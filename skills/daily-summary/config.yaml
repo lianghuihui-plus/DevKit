@@ -1,0 +1,24 @@
+# 每日工作总结配置
+
+# 数据源开关
+sources:
+  git: true
+  hermes: true
+  cursor: true
+  openclaw: true
+
+# Git 仓库配置
+git:
+  repos:
+    - ~/GitProj/LunarHarmony2/lunarharmony
+    - ~/GitProj/LunarHarmony/lunarharmony
+    - ~/GitProj/AIWorkFlow/AIWorkFlow
+    - ~/GitProj/DevKit
+  author: "lianghuihui"
+
+# 输出配置
+output:
+  # 日报文件保存目录（为空则仅输出到对话，不落盘）
+  path: ~/Documents/daily-reports/
+  # 文件名模板，{date} 会被替换为 YYYY-MM-DD
+  filename: "daily-{date}.md"
