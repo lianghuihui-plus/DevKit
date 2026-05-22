@@ -256,47 +256,100 @@ def _clean_title(text: str) -> str:
 
 
 def collect_openclaw(day_start: datetime, day_end: datetime) -> list[dict]:
-    """采集 OpenClaw 会话事件"""
+    """采集 OpenClaw 会话事件。
+
+    两路数据源：
+    1. sessions.json — 当前活跃会话（含 updatedAt 时间戳和 model/token 元数据）
+    2. *.jsonl.reset.* — 已 reset 的历史会话快照（不在 sessions.json 中，
+       但保留了完整对话的 JSONL 快照，文件名含 reset 时间戳）
+    """
+    import re
+
     events = []
-    sessions_path = os.path.expanduser(
-        "~/.openclaw/agents/main/sessions/sessions.json"
-    )
-    if not os.path.isfile(sessions_path):
-        return events
+    seen_files = set()  # 避免活跃会话和 reset 快照重复
 
-    with open(sessions_path) as f:
-        sessions = json.load(f)
+    sessions_dir = os.path.expanduser("~/.openclaw/agents/main/sessions")
+    sessions_path = os.path.join(sessions_dir, "sessions.json")
 
-    for key, sess in sessions.items():
-        updated_at = sess.get("updatedAt", 0)
-        if not updated_at:
-            continue
+    # ── 第 1 路：sessions.json（活跃会话） ──
+    if os.path.isfile(sessions_path):
+        with open(sessions_path) as f:
+            sessions = json.load(f)
 
-        dt = datetime.fromtimestamp(updated_at / 1000, tz=TZ)
-        if dt < day_start or dt >= day_end:
-            continue
+        for key, sess in sessions.items():
+            updated_at = sess.get("updatedAt", 0)
+            if not updated_at:
+                continue
 
-        session_file = sess.get("sessionFile", "")
-        model = sess.get("model", "")
-        tokens = sess.get("totalTokens", 0)
+            dt = datetime.fromtimestamp(updated_at / 1000, tz=TZ)
+            if dt < day_start or dt >= day_end:
+                continue
 
-        # 从 jsonl 提取上下文
-        title = ""
-        assistant_preview = ""
-        exchange_count = 0
-        if session_file and os.path.isfile(session_file):
-            title, assistant_preview, exchange_count = _openclaw_extract_context(session_file)
+            session_file = sess.get("sessionFile", "")
+            model = sess.get("model", "")
+            tokens = sess.get("totalTokens", 0)
 
-        events.append({
-            "time": dt.strftime("%H:%M"),
-            "timestamp": dt.isoformat(),
-            "source": "openclaw",
-            "title": title,
-            "context": assistant_preview,
-            "exchanges": exchange_count,
-            "model": model,
-            "tokens": tokens,
-        })
+            title, assistant_preview, exchange_count = "", "", 0
+            if session_file and os.path.isfile(session_file):
+                title, assistant_preview, exchange_count = _openclaw_extract_context(session_file)
+                seen_files.add(os.path.realpath(session_file))
+
+            events.append({
+                "time": dt.strftime("%H:%M"),
+                "timestamp": dt.isoformat(),
+                "source": "openclaw",
+                "title": title,
+                "context": assistant_preview,
+                "exchanges": exchange_count,
+                "model": model,
+                "tokens": tokens,
+            })
+
+    # ── 第 2 路：*.jsonl.reset.*（已 reset 的历史会话） ──
+    if os.path.isdir(sessions_dir):
+        reset_pattern = re.compile(
+            r'\.jsonl\.reset\.(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z)$'
+        )
+        for fname in os.listdir(sessions_dir):
+            m = reset_pattern.search(fname)
+            if not m:
+                continue
+
+            full_path = os.path.join(sessions_dir, fname)
+
+            # 跳过空文件
+            if os.path.getsize(full_path) == 0:
+                continue
+
+            # 跳过已在活跃会话中覆盖的文件
+            if os.path.realpath(full_path) in seen_files:
+                continue
+
+            # 从文件名提取 reset 时间戳（UTC），转为北京时间
+            reset_ts_str = m.group(1)  # e.g. "2026-05-21T08:50:59.710Z"
+            try:
+                reset_dt_utc = datetime.strptime(
+                    reset_ts_str, "%Y-%m-%dT%H-%M-%S.%fZ"
+                ).replace(tzinfo=timezone.utc)
+                reset_dt = reset_dt_utc.astimezone(TZ)
+            except ValueError:
+                continue
+
+            if reset_dt < day_start or reset_dt >= day_end:
+                continue
+
+            title, assistant_preview, exchange_count = _openclaw_extract_context(full_path)
+
+            events.append({
+                "time": reset_dt.strftime("%H:%M"),
+                "timestamp": reset_dt.isoformat(),
+                "source": "openclaw",
+                "title": title,
+                "context": assistant_preview,
+                "exchanges": exchange_count,
+                "model": "",
+                "tokens": 0,
+            })
 
     return events
 
