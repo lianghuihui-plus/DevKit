@@ -6,6 +6,7 @@ sources:
   hermes: true
   cursor: true
   openclaw: true
+  claude: true
 
 # Git 仓库配置
 git:

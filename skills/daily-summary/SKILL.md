@@ -1,6 +1,6 @@
 ---
 name: daily-summary
-description: 生成每日工作总结，采集 Git / Hermes / Cursor / OpenClaw 数据，按时间线输出。
+description: 生成每日工作总结，采集 Git / Hermes / Cursor / OpenClaw / Claude Code 数据，按时间线输出。
 trigger:
   - 日报
   - 每日总结
@@ -11,7 +11,7 @@ trigger:
 
 # 每日工作总结
 
-采集四个数据源，按时间线生成日报。**只落盘，不在对话中输出完整内容**——保存后告知用户文件路径即可。
+采集五个数据源，按时间线生成日报。**只落盘，不在对话中输出完整内容**——保存后告知用户文件路径即可。
 
 ## 执行流程
 
@@ -29,7 +29,13 @@ trigger:
 python3 {skill_dir}/scripts/generate.py [YYYY-MM-DD]
 ```
 
-脚本输出 JSON，包含 Git / Cursor / OpenClaw 事件。日期参数可选，默认今天。
+脚本输出 JSON，包含 Git / Cursor / OpenClaw / Claude Code 事件。日期参数可选，默认今天。
+
+> OpenClaw 数据采集细节见 `references/openclaw-sessions.md`：两路扫描（sessions.json + .reset 历史快照），时间戳格式陷阱（破折号非冒号）。
+
+> Claude Code 数据采集细节见 `references/claude-code-sessions.md`：扫描 `~/.claude/projects/` 下所有 `.jsonl`，按消息 timestamp 过滤日期。
+
+> Git 数据采集见 `references/git-collection.md`：`--since`/`--until` 按 committer date 过滤，需要额外按 author date 二次校验以避免 rebase/cherry-pick 引入的日期污染。
 
 ### 4. 采集 Hermes 会话
 
@@ -77,6 +83,7 @@ for r in rows:
 - **Git 提交**：展开 commit message 全文，说明修改了什么
 - **Cursor 会话**：解释做了什么操作（编辑/生成/审查），涉及什么文件
 - **OpenClaw 会话**：概括对话主题和结论
+- **Claude Code 会话**：根据标题和交换轮数概括对话主题和结论
 
 然后将事件按主题合并为不超过 5 个工作项。相关的连续事件（如同一工作流的多个会话）应合并为一个工作项。每个工作项记录：
 
@@ -118,12 +125,19 @@ for r in rows:
 
 - 分支: `feature/ai-tutor-entry`
 - 修改文件: `src/entry/Index.ets`, `src/model/TutorModel.ets`
+
+### 15:48 🤖 Claude Code
+
+**Claude CLI 在其他目录无法识别 API key**
+
+- 排查 Claude Code CLI 的 API key 识别机制，确认 `settings.json` 和 `~/.claude.json` 的读取优先级
+- 解决多项目间 key 共享问题
 ```
 
 要求：
 - 每个事件至少 2-3 行实质描述
 - 概览表放在标题下方、时间线之前，最多 5 行
-- 耗时的计算：Hermes 会话用 `ended_at - started_at`（进行中的用当前时间）；Git/Cursor/OpenClaw 用相邻事件间隔估算；无明显结束时间的取合理默认值
+- 耗时的计算：Hermes 会话用 `ended_at - started_at`（进行中的用当前时间）；Git/Cursor/OpenClaw/Claude Code 用相邻事件间隔估算；无明显结束时间的取合理默认值
 - 合并工作项时，「工作内容」列写一句概括性总结（如「AIWorkFlow 技能重构与工作流推进」），**不要**用 `+` 拼多个任务名
 - **只有同类工作才能合并**——同一主题/同一项目的相关事件可合并，不同主题的工作即使时间相邻也分列
 

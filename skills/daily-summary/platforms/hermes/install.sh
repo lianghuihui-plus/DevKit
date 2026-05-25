@@ -10,5 +10,6 @@ mkdir -p "$DST_DIR"
 cp "$SKILL_DIR/SKILL.md" "$DST_DIR/SKILL.md"
 cp "$SKILL_DIR/config.yaml" "$DST_DIR/config.yaml"
 cp -r "$SKILL_DIR/scripts" "$DST_DIR/scripts"
+cp -r "$SKILL_DIR/references" "$DST_DIR/references"
 
 echo "✅ daily-summary → Hermes"

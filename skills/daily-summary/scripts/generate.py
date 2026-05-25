@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """每日工作总结数据采集脚本。
 
-采集 Git / Cursor / OpenClaw 的事件，输出 JSON 行，由 SKILL.md 中的 Agent
+采集 Git / Cursor / OpenClaw / Claude Code 的事件，输出 JSON 行，由 SKILL.md 中的 Agent
 结合 Hermes session_search 结果合并为时间线日报。
 
 用法: python3 generate.py [YYYY-MM-DD]
@@ -390,6 +390,164 @@ def _openclaw_extract_context(jsonl_path: str) -> tuple[str, str, int]:
     return title, assistant_preview, user_count + assistant_count
 
 
+# ── Claude Code ─────────────────────────────────────────────────────
+
+
+def collect_claude(day_start: datetime, day_end: datetime) -> list[dict]:
+    """采集 Claude Code 会话事件。
+
+    扫描 ~/.claude/projects/ 下所有 .jsonl 文件，按消息 timestamp 过滤当天会话。
+    Claude Code 的 session JSONL 中每条消息有 type/timestamp/sessionId/message 字段。
+    """
+    events = []
+    seen_sessions = set()
+    projects_dir = os.path.expanduser("~/.claude/projects")
+
+    if not os.path.isdir(projects_dir):
+        return events
+
+    for proj_dir in os.listdir(projects_dir):
+        proj_path = os.path.join(projects_dir, proj_dir)
+        if not os.path.isdir(proj_path) or proj_dir.startswith("."):
+            continue
+
+        for fname in os.listdir(proj_path):
+            if not fname.endswith(".jsonl"):
+                continue
+
+            fpath = os.path.join(proj_path, fname)
+            try:
+                with open(fpath) as f:
+                    lines = f.readlines()
+            except Exception:
+                continue
+
+            if not lines:
+                continue
+
+            # 扫描前几行找第一条有 timestamp 的消息（前两行可能是无 ts 的元数据）
+            first_ts = None
+            session_id = ""
+            for line in lines:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = obj.get("timestamp", "")
+                if ts:
+                    first_ts = ts
+                    session_id = obj.get("sessionId", "")
+                    break
+
+            if not first_ts:
+                continue
+
+            # 解析时间戳（UTC ISO → 北京时间）
+            try:
+                dt_utc = datetime.fromisoformat(first_ts.replace("Z", "+00:00"))
+                dt = dt_utc.astimezone(TZ)
+            except ValueError:
+                continue
+
+            if dt < day_start or dt >= day_end:
+                continue
+
+            # 去重：同一 sessionId 只取最早的一个文件
+            if session_id in seen_sessions:
+                continue
+            seen_sessions.add(session_id)
+
+            # 提取标题和交换轮数
+            title, user_count, assistant_count = _claude_extract_context(lines)
+
+            # 提取项目名（从目录名反推可读名称）
+            project_name = _claude_project_name(proj_dir)
+
+            events.append({
+                "time": dt.strftime("%H:%M"),
+                "timestamp": dt.isoformat(),
+                "source": "claude",
+                "title": title,
+                "project": project_name,
+                "exchanges": user_count + assistant_count,
+            })
+
+    return events
+
+
+def _claude_extract_context(lines: list[str]) -> tuple[str, int, int]:
+    """从 Claude Code JSONL 行提取标题和 user/assistant 消息数"""
+    title = ""
+    user_count = 0
+    assistant_count = 0
+
+    for line in lines:
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        t = obj.get("type", "")
+        if t == "ai-title":
+            ai_title = obj.get("aiTitle", "")
+            if ai_title and not title:
+                title = ai_title
+        elif t == "user":
+            msg = obj.get("message", {})
+            content = msg.get("content", "")
+            text = _claude_extract_text(content).strip()
+            if text:
+                user_count += 1
+                if not title:
+                    title = _claude_clean_title(text)[:150]
+        elif t == "assistant":
+            assistant_count += 1
+
+    return title, user_count, assistant_count
+
+
+def _claude_extract_text(content) -> str:
+    """从 Claude Code message content（str 或 list）提取纯文本"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+    return ""
+
+
+def _claude_clean_title(text: str) -> str:
+    """清理 Claude Code 标题：去除 XML 标签、skill 加载信息等"""
+    import re
+    text = re.sub(r'<command-(?:name|message|args)>[^<]*</command-(?:name|message|args)>', '', text)
+    text = re.sub(r'<local-command-stdout>.*?</local-command-stdout>', '', text, flags=re.DOTALL)
+    text = re.sub(r'Base directory for this skill:.*?\n', '', text)
+    text = re.sub(r'^#\s*(?:Role|Task|Output Format|Input|工作流会话).*$', '', text, flags=re.MULTILINE)
+    return text.strip()
+
+
+def _claude_project_name(proj_dir: str) -> str:
+    """从编码后的项目目录名反推可读项目名。
+
+    编码规则：以 - 开头，/ 替换为 -，特殊字符（. 等）替换为 -。
+    这里简化为去掉前导 - 后，取最后一段作为项目名。
+    """
+    # 去掉前导 -
+    name = proj_dir.lstrip("-")
+    # 取最后一段（原始路径的 basename）
+    parts = [p for p in name.split("-") if p]
+    # 常见模式：Users-cm-xxx → 取 xxx 部分；Users-cm 则为 home
+    if len(parts) <= 2:
+        return "home"
+    # 返回倒数第一个有意义的段
+    return parts[-1] if parts[-1] not in ("", "claude") else (
+        parts[-2] if len(parts) > 2 else "home"
+    )
+
+
 # ── Main ───────────────────────────────────────────────────────────
 
 
@@ -411,6 +569,9 @@ def main():
 
     if sources.get("openclaw", True):
         all_events.extend(collect_openclaw(day_start, day_end))
+
+    if sources.get("claude", True):
+        all_events.extend(collect_claude(day_start, day_end))
 
     # 按时间排序
     all_events.sort(key=lambda e: e["time"])
