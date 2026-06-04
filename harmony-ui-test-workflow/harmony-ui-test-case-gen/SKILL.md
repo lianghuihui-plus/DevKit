@@ -1,0 +1,512 @@
+---
+name: harmony-ui-test-case-gen
+description: 鸿蒙 UI 测试用例生成。在工作空间中，用户用自然语言描述测试意图，Agent 读代码 + 上设备探索页面，生成 YAML 用例和页面探索数据。
+version: 1.0.0
+author: cm
+---
+
+# 鸿蒙 UI 测试用例生成
+
+> NL → 读代码 → 上设备 → YAML + exploration 数据 → 落盘 workspace。
+
+## 前置条件
+
+- 当前目录为 UITestWorkspace-*（或其子目录）
+- 已通过 session 创建或恢复 workspace 上下文（`CONTEXT.md` 存在，且 `AGENT.md` 已加载）
+
+## 数据边界
+
+| 文件 | 职责 |
+|------|------|
+| `test-sources/*.md` | 人类原始输入；临时自然语言先规范化写入这里 |
+| `test-plans/*.yaml` | 结构化测试意图；新生成 YAML 使用结构化 action / assert |
+| `explorations/<page>/exploration.md` | 页面经验：控件定位、状态规律、弹窗、已验证修正、失败尝试 |
+| `explorations/<page>/layoutTree.json` | 最近一次真实 dumpLayout 证据快照 |
+| `test-records.json` | 只初始化 / 更新 `auto_generated`，不写执行结果 |
+
+## 产物格式
+
+| 产物 | 命名 / 位置 | 写入规则 |
+|------|-------------|----------|
+| 源用例 | `test-sources/<slug>.md` | 临时自然语言先落源文件；批量模式读取已有源文件 |
+| 结构化 YAML | `test-plans/<page>-<n>.yaml` | 一个 YAML 一个用例；普通用例按序号写入 |
+| smoke YAML | `test-plans/smoke-<page>.yaml` | 批量探索固定命名，重复探索更新同一文件 |
+| 页面经验 | `explorations/<page>/exploration.md` | 增量写入章节；结构化表头保持稳定 |
+| 页面快照 | `explorations/<page>/layoutTree.json` | 每次真实 dumpLayout 后覆盖最近快照 |
+| 运行记录 | `test-records.json` | 只初始化 / 更新 `auto_generated`，不写执行结果 |
+
+人类会直接打开阅读的产物必须带简短说明：
+- `test-plans/*.yaml` 顶部写 YAML 注释形式的“阅读说明”，解释它是结构化测试意图、不是回放脚本。
+- `explorations/<page>/exploration.md` 顶部写 `## 阅读说明`，解释页面经验、已验证修正和失败尝试记录的用途。
+
+## 执行流程
+
+支持三种模式：
+
+- **单个模式**：启动前一次性收集目标页面、测试意图和必要测试数据；开始生成 / 探索后不反复中途询问。
+- **批量模式**：用户说“全部生成 / 批量编译 / 编译 test-sources”时，扫描 `test-sources/*.md`，先展示编译计划，再逐文件处理；单个源文件缺 target、测试数据或关键导航依据时标记为需人工处理并继续后续文件。
+- **批量探索模式**：用户说“探索全部页面 / 全部未验证页面 / 生成冒烟用例”时，允许按 `CONTEXT.md ## 路由索引` 全量读取 route_map，并结合已解析的 `## 路由表` 和 `test-records.json`，为缺少 exploration 或长期未验证的页面补探索数据并生成 smoke YAML；单个页面无法导航或无法获得稳定锚点时记录为需人工处理。
+
+**自动化批处理原则**：
+- 用户启动 case-gen 后，异常优先落到批量结果、`exploration.md` 的失败尝试或源文件状态说明中，不因单个源文件 / 页面中断整批。
+- 能从 `CONTEXT.md`、源码和实时 dumpLayout 可靠推断的信息自动补全，并在产物中记录依据。
+- 无法可靠推断的信息不编造；当前源文件 / 页面不写 YAML 或 smoke YAML，状态标记为“需人工处理”。
+
+---
+
+### Step 1：定位 workspace
+
+向上查找 `UITestWorkspace-*` 目录 → 找不到 → 提示"先执行 session 新建或进入工作空间"。
+
+定位成功后，确认当前 workspace 已由 session 创建或恢复。后续读代码、hdc 探索、写 YAML 和写 exploration 时必须遵守 `AGENT.md` 约束；特别是"遇阻先读代码"、"超限记录"和工作空间写入边界。
+
+---
+
+### Step 2：获取目标页面和测试意图
+
+优先扫描 `test-sources/*.md`：
+
+- 若存在源文件且用户没有指定具体用例，列出源文件让用户选择要编译的文件；用户选择 `all` 时进入批量模式。
+- 若用户直接用自然语言提出用例，先生成 slug，写入 `test-sources/<slug>.md`，再按同一流程编译。
+- 若没有 `test-sources/`，创建目录后继续。
+
+**批量编译计划**：
+
+进入批量模式后，先生成计划并展示：
+
+```markdown
+## 批量编译计划
+| 源文件 | 推断 target | 场景数 | 状态 |
+|--------|-------------|--------|------|
+| test-sources/account-login.md | accountLoginPage | 2 | 可编译 |
+| test-sources/settings.md | settingsPage | 1 | 需人工处理 |
+```
+
+- 一个源文件包含多个场景时，拆成多个候选 YAML；写入前展示拆分结果。
+- 已有同 `caseId` 的 YAML 时，默认更新同一 YAML 文件；无法确认对应关系时生成新序号文件，并在汇总中说明。
+- `sourceHash` 与已生成 YAML 相同且 YAML 通过基础校验时，标记为“未变化”，默认跳过；用户明确要求重生成时才覆盖。
+- 已有同 `caseId` 的 YAML 被实质更新时，必须同步更新 records 中的 `yaml`、`source`、`sourceHash`，并将长期 `status` 降为 `auto_generated`；保留 `runCount`、`lastFailure`、`manualNote` 等历史信息，不保留 `passStreak`。
+- 缺 target、测试数据或导航依据的源文件标记为“需人工处理”，批量中不逐个提问，也不为这些源文件写 YAML。
+- 某个源文件编译失败不阻塞后续文件；失败原因写入批量汇总，不写通过 / 失败运行状态。
+
+普通模式不要求 `CONTEXT.md ## 路由表` 已包含全部页面；只有目标页面缺失时，才按 `## 路由索引` 从 `routeMap` 查询该 target 并追加到 `## 路由表`。批量探索模式需要页面列表时，才全量读取 `routeMap`。
+
+路由索引异常处理：
+- `routeMap` 存在 → 直接按 target 查询。
+- `routeMap` 为空且 `routeMapCandidates` 只有 1 个 → 使用该候选，并把它补写为 `routeMap`。
+- `routeMap` 为空且 `routeMapCandidates` 多于 1 个 → 仅作为旧 workspace 或 `CONTEXT.md` 被手工修改后的恢复兜底；当前源文件 / 页面标记为“需人工处理：路由索引多候选”，批量中继续后续项，不在生成中途反复询问。正常新建 workspace 应由 session 阶段选择主 `routeMap`。
+- `routeMap` 和候选都缺失 → 记录“需人工处理：缺 route_map”，不编造页面源文件。
+
+**批量探索计划**：
+
+进入批量探索模式后，先生成计划并展示。页面探索状态和业务用例状态分开判断：
+- 页面可达性优先看 `smoke-<page>` 记录、`exploration.md` 是否存在、最近 `layoutTree.json` 是否可用。
+- `smoke-<page>` 为 `verified` 且 exploration/layoutTree 存在时，页面可视为已完成基础探索，不因缺少普通业务用例而反复探索。
+- 普通业务用例状态只用于判断业务可信度；存在 `blocked/failing/stale/auto_generated` 时按这个优先级作为业务风险提示，不阻塞页面可达性闭环。
+- 没有 smoke 记录且没有普通业务 case 时记为“无记录”。
+
+```markdown
+## 批量探索计划
+| 页面 | exploration | records 状态 | 计划 |
+|------|-------------|--------------|------|
+| accountLoginPage | 缺失 | auto_generated | 探索 + 生成 smoke YAML |
+| settingsPage | 已存在 | stale | 重新 dumpLayout + 刷新 smoke YAML |
+```
+
+- 选择范围默认是缺少 `exploration.md` 或 records 状态为 `stale/failing/auto_generated` 且长期未验证的页面。
+- 每个页面按已解析的 `CONTEXT.md ## 路由表`、`## 路由索引` 和 `## 页面导航` 推断导航；缺页面路由时先从 `routeMap` 懒加载并追加到 `## 路由表`，仍无法确认时标记“需人工处理”，不编造 deeplink。
+- 探索成功后写入 `explorations/<page>/exploration.md` 和 `layoutTree.json`。
+- 每个探索成功页面先写入 `test-sources/smoke-<page>.md`，再生成一个 smoke YAML，用 `caseId: smoke-<page>`，`source` 指向该源文件，`sourceHash` 使用该源文件原始字节 sha256。
+- smoke YAML 固定写入 `test-plans/smoke-<page>.yaml`；重复批量探索时更新同一文件，不使用普通序号规则。
+- smoke YAML 只验证页面核心锚点存在，不写业务断言，不把页面标记为 trusted。
+- smoke YAML 写入后只可初始化 / 更新 records，不写执行通过状态；如果重复探索导致 smoke YAML 或 smoke source 实质变化，必须将对应 smoke case 的长期 `status` 降为 `auto_generated`，并清零 `passStreak`。
+
+单个模式启动前可询问用户：`要测哪个页面？想测什么？`
+
+如果用户 NL 中已同时包含 target 和测试意图（如"测登录页的密码错误提示"）→ 全部跳过。
+
+否则在启动前收集缺失信息：
+
+```
+比如：
+· 输错密码看有没有错误提示
+· 勾选协议才能点登录
+· 不填账号直接点登录看提示
+```
+
+用户输入后，Agent 解析产出**意图草案**（控件的具体 text 用占位符）。草案最终会编译为结构化 YAML：
+
+**action 拆分**
+
+action 是**逻辑操作**。Agent 执行时自动拆为物理操作。
+
+| 逻辑操作 | 物理实现 |
+|---------|---------|
+| `点击xxx` | 找控件 → 点击 |
+| `输入xxx` | 点击输入框 → 键入 → 收键盘 |
+| `勾选xxx` | 找 Toggle → 点击 |
+| `滑动` | 找可滚动容器 → swipe |
+
+- 每个逻辑操作执行完后，UI 必须回到干净状态（无键盘、无弹窗）
+- "并"/"和"/"然后"/"再" → 拆分逻辑操作
+- 不拆到物理层
+
+**隐式 action 补全**
+- "输错密码看有没有提示" → 补 `点击登录`
+- 补全依据：初步推断，读代码后做最终确认
+
+**断言推断**
+- "看有没有 xxx" → `text: "xxx"`（占位符，上设备后用真实值替换）
+- "能不能点"/"能否跳转" → 自然语言断言
+- 用户未提断言的 action → 不加 assert
+
+**结构化 action 编译**
+
+| 用户意图 | 结构化 action |
+|---------|-----------|
+| 点击登录 | `kind: click`, `targetRole: 登录按钮` |
+| 输入账号 test@example.com | `kind: inputText`, `targetRole: 账号输入框`, `text: test@example.com` |
+| 清空账号 | `kind: clearText`, `targetRole: 账号输入框` |
+| 勾选协议 | `kind: click`, `targetRole: 协议勾选框` |
+| 向上滑动 | `kind: swipe`, `targetRole: 页面滚动区`, `direction: up` |
+| 等待 1 秒 | `kind: wait`, `durationMs: 1000` |
+| 关闭弹窗 | `kind: closePopup`, `targetRole: 弹窗关闭按钮` |
+
+**结构化 assert 编译**
+
+| 用户预期 | 结构化 assert |
+|---------|-----------|
+| 出现"账号或密码错误" | `type: textPresent`, `value: 账号或密码错误` |
+| 不出现"首页" | `type: textAbsent`, `value: 首页` |
+| 页面跳转 | `type: pageChanged` |
+| 页面仍有账号、密码、登录 | `type: pageAnchorsPresent`, `values: [账号, 密码, 登录]` |
+| 登录按钮可点击 | `type: componentEnabled`, `targetRole: 登录按钮` |
+| 出现 Toast | `type: toastPresent`, `value: xxx` |
+| 难以结构化判断 | `type: naturalLanguage`, `text: 原始预期` |
+
+解析完毕后展示草案，并在启动前收集测试数据：
+
+draft 中包含输入类 step 时，收集必要测试数据。
+
+```
+需要输入什么账号？
+```
+
+用户回答后，展示最终草案；进入生成 / 探索后不再追加询问，运行中发现仍缺数据则当前源文件标记为“需人工处理”。
+
+---
+
+### Step 3：读代码
+
+**目标**：输出 navigation 序列 + 每个 step 的业务逻辑分析。
+
+**导航分析**
+
+1. 从 `CONTEXT.md` 的 `## 项目` 获取代码仓库路径（后续读源码用）
+2. 检查 `CONTEXT.md` 的 `## 页面导航`：目标页面已有导航路径 → 复用，跳过分析
+3. 无已有路径 → 先从 `CONTEXT.md` 的 `## 路由表` 查找目标页面 `pageSourceFile`；不存在时按 `## 路由索引` 读取 `routeMap` 中该 target 的记录，并将 `页面名 / 源文件 / 来源 / 更新时间` 追加到 `## 路由表`；如果 `routeMap` 缺失且候选不唯一，当前源文件 / 页面标记为需人工处理
+4. 优先搜索 `UriRouterConstants` / route constants / deep link helper，确认 deep link scheme + host
+5. 如果项目不用固定常量名，回退搜索 `router.pushUrl`、`Navigation`、`module.json5`、已有 `CONTEXT.md` 导航、页面入口 onClick 绑定和 hdc 点击链路
+6. 优先 deep link，无法直达则追加点击步骤；仍无法确认时记录候选路径和缺口，当前源文件 / 页面标记为需人工处理，不直接编造
+
+```
+navigation:
+  - deeplink: codemao://lunar/accountLogin
+```
+
+**业务逻辑分析**
+
+针对 draft 中每个 step，读源码追踪交互逻辑。
+
+**点击类 step**：
+1. 找该控件的 `onClick` 绑定 → 跟踪函数体
+2. 成功/失败分支各自的 UI 结果（跳转页面标志 text / Toast 文本）
+3. 前置条件（非空校验 / 勾选校验 / 权限校验）
+
+**输入类 step**：
+1. 找 TextInput 的 `onChange` 绑定
+2. 输入后联动哪些状态
+
+**断言推断**（基于代码）：
+
+| 代码模式 | 断言 |
+|---------|------|
+| `router.pushUrl({ url: 'pages/Home' })` | `text: "首页"` |
+| `promptAction.showToast({ message: 'xxx' })` | `text: "xxx"` |
+| `if (!this.agreed)` | 代码要求先勾选协议 → 高置信时自动补 UI 前置 step；低置信时标记需人工处理 |
+
+**隐式前置条件**：代码要求但 draft 中没有（如 `if (!this.agreed)` → 勾选协议）→ 若能从源码和实时 UI 确认是 UI 可验证前置条件，则自动补 step 并记录依据；若无法确认或补全代价过大，当前源文件标记为需人工处理，不写 YAML。
+
+完成分析后进入 Step 4。
+
+---
+
+### Step 4：上设备
+
+> **核心规则**
+> **A. 遇阻先读代码**：dump 失败/异常 → 读源码，不盲重试
+> **B. 超限记录**：同一目标重试 3 次无果 → 记录为需人工处理并继续后续项
+
+**环境检查（仅首个用例执行）**
+
+> 加载 workspace 的 `references/device-setup.md`，按步骤检查设备连接、启动守护进程、确认 App 已安装。
+> 读取 `CONTEXT.md` 的 `## 记录`，了解已知的设备特性与陷阱。
+
+后续用例跳过此步，直接导航。
+
+**导航到目标页面**
+
+按 Step 3 的导航分析结果逐项执行。
+任一导航步骤失败 → 按规则 A 读代码换策略 → 按规则 B 限次。
+
+**dumpLayout 取真实 text**
+
+1. `hdc shell uitest dumpLayout -p /data/local/tmp/layout.json`
+2. `hdc file recv /data/local/tmp/layout.json /tmp/`
+3. **立即保存**为 `explorations/<page>/layoutTree.json`（覆盖，目录不存在则先创建；它只代表最近一次真实快照）
+4. 解析 JSON，按类型分组展示。
+
+**TextInput text 为空时**：`text=""` 可能只是输入框当前值为空，也可能是 placeholder 使用了 `$r()` 资源引用。先查 dumpLayout 中的 `hint` / `originalText` / `description` 字段，有值则直接用。都没有 → 读源码查 `placeholder: $r('app.string.xxx')` → 解析对应 `string.json`。
+
+产出：控件真实 text（供 Step 5 使用）。
+
+---
+
+### Step 5：生成
+
+**写入 exploration**
+
+在 `explorations/<page>/` 下创建或增量更新 `exploration.md`（目录不存在则先创建）：
+
+```
+explorations/
+  accountLoginPage/
+    exploration.md       ← 页面经验库
+    layoutTree.json      ← Step 4 最近一次 dumpLayout 证据快照
+```
+
+同页面已有 `exploration.md` → 增量更新，不覆盖：
+
+| 章节 | 策略 |
+|------|------|
+| `## 导航` | 有变化才更新 |
+| `## 控件定位` | 追加新发现，不删除已有 |
+| `## 状态规律` | 追加新发现，不删除已有 |
+| `## 弹窗与遮挡` | 追加新发现，不删除已有 |
+| `## 代码分析` | 追加新发现，不删除已有 |
+| `## hdc 探索记录` | 追加新发现 |
+| `## 已验证修正` | 只追加已经由设备执行验证过的修正 |
+| `## 失败尝试记录` | 追加失败现象和未验证 / 无效尝试 |
+
+`layoutTree.json` 在 Step 4 dumpLayout 时已覆盖保存。
+
+**exploration.md 格式**：
+
+```markdown
+# accountLoginPage
+
+## 阅读说明
+- 这是页面经验库，不是测试用例。
+- runner / script-gen 会读取这里的页面级经验辅助定位和修复。
+- `已验证修正` 可被 runner 自动应用；`失败尝试记录` 只用于复盘和避坑，不会自动复用。
+
+## 导航
+- deeplink: codemao://lunar/accountLogin
+
+## 控件定位
+| targetRole | preferred | fallback | anchors | source | confidence | lastVerifiedAt |
+|------------|-----------|----------|---------|--------|------------|----------------|
+| 账号输入框 | type=TextInput,order=first | placeholder=编程猫账号 | 编程猫账号 | dumpLayout+source | medium | 2026-06-03T10:00:00+08:00 |
+| 密码输入框 | type=TextInput,order=second | placeholder=密码 | 密码 | dumpLayout+source | medium | 2026-06-03T10:00:00+08:00 |
+| 登录按钮 | text=登录,type=Button | onClick=performLogin | 账号,密码 | dumpLayout+source | high | 2026-06-03T10:00:00+08:00 |
+
+## 状态规律
+- 两个输入框均非空后登录按钮 enabled
+- 未勾选协议时点击登录会被协议校验阻止
+
+## 弹窗与遮挡
+- 导航到页面后出现"青少年守护"弹窗，需先关闭
+- 输入文字后键盘遮挡底部 Toggle，输入完成后点击页面标题区域收键盘
+
+## 代码分析
+- 登录按钮 onClick → performLogin()
+  - onSuccess → navigateBack
+  - onError → Toast("账号或密码错误")
+- 两个输入框均非空 → 按钮 enabled
+- this.agreed === true → 不勾选弹窗阻止
+
+## hdc 探索记录
+- TextInput placeholder 为 $r() 引用，text 为空
+
+## 已验证修正
+| symptom | fix | appliesTo | verifiedAt |
+|---------|-----|-----------|------------|
+| 弹窗遮挡登录按钮导致点击失败 | dump 后先关闭弹窗再继续 | 登录前操作 | 2026-06-03T10:00:00+08:00 |
+
+## 失败尝试记录
+| symptom | attemptedFix | result | recordedAt |
+|---------|--------------|--------|------------|
+| 登录按钮文本在部分状态下不可见 | 直接按 text="登录" 查找 | 未验证，不自动复用 | 2026-06-03T10:00:00+08:00 |
+```
+
+| 章节 | 来源 | 内容 |
+|------|------|------|
+| `## 导航` | Step 3 导航分析 | deep link / 点击链路 |
+| `## 控件定位` | Step 3 + Step 4 | 页面关键控件的稳定识别方式，不要求固化为 YAML selector |
+| `## 状态规律` | Step 3 业务逻辑 | enabled 条件、校验分支、跳转 / Toast 规律 |
+| `## 弹窗与遮挡` | Step 4 设备操作 | 弹窗、键盘、遮挡等执行前需处理的问题 |
+| `## 代码分析` | Step 3 业务逻辑 | onClick 链条、成功/失败分支、前置条件 |
+| `## hdc 探索记录` | Step 4 设备操作 | 实际操作中发现的意外情况（弹窗、遮挡、placeholder 问题等） |
+| `## 已验证修正` | Step 4 / runner | 已经由设备验证过、runner 可自动应用的修正方式 |
+| `## 失败尝试记录` | Step 4 / runner | 失败原因、无效尝试和待验证修正；runner 不自动应用 |
+
+`## 控件定位` 表格字段必须保持稳定，便于 runner / script-gen 读取：
+
+- `targetRole` 对应 YAML 中的 `targetRole`。
+- `preferred` 是首选定位策略，不是强 selector。
+- `fallback` 是首选失败后的替代策略。
+- `anchors` 是页面或局部区域锚点，用逗号分隔。
+- `source` 可取 `dumpLayout`、`source`、`success-path` 或组合。
+- `confidence` 取 `high`、`medium`、`low`。
+- `lastVerifiedAt` 是最近一次设备探索或 runner 执行验证时间。
+
+**生成 YAML**
+
+按 templates/input-template.md 格式组装：
+
+| 字段 | 来源 |
+|------|------|
+| `caseId` | 由 target + 源文件 slug + 用例目标生成，同一 workspace 内稳定唯一 |
+| `description` | Agent 自动生成 |
+| `target` | Step 2 |
+| `source` | 对应 `test-sources/*.md`；临时 NL 也先落源文件 |
+| `sourceHash` | `sha256:` + 源文件原始字节 sha256 |
+| `navigation` | Step 3 |
+| `precondition` | Step 2 推断 + Step 3 代码分析发现的前置条件（仅保留 UI 可验证的） |
+| `steps[].action` | 结构化逻辑操作，不写 selector / index / 坐标 |
+| `steps[].assert` | 结构化断言数组；自然语言只作为兜底类型 |
+| `steps[].assert[].type` | 断言类型，取 `textPresent`、`textAbsent`、`pageChanged`、`pageAnchorsPresent`、`componentEnabled`、`toastPresent`、`naturalLanguage` |
+
+YAML 顶部必须包含注释形式的阅读说明：
+
+```yaml
+# 阅读说明：
+# - 这是结构化测试意图，不是可直接回放的脚本。
+# - action / assert 只描述“要做什么、要验证什么”，具体控件定位由 runner 结合 exploration、源码和实时 dumpLayout 判断。
+# - sourceHash 用于发现 test-sources 原始用例是否变化；不一致时 runner 会跳过当前 YAML 并标记 stale。
+```
+
+**断言位置校验**：确保指定 assert 的 step 在代码逻辑中确实满足触发条件。
+
+**写入前校验**：
+- 新生成 YAML 必须包含 `caseId`、`source`、`sourceHash`。
+- `description` / `target` / `navigation` / `steps` 必须完整。
+- `caseId` 只能包含字母、数字、下划线和连字符；同一 workspace 内不得与其他结构化 YAML 重复。
+- 每个 step 必须有非空 `action.kind`。
+- `action.kind` 只能取 `click`、`inputText`、`clearText`、`swipe`、`wait`、`closePopup`。
+- `inputText` 必须有 `targetRole` 和 `text`；`click` / `clearText` / `closePopup` 必须有 `targetRole`；`swipe` 必须有 `direction`；`wait` 必须有 `durationMs`。
+- `assert` 必须是对象或对象数组；历史字符串写法兼容时才允许字符串或字符串数组。
+- YAML 不写强执行 selector；页面定位经验写入 `exploration.md`。
+- `navigation` 每项必须为 `deeplink` 或 `click`；`click.target` 仅作可见文本提示，缺失时不阻塞写入，但必须能从 context / 代码分析 / hdc 探索三者之一找到点击依据。
+- 导航必须能从 context / 代码分析 / hdc 探索三者之一得到依据。
+
+生成后先做基础校验；校验通过即写入 YAML 和对应 records 初始化，不等待逐个确认。批量模式下先输出候选清单和风险说明，再按文件逐个写入；写入失败的源文件记录在批量结果中。
+
+写入 YAML 后，可以在 `test-records.json.cases[caseId]` 初始化一条记录：
+
+```json
+{
+  "caseId": "account-login-error",
+  "yaml": "test-plans/accountLoginPage-1.yaml",
+  "target": "accountLoginPage",
+  "status": "auto_generated",
+  "source": "test-sources/account-login.md",
+  "sourceHash": "sha256:...",
+  "runCount": 0,
+  "passStreak": 0
+}
+```
+
+records 更新规则：
+- 新 `caseId`：初始化为 `auto_generated`、`runCount: 0`、`passStreak: 0`。
+- 已有同 `caseId` 且 YAML/source 未实质变化：只补齐缺失的 `yaml`、`target`、`source`、`sourceHash`，不得覆盖执行状态。
+- 已有同 `caseId` 且 YAML/source 实质变化：更新 `yaml`、`target`、`source`、`sourceHash`，将 `status` 设为 `auto_generated`，将 `passStreak` 设为 `0`，将 `successPath` 设为 `null` 或移除，并在 `lastAttempt.note` 记录 `case-gen refreshed YAML; successPath invalidated`；保留 `runCount`、`lastAttempt`、`lastFailure`、`manualNote` 供复盘。
+- 批量模式下每写入一个 YAML 就立刻原子更新一次 `test-records.json`，避免中途停止导致已生成用例丢失记录。
+
+**smoke YAML 生成规则**：
+
+先写入 smoke 源文件：
+
+```markdown
+# accountLoginPage 冒烟用例
+
+页面：accountLoginPage
+
+操作：
+1. 打开 accountLoginPage
+2. 等待页面稳定
+
+预期：
+- 页面核心锚点存在：编程猫账号、登录
+```
+
+```yaml
+caseId: smoke-accountLoginPage
+description: 冒烟验证 accountLoginPage 可打开且核心控件存在
+target: accountLoginPage
+source: test-sources/smoke-accountLoginPage.md
+sourceHash: sha256:...
+navigation:
+  - deeplink: codemao://lunar/accountLogin
+steps:
+  - action:
+      kind: wait
+      durationMs: 500
+    assert:
+      - type: pageAnchorsPresent
+        values:
+          - 编程猫账号
+          - 登录
+```
+
+smoke YAML 的 anchors 必须来自本次 dumpLayout 或源码确认的稳定页面锚点；少于 1 个稳定锚点时不生成 smoke YAML，只在批量探索汇总中标记“需人工处理”。
+
+smoke YAML 固定写入 `test-plans/smoke-<page>.yaml`，并用 `caseId: smoke-<page>` 更新对应 `test-records.json.cases` 记录；不得覆盖普通业务用例 YAML。重复探索刷新 smoke YAML/source 时，按 records 更新规则降回 `auto_generated`，等待 runner 重新验证。
+
+**序号规则**：扫描 `test-plans/<page>-*.yaml` 中已有文件名的数字后缀，取最大序号 + 1；没有已有文件时从 1 开始，避免依赖 `ls` 在无匹配文件时的行为。
+
+**更新 CONTEXT.md**：Step 3 新发现的导航路径 → 写入 `CONTEXT.md` 的 `## 页面导航`（该页面下无此路径时追加）。Step 4 新发现的全局性问题 → 写入 `CONTEXT.md` 的 `## 记录`。
+
+**输出格式：批量编译结果**
+
+```markdown
+## 批量编译结果
+| 源文件 | caseId | YAML | 状态 | 说明 |
+|--------|--------|------|------|------|
+| test-sources/account-login.md | account-login-error | test-plans/accountLoginPage-1.yaml | 已写入 | sourceHash 已刷新 |
+| test-sources/settings.md | — | — | 需人工处理 | target 无法唯一匹配 |
+```
+
+**输出格式：批量探索结果**
+
+```markdown
+## 批量探索结果
+| 页面 | exploration | layoutTree | smoke YAML | 状态 | 说明 |
+|------|-------------|------------|------------|------|------|
+| accountLoginPage | 已刷新 | 已覆盖 | test-plans/smoke-accountLoginPage.yaml | 成功 | 2 个稳定锚点 |
+| settingsPage | 未写入 | 未写入 | — | 需人工处理 | 导航无法唯一确认 |
+```
+
+**多用例循环**：单个模式完成当前用例后询问`继续生成下一个用例？` → 回到 Step 2。批量模式完成后不再逐个询问继续。复用 Step 1 的 workspace 和 Step 4 的环境检查。
+
+---
+
+## 关键原则
+
+- **一个 YAML 一个用例**：一个 `test-sources/*.md` 可包含多个场景，但必须拆成多个 YAML
+- **批量先计划后写入**：先展示源文件、target、场景数和风险，再落盘 YAML
+- **批量不写执行状态**：只可初始化 `auto_generated`，不得写 passed / failed / trusted
+- **遇阻先读代码**：dump 失败 → 读源码，不盲重试
+- **超限记录**：同一目标重试 3 次无果 → 当前源文件 / 页面标记为需人工处理，批量继续后续项
+- **用 dumpLayout 的真实 text**，不凭空编造
+- **启动后少打断**：开始生成 / 探索后不频繁询问用户，异常写入批量结果等待人工处理
