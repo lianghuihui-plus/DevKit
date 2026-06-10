@@ -1,5 +1,11 @@
 # 构建与执行说明
 
+## 何时读取
+
+- 执行测试前需要探测 DevEco、Node、hvigor、hdc、product、module、bundleName 或 signed HAP 时读取。
+- 构建、安装、`aa test`、目标产物确认、hdc 权限或失败后实时诊断相关问题时读取。
+- 只生成测试代码且不涉及构建执行时，通常不需要读取本文件。
+
 这些命令作为默认模板使用。如果用户指定文档、项目内文档或 DevEco 构建日志给出了项目特定参数，优先使用项目特定参数。
 
 ## 需要先确认的值
@@ -20,19 +26,21 @@
 
 构建前必须先做项目探测。不要直接套用固定命令。
 
+探测前先读取工作目录 `config.json` 的 `environment` 配置。`devecoSdkHome`、`nodePath`、`hvigorwPath` 和 `hdcPath` 有值时优先使用；为空或不可用时，再按下方规则查找。配置值只是路径默认值，实际可用性仍需通过命令执行或文件存在性确认。
+
 探测项：
 
-- `DEVECO_SDK_HOME`：如果 hvigor 报 `Invalid value of 'DEVECO_SDK_HOME'`，先定位 DevEco SDK 并设置环境变量，或让用户确认环境。
-- `node`：优先使用 DevEco Studio 内置 Node 或项目文档指定 Node。
-- `hvigorw.js`：优先级为项目本地 hvigor wrapper、DevEco Studio 内置 `tools/hvigor/bin/hvigorw.js`、用户指定路径。
-- 可用 task：不要假设 `genOnDeviceTestHap` 一定存在，应先通过项目 task 列表、DevEco 构建日志或实际构建反馈确认。
+- `DEVECO_SDK_HOME`：优先使用 `config.environment.devecoSdkHome`；如果 hvigor 报 `Invalid value of 'DEVECO_SDK_HOME'`，再定位 DevEco SDK 并设置环境变量，或让用户确认环境。
+- `node`：优先使用 `config.environment.nodePath`、DevEco Studio 内置 Node 或项目文档指定 Node。
+- `hvigorw.js`：优先使用 `config.environment.hvigorwPath`，其次为项目本地 hvigor wrapper、DevEco Studio 内置 `tools/hvigor/bin/hvigorw.js`、用户指定路径。
+- 可用 task：不要假设 `genOnDeviceTestHap` 一定存在，也不要只因 `hvigor tasks` 未列出它就判定不可用。task 列表、`taskTree`、DevEco 构建日志、模板命令试跑结果和实际构建反馈都可作为证据；如果 task 列表不完整，应优先用模板构建命令或项目日志中的等价命令验证，再决定是否记录 `BUILD_TASK_UNAVAILABLE`。
 - `product`：从用户指定、项目 build-profile、DevEco 日志或构建命令中确认。
 - `moduleName`：从人工用例目标模块、路由归属、源码目录和 build-profile 中确认。
-- ohosTest target：构建 test HAP 前确认 product/module build-profile 中存在 ohosTest target；缺失时记录 `OHOSTEST_TARGET_MISSING`，不要盲目构建。
+- ohosTest target：构建 test HAP 前确认 product/module build-profile 中存在 ohosTest target。若 product/module 已确认，且缺失项只是测试 target 配置，可以在修复预算内补齐测试构建配置并继续构建；若 product/module 或构建目标不确定，记录 `OHOSTEST_TARGET_MISSING` 并阻塞。
 - `bundleName`：配置文件中的 bundleName 只作候选，最终以安装包/设备 `bm dump`/构建产物元数据为准。
 - HAP 产物规则：构建前确认将优先选择 `*-signed.hap`；构建后再从实际输出中选择 signed app/test HAP。非 signed HAP 可能导致 `install sign info inconsistent`。
 
-探测结果写入 execution plan 的 `execution.probe`，并复制到 report。构建后产物选择也要回写到同一个 `execution.probe`。
+探测结果写入 execution plan 的 `execution.probe`，`hdc` 实际路径写入 `execution.hdcPath`，并复制到 report。构建后产物选择也要回写到同一个 `execution.probe`。如果使用了配置中的环境路径，应在对应字段记录实际采用的路径；如果配置路径不可用，应在日志或 report 中记录 fallback 原因。
 
 ## 目标产物确认闸门
 
@@ -55,7 +63,7 @@ build test command:
 
 用户确认后再构建。
 
-构建完成、实际 signed HAP 和最终 bundleName 可确认后，在安装 app HAP、安装 test HAP 或执行 `aa test` 前，再展示执行确认摘要：
+构建完成、实际 signed HAP 和最终 bundleName 可确认后，在安装 app HAP、安装 test HAP 或执行 `aa test` 前，先自动生成最终执行摘要：
 
 ```text
 product:
@@ -71,11 +79,11 @@ install test command:
 run test command:
 ```
 
-用户确认后再继续安装或执行。
+如果最终执行摘要与构建前确认的目标一致，将 `targetConfirmation.preInstall.status` 记为 `verified`，并继续安装或执行，不再二次人工确认。报告中仍必须记录该摘要，便于追溯。
 
-如果构建后实际选择的 `*-signed.hap`、最终 `bundleName`、`testModuleName` 或设备与确认摘要不一致，必须再次展示差异并等待确认。用户未确认或拒绝确认时，不构建、不安装、不执行，记录 `BLOCKED`，failure code 使用 `TARGET_CONFIRMATION_BLOCKED`；如果实际产物与已确认摘要不一致且需要重新确认，使用 `TARGET_CONFIRMATION_STALE`。
+如果构建后实际选择的 `*-signed.hap`、最终 `bundleName`、`testModuleName` 或设备与构建前确认目标不一致，或 agent 无法自动确认一致性，必须再次展示差异并等待确认。用户确认后继续安装或执行，并将 `targetConfirmation.preInstall.status` 记为 `confirmed`。用户未确认或拒绝确认时，不安装、不执行，记录 `BLOCKED`；实际产物与已确认摘要不一致或无法自动确认一致性时，failure code 使用 `TARGET_CONFIRMATION_STALE`；用户明确拒绝继续时使用 `TARGET_CONFIRMATION_BLOCKED`。
 
-批量执行时按相同 `product/moduleName/bundleName/testModuleName/device` 分组展示确认摘要；同一组用户确认一次即可。组内任一实际产物与确认摘要不一致时，该组需要重新确认。
+批量执行时按相同 `product/moduleName/bundleName/testModuleName/device` 分组展示构建前确认摘要；同一组用户确认一次即可。构建后逐组自动校验，校验一致的组直接安装执行；组内任一实际产物与确认摘要不一致，或无法自动确认一致性时，该组需要重新确认。
 
 ## hdc 权限与沙箱处理
 
@@ -83,7 +91,7 @@ run test command:
 
 推荐处理顺序：
 
-1. 优先使用用户或项目文档指定的 hdc 绝对路径。
+1. 优先使用用户指令、工作目录 `config.environment.hdcPath` 或项目文档指定的 hdc 绝对路径。
 2. 如果未指定，尝试项目/DevEco 常见 hdc 路径或 PATH 中的 `hdc`。
 3. 执行 `hdc list targets`。
 4. 如果出现 `Connect server failed`、权限、沙箱、server connect、USB 访问、签名或系统拦截类错误，立即使用当前 agent 平台的提权/沙箱外执行机制重跑同一条 `hdc list targets`。
@@ -123,7 +131,7 @@ BUILD_MODE_NAME = 'debug'
 DEBUG = true
 ```
 
-如果当前是 release 包，不要继续执行 debug 账号相关用例。
+如果当前是 release 包且用例或用户明确要求 debug 包，应记录目标产物不匹配，走目标确认或构建产物失败路径；不要把它归因于账号、密码等测试输入不可用。
 
 ## 构建 ohosTest HAP
 
@@ -144,8 +152,8 @@ node <hvigorw.js> \
 常见坑：
 
 - `-p module=<moduleName>` 可能只构建业务 HAP，不会生成测试 HAP。通常需要使用 `-p module=<moduleName>@ohosTest`。
-- 有些项目没有 `genOnDeviceTestHap` task，实际需要使用 `assembleHap` 或项目日志里的其他 task。此时应记录 fallback 原因，不要把模板 task 当成唯一正确命令。
-- 如果缺少 ohosTest target，应先记录 `OHOSTEST_TARGET_MISSING`，由用户确认是否允许修改 build-profile。
+- 有些项目的 `hvigor tasks` 不会完整列出真实可用的测试构建 task，但直接使用模板命令、`taskTree` 或项目日志里的等价命令可能可以构建成功。此时应记录验证方式和 fallback 原因，不要把 task 列表缺失直接当成 `BUILD_TASK_UNAVAILABLE`。
+- 如果缺少 ohosTest target，先判断是否只是目标模块的测试构建配置缺失。若 product/module 已确认且改动范围明确，可以补充 ohosTest target 后继续构建；若会影响 product、bundleName、签名、发布 target 或无法确认改动范围，记录 `OHOSTEST_TARGET_MISSING` 并等待用户确认。
 
 fallback 示例：
 
@@ -204,3 +212,41 @@ Tests run: <n>, Failure: <n>, Error: <n>, Pass: <n>, Ignore: <n>
 ```
 
 如果 runner 超时或没有结果摘要，记录关键原始输出片段，并用最接近的失败码分类。
+
+## 失败后 hdc 实时诊断
+
+测试执行失败后、进入自动修复前，可以根据当前失败类型使用 hdc 做实时诊断。诊断用于辅助判断当前页面、控件树、Ability 状态、bundleName、进程状态和关键系统日志，不替代 runner 输出。
+
+诊断原则：
+
+- 聚焦当前失败用例和当前被测 app，不做无关设备、无关应用或全量日志扫描。
+- 优先选择能解释当前失败的最小诊断命令组合。
+- 诊断失败不阻塞报告生成，不改变原始 runner 失败事实。
+- 诊断结果用于辅助失败分类和修复决策；不要因为诊断信息不完整就反复诊断。
+- 诊断命令、关键输出片段、截图或控件树文件路径写入 report 的 `diagnostics`。默认不为每条诊断命令创建独立日志文件；只有原始输出过长或附件确有定位价值时，才写入工作目录 `logs/`，并优先合并到 `logs/<caseId>-evidence.md`。
+
+常见诊断：
+
+- `SELECTOR_NOT_FOUND` / `TEST_TIMEOUT`：优先 dump 当前控件树；只有控件树不足以解释问题时再截图，确认目标控件是否存在、id/text 是否变化、页面是否停在预期位置。
+- `ASSERTION_FAILED`：优先选择截图或 dump 当前控件树中的一种；只有单一证据不足时才同时保留两者，确认实际页面状态和人工预期差异。
+- `NAVIGATION_AMBIGUOUS`：检查当前窗口、Ability 或页面根节点，辅助判断停留页面。
+- `BUNDLE_NAME_UNRESOLVED`：使用 `bm dump`、安装包元数据或测试包挂载信息确认最终 bundleName。
+- runner 无结果、app 启动失败或执行卡死：检查进程、Ability 状态和关键 hilog 片段。
+
+可选命令示例，具体命令以设备和系统版本支持为准：
+
+```bash
+hdc shell uitest dumpLayout
+hdc shell uitest screenCap
+hdc shell bm dump -n <bundleName>
+hdc shell aa dump
+hdc shell pidof <bundleName>
+hdc shell hilog
+```
+
+日志收敛规则：
+
+- 成功执行不保存独立 runner log，结果摘要和命令写入 report 即可。
+- 失败执行只保存与当前失败直接相关的关键证据。
+- 同一个 case 的文本证据优先合并到一个 evidence 文件。
+- 构建或设备检查失败影响整批时，写批量级 evidence 文件，不为每个受影响 case 复制同一份日志。
