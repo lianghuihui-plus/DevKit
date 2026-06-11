@@ -7,6 +7,7 @@ sources:
   cursor: true
   openclaw: true
   claude: true
+  codex: true
 
 # Git 仓库配置
 git:

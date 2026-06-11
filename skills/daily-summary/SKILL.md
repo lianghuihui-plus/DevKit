@@ -1,6 +1,6 @@
 ---
 name: daily-summary
-description: 生成每日工作总结，采集 Git / Hermes / Cursor / OpenClaw / Claude Code 数据，按时间线输出。
+description: 生成每日工作总结，采集 Git / Hermes / Cursor / OpenClaw / Claude Code / Codex 数据，按时间线输出。
 trigger:
   - 日报
   - 每日总结
@@ -11,7 +11,7 @@ trigger:
 
 # 每日工作总结
 
-采集五个数据源，按时间线生成日报。**只落盘，不在对话中输出完整内容**——保存后告知用户文件路径即可。
+采集六个数据源，按时间线生成日报。**只落盘，不在对话中输出完整内容**——保存后告知用户文件路径即可。
 
 ## 执行流程
 
@@ -29,19 +29,21 @@ trigger:
 python3 {skill_dir}/scripts/generate.py [YYYY-MM-DD]
 ```
 
-脚本输出 JSON，包含 Git / Cursor / OpenClaw / Claude Code 事件。日期参数可选，默认今天。
+脚本输出 JSON，包含 Git / Cursor / OpenClaw / Claude Code / Codex 事件。日期参数可选，默认今天。
 
 > OpenClaw 数据采集细节见 `references/openclaw-sessions.md`：两路扫描（sessions.json + .reset 历史快照），时间戳格式陷阱（破折号非冒号）。
 
 > Claude Code 数据采集细节见 `references/claude-code-sessions.md`：扫描 `~/.claude/projects/` 下所有 `.jsonl`，按消息 timestamp 过滤日期。
 
+> Codex 数据采集细节见 `references/codex-sessions.md`：通过 `session_index.jsonl` 索引定位，扫描 `sessions/` 和 `archived_sessions/` 目录，按 `updated_at` 过滤。
+
 > Git 数据采集见 `references/git-collection.md`：`--since`/`--until` 按 committer date 过滤，需要额外按 author date 二次校验以避免 rebase/cherry-pick 引入的日期污染。
 
 ### 4. 采集 Hermes 会话
 
-**不要**用 `session_search()` 浏览模式——它会漏掉进行中的会话且只返回摘要。
+**不要**用 `session_search()` 无参浏览模式——它会漏掉进行中的会话且只返回摘要。正确做法分两步：
 
-改用 `terminal` 执行 Python 直查 `~/.hermes/state.db`：
+**第一步**：用 `terminal` 执行 Python 直查 `~/.hermes/state.db` 获取会话列表：
 
 ```python
 import sqlite3, os
@@ -65,7 +67,12 @@ for r in rows:
 
 这样能拿到**所有**当天会话（含进行中的 `ended_at IS NULL` 的会话）。
 
-拿到会话列表后，对每个会话用 `session_search(session_id, around_message_id)` 滚动查看其开头、中间和结尾的关键消息，以理解全天的工作内容。
+**第二步**：拿到会话列表后，**过滤掉**以下会话，不对它们做内容提取：
+
+- `source = 'cron'` 且 title 含「每日工作总结」的会话（daily-summary 自身的定时触发）
+- 当前正在执行的 daily-summary 会话本身
+
+对剩余的每个会话，用 `session_search(session_id, around_message_id)`（**带 session_id 的定点查看模式**，不是无参浏览）滚动查看其开头、中间和结尾的关键消息，以理解全天的工作内容。
 
 **尤其注意跨度超过 2 小时的会话**——它们可能包含上午到下午的持续工作，只取开头消息会漏掉下午的内容。对此类会话至少取样开头、中间、结尾三个位置。
 
@@ -84,6 +91,7 @@ for r in rows:
 - **Cursor 会话**：解释做了什么操作（编辑/生成/审查），涉及什么文件
 - **OpenClaw 会话**：概括对话主题和结论
 - **Claude Code 会话**：根据标题和交换轮数概括对话主题和结论
+- **Codex 会话**：根据 thread_name 和交换轮数概括对话主题和结论
 
 然后将事件按主题合并为不超过 5 个工作项。相关的连续事件（如同一工作流的多个会话）应合并为一个工作项。每个工作项记录：
 
@@ -137,7 +145,7 @@ for r in rows:
 要求：
 - 每个事件至少 2-3 行实质描述
 - 概览表放在标题下方、时间线之前，最多 5 行
-- 耗时的计算：Hermes 会话用 `ended_at - started_at`（进行中的用当前时间）；Git/Cursor/OpenClaw/Claude Code 用相邻事件间隔估算；无明显结束时间的取合理默认值
+- 耗时的计算：Hermes 会话用 `ended_at - started_at`（进行中的用当前时间）；Git/Cursor/OpenClaw/Claude Code/Codex 用相邻事件间隔估算；无明显结束时间的取合理默认值
 - 合并工作项时，「工作内容」列写一句概括性总结（如「AIWorkFlow 技能重构与工作流推进」），**不要**用 `+` 拼多个任务名
 - **只有同类工作才能合并**——同一主题/同一项目的相关事件可合并，不同主题的工作即使时间相邻也分列
 

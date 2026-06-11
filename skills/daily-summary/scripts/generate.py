@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """每日工作总结数据采集脚本。
 
-采集 Git / Cursor / OpenClaw / Claude Code 的事件，输出 JSON 行，由 SKILL.md 中的 Agent
+采集 Git / Cursor / OpenClaw / Claude Code / Codex 的事件，输出 JSON 行，由 SKILL.md 中的 Agent
 结合 Hermes session_search 结果合并为时间线日报。
 
 用法: python3 generate.py [YYYY-MM-DD]
@@ -10,11 +10,13 @@
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Optional
 
 # 北京时间
 TZ = timezone(timedelta(hours=8))
@@ -243,7 +245,6 @@ def _extract_texts(content) -> list[str]:
 
 def _clean_title(text: str) -> str:
     """清理标题：去除时间戳前缀、markdown 标题前缀等"""
-    import re
     # 去掉 OpenClaw 时间戳前缀 [Day YYYY-MM-DD HH:MM GMT+8]
     text = re.sub(r'^\[[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2} GMT[+-]\d+\]\s*', '', text)
     # 去掉开头的 # Role 等 markdown 标题块
@@ -263,8 +264,6 @@ def collect_openclaw(day_start: datetime, day_end: datetime) -> list[dict]:
     2. *.jsonl.reset.* — 已 reset 的历史会话快照（不在 sessions.json 中，
        但保留了完整对话的 JSONL 快照，文件名含 reset 时间戳）
     """
-    import re
-
     events = []
     seen_files = set()  # 避免活跃会话和 reset 快照重复
 
@@ -521,7 +520,6 @@ def _claude_extract_text(content) -> str:
 
 def _claude_clean_title(text: str) -> str:
     """清理 Claude Code 标题：去除 XML 标签、skill 加载信息等"""
-    import re
     text = re.sub(r'<command-(?:name|message|args)>[^<]*</command-(?:name|message|args)>', '', text)
     text = re.sub(r'<local-command-stdout>.*?</local-command-stdout>', '', text, flags=re.DOTALL)
     text = re.sub(r'Base directory for this skill:.*?\n', '', text)
@@ -548,6 +546,205 @@ def _claude_project_name(proj_dir: str) -> str:
     )
 
 
+# ── Codex ───────────────────────────────────────────────────────────
+
+
+def _parse_utc_iso(ts: str) -> Optional[datetime]:
+    """解析 UTC ISO 时间戳，容错不同精度和 Z/+00:00 后缀"""
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    # 部分条目微秒精度不固定（5 位或 6 位），fromisoformat 可能拒绝
+    # 回退：截断到秒级重新组装
+    try:
+        ts_clean = ts.replace("Z", "+00:00")
+        date_part, time_part = ts_clean.split("T", 1)
+        time_clean = time_part.split(".")[0]  # 丢弃微秒
+        if "+" in time_clean:
+            time_clean = time_clean.split("+")[0]
+        return datetime.fromisoformat(f"{date_part}T{time_clean}+00:00")
+    except (ValueError, IndexError):
+        return None
+
+
+def collect_codex(day_start: datetime, day_end: datetime) -> list[dict]:
+    """采集 Codex CLI 会话事件。
+
+    两路采集：
+    1. session_index.jsonl — 按 updated_at 过滤（覆盖已结束的会话）
+    2. sessions/YYYY/MM/DD/ — 按文件名日期和首条消息时间戳双重过滤
+       （捕获进行中、尚未写入索引的会话）
+
+    Codex 消息格式：response_item 类型，payload.role 区分 user/assistant，
+    payload.content 为 [{"type": "input_text"/"output_text", "text": ...}] 数组。
+    """
+    events = []
+    seen_ids = set()
+    codex_dir = os.path.expanduser("~/.codex")
+    index_path = os.path.join(codex_dir, "session_index.jsonl")
+    matching_sessions: list[tuple[str, str, datetime]] = []
+    index_ids: set[str] = set()  # 索引中已有的 ID，用于第二路去重
+
+    # ══ 第 1 路：session_index.jsonl（已结束的会话） ══
+    if os.path.isfile(index_path):
+        try:
+            with open(index_path) as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    updated_at = obj.get("updated_at", "")
+                    if not updated_at:
+                        continue
+                    dt_utc = _parse_utc_iso(updated_at)
+                    if dt_utc is None:
+                        continue
+                    dt = dt_utc.astimezone(TZ)
+                    if dt < day_start or dt >= day_end:
+                        continue
+                    session_id = obj.get("id", "")
+                    index_ids.add(session_id)
+                    matching_sessions.append((session_id, obj.get("thread_name", ""), dt))
+        except Exception as e:
+            print(f"# codex index error: {e}", file=sys.stderr)
+
+    # ══ 第 2 路：sessions/YYYY/MM/DD/ 目录（进行中的会话） ══
+    date_dir = os.path.join(codex_dir, "sessions", day_start.strftime("%Y/%m/%d"))
+    if os.path.isdir(date_dir):
+        for fname in os.listdir(date_dir):
+            if not fname.endswith(".jsonl"):
+                continue
+            # 从文件名提取 session ID
+            parts = fname.rsplit("-", 5)
+            if len(parts) != 6:
+                continue
+            sid = parts[1] + "-" + parts[2] + "-" + parts[3] + "-" + parts[4] + "-" + parts[5].replace(".jsonl", "")
+            if sid in index_ids:
+                continue
+
+            fpath = os.path.join(date_dir, fname)
+            try:
+                with open(fpath) as f:
+                    first_line = f.readline()
+                obj = json.loads(first_line)
+                ts = obj.get("timestamp", "")
+                if ts:
+                    dt_utc = _parse_utc_iso(ts)
+                    if dt_utc is not None:
+                        dt = dt_utc.astimezone(TZ)
+                        if day_start <= dt < day_end:
+                            meta = obj.get("payload", {}) if obj.get("type") == "session_meta" else {}
+                            thread_name = meta.get("id", "")  # fallback: use session id as name
+                            matching_sessions.append((sid, thread_name, dt))
+            except Exception as e:
+                print(f"# codex file scan error [{fname}]: {e}", file=sys.stderr)
+
+    if not matching_sessions:
+        return events
+
+    # ══ 构建 session_id → 文件路径 索引 ══
+    file_index: dict[str, str] = {}
+    session_dirs = [
+        os.path.join(codex_dir, "sessions"),
+        os.path.join(codex_dir, "archived_sessions"),
+    ]
+    for base_dir in session_dirs:
+        if not os.path.isdir(base_dir):
+            continue
+        for root, dirs, files in os.walk(base_dir):
+            for fname in files:
+                if not fname.endswith(".jsonl"):
+                    continue
+                parts = fname.rsplit("-", 5)
+                if len(parts) == 6:
+                    sid = parts[1] + "-" + parts[2] + "-" + parts[3] + "-" + parts[4] + "-" + parts[5].replace(".jsonl", "")
+                    if sid not in file_index:
+                        file_index[sid] = os.path.join(root, fname)
+
+    # ══ 解析每个匹配的会话 ══
+    for session_id, thread_name, dt in matching_sessions:
+        if session_id in seen_ids:
+            continue
+        seen_ids.add(session_id)
+
+        title = thread_name or ""
+        user_count = 0
+        assistant_count = 0
+        project = ""
+
+        fpath = file_index.get(session_id)
+        if fpath:
+            try:
+                with open(fpath) as f:
+                    lines = f.readlines()
+            except Exception as e:
+                print(f"# codex read error [{fpath}]: {e}", file=sys.stderr)
+                lines = []
+
+            for line in lines:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                t = obj.get("type", "")
+                if t == "session_meta":
+                    payload = obj.get("payload", {})
+                    cwd = payload.get("cwd", "")
+                    if cwd:
+                        project = os.path.basename(cwd)
+                elif t == "response_item":
+                    payload = obj.get("payload", {})
+                    role = payload.get("role", "")
+                    content = payload.get("content", [])
+                    texts = _codex_extract_texts(content)
+
+                    if role == "user":
+                        user_count += 1
+                        if not title and texts:
+                            title = _codex_clean_title(texts)[:150]
+                    elif role == "assistant":
+                        assistant_count += 1
+
+        events.append({
+            "time": dt.strftime("%H:%M"),
+            "timestamp": dt.isoformat(),
+            "source": "codex",
+            "title": title,
+            "project": project,
+            "exchanges": user_count + assistant_count,
+        })
+
+    return events
+
+
+def _codex_extract_texts(content) -> str:
+    """从 Codex content 数组提取纯文本"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                t = item.get("type", "")
+                if t in ("input_text", "output_text", "text"):
+                    parts.append(item.get("text", ""))
+        return "".join(parts)
+    return ""
+
+
+def _codex_clean_title(text: str) -> str:
+    """清理 Codex 标题：去除 AGENTS.md 注入、skill 加载信息等"""
+    # 去除 AGENTS.md 指令注入（以 # AGENTS.md instructions 开头的大段文本）
+    text = re.sub(r'# AGENTS\.md instructions for .*?</INSTRUCTIONS>', '', text, flags=re.DOTALL)
+    # 去除 skill 加载信息 [$skill-name](/path/to/SKILL.md)
+    text = re.sub(r'\[\$[^\]]+\]\([^)]+\)', '', text)
+    # 去除开头的空行
+    return text.strip()
+
+
 # ── Main ───────────────────────────────────────────────────────────
 
 
@@ -572,6 +769,9 @@ def main():
 
     if sources.get("claude", True):
         all_events.extend(collect_claude(day_start, day_end))
+
+    if sources.get("codex", True):
+        all_events.extend(collect_codex(day_start, day_end))
 
     # 按时间排序
     all_events.sort(key=lambda e: e["time"])
