@@ -28,9 +28,28 @@
 
 探测前先读取工作目录 `config.json` 的 `environment` 配置。`devecoSdkHome`、`nodePath`、`hvigorwPath` 和 `hdcPath` 有值时优先使用；为空或不可用时，再按下方规则查找。配置值只是路径默认值，实际可用性仍需通过命令执行或文件存在性确认。
 
+## 环境安全边界
+
+agent 不得为了构建或执行测试而持久修改用户机器环境。禁止写入或修改：
+
+- `~/.zshrc`、`~/.zprofile`、`~/.bashrc`、`~/.bash_profile`、`~/.profile`
+- `/etc/profile`、`/etc/zshrc` 等系统级 shell 配置
+- `launchctl setenv`、全局 `PATH`、全局 SDK 环境变量
+- DevEco Studio 安装目录或 IDE 全局配置
+
+`DEVECO_SDK_HOME`、`PATH` 等只允许作为单次命令的临时环境传入。例如：
+
+```bash
+DEVECO_SDK_HOME=<devecoSdkHome> node <hvigorw.js> ...
+```
+
+不要使用 `export DEVECO_SDK_HOME=...` 后再执行多条命令，也不要把环境修复写回用户 shell 配置。实际采用的环境值只记录到 plan/report。
+
+默认不要使用 hvigor daemon。agent 自动构建时优先使用非 daemon 命令，避免 daemon 缓存错误 SDK 或环境后影响 DevEco Studio。禁止主动添加 `--daemon`；如果项目 hvigor 支持显式禁用 daemon 的参数，应优先使用。若怀疑 daemon 已缓存错误环境，先停止 daemon 或提示用户重启 DevEco Studio，再继续。
+
 探测项：
 
-- `DEVECO_SDK_HOME`：优先使用 `config.environment.devecoSdkHome`；如果 hvigor 报 `Invalid value of 'DEVECO_SDK_HOME'`，再定位 DevEco SDK 并设置环境变量，或让用户确认环境。
+- `DEVECO_SDK_HOME`：优先使用 `config.environment.devecoSdkHome`；如果 hvigor 报 `Invalid value of 'DEVECO_SDK_HOME'`，再定位 DevEco SDK，并仅对下一次 hvigor 命令临时传入该环境变量，或让用户确认环境。
 - `node`：优先使用 `config.environment.nodePath`、DevEco Studio 内置 Node 或项目文档指定 Node。
 - `hvigorw.js`：优先使用 `config.environment.hvigorwPath`，其次为项目本地 hvigor wrapper、DevEco Studio 内置 `tools/hvigor/bin/hvigorw.js`、用户指定路径。
 - 可用 task：不要假设 `genOnDeviceTestHap` 一定存在，也不要只因 `hvigor tasks` 未列出它就判定不可用。task 列表、`taskTree`、DevEco 构建日志、模板命令试跑结果和实际构建反馈都可作为证据；如果 task 列表不完整，应优先用模板构建命令或项目日志中的等价命令验证，再决定是否记录 `BUILD_TASK_UNAVAILABLE`。
@@ -121,7 +140,7 @@ node <hvigorw.js> \
   --mode project \
   -p product=<product> \
   -p buildMode=debug \
-  assembleApp --analyze=normal --parallel --incremental --daemon
+  assembleApp --analyze=normal --parallel --incremental
 ```
 
 如果测试数据只适用于 debug 包，必须确认构建产物确实是 debug。可以检查生成的 build profile 或等价元数据，例如：
@@ -146,7 +165,7 @@ node <hvigorw.js> \
   -p isOhosTest=true \
   -p product=<product> \
   -p buildMode=test \
-  genOnDeviceTestHap --analyze=normal --parallel --incremental --daemon
+  genOnDeviceTestHap --analyze=normal --parallel --incremental
 ```
 
 常见坑：
@@ -164,7 +183,7 @@ node <hvigorw.js> \
   -p isOhosTest=true \
   -p product=<product> \
   -p buildMode=test \
-  assembleHap --analyze=normal --parallel --incremental --daemon
+  assembleHap --analyze=normal --parallel --incremental
 ```
 
 ## 检查设备

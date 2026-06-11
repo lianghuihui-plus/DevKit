@@ -114,6 +114,8 @@ logs/<groupId>-device-evidence.md
 
 环境配置只作为工具路径默认值，不代表探测事实。实际使用的 `DEVECO_SDK_HOME`、`node`、`hvigorw.js` 和 `hdc` 路径仍必须写入 execution plan 的 `execution.probe` 或 `execution.hdcPath`，并复制到 report。
 
+agent 不得把这些环境值写入用户 shell 配置、系统环境或 DevEco Studio 全局配置。`DEVECO_SDK_HOME` 等环境变量只能作为单次命令临时传入，不能持久化。
+
 ## 配置优先级
 
 同一配置项按以下优先级解析：
@@ -176,6 +178,6 @@ logs/<groupId>-device-evidence.md
 }
 ```
 
-自动修复和 blocked 重跑完成后，只更新 case report 的当前结果快照和预算计数；批量场景同步或重建 summary 索引，不记录详细过程历史。
+自动修复完成后，只更新 case report 的当前结果快照和预算计数；批量场景同步或重建 summary 索引，不记录详细过程历史。blocked 重跑若本次运行上下文覆盖了原阻塞条件，先按 `execution-plan.md` 更新同一个 case plan 的 gate、目标确认和 evidence，再覆盖 case report。
 
 修复、重跑和续跑只读取当前工作目录内的 plan、report 和批量 summary 索引。不要跨工作目录或历史目录猜测要恢复的上下文。结果类 summary 索引缺失时，只扫描当前工作目录的 case reports 重建失败或 blocked 候选；case plans 只能用于恢复待生成、待执行或目标映射候选，不能用来推断已有执行结果。

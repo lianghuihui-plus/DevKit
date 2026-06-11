@@ -51,6 +51,7 @@ case report 是当前结果快照。每次执行、重跑或修复完成后，�
 ```json
 {
   "status": "PASS | FAIL | BLOCKED",
+  "caseId": "",
   "caseFile": "",
   "caseName": "",
   "planId": "",
@@ -232,15 +233,15 @@ Markdown 必须由最新 report JSON 全量渲染，不要手写自由格式，�
 - `PASS` 报告也必须保留 `诊断` 和 `失败分析` 章节，通常写 `无` 或 `不适用`。
 - 重跑或修复后不要保留旧 Markdown 中的历史段落；历史过程不属于当前结果快照。
 
-## 修复时更新报告
+## 执行、重跑和修复后更新报告
 
 报告只保留当前结果快照，不记录过程历史。
 
 JSON：
 
 - 根据 plan 和本次执行结果重新生成完整 JSON，并覆盖写入稳定文件名。
-- 更新顶层 `status`、`result`、`failure`。
-- 更新 `repairBudget.used` 和 `repairBudget.remaining`。
+- 更新顶层 `caseId`、`status`、`result`、`failure`。
+- 保留本次生效的 `repairBudget` 快照；只有自动修复消耗预算时才增加 `used` 并减少 `remaining`。普通执行、构建 task fallback、hdc 提权重跑和 blocked 重跑不消耗修复预算。
 - 保留实际使用的最终命令、产物、环境和目标确认信息。
 
 Markdown：
@@ -258,6 +259,7 @@ summary：
 
 报告是执行后产物，execution plan 是执行前产物。报告必须记录：
 
+- `caseId`
 - `planId`
 - `planFile`
 - `preconditions`

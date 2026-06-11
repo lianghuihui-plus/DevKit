@@ -108,6 +108,7 @@ caseId = "tc-" + sha1(normalizedManualCaseText).slice(0, 12)
 -> 读取 report 和 plan
 -> 若 summary 索引中存在多个 blocked 用例，按本次运行上下文筛选；筛选后仍有多个且目标不明确时，列出候选并等待用户选择
 -> 只选择本次运行上下文能覆盖的 blocked 用例
+-> 对可覆盖用例更新同一个 case plan 的 preconditions、preconditionGate、targetConfirmation 和 evidence
 -> 不改测试代码，不占用修复预算
 -> 重跑后覆盖更新 report；批量场景同步或重建 summary 索引
 ```

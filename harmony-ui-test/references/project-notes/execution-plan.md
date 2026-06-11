@@ -408,7 +408,36 @@ stop
 
 重跑 blocked 用例不是修复代码。只有在用户提供新的自然语言运行上下文、agent 找到新的自动检查方式，或已有证据发生变化时，才重跑。适用失败码包括 `PRECONDITION_UNKNOWN`、`PRECONDITION_UNSATISFIED`、`TARGET_CONFIRMATION_BLOCKED` 和 `TARGET_CONFIRMATION_STALE`。
 
-agent 根据用户自然语言判断哪些 blocked 用例的阻塞条件已被覆盖。能覆盖的用例直接按原 plan 重跑；不能覆盖的用例保持 `BLOCKED`。重跑完成后只更新对应 case report；批量场景同步或重建 summary 索引，不生成额外 plan，不记录过程历史。
+agent 根据用户自然语言判断哪些 blocked 用例的阻塞条件已被覆盖。这个筛选本身就是一次 gate 重新评估，必须写回同一个 case plan，而不是只在对话中口头判断。
+
+重跑流程：
+
+```text
+读取 report 和 plan
+-> 读取用户本次 runContext 或新的自动检查证据
+-> 重新评估原 blocked 的 preconditions、preconditionGate 和 targetConfirmation
+-> 能覆盖：更新同一个 case plan 的执行状态字段和 evidence
+-> 不能覆盖：保持 BLOCKED，不执行
+-> 按更新后的 case plan 重跑
+-> 覆盖更新 report；批量场景同步或重建 summary 索引
+```
+
+允许更新同一个 case plan 的字段：
+
+- `preconditions[].status`、`evidence`、`nextAction`
+- `preconditionGate.status`、`decision`、`reason`、`userDecision`
+- `execution.targetConfirmation.preBuild`、`execution.targetConfirmation.preInstall`
+- `execution.probe`、`execution.hdcPath`、`execution.device`、`execution.commands`、`execution.artifacts` 中因本次重跑重新确认的执行信息
+- `riskNotes` 中与本次 runContext 相关的说明
+
+禁止在 blocked 重跑中修改：
+
+- `case.caseId`、`case.caseFile`、`manualCase`
+- `target.testFile`、`target.testClass`、`target.testMethod`
+- 人工步骤、人工预期和测试代码
+- `generation` 状态
+
+blocked 重跑不生成额外 plan，不生成 rerun plan，不占用修复预算。不能覆盖阻塞条件的用例保持 `BLOCKED`，只在需要刷新当前结果快照时覆盖对应 report。重跑完成后覆盖更新对应 case report；批量场景同步或重建 summary 索引，不记录过程历史。
 
 ## 修复流程
 

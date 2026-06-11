@@ -24,7 +24,7 @@
 - 先解析所有显式指定用例；可生成的生成测试，不可生成的写入 plan，`generation.status = blocked`。
 - 若本次要求执行，`generation.status = blocked` 的用例直接记录 `BLOCKED/GENERATION_BLOCKED`，不进入构建和运行。
 - 每个用例使用同一套修复预算；当前用例预算耗尽或同类失败连续达到阈值后，记录失败并继续下一个用例。
-- blocked 重跑只执行本次运行上下文能覆盖的子集；无法覆盖的用例保持 `BLOCKED`。
+- blocked 重跑只执行本次运行上下文能覆盖的子集；可覆盖时先更新同一个 case plan 的 gate、目标确认和 evidence，再执行；无法覆盖的用例保持 `BLOCKED`。
 - 用例局部失败时，先写入或覆盖该 case report，再继续下一个用例。
 - 基础设施失败时，停止整批；停止前已完成的 case reports 必须保留。所有受该基础设施失败影响且尚未执行的 case，都必须写入 `BLOCKED` case report，`failure.code` 使用对应基础设施失败码。停止后从已有 case reports 生成或覆盖 summary 索引。
 
