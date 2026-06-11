@@ -72,11 +72,26 @@ case report 是当前结果快照。每次执行、重跑或修复完成后，�
     "source": "user_instruction | workspace_config | skill_default"
   },
   "commands": {
-    "buildApp": "",
-    "buildTest": "",
-    "installApp": "",
-    "installTest": "",
-    "runTest": ""
+    "buildApp": {
+      "script": "",
+      "actual": ""
+    },
+    "buildTest": {
+      "script": "",
+      "actual": ""
+    },
+    "installApp": {
+      "script": "",
+      "actual": ""
+    },
+    "installTest": {
+      "script": "",
+      "actual": ""
+    },
+    "runTest": {
+      "script": "",
+      "actual": ""
+    }
   },
   "artifacts": {
     "appHap": "",
@@ -164,32 +179,61 @@ case report 是当前结果快照。每次执行、重跑或修复完成后，�
 
 当失败来自权限或沙箱限制时，`failure.summary` 必须保留原始错误摘要，`failure.nextAction` 必须写明需要用户授权提权执行，或由用户在本机终端执行同一命令并回贴输出。
 
-`diagnostics` 记录失败后的 hdc 实时诊断证据。没有执行诊断时使用空数组。
+`diagnostics` 记录失败后的 hdc 步骤复现证据。没有执行复现时使用空数组。
 
 ```json
 {
   "diagnostics": [
     {
-      "type": "layout_dump | screenshot | ability_state | bundle_info | process_state | hilog | other",
-      "stage": "after_run_failure",
-      "command": "hdc shell uitest dumpLayout",
+      "type": "step_reproduction",
+      "stage": "before_repair",
+      "reproduction": {
+        "target": "复现到第 3 步点击登录后、等待首页前",
+        "steps": [
+          "启动 app",
+          "输入账号和密码",
+          "点击登录按钮"
+        ]
+      },
+      "commands": [
+        "hdc shell uitest dumpLayout"
+      ],
       "status": "success | failed | skipped",
       "artifact": "harmony-ui-test-workspace/logs/tc-a83f21c9d4e5-evidence.md",
-      "summary": "当前页面未出现 login_button，存在 login_submit_button",
+      "observations": [
+        "复现后仍停留在登录页",
+        "密码输入框为空，说明输入动作未生效"
+      ],
+      "hypothesis": "测试失败原因是输入未生效导致登录未触发目标跳转",
+      "fixBasis": "修复输入方式，改用 Driver.inputText(point, text)",
       "details": "关键输出片段、失败原因，或 evidence 文件中的具体小节"
     }
   ]
 }
 ```
 
-诊断信息只保存与当前失败用例相关的关键证据。诊断失败不阻塞报告生成，`status = failed` 或 `skipped` 时在 `details` 中记录原因。`artifact` 默认指向聚合 evidence 文件；只有截图、控件树 dump 或大体积原始输出确实需要单独保留时，才引用单独附件。
+复现信息只保存与当前失败用例、复现目标和修复假设相关的关键证据。复现失败不阻塞报告生成，`status = failed` 或 `skipped` 时在 `details` 中记录原因。`artifact` 默认指向聚合 evidence 文件；截图、控件树 dump 或大体积原始输出可在 evidence 文件中按小节引用。
+
+`commands` 中每个执行阶段都使用相同结构：
+
+```json
+{
+  "script": "<skillRoot>/scripts/run-test.sh --hdc /path/to/hdc ...",
+  "actual": "COMMAND: /path/to/hdc shell aa test ..."
+}
+```
+
+- `script`：agent 调用固定脚本时使用的完整命令。
+- `actual`：脚本输出的 `COMMAND:` 行；未执行到脚本或该阶段不适用时为空字符串。
+- 安装阶段默认分两次调用脚本：安装 app HAP 写入 `commands.installApp`，安装 test HAP 写入 `commands.installTest`。
+- 设备检查不是固定脚本，若需要记录，可放入 `diagnostics`、`failure.details` 或 evidence 文件，不写入 `commands` 的构建/安装/执行阶段字段。
 
 日志文件收敛：
 
-- report 本身应承载命令、结果摘要、关键输出片段和诊断结论。
+- report 本身应承载命令、结果摘要、关键输出片段和复现结论。
 - 成功用例默认不生成独立 log 文件。
 - 失败用例需要保留原始证据时，优先合并到 `logs/<caseId>-evidence.md`，并在 `diagnostics[].artifact` 或 Markdown 报告中引用。
-- 不要为同一个 case 的 build、install、runner、dump、screenshot、hilog 默认各生成一个文件；只有确实有定位价值的附件才单独保存。
+- 同一个 case 的 build、install、runner、步骤复现、截图、控件树和关键日志证据优先合并到一个 evidence 文件。
 - 批量共享的构建、安装、设备检查证据使用批量级 evidence 文件，case report 引用同一份证据，不复制多份。
 
 ## Markdown 报告
@@ -224,9 +268,9 @@ Markdown 必须由最新 report JSON 全量渲染，不要手写自由格式，�
 - 环境：设备、bundle、测试模块、build mode。
 - 构建探测：DevEco SDK、Node、hvigorw、task、product、module、bundleName 来源、signed HAP 选择。
 - 产物：app HAP 和 test HAP 路径。
-- 命令：实际使用的完整命令。
+- 命令：逐阶段展示 `commands.<stage>.script` 和 `commands.<stage>.actual`；某阶段未执行时写 `未执行` 或 `不适用`。
 - 结果：解析后的摘要和关键原始输出片段。
-- 诊断：失败后的 hdc 实时诊断命令、关键证据和产物路径。
+- 诊断：失败后的 hdc 步骤复现目标、执行步骤、观察结果、修复假设和证据路径。
 - 失败分析：阶段、失败码、可能原因、下一步建议。
 - 固定标题和章节顺序不能因 `PASS`、`FAIL` 或 `BLOCKED` 改变。
 - 某个章节没有内容时仍保留章节，并写 `无` 或 `不适用`。
@@ -242,7 +286,7 @@ JSON：
 - 根据 plan 和本次执行结果重新生成完整 JSON，并覆盖写入稳定文件名。
 - 更新顶层 `caseId`、`status`、`result`、`failure`。
 - 保留本次生效的 `repairBudget` 快照；只有自动修复消耗预算时才增加 `used` 并减少 `remaining`。普通执行、构建 task fallback、hdc 提权重跑和 blocked 重跑不消耗修复预算。
-- 保留实际使用的最终命令、产物、环境和目标确认信息。
+- 保留实际使用的最终命令、产物、环境和目标确认信息；命令字段必须使用 `{ "script": "", "actual": "" }` 结构。
 
 Markdown：
 

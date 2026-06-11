@@ -3,10 +3,20 @@
 ## 何时读取
 
 - 执行测试前需要探测 DevEco、Node、hvigor、hdc、product、module、bundleName 或 signed HAP 时读取。
-- 构建、安装、`aa test`、目标产物确认、hdc 权限或失败后实时诊断相关问题时读取。
+- 构建、安装、`aa test`、目标产物确认、hdc 权限或失败后按人工步骤复现定位相关问题时读取。
 - 只生成测试代码且不涉及构建执行时，通常不需要读取本文件。
 
-这些命令作为默认模板使用。如果用户指定文档、项目内文档或 DevEco 构建日志给出了项目特定参数，优先使用项目特定参数。
+构建、安装和执行优先使用 skill 内固定脚本。agent 通常在被测 HarmonyOS 项目根目录工作，因此必须先解析本 skill 根目录，再用绝对路径调用脚本；不要假设被测项目根目录存在 `scripts/`。
+
+```text
+<skillRoot>/scripts/build-app.sh
+<skillRoot>/scripts/build-test.sh
+<skillRoot>/scripts/install-hap.sh
+<skillRoot>/scripts/run-test.sh
+<skillRoot>/scripts/stop-hvigor-daemon.sh
+```
+
+脚本负责执行固定命令结构，agent 负责传入已确认的项目参数。脚本会打印 `COMMAND:` 行，plan/report 的 `commands.<stage>` 必须同时记录脚本调用命令和脚本打印出的实际命令。若用户指定文档、项目内文档或 DevEco 构建日志给出了项目特定 task 或参数，优先通过脚本参数传入。
 
 ## 需要先确认的值
 
@@ -46,6 +56,22 @@ DEVECO_SDK_HOME=<devecoSdkHome> node <hvigorw.js> ...
 不要使用 `export DEVECO_SDK_HOME=...` 后再执行多条命令，也不要把环境修复写回用户 shell 配置。实际采用的环境值只记录到 plan/report。
 
 默认不要使用 hvigor daemon。agent 自动构建时优先使用非 daemon 命令，避免 daemon 缓存错误 SDK 或环境后影响 DevEco Studio。禁止主动添加 `--daemon`；如果项目 hvigor 支持显式禁用 daemon 的参数，应优先使用。若怀疑 daemon 已缓存错误环境，先停止 daemon 或提示用户重启 DevEco Studio，再继续。
+
+如果已确认当前 hvigor 支持显式禁用 daemon 参数，通过构建脚本白名单传入：
+
+```bash
+<skillRoot>/scripts/build-app.sh ... --hvigor-flag --no-daemon
+<skillRoot>/scripts/build-test.sh ... --hvigor-flag --no-daemon
+```
+
+需要停止 hvigor daemon 时，优先使用固定脚本：
+
+```bash
+<skillRoot>/scripts/stop-hvigor-daemon.sh \
+  --node <node> \
+  --hvigor <hvigorw.js> \
+  --project-root <projectRoot>
+```
 
 探测项：
 
@@ -112,8 +138,8 @@ run test command:
 
 1. 优先使用用户指令、工作目录 `config.environment.hdcPath` 或项目文档指定的 hdc 绝对路径。
 2. 如果未指定，尝试项目/DevEco 常见 hdc 路径或 PATH 中的 `hdc`。
-3. 执行 `hdc list targets`。
-4. 如果出现 `Connect server failed`、权限、沙箱、server connect、USB 访问、签名或系统拦截类错误，立即使用当前 agent 平台的提权/沙箱外执行机制重跑同一条 `hdc list targets`。
+3. 执行 `<hdc> list targets`，其中 `<hdc>` 是最终确认的 hdc 绝对路径，或 PATH 解析出的 hdc 命令。
+4. 如果出现 `Connect server failed`、权限、沙箱、server connect、USB 访问、签名或系统拦截类错误，立即使用当前 agent 平台的提权/沙箱外执行机制重跑同一条 `<hdc> list targets`。
 5. 提权后如果能列出设备，后续 `hdc install` 和 `hdc shell aa test` 必须沿用同一个 hdc 路径和同一种提权/沙箱外执行方式。
 6. 如果当前 agent 平台不支持提权执行，请把完整命令交给用户在本机终端执行，并要求用户回贴输出。
 7. 用户确认其终端可执行时，记录 agent 环境受限，不要把它误判为设备真实不可用。
@@ -125,7 +151,7 @@ run test command:
   "failure": {
     "code": "DEVICE_UNAVAILABLE",
     "stage": "device_check",
-    "summary": "agent 环境无法执行 hdc list targets",
+    "summary": "agent 环境无法执行 <hdc> list targets",
     "nextAction": "请求用户授权提权执行，或让用户在本机终端执行同一条命令并回贴输出"
   }
 }
@@ -136,11 +162,13 @@ run test command:
 ## 构建 debug app HAP
 
 ```bash
-node <hvigorw.js> \
-  --mode project \
-  -p product=<product> \
-  -p buildMode=debug \
-  assembleApp --analyze=normal --parallel --incremental
+<skillRoot>/scripts/build-app.sh \
+  --project-root <projectRoot> \
+  --deveco-sdk-home <devecoSdkHome> \
+  --node <node> \
+  --hvigor <hvigorw.js> \
+  --product <product> \
+  --build-mode debug
 ```
 
 如果测试数据只适用于 debug 包，必须确认构建产物确实是 debug。可以检查生成的 build profile 或等价元数据，例如：
@@ -159,13 +187,14 @@ DEBUG = true
 候选命令：
 
 ```bash
-node <hvigorw.js> \
-  --mode module \
-  -p module=<moduleName>@ohosTest \
-  -p isOhosTest=true \
-  -p product=<product> \
-  -p buildMode=test \
-  genOnDeviceTestHap --analyze=normal --parallel --incremental
+<skillRoot>/scripts/build-test.sh \
+  --project-root <projectRoot> \
+  --deveco-sdk-home <devecoSdkHome> \
+  --node <node> \
+  --hvigor <hvigorw.js> \
+  --product <product> \
+  --module <moduleName> \
+  --build-mode test
 ```
 
 常见坑：
@@ -177,48 +206,57 @@ node <hvigorw.js> \
 fallback 示例：
 
 ```bash
-node <hvigorw.js> \
-  --mode module \
-  -p module=<moduleName>@ohosTest \
-  -p isOhosTest=true \
-  -p product=<product> \
-  -p buildMode=test \
-  assembleHap --analyze=normal --parallel --incremental
+<skillRoot>/scripts/build-test.sh \
+  --project-root <projectRoot> \
+  --deveco-sdk-home <devecoSdkHome> \
+  --node <node> \
+  --hvigor <hvigorw.js> \
+  --product <product> \
+  --module <moduleName> \
+  --build-mode test \
+  --task assembleHap
 ```
 
 ## 检查设备
 
 ```bash
-hdc list targets
+<hdc> list targets
 ```
 
-如果 agent 环境无法访问 hdc，但用户终端可以访问，优先请求提权执行或让用户执行同一命令并回贴输出；不要继续安装或运行测试。若仍无法继续，记录 `DEVICE_UNAVAILABLE` 并生成报告。
+`<hdc>` 必须是已确认的 hdc 绝对路径，或 PATH 解析出的 hdc 命令；后续安装和执行必须沿用同一个 hdc。若 agent 环境无法访问该 hdc，但用户终端可以访问，优先请求提权执行或让用户执行同一命令并回贴输出；不要继续安装或运行测试。若仍无法继续，记录 `DEVICE_UNAVAILABLE` 并生成报告。
 
 如果普通执行返回 `Connect server failed`，但提权/沙箱外执行成功，这是 agent 沙箱限制，不是设备不可用；报告中应记录普通执行失败和提权执行成功的事实。
 
 ## 安装 HAP
 
-先安装 app HAP，再安装 test HAP：
+默认分两次调用安装脚本：先安装 app HAP，再安装 test HAP。这样 plan/report 可以分别记录 `commands.installApp` 和 `commands.installTest`。
 
 ```bash
-hdc install -r <app.hap>
-hdc install -r <test.hap>
+<skillRoot>/scripts/install-hap.sh \
+  --hdc <hdc> \
+  --app-hap <app.hap>
+
+<skillRoot>/scripts/install-hap.sh \
+  --hdc <hdc> \
+  --test-hap <test.hap>
 ```
+
+第一条脚本调用及其 `COMMAND:` 输出写入 `commands.installApp`，第二条写入 `commands.installTest`。脚本支持一次传入 `--app-hap` 和 `--test-hap`，但 agent 默认不要这样做，避免报告字段归属不清。
 
 安装前优先选择 `*-signed.hap`。如果安装非 signed HAP 出现 `install sign info inconsistent`，切换 signed HAP，并在 report 中记录选择原因。
 
 ## 执行单条测试
 
 ```bash
-hdc shell aa test \
-  -b <bundleName> \
-  -m <testModuleName> \
-  -s unittest OpenHarmonyTestRunner \
-  -s class <describeName>#<itName> \
-  -s timeout 60000
+<skillRoot>/scripts/run-test.sh \
+  --hdc <hdc> \
+  --bundle <bundleName> \
+  --test-module <testModuleName> \
+  --class <describeName>#<itName> \
+  --timeout 60000
 ```
 
-执行报告中必须记录实际使用的完整命令。
+执行报告中必须在 `commands.runTest.script` 记录脚本调用命令，并在 `commands.runTest.actual` 记录脚本打印出的 `COMMAND:` 实际命令。
 
 `-b <bundleName>` 必须是最终安装到设备上的应用 Bundle 名称。不要只依赖 `AppScope/app.json5` 或根 `build-profile.json5` 的候选值；优先使用安装包元数据、`bm dump` 或实际测试包挂载的 bundleName。
 
@@ -232,27 +270,35 @@ Tests run: <n>, Failure: <n>, Error: <n>, Pass: <n>, Ignore: <n>
 
 如果 runner 超时或没有结果摘要，记录关键原始输出片段，并用最接近的失败码分类。
 
-## 失败后 hdc 实时诊断
+## 失败后 hdc 步骤复现
 
-测试执行失败后、进入自动修复前，可以根据当前失败类型使用 hdc 做实时诊断。诊断用于辅助判断当前页面、控件树、Ability 状态、bundleName、进程状态和关键系统日志，不替代 runner 输出。
+测试执行失败后、进入自动修复前，先用 runner 原始输出定位失败发生的人工步骤或测试代码阶段，再用 hdc 按人工用例步骤复现到失败点附近。复现结果用于形成修复假设，并和 runner 原始事实一起写入 report。
 
-诊断原则：
+注意：UI 单元测试执行结束后，被测 app 可能已经被 runner 关闭、退出或回到非失败页面。不要假设失败时刻的页面仍停留在设备上，也不要在测试结束后直接 `dumpLayout` 当作失败现场。dump、截图、Ability 状态和日志只能作为“重新启动 app 并按人工步骤复现到目标位置后”的证据采集手段。
 
-- 聚焦当前失败用例和当前被测 app，不做无关设备、无关应用或全量日志扫描。
-- 优先选择能解释当前失败的最小诊断命令组合。
-- 诊断失败不阻塞报告生成，不改变原始 runner 失败事实。
-- 诊断结果用于辅助失败分类和修复决策；不要因为诊断信息不完整就反复诊断。
-- 诊断命令、关键输出片段、截图或控件树文件路径写入 report 的 `diagnostics`。默认不为每条诊断命令创建独立日志文件；只有原始输出过长或附件确有定位价值时，才写入工作目录 `logs/`，并优先合并到 `logs/<caseId>-evidence.md`。
+步骤复现流程：
 
-常见诊断：
+```text
+解析 runner 输出和测试栈
+-> 对齐人工用例步骤、测试代码阶段和失败阶段
+-> 定义 reproduction.target，例如“复现到第 3 步点击后、等待首页前”
+-> 用 hdc 启动 app，并按人工用例步骤操作到 reproduction.target
+-> 采集当前页面、Ability、控件、输入状态、跳转状态、bundle 或关键日志证据
+-> 记录 observations 和 evidence
+-> 基于复现证据形成 hypothesis
+-> 选择最小修复并重跑目标用例
+```
 
-- `SELECTOR_NOT_FOUND` / `TEST_TIMEOUT`：优先 dump 当前控件树；只有控件树不足以解释问题时再截图，确认目标控件是否存在、id/text 是否变化、页面是否停在预期位置。
-- `ASSERTION_FAILED`：优先选择截图或 dump 当前控件树中的一种；只有单一证据不足时才同时保留两者，确认实际页面状态和人工预期差异。
-- `NAVIGATION_AMBIGUOUS`：检查当前窗口、Ability 或页面根节点，辅助判断停留页面。
-- `BUNDLE_NAME_UNRESOLVED`：使用 `bm dump`、安装包元数据或测试包挂载信息确认最终 bundleName。
-- runner 无结果、app 启动失败或执行卡死：检查进程、Ability 状态和关键 hilog 片段。
+复现记录写入 report 的 `diagnostics`，字段至少表达：
 
-可选命令示例，具体命令以设备和系统版本支持为准：
+- `reproduction.target`：复现目标，说明复现到哪个人工步骤前后或测试代码阶段。
+- `reproduction.steps`：实际执行的 hdc 操作步骤。
+- `observations`：复现时观察到的页面、控件、输入、跳转、Ability、bundle 或日志状态。
+- `evidence`：关键输出片段或证据附件路径。
+- `hypothesis`：基于复现证据选择的失败原因假设。
+- `fixBasis`：本次修改为什么对应该假设。
+
+常用 hdc 命令示例，具体命令以设备和系统版本支持为准：
 
 ```bash
 hdc shell uitest dumpLayout
@@ -266,6 +312,6 @@ hdc shell hilog
 日志收敛规则：
 
 - 成功执行不保存独立 runner log，结果摘要和命令写入 report 即可。
-- 失败执行只保存与当前失败直接相关的关键证据。
+- 失败执行只保存与步骤复现目标和修复假设直接相关的关键证据。
 - 同一个 case 的文本证据优先合并到一个 evidence 文件。
 - 构建或设备检查失败影响整批时，写批量级 evidence 文件，不为每个受影响 case 复制同一份日志。

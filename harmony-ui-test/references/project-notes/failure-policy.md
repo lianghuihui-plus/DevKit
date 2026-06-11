@@ -3,7 +3,7 @@
 ## 何时读取
 
 - 执行失败、构建失败、生成阻塞或 blocked 重跑时读取，用于确定失败码、是否可修、是否继续批量执行。
-- 自动修复前读取，用于检查修复预算、同类失败停止阈值和 hdc 诊断要求。
+- 自动修复前读取，用于检查修复预算、同类失败停止阈值和 hdc 步骤复现要求。
 - 只生成测试代码且尚未失败时，通常不需要读取本文件。
 
 批量执行的目标是产出可信的结果矩阵，而不是在单个困难用例上无限循环。
@@ -104,21 +104,26 @@ BLOCKED
 - `BUILD_TEST_FAILED`：修复生成测试代码或测试模块配置中的明确编译问题。
 - `OHOSTEST_TARGET_MISSING`：在 product/module 已确认且改动范围只限测试 target 配置时，补齐 ohosTest target 或等价测试构建配置。
 
-对 `SELECTOR_NOT_FOUND`、`ASSERTION_FAILED`、`TEST_TIMEOUT`、`NAVIGATION_AMBIGUOUS`、`BUNDLE_NAME_UNRESOLVED`、runner 无结果或 app 启动失败等运行期问题，进入自动修复前应优先按 `references/project-notes/build-and-run.md` 做必要 hdc 实时诊断。诊断用于确认当前 UI、Ability、bundleName、进程或关键日志状态，避免盲目修改 selector、等待或断言。
+运行期失败进入自动修复前，应优先按 `references/project-notes/build-and-run.md` 执行 hdc 步骤复现。复现用于把 runner 原始失败、人工步骤、测试代码阶段和真实 app 状态对齐，再形成修复假设。
 
-诊断是失败定位辅助，不是修复尝试。诊断失败不占用修复预算，不阻塞报告生成；如果 hdc 或诊断命令不可用，记录诊断失败原因，并继续根据 runner 输出和已有证据分类。
+测试执行结束后 app 可能已经关闭或离开失败页面。自动修复前的 hdc 证据必须来自重新启动 app 并按人工步骤复现到失败点附近后的观察，不要把执行结束后的直接 dump 当作失败现场。
+
+步骤复现是失败定位辅助，不是修复尝试。复现失败不占用修复预算；如果 hdc 或复现命令不可用，记录复现失败原因，并继续根据 runner 输出和已有证据分类。
 
 自动修复循环：
 
 ```text
 执行失败
 -> 解析 runner 输出并初步判断失败类型
--> 对适用的运行期失败执行必要 hdc 实时诊断
--> 结合 runner 输出和诊断证据分类失败码
+-> 定位失败对应的人工步骤或测试代码阶段
+-> 重新启动 app 并按人工步骤复现到失败点附近
+-> 对运行期失败执行 hdc 步骤复现
+-> 结合 runner 输出和复现证据分类失败码
+-> 记录 hypothesis 和 fixBasis
 -> 不可修则记录最终失败
 -> 可修则检查 repairBudget.remaining 和连续失败码次数
 -> 可修且未超预算则修改并重跑目标用例
--> 每次重跑后更新 report 当前结果和 repairBudget
+-> 每次重跑后更新 report 当前结果和 repairBudget 快照；只有自动修复消耗预算时才增加 used
 -> 通过则记录 PASS
 -> 预算耗尽或同一失败码连续达到阈值则记录 FAIL/RETRY_BUDGET_EXCEEDED
 ```

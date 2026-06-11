@@ -21,7 +21,7 @@
 
 - `workspace-and-config.md`：工作目录、环境默认值、修复预算配置。
 - `execution-plan.md`：读取或生成 plan、前置条件 gate、目标映射。
-- `build-and-run.md`：环境探测、构建、安装、`aa test`、目标确认、hdc 诊断。
+- `build-and-run.md`：环境探测、构建、安装、`aa test`、目标确认和失败后 hdc 步骤复现。
 - `report-format.md`：执行结果报告。
 - `failure-policy.md`：失败码、是否修复、是否停止整批。
 
@@ -33,7 +33,7 @@
 - `execution-plan.md`：从 plan 恢复人工用例、测试文件、测试方法和前置条件。
 - `failure-policy.md`：判断失败是否可修、预算是否可用。
 - `test-code-patterns.md`：修复 selector、等待、断言、输入和异常暴露。
-- `build-and-run.md`：运行期失败需要 hdc 实时诊断时读取。
+- `build-and-run.md`：运行期失败需要按人工步骤 hdc 复现定位时读取。
 
 如果只能从 `summary.json` 恢复候选，且存在多个可修失败用例，必须先让用户选择目标 case；不要自动挑选。summary 是批量索引缓存，缺失或过期时从 case reports 重建。
 
@@ -51,7 +51,7 @@
 
 读取：
 
-- `build-and-run.md`：DevEco/Node/hvigor/hdc 探测、目标确认、命令模板和常见坑。
+- `build-and-run.md`：DevEco/Node/hvigor/hdc 探测、目标确认、固定脚本和常见坑。
 - `workspace-and-config.md`：环境路径默认值和配置优先级。
 - `failure-policy.md`：构建类失败是否允许自动修复。
 

@@ -27,7 +27,7 @@ description: 当用户需要基于人工测试用例生成、执行、调试或�
 - 工作目录与配置：`references/project-notes/workspace-and-config.md`
 - plan、caseId、前置条件和重跑：`references/project-notes/execution-plan.md`
 - 测试代码模板、模块归属、等待、输入和异常暴露：`references/project-notes/test-code-patterns.md`
-- 构建、安装、`aa test`、目标确认、hdc 和实时诊断：`references/project-notes/build-and-run.md`
+- 构建、安装、`aa test`、目标确认和失败后 hdc 步骤复现：`references/project-notes/build-and-run.md`
 - report 字段和格式：`references/project-notes/report-format.md`
 - 失败码、修复预算和停止规则：`references/project-notes/failure-policy.md`
 - 官方 UI 测试流程：`references/official/UI测试框架使用指导.md`
@@ -81,7 +81,7 @@ caseId = "tc-" + sha1(normalizedManualCaseText).slice(0, 12)
 -> 读取或生成 plan
 -> 补全项目探测、前置条件 gate 和目标产物确认
 -> gate 和目标确认允许后构建、安装、执行
--> 失败后先结合 runner 输出和必要 hdc 实时诊断分类
+-> 失败后先结合 runner 输出定位失败步骤；需要修复时按人工步骤执行 hdc 复现定位
 -> 按失败策略判断修复、重跑或停止
 -> 每个 case 到达 PASS/FAIL/BLOCKED 后立即写入或覆盖自己的 case report
 -> 若基础设施失败导致整批停止，为所有受影响且未执行的 case 写入 BLOCKED case report
@@ -97,6 +97,7 @@ caseId = "tc-" + sha1(normalizedManualCaseText).slice(0, 12)
 -> 读取 report.planFile 和对应 plan
 -> 按 failure-policy 判断是否可修
 -> 读取 test-code-patterns 和相关项目代码
+-> 运行期失败先按人工步骤执行 hdc 复现定位，并记录 hypothesis/fixBasis
 -> 做最小化修改并重跑目标用例
 -> 覆盖更新当前 report；批量场景同步或重建 summary 索引
 ```
@@ -118,10 +119,11 @@ caseId = "tc-" + sha1(normalizedManualCaseText).slice(0, 12)
 - 生成、执行或修复前先解析专属工作目录，默认是被测 HarmonyOS 项目根目录下的 `harmony-ui-test-workspace/`。
 - 若工作目录不存在，创建目录和默认 `config.json`；若已存在，先读取配置。
 - 构建或执行前必须探测 DevEco SDK、Node、hvigor、hdc、product、module、ohosTest target、bundleName 候选和 signed HAP 选择规则。
+- 构建、安装和执行命令必须优先调用 skill 内固定脚本；先解析本 skill 根目录，再用绝对路径调用 `<skillRoot>/scripts/build-app.sh`、`<skillRoot>/scripts/build-test.sh`、`<skillRoot>/scripts/install-hap.sh`、`<skillRoot>/scripts/run-test.sh`。
 - 构建前必须展示目标产物确认摘要；用户确认后再构建。
 - 构建后必须自动校验实际 signed HAP、bundleName、test module、设备和命令；一致时继续安装/执行，不一致或无法确认时再次确认。
 - `hvigor tasks` 未列出测试构建 task 时，不要直接判定不可用；按 `build-and-run.md` 尝试 `taskTree`、模板命令或项目日志中的等价命令。
-- 执行失败后可以用 hdc 做聚焦实时诊断，但诊断不能覆盖 runner 原始失败事实，诊断失败也不能阻塞报告生成。
+- 执行失败后需要自动修复时，优先用 hdc 按人工步骤复现到失败点附近，基于复现证据形成修复假设。
 - 不要无限循环修复；修复预算、同类失败停止阈值和批量停止规则以 `failure-policy.md` 和工作目录配置为准。
 
 ## 完成标准

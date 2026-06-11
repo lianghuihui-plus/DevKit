@@ -226,11 +226,26 @@ planFile = harmony-ui-test-workspace/plans/<caseId>-plan.json
       "reason": ""
     },
     "commands": {
-      "buildApp": "",
-      "buildTest": "",
-      "installApp": "",
-      "installTest": "",
-      "runTest": ""
+      "buildApp": {
+        "script": "",
+        "actual": ""
+      },
+      "buildTest": {
+        "script": "",
+        "actual": ""
+      },
+      "installApp": {
+        "script": "",
+        "actual": ""
+      },
+      "installTest": {
+        "script": "",
+        "actual": ""
+      },
+      "runTest": {
+        "script": "",
+        "actual": ""
+      }
     },
     "artifacts": {
       "appHap": "",
@@ -451,6 +466,7 @@ blocked 重跑不生成额外 plan，不生成 rerun plan，不占用修复预�
 -> 读取 planFile
 -> 继承原 plan 中的 preconditions 和 preconditionGate
 -> 判断失败码是否可修、修复预算是否可用、同类失败是否达到停止阈值
+-> 运行期失败先按人工步骤执行 hdc 复现定位，记录 observations、hypothesis 和 fixBasis
 -> 做最小化修改
 -> 重跑目标用例
 -> 更新 report 为最新结果

@@ -145,6 +145,8 @@ await driver.inputText(accountPoint, 'test_account');
 
 涉及 `Driver`、`ON`、`Component`、等待、点击、输入、键盘、滑动、截图、断言、`startAbility` 和 `aa test` 参数时，优先按 `references/official/` 的 API 和示例写法生成。项目已有测试可以作为风格参考，但如果已有写法会吞异常、弱化断言或偏离人工步骤，应按本文件规则修正。
 
+修复运行期失败时，先使用 `references/project-notes/build-and-run.md` 的 hdc 步骤复现流程，把失败现象对齐到人工步骤和真实 app 状态，再选择 selector、等待、输入或断言方向的最小修改。
+
 ## 前置条件不满足不要改断言掩盖
 
 只有人工用例明确声明了阻塞型前置条件，且该条件不满足会导致步骤无法开始时，才在 execution plan/report 中记录 `PRECONDITION_UNSATISFIED` 或 `PRECONDITION_UNKNOWN`。
