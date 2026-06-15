@@ -6,25 +6,18 @@
 #   ./skill-unlink.sh cm-ai-git-commit hermes       # 只删 Hermes
 set -euo pipefail
 
-platform_dir() {
-  case "$1" in
-    hermes)   echo "${HOME}/.hermes/skills" ;;
-    cursor)   echo "${HOME}/.cursor/skills" ;;
-    claude)   echo "${HOME}/.claude/skills" ;;
-    openclaw) echo "${HOME}/.openclaw/skills" ;;
-    codex)    echo "${HOME}/.codex/skills" ;;
-    *)        echo "" ;;
-  esac
-}
+CONF_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${CONF_DIR}/platforms.conf"
 
-all_platforms() {
-  echo "hermes cursor claude openclaw codex"
+platform_dir() {
+  local varname="${1}_dir"
+  echo "${!varname:-}"
 }
 
 usage() {
   echo "用法: $0 <skill名> [平台...]"
   echo ""
-  echo "平台: $(all_platforms)（默认全部）"
+  echo "平台: ${PLATFORM_LIST}（默认全部）"
   exit 1
 }
 
@@ -33,7 +26,7 @@ usage() {
 SKILL_NAME="$1"; shift
 
 if [ $# -eq 0 ]; then
-  PLATFORMS=($(all_platforms))
+  PLATFORMS=($PLATFORM_LIST)
 else
   PLATFORMS=("$@")
 fi

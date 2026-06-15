@@ -6,25 +6,18 @@
 #   ./skill-link.sh /path/to/skills/cm-ai-git-commit hermes       # 只装 Hermes
 set -euo pipefail
 
-platform_dir() {
-  case "$1" in
-    hermes)   echo "${HOME}/.hermes/skills" ;;
-    cursor)   echo "${HOME}/.cursor/skills" ;;
-    claude)   echo "${HOME}/.claude/skills" ;;
-    openclaw) echo "${HOME}/.openclaw/skills" ;;
-    codex)    echo "${HOME}/.codex/skills" ;;
-    *)        echo "" ;;
-  esac
-}
+CONF_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${CONF_DIR}/platforms.conf"
 
-all_platforms() {
-  echo "hermes cursor claude openclaw codex"
+platform_dir() {
+  local varname="${1}_dir"
+  echo "${!varname:-}"
 }
 
 usage() {
   echo "用法: $0 <skill绝对路径> [平台...]"
   echo ""
-  echo "平台: $(all_platforms)（默认全部）"
+  echo "平台: ${PLATFORM_LIST}（默认全部）"
   exit 1
 }
 
@@ -39,7 +32,7 @@ SKILL_NAME="$(basename "$SKILL_PATH")"
 [ -f "${SKILL_PATH}/SKILL.md" ] || { echo "❌ ${SKILL_PATH} 下没有 SKILL.md"; exit 1; }
 
 if [ $# -eq 0 ]; then
-  PLATFORMS=($(all_platforms))
+  PLATFORMS=($PLATFORM_LIST)
 else
   PLATFORMS=("$@")
 fi
@@ -48,7 +41,7 @@ for platform in "${PLATFORMS[@]}"; do
   dest_base="$(platform_dir "$platform")"
   if [ -z "$dest_base" ]; then
     echo "❌ 未知平台: ${platform}"
-    echo "可用: $(all_platforms)"
+    echo "可用: ${PLATFORM_LIST}"
     continue
   fi
   dest="${dest_base}/${SKILL_NAME}"
