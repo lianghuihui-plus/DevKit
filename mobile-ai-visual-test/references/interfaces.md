@@ -27,8 +27,8 @@ Skill 编排层
 - 导入外部 Markdown 为 `source.md`。
 - 从 `source.md` 生成 `case.json`。
 - 追加 `notes.jsonl` 并重放用户补充。
-- 创建 `executions/<executionId>/`。
-- 读写 `timeline.jsonl`、`result.json`、`metrics.json`、`state.json`。
+- 创建当前平台的 `platforms/<platform>/executions/<executionId>/`。
+- 读写当前平台的 `timeline.jsonl`、`result.json`、`metrics.json`、`state.json`。
 
 ## PlatformAdapter
 
@@ -44,9 +44,35 @@ act(env, action) -> ActionResult
 
 ```bash
 scripts/probe-env.sh --platform <platform>
-scripts/observe.sh --case-dir <case-dir> --execution-id <id> --platform <platform> ...
+scripts/observe.sh --case-dir <case-dir> --execution-id <id> --platform <platform> [--step-id <step-id>] ...
 scripts/action.sh --case-dir <case-dir> --execution-id <id> --platform <platform> ...
 ```
+
+agent 可直接调用的稳定入口只包括三类，主执行入口保持精简，维护和 Flow 入口按需使用：
+
+```text
+scripts/probe-env.sh
+scripts/resolve-execution-targets.js
+scripts/parse-case.js
+scripts/update-env.js
+scripts/prepare-env.sh
+scripts/run-case.js
+scripts/observe.sh
+scripts/action.sh
+scripts/apply-note.js
+scripts/refresh-case.js
+scripts/render-context.js
+scripts/render-index.js
+scripts/flow/start-recording.js
+scripts/flow/observe.sh
+scripts/flow/action.sh
+scripts/flow/finalize-recording.js
+scripts/flow/record-scan.js
+```
+
+`scripts/platform/`、`scripts/platform/adapters/`、`scripts/platform/adapters/<platform>/atoms/`、`scripts/case/`、`scripts/report/`、`scripts/execution/`、`scripts/lib/` 都是内部实现层；可以被稳定入口调用，但不作为 agent 操作入口。
+
+顶层 `scripts/common.js` 仅是兼容导出层；共享实现放在 `scripts/lib/common.js`，shell 入口的公共逻辑放在 `scripts/lib/action-common.sh`。新增或重构脚本时，应优先复用 `scripts/lib/`，避免把内部实现重新暴露成 agent 入口。
 
 正式执行用例时必须调用顶层 `scripts/observe.sh`、`scripts/action.sh`；平台实现放在：
 
@@ -55,6 +81,8 @@ scripts/platform/adapters/<platform>/probe.sh
 scripts/platform/adapters/<platform>/observe.sh
 scripts/platform/adapters/<platform>/action.sh
 ```
+
+正式执行必须显式传 `--platform <harmony|android|ios>`，顶层 case-bound observe/action/run-case 会拒绝缺少平台参数的调用。无平台根运行态只用于历史产物兼容，需显式 `--legacy-runtime`。步骤内观察必须给 `scripts/observe.sh` 传 `--step-id <step-id>`；非步骤级环境快照或诊断观察可以不传。
 
 ## EnvironmentProbe
 
@@ -73,7 +101,7 @@ scripts/platform/adapters/<platform>/action.sh
     "foregroundApp": false,
     "logs": false,
     "launchApp": true,
-    "actions": ["launchApp", "tap", "toggle", "inputText", "swipe", "back", "home", "wait"]
+    "actions": ["launchApp", "tap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait"]
   }
 }
 ```
@@ -126,7 +154,7 @@ agent 只输出结构化动作：
 }
 ```
 
-动作集合：`launchApp`、`tap`、`toggle`、`inputText`、`swipe`、`back`、`home`、`wait`。
+动作集合：`launchApp`、`tap`、`toggle`、`longPress`、`inputText`、`swipe`、`back`、`home`、`wait`。
 
 坐标动作必须说明坐标来源。`layout` 只能用于目标本身存在控件树节点的场景；H5 自绘、图片按钮、Canvas 等没有独立节点的目标必须使用 `visual` 或 `pixel`，并提供截图目标区域 `targetBounds` 和 `coordinateEvidence`。
 
@@ -220,11 +248,12 @@ Reporter 渲染 `CONTEXT.md`/`CONTEXT.html`。MetricsCollector 生成 `metrics.j
 
 报告和统计不得成为执行依据；下一次执行依据仍是 `source.md`、`case.json`、`notes.jsonl` 和已确认环境。
 
-- `scripts/run-case.js <case-dir> --start` 创建 execution。
-- `scripts/observe.sh --case-dir <case-dir> --execution-id <id> ...` 采集观察并自动记录。
-- `scripts/action.sh --case-dir <case-dir> --execution-id <id> --step-id <step-id> ...` 执行动作并自动记录。
-- `scripts/run-case.js <case-dir> --record-json <json>` 追加非平台事实事件。
-- `scripts/run-case.js <case-dir> --finalize --status <status>` 聚合结果并刷新报告。
+- `scripts/run-case.js <case-dir> --platform <platform> --start` 创建当前平台 execution。
+- `scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>` 在 execution 创建前准备当前平台必需依赖，写入 `state.json.dependencies`，并刷新当前平台报告。
+- `scripts/observe.sh --case-dir <case-dir> --platform <platform> --execution-id <id> [--step-id <step-id>] ...` 采集观察并自动记录；步骤内观察必须传 `--step-id`，报告据此把截图证据关联到用例步骤。
+- `scripts/action.sh --case-dir <case-dir> --platform <platform> --execution-id <id> --step-id <step-id> ...` 执行动作并自动记录。
+- `scripts/run-case.js <case-dir> --platform <platform> --record-json <json>` 追加非平台事实事件。
+- `scripts/run-case.js <case-dir> --platform <platform> --finalize --status <status>` 聚合结果并刷新当前平台报告。
 
 ## BusinessFlowRepository
 
@@ -233,15 +262,18 @@ Reporter 渲染 `CONTEXT.md`/`CONTEXT.html`。MetricsCollector 生成 `metrics.j
 当前脚本入口：
 
 ```bash
-scripts/flow/start-recording.js --name <flow-name> --intent <intent1,intent2> [--cwd <workspace-cwd>] [--platform <platform>] [--device <device>] [--app <appId>] [--entry <entry>]
+scripts/flow/start-recording.js --name <flow-name> --intent <intent1,intent2> --platform <platform> [--flow-scope universal|platform] [--cwd <workspace-cwd>] [--device <device>] [--app <appId>] [--entry <entry>]
 scripts/flow/observe.sh --flow-dir <flow-dir> --recording-id <id> ...
 scripts/flow/action.sh --flow-dir <flow-dir> --recording-id <id> --instruction <text> --type <action> ...
 scripts/flow/finalize-recording.js <flow-dir> --recording-id <id> --status READY
+scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform <platform> --execution-id <id> [--step-id <step-id>] [--matched-flow-ids <id,id>]
 ```
 
 `start-recording.js` 会把录制环境写入 Flow `state.json`；后续 `flow/observe.sh` 和 `flow/action.sh` 未显式传平台、设备、应用或入口时，必须继承该环境。
 
-正式执行用例时，agent 必须在创建 execution 后调用 `scripts/flow/list-flows.js --cwd <workspace-cwd>` 扫描 `ai-visual-test/flows/` 的可用 Flow，并读取脚本输出作为候选业务路径库。脚本输出包含可执行参考步骤；不允许 agent 自己拼目录扫描。
+正式执行用例时，agent 必须在创建 execution 后调用 `scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform <platform> --execution-id <id>` 扫描 `<workspace-cwd>/flows/` 的可用 Flow，并读取脚本输出作为全局候选业务路径库。每个业务步骤匹配或动作前，必须再调用 `record-scan.js ... --step-id <step-id>` 写入步骤级 `flowScan`。脚本输出包含可执行参考步骤，并自动把带 `source=list-flows`、`flowsRoot`、`scannedFlowIds` 的 `flowScan` 事实写入当前 execution；不允许 agent 自己拼目录扫描或手写缺少扫描来源的 `flowScan`。带平台扫描默认只返回当前平台专用 Flow 和通用 Flow。
+
+Flow 默认跨平台通用。录制时的 `recordingPlatform` 只表示采集环境；只有 `flow.json`/`state.json` 中存在 `platform` 字段，或 Flow 名称显式带有 `-android`、`-ios`、`-harmony` 这类平台标识时，才视为平台专用 Flow；同语义匹配时，当前平台专用 Flow 优先于通用 Flow。
 
 当步骤文本、前置条件或当前页面目标包含业务导航语义时，例如“进入 AI 精灵页面”“打开创作页”“登录账号”“点击某业务入口后再验证”，agent 必须先尝试匹配候选 Flow；匹配依据包括 `name`、`intent`、`humanInstruction`、`successHint` 和当前页面状态。
 
@@ -252,9 +284,12 @@ scripts/flow/finalize-recording.js <flow-dir> --recording-id <id> --status READY
 ```json
 {
   "type": "flowScan",
+  "source": "list-flows",
   "status": "COMPLETED",
   "candidateCount": 3,
+  "scannedFlowIds": ["flow-xxxxxxxxxxxx", "flow-bbbbbbbbbbbb", "flow-cccccccccccc"],
   "matchedFlowIds": ["flow-xxxxxxxxxxxx"],
+  "flowsRoot": "<workspace-cwd>/flows",
   "stepId": "step-002",
   "reason": "步骤需要进入 AI 精灵页面"
 }

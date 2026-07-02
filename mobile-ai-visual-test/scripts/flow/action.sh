@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+source "$script_dir/../lib/action-common.sh"
 flow_dir=""
 recording_id=""
 instruction=""
@@ -24,28 +25,8 @@ from_x=""
 from_y=""
 to_x=""
 to_y=""
+duration_ms=""
 args=()
-
-validate_coordinate_metadata() {
-  if [[ -n "$coordinate_source" ]]; then
-    case "$coordinate_source" in
-      layout|visual|pixel|manual|flow) ;;
-      *)
-        echo "无效 --coordinate-source: $coordinate_source" >&2
-        exit 2
-        ;;
-    esac
-  fi
-  if [[ -n "$target_bounds" ]]; then
-    if ! node -e '
-const parts = String(process.argv[1] || "").split(",").map((item) => Number(item.trim()));
-process.exit(parts.length === 4 && parts.every((item) => Number.isFinite(item)) ? 0 : 1);
-' "$target_bounds"; then
-      echo "无效 --target-bounds: $target_bounds" >&2
-      exit 2
-    fi
-  fi
-}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -70,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --from-y) from_y="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --to-x) to_x="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --to-y) to_y="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --duration-ms) duration_ms="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -79,77 +61,22 @@ if [[ -z "$flow_dir" || -z "$recording_id" || -z "$type" ]]; then
   exit 2
 fi
 
-validate_coordinate_metadata
-
-case "$type" in
-  tap|toggle)
-    if [[ -n "$x" || -n "$y" ]]; then
-      if [[ -z "$coordinate_source" ]]; then
-        echo "坐标动作必须提供 --coordinate-source" >&2
-        exit 2
-      fi
-      if [[ -z "$coordinate_evidence" ]]; then
-        echo "坐标动作必须提供 --coordinate-evidence" >&2
-        exit 2
-      fi
-    fi
-    ;;
-  inputText)
-    if [[ -n "$x" || -n "$y" ]]; then
-      if [[ -z "$coordinate_source" ]]; then
-        echo "坐标动作必须提供 --coordinate-source" >&2
-        exit 2
-      fi
-      if [[ -z "$coordinate_evidence" ]]; then
-        echo "坐标动作必须提供 --coordinate-evidence" >&2
-        exit 2
-      fi
-    fi
-    ;;
-esac
-if [[ "$coordinate_source" == "visual" || "$coordinate_source" == "pixel" ]]; then
-  if [[ -z "$target_bounds" ]]; then
-    echo "视觉坐标动作必须提供 --target-bounds" >&2
-    exit 2
-  fi
-fi
+mavt_validate_coordinate_action flow "$type" "$x" "$y" "$coordinate_source" "$coordinate_evidence" "$target_bounds"
 
 recording_dir="$flow_dir/recordings/$recording_id"
 mkdir -p "$recording_dir/logs"
 
 if [[ $has_platform -eq 0 ]]; then
-  platform="$(node -e '
-const fs = require("fs");
-const path = require("path");
-const statePath = path.join(process.argv[1], "state.json");
-const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
-process.stdout.write(state.environment?.platform || "harmony");
-' "$flow_dir")"
+  platform="$(mavt_flow_platform "$flow_dir")"
+fi
+if [[ -z "$platform" ]]; then
+  echo "Flow 录制缺少平台。请在 start-recording.js 传 --platform，或本次 action 显式传 --platform。" >&2
+  exit 2
 fi
 env_args=()
 while IFS= read -r item; do
   [[ -n "$item" ]] && env_args+=("$item")
-done < <(node -e '
-const fs = require("fs");
-const path = require("path");
-const flowDir = process.argv[1];
-const has = {
-  device: process.argv[2] === "1",
-  app: process.argv[3] === "1",
-  entry: process.argv[4] === "1"
-};
-const statePath = path.join(flowDir, "state.json");
-const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
-const env = state.environment || {};
-const out = [];
-function add(flag, value) {
-  if (value !== undefined && value !== null && String(value) !== "") out.push(flag, String(value));
-}
-if (!has.device) add("--device", env.device);
-if (!has.app) add("--app", env.appId || env.bundleName);
-if (!has.entry) add("--entry", env.entry || env.abilityName);
-process.stdout.write(out.length ? `${out.join("\n")}\n` : "");
-' "$flow_dir" "$has_device" "$has_app" "$has_entry")
+done < <(mavt_flow_env_args "$flow_dir" "$has_device" "$has_app" "$has_entry")
 if [[ ${#env_args[@]} -gt 0 ]]; then
   merged_args=("${env_args[@]}")
   if [[ ${#args[@]} -gt 0 ]]; then
@@ -164,11 +91,7 @@ adapter_status=$?
 set -e
 
 if [[ $adapter_status -eq 0 && "$type" != "wait" ]]; then
-  sleep "$(node -e '
-const value = Number(process.argv[1] || 0);
-if (!Number.isFinite(value) || value < 0) process.exit(2);
-console.log((value / 1000).toFixed(3));
-' "$settle_ms")"
+  mavt_sleep_ms "$settle_ms"
 fi
 
 node -e '
@@ -192,6 +115,7 @@ const settleMs = Number(process.argv[8] || 0);
 const coordinateSource = process.argv[16] || "";
 const targetBoundsText = process.argv[17] || "";
 const coordinateEvidence = process.argv[18] || "";
+const durationMs = process.argv[19] || "";
 function parseBounds(value) {
   if (!value) return undefined;
   const parts = String(value).split(",").map((item) => Number(item.trim()));
@@ -207,7 +131,8 @@ const actionDetails = {
   fromX: process.argv[12] || undefined,
   fromY: process.argv[13] || undefined,
   toX: process.argv[14] || undefined,
-  toY: process.argv[15] || undefined
+  toY: process.argv[15] || undefined,
+  durationMs: durationMs || undefined
 };
 const targetBounds = parseBounds(targetBoundsText);
 if (coordinateSource) actionDetails.coordinateSource = coordinateSource;
@@ -231,6 +156,7 @@ if (adapterStatus === 0) {
 }
 if (actionDetails.x !== undefined) actionResult.x = Number.isFinite(Number(actionDetails.x)) ? Number(actionDetails.x) : actionDetails.x;
 if (actionDetails.y !== undefined) actionResult.y = Number.isFinite(Number(actionDetails.y)) ? Number(actionDetails.y) : actionDetails.y;
+if (actionDetails.durationMs !== undefined) actionResult.durationMs = Number.isFinite(Number(actionDetails.durationMs)) ? Number(actionDetails.durationMs) : actionDetails.durationMs;
 if (target) actionResult.target = target;
 if (coordinateSource) actionResult.coordinateSource = coordinateSource;
 if (targetBounds) actionResult.targetBounds = targetBounds;
@@ -246,4 +172,4 @@ const event = {
 fs.appendFileSync(path.join(recordingDir, "timeline.jsonl"), `${JSON.stringify(event)}\n`);
 process.stdout.write(`${JSON.stringify(event, null, 2)}\n`);
 process.exit(adapterStatus === 0 ? 0 : adapterStatus);
-' "$recording_dir" "$adapter_status" "$adapter_output" "$type" "$instruction" "$target" "$success_hint" "$settle_ms" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$coordinate_source" "$target_bounds" "$coordinate_evidence"
+' "$recording_dir" "$adapter_status" "$adapter_output" "$type" "$instruction" "$target" "$success_hint" "$settle_ms" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$coordinate_source" "$target_bounds" "$coordinate_evidence" "$duration_ms"

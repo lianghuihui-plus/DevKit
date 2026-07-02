@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-platform="harmony"
+platform=""
 args=()
 
 while [[ $# -gt 0 ]]; do
@@ -10,6 +10,11 @@ while [[ $# -gt 0 ]]; do
     *) args+=("$1"); shift ;;
   esac
 done
+
+if [[ -z "$platform" ]]; then
+  echo "platform/observe.sh 需要显式传 --platform <harmony|android|ios>，不能默认选择平台。" >&2
+  exit 2
+fi
 
 adapter="$(cd "$(dirname "$0")" && pwd)/adapters/${platform}/observe.sh"
 if [[ ! -x "$adapter" ]]; then

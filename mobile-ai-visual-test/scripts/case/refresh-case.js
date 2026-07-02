@@ -14,6 +14,7 @@ const {
   refreshIndexForCase,
   reapplyNotes,
   writeCaseReports,
+  writePlatformCaseReports,
   writeJson,
 } = require('../common');
 
@@ -40,7 +41,8 @@ if (!fs.existsSync(sourcePath)) {
 const previous = readJson(casePath);
 const sourceText = fs.readFileSync(sourcePath, 'utf8');
 const sourceStat = fs.statSync(sourcePath);
-const parsed = parseMarkdownCase(previous.identity.importSource || previous.identity.sourceFile || sourcePath, process.cwd(), {
+const workspaceDir = path.dirname(path.dirname(caseDir));
+const parsed = parseMarkdownCase(previous.identity.importSource || previous.identity.sourceFile || sourcePath, workspaceDir, {
   markdown: sourceText,
   sourceUpdatedAt: formatLocalIso(sourceStat.mtime),
   sourceMode: 'snapshot',
@@ -80,6 +82,7 @@ const state = readJson(statePath, {
 writeJson(statePath, state);
 const currentNotes = readJsonl(notesPath);
 const reports = writeCaseReports(caseDir, caseJson, state, currentNotes);
+writePlatformCaseReports(caseDir, caseJson, currentNotes);
 const indexHtml = refreshIndexForCase(caseDir);
 
 console.log(JSON.stringify({ caseDir, caseJson: casePath, ...reports, indexHtml, sourceChanged }, null, 2));

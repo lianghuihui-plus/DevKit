@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+atoms_dir="$script_dir/atoms"
+
 device=""
 bundle=""
 app=""
@@ -34,9 +37,9 @@ fi
 
 mkdir -p "$out/screenshots" "$out/layouts" "$out/logs"
 
-hdc_prefix=(hdc)
+device_args=()
 if [[ -n "$device" ]]; then
-  hdc_prefix=(hdc -t "$device")
+  device_args=(--device "$device")
 fi
 
 remote_png="/data/local/tmp/mavt-${label}.png"
@@ -49,43 +52,34 @@ local_pidof="$out/logs/${label}-pidof.txt"
 local_hilog="$out/logs/${label}-hilog.txt"
 local_errors="$out/logs/${label}-errors.txt"
 
-run_optional() {
-  local timeout_seconds="$1"
-  local output_file="$2"
-  shift 2
-  if perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" "$@" >"$output_file" 2>&1; then
-    return 0
-  fi
-  printf '\n[observe warning] command failed or timed out: %s\n' "$*" >>"$output_file"
-  return 0
-}
+: >"$local_errors"
 
-"${hdc_prefix[@]}" shell uitest screenCap -p "$remote_png" >/dev/null
-"${hdc_prefix[@]}" file recv "$remote_png" "$local_png" >/dev/null
-
-dump_args=(shell uitest dumpLayout -p "$remote_json" -m true)
-if [[ -n "$bundle" ]]; then
-  dump_args+=( -b "$bundle" )
+if ! "$atoms_dir/screenshot.sh" "${device_args[@]}" --remote "$remote_png" --out "$local_png" >"$out/logs/${label}-screenshot.json" 2>"$out/logs/${label}-screencap.txt"; then
+  printf '[screenshot] screenCap failed. See logs/%s-screencap.txt\n' "$label" >>"$local_errors"
+  rm -f "$local_png"
 fi
-if ! "${hdc_prefix[@]}" "${dump_args[@]}" >"$out/logs/${label}-dump-layout.txt" 2>&1; then
+
+dump_args=(--remote "$remote_json" --out "$local_json" --log "$out/logs/${label}-dump-layout.txt")
+if [[ -n "$bundle" ]]; then
+  dump_args+=(--bundle "$bundle")
+fi
+if ! "$atoms_dir/dump-tree.sh" "${device_args[@]}" "${dump_args[@]}" >"$out/logs/${label}-dump-tree.json" 2>>"$local_errors"; then
   printf '[layout] dumpLayout failed. See logs/%s-dump-layout.txt\n' "$label" >>"$local_errors"
-fi
-if ! "${hdc_prefix[@]}" file recv "$remote_json" "$local_json" >/dev/null 2>&1; then
-  printf '[layout] failed to receive remote layout: %s\n' "$remote_json" >>"$local_errors"
+  rm -f "$local_json"
 fi
 
-run_optional 5 "$local_aa_dump" "${hdc_prefix[@]}" shell aa dump -l
-run_optional 5 "$local_window_dump" "${hdc_prefix[@]}" shell hidumper -s WindowManagerService -a "-a"
+log_args=(--out-dir "$out/logs" --label "$label")
 if [[ -n "$bundle" ]]; then
-  run_optional 3 "$local_pidof" "${hdc_prefix[@]}" shell pidof "$bundle"
+  log_args+=(--app "$bundle")
 fi
-run_optional 5 "$local_hilog" "${hdc_prefix[@]}" shell "hilog -x | tail -n 200"
+"$atoms_dir/logs.sh" "${device_args[@]}" "${log_args[@]}" >"$out/logs/${label}-logs.json" 2>>"$local_errors" || true
+"$atoms_dir/foreground.sh" "${device_args[@]}" --aa-out "$local_aa_dump" --window-out "$local_window_dump" >"$out/logs/${label}-foreground.json" 2>>"$local_errors" || true
 
 node -e '
 const path = require("path");
 const fs = require("fs");
 const out = process.argv[1], label = process.argv[2], png = process.argv[3], json = process.argv[4], device = process.argv[5], app = process.argv[6];
-const aaDump = process.argv[7], windowDump = process.argv[8], pidofFile = process.argv[9], hilog = process.argv[10], errorsFile = process.argv[11];
+const aaDump = process.argv[7], windowDump = process.argv[8], pidofFile = process.argv[9], hilog = process.argv[10], errorsFile = process.argv[11], foregroundJson = process.argv[12];
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();
   const sign = offset >= 0 ? "+" : "-";
@@ -99,65 +93,23 @@ function rel(file) {
 function read(file) {
   return file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
 }
+function readJson(file) {
+  try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null; } catch { return null; }
+}
 function hasUsableContent(file) {
   const text = read(file).trim();
   return !!text && !/command failed or timed out/.test(text);
 }
-const aaText = read(aaDump);
-const windowText = read(windowDump);
-function firstMatch(text, pattern) {
-  const match = text.match(pattern);
-  return match ? match[1] : null;
-}
-function parseForegroundAbility(text) {
-  const blocks = text.split(/AbilityRecord ID #/).slice(1);
-  for (const block of blocks) {
-    if (!/(?:^|\s)(?:state|app state) #FOREGROUND\b/.test(block)) continue;
-    if (!/ability type \[PAGE\]/.test(block)) continue;
-    const bundleName = firstMatch(block, /bundle name \[([^\]]+)\]/);
-    const abilityName = firstMatch(block, /main name \[([^\]]+)\]/);
-    const recordId = firstMatch(block, /^(\d+)/);
-    return {
-      bundleName,
-      abilityName,
-      recordId,
-      line: block.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 8).join(" | ")
-    };
-  }
-  return null;
-}
-function parseForegroundProcess(text, bundleName) {
-  const blocks = text.split(/AppRunningRecord ID #/).slice(1);
-  const preferred = blocks.find((block) => bundleName && block.includes(`process name [${bundleName}]`) && /state #FOREGROUND\b/.test(block)) ||
-    blocks.find((block) => /state #FOREGROUND\b/.test(block) && !/process name \[com\.ohos\.sceneboard/.test(block));
-  if (!preferred) return null;
-  return {
-    processName: firstMatch(preferred, /process name \[([^\]]+)\]/),
-    pid: firstMatch(preferred, /pid #(\d+)/),
-    line: preferred.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 5).join(" | ")
-  };
-}
-function parseFocusedWindow(text) {
-  const focusWindow = firstMatch(text, /Focus window:\s*(\d+)/);
-  if (!focusWindow) return null;
-  const line = text.split(/\r?\n/).find((item) => {
-    const cols = item.trim().split(/\s+/);
-    return cols[3] === focusWindow;
-  });
-  return line ? { windowId: focusWindow, line: line.trim() } : { windowId: focusWindow, line: null };
-}
-const foregroundAbility = parseForegroundAbility(aaText);
-const foregroundProcess = parseForegroundProcess(aaText, foregroundAbility?.bundleName || app);
-const focusedWindow = parseFocusedWindow(windowText);
+const fg = readJson(foregroundJson);
+const foregroundAbility = fg?.foregroundAbility || null;
+const foregroundProcess = fg?.foregroundProcess || null;
+const focusedWindow = fg?.focusedWindow || null;
 const foregroundLine = foregroundAbility?.line || foregroundProcess?.line || focusedWindow?.line || null;
 const foregroundApp = foregroundAbility?.bundleName || foregroundProcess?.processName || null;
 const logs = [aaDump, windowDump, pidofFile, hilog, errorsFile].map(rel).filter(Boolean);
 const screenshotRel = rel(png);
 const layoutRel = rel(json);
-const errors = read(errorsFile)
-  .split(/\r?\n/)
-  .map((line) => line.trim())
-  .filter(Boolean);
+const errors = read(errorsFile).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 console.log(JSON.stringify({
   schemaVersion: 1,
   type: "observation",
@@ -197,4 +149,4 @@ console.log(JSON.stringify({
   screenshot: screenshotRel,
   layout: layoutRel
 }, null, 2));
-' "$out" "$label" "$local_png" "$local_json" "$device" "$bundle" "$local_aa_dump" "$local_window_dump" "$local_pidof" "$local_hilog" "$local_errors"
+' "$out" "$label" "$local_png" "$local_json" "$device" "$bundle" "$local_aa_dump" "$local_window_dump" "$local_pidof" "$local_hilog" "$local_errors" "$out/logs/${label}-foreground.json"

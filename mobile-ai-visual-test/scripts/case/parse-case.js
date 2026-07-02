@@ -19,6 +19,7 @@ const {
   desiredCaseDir,
   syncCaseDirectory,
   writeCaseReports,
+  writePlatformCaseReports,
   writeJson,
   writeText,
 } = require('../common');
@@ -47,7 +48,6 @@ const caseKey = parsed.caseJson.identity.caseKey;
 const existingCaseDir = findExistingCaseDir(root, caseKey);
 let caseDir = existingCaseDir || parsed.caseDir;
 ensureDir(caseDir);
-ensureDir(path.join(caseDir, 'executions'));
 
 const casePath = path.join(caseDir, 'case.json');
 const sourceSnapshotPath = path.join(caseDir, 'source.md');
@@ -99,25 +99,23 @@ if (!existingCaseDir) {
 } else {
   caseDir = syncCaseDirectory(root, caseDir, caseJson);
 }
-ensureDir(path.join(caseDir, 'executions'));
 const finalCasePath = path.join(caseDir, 'case.json');
 const finalSourceSnapshotPath = path.join(caseDir, 'source.md');
 const finalNotesPath = path.join(caseDir, 'notes.jsonl');
 writeText(finalSourceSnapshotPath, selected.sourceMarkdown);
 writeJson(finalCasePath, caseJson);
 
-const statePath = path.join(caseDir, 'state.json');
-const state = readJson(statePath, {
+const state = {
   schemaVersion: 1,
   latestStatus: 'NOT_RUN',
   executionCount: 0,
   environment: {},
   statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 },
-});
-writeJson(statePath, state);
+};
 const currentNotes = readJsonl(notesPath);
 const finalNotes = finalNotesPath === notesPath ? currentNotes : readJsonl(finalNotesPath);
 const reports = writeCaseReports(caseDir, caseJson, state, finalNotes);
+writePlatformCaseReports(caseDir, caseJson, finalNotes);
 const indexHtml = refreshIndexForCase(caseDir);
 
 console.log(JSON.stringify({ caseDir, caseJson: finalCasePath, ...reports, indexHtml }, null, 2));

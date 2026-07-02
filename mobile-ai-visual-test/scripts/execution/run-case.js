@@ -6,8 +6,10 @@ const path = require('path');
 const {
   appendJsonl,
   caseContractSha,
+  caseRuntimeDir,
   ensureDir,
   nowIso,
+  normalizePlatform,
   readJson,
   readJsonl,
   refreshIndexForCase,
@@ -34,7 +36,7 @@ const VALID_EVENT_TYPES = new Set([
   'result',
 ]);
 const VALID_DECISIONS = new Set(['act', 'assert_pass', 'assert_fail', 'wait', 'blocked']);
-const VALID_ACTIONS = new Set(['launchApp', 'tap', 'toggle', 'inputText', 'swipe', 'back', 'home', 'wait']);
+const VALID_ACTIONS = new Set(['launchApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']);
 const VALID_RULE_STATUSES = new Set(['MATCHED', 'SKIPPED', 'FAILED', 'BLOCKED', 'UNKNOWN']);
 const VALID_RULE_TYPES = new Set(['guard']);
 const VALID_RULE_FAILURES = new Set(['BLOCKED', 'UNKNOWN', 'FAIL']);
@@ -56,11 +58,12 @@ const DEFAULT_BUDGET = {
 function usage() {
   console.error([
     'Usage:',
-    '  run-case.js <case-dir> --start',
-    '  run-case.js <case-dir> --check-budget --event-type <type> [--action <action>] [--step-id <step-id>] [--execution-id <id>]',
-    '  run-case.js <case-dir> --record-json <json> [--execution-id <id>]',
-    '  run-case.js <case-dir> --finalize --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>] [--execution-id <id>]',
-    '  run-case.js <case-dir> --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>]',
+    '  run-case.js <case-dir> --platform <platform> --start',
+    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--step-id <step-id>] [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --record-json <json> [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --finalize --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>] [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>]',
+    '  run-case.js <case-dir> --legacy-runtime ...',
   ].join('\n'));
   process.exit(2);
 }
@@ -182,9 +185,22 @@ function validateEvent(event) {
   }
   if (event.type === 'flowScan') {
     if (!event.status || !VALID_FLOW_SCAN_STATUSES.has(event.status)) throw new Error(`Unsupported flowScan status: ${event.status}`);
+    if (event.source !== 'list-flows') throw new Error('flowScan source must be list-flows');
+    if (!event.flowsRoot || typeof event.flowsRoot !== 'string') throw new Error('flowScan missing flowsRoot');
+    if (!Array.isArray(event.scannedFlowIds) || !event.scannedFlowIds.every((item) => typeof item === 'string')) {
+      throw new Error('flowScan scannedFlowIds must be a string array');
+    }
     if (event.candidateCount !== undefined && (!Number.isInteger(event.candidateCount) || event.candidateCount < 0)) throw new Error('flowScan candidateCount must be a non-negative integer');
+    if (event.candidateCount !== undefined && event.candidateCount !== event.scannedFlowIds.length) {
+      throw new Error('flowScan candidateCount must match scannedFlowIds length');
+    }
     if (event.matchedFlowIds !== undefined && (!Array.isArray(event.matchedFlowIds) || !event.matchedFlowIds.every((item) => typeof item === 'string'))) {
       throw new Error('flowScan matchedFlowIds must be a string array');
+    }
+    if (Array.isArray(event.matchedFlowIds)) {
+      const scanned = new Set(event.scannedFlowIds);
+      const unknown = event.matchedFlowIds.filter((flowId) => !scanned.has(flowId));
+      if (unknown.length) throw new Error(`flowScan matchedFlowIds not found in scannedFlowIds: ${unknown.join(', ')}`);
     }
   }
   if (event.type === 'flow') {
@@ -204,17 +220,20 @@ function validateEvent(event) {
 function validateCoordinateMetadata(event, action) {
   const hasCoordinates = event.x !== undefined || event.y !== undefined;
   if (!hasCoordinates) return;
-  if (!['tap', 'toggle', 'inputText'].includes(action)) return;
+  if (!['tap', 'toggle', 'longPress', 'inputText'].includes(action)) return;
   if (event.x === undefined || event.y === undefined) throw new Error('coordinate action requires both x and y');
   if (!event.coordinateSource || !VALID_COORDINATE_SOURCES.has(event.coordinateSource)) {
     throw new Error('coordinate action missing valid coordinateSource');
   }
+  if (event.coordinateSource === 'manual') {
+    throw new Error('manual coordinateSource is not allowed in case execution; use layout, visual, pixel, or flow');
+  }
   if (!event.coordinateEvidence || typeof event.coordinateEvidence !== 'string') {
     throw new Error('coordinate action missing coordinateEvidence');
   }
-  if ((event.coordinateSource === 'visual' || event.coordinateSource === 'pixel') &&
+  if ((event.coordinateSource === 'visual' || event.coordinateSource === 'pixel' || event.coordinateSource === 'flow') &&
     (!Array.isArray(event.targetBounds) || event.targetBounds.length !== 4 || !event.targetBounds.every((item) => Number.isFinite(Number(item))))) {
-    throw new Error('visual coordinate action requires targetBounds [x1,y1,x2,y2]');
+    throw new Error(`${event.coordinateSource} coordinate action requires targetBounds [x1,y1,x2,y2]`);
   }
 }
 
@@ -353,8 +372,8 @@ function countArtifacts(events) {
 }
 
 function buildMetrics(caseJson, state, events, result, executionState = {}) {
-  const actionTypes = ['tap', 'toggle', 'inputText', 'swipe', 'back', 'launchApp', 'wait', 'home'];
-  const actions = { total: 0, tap: 0, toggle: 0, inputText: 0, swipe: 0, back: 0, launchApp: 0, wait: 0, home: 0 };
+  const actionTypes = ['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'launchApp', 'wait', 'home'];
+  const actions = { total: 0, tap: 0, toggle: 0, longPress: 0, inputText: 0, swipe: 0, back: 0, launchApp: 0, wait: 0, home: 0 };
   for (const event of events) {
     if (event.type !== 'actionResult') continue;
     const action = actionType(event);
@@ -452,14 +471,27 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
 }
 
 function finalize(caseDir, options) {
+  const runtimeDir = caseRuntimeDir(caseDir, options.platform);
   const caseJson = readJson(path.join(caseDir, 'case.json'));
   if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
   validateGlobalRules(caseJson);
-  const statePath = path.join(caseDir, 'state.json');
+  const statePath = path.join(runtimeDir, 'state.json');
   const state = readJson(statePath, { schemaVersion: 1, executionCount: 0, statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 }, environment: {} });
-  const executionId = options.executionId || latestExecutionId(caseDir) || allocateExecutionId(caseDir);
-  const { execDir } = createExecution(caseDir, executionId);
+  let executionId = options.executionId || latestExecutionId(runtimeDir);
+  if (!executionId) {
+    if (!options.legacyRuntime) {
+      throw new Error('No started execution exists. Run --start first or pass --execution-id.');
+    }
+    executionId = allocateExecutionId(runtimeDir);
+  }
+  if (options.executionId && !executionExists(runtimeDir, options.executionId) && !options.legacyRuntime) {
+    throw new Error(`Execution was not started: ${options.executionId}`);
+  }
+  const { execDir } = createExecution(runtimeDir, executionId);
   const executionState = readExecutionState(execDir) || {};
+  if (!options.legacyRuntime && !executionState.schemaVersion) {
+    throw new Error(`Execution was not started: ${executionId}`);
+  }
   const timelinePath = path.join(execDir, 'timeline.jsonl');
   const existingEvents = readJsonl(timelinePath);
   const existingResult = readJson(path.join(execDir, 'result.json'), null);
@@ -485,6 +517,7 @@ function finalize(caseDir, options) {
     schemaVersion: 1,
     executionId,
     caseKey: caseJson.identity.caseKey,
+    platform: options.platform || state.environment?.platform || null,
     sourceSha1: caseJson.identity.sourceSha1,
     caseContractSha: caseContractSha(caseJson),
     status,
@@ -526,7 +559,7 @@ function finalize(caseDir, options) {
   });
 
   const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
-  writeCaseReports(caseDir, caseJson, state, notes, { result, metrics, events });
+  writeCaseReports(caseDir, caseJson, state, notes, { result, metrics, events }, { platform: options.platform });
   refreshIndexForCase(caseDir);
   return { executionId, execDir, result: path.join(execDir, 'result.json'), metrics: path.join(execDir, 'metrics.json'), timeline: timelinePath };
 }
@@ -564,23 +597,72 @@ function flowFailureReadiness(events, failureCode, failedStep) {
   };
 }
 
+function actionRequiresFlowScan(action) {
+  return action && !['launchApp', 'wait'].includes(action);
+}
+
+function flowScanActionReadiness(events, action, stepId) {
+  if (!actionRequiresFlowScan(action)) return { ok: true };
+  if (!events.some((event) => event.type === 'flowScan')) {
+    return {
+      ok: false,
+      failureCode: 'FLOW_SCAN_REQUIRED',
+      reason: '业务动作前必须先写入 flowScan 事实。',
+    };
+  }
+  if (stepId && !events.some((event) => event.type === 'flowScan' && event.stepId === stepId)) {
+    return {
+      ok: false,
+      failureCode: 'FLOW_SCAN_REQUIRED',
+      reason: `业务动作前缺少当前步骤的 flowScan 事实: ${stepId}。全局扫描只用于建立候选库，不能替代步骤级扫描。`,
+    };
+  }
+  return { ok: true };
+}
+
+function requiredEnvironmentDependencies(platform) {
+  if (platform === 'android') return ['mavtInputIme'];
+  return [];
+}
+
+function missingEnvironmentDependencies(state, platform) {
+  const dependencies = state?.dependencies || {};
+  return requiredEnvironmentDependencies(platform).filter((id) => !dependencies[id]?.ok);
+}
+
 function findUnfinalizedExecution(caseDir) {
   const casesDir = path.dirname(caseDir);
   if (!fs.existsSync(casesDir)) return null;
   for (const caseName of fs.readdirSync(casesDir).sort()) {
     const currentCaseDir = path.join(casesDir, caseName);
-    const execRoot = path.join(currentCaseDir, 'executions');
-    if (!fs.existsSync(execRoot) || !fs.statSync(currentCaseDir).isDirectory()) continue;
-    for (const executionId of fs.readdirSync(execRoot).sort()) {
-      const execDir = path.join(execRoot, executionId);
-      if (!fs.statSync(execDir).isDirectory()) continue;
-      const executionState = readExecutionState(execDir);
-      if (executionState && executionState.finalized === false) {
-        return { caseDir: currentCaseDir, executionId, execDir };
+    if (!fs.statSync(currentCaseDir).isDirectory()) continue;
+    for (const runtime of caseRuntimeDirs(currentCaseDir)) {
+      const execRoot = path.join(runtime.runtimeDir, 'executions');
+      if (!fs.existsSync(execRoot)) continue;
+      for (const executionId of fs.readdirSync(execRoot).sort()) {
+        const execDir = path.join(execRoot, executionId);
+        if (!fs.statSync(execDir).isDirectory()) continue;
+        const executionState = readExecutionState(execDir);
+        if (executionState && executionState.finalized === false) {
+          return { caseDir: currentCaseDir, platform: runtime.platform, executionId, execDir };
+        }
       }
     }
   }
   return null;
+}
+
+function caseRuntimeDirs(caseDir) {
+  const items = [{ platform: '', runtimeDir: caseDir }];
+  const platformsDir = path.join(caseDir, 'platforms');
+  if (fs.existsSync(platformsDir)) {
+    for (const name of fs.readdirSync(platformsDir).sort()) {
+      const platform = normalizePlatform(name);
+      const runtimeDir = path.join(platformsDir, name);
+      if (platform && fs.statSync(runtimeDir).isDirectory()) items.push({ platform, runtimeDir });
+    }
+  }
+  return items;
 }
 
 const args = process.argv.slice(2);
@@ -592,12 +674,14 @@ let command = null;
 for (let i = 1; i < args.length; i++) {
   switch (args[i]) {
     case '--start': command = 'start'; break;
+    case '--platform': options.platform = normalizePlatform(args[++i]); if (!options.platform) usage(); break;
     case '--check-budget': command = 'checkBudget'; break;
     case '--event-type': options.eventType = args[++i]; break;
     case '--action': options.action = args[++i]; break;
     case '--step-id': options.stepId = args[++i]; break;
     case '--record-json': command = 'record'; options.recordJson = args[++i]; break;
     case '--finalize': command = 'finalize'; break;
+    case '--legacy-runtime': options.legacyRuntime = true; break;
     case '--execution-id': options.executionId = args[++i]; break;
     case '--status': options.status = args[++i]; if (!command) command = 'finalize'; break;
     case '--reason': options.reason = args[++i]; break;
@@ -609,23 +693,31 @@ for (let i = 1; i < args.length; i++) {
 }
 
 try {
+  if (!options.platform && !options.legacyRuntime) {
+    throw new Error('Missing --platform. 正式执行必须写入 cases/<case>/platforms/<platform>/；旧根运行态请显式传 --legacy-runtime。');
+  }
   if (command === 'start') {
+    const runtimeDir = caseRuntimeDir(caseDir, options.platform);
     const caseJson = readJson(path.join(caseDir, 'case.json'));
     if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
     validateGlobalRules(caseJson);
-    const state = readJson(path.join(caseDir, 'state.json'), null);
+    const state = readJson(path.join(runtimeDir, 'state.json'), null);
     const missingEnv = requiredEnvironmentFields(state).filter((field) => !state?.environment?.[field]);
     if (!state?.environmentConfirmedAt || missingEnv.length) {
       throw new Error(`Environment is not confirmed. Run update-env.js first. Missing: ${missingEnv.join(', ') || 'environmentConfirmedAt'}`);
+    }
+    const missingDependencies = missingEnvironmentDependencies(state, options.platform);
+    if (missingDependencies.length) {
+      throw new Error(`Environment dependencies are not prepared. Run scripts/prepare-env.sh --case-dir <case-dir> --platform ${options.platform} before --start. Missing: ${missingDependencies.join(', ')}`);
     }
     const active = findUnfinalizedExecution(caseDir);
     if (active) {
       throw new Error(`Unfinalized execution exists: ${active.executionId} in ${active.caseDir}. Finalize it before starting another execution.`);
     }
-    if (options.executionId && executionExists(caseDir, options.executionId)) {
+    if (options.executionId && executionExists(runtimeDir, options.executionId)) {
       throw new Error(`Execution already exists: ${options.executionId}`);
     }
-    const { executionId, execDir } = createExecution(caseDir, options.executionId || allocateExecutionId(caseDir));
+    const { executionId, execDir } = createExecution(runtimeDir, options.executionId || allocateExecutionId(runtimeDir));
     writeExecutionState(execDir, {
       schemaVersion: 1,
       executionId,
@@ -637,15 +729,17 @@ try {
       time: nowIso(),
       type: 'executionStart',
       executionId,
+      platform: options.platform || state.environment?.platform || null,
       caseKey: caseJson.identity.caseKey,
       sourceSha1: caseJson.identity.sourceSha1,
       caseContractSha: caseContractSha(caseJson),
     });
     console.log(JSON.stringify({ executionId, execDir, timeline: path.join(execDir, 'timeline.jsonl') }, null, 2));
   } else if (command === 'checkBudget') {
-    const executionId = options.executionId || latestExecutionId(caseDir);
+    const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+    const executionId = options.executionId || latestExecutionId(runtimeDir);
     if (!executionId) throw new Error('No execution exists. Run --start first or pass --execution-id.');
-    const { execDir } = createExecution(caseDir, executionId);
+    const { execDir } = createExecution(runtimeDir, executionId);
     const executionState = readExecutionState(execDir);
     if (!executionState) throw new Error(`Execution was not started: ${executionId}`);
     if (executionState?.finalized) throw new Error(`Execution already finalized: ${executionId}`);
@@ -660,6 +754,10 @@ try {
     });
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
+    const flowScanReady = flowScanActionReadiness(events, options.action, options.stepId);
+    if (!flowScanReady.ok) {
+      throw new Error(`${flowScanReady.failureCode}: ${flowScanReady.reason}`);
+    }
     const violation = budgetViolation(events, event, executionState?.budget || DEFAULT_BUDGET, executionState?.startedAt);
     if (violation) {
       const budgetEvent = {
@@ -671,6 +769,7 @@ try {
       };
       appendJsonl(timelinePath, budgetEvent);
       const finalized = finalize(caseDir, {
+        platform: options.platform,
         executionId,
         status: 'BLOCKED',
         failureCode: violation.failureCode,
@@ -682,9 +781,10 @@ try {
     }
     console.log(JSON.stringify({ executionId, budgetOk: true, eventType: options.eventType }, null, 2));
   } else if (command === 'record') {
-    const executionId = options.executionId || latestExecutionId(caseDir);
+    const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+    const executionId = options.executionId || latestExecutionId(runtimeDir);
     if (!executionId) throw new Error('No execution exists. Run --start first or pass --execution-id.');
-    const { execDir } = createExecution(caseDir, executionId);
+    const { execDir } = createExecution(runtimeDir, executionId);
     const executionState = readExecutionState(execDir);
     if (!executionState) throw new Error(`Execution was not started: ${executionId}`);
     if (executionState?.finalized) throw new Error(`Execution already finalized: ${executionId}`);
@@ -707,6 +807,7 @@ try {
       };
       appendJsonl(timelinePath, budgetEvent);
       const finalized = finalize(caseDir, {
+        platform: options.platform,
         executionId,
         status: 'BLOCKED',
         failureCode: violation.failureCode,

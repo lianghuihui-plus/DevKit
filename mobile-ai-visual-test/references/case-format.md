@@ -17,6 +17,8 @@
 3. 预期看到昵称「测试用户」。
 ```
 
+`前置条件` 章节名仍是固定入口；章节内容可以使用 `-`、`*`、`1.`、`1)`、`1、`、`（1）`、中文序号或普通非空行，解析时会统一去掉列表序号并保留正文。
+
 步骤可以是操作，也可以是断言。断言常见关键词包括：`预期`、`应该`、`看到`、`显示`、`不存在`、`进入`、`确认`。
 
 ## case.json
@@ -48,7 +50,7 @@
 用例目录同步体现编号：
 
 ```text
-ai-visual-test/cases/C001__登录成功__ck-xxxxxxxxxxxx/
+cases/C001__登录成功__ck-xxxxxxxxxxxx/
 ```
 
 定位约定：
@@ -57,17 +59,22 @@ ai-visual-test/cases/C001__登录成功__ck-xxxxxxxxxxxx/
 - `caseKey` 仍是内部稳定键，用于识别同一个导入来源。
 - 标题可以用于模糊定位，但命中多个 case 时必须让用户改用 `caseNo`。
 
-相关脚本：
+正式执行入口：
 
 ```bash
 scripts/resolve-execution-targets.js C001 --cwd <workspace-cwd>
+```
+
+内部维护脚本：
+
+```bash
 scripts/assign-case-nos.js
 scripts/resolve-case-ref.js C001
 scripts/resolve-case-ref.js ck-xxxxxxxxxxxx
 scripts/resolve-case-ref.js "登录成功"
 ```
 
-正式执行入口优先使用 `resolve-execution-targets.js`；`resolve-case-ref.js` 只负责定位单个已有用例。
+正式执行入口使用 `resolve-execution-targets.js`；`assign-case-nos.js` 和 `resolve-case-ref.js` 只用于内部维护、迁移或人工排障。
 
 ## globalRules
 
@@ -134,15 +141,15 @@ scripts/resolve-case-ref.js "登录成功"
 2. 重放 `notes.jsonl`；无法匹配的补充标记为 stale，不删除。
 3. 追加系统记录并刷新报告。
 
-刷新 `case.json` 时必须保留已有 `globalRules`，除非输入源显式提供新的规则定义；规则变化会影响 `caseContractSha`，旧执行结果不得继续作为当前结果展示。
+刷新 `case.json` 时必须保留已有 `globalRules`，除非输入源显式提供新的规则定义；规则变化和用户补充重放产生的步骤 `hints` 变化都会影响 `caseContractSha`，旧执行结果不得继续作为当前结果展示。
 
 ## 重复导入与执行
 
 - `caseKey` 来自外部导入路径，用于定位同一个用例空间。
 - 外部文件移动、删除或修改，不影响已有用例空间；默认执行依据是 `source.md`。
 - 重复执行同一用例时读取最新 `case.json`、`notes.jsonl`、已确认环境和当前 `source.md` 版本，从第 1 步完整重跑。
-- 新执行写入新的 `executions/<executionId>/`，并记录当前 `sourceSha1`。
-- 新执行写入新的 `executions/<executionId>/`，并记录当前 `caseContractSha`。
+- 新执行写入当前平台的 `platforms/<platform>/executions/<executionId>/`，并记录当前 `sourceSha1`。
+- 新执行写入当前平台的 `platforms/<platform>/executions/<executionId>/`，并记录当前 `caseContractSha`。
 - 只有显式 `--refresh-from-input` 才用外部 Markdown 覆盖 `source.md`。
 
 ## source.md 变更

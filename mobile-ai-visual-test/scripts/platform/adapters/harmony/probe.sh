@@ -9,10 +9,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+atoms_dir="$script_dir/atoms"
 hdc_prefix=(hdc)
 if [[ -n "$device" ]]; then
   hdc_prefix=(hdc -t "$device")
 fi
+
+tmp_dir="${TMPDIR:-/tmp}/mavt-harmony-probe-$$"
+mkdir -p "$tmp_dir"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
 
 run_probe_optional() {
   local timeout_seconds="$1"
@@ -37,11 +46,13 @@ if [[ -n "$device" || "$(printf '%s\n' "$targets" | sed '/^\s*$/d' | wc -l | tr 
     hdc_prefix=(hdc -t "$device")
   fi
   uitest_version="$("${hdc_prefix[@]}" shell uitest --version 2>/dev/null || true)"
-  run_probe_optional 8 "${hdc_prefix[@]}" shell uitest screenCap -p /data/local/tmp/mavt-probe.png && screen_cap="true" || true
-  run_probe_optional 8 "${hdc_prefix[@]}" shell uitest dumpLayout -p /data/local/tmp/mavt-probe.json -m true && dump_layout="true" || true
-  run_probe_optional 5 "${hdc_prefix[@]}" shell aa dump -l && aa_dump="true" || true
-  run_probe_optional 5 "${hdc_prefix[@]}" shell hidumper -s WindowManagerService -a "-a" && window_dump="true" || true
-  run_probe_optional 3 "${hdc_prefix[@]}" shell hilog --help && hilog="true" || true
+  run_probe_optional 8 "$atoms_dir/screenshot.sh" --device "$device" --out "$tmp_dir/probe.png" --remote /data/local/tmp/mavt-probe.png && screen_cap="true" || true
+  run_probe_optional 8 "$atoms_dir/dump-tree.sh" --device "$device" --out "$tmp_dir/probe.json" --remote /data/local/tmp/mavt-probe.json --log "$tmp_dir/dump-tree.log" && dump_layout="true" || true
+  if run_probe_optional 5 "$atoms_dir/foreground.sh" --device "$device" --aa-out "$tmp_dir/aa-dump.txt" --window-out "$tmp_dir/window-dump.txt"; then
+    [[ -s "$tmp_dir/aa-dump.txt" ]] && aa_dump="true"
+    [[ -s "$tmp_dir/window-dump.txt" ]] && window_dump="true"
+  fi
+  run_probe_optional 5 "$atoms_dir/logs.sh" --device "$device" --out-dir "$tmp_dir/logs" --label probe && hilog="true" || true
 fi
 
 node -e '
@@ -58,7 +69,7 @@ const canUseUitest = hasTarget && !!uitestVersion;
 const canLaunchApp = hasTarget && aaDump;
 const actions = [];
 if (canLaunchApp) actions.push("launchApp");
-if (canUseUitest) actions.push("tap", "toggle", "inputText", "swipe", "back", "home");
+if (canUseUitest) actions.push("tap", "toggle", "longPress", "inputText", "swipe", "back", "home");
 if (hasTarget) actions.push("wait");
 const data = {
   schemaVersion: 1,

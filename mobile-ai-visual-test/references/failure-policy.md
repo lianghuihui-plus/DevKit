@@ -23,6 +23,7 @@
 - `ACTION_TARGET_NOT_FOUND`
 - `PAGE_LOAD_BLOCKED`
 - `FLOW_NOT_FOUND`
+- `FLOW_SCAN_REQUIRED`
 - `FLOW_STEP_UNMATCHED`
 - `FLOW_ACTION_FAILED`
 - `FLOW_UNSAFE`
@@ -44,9 +45,10 @@
 - 目标应用累计离开前台 2 次时停止。
 - 重新拉起应用导致业务上下文丢失时停止。
 - Flow 文件不存在、与当前页面明显不匹配、动作失败或涉及不安全业务操作时停止。
+- 非 `launchApp`、非 `wait` 的业务动作前必须已有当前步骤的 `flowScan` 事实；`flowScan` 必须由 `scripts/flow/record-scan.js ... --step-id <step-id>` 写入并包含 `source=list-flows`、`flowsRoot`、`scannedFlowIds`，否则顶层动作入口以 `FLOW_SCAN_REQUIRED` 拒绝且不会执行平台动作，并写入失败 `actionResult`、`result.json`、`metrics.json` 后 finalize。全局 `flowScan` 只用于建立候选库，不能替代步骤级扫描。
 - 判定 `PAGE_LOAD_BLOCKED`、`ACTION_TARGET_NOT_FOUND`、`APP_CONTEXT_LOST` 前，必须传 `--failed-step`，且该失败步骤已有对应 `flowScan` 事实；否则结果降级为 `UNKNOWN/FLOW_SCAN_MISSING`。
 - 如果失败步骤的 `flowScan.matchedFlowIds` 非空，必须对每个命中的 Flow 写入同 `stepId` 的终态 `flow` 事实：`COMPLETED`、`FAILED`、`SKIPPED` 或 `BLOCKED`；否则结果降级为 `UNKNOWN/FLOW_MATCH_UNRESOLVED`。
-- 坐标目标判定 `ACTION_TARGET_NOT_FOUND` 前，必须至少有一次带 `coordinateSource`、`coordinateEvidence` 的动作事实；若目标是 H5 自绘、图片按钮或 Canvas，还必须有 `targetBounds`。
+- 坐标目标判定 `ACTION_TARGET_NOT_FOUND` 前，必须至少有一次带 `coordinateSource`、`coordinateEvidence` 的动作事实；若目标是 H5 自绘、图片按钮、Canvas 或沿用 Flow 坐标，还必须有 `targetBounds`。正式 case execution 禁止使用 `coordinateSource=manual`。
 - 坐标动作命中错误区域或页面无变化时，不能重复相同 `x/y` 作为新的尝试；必须重新观察并更换坐标证据，否则只能判定 `UNKNOWN`。
 
 ## 执行预算

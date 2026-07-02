@@ -3,7 +3,10 @@
 
 const path = require('path');
 const {
+  caseRootFromCaseDir,
+  caseRuntimeDir,
   nowIso,
+  normalizePlatform,
   readJson,
   readJsonl,
   refreshIndexForCase,
@@ -40,7 +43,13 @@ for (let i = 1; i < args.length; i++) {
   }
 }
 
-const statePath = path.join(caseDir, 'state.json');
+const platform = normalizePlatform(env.platform);
+if (!platform) {
+  console.error('环境信息不完整，缺少或无效: platform');
+  process.exit(1);
+}
+const runtimeDir = caseRuntimeDir(caseDir, platform);
+const statePath = path.join(runtimeDir, 'state.json');
 const state = readJson(statePath, { schemaVersion: 1, executionCount: 0, statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 } });
 state.environment = { ...(state.environment || {}), ...env };
 const missing = ['platform', 'device', 'appId', 'entry'].filter((field) => !state.environment[field]);
@@ -50,10 +59,17 @@ if (missing.length) {
 }
 state.environmentConfirmedAt = nowIso();
 writeJson(statePath, state);
+writeJson(path.join(caseRootFromCaseDir(caseDir), 'platforms', `${platform}.json`), {
+  schemaVersion: 1,
+  platform,
+  environment: state.environment,
+  confirmedAt: state.environmentConfirmedAt,
+});
 
 const caseJson = readJson(path.join(caseDir, 'case.json'));
 const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
-const reports = writeCaseReports(caseDir, caseJson, state, notes);
+const reports = writeCaseReports(caseDir, caseJson, state, notes, null, { platform });
+writeCaseReports(caseDir, caseJson, {}, notes);
 const indexHtml = refreshIndexForCase(caseDir);
 
 console.log(JSON.stringify({ environment: state.environment, ...reports, indexHtml }, null, 2));

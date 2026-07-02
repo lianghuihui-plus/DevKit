@@ -9,12 +9,12 @@ const {
 } = require('../common');
 
 function usage() {
-  console.error('Usage: render-index.js [ai-visual-test-root|workspace-cwd]');
+  console.error('Usage: render-index.js [workspace-cwd]');
   process.exit(2);
 }
 
 const input = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd();
-const rootDir = path.basename(input) === 'ai-visual-test' ? input : workspaceRoot(input);
+const rootDir = workspaceRoot(input);
 const casesRoot = path.join(rootDir, 'cases');
 
 if (!fs.existsSync(casesRoot)) {

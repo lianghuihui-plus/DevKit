@@ -5,8 +5,10 @@ const fs = require('fs');
 const path = require('path');
 const {
   casesRoot,
+  hasWorkspaceShape,
   normalizeCaseNo,
   readCaseEntries,
+  workspaceRoot,
 } = require('../common');
 
 function usage() {
@@ -31,7 +33,7 @@ function collectMarkdown(input, out) {
 
 function walk(dir, out) {
   const base = path.basename(dir);
-  if (base.startsWith('.') || base === 'ai-visual-test') return;
+  if (base.startsWith('.') || fs.existsSync(path.join(dir, 'workspace.json')) || hasWorkspaceShape(dir)) return;
   for (const name of fs.readdirSync(dir)) {
     const file = path.join(dir, name);
     const stat = fs.statSync(file);
@@ -92,6 +94,7 @@ for (let i = 0; i < args.length; i++) {
 if (!inputs.length) usage();
 
 try {
+  workspaceRoot(cwd);
   const markdownFiles = [];
   const existingCases = [];
   const seenCases = new Set();

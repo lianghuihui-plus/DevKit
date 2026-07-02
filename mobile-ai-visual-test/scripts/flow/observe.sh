@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+source "$script_dir/../lib/action-common.sh"
 flow_dir=""
 recording_id=""
 platform=""
@@ -30,36 +31,16 @@ recording_dir="$flow_dir/recordings/$recording_id"
 mkdir -p "$recording_dir/screenshots" "$recording_dir/layouts" "$recording_dir/logs"
 
 if [[ $has_platform -eq 0 ]]; then
-  platform="$(node -e '
-const fs = require("fs");
-const path = require("path");
-const statePath = path.join(process.argv[1], "state.json");
-const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
-process.stdout.write(state.environment?.platform || "harmony");
-' "$flow_dir")"
+  platform="$(mavt_flow_platform "$flow_dir")"
+fi
+if [[ -z "$platform" ]]; then
+  echo "Flow 录制缺少平台。请在 start-recording.js 传 --platform，或本次 observe 显式传 --platform。" >&2
+  exit 2
 fi
 env_args=()
 while IFS= read -r item; do
   [[ -n "$item" ]] && env_args+=("$item")
-done < <(node -e '
-const fs = require("fs");
-const path = require("path");
-const flowDir = process.argv[1];
-const has = {
-  device: process.argv[2] === "1",
-  app: process.argv[3] === "1"
-};
-const statePath = path.join(flowDir, "state.json");
-const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
-const env = state.environment || {};
-const out = [];
-function add(flag, value) {
-  if (value !== undefined && value !== null && String(value) !== "") out.push(flag, String(value));
-}
-if (!has.device) add("--device", env.device);
-if (!has.app) add("--app", env.appId || env.bundleName);
-process.stdout.write(out.length ? `${out.join("\n")}\n` : "");
-' "$flow_dir" "$has_device" "$has_app")
+done < <(mavt_flow_env_args "$flow_dir" "$has_device" "$has_app" "1")
 if [[ ${#env_args[@]} -gt 0 ]]; then
   merged_args=("${env_args[@]}")
   if [[ ${#args[@]} -gt 0 ]]; then

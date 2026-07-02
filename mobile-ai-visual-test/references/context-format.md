@@ -6,19 +6,38 @@
 
 ## index.html
 
-`ai-visual-test/index.html` 是外层总览，展示全部用例状态并链接到各自 `CONTEXT.html`。
+`index.html` 是工作空间外层总览，展示全部用例的多平台聚合摘要并链接到 case 详情和各平台的 `CONTEXT.html`。
 
-必须包含：
+报告体系必须覆盖：
 
 - 用例短编号 `caseNo`。
 - 当前状态和最近一次结论。
 - 源文件和源文件变更摘要。
 - 已确认环境。
+- 平台前置依赖状态。
 - 步骤进度。
 - 失败现场和证据路径。
 - 执行统计摘要。
 - 用户补充和失效补充。
 - 用户下次执行前需要调整的内容。
+
+其中 `index.html` 只承载工作空间总览、平台维度统计、case 卡片摘要和报告入口；完整步骤复盘、失败现场、截图证据和用户下次调整内容放在 `cases/<case>/CONTEXT.html` 或 `cases/<case>/platforms/<platform>/CONTEXT.html`。
+
+多平台 case 的总览卡片状态是聚合状态，不是 case 的真实单一结果；聚合规则按 `FAIL > BLOCKED > UNKNOWN > NOT_RUN > PASS`，只有所有已展示平台都通过时才显示通过。具体结论以平台标签和对应 `platforms/<platform>/CONTEXT.html` 为准。
+
+当最新执行结果与当前 `sourceSha1` 或 `caseContractSha` 不匹配时，报告隐藏旧结果并显示“源用例或执行契约变更”；如果已经基于当前 source 和 contract 重新执行出新结果，不再显示变更警告。`caseContractSha` 至少覆盖 `sourceSha1`、`globalRules` 和用户补充重放产生的步骤 hints。
+
+HTML 跳转链路：
+
+```text
+index.html
+  -> cases/<case>/CONTEXT.html
+       -> platforms/<platform>/CONTEXT.html
+```
+
+- `index.html`：展示工作空间总览、用例维度统计、平台维度统计、每个 case 的多端结果摘要；case 标题和“查看多端详情”进入 `cases/<case>/CONTEXT.html`，平台 chip 的“查看报告”直达对应单平台报告。
+- `cases/<case>/CONTEXT.html`：展示单 case 的平台执行概览、共享前置条件、共享步骤、全局规则和用户补充；平台展示顺序统一为 Android、iOS、Harmony；平台概览固定按一个平台一行展示，适配三端；平台卡片只保留状态、中文执行结果、摘要、步骤、耗时、开始/结束时间和报告入口，不展示完整截图证据和完整 timeline；全局规则和用户补充上下独立展示，不并排。
+- `cases/<case>/platforms/<platform>/CONTEXT.html`：展示单平台最新执行详情，包括执行结论、失败证据、步骤复盘、Flow、规则、环境和调试信息；截图证据优先按 observation 的 `stepId` 融入对应步骤卡，缺少 `stepId` 且 label 中无法识别 `step-xxx` 时展示为未关联观察；截图在报告页内用 lightbox 预览，控件树和日志只提供原文件链接，不在 HTML 内嵌预览。
 
 ## result.json
 
@@ -71,7 +90,7 @@
 
 ## state.json
 
-`state.json` 保存最新状态和轻量累计统计。它不是续跑指针。
+`state.json` 保存最新状态、平台前置依赖和轻量累计统计。它不是续跑指针。正式多平台执行时，状态写入 `cases/<case>/platforms/<platform>/state.json`；根目录 `state.json` 只用于兼容旧产物。
 
 ## timeline.jsonl
 
@@ -92,16 +111,28 @@
 
 `execution.json` 记录预算、开始时间和 finalized 状态；finalized 后不得追加 timeline。
 
-事件写入入口：
+正式多平台执行的事件写入入口：
 
 ```bash
-scripts/run-case.js <case-dir> --start
-scripts/run-case.js <case-dir> --record-json '{"type":"observation", "...":"..."}'
-scripts/run-case.js <case-dir> --finalize --status FAIL --reason "..."
+scripts/run-case.js <case-dir> --platform <platform> --start
+scripts/run-case.js <case-dir> --platform <platform> --record-json '{"type":"observation", "...":"..."}'
+scripts/run-case.js <case-dir> --platform <platform> --finalize --status FAIL --reason "..."
 ```
 
-兼容旧收尾方式：
+正式平台执行的 `--finalize` 只能收尾已由 `--start` 创建的 execution；不能用 `--finalize` 直接隐式创建新 execution。无平台根运行态的历史兼容收尾必须显式使用 `--legacy-runtime`。
+
+## 历史兼容
+
+无平台根运行态只用于兼容旧产物，新执行必须显式传 `--platform`，正式执行不得使用 `--legacy-runtime`。需要人工迁移或收尾历史根运行态时才显式传 `--legacy-runtime`：
 
 ```bash
-scripts/run-case.js <case-dir> --status FAIL --reason "..."
+scripts/run-case.js <case-dir> --legacy-runtime --start
+scripts/run-case.js <case-dir> --legacy-runtime --record-json '{"type":"observation", "...":"..."}'
+scripts/run-case.js <case-dir> --legacy-runtime --finalize --status FAIL --reason "..."
+```
+
+兼容旧收尾方式仅用于人工排障旧产物：
+
+```bash
+scripts/run-case.js <case-dir> --legacy-runtime --status FAIL --reason "..."
 ```

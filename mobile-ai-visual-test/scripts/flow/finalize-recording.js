@@ -42,6 +42,9 @@ const state = readJson(statePath, {});
 const flowId = state.flowId || start.flowId;
 const name = state.name || start.name || flowId;
 const intent = state.intent || start.intent || [];
+const recordingPlatform = state.recordingPlatform || start.recordingPlatform || state.environment?.platform || '';
+const flowScope = state.flowScope || start.flowScope || 'universal';
+const platform = flowScope === 'platform' ? (state.platform || start.platform || recordingPlatform) : undefined;
 const steps = buildSteps(events, recordingId);
 validateReadyFlow(status, steps);
 const endedAt = nowIso();
@@ -50,6 +53,9 @@ const flow = {
   id: flowId,
   name,
   intent,
+  recordingPlatform,
+  flowScope,
+  platform,
   status,
   latestRecordingId: recordingId,
   updatedAt: endedAt,
@@ -68,6 +74,9 @@ writeJson(statePath, {
   flowId,
   name,
   intent,
+  recordingPlatform,
+  flowScope,
+  platform,
   latestRecordingId: recordingId,
   latestStatus: status,
   updatedAt: endedAt,
@@ -110,6 +119,7 @@ function buildSteps(events, recordingId) {
         fromY: actionEvent.action?.fromY || actionResult.fromY,
         toX: actionEvent.action?.toX || actionResult.toX,
         toY: actionEvent.action?.toY || actionResult.toY,
+        durationMs: actionEvent.action?.durationMs || actionResult.durationMs,
         target: actionEvent.action?.target,
         coordinateSource: actionEvent.action?.coordinateSource || actionResult.coordinateSource,
         targetBounds: actionEvent.action?.targetBounds || actionResult.targetBounds,
