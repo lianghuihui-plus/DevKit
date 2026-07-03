@@ -4,9 +4,10 @@
 
 - 生成或修复 ArkTS UI 测试代码时读取。
 - 处理人工步骤覆盖、selector、等待、输入、断言、异常暴露、少封装和官方 API 写法时读取。
+- 处理平台无关的动作后等待、页面稳定和断言前目标状态时，先读取 `ui-automation-stability.md`。
 - 构建、安装、报告字段和失败码分类问题优先读取对应专项文档。
 
-这些规则用于生成或修复 HarmonyOS ArkTS UI 测试代码。
+这些规则用于生成或修复 HarmonyOS ArkTS UI 测试代码。通用 UI 自动化稳定性原则由 `ui-automation-stability.md` 承载，本文件只说明 HarmonyOS ArkTS/UiTest 的具体写法映射。
 
 ## 测试放置与模块归属
 
@@ -109,6 +110,8 @@ await driver.assertComponentExist(ON.id('home_page_root'));
 
 ## 等待目标状态
 
+先遵循 `ui-automation-stability.md` 的平台无关规则：任何会改变 UI 状态的动作后，都要等待下一步所需的目标状态稳定，再继续操作或断言。
+
 `waitForIdle()` 只能说明 UI 线程进入空闲，不代表网络请求、登录、提交、页面跳转或数据加载已经完成。登录、提交、跳转、加载等异步流程应等待人工用例要求的目标状态。
 
 优先等待：
@@ -118,6 +121,8 @@ await driver.assertComponentExist(ON.id('home_page_root'));
 - 人工预期中的稳定文本、状态或可交互控件出现。
 
 如果存在多个合法成功页面，等待共同稳定不变量，例如“离开登录页”或“出现任一合法成功目标页”，不要只等待 `waitForIdle()` 后立即断言。
+
+不要在点击、输入、提交、跳转、返回、弹窗处理或滑动加载后下一句马上断言业务结果。应先等待旧状态消失、新状态出现、loading/遮罩消失、目标控件可交互或人工用例允许的终态出现。
 
 示例：
 
@@ -149,7 +154,7 @@ await driver.inputText(accountPoint, 'test_account');
 
 ## 前置条件不满足不要改断言掩盖
 
-只有人工用例明确声明了阻塞型前置条件，且该条件不满足会导致步骤无法开始时，才在 execution plan/report 中记录 `PRECONDITION_UNSATISFIED` 或 `PRECONDITION_UNKNOWN`。
+只有人工用例明确声明了阻塞型前置条件，且该条件不满足会导致步骤无法开始时，才在 `state.json`、`case.md` 和本次 run 中记录 `PRECONDITION_UNSATISFIED` 或 `PRECONDITION_UNKNOWN`。
 
 不要因为测试步骤里的目标控件未出现，就反推出新的阻塞型前置条件。步骤执行不到、控件缺失或断言失败，应按真实运行结果记录，例如 `SELECTOR_NOT_FOUND`、`ASSERTION_FAILED` 或 `NAVIGATION_AMBIGUOUS`。
 

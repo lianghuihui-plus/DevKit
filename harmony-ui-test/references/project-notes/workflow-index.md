@@ -6,13 +6,14 @@
 
 读取：
 
-- `execution-plan.md`：生成 plan、caseId、人工用例到测试方法映射。
+- `execution-plan.md`：生成用例目录、caseId、state.json、人工用例到测试方法映射。
 - `test-code-patterns.md`：测试代码写法、步骤覆盖、少封装、等待和输入规则。
+- `ui-automation-stability.md`：平台无关 UI 稳定性、动作后等待和断言前目标状态规则。
 - `workspace-and-config.md`：工作目录和配置文件。
+- `report-format.md`：生成或更新 `case.md`、本次 run 和 index。
 
 不读取：
 
-- `report-format.md`，除非用户同时要求执行。
 - `build-and-run.md`，除非需要确认模块或 ohosTest 结构。
 
 ## 执行测试
@@ -20,32 +21,33 @@
 读取：
 
 - `workspace-and-config.md`：工作目录、环境默认值、修复预算配置。
-- `execution-plan.md`：读取或生成 plan、前置条件 gate、目标映射。
+- `execution-plan.md`：读取或生成 state.json、前置条件 gate、目标映射。
 - `build-and-run.md`：环境探测、构建、安装、`aa test`、目标确认和失败后 hdc 步骤复现。
-- `report-format.md`：执行结果报告。
+- `report-format.md`：case.md、state.json.latestResult、run 快照和 index。
 - `failure-policy.md`：失败码、是否修复、是否停止整批。
 
 ## 修复失败用例
 
 读取：
 
-- `report-format.md`：从 report 恢复 `planFile` 和当前结果。
-- `execution-plan.md`：从 plan 恢复人工用例、测试文件、测试方法和前置条件。
+- `report-format.md`：从 case、run、index 或旧 report 兼容恢复当前结果。
+- `execution-plan.md`：从 state.json 恢复人工用例、测试文件、测试方法和前置条件。
 - `failure-policy.md`：判断失败是否可修、预算是否可用。
 - `test-code-patterns.md`：修复 selector、等待、断言、输入和异常暴露。
+- `ui-automation-stability.md`：判断是否因操作过快、页面未稳定、异步流程未完成导致失败。
 - `build-and-run.md`：运行期失败需要按人工步骤 hdc 复现定位时读取。
 
-如果只能从 `summary.json` 恢复候选，且存在多个可修失败用例，必须先让用户选择目标 case；不要自动挑选。summary 是批量索引缓存，缺失或过期时从 case reports 重建。
+如果从 `index.json` 或某个 run 恢复出多个可修失败用例，必须先让用户选择目标 case；不要自动挑选。`index.json` 缺失或过期时从 `cases/*/state.json` 重建。
 
 ## 重跑 BLOCKED 用例
 
 读取：
 
 - `execution-plan.md`：blocked 重跑条件、运行上下文覆盖规则。
-- `report-format.md`：读取 case report 或 summary 索引。
+- `report-format.md`：读取 case 状态、run 快照或 index。
 - `failure-policy.md`：确认 blocked 失败码是否应该重跑而不是修代码。
 
-如果 `summary.json` 中有多个 blocked 用例，先按本次运行上下文筛选；筛选后仍有多个且目标不明确时，必须让用户选择。summary 是批量索引缓存，不能替代 case report 和 case plan。
+如果 `index.json` 或 run 中有多个 blocked 用例，先按本次运行上下文筛选；筛选后仍有多个且目标不明确时，必须让用户选择。index 和 run 不能替代各 case 的 `state.json`。
 
 ## 构建、安装或 aa test 问题
 
@@ -60,12 +62,13 @@
 读取：
 
 - `test-code-patterns.md`：官方风格、少 helper、少 `try-catch`、`waitForComponent` 非空、目标状态等待、文本输入策略。
+- `ui-automation-stability.md`：平台无关 UI 稳定性、动作后等待和断言前目标状态规则。
 - `references/official/`：只在需要 API 细节时按关键词搜索相关片段。
 
-## 报告和产物字段
+## 结果和产物字段
 
 读取：
 
-- `report-format.md`：report JSON/Markdown 字段、diagnostics、覆盖策略。
-- `execution-plan.md`：plan 与 report 的引用关系。
-- `workspace-and-config.md`：工作目录、logs、reports、plans。
+- `report-format.md`：case.md、state.json.latestResult、run、index 和 diagnostics 规则。
+- `execution-plan.md`：state.json 与测试方法映射、前置条件和重跑规则。
+- `workspace-and-config.md`：工作目录、cases、runs、logs 和 index。

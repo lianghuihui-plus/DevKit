@@ -2,8 +2,8 @@
 
 ## 何时读取
 
-- 执行测试前需要探测 DevEco、Node、hvigor、hdc、product、module、bundleName 或 signed HAP 时读取。
-- 构建、安装、`aa test`、目标产物确认、hdc 权限或失败后按人工步骤复现定位相关问题时读取。
+- 执行测试前需要探测 DevEco、Node、hvigor、devecocli、hdc、product、module、bundleName 或 signed HAP 时读取。
+- 构建、安装、`aa test`、目标产物确认、设备权限、日志或失败后按人工步骤复现定位相关问题时读取。
 - 只生成测试代码且不涉及构建执行时，通常不需要读取本文件。
 
 构建、安装和执行优先使用 skill 内固定脚本。agent 通常在被测 HarmonyOS 项目根目录工作，因此必须先解析本 skill 根目录，再用绝对路径调用脚本；不要假设被测项目根目录存在 `scripts/`。
@@ -16,7 +16,7 @@
 <skillRoot>/scripts/stop-hvigor-daemon.sh
 ```
 
-脚本负责执行固定命令结构，agent 负责传入已确认的项目参数。脚本会打印 `COMMAND:` 行，plan/report 的 `commands.<stage>` 必须同时记录脚本调用命令和脚本打印出的实际命令。若用户指定文档、项目内文档或 DevEco 构建日志给出了项目特定 task 或参数，优先通过脚本参数传入。
+脚本负责执行固定命令结构，agent 负责传入已确认的项目参数。脚本会打印 `COMMAND:` 行，`state.json.execution.commands.<stage>` 必须同时记录脚本调用命令和脚本打印出的实际命令；`case.md` 和本次 run 展示关键摘要。若用户指定文档、项目内文档或 DevEco 构建日志给出了项目特定 task 或参数，优先通过脚本参数传入。
 
 ## 需要先确认的值
 
@@ -29,8 +29,9 @@
 - `moduleName`：目标模块名，例如 `LunarLogin`。
 - `bundleName`：应用包名。
 - `testModuleName`：测试模块名，通常类似 `<ModuleName>_test`。
+- `devecocli`：优先用于设备列表、设备详情、本地文档和日志采集。
 - `describeName` 和 `itName`：Hypium 测试套件名和用例名。
-- `hdc`：能够看到目标设备的 hdc 可执行文件。
+- `hdc`：能够看到目标设备的 hdc 可执行文件，主要用于安装 HAP、`aa test`、UI dump、截图和其他 devecocli 暂不覆盖的底层能力。
 
 ## 项目探测阶段
 
@@ -53,7 +54,7 @@ agent 不得为了构建或执行测试而持久修改用户机器环境。禁�
 DEVECO_SDK_HOME=<devecoSdkHome> node <hvigorw.js> ...
 ```
 
-不要使用 `export DEVECO_SDK_HOME=...` 后再执行多条命令，也不要把环境修复写回用户 shell 配置。实际采用的环境值只记录到 plan/report。
+不要使用 `export DEVECO_SDK_HOME=...` 后再执行多条命令，也不要把环境修复写回用户 shell 配置。实际采用的环境值只记录到 `state.json`、`case.md` 或本次 run。
 
 默认不要使用 hvigor daemon。agent 自动构建时优先使用非 daemon 命令，避免 daemon 缓存错误 SDK 或环境后影响 DevEco Studio。禁止主动添加 `--daemon`；如果项目 hvigor 支持显式禁用 daemon 的参数，应优先使用。若怀疑 daemon 已缓存错误环境，先停止 daemon 或提示用户重启 DevEco Studio，再继续。
 
@@ -78,6 +79,7 @@ DEVECO_SDK_HOME=<devecoSdkHome> node <hvigorw.js> ...
 - `DEVECO_SDK_HOME`：优先使用 `config.environment.devecoSdkHome`；如果 hvigor 报 `Invalid value of 'DEVECO_SDK_HOME'`，再定位 DevEco SDK，并仅对下一次 hvigor 命令临时传入该环境变量，或让用户确认环境。
 - `node`：优先使用 `config.environment.nodePath`、DevEco Studio 内置 Node 或项目文档指定 Node。
 - `hvigorw.js`：优先使用 `config.environment.hvigorwPath`，其次为项目本地 hvigor wrapper、DevEco Studio 内置 `tools/hvigor/bin/hvigorw.js`、用户指定路径。
+- `devecocli`：如果本机可用，优先用于设备探测和日志采集；如果不可用，再回退到 hdc 或项目文档中的等价命令。
 - 可用 task：不要假设 `genOnDeviceTestHap` 一定存在，也不要只因 `hvigor tasks` 未列出它就判定不可用。task 列表、`taskTree`、DevEco 构建日志、模板命令试跑结果和实际构建反馈都可作为证据；如果 task 列表不完整，应优先用模板构建命令或项目日志中的等价命令验证，再决定是否记录 `BUILD_TASK_UNAVAILABLE`。
 - `product`：从用户指定、项目 build-profile、DevEco 日志或构建命令中确认。
 - `moduleName`：从人工用例目标模块、路由归属、源码目录和 build-profile 中确认。
@@ -85,7 +87,7 @@ DEVECO_SDK_HOME=<devecoSdkHome> node <hvigorw.js> ...
 - `bundleName`：配置文件中的 bundleName 只作候选，最终以安装包/设备 `bm dump`/构建产物元数据为准。
 - HAP 产物规则：构建前确认将优先选择 `*-signed.hap`；构建后再从实际输出中选择 signed app/test HAP。非 signed HAP 可能导致 `install sign info inconsistent`。
 
-探测结果写入 execution plan 的 `execution.probe`，`hdc` 实际路径写入 `execution.hdcPath`，并复制到 report。构建后产物选择也要回写到同一个 `execution.probe`。如果使用了配置中的环境路径，应在对应字段记录实际采用的路径；如果配置路径不可用，应在日志或 report 中记录 fallback 原因。
+探测结果写入 `state.json.execution.probe`，`hdc` 实际路径写入 `state.json.execution.hdcPath`。构建后产物选择也要回写到同一个 `execution.probe`。如果使用了配置中的环境路径，应在对应字段记录实际采用的路径；如果配置路径不可用，应在 `case.md`、run 或日志中记录 fallback 原因。
 
 ## 目标产物确认闸门
 
@@ -124,40 +126,43 @@ install test command:
 run test command:
 ```
 
-如果最终执行摘要与构建前确认的目标一致，将 `targetConfirmation.preInstall.status` 记为 `verified`，并继续安装或执行，不再二次人工确认。报告中仍必须记录该摘要，便于追溯。
+如果最终执行摘要与构建前确认的目标一致，将 `targetConfirmation.preInstall.status` 记为 `verified`，并继续安装或执行，不再二次人工确认。`case.md` 和本次 run 中仍必须记录该摘要，便于追溯。
+
+首次启动 warm-up 是安装 app HAP 后的执行准备动作，不属于目标产物确认摘要的必填命令；是否触发和执行证据写入 `startupWarmup`。
 
 如果构建后实际选择的 `*-signed.hap`、最终 `bundleName`、`testModuleName` 或设备与构建前确认目标不一致，或 agent 无法自动确认一致性，必须再次展示差异并等待确认。用户确认后继续安装或执行，并将 `targetConfirmation.preInstall.status` 记为 `confirmed`。用户未确认或拒绝确认时，不安装、不执行，记录 `BLOCKED`；实际产物与已确认摘要不一致或无法自动确认一致性时，failure code 使用 `TARGET_CONFIRMATION_STALE`；用户明确拒绝继续时使用 `TARGET_CONFIRMATION_BLOCKED`。
 
 批量执行时按相同 `product/moduleName/bundleName/testModuleName/device` 分组展示构建前确认摘要；同一组用户确认一次即可。构建后逐组自动校验，校验一致的组直接安装执行；组内任一实际产物与确认摘要不一致，或无法自动确认一致性时，该组需要重新确认。
 
-## hdc 权限与沙箱处理
+## 设备权限与沙箱处理
 
-`hdc` 经常受 agent 沙箱、系统权限、签名、USB/模拟器连接状态影响。设备检查失败时，不要继续猜测或反复执行。
+设备连接经常受 agent 沙箱、系统权限、签名、USB/模拟器连接状态影响。设备检查失败时，不要继续猜测或反复执行。
 
 推荐处理顺序：
 
-1. 优先使用用户指令、工作目录 `config.environment.hdcPath` 或项目文档指定的 hdc 绝对路径。
-2. 如果未指定，尝试项目/DevEco 常见 hdc 路径或 PATH 中的 `hdc`。
-3. 执行 `<hdc> list targets`，其中 `<hdc>` 是最终确认的 hdc 绝对路径，或 PATH 解析出的 hdc 命令。
-4. 如果出现 `Connect server failed`、权限、沙箱、server connect、USB 访问、签名或系统拦截类错误，立即使用当前 agent 平台的提权/沙箱外执行机制重跑同一条 `<hdc> list targets`。
-5. 提权后如果能列出设备，后续 `hdc install` 和 `hdc shell aa test` 必须沿用同一个 hdc 路径和同一种提权/沙箱外执行方式。
-6. 如果当前 agent 平台不支持提权执行，请把完整命令交给用户在本机终端执行，并要求用户回贴输出。
-7. 用户确认其终端可执行时，记录 agent 环境受限，不要把它误判为设备真实不可用。
+1. 优先执行 `devecocli device list`。
+2. 如果有多个设备，执行 `devecocli device view -t <deviceNameOrSerial>` 确认目标设备。
+3. 如果 `devecocli` 不可用或输出不足，再使用用户指令、工作目录 `config.environment.hdcPath` 或项目文档指定的 hdc 绝对路径。
+4. 使用 hdc fallback 时，执行 `<hdc> list targets`，其中 `<hdc>` 是最终确认的 hdc 绝对路径，或 PATH 解析出的 hdc 命令。
+5. 如果出现 `Connect server failed`、权限、沙箱、server connect、USB 访问、签名或系统拦截类错误，立即使用当前 agent 平台的提权/沙箱外执行机制重跑同一条命令。
+6. 提权后如果能列出设备，后续安装、`aa test` 和 hdc 步骤复现必须沿用同一种提权/沙箱外执行方式。
+7. 如果当前 agent 平台不支持提权执行，请把完整命令交给用户在本机终端执行，并要求用户回贴输出。
+8. 用户确认其终端可执行时，记录 agent 环境受限，不要把它误判为设备真实不可用。
 
-如果无法在 agent 环境内完成设备检查，报告中记录：
+如果无法在 agent 环境内完成设备检查，写入 `state.json.latestResult`、`case.md` 和本次 run：
 
 ```json
 {
   "failure": {
     "code": "DEVICE_UNAVAILABLE",
     "stage": "device_check",
-    "summary": "agent 环境无法执行 <hdc> list targets",
+    "summary": "agent 环境无法执行 devecocli device list 或等价设备检查命令",
     "nextAction": "请求用户授权提权执行，或让用户在本机终端执行同一条命令并回贴输出"
   }
 }
 ```
 
-如果平台支持更具体的权限失败分类，也可以使用 `PERMISSION_DENIED`，但 summary 中必须保留原始错误摘要。
+如果平台支持更具体的权限失败分类，也可以使用 `PERMISSION_DENIED`，但 `latestResult.summary` 和 `case.md` 中必须保留原始错误摘要。
 
 ## 构建 debug app HAP
 
@@ -220,16 +225,23 @@ fallback 示例：
 ## 检查设备
 
 ```bash
+devecocli device list
+devecocli device view -t <deviceNameOrSerial>
+```
+
+如果需要回退到 hdc：
+
+```bash
 <hdc> list targets
 ```
 
-`<hdc>` 必须是已确认的 hdc 绝对路径，或 PATH 解析出的 hdc 命令；后续安装和执行必须沿用同一个 hdc。若 agent 环境无法访问该 hdc，但用户终端可以访问，优先请求提权执行或让用户执行同一命令并回贴输出；不要继续安装或运行测试。若仍无法继续，记录 `DEVICE_UNAVAILABLE` 并生成报告。
+`<hdc>` 必须是已确认的 hdc 绝对路径，或 PATH 解析出的 hdc 命令；后续安装、执行和步骤复现必须沿用同一个 hdc。若 agent 环境无法访问设备，但用户终端可以访问，优先请求提权执行或让用户执行同一命令并回贴输出；不要继续安装或运行测试。若仍无法继续，记录 `DEVICE_UNAVAILABLE`，并更新相关 `case.md`、`state.json` 和本次 run。
 
-如果普通执行返回 `Connect server failed`，但提权/沙箱外执行成功，这是 agent 沙箱限制，不是设备不可用；报告中应记录普通执行失败和提权执行成功的事实。
+如果普通执行返回 `Connect server failed`，但提权/沙箱外执行成功，这是 agent 沙箱限制，不是设备不可用；`case.md` 或 run 中应记录普通执行失败和提权执行成功的事实。
 
 ## 安装 HAP
 
-默认分两次调用安装脚本：先安装 app HAP，再安装 test HAP。这样 plan/report 可以分别记录 `commands.installApp` 和 `commands.installTest`。
+默认分两次调用安装脚本：先安装 app HAP，再安装 test HAP。这样 `state.json` 可以分别记录 `commands.installApp` 和 `commands.installTest`。
 
 ```bash
 <skillRoot>/scripts/install-hap.sh \
@@ -241,9 +253,49 @@ fallback 示例：
   --test-hap <test.hap>
 ```
 
-第一条脚本调用及其 `COMMAND:` 输出写入 `commands.installApp`，第二条写入 `commands.installTest`。脚本支持一次传入 `--app-hap` 和 `--test-hap`，但 agent 默认不要这样做，避免报告字段归属不清。
+第一条脚本调用及其 `COMMAND:` 输出写入 `commands.installApp`，第二条写入 `commands.installTest`。脚本支持一次传入 `--app-hap` 和 `--test-hap`，但 agent 默认不要这样做，避免命令字段归属不清。
 
-安装前优先选择 `*-signed.hap`。如果安装非 signed HAP 出现 `install sign info inconsistent`，切换 signed HAP，并在 report 中记录选择原因。
+安装前优先选择 `*-signed.hap`。如果安装非 signed HAP 出现 `install sign info inconsistent`，切换 signed HAP，并在 `case.md` 或 run 中记录选择原因。
+
+## 首次启动 warm-up
+
+warm-up 只在本次执行重新安装 app HAP 后触发。未重新安装 app HAP 时，不为了 warm-up 单独启动或操作 app，`startupWarmup.status` 记录为 `not_applicable`。
+
+warm-up 的目标是处理首次安装或首次启动产生的持久阻塞，例如隐私协议、权限授权、启动引导、初始化遮罩或其他会阻止后续测试框架正常拉起应用的高层级阻塞。warm-up 不用于匹配人工用例第一步，也不执行人工用例中的业务步骤；`aa test` 执行时 app 会由测试框架重新拉起，执行结束后 app 也可能被关闭，因此 warm-up 不承诺当前页面能延续到测试开始。
+
+推荐流程：
+
+```text
+安装 app HAP
+-> 启动 app
+-> 识别并处理首次安装/首次启动阻塞
+-> force-stop app
+-> 再启动 app
+-> 验证同类阻塞不再出现，且 app 能正常启动
+-> force-stop app
+-> 安装 test HAP
+-> 执行 aa test
+```
+
+稳定标准：
+
+- 首次启动阻塞已处理，二次启动时同类阻塞不再出现。
+- app 能正常启动到非崩溃、非空白、非永久加载、非系统/应用阻塞弹窗覆盖状态。
+- warm-up 的判断基于启动状态、阻塞层是否消失和关键证据，不基于人工用例第一步是否可见。
+- warm-up 结束前必须 force-stop app，让后续 `aa test` 自行启动被测对象。
+
+常用命令示例，具体 ability 以项目探测结果为准：
+
+```bash
+<hdc> shell aa start -b <bundleName> -a <abilityName>
+<hdc> shell uitest dumpLayout
+<hdc> shell uitest screenCap
+<hdc> shell aa force-stop <bundleName>
+```
+
+如果 ability 无法确认，或 warm-up 需要处理的阻塞类型不明确，记录 `startupWarmup.status = skipped` 或 `failed`，并说明原因；不要为了 warm-up 猜测业务操作。warm-up 失败是否阻塞执行，取决于阻塞是否会稳定影响后续测试启动：会影响则进入 precondition gate 的 blocking 条件，不影响则作为 warning 继续。
+
+warm-up 结果写入 `state.json.execution.startupWarmup`。命令、dump、截图和观察结果写入 `case.md` 的证据章节或 run；不要把 warm-up 命令写入 `commands.buildApp/installApp/installTest/runTest` 这些固定阶段字段。
 
 ## 执行单条测试
 
@@ -256,7 +308,7 @@ fallback 示例：
   --timeout 60000
 ```
 
-执行报告中必须在 `commands.runTest.script` 记录脚本调用命令，并在 `commands.runTest.actual` 记录脚本打印出的 `COMMAND:` 实际命令。
+执行结果中必须在 `commands.runTest.script` 记录脚本调用命令，并在 `commands.runTest.actual` 记录脚本打印出的 `COMMAND:` 实际命令。
 
 `-b <bundleName>` 必须是最终安装到设备上的应用 Bundle 名称。不要只依赖 `AppScope/app.json5` 或根 `build-profile.json5` 的候选值；优先使用安装包元数据、`bm dump` 或实际测试包挂载的 bundleName。
 
@@ -272,7 +324,7 @@ Tests run: <n>, Failure: <n>, Error: <n>, Pass: <n>, Ignore: <n>
 
 ## 失败后 hdc 步骤复现
 
-测试执行失败后、进入自动修复前，先用 runner 原始输出定位失败发生的人工步骤或测试代码阶段，再用 hdc 按人工用例步骤复现到失败点附近。复现结果用于形成修复假设，并和 runner 原始事实一起写入 report。
+测试执行失败后、进入自动修复前，先用 runner 原始输出定位失败发生的人工步骤或测试代码阶段，再用 hdc 按人工用例步骤复现到失败点附近。复现结果用于形成修复假设，并和 runner 原始事实一起写入 `case.md` 和 `state.json.latestResult`。
 
 注意：UI 单元测试执行结束后，被测 app 可能已经被 runner 关闭、退出或回到非失败页面。不要假设失败时刻的页面仍停留在设备上，也不要在测试结束后直接 `dumpLayout` 当作失败现场。dump、截图、Ability 状态和日志只能作为“重新启动 app 并按人工步骤复现到目标位置后”的证据采集手段。
 
@@ -289,12 +341,12 @@ Tests run: <n>, Failure: <n>, Error: <n>, Pass: <n>, Ignore: <n>
 -> 选择最小修复并重跑目标用例
 ```
 
-复现记录写入 report 的 `diagnostics`，字段至少表达：
+复现记录写入 `case.md` 的 `## 证据`，至少表达：
 
 - `reproduction.target`：复现目标，说明复现到哪个人工步骤前后或测试代码阶段。
 - `reproduction.steps`：实际执行的 hdc 操作步骤。
 - `observations`：复现时观察到的页面、控件、输入、跳转、Ability、bundle 或日志状态。
-- `evidence`：关键输出片段或证据附件路径。
+- `evidence`：关键输出片段或外置 `logs/` 证据路径。
 - `hypothesis`：基于复现证据选择的失败原因假设。
 - `fixBasis`：本次修改为什么对应该假设。
 
@@ -306,12 +358,20 @@ hdc shell uitest screenCap
 hdc shell bm dump -n <bundleName>
 hdc shell aa dump
 hdc shell pidof <bundleName>
-hdc shell hilog
 ```
+
+日志采集优先使用 `devecocli log`：
+
+```bash
+devecocli log --device <deviceNameOrSerial> --bundle-name <bundleName> --level E --from 5m --tail 200
+devecocli log --device <deviceNameOrSerial> --crash --bundle-name <bundleName>
+```
+
+只有 `devecocli log` 不可用、输出不足，或需要系统版本特定能力时，才回退到 `hdc shell hilog`。
 
 日志收敛规则：
 
-- 成功执行不保存独立 runner log，结果摘要和命令写入 report 即可。
+- 成功执行不保存独立 runner log，结果摘要和命令写入 `case.md`/`state.json` 即可。
 - 失败执行只保存与步骤复现目标和修复假设直接相关的关键证据。
 - 同一个 case 的文本证据优先合并到一个 evidence 文件。
 - 构建或设备检查失败影响整批时，写批量级 evidence 文件，不为每个受影响 case 复制同一份日志。

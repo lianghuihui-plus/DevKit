@@ -83,13 +83,16 @@ cd "$project_root"
 
 cmd=(
   "$node_path" "$hvigorw_path"
-  "${extra_hvigor_flags[@]}"
   --mode project
   -p "product=$product"
   -p "buildMode=$build_mode"
   "$task"
   --analyze=normal
 )
+
+if [[ "${#extra_hvigor_flags[@]}" -gt 0 ]]; then
+  cmd=("$node_path" "$hvigorw_path" "${extra_hvigor_flags[@]}" "${cmd[@]:2}")
+fi
 
 if [[ "$parallel" -eq 1 ]]; then
   cmd+=(--parallel)
