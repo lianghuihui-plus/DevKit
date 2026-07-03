@@ -33,7 +33,7 @@ case "$type" in
     exec "$atoms_dir/swipe.sh" "${args[@]}"
     ;;
   back|home)
-    exec "$atoms_dir/keyevent.sh" "${args[@]}"
+    exec "$atoms_dir/keyevent.sh" "${args[@]}" --key "$type"
     ;;
   *)
     echo "iOS 适配器尚未实现" >&2

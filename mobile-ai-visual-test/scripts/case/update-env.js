@@ -19,6 +19,11 @@ function usage() {
   process.exit(2);
 }
 
+function requiredEnvironmentFields(platform) {
+  if (platform === 'ios') return ['platform', 'device', 'appId'];
+  return ['platform', 'device', 'appId', 'entry'];
+}
+
 const args = process.argv.slice(2);
 if (!args.length) usage();
 
@@ -52,7 +57,7 @@ const runtimeDir = caseRuntimeDir(caseDir, platform);
 const statePath = path.join(runtimeDir, 'state.json');
 const state = readJson(statePath, { schemaVersion: 1, executionCount: 0, statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 } });
 state.environment = { ...(state.environment || {}), ...env };
-const missing = ['platform', 'device', 'appId', 'entry'].filter((field) => !state.environment[field]);
+const missing = requiredEnvironmentFields(platform).filter((field) => !state.environment[field]);
 if (missing.length) {
   console.error(`环境信息不完整，缺少: ${missing.join(', ')}`);
   process.exit(1);

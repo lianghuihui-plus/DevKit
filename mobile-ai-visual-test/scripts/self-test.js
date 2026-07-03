@@ -940,6 +940,80 @@ assert.ok(fakeAdbOutput.includes('install -r'));
 assert.strictEqual((fakeAdbOutput.match(/install -r/g) || []).length, 1);
 assert.ok(fakeAdbOutput.includes('shell am broadcast -a mavt.android.ime.INPUT_TEXT'));
 
+const fakeIosEnv = {
+  ...process.env,
+  MAVT_IOS_FAKE: '1',
+  MAVT_ACTION_SETTLE_MS: '0',
+};
+const fakeIosDevice = '00000000-0000-0000-0000-000000000000';
+const iosProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'ios', '--device', fakeIosDevice], { env: fakeIosEnv }));
+assert.strictEqual(iosProbe.platform, 'ios');
+assert.deepStrictEqual(iosProbe.targets, [fakeIosDevice]);
+assert.strictEqual(iosProbe.capabilities.connector, 'appium-xcuitest');
+assert.strictEqual(iosProbe.capabilities.deviceType, 'simulator');
+assert.strictEqual(iosProbe.capabilities.implemented, true);
+assert.strictEqual(iosProbe.capabilities.screenshot, true);
+assert.strictEqual(iosProbe.capabilities.layout, true);
+assert.strictEqual(iosProbe.capabilities.foregroundApp, true);
+assert.ok(iosProbe.capabilities.actions.includes('tap'));
+assert.ok(iosProbe.capabilities.actions.includes('longPress'));
+assert.ok(iosProbe.capabilities.actions.includes('inputText'));
+assert.ok(iosProbe.capabilities.actions.includes('back'));
+assert.ok(iosProbe.capabilities.actions.includes('home'));
+
+const iosFile = path.join(sourceRoot, 'cases', 'ios.md');
+write(iosFile, `# iOS 适配测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 点击「登录」。
+`);
+const iosParsed = JSON.parse(run('node', ['scripts/parse-case.js', iosFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', iosParsed.caseDir, '--platform', 'ios', '--device', fakeIosDevice, '--app', 'com.example.demo']);
+const iosStateBeforePrepare = json(path.join(iosParsed.caseDir, 'platforms', 'ios', 'state.json'));
+assert.strictEqual(iosStateBeforePrepare.environment.entry, undefined);
+const iosStartBeforePrepare = runAllowFailure('node', ['scripts/run-case.js', iosParsed.caseDir, '--platform', 'ios', '--start']);
+assert.notStrictEqual(iosStartBeforePrepare.status, 0);
+assert.ok(iosStartBeforePrepare.stderr.includes('iosAutomation'));
+const iosPrepare = JSON.parse(run('./scripts/prepare-env.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios'], { env: fakeIosEnv }));
+assert.strictEqual(iosPrepare.ok, true);
+assert.ok(iosPrepare.dependencies.some((item) => item.id === 'iosAutomation' && item.ok));
+const iosPreparedState = json(path.join(iosParsed.caseDir, 'platforms', 'ios', 'state.json'));
+assert.strictEqual(iosPreparedState.dependencies.iosAutomation.ok, true);
+const iosStart = JSON.parse(run('node', ['scripts/run-case.js', iosParsed.caseDir, '--platform', 'ios', '--start']));
+assert.ok(iosStart.execDir.includes('/platforms/ios/executions/'));
+const iosObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--label', 'step-001-before'], { env: fakeIosEnv }));
+assert.strictEqual(iosObservation.platform, 'ios');
+assert.strictEqual(iosObservation.label, '001-step-001-before');
+assert.strictEqual(iosObservation.artifacts.screenshot, 'screenshots/001-step-001-before.png');
+assert.strictEqual(iosObservation.artifacts.layout, 'layouts/001-step-001-before.xml');
+assert.strictEqual(iosObservation.app.foregroundApp, 'com.example.demo');
+assert.strictEqual(iosObservation.app.entry, null);
+assert.strictEqual(iosObservation.app.inTargetApp, true);
+run('node', ['scripts/flow/record-scan.js', iosParsed.caseDir, '--platform', 'ios', '--cwd', workspace, '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--reason', 'iOS 动作前已扫描 Flow，无可用候选']);
+const iosAction = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '10', '--y', '20', '--coordinate-source', 'layout', '--target-bounds', '8,18,12,22', '--coordinate-evidence', 'ios xcuitest frame', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosAction.platform, 'ios');
+assert.strictEqual(iosAction.action, 'tap');
+assert.strictEqual(iosAction.ok, true);
+assert.strictEqual(iosAction.coordinateSource, 'layout');
+const iosLongPress = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'longPress', '--x', '30', '--y', '40', '--duration-ms', '900', '--coordinate-source', 'layout', '--target-bounds', '20,30,40,50', '--coordinate-evidence', 'ios xcuitest long press frame', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosLongPress.action, 'longPress');
+assert.strictEqual(iosLongPress.ok, true);
+assert.strictEqual(iosLongPress.durationMs, 900);
+const iosInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', '中文输入', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosInput.action, 'inputText');
+assert.strictEqual(iosInput.ok, true);
+assert.strictEqual(iosInput.inputMethod, 'wda-set-value');
+const iosBack = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'back', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosBack.action, 'back');
+assert.strictEqual(iosBack.ok, true);
+const iosHome = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'home', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosHome.action, 'home');
+assert.strictEqual(iosHome.ok, true);
+run('node', ['scripts/run-case.js', iosParsed.caseDir, '--platform', 'ios', '--finalize', '--status', 'UNKNOWN', '--reason', 'iOS adapter smoke test complete', '--execution-id', iosStart.executionId]);
+
 const fakeBin = path.join(tmp, 'fake-bin');
 const fakeHdcLog = path.join(tmp, 'fake-hdc.log');
 const fakeHdcRemote = path.join(tmp, 'fake-hdc-remote');

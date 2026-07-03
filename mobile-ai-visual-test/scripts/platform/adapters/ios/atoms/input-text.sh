@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-"$(cd "$(dirname "$0")" && pwd)/unimplemented.sh" input-text
+script_dir="$(cd "$(dirname "$0")/.." && pwd)"
+exec node "$script_dir/lib/ios-driver.js" atom input-text "$@"

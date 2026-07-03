@@ -622,6 +622,7 @@ function flowScanActionReadiness(events, action, stepId) {
 
 function requiredEnvironmentDependencies(platform) {
   if (platform === 'android') return ['mavtInputIme'];
+  if (platform === 'ios') return ['iosAutomation'];
   return [];
 }
 
@@ -830,6 +831,7 @@ try {
 }
 
 function requiredEnvironmentFields(state) {
-  if (!state?.environment) return ['platform', 'device', 'appId', 'entry'];
+  const platform = normalizePlatform(state?.environment?.platform);
+  if (platform === 'ios') return ['platform', 'device', 'appId'];
   return ['platform', 'device', 'appId', 'entry'];
 }
