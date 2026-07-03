@@ -985,16 +985,23 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
   const environmentRows = Object.keys(env).length
     ? Object.entries(env).map(([key, value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(formatCell(value))}</td></tr>`).join('\n')
     : '<tr><td colspan="2">未确认</td></tr>';
-  const dependencyRows = dependencyItems(state).length
-    ? dependencyItems(state).map((item) => `<tr>
-        <td>${escapeHtml(item.id || item.name || '-')}</td>
-        <td>${escapeHtml(item.name || '-')}</td>
-        <td>${escapeHtml(dependencyStatusText(item))}</td>
-        <td>${escapeHtml(item.stage || '-')}</td>
-        <td>${escapeHtml(item.required ? '是' : '否')}</td>
-        <td>${escapeHtml(item.currentInputMethod || item.packageName || '-')}</td>
-      </tr>`).join('\n')
-    : '<tr><td colspan="6">无必需依赖。</td></tr>';
+  const dependencyCards = dependencyItems(state).length
+    ? dependencyItems(state).map((item) => {
+      const rows = [
+        ['ID', item.id || '-'],
+        ['状态', dependencyStatusText(item)],
+        ['阶段', item.stage || '-'],
+        ['必需', item.required ? '是' : '否'],
+        ['详情', item.currentInputMethod || item.packageName || '-'],
+        ['包名', item.packageName || '-'],
+        ['IME', item.imeId || '-'],
+      ];
+      return `<div class="dependency-card">
+        <h3>${escapeHtml(item.name || item.id || '平台依赖')}</h3>
+        <table><tbody>${rows.map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(formatCell(value))}</td></tr>`).join('')}</tbody></table>
+      </div>`;
+    }).join('\n')
+    : '<p class="empty">无必需依赖。</p>';
   const evidenceCount = metrics?.artifacts
     ? `截图 ${metrics.artifacts.screenshots || 0} / 控件树 ${metrics.artifacts.layouts || 0}`
     : `截图 ${screenshots.length}`;
@@ -1320,10 +1327,16 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     .debug-details[open] > summary::after { content: "收起"; }
     .debug-details[open] > summary { border-bottom: 1px solid var(--line); }
     .debug-content { display: grid; gap: 12px; padding: 14px; background: linear-gradient(180deg, #f8fcff, #fff); }
-    .debug-overview { display: grid; grid-template-columns: 1.35fr 1fr .72fr; gap: 12px; }
+    .debug-overview { display: grid; grid-template-columns: minmax(240px, 1.08fr) minmax(210px, .92fr) minmax(260px, 1.18fr) minmax(160px, .62fr); gap: 12px; align-items: start; }
     .debug-section { margin: 0; padding: 14px; box-shadow: none; background: rgba(255,255,255,.86); }
     .debug-section.compact { min-width: 0; }
     .debug-section h2 { margin-bottom: 10px; font-size: 15px; }
+    .dependency-list { display: grid; gap: 10px; }
+    .dependency-card { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+    .dependency-card h3 { margin: 0 0 8px; color: var(--text); font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+    .dependency-card table { border-radius: 6px; background: #fff; }
+    .dependency-card th { width: 58px; color: var(--muted); white-space: nowrap; }
+    .dependency-card td { overflow-wrap: anywhere; word-break: break-word; }
     .debug-section table { font-size: 13px; border: 1px solid var(--line); }
     .debug-section th, .debug-section td { padding: 8px 10px; }
     .debug-section .table-wrap table { min-width: 620px; }
@@ -1342,6 +1355,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     .shot-lightbox-nav.prev { left: 12px; }
     .shot-lightbox-nav.next { right: 12px; }
     .shot-lightbox-nav:disabled { opacity: .35; cursor: default; }
+    @media (max-width: 1020px) { .debug-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 760px) { main { width: calc(100vw - 20px); margin-top: 14px; } header, .grid { display:block; } .summary, .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } .failure-evidence, .precondition-item, .debug-overview { grid-template-columns: 1fr; } .precondition-item strong { justify-self: start; } .step-review-head { flex-direction: column; align-items: flex-start; } .step-review-badges { flex-wrap: wrap; } .debug-details > summary { align-items: flex-start; flex-wrap: wrap; } .debug-details > summary small { text-align: left; } h1 { font-size: 22px; } section { padding: 12px; } .shot-lightbox { padding: 10px; } }
   </style>
 </head>
@@ -1389,10 +1403,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
       </section>
         <section class="debug-section compact">
         <h2>平台依赖</h2>
-        <div class="table-wrap"><table>
-          <thead><tr><th>ID</th><th>名称</th><th>状态</th><th>阶段</th><th>必需</th><th>详情</th></tr></thead>
-          <tbody>${dependencyRows}</tbody>
-        </table></div>
+        <div class="dependency-list">${dependencyCards}</div>
       </section>
         <section class="debug-section compact">
         <h2>事件统计</h2>
