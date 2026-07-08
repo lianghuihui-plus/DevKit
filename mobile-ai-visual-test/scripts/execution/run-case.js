@@ -720,6 +720,7 @@ function statusForFailureCode(failureCode, fallbackStatus) {
     'EXECUTION_BUDGET_EXCEEDED',
     'TOOL_ERROR',
     'ACTION_RESULT_SOURCE_REQUIRED',
+    'OBSERVATION_SOURCE_REQUIRED',
     'ASSERTION_EVIDENCE_REQUIRED',
   ].includes(failureCode)) return 'BLOCKED';
   return fallbackStatus;

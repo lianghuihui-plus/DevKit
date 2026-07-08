@@ -1,98 +1,95 @@
 # 失败策略
 
+> 负责：状态、failureCode、结果归一、预算和停止规则。
+> 不负责：执行阶段、事件 schema、动作参数、报告布局。
+> 参见：`workflow.md`、`interfaces.md`、`context-format.md`。
+
 ## 状态
 
-- `PASS`：用例完整满足。
-- `FAIL`：用例已执行但实际结果不满足预期，或缺少证明通过所需的断言证据。
-- `BLOCKED`：环境、前置条件、平台工具或应用状态阻止可靠执行。
-- `UNKNOWN`：仅保留给历史兼容或无法归类的异常状态；正式用例结果不应把断言证据不足落为 `UNKNOWN`。
+| 状态 | 含义 |
+| --- | --- |
+| `PASS` | 所有步骤都有当前 execution 内的通过证据 |
+| `FAIL` | 明确观察到不符合预期，或证据不足被归一为失败 |
+| `BLOCKED` | 环境、工具、前置条件、业务上下文或安全限制导致无法继续 |
+| `UNKNOWN` | 历史兼容状态；正式执行应尽量归一到 `FAIL` 或 `BLOCKED` |
 
-## 失败码
+断言证据不足统一为 `FAIL/ASSERTION_UNKNOWN`。
 
-`result.json` 和 `metrics.json` 使用稳定失败码：
+## failureCode
 
-- `ENV_UNCONFIRMED`
-- `ENV_UNAVAILABLE`
-- `ENV_AMBIGUOUS`
-- `PLATFORM_UNIMPLEMENTED`
-- `PRECONDITION_FAILED`
-- `PRECONDITION_REQUIRED`
-- `PRECONDITION_UNKNOWN`
-- `PRECONDITION_UNSUPPORTED`
-- `ASSERTION_FAILED`
-- `ASSERTION_UNKNOWN`
-- `ASSERTION_EVIDENCE_REQUIRED`
-- `STEP_ORDER_VIOLATION`
-- `ACTION_RESULT_SOURCE_REQUIRED`
-- `ACTION_TARGET_NOT_FOUND`
-- `PAGE_LOAD_BLOCKED`
-- `FLOW_NOT_FOUND`
-- `FLOW_SCAN_REQUIRED`
-- `FLOW_STEP_UNMATCHED`
-- `FLOW_ACTION_FAILED`
-- `FLOW_UNSAFE`
-- `FLOW_SCAN_MISSING`
-- `FLOW_MATCH_UNRESOLVED`
-- `APP_CONTEXT_LOST`
-- `APP_LEFT_FOREGROUND`
-- `UNKNOWN_POPUP`
-- `CASE_TIMEOUT`
-- `CASE_RESTART_FAILED`
-- `EXECUTION_BUDGET_EXCEEDED`
-- `TOOL_ERROR`
+| failureCode | 状态 | 含义 |
+| --- | --- | --- |
+| `ASSERTION_FAILED` | `FAIL` | 明确断言不通过 |
+| `ASSERTION_UNKNOWN` | `FAIL` | 不能证明通过 |
+| `ASSERTION_EVIDENCE_REQUIRED` | `BLOCKED` | PASS 断言缺合法 observation 证据 |
+| `STEP_ORDER_VIOLATION` | `BLOCKED` | 跳序、回补或步骤绑定非法 |
+| `PRECONDITION_REQUIRED` | `BLOCKED` | 进入步骤前缺前置条件事实 |
+| `PRECONDITION_FAILED` | `BLOCKED` | 前置条件明确不满足 |
+| `PRECONDITION_UNKNOWN` | `BLOCKED` | 前置条件无法判断 |
+| `PRECONDITION_UNSUPPORTED` | `BLOCKED` | 前置条件不支持自动处理 |
+| `FLOW_SCAN_REQUIRED` | `BLOCKED` | 缺全局或步骤级可用 Flow 扫描 |
+| `FLOW_SCAN_MISSING` | `BLOCKED` | 判定导航类失败前缺扫描 |
+| `FLOW_MATCH_UNRESOLVED` | `BLOCKED` | 命中 Flow 缺终态事实 |
+| `FLOW_NOT_FOUND` | `BLOCKED` | 需要业务路径但无可用 Flow |
+| `FLOW_STEP_UNMATCHED` | `BLOCKED` | Flow 步骤无法匹配页面 |
+| `FLOW_ACTION_FAILED` | `BLOCKED` | Flow 参考动作失败 |
+| `FLOW_UNSAFE` | `BLOCKED` | Flow 涉及不安全操作 |
+| `ENV_UNCONFIRMED` | `BLOCKED` | 环境未确认 |
+| `ENV_UNAVAILABLE` | `BLOCKED` | 平台或设备不可用 |
+| `ENV_AMBIGUOUS` | `BLOCKED` | 设备、App 或入口歧义 |
+| `PLATFORM_UNIMPLEMENTED` | `BLOCKED` | 平台能力未实现 |
+| `TOOL_ERROR` | `BLOCKED` | 工具或底层命令异常 |
+| `ACTION_RESULT_SOURCE_REQUIRED` | `BLOCKED` | actionResult 来源非法 |
+| `OBSERVATION_SOURCE_REQUIRED` | `BLOCKED` | observation 来源非法 |
+| `CASE_RESTART_FAILED` | `BLOCKED` | 用例冷启动失败或不可验证 |
+| `ACTION_TARGET_NOT_FOUND` | `FAIL`/`BLOCKED` | 目标不可定位；上下文丢失时阻塞 |
+| `PAGE_LOAD_BLOCKED` | `FAIL`/`BLOCKED` | 页面加载失败或长期无目标状态 |
+| `APP_CONTEXT_LOST` | `BLOCKED` | 恢复前台后业务上下文不可判断 |
+| `APP_LEFT_FOREGROUND` | `BLOCKED` | 多次离开目标 App |
+| `UNKNOWN_POPUP` | `BLOCKED` | 未知弹窗无法安全处理 |
+| `CASE_TIMEOUT` | `BLOCKED` | 单 case 超时 |
+| `EXECUTION_BUDGET_EXCEEDED` | `BLOCKED` | observation、action、wait 等预算超限 |
 
-## 停止规则
+## 步骤证据
 
-- 无人值守执行阶段不向用户提问。
-- 证据弱时不能强行判定 `PASS`。
-- 每个步骤必须按 `case.json.steps` 顺序写入当前 execution 的步骤事实；跳过前置步骤、跨步记录或进入后续步骤后回头补写前置步骤时，入口以 `STEP_ORDER_VIOLATION` 拒绝且不写入 timeline。
-- 前一步没有通过证据时不能进入下一步；普通操作步骤需要真实业务动作 `tap`、`toggle`、`longPress`、`inputText`、`swipe`、`back` 的 `actionResult ok=true` 且其后有同一步骤的 observation，或 `assertion PASS`；`assertion PASS` 必须引用当前步骤已有 observation 的截图、布局或 label，缺失时入口以 `ASSERTION_EVIDENCE_REQUIRED` 拒绝且不写入 timeline；断言型步骤必须写带 observation 证据引用的 `assertion PASS`；`launchApp`、`restartApp`、`wait` 不能单独作为步骤通过证据。
-- `actionResult` 必须由顶层 `scripts/action.sh` 自动写入，直接通过 `run-case.js --record-json` 手写动作结果时，入口以 `ACTION_RESULT_SOURCE_REQUIRED` 拒绝且不写入 timeline。
-- `--finalize --status PASS` 缺少步骤通过证据时，本次结果归一为 `FAIL/ASSERTION_UNKNOWN` 并 finalize；`result.requestedStatus` 保留 agent 原始请求，agent 不能把缺证据当作 PASS。
-- 需要破坏性准备时停止。
-- 连续 3 次截图或控件树无明显变化时停止。
-- 目标应用累计离开前台 2 次时停止。
-- 重新拉起应用导致业务上下文丢失时停止。
-- 用例开始时必须尝试 `restartApp` 并记录真实结果；冷启动失败或没有明确 `coldStartVerified=true` 时，`case.json.isolation.requireCleanRestart=true` 的用例必须按 `BLOCKED/CASE_RESTART_FAILED` 收尾；`auto` 模式下含“首次进入 / 重启 App 后 / 同一次 App 启动内 / 默认初始化 / 新用户首次状态”等语义的冷启动敏感用例同样阻塞，普通用例可标记 `isolationCompromised` 后继续执行。
-- Flow 文件不存在、与当前页面明显不匹配、动作失败或涉及不安全业务操作时停止。
-- 任何带 `stepId` 的步骤事实前必须已有 execution 级全局可用 `flowScan` 事实；公开事实写入缺失时入口以 `FLOW_SCAN_REQUIRED` 拒绝且不会写入 timeline，顶层动作入口缺失时会写入失败 `actionResult` 并 finalize。
-- `restartApp` 是 execution 级隔离动作，禁止绑定 `stepId`；非 `launchApp`、非 `wait` 的业务动作前还必须已有当前步骤的可用 `flowScan` 事实；`flowScan` 必须由 `scripts/flow/record-scan.js ... --step-id <step-id>` 写入并包含 `source=list-flows`、`flowsRoot`、`scannedFlowIds`，且状态不能为 `FAILED`，否则顶层动作入口以 `FLOW_SCAN_REQUIRED` 拒绝且不会执行平台动作，并写入失败 `actionResult`、`result.json`、`metrics.json` 后 finalize。全局 `flowScan` 只用于建立候选库，不能替代步骤级扫描。
-- 判定 `PAGE_LOAD_BLOCKED`、`ACTION_TARGET_NOT_FOUND`、`APP_CONTEXT_LOST` 前，必须传 `--failed-step`，且该失败步骤已有对应 `flowScan` 事实；否则结果归一为 `BLOCKED/FLOW_SCAN_MISSING`。
-- 如果失败步骤的 `flowScan.matchedFlowIds` 非空，必须对每个命中的 Flow 写入同 `stepId` 的终态 `flow` 事实：`COMPLETED`、`FAILED`、`SKIPPED` 或 `BLOCKED`；否则结果归一为 `BLOCKED/FLOW_MATCH_UNRESOLVED`。
-- 坐标目标判定 `ACTION_TARGET_NOT_FOUND` 前，必须至少有一次带 `coordinateSource`、`coordinateEvidence` 的动作事实；若目标是 H5 自绘、图片按钮、Canvas 或沿用 Flow 坐标，还必须有 `targetBounds`。正式 case execution 禁止使用 `coordinateSource=manual`。
-- 坐标动作命中错误区域或页面无变化时，不能重复相同 `x/y` 作为新的尝试；必须重新观察并更换坐标证据，否则按 `ACTION_TARGET_NOT_FOUND` 或 `BLOCKED/TOOL_ERROR` 收尾。
+通过证据只认当前 execution：
 
-## 执行预算
+- 普通操作步骤：业务动作 `tap`、`toggle`、`longPress`、`inputText`、`swipe`、`back` 的 `actionResult ok=true`，且动作后有同一步骤 observation。
+- 断言型步骤：必须写 `assertion PASS`，并引用同一步骤 observation。
+- 页面已满足当前步骤时，也必须先 observe，再写带证据的 `assertion PASS`。
 
-`scripts/observe.sh`、`scripts/action.sh` 和 `scripts/run-case.js --record-json` 都绑定 execution 并强制检查预算；超限会自动写入 `budgetExceeded` 事件并 finalize 为 `BLOCKED`。finalized 后继续观察、动作或 record 都会失败。
+不能单独作为步骤通过证据：`launchApp`、`restartApp`、`wait`、`observation`、`perception`、`decision`、`rule`、`flowScan`、`flow`。
 
-默认预算：
+## 顺序
 
-- 单用例总时长最多 20 分钟。
-- observation 最多 80 次。
-- action 最多 60 次。
-- 单步骤相关事件最多 24 条。
-- 单步骤 wait 最多 8 次。
-- 已知弹窗最多处理 5 次。
-- no-change observation 最多 5 次。
+- 第一个步骤事实必须属于 `case.json.steps[0]`。
+- 进入下一步前，前一步必须已有通过证据。
+- 进入后续步骤后，禁止回头补写前置步骤事实。
+- `restartApp` 是 execution 级隔离动作，禁止绑定 `stepId`。
 
-## 前置条件
+## PASS 归一
 
-前置条件分为：
+请求 PASS 但步骤缺证据时，框架写为：
 
-- `auto_check`：平台级或环境级事实，可通过设备、应用、截图或控件树直接判断。
-- `auto_prepare`：平台级或环境级事实，可在预算内通过安全 UI 动作准备。
-- `manual_context`：业务级、账号级或数据级上下文，仅作为 agent 判断依据，不自动准备。
-- `unsupported`：涉及破坏性、缺少凭证或不可验证条件，直接 `BLOCKED` 或 `FAIL`。
+```json
+{"status":"FAIL","requestedStatus":"PASS","failureCode":"ASSERTION_UNKNOWN"}
+```
 
-处理规则：
+`requestedStatus` 保留 agent 原始请求，`status` 是真实归一结果。
 
-- 执行前用 `scripts/preflight-preconditions.js` 批量归纳前置条件并提示用户处理；预检不写入 execution。
-- 创建 execution 后、进入步骤前，必须为每条 `case.json.preconditions` 写入 `precondition` 事实。
-- 平台级前置条件检查和准备必须写入 `timeline.jsonl`；满足写 `PASS`，安全准备完成写 `PREPARED`。
-- 业务级前置条件不做通用自动准备；agent 只能基于页面证据、用户补充和用例上下文保守判断。
-- 登录态、账号数据、订单状态、业务资源数量、权限首次弹窗等前置条件默认属于 `manual_context` 或 `unsupported`；预检不得将这类业务上下文归为 `READY`。
-- 不猜测密码、验证码或其他凭证。
-- 不清数据、不卸载、不做支付、删除、发布、修改真实资料等破坏性动作。
-- 缺少任何前置条件事实时，入口以 `PRECONDITION_REQUIRED` 拒绝并且不写入 timeline；前置条件为 `FAIL`、`UNKNOWN`、`BLOCKED` 时，分别以 `PRECONDITION_FAILED`、`PRECONDITION_UNKNOWN`、`PRECONDITION_UNSUPPORTED` 写入结果并 finalize，可短路剩余前置条件。
-- 前置条件无法满足时，不进入步骤执行，仍生成本次 execution、`result.json`、`metrics.json` 和 `CONTEXT.md`。
+## 冷启动隔离
+
+- 每个 execution 开始必须尝试 `restartApp`。
+- `ok=true` 且 `coldStartVerified=true` 才算干净冷启动。
+- 冷启动敏感用例失败时：`BLOCKED/CASE_RESTART_FAILED`。
+- 普通用例可降级继续，但 metrics 和报告必须标记 `isolationCompromised=true`。
+
+冷启动敏感来源：`case.json.isolation.requireCleanRestart=true`，或 `auto` 识别到首次进入、重启后、同一次启动内、默认初始化、新用户首次状态等语义。
+
+## 预算和停止
+
+- 单 case 默认 20 分钟，具体预算由 `run-case.js` 管理。
+- 预算超限自动写 `budgetExceeded` 并 finalize 为 `BLOCKED`。
+- `paceHint` 只提醒节奏，不改变结果。
+
+立即停止当前 case 的情况：明确断言失败、前置条件终态、环境不可用、平台未实现、工具错误、未知弹窗、破坏性操作风险、预算超限、冷启动敏感用例无法确认真实冷启动。

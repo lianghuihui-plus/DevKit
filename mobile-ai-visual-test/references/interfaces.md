@@ -1,315 +1,226 @@
-# 模块接口
+# 接口契约
 
-skill 只编排流程；确定性能力走模块接口，JSON 契约为准。
+> 本文件负责：稳定顶层入口、内部层级、事件类型和关键 JSON 契约。
+> 本文件不负责：端到端阶段顺序、动作参数细节、failureCode 语义、报告展示规则。
+> 相关文件：`workflow.md`、`action-schema.md`、`failure-policy.md`、`context-format.md`。
 
-## 分层职责
+## 分层
 
 ```text
-Skill 编排层
-  -> 读取用例、确认环境、处理前置条件、执行循环、失败策略、报告规则
+Skill 协议层
+  SKILL.md
+  references/*.md
 
-模块接口层
-  -> CaseRepository、PlatformAdapter、Perception、Decision、Reporter、MetricsCollector
+稳定入口层
+  scripts/probe-env.sh
+  scripts/resolve-execution-targets.js
+  scripts/parse-case.js
+  scripts/preflight-preconditions.js
+  scripts/update-env.js
+  scripts/prepare-env.sh
+  scripts/run-case.js
+  scripts/observe.sh
+  scripts/action.sh
+  scripts/flow/*.js|*.sh
 
-平台适配层
-  -> harmony、android、ios
+内部实现层
+  scripts/case/
+  scripts/execution/
+  scripts/report/
+  scripts/lib/
+
+平台能力层
+  scripts/platform/
+  scripts/platform/adapters/<platform>/
+  scripts/platform/adapters/<platform>/atoms/
 ```
 
-- 平台适配器只做设备事实采集和动作执行，不做用例判断。
-- Perception 只做页面理解和候选目标识别。
-- Decision 由 agent 根据用例、规则、观察事实和页面理解完成。
-- Reporter/MetricsCollector 只从事实文件生成报告和统计。
+agent 只调用稳定入口层。内部实现层、平台 adapter 和 atoms 不作为 agent 入口。
 
-## CaseRepository
+## 稳定入口
 
-负责用例空间和执行产物：
+| 入口 | 职责 |
+| --- | --- |
+| `scripts/resolve-execution-targets.js` | 分流已有 case 与 Markdown 输入 |
+| `scripts/parse-case.js` | 创建或刷新 case 资产 |
+| `scripts/preflight-preconditions.js` | 执行前批量归纳前置条件 |
+| `scripts/probe-env.sh` | 探测平台和设备能力 |
+| `scripts/update-env.js` | 固化设备、App 和入口到平台 state |
+| `scripts/prepare-env.sh` | 准备平台依赖 |
+| `scripts/run-case.js` | 创建 execution、写 agent 事实、finalize、守卫和报告刷新 |
+| `scripts/observe.sh` | 采集 observation 并写入 timeline |
+| `scripts/action.sh` | 执行动作并写入 actionResult |
+| `scripts/render-context.js` | 重渲染 case 报告 |
+| `scripts/render-index.js` | 重渲染 workspace 总览 |
+| `scripts/flow/start-recording.js` | 创建 Flow 录制会话 |
+| `scripts/flow/observe.sh` | 录制 Flow observation |
+| `scripts/flow/action.sh` | 录制 Flow action |
+| `scripts/flow/finalize-recording.js` | 生成 Flow 资产 |
+| `scripts/flow/record-scan.js` | 扫描可用 Flow 并写入 execution |
 
-- 导入外部 Markdown 为 `source.md`。
-- 从 `source.md` 生成 `case.json`。
-- 追加 `notes.jsonl` 并重放用户补充。
-- 创建当前平台的 `platforms/<platform>/executions/<executionId>/`。
-- 读写当前平台的 `timeline.jsonl`、`result.json`、`metrics.json`、`state.json`。
+正式 case-bound 入口必须显式传 `--platform <harmony|android|ios>`。
 
 ## PlatformAdapter
 
-平台适配器必须提供同一组能力：
+平台 adapter 对外提供统一能力：
 
-```text
-probe(env?) -> EnvironmentProbe
-observe(env, options) -> Observation
-act(env, action) -> ActionResult
+```ts
+interface PlatformAdapter {
+  probe(): EnvironmentProbe
+  observe(input: ObserveInput): Observation
+  action(input: Action): ActionResult
+}
 ```
 
-当前脚本入口：
+adapter 内部可以调用 atoms，但不得：
 
-```bash
-scripts/probe-env.sh --platform <platform>
-scripts/observe.sh --case-dir <case-dir> --execution-id <id> --platform <platform> (--step-id <step-id>|--scope global) ...
-scripts/action.sh --case-dir <case-dir> --execution-id <id> --platform <platform> ...
-```
-
-agent 可直接调用的稳定入口只包括三类，主执行入口保持精简，维护和 Flow 入口按需使用：
-
-```text
-scripts/probe-env.sh
-scripts/resolve-execution-targets.js
-scripts/parse-case.js
-scripts/preflight-preconditions.js
-scripts/update-env.js
-scripts/prepare-env.sh
-scripts/run-case.js
-scripts/observe.sh
-scripts/action.sh
-scripts/apply-note.js
-scripts/refresh-case.js
-scripts/render-context.js
-scripts/render-index.js
-scripts/flow/start-recording.js
-scripts/flow/observe.sh
-scripts/flow/action.sh
-scripts/flow/finalize-recording.js
-scripts/flow/record-scan.js
-```
-
-`scripts/platform/`、`scripts/platform/adapters/`、`scripts/platform/adapters/<platform>/atoms/`、`scripts/case/`、`scripts/report/`、`scripts/execution/`、`scripts/lib/` 都是内部实现层；可以被稳定入口调用，但不作为 agent 操作入口。
-
-顶层 `scripts/common.js` 仅是兼容导出层；共享实现放在 `scripts/lib/common.js`，shell 入口的公共逻辑放在 `scripts/lib/action-common.sh`。新增或重构脚本时，应优先复用 `scripts/lib/`，避免把内部实现重新暴露成 agent 入口。
-
-正式执行用例时必须调用顶层 `scripts/observe.sh`、`scripts/action.sh`；平台实现放在：
-
-```text
-scripts/platform/adapters/<platform>/probe.sh
-scripts/platform/adapters/<platform>/observe.sh
-scripts/platform/adapters/<platform>/action.sh
-```
-
-正式执行必须显式传 `--platform <harmony|android|ios>`，顶层 case-bound observe/action/run-case 会拒绝缺少平台参数的调用。无平台根运行态只用于历史产物兼容，需显式 `--legacy-runtime`。步骤内观察必须给 `scripts/observe.sh` 传 `--step-id <step-id>`；非步骤级环境快照或诊断观察必须显式传 `--scope global` 或 `--global-observation`。
+- 读取或修改 case 业务资产。
+- 写入 `timeline.jsonl`。
+- 做业务判断。
+- 把 agent 可审计编排的多步流程封装成黑盒组合。
 
 ## EnvironmentProbe
 
-用于执行前环境确认。
+`probe-env` 输出平台能力事实：
 
 ```json
 {
   "schemaVersion": 1,
-  "type": "environmentProbe",
-  "platform": "harmony",
-  "targets": ["127.0.0.1:5555"],
+  "platform": "android",
+  "devices": [{"id": "device-id", "name": "Pixel"}],
   "capabilities": {
-    "connector": "hdc",
     "screenshot": true,
-    "layout": true,
-    "foregroundApp": false,
-    "logs": false,
-    "launchApp": true,
-    "actions": ["launchApp", "restartApp", "tap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait"]
+    "uiTree": true,
+    "foreground": true,
+    "logs": true,
+    "actions": ["launchApp", "restartApp", "tap", "inputText", "swipe", "back", "wait"],
+    "dependencies": {"mavtInputIme": {"ok": true}}
   }
 }
 ```
 
-必填：`schemaVersion`、`type`、`platform`、`targets`、`capabilities`。
+目标 App、入口和当前前台状态不由 `probe-env` 固化；目标信息由 `update-env.js` 写入，当前状态由 `observe.sh` 采集。
 
 ## Observation
 
-视觉和 CLI 事实的统一载体。
+正式 observation 必须由 `scripts/observe.sh` 写入，并带 `source: "observe.sh"`。
 
 ```json
 {
   "schemaVersion": 1,
   "type": "observation",
-  "platform": "harmony",
-  "time": "2026-06-17T10:00:00.000Z",
-  "label": "step-001-before",
-  "artifacts": {"screenshot": "screenshots/step-001-before.png", "layout": "layouts/step-001-before.json", "logs": []},
-  "device": {"id": "127.0.0.1:5555", "screen": null},
+  "source": "observe.sh",
+  "platform": "android",
+  "stepId": "step-001",
+  "label": "001-step-001-before",
   "app": {
-    "appId": "com.example.demo",
-    "foregroundApp": "com.example.demo",
-    "entry": "EntryAbility",
-    "inTargetApp": true
+    "inTargetApp": true,
+    "appId": "com.example.app",
+    "activity": ".MainActivity"
   },
-  "capabilities": {"screenshot": true, "layout": true, "foregroundApp": true, "logs": true}
+  "artifacts": {
+    "screenshot": "screenshots/001-step-001-before.png",
+    "layout": "layouts/001-step-001-before.json",
+    "logs": "logs/001-step-001-before.log"
+  }
 }
 ```
 
-必填：`schemaVersion`、`type`、`platform`、`time`、`label`、`artifacts`、`capabilities`、`source`。正式 case execution 中 `source` 必须为 `observe.sh`，并且只能由顶层 `scripts/observe.sh` 的内部写入通道生成。
-
-`artifacts` 只记录相对当前 execution 目录的路径；写入 observation 和 assertion 引用 observation 产物时，框架会校验对应文件存在。
-
-前台 App 和日志采集 best-effort；失败信息写入 `capabilities` 或 `raw`。
-
-## Action
-
-agent 只输出结构化动作：
-
-```json
-{
-  "type": "tap",
-  "target": "登录按钮",
-  "x": 512,
-  "y": 1720,
-  "coordinateSource": "layout",
-  "targetBounds": [120, 1680, 900, 1780],
-  "coordinateEvidence": "控件树存在登录按钮 bounds",
-  "reason": "截图和控件树均显示登录按钮"
-}
-```
-
-动作集合：`launchApp`、`restartApp`、`tap`、`toggle`、`longPress`、`inputText`、`swipe`、`back`、`home`、`wait`。
-
-坐标动作必须说明坐标来源。`layout` 只能用于目标本身存在控件树节点的场景；H5 自绘、图片按钮、Canvas 等没有独立节点的目标必须使用 `visual` 或 `pixel`，并提供截图目标区域 `targetBounds` 和 `coordinateEvidence`。
+步骤内观察必须传 `--step-id <step-id>`。全局诊断观察必须显式传 `--scope global` 或 `--global-observation`。
 
 ## ActionResult
 
-动作执行事实：
+正式 actionResult 必须由 `scripts/action.sh` 写入，并带 `source: "action.sh"`。
 
 ```json
 {
   "schemaVersion": 1,
   "type": "actionResult",
-  "platform": "harmony",
-  "time": "2026-06-17T10:00:01.000Z",
+  "source": "action.sh",
+  "platform": "android",
+  "stepId": "step-001",
   "action": "tap",
   "ok": true,
-  "x": 512,
-  "y": 1720,
+  "target": "登录按钮",
   "coordinateSource": "layout",
   "targetBounds": [120, 1680, 900, 1780],
   "coordinateEvidence": "控件树存在登录按钮 bounds"
 }
 ```
 
-动作失败时返回或落盘错误事实。
+动作集合和坐标要求见 `action-schema.md`。
 
-## Perception
+## Agent 事实
 
-页面理解输出示例：
+agent 可通过 `run-case.js --record-json` 写入非平台事实：
 
-```json
-{
-  "pageState": "login_page",
-  "visibleTexts": ["手机号", "验证码", "登录"],
-  "candidates": [
-    {
-      "role": "login_button",
-      "text": "登录",
-      "bounds": [120, 1800, 960, 1900],
-      "coordinateSource": "layout",
-      "confidence": 0.92,
-      "evidence": ["screenshot", "layout"]
-    },
-    {
-      "role": "send_button",
-      "text": null,
-      "bounds": [839, 1201, 901, 1275],
-      "coordinateSource": "pixel",
-      "confidence": 0.86,
-      "evidence": ["screenshot-orange-pixel-region"]
-    }
-  ],
-  "risks": []
-}
-```
+| 类型 | 用途 |
+| --- | --- |
+| `precondition` | 当前 execution 内的前置条件结果 |
+| `perception` | 影响后续动作的视觉理解 |
+| `decision` | 影响后续动作或断言的决策 |
+| `rule` | 全局规则或弹窗规则处理 |
+| `flow` | Flow 使用、跳过、失败或完成事实 |
+| `assertion` | 步骤断言结果 |
 
-Perception 不执行动作、不判定最终通过。
+不要为了说明想法写入不会影响执行的事实。
 
-## Decision
-
-输入：
-
-- `case.json` 当前步骤。
-- `case.json.globalRules` 当前 case 的全局规则。
-- `notes.jsonl` 用户补充。
-- 当前 `Observation`。
-- Perception 输出。
-- 历史 `timeline.jsonl`。
-- 前置条件、安全预算和失败策略。
-
-输出：`act`、`assert_pass`、`assert_fail`、`wait`、`blocked`。
-
-`globalRules` 只在当前 case execution 内生效。agent 根据观察事实判断规则是否命中；平台适配器和底层脚本不直接解释规则条件。
-
-规则命中、跳过或失败时，agent 写入 `rule` 事实事件：
+`precondition` 最小模板：
 
 ```json
 {
-  "type": "rule",
-  "ruleId": "rule-001",
-  "status": "MATCHED",
-  "stepId": "step-002",
-  "reason": "检测到权限弹窗"
+  "type": "precondition",
+  "id": "pre-001",
+  "status": "PASS",
+  "reason": "用户已在执行前确认登录态满足"
 }
 ```
 
-`ruleId` 必须引用当前 `case.json.globalRules` 中存在的规则；`status` 使用 `MATCHED`、`SKIPPED`、`FAILED`、`BLOCKED` 或 `UNKNOWN`。
+`status` 只允许 `PASS`、`PREPARED`、`FAIL`、`UNKNOWN`、`BLOCKED`。`PASS` 和 `PREPARED` 允许进入步骤，其余状态会收尾当前 execution。
 
-## Reporter 和 MetricsCollector
+## Assertion
 
-Reporter 渲染 `CONTEXT.md`/`CONTEXT.html`。MetricsCollector 生成 `metrics.json`。
+`assertion PASS` 必须引用当前步骤已有 observation 证据：
 
-报告和统计不得成为执行依据；下一次执行依据仍是 `source.md`、`case.json`、`notes.jsonl` 和已确认环境。
-
-- `scripts/run-case.js <case-dir> --platform <platform> --start` 创建当前平台 execution，并自动通过顶层动作入口写入 execution 级 `restartApp` 冷启动事实；冷启动失败或不可验证时根据 `case.json.isolation.requireCleanRestart` 和自动推断结果决定阻塞或隔离降级。
-- `scripts/preflight-preconditions.js <case-dir|caseNo|caseKey|title>... --cwd <workspace-cwd>` 在创建 execution 前批量归纳前置条件，输出 `READY`、`CONFIRM`、`NEEDS_SETUP`、`UNKNOWN`、`UNSUPPORTED` 分类，供用户决定哪些用例进入无人值守执行。
-- `scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>` 在 execution 创建前准备当前平台必需依赖，写入 `state.json.dependencies`，并刷新当前平台报告。
-- `scripts/observe.sh --case-dir <case-dir> --platform <platform> --execution-id <id> (--step-id <step-id>|--scope global) ...` 采集观察并自动记录，内部写入 `source:"observe.sh"`；步骤内观察必须传 `--step-id`，报告据此把截图证据关联到用例步骤；非步骤观察必须显式标记全局。
-- `scripts/action.sh --case-dir <case-dir> --platform <platform> --execution-id <id> --step-id <step-id> ...` 执行动作并自动记录；`restartApp` 禁止绑定 `stepId`；非 `launchApp`、非 `wait` 的业务动作要求当前步骤已有 `COMPLETED` 或 `EMPTY` 的 `flowScan`，`FAILED` 扫描不能作为动作前置。
-- `scripts/run-case.js <case-dir> --platform <platform> --record-json <json>` 追加非平台事实事件；正式观察只能由 `scripts/observe.sh` 自动写入，直接手写 `observation` 会被 `OBSERVATION_SOURCE_REQUIRED` 拒绝；正式动作结果只能由 `scripts/action.sh` 自动写入，直接手写 `actionResult` 会被 `ACTION_RESULT_SOURCE_REQUIRED` 拒绝；`assertion PASS` 必须引用当前步骤已有且由 `scripts/observe.sh` 写入的 observation 截图、布局或 label，例如 `{"type":"assertion","stepId":"step-001","status":"PASS","reason":"截图显示首页","evidence":["screenshots/001-step-001-after.png"]}`，缺失时以 `ASSERTION_EVIDENCE_REQUIRED` 拒绝。
-- `scripts/run-case.js <case-dir> --platform <platform> --finalize --status <status>` 聚合结果并刷新当前平台报告。
-
-## BusinessFlowRepository
-
-业务路径 Flow 是人工指挥 agent 录制出来的可复用业务操作参考，不替代 `case.json` 的用例步骤，也不替代 agent 的实时判断。
-
-当前脚本入口：
-
-```bash
-scripts/flow/start-recording.js --name <flow-name> --intent <intent1,intent2> --platform <platform> [--flow-scope universal|platform] [--cwd <workspace-cwd>] [--device <device>] [--app <appId>] [--entry <entry>]
-scripts/flow/observe.sh --flow-dir <flow-dir> --recording-id <id> ...
-scripts/flow/action.sh --flow-dir <flow-dir> --recording-id <id> --instruction <text> --type <action> ...
-scripts/flow/finalize-recording.js <flow-dir> --recording-id <id> --status READY
-scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform <platform> --execution-id <id> [--step-id <step-id>] [--matched-flow-ids <id,id>]
+```json
+{
+  "type": "assertion",
+  "stepId": "step-001",
+  "status": "PASS",
+  "reason": "截图显示已进入首页",
+  "evidence": ["screenshots/001-step-001-after.png"]
+}
 ```
 
-`start-recording.js` 会把录制环境写入 Flow `state.json`；后续 `flow/observe.sh` 和 `flow/action.sh` 未显式传平台、设备、应用或入口时，必须继承该环境。
+证据要求和 PASS 归一规则见 `failure-policy.md`。
 
-正式执行用例时，agent 必须在创建 execution 后调用 `scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform <platform> --execution-id <id>` 扫描 `<workspace-cwd>/flows/` 的可用 Flow，并读取脚本输出作为全局候选业务路径库；任何带 `stepId` 的步骤事实都要求这个 execution 级全局扫描已存在且可用。每个业务步骤匹配或动作前，必须再调用 `record-scan.js ... --step-id <step-id>` 写入步骤级 `flowScan`。脚本输出包含可执行参考步骤，并自动把带 `source=list-flows`、`flowsRoot`、`scannedFlowIds` 的 `flowScan` 事实写入当前 execution；不允许 agent 自己拼目录扫描或手写缺少扫描来源的 `flowScan`。带平台扫描默认只返回当前平台专用 Flow 和通用 Flow。`status=FAILED` 的扫描事实只能用于审计失败原因，不能满足后续步骤或动作守卫。
+## FlowScan
 
-Flow 默认跨平台通用。录制时的 `recordingPlatform` 只表示采集环境；只有 `flow.json`/`state.json` 中存在 `platform` 字段，或 Flow 名称显式带有 `-android`、`-ios`、`-harmony` 这类平台标识时，才视为平台专用 Flow；同语义匹配时，当前平台专用 Flow 优先于通用 Flow。
-
-当步骤文本、前置条件或当前页面目标包含业务导航语义时，例如“进入 AI 精灵页面”“打开创作页”“登录账号”“点击某业务入口后再验证”，agent 必须先尝试匹配候选 Flow；匹配依据包括 `name`、`intent`、`humanInstruction`、`successHint` 和当前页面状态。
-
-每次扫描、使用、跳过或失败都必须在当前 execution 的 `timeline.jsonl` 写入 `flowScan` / `flow` 事实事件。涉及具体失败步骤时，`flowScan.stepId` 必须等于该失败步骤，否则不能作为该步骤的扫描证据；`PAGE_LOAD_BLOCKED`、`ACTION_TARGET_NOT_FOUND`、`APP_CONTEXT_LOST` 这类结论必须传 `--failed-step`。
-
-`flowScan` 事件示例：
+`flowScan` 必须由 `scripts/flow/record-scan.js` 写入：
 
 ```json
 {
   "type": "flowScan",
   "source": "list-flows",
   "status": "COMPLETED",
-  "candidateCount": 3,
-  "scannedFlowIds": ["flow-xxxxxxxxxxxx", "flow-bbbbbbbbbbbb", "flow-cccccccccccc"],
-  "matchedFlowIds": ["flow-xxxxxxxxxxxx"],
-  "flowsRoot": "<workspace-cwd>/flows",
-  "stepId": "step-002",
-  "reason": "步骤需要进入 AI 精灵页面"
+  "flowsRoot": "flows",
+  "candidateCount": 2,
+  "scannedFlowIds": ["flow-xxx"],
+  "matchedFlowIds": ["flow-xxx"],
+  "stepId": "step-002"
 }
 ```
 
-`flowScan.status` 使用 `COMPLETED`、`EMPTY` 或 `FAILED`。
+Flow 录制、扫描和使用规则见 `flow-format.md`。
 
-```json
-{
-  "type": "flow",
-  "flowId": "flow-xxxxxxxxxxxx",
-  "flowStepId": "flow-step-001",
-  "status": "STEP_COMPLETED",
-  "stepId": "step-002",
-  "reason": "已参考录制路径点击创作入口"
-}
-```
+## Result
 
-`flow` 状态使用 `STARTED`、`STEP_STARTED`、`STEP_COMPLETED`、`COMPLETED`、`FAILED`、`SKIPPED`、`BLOCKED`。
+`result` 事件、`result.json` 和 `metrics.json` 由 `run-case.js --finalize` 写入。报告产物语义见 `context-format.md`。
 
-如果 agent 在未扫描 Flow 的情况下直接探索相似入口并失败，该执行不应直接判定业务阻塞；必须补做 Flow 扫描和匹配后再下结论。`PAGE_LOAD_BLOCKED`、`ACTION_TARGET_NOT_FOUND`、`APP_CONTEXT_LOST` 等结论缺少 `--failed-step` 或缺少同一失败步骤的 `flowScan` 事实时会被归一为 `BLOCKED/FLOW_SCAN_MISSING`。
+## 来源守卫
+
+- 公开 `run-case.js --record-json` 不接受正式 `observation`。
+- 公开 `run-case.js --record-json` 不接受正式 `actionResult`。
+- 正式观察必须走 `observe.sh`。
+- 正式动作必须走 `action.sh`。
+- 直接手写观察或动作结果会被拒绝。

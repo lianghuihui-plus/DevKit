@@ -1,29 +1,36 @@
 # 用例格式
 
-## Markdown 输入
+> 负责：Markdown 输入、`case.json`、`source.md`、`notes.jsonl`、执行契约。
+> 不负责：执行流程、平台动作、报告展示、failureCode。
+> 参见：`workflow.md`、`context-format.md`、`failure-policy.md`。
 
-只要求以下两个章节：
+## 输入和目录
 
-```markdown
-# 登录成功
+支持 Markdown 文件、Markdown 目录、已有 caseNo、caseKey、标题或 case 目录。输入先由 `resolve-execution-targets.js` 分流，Markdown 再由 `parse-case.js` 创建或刷新。
 
-## 前置条件
-- App 已安装。
-- 已登录，手机号 13800000000，验证码 123456。
+case 目录：
 
-## 步骤
-1. 打开 App。
-2. 点击「我的」。
-3. 预期看到昵称「测试用户」。
+```text
+cases/C001__ck-xxxxxxxxxxxx/
+  source.md
+  case.json
+  notes.jsonl
+  CONTEXT.md
+  CONTEXT.html
+  platforms/<platform>/
+    state.json
+    CONTEXT.md
+    CONTEXT.html
+    executions/
 ```
 
-`前置条件` 章节名仍是固定入口；章节内容可以使用 `-`、`*`、`1.`、`1)`、`1、`、`（1）`、中文序号或普通非空行，解析时会统一去掉列表序号并保留正文。
+共享资产是 `source.md`、`case.json`、`notes.jsonl`；平台运行态写入 `platforms/<platform>/`。
 
-步骤可以是操作，也可以是断言。断言常见关键词包括：`预期`、`应该`、`看到`、`显示`、`不存在`、`进入`、`确认`。
+## Markdown 约定
+
+Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、全局规则或补充说明。格式不要求完全统一；无法稳定结构化的内容保留到 `source.md` 和 notes，由 agent 执行时结合上下文判断。
 
 ## case.json
-
-`case.json` 是执行契约：
 
 ```json
 {
@@ -31,157 +38,87 @@
   "identity": {
     "caseNo": "C001",
     "caseKey": "ck-xxxxxxxxxxxx",
-    "title": "登录成功",
-    "importSource": "/abs/path/cases/login.md",
-    "sourceSnapshot": "source.md",
-    "sourceSha1": "source-xxxxxxxxxxxx",
-    "sourceUpdatedAt": "2026-06-16T18:00:00+08:00"
+    "title": "AI 精灵单条语音播放按钮展示",
+    "sourceSha1": "source-xxxxxxxxxxxx"
   },
-  "preconditions": [],
-  "steps": [],
-  "isolation": {
-    "requireCleanRestart": "auto"
-  },
-  "globalRules": []
+  "preconditions": [
+    {"id": "pre-001", "text": "用户已登录", "checkMode": "confirm"}
+  ],
+  "steps": [
+    {"id": "step-001", "kind": "action", "sourceText": "进入 AI 精灵页面", "expected": "页面展示 AI 精灵入口"},
+    {"id": "step-002", "kind": "assertion", "sourceText": "确认最新回复展示语音播放按钮", "assertions": ["最新 AI 回复区域展示单条语音播放按钮"]}
+  ],
+  "globalRules": [],
+  "isolation": {"requireCleanRestart": "auto"}
 }
 ```
 
-`isolation.requireCleanRestart` 控制用例对冷启动隔离的要求：
+## identity
 
-- `true`：必须真实冷启动，`restartApp` 失败或不可验证时直接 `BLOCKED/CASE_RESTART_FAILED`。
-- `false`：允许隔离降级继续执行，但报告必须标记 `isolationCompromised`。
-- `"auto"`：由框架根据标题、前置条件和步骤中的冷启动敏感语义推断。
+| 字段 | 含义 |
+| --- | --- |
+| `caseNo` | 人读短编号 |
+| `caseKey` | 稳定身份 key |
+| `title` | 用例标题 |
+| `sourceSha1` | `source.md` 内容摘要 |
 
-## caseNo 与目录
+## preconditions
 
-`caseNo` 是人和 agent 沟通用的短编号，格式为 `C001`、`C002`。它一旦生成就保持稳定，不随标题变化，不复用已删除编号。
+每条包含 `id`、`text`、`checkMode`。
 
-用例目录同步体现编号：
+| checkMode | 含义 |
+| --- | --- |
+| `ready` | 技术上可直接判断 |
+| `confirm` | 需要用户确认 |
+| `needs_setup` | 需要执行前准备 |
+| `unknown` | 无法可靠判断 |
+| `unsupported` | 当前框架不支持自动判断 |
 
-```text
-cases/C001__登录成功__ck-xxxxxxxxxxxx/
-```
+执行前预检见 `workflow.md`；运行期状态见 `failure-policy.md`。
 
-定位约定：
+## steps
 
-- 对话、执行、查看报告优先引用 `caseNo`，例如“执行 C001”。
-- `caseKey` 仍是内部稳定键，用于识别同一个导入来源。
-- 标题可以用于模糊定位，但命中多个 case 时必须让用户改用 `caseNo`。
+步骤 id 形如 `step-001`。常见 kind：
 
-正式执行入口：
+- `action`：需要操作并验证结果。
+- `assertion`：主要验证预期结果。
+- `setup`：用例内准备动作。
 
-```bash
-scripts/resolve-execution-targets.js C001 --cwd <workspace-cwd>
-```
-
-内部维护脚本：
-
-```bash
-scripts/assign-case-nos.js
-scripts/resolve-case-ref.js C001
-scripts/resolve-case-ref.js ck-xxxxxxxxxxxx
-scripts/resolve-case-ref.js "登录成功"
-```
-
-正式执行入口使用 `resolve-execution-targets.js`；`assign-case-nos.js` 和 `resolve-case-ref.js` 只用于内部维护、迁移或人工排障。
+断言型步骤必须满足 `failure-policy.md` 的证据规则。
 
 ## globalRules
 
-`globalRules` 是 case-local 的全局规则，只在当前 `case.json` 对应的 execution 内生效；不同 case 的 `globalRules` 不共享、不合并。
+用于表达跨步骤规则，例如系统弹窗处理、禁止破坏性操作、页面稳定条件、业务入口偏好。运行期 `rule` 事件 schema 见 `interfaces.md`。
 
-它用于稳定性和干扰处理，不用于改写主业务路径。适合放入：
+## isolation
 
-- 系统权限弹窗、升级弹窗、公告弹窗等已知干扰处理。
-- 页面加载、短暂空白、弱网提示等等待或阻塞策略。
-- 目标 App 离开前台后的安全恢复策略。
+| 值 | 含义 |
+| --- | --- |
+| `true` / `required` | 必须真实冷启动，失败直接 `BLOCKED/CASE_RESTART_FAILED` |
+| `false` / `optional` | 冷启动失败可降级继续 |
+| `auto` | 框架根据用例语义识别是否冷启动敏感 |
 
-不适合放入：
+## source.md
 
-- 登录、下单、购买、创建数据等业务流程分支。
-- 清数据、卸载、支付、删除、发布、修改真实资料等破坏性操作。
-- 需要猜测账号、密码、验证码或业务数据的准备逻辑。
+保存原始用例文本，是稳定输入源。原始 Markdown 变化会更新 `sourceSha1`；报告发现 `sourceSha1` 或 `caseContractSha` 不匹配时，应隐藏旧结果并提示重新执行。
 
-推荐结构：
+## notes.jsonl
+
+保存用户补充和修正：
 
 ```json
-{
-  "id": "rule-001",
-  "type": "guard",
-  "scope": "system_popup",
-  "appliesTo": "any_step",
-  "priority": 100,
-  "when": "出现权限弹窗",
-  "then": {
-    "decision": "act",
-    "action": {
-      "type": "tap",
-      "target": "允许"
-    }
-  },
-  "maxAttempts": 1,
-  "onFailure": "BLOCKED"
-}
+{"time":"2026-07-08T10:00:00+08:00","type":"stepHint","stepId":"step-002","text":"语音播放按钮可能在最新回复右下角"}
 ```
 
-字段约定：
+用户补充不能直接改写 source；解析或刷新 case 时重放有效 notes，失效 notes 应在报告中标记。
 
-- `id`：当前 case 内唯一规则 id。
-- `type`：规则类型，当前建议只使用 `guard`。
-- `scope`：规则适用范围，例如 `system_popup`、`app_foreground`、`loading_state`、`known_interruption`。
-- `appliesTo`：适用步骤，使用 `any_step` 或步骤 id 数组，例如 `["step-002"]`。
-- `priority`：同一观察命中多个规则时的排序依据，数值越大越优先。
-- `when`：由 agent 基于截图、控件树、日志和历史事实判断的命中条件。
-- `then`：命中后的建议决策，只能使用安全的结构化动作、`wait` 或 `blocked`。
-- `maxAttempts`：当前 execution 内最多命中次数，防止循环处理。
-- `onFailure`：规则动作无法完成时的状态，建议优先使用 `BLOCKED`；`UNKNOWN` 仅用于规则事实层面的历史兼容或无法归类场景，不应作为正式断言证据不足的最终结果。
+## caseContractSha
 
-执行约定：
+执行契约摘要，至少覆盖 `sourceSha1`、`preconditions`、`steps`、`globalRules`、notes 重放 hints 和 `isolation`。result 的 contract 与当前 case 不一致时，不展示为当前有效结果。
 
-- agent 负责判断 `globalRules` 是否命中；脚本不直接解释 `when`。
-- 命中规则时，agent 仍需通过 `scripts/run-case.js --record-json` 记录 `decision`，并通过顶层 `scripts/action.sh` 执行动作。
-- 规则命中、跳过、失败等事实应写入 `timeline.jsonl`，报告只从事实记录渲染。
-- 如果规则处理会改变主业务路径或业务数据，应停止并记录 `BLOCKED`，不要静默改写用例步骤。
+## 编号与刷新
 
-## 源文件变更
-
-当 `source.md` 内容变化导致 `sourceSha1` 变化时：
-
-1. 重新解析 `source.md` 并生成 `case.json`。
-2. 重放 `notes.jsonl`；无法匹配的补充标记为 stale，不删除。
-3. 追加系统记录并刷新报告。
-
-刷新 `case.json` 时必须保留已有 `globalRules`，除非输入源显式提供新的规则定义；前置条件、规则变化和用户补充重放产生的步骤 `hints` 变化都会影响 `caseContractSha`，旧执行结果不得继续作为当前结果展示。
-
-## 重复导入与执行
-
-- `caseKey` 来自外部导入路径，用于定位同一个用例空间。
-- 外部文件移动、删除或修改，不影响已有用例空间；默认执行依据是 `source.md`。
-- 重复执行同一用例时读取最新 `case.json`、`notes.jsonl`、已确认环境和当前 `source.md` 版本，从第 1 步完整重跑。
-- 新执行写入当前平台的 `platforms/<platform>/executions/<executionId>/`，并记录当前 `sourceSha1`。
-- 新执行写入当前平台的 `platforms/<platform>/executions/<executionId>/`，并记录当前 `caseContractSha`。
-- 只有显式 `--refresh-from-input` 才用外部 Markdown 覆盖 `source.md`。
-
-## source.md 变更
-
-用户告知已调整 `source.md` 后，执行：
-
-```bash
-scripts/refresh-case.js <case-dir>
-```
-
-用户在对话中补充时，使用：
-
-```bash
-scripts/apply-note.js <case-dir> --text <note> [--applies-to <step-id>]
-```
-
-## 补充重放
-
-按以下顺序匹配补充：
-
-1. 同一步骤 id 且步骤原文仍一致。
-2. 相似步骤原文。
-3. 相同目标文案或动作类型。
-4. 前后相邻步骤。
-
-如果补充指向已删除的测试数据、断言或步骤，标记为 stale，不再应用。
+- 新用例自动分配 `caseNo`。
+- 刷新已有用例时尽量保持 `caseNo` 和 `caseKey` 稳定。
+- 重复导入同一 source 时应复用或刷新，不静默创建重复 case。
+- 不支持从失败步骤续跑；每次执行都是完整重跑。
