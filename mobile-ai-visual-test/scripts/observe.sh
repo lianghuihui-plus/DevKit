@@ -8,6 +8,7 @@ execution_id=""
 label=""
 has_label=0
 step_id=""
+scope=""
 out=""
 args=()
 platform=""
@@ -20,6 +21,8 @@ while [[ $# -gt 0 ]]; do
     --case-dir) case_dir="${2:-}"; shift 2 ;;
     --execution-id) execution_id="${2:-}"; shift 2 ;;
     --step-id) step_id="${2:-}"; shift 2 ;;
+    --scope) scope="${2:-}"; shift 2 ;;
+    --global-observation) scope="global"; shift ;;
     --platform) platform="${2:-}"; has_platform=1; args+=("$1" "$2"); shift 2 ;;
     --device) has_device=1; args+=("$1" "$2"); shift 2 ;;
     --app|--bundle) has_app=1; args+=("$1" "$2"); shift 2 ;;
@@ -40,6 +43,10 @@ if [[ -n "$case_dir" ]]; then
   fi
   if [[ -z "$execution_id" ]]; then
     execution_id="$(mavt_latest_execution_id "$runtime_dir")"
+  fi
+  if [[ -z "$step_id" && "$scope" != "global" ]]; then
+    echo "OBSERVATION_SCOPE_REQUIRED: case-bound observe 必须传 --step-id；全局诊断观察必须显式传 --scope global 或 --global-observation。" >&2
+    exit 2
   fi
   env_args=()
   while IFS= read -r item; do
@@ -64,7 +71,21 @@ if [[ -n "$case_dir" ]]; then
   if [[ -n "$platform" ]]; then
     run_case_args+=(--platform "$platform")
   fi
-  "$script_dir/run-case.js" "${run_case_args[@]}" --check-budget --event-type observation --execution-id "$execution_id" >/dev/null
+  precheck_args=("${run_case_args[@]}" --check-budget --event-type observation --execution-id "$execution_id")
+  if [[ -n "$step_id" ]]; then
+    precheck_args+=(--step-id "$step_id")
+  elif [[ "$scope" == "global" ]]; then
+    precheck_args+=(--scope global)
+  fi
+	  set +e
+	  precheck_output="$("$script_dir/run-case.js" "${precheck_args[@]}" 2>&1)"
+	  precheck_status=$?
+	  set -e
+	  if [[ $precheck_status -ne 0 ]]; then
+	    printf '%s\n' "$precheck_output" >&2
+	    exit "$precheck_status"
+	  fi
+	  printf '%s' "$precheck_output" | mavt_emit_pace_hint
   numbered_label="$(mavt_numbered_observe_label "$case_dir" "$execution_id" "$label" "$platform")"
   args+=("--label" "$numbered_label")
   set +e
@@ -84,6 +105,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { input += chunk; });
 process.stdin.on("end", () => {
   const event = JSON.parse(input);
+  event.source = "observe.sh";
   event.stepId = stepId;
   if (event.observation && typeof event.observation === "object" && !event.observation.stepId) {
     event.observation.stepId = stepId;
@@ -91,8 +113,23 @@ process.stdin.on("end", () => {
   process.stdout.write(`${JSON.stringify(event, null, 2)}\n`);
 });
 ' "$step_id")"
+  elif [[ "$scope" == "global" ]]; then
+    observation="$(printf '%s' "$observation" | node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const event = JSON.parse(input);
+  event.source = "observe.sh";
+  event.scope = "global";
+  if (event.observation && typeof event.observation === "object" && !event.observation.scope) {
+    event.observation.scope = "global";
+  }
+  process.stdout.write(`${JSON.stringify(event, null, 2)}\n`);
+});
+')"
   fi
-  "$script_dir/run-case.js" "${run_case_args[@]}" --record-json "$observation" --execution-id "$execution_id" >/dev/null
+	  MAVT_OBSERVATION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-observation-json "$observation" --execution-id "$execution_id" >/dev/null
   if [[ $adapter_status -ne 0 ]]; then
     failure_code="TOOL_ERROR"
     if [[ $adapter_status -eq 64 ]]; then

@@ -20,6 +20,9 @@ case "$type" in
   launchApp)
     exec "$atoms_dir/launch-app.sh" "${args[@]}"
     ;;
+  restartApp)
+    exec "$atoms_dir/restart-app.sh" "${args[@]}"
+    ;;
   tap|toggle)
     exec "$atoms_dir/tap.sh" "${args[@]}"
     ;;
@@ -36,7 +39,7 @@ case "$type" in
     exec "$atoms_dir/keyevent.sh" "${args[@]}" --key "$type"
     ;;
   *)
-    echo "iOS 适配器尚未实现" >&2
+    echo "iOS 适配器不支持的动作: ${type:-unknown}" >&2
     exit 64
     ;;
 esac

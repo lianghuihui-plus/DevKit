@@ -82,6 +82,9 @@ case "$type" in
   launchApp)
     run_atom "$type" "$atoms_dir/launch-app.sh" "${device_args[@]}" --app "$bundle" ${entry:+--entry "$entry"}
     ;;
+  restartApp)
+    run_atom "$type" "$atoms_dir/restart-app.sh" "${device_args[@]}" --app "$bundle" ${entry:+--entry "$entry"}
+    ;;
   tap)
     run_atom "$type" "$atoms_dir/tap.sh" "${device_args[@]}" --x "$x" --y "$y"
     ;;

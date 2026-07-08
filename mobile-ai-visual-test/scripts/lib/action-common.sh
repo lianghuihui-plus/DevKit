@@ -167,6 +167,25 @@ console.log(JSON.stringify({
 ' "$@"
 }
 
+mavt_emit_pace_hint() {
+  node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const data = JSON.parse(input || "{}");
+    const hint = data.paceHint;
+    if (!hint || !hint.message) return;
+    const prefix = hint.level === "WARN" ? "PACE_HINT" : "PACE_INFO";
+    process.stderr.write(`${prefix}: ${hint.message}\n`);
+  } catch {
+    // Best effort only; pace hints must never affect execution.
+  }
+});
+'
+}
+
 mavt_observation_failure_json() {
   node -e '
 function localIso(date = new Date()) {
@@ -228,6 +247,7 @@ function parseBounds(value) {
   return parts;
 }
 if (meta.action && meta.action !== "wait" && event.ok !== false) event.settleMs = Number(meta.settleMs || 0);
+event.source = "action.sh";
 const x = numberOrString(meta.x);
 const y = numberOrString(meta.y);
 if (x !== undefined) event.x = x;

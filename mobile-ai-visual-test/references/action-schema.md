@@ -40,7 +40,7 @@ HarmonyOS 的 `inputText` 必须提供 `x/y`，设备端命令形态为 `uitest 
 
 当目标是 H5 自绘/图片/Canvas，且控件树没有独立节点时，必须先从截图中识别目标像素边界，再点击边界中心；不能只根据附近文字或输入框 bounds 估算坐标。
 
-一次坐标点击后页面无变化或命中错误区域时，不能重复使用同一 `x/y` 重试。必须重新 observe，并更换坐标证据；如果仍无法定位，停止并按失败策略记录 `ACTION_TARGET_NOT_FOUND` 或 `UNKNOWN`。
+一次坐标点击后页面无变化或命中错误区域时，不能重复使用同一 `x/y` 重试。必须重新 observe，并更换坐标证据；如果仍无法定位，停止并按失败策略记录 `ACTION_TARGET_NOT_FOUND` 或 `BLOCKED/TOOL_ERROR`。
 
 ## 平台适配
 
@@ -58,16 +58,21 @@ scripts/platform/adapters/ios/action.sh
 scripts/platform/adapters/<platform>/atoms/
 ```
 
-atoms 只做最小设备能力，例如 `tap.sh`、`long-press.sh`、`swipe.sh`、`input-text.sh`、`input-state.sh`、`screenshot.sh`、`dump-tree.sh`、`foreground.sh`、`logs.sh`、`launch-app.sh`、`wait.sh`。`action.sh` 只分发动作到 atoms，`observe.sh` 只组合一次观察快照所需 atoms；不要把 `tap + inputText`、`tap + wait + assert`、`scroll until visible + tap`、`longPress + tap menu item` 这类 agent 可编排流程封装到平台底层。
+atoms 只做最小设备能力，例如 `tap.sh`、`long-press.sh`、`swipe.sh`、`input-text.sh`、`input-state.sh`、`screenshot.sh`、`dump-tree.sh`、`foreground.sh`、`logs.sh`、`launch-app.sh`、`restart-app.sh`、`wait.sh`。`action.sh` 只分发动作到 atoms，`observe.sh` 只组合一次观察快照所需 atoms；不要把 `tap + inputText`、`tap + wait + assert`、`scroll until visible + tap`、`longPress + tap menu item` 这类 agent 可编排流程封装到平台底层。
 
 ## launchApp
 
 `launchApp` 使用已确认环境；无人值守执行阶段不能临时猜测启动入口。Android 若显式 `entry` 因非 exported Activity 等原因启动失败，adapter 可以回退到包级 launcher 启动，并在 action result 中记录 `launchMethod=monkey-fallback` 和 `fallbackReason`。
 
+## restartApp
+
+`restartApp` 是 execution 级隔离动作，由 `scripts/run-case.js --start` 默认自动调用，不能绑定 `--step-id`，也不能作为步骤通过证据。平台 adapter 必须先停止目标 App，再按已确认入口启动：Harmony 使用 `aa force-stop` 后 `aa start`，Android 使用 `am force-stop` 后 `am start` 或 monkey fallback，iOS 使用 Appium terminate 后 activate。成功结果必须记录 `restart=true`、`stopMethod`、`launchMethod` 和平台验证字段；Harmony/Android 记录 `coldStartVerified=true`、旧 PID 和新 PID，iOS 记录 Appium app state 验证结果。失败必须记录 `actionResult ok=false`；如果命令成功但平台无法确认真实冷启动，必须记录 `coldStartVerified=false`，由执行层按隔离降级或 `CASE_RESTART_FAILED` 处理。执行层只把 `ok=true` 且 `coldStartVerified=true` 认定为干净冷启动，缺少验证字段也按不可验证处理。
+
 ## 预算
 
 - 动作成功后默认等待 1000ms 再返回，避免下一次 observe 过早截图；可用 `--settle-ms <ms>` 或 `MAVT_ACTION_SETTLE_MS` 覆盖。
-- 除 `launchApp` 和 `wait` 外，带 `--step-id` 的 case-bound 动作执行前必须已有当前步骤的 `flowScan` 事实；该事实应由 `scripts/flow/record-scan.js ... --step-id <step-id>` 写入，缺失时顶层 `scripts/action.sh` 会在调用平台 adapter 前失败，错误码为 `FLOW_SCAN_REQUIRED`。创建 execution 后的全局扫描只用于建立候选库，不能替代步骤级扫描。
+- 任何带 `stepId` 的步骤事实写入前必须已有 execution 级全局可用 `flowScan` 事实；`restartApp` 禁止绑定 `stepId`；除 `launchApp` 和 `wait` 外，带 `--step-id` 的 case-bound 动作执行前还必须已有当前步骤的可用 `flowScan` 事实。步骤级事实应由 `scripts/flow/record-scan.js ... --step-id <step-id>` 写入，缺失或扫描 `status=FAILED` 时顶层 `scripts/action.sh` 会在调用平台 adapter 前失败，错误码为 `FLOW_SCAN_REQUIRED`。创建 execution 后的全局扫描只用于建立候选库，不能替代步骤级扫描。
+- 正式 execution 的 `actionResult` 必须由顶层 `scripts/action.sh` 写入，并带 `source: "action.sh"`；`scripts/run-case.js --record-json` 不接受 agent 手写的动作结果。
 - 同一操作最多尝试 2 次。
 - 单个前置条件最多 5 个 UI 动作。
 - 所有前置条件合计最多 12 个 UI 动作。
@@ -81,5 +86,5 @@ atoms 只做最小设备能力，例如 `tap.sh`、`long-press.sh`、`swipe.sh`�
 - 仍在目标 App：继续当前步骤。
 - 系统弹窗覆盖：只处理已知且文案明确的弹窗。
 - 进入设置、浏览器、其他 App：最多用 `launchApp` 恢复 1 次，并写入 `timeline.jsonl`。
-- 恢复后页面状态不可判断或业务上下文丢失：`FAIL/APP_CONTEXT_LOST`。
-- 累计离开目标 App 2 次：`FAIL/APP_LEFT_FOREGROUND`。
+- 恢复后页面状态不可判断或业务上下文丢失：`BLOCKED/APP_CONTEXT_LOST`。
+- 累计离开目标 App 2 次：`BLOCKED/APP_LEFT_FOREGROUND`。

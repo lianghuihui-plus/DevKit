@@ -52,6 +52,7 @@ const DECISION_LABELS = {
 
 const ACTION_LABELS = {
   launchApp: '启动应用',
+  restartApp: '冷启动应用',
   tap: '点击',
   toggle: '切换开关',
   longPress: '长按',
@@ -90,11 +91,15 @@ const FAILURE_CODE_LABELS = {
   PLATFORM_UNIMPLEMENTED: '平台能力未实现',
   PRECONDITION_FAILED: '前置条件不满足',
   PRECONDITION_NOT_MET: '前置条件不满足',
+  PRECONDITION_REQUIRED: '需要先处理前置条件',
   PRECONDITION_UNMET: '前置条件未满足',
   PRECONDITION_UNKNOWN: '前置条件无法确认',
   PRECONDITION_UNSUPPORTED: '前置条件不支持自动处理',
   ASSERTION_FAILED: '断言不通过',
   ASSERTION_UNKNOWN: '断言证据不足',
+  ASSERTION_EVIDENCE_REQUIRED: '断言缺少观察证据',
+  STEP_ORDER_VIOLATION: '步骤顺序违规',
+  ACTION_RESULT_SOURCE_REQUIRED: '动作结果来源无效',
   ACTION_TARGET_NOT_FOUND: '未找到操作目标',
   PAGE_LOAD_BLOCKED: '页面加载受阻',
   FLOW_NOT_FOUND: '未找到可用业务路径',
@@ -108,6 +113,7 @@ const FAILURE_CODE_LABELS = {
   APP_LEFT_FOREGROUND: '应用离开前台',
   UNKNOWN_POPUP: '未知弹窗阻塞',
   CASE_TIMEOUT: '用例执行超时',
+  CASE_RESTART_FAILED: '用例冷启动失败',
   EXECUTION_BUDGET_EXCEEDED: '执行预算超限',
   TOOL_ERROR: '工具执行异常',
 };
@@ -138,6 +144,7 @@ function formatActionSummary(actions) {
     ['滑动', actions.swipe],
     ['返回', actions.back],
     ['启动', actions.launchApp],
+    ['冷启动', actions.restartApp],
     ['等待', actions.wait],
   ]
     .filter(([, count]) => count)

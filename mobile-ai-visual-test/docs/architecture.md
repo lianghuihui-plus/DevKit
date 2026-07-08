@@ -1,0 +1,238 @@
+# Mobile AI Visual Test Skill 架构图
+
+本文档用于说明 `mobile-ai-visual-test` skill 的整体设计架构、执行链路和核心守卫。
+
+## 整体架构
+
+```mermaid
+flowchart TD
+  U["用户输入<br/>输入: Markdown / caseNo / 目录 / 批量执行目标<br/>作用: 触发录制或执行流程"] --> S["Skill 编排层<br/>文件: SKILL.md + references<br/>职责: 定义协议、边界、失败策略和 agent 规则"]
+
+  S --> M{"模式分流<br/>判断: 录制 Flow 还是执行 case<br/>约束: 两种模式不能混用"}
+  M -->|录制 Flow| FR["Flow Recording Mode<br/>用途: 人工指挥录制业务路径<br/>禁止: 启动 case execution"]
+  M -->|执行用例| CE["Case Execution Mode<br/>用途: 执行 Markdown 用例<br/>要求: 逐 case 闭环"]
+
+  FR --> FS["scripts/flow/start-recording.js<br/>职责: 创建录制会话<br/>写入: name / intent / platform / environment"]
+  FS --> FO["scripts/flow/observe.sh<br/>职责: 录制前后观察<br/>产物: 截图 / 控件树 / 日志"]
+  FO --> FA["scripts/flow/action.sh<br/>职责: 执行人工指令<br/>产物: flowAction / actionResult"]
+  FA --> FF["scripts/flow/finalize-recording.js<br/>职责: 收尾录制<br/>输出: flow.json / flow.md"]
+  FF --> BF["flows/{flow}/<br/>内容: flow.json / flow.md / recordings<br/>用途: 可复用业务路径参考"]
+
+  CE --> RT["resolve-execution-targets.js<br/>职责: 解析执行目标<br/>输出: existingCases / markdownFiles"]
+  RT --> PC["parse-case.js / refresh-case.js<br/>职责: 生成或刷新用例契约<br/>输出: case.json"]
+  PC --> CJ["case.json / source.md / notes.jsonl<br/>职责: 当前 case 稳定输入源<br/>约束: 执行以 case.json 为契约"]
+  CJ --> PFL["preflight-preconditions.js<br/>职责: 批量归纳前置条件<br/>输出: READY / CONFIRM / NEEDS_SETUP / UNKNOWN / UNSUPPORTED"]
+
+  PFL --> ENV["probe-env.sh / update-env.js / prepare-env.sh<br/>职责: 探测、确认、准备平台环境<br/>输出: state.json"]
+  ENV --> ST["platforms/{platform}/state.json<br/>内容: 环境、依赖、最新状态<br/>说明: 不是续跑指针"]
+
+  CJ --> START["run-case.js --start<br/>职责: 创建新 execution<br/>产物: execution.json / timeline.jsonl"]
+  ST --> START
+  START --> EX["executions/{executionId}/<br/>职责: 单次执行运行态目录<br/>保存: facts / result / metrics / evidence"]
+
+  EX --> PCF["precondition facts<br/>职责: 写入每条前置条件结果<br/>要求: PASS / PREPARED 才能进入步骤<br/>非通过: 自动 result + finalize"]
+  PCF --> SCAN["flow/record-scan.js<br/>职责: 扫描 READY Flow<br/>写入: 全局或步骤级 flowScan"]
+  BF --> SCAN
+
+  SCAN --> LOOP["步骤执行循环<br/>顺序: step-001 -> step-002 -> ...<br/>约束: 不跳步、不回头补前置步骤"]
+
+  LOOP --> OBS["observe.sh<br/>职责: 正式执行观察<br/>写入: observation + 证据路径"]
+  LOOP --> ACT["action.sh<br/>职责: 执行结构化动作<br/>写入: actionResult"]
+  LOOP --> REC["run-case.js --record-json<br/>职责: 写 agent 事实<br/>类型: perception / decision / flow / assertion"]
+
+  OBS --> PRE["run-case.js --check-budget<br/>职责: 设备动作前预检<br/>检查: PreconditionGuard / StepGuard / 预算 / FlowScan"]
+  ACT --> PRE
+  PRE --> ADP["platform/action.sh 或 observe.sh<br/>职责: 平台分发<br/>输入: 通用 observe/action"]
+  ADP --> PAD["平台 adapter<br/>harmony / android / ios<br/>职责: 设备事实采集和动作执行<br/>禁止: 业务判断"]
+  PAD --> ATOM["atoms<br/>职责: 最小设备能力<br/>示例: screenshot / dump-tree / tap / input / wait / logs"]
+
+  OBS --> TL["timeline.jsonl<br/>定位: execution 事实源<br/>用途: result / metrics / report 的唯一聚合来源"]
+  ACT --> TL
+  REC --> TL
+
+  TL --> GUARD["run-case.js 核心守卫<br/>PreconditionGuard: 前置条件事实<br/>GlobalFlowScanGuard: 全局 FlowScan<br/>StepGuard: 步骤顺序<br/>EvidenceGuard: 步骤证据<br/>FlowGuard: Flow 失败门禁<br/>BudgetGuard: 执行预算"]
+  GUARD --> FIN["run-case.js --finalize<br/>职责: 聚合执行结论<br/>约束: PASS 必须所有 step 有证据"]
+
+  FIN --> RES["result.json<br/>内容: 状态 / 失败码 / 失败步骤 / 原因"]
+  FIN --> MET["metrics.json<br/>内容: 步骤 / 动作 / Flow / 证据 / 稳定性统计"]
+  FIN --> REP["CONTEXT.md / CONTEXT.html<br/>用途: 单 case 单平台复盘报告<br/>展示: 步骤、证据、失败现场"]
+  REP --> IDX["index.html<br/>用途: 工作空间总览<br/>展示: 所有 case 和平台最新状态"]
+```
+
+## 执行状态机
+
+```mermaid
+stateDiagram-v2
+  state "EnvConfirmed<br/>环境已确认<br/>update-env 固化目标<br/>prepare-env 准备依赖" as EnvConfirmed
+  state "ExecutionStarted<br/>execution 已创建<br/>可写 timeline facts" as ExecutionStarted
+  state "PreconditionReady<br/>前置条件事实已写齐<br/>PASS / PREPARED 才能进入步骤" as PreconditionReady
+  state "GlobalFlowScanned<br/>全局 Flow 候选库已扫描<br/>后续步骤可做 Flow 匹配" as GlobalFlowScanned
+  state "StepCurrent<br/>当前步骤游标<br/>必须按 case.json 顺序推进" as StepCurrent
+  state "StepObserved<br/>当前步骤已有观察证据<br/>截图 / 控件树 / 日志" as StepObserved
+  state "StepFlowScanned<br/>当前步骤已扫描 Flow<br/>满足业务动作前置要求" as StepFlowScanned
+  state "StepActed<br/>当前步骤已执行动作<br/>产生 actionResult" as StepActed
+  state "StepAsserted<br/>当前步骤已写断言<br/>断言型 step 必须到达" as StepAsserted
+  state "NextStep<br/>当前 step 有通过证据<br/>允许进入下一步" as NextStep
+  state "FinalizeReady<br/>所有 step 有通过证据<br/>可以尝试 PASS 收尾" as FinalizeReady
+  state "Passed<br/>用例通过<br/>已生成 result / metrics / report" as Passed
+  state "Failed<br/>业务断言失败<br/>通常对应 ASSERTION_FAILED" as Failed
+  state "Unknown<br/>历史兼容 / 异常状态<br/>正式断言证据不足不落这里" as Unknown
+  state "Blocked<br/>环境 / Flow / 预算 / 前置条件阻塞<br/>无法可靠继续执行" as Blocked
+
+  [*] --> EnvConfirmed: update-env + prepare-env
+  EnvConfirmed --> ExecutionStarted: run-case --start
+  ExecutionStarted --> PreconditionReady: record precondition facts
+  PreconditionReady --> GlobalFlowScanned: record-scan execution级
+
+  GlobalFlowScanned --> StepCurrent: step-001
+
+  StepCurrent --> StepObserved: observe --step-id
+  StepObserved --> StepFlowScanned: record-scan --step-id
+  StepFlowScanned --> StepActed: actionResult ok=true
+  StepFlowScanned --> StepAsserted: assertion PASS
+  StepActed --> StepAsserted: 如需确认结果
+  StepAsserted --> NextStep: 当前 step 有通过证据
+
+  NextStep --> StepCurrent: 进入下一个 step
+  NextStep --> FinalizeReady: 所有 step 有通过证据
+
+  FinalizeReady --> Passed: finalize PASS
+  StepCurrent --> Failed: assertion FAIL / ASSERTION_UNKNOWN
+  StepCurrent --> Unknown: 历史兼容 / 无法归类
+  StepCurrent --> Blocked: 环境 / Flow / 预算 / 前置条件阻塞
+
+  Passed --> [*]
+  Failed --> [*]
+  Unknown --> [*]
+  Blocked --> [*]
+```
+
+## 步骤与证据守卫
+
+```mermaid
+flowchart LR
+  E["即将写入的事件<br/>来源: agent 或顶层入口<br/>特征: 通常携带 stepId"] --> AG["ActionResultSourceGuard<br/>检查: actionResult 必须来自 action.sh<br/>目的: 防止手写动作证据"]
+  AG -->|来源有效| PG["PreconditionGuard<br/>检查: 每条前置条件是否有事实<br/>通过: PASS / PREPARED"]
+  AG -->|手写动作结果| ERRA["ACTION_RESULT_SOURCE_REQUIRED<br/>结果: 拒绝写入 timeline<br/>要求: 改走 scripts/action.sh"]
+  PG -->|前置条件通过| FG["GlobalFlowScanGuard<br/>检查: 带 stepId 的事实前必须有全局 flowScan<br/>目的: 强制先建立候选业务路径库"]
+  PG -->|缺失| ERR0["PRECONDITION_REQUIRED<br/>结果: 拒绝写入 timeline<br/>不调用设备动作"]
+  PG -->|非通过事实| ERRP["PRECONDITION_FAILED / UNKNOWN / UNSUPPORTED<br/>结果: 归一为 BLOCKED 或 FAIL<br/>写入 result / metrics<br/>execution 自动 finalized"]
+  FG -->|已全局扫描| SG["StepGuard<br/>检查: 步骤顺序<br/>禁止: 跳步 / 跨步 / 回头补写"]
+  FG -->|缺全局扫描| ERRF["FLOW_SCAN_REQUIRED<br/>结果: 拒绝写入 timeline<br/>不调用设备动作"]
+  SG -->|顺序正确| EG["EvidenceGuard<br/>检查: 前一步是否已通过<br/>目的: 防止页面继续但证据漏写"]
+  SG -->|跳步 / 回头补写| ERR1["STEP_ORDER_VIOLATION<br/>结果: 拒绝写入 timeline<br/>不调用设备动作 / 不自动 finalize"]
+
+  EG -->|前一步已有通过证据| W["写入 timeline.jsonl<br/>事件成为正式事实源<br/>可参与报告和统计聚合"]
+  EG -->|前一步无通过证据| ERR2["STEP_ORDER_VIOLATION<br/>要求: 先补前一步通过证据<br/>普通 step: actionResult ok 或 assertion PASS<br/>断言 step: assertion PASS"]
+
+  W --> FIN["finalize PASS<br/>请求: 以 PASS 收尾<br/>检查: 所有 step 是否有当前 execution 证据"]
+  FIN -->|所有 step 有证据| PASS["PASS<br/>结果: 生成 result / metrics<br/>刷新 CONTEXT 和 index"]
+  FIN -->|缺证据| ERR3["FAIL / ASSERTION_UNKNOWN<br/>结果: 写入 result / metrics<br/>execution finalized<br/>保留 requestedStatus=PASS"]
+```
+
+## 分层职责
+
+```mermaid
+flowchart TB
+  subgraph L1["Skill 编排层<br/>面向 agent 的协议层"]
+    DOC["SKILL.md / references<br/>职责: 定义模式分流、执行协议、边界、失败策略、报告规则<br/>约束: agent 按这里行动"]
+    AGENT["agent<br/>职责: 页面理解、Flow 匹配、决策、断言<br/>禁止: 直接绕过顶层入口调用内部 adapter 或 atoms"]
+  end
+
+  subgraph L2["稳定入口层<br/>agent 允许直接调用的脚本边界"]
+    PFL2["scripts/preflight-preconditions.js<br/>职责: execution 前批量预检<br/>能力: 前置条件归类和用户决策辅助"]
+    RUN["scripts/run-case.js<br/>职责: execution 状态中心<br/>能力: start / check-budget / record-json / finalize<br/>守卫: ActionResultSourceGuard / PreconditionGuard / GlobalFlowScanGuard / StepGuard / EvidenceGuard / FlowGuard / BudgetGuard"]
+    OBS2["scripts/observe.sh<br/>职责: 正式执行观察入口<br/>能力: 绑定 execution、采集截图/控件树/日志、写 observation"]
+    ACT2["scripts/action.sh<br/>职责: 正式执行动作入口<br/>能力: 绑定 execution、执行结构化动作、写 actionResult"]
+    FLOW2["scripts/flow/*<br/>职责: Flow 录制、扫描和收尾<br/>边界: 录制入口和 case 执行入口互斥"]
+    CASE2["scripts/parse-case.js / refresh-case.js / update-env.js / prepare-env.sh<br/>职责: 用例解析、刷新、环境固化和依赖准备<br/>输出: case.json / state.json"]
+  end
+
+  subgraph L3["内部实现层<br/>稳定入口背后的实现模块"]
+    CASE3["scripts/case/<br/>职责: 用例仓库<br/>能力: 导入、编号、补充重放、执行目标解析"]
+    EXEC3["scripts/execution/<br/>职责: execution 状态机<br/>能力: 预算、步骤证据、Flow 门禁、结果聚合"]
+    REPORT3["scripts/report/<br/>职责: 报告渲染<br/>输出: CONTEXT.md / CONTEXT.html / index.html"]
+    PLATFORM3["scripts/platform/<br/>职责: 平台分发<br/>能力: probe / observe / action / prepare-env"]
+    LIB3["scripts/lib/<br/>职责: 公共库<br/>能力: workspace、case、report、display、shell helper"]
+  end
+
+  subgraph L4["平台适配层<br/>设备能力实现，不做业务判断"]
+    HARMONY["adapters/harmony<br/>实现: hdc + uitest<br/>能力: 截图、布局、点击、输入、日志"]
+    ANDROID["adapters/android<br/>实现: adb + uiautomator<br/>能力: 截图、布局、点击、输入、日志"]
+    IOS["adapters/ios<br/>实现: Appium/WDA 预留<br/>能力: 接口已预留，按平台依赖启用"]
+  end
+
+  subgraph L5["Atoms 原子能力层<br/>最小可审计设备动作"]
+    ATOMS2["atoms<br/>职责: 单一设备能力<br/>示例: screenshot / dump-tree / foreground / tap / input-text / wait / logs<br/>约束: 不读写 case，不做业务判断，不组合复杂流程"]
+  end
+
+  DOC --> AGENT
+  AGENT --> RUN
+  AGENT --> PFL2
+  AGENT --> OBS2
+  AGENT --> ACT2
+  AGENT --> FLOW2
+  AGENT --> CASE2
+
+  RUN --> EXEC3
+  RUN --> REPORT3
+  OBS2 --> RUN
+  OBS2 --> PLATFORM3
+  ACT2 --> RUN
+  ACT2 --> PLATFORM3
+  FLOW2 --> RUN
+  FLOW2 --> PLATFORM3
+  CASE2 --> CASE3
+  CASE2 --> REPORT3
+
+  CASE3 --> LIB3
+  EXEC3 --> LIB3
+  REPORT3 --> LIB3
+  PLATFORM3 --> HARMONY
+  PLATFORM3 --> ANDROID
+  PLATFORM3 --> IOS
+
+  HARMONY --> ATOMS2
+  ANDROID --> ATOMS2
+  IOS --> ATOMS2
+```
+
+## 核心设计原则
+
+- agent 负责页面理解、Flow 匹配、决策和断言。
+- 脚本负责确定性操作、预算检查、步骤状态机、事实记录和报告聚合。
+- `timeline.jsonl` 是当前 execution 的事实源，报告、结果和统计都从它聚合。
+- 批量执行只是多个单 case 顺序闭环，不共享 execution。
+- 页面状态可以复用，但步骤游标和步骤证据必须在当前 execution 内重新生成。
+- 普通操作步骤需要 `actionResult ok=true` 或 `assertion PASS`。
+- `actionResult` 必须由 `scripts/action.sh` 写入，agent 不能用 `run-case.js --record-json` 手写动作证据。
+- 断言型步骤必须写 `assertion PASS`。
+- `observation`、`perception`、`flowScan` 和 `flow` 是辅助证据，不能单独让步骤通过；无 `stepId` 的观察必须显式标记为全局观察。
+
+## 主要产物路径
+
+```text
+workspace.json
+index.html
+flows/
+cases/
+  C001__<title>__<caseKey>/
+    source.md
+    case.json
+    notes.jsonl
+    CONTEXT.html
+    platforms/
+      harmony/
+        state.json
+        CONTEXT.md
+        CONTEXT.html
+        executions/
+          <executionId>/
+            execution.json
+            timeline.jsonl
+            result.json
+            metrics.json
+            screenshots/
+            layouts/
+            logs/
+```

@@ -68,7 +68,7 @@ const hasTarget = hdc && !!device;
 const canUseUitest = hasTarget && !!uitestVersion;
 const canLaunchApp = hasTarget && aaDump;
 const actions = [];
-if (canLaunchApp) actions.push("launchApp");
+if (canLaunchApp) actions.push("launchApp", "restartApp");
 if (canUseUitest) actions.push("tap", "toggle", "longPress", "inputText", "swipe", "back", "home");
 if (hasTarget) actions.push("wait");
 const data = {

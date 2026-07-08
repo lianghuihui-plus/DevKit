@@ -81,7 +81,7 @@ const screen = process.argv[8] || null;
 const dependencies = JSON.parse(process.argv[9] || "[]");
 const hasTarget = adb && !!device;
 const actions = [];
-if (hasTarget) actions.push("launchApp", "tap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait");
+if (hasTarget) actions.push("launchApp", "restartApp", "tap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait");
 console.log(JSON.stringify({
   schemaVersion: 1,
   type: "environmentProbe",

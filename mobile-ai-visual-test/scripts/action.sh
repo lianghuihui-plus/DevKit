@@ -63,6 +63,10 @@ if [[ -n "$case_dir" ]]; then
     echo "缺少 --type" >&2
     exit 2
   fi
+  if [[ "$action_type" == "restartApp" && -n "$step_id" ]]; then
+    echo "STEP_ORDER_VIOLATION: restartApp 是 execution 级隔离动作，不能绑定步骤 stepId 或作为步骤证据。" >&2
+    exit 2
+  fi
   mavt_validate_coordinate_action case "$action_type" "$x" "$y" "$coordinate_source" "$coordinate_evidence" "$target_bounds"
   runtime_dir="$case_dir"
   if [[ -n "$platform" ]]; then
@@ -107,6 +111,14 @@ if [[ -n "$case_dir" ]]; then
       printf '%s\n' "$precheck_output" >&2
       exit "$precheck_status"
     fi
+    if [[ "$precheck_output" == *"STEP_ORDER_VIOLATION"* ]]; then
+      printf '%s\n' "$precheck_output" >&2
+      exit "$precheck_status"
+    fi
+    if [[ "$precheck_output" == *"PRECONDITION_"* ]]; then
+      printf '%s\n' "$precheck_output" >&2
+      exit "$precheck_status"
+    fi
     failure_code="TOOL_ERROR"
     if [[ "$precheck_output" == *"FLOW_SCAN_REQUIRED"* ]]; then
       failure_code="FLOW_SCAN_REQUIRED"
@@ -125,16 +137,17 @@ event.stepId = process.argv[2];
 console.log(JSON.stringify(event, null, 2));
 ' "$result" "$step_id")"
     fi
-    "$script_dir/run-case.js" "${run_case_args[@]}" --record-json "$result" --execution-id "$execution_id" >/dev/null
+    MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
     finalize_args=("${run_case_args[@]}" --finalize --status BLOCKED --failure-code "$failure_code" --reason "$precheck_output" --execution-id "$execution_id")
     if [[ -n "$step_id" ]]; then
       finalize_args+=(--failed-step "$step_id")
     fi
     "$script_dir/run-case.js" "${finalize_args[@]}" >/dev/null
-    printf '%s\n' "$result"
-    exit "$precheck_status"
-  fi
-  set +e
+	    printf '%s\n' "$result"
+	    exit "$precheck_status"
+	  fi
+	  printf '%s' "$precheck_output" | mavt_emit_pace_hint
+	  set +e
   adapter_output="$("$script_dir/platform/action.sh" "${args[@]}" 2>&1)"
   adapter_status=$?
   set -e
@@ -154,11 +167,15 @@ event.stepId = process.argv[2];
 console.log(JSON.stringify(event, null, 2));
 ' "$result" "$step_id")"
   fi
-  "$script_dir/run-case.js" "${run_case_args[@]}" --record-json "$result" --execution-id "$execution_id" >/dev/null
+  MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
   if [[ $adapter_status -ne 0 ]]; then
     failure_code="TOOL_ERROR"
     if [[ $adapter_status -eq 64 ]]; then
       failure_code="PLATFORM_UNIMPLEMENTED"
+    fi
+    if [[ "$action_type" == "restartApp" && "${MAVT_RESTART_FAILURE_NON_TERMINAL:-}" == "1" ]]; then
+      printf '%s\n' "$result"
+      exit 0
     fi
     finalize_args=("${run_case_args[@]}" --finalize --status BLOCKED --failure-code "$failure_code" --reason "$adapter_output" --execution-id "$execution_id")
     if [[ -n "$step_id" ]]; then

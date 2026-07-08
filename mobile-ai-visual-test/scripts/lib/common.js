@@ -21,6 +21,20 @@ const {
 } = require('./display-format');
 
 const WORKSPACE_TYPE = 'mobile-ai-visual-test-workspace';
+const PRECONDITION_STATUS_PRIORITY = {
+  READY: 1,
+  CONFIRM: 2,
+  NEEDS_SETUP: 3,
+  UNKNOWN: 4,
+  UNSUPPORTED: 5,
+};
+const PRECONDITION_STATUS_LABELS = {
+  READY: '可执行',
+  CONFIRM: '需确认',
+  NEEDS_SETUP: '需准备',
+  UNKNOWN: '待判断',
+  UNSUPPORTED: '不支持',
+};
 
 function sha1(value) {
   return crypto.createHash('sha1').update(value).digest('hex');
@@ -37,8 +51,12 @@ function stableJson(value) {
 function caseContractSha(caseJson = {}) {
   const contract = {
     sourceSha1: caseJson.identity?.sourceSha1 || '',
+    preconditions: Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [],
     globalRules: Array.isArray(caseJson.globalRules) ? caseJson.globalRules : [],
   };
+  if (caseJson.isolation && typeof caseJson.isolation === 'object') {
+    contract.isolation = caseJson.isolation;
+  }
   const stepHints = Array.isArray(caseJson.steps)
     ? caseJson.steps
       .map((step) => ({
@@ -393,6 +411,9 @@ function parseMarkdownCase(file, cwd = process.cwd(), options = {}) {
       },
       preconditions,
       steps,
+      isolation: {
+        requireCleanRestart: 'auto',
+      },
       globalRules: [],
       sourceChanged: false,
       staleNotes: [],
@@ -402,16 +423,96 @@ function parseMarkdownCase(file, cwd = process.cwd(), options = {}) {
 
 function inferPreconditionMode(text) {
   if (/已安装|设备已连接|App\s*已安装/.test(text)) return 'auto_check';
-  if (/未登录/.test(text)) return 'auto_check';
-  if (/已登录|登录/.test(text)) return 'auto_prepare';
-  if (/账号|手机号|验证码|密码/.test(text)) return 'manual_context';
+  if (/已登录|未登录|登录|账号|手机号|验证码|密码|会员|权限|角色|灰度/.test(text)) return 'manual_context';
   return 'manual_context';
+}
+
+function normalizePreconditionText(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[。；;，,\s]+$/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+function classifyPrecondition(item) {
+  const text = normalizePreconditionText(item.text || item);
+  const checkMode = String(item.checkMode || '');
+  if (/真实支付|支付完成|真实扣款|清数据|卸载|删除|发布|修改真实|线上|生产|删除资料/.test(text) || checkMode === 'unsupported') {
+    return {
+      category: 'unsupported',
+      status: 'UNSUPPORTED',
+      defaultResolution: 'skip_or_user_handles_outside_execution',
+    };
+  }
+  if (/短信|审核|第三方|风控|推送|邮件|支付/.test(text)) {
+    return {
+      category: 'external_dependency',
+      status: 'UNKNOWN',
+      defaultResolution: 'user_confirm_or_skip',
+    };
+  }
+  if (/已登录|未登录|登录|账号|手机号|验证码|密码|会员|权限|角色|灰度/.test(text) || checkMode === 'auto_prepare') {
+    return {
+      category: 'account',
+      status: 'CONFIRM',
+      defaultResolution: 'user_confirmed',
+    };
+  }
+  if (/订单|草稿|余额|数据|商品|活动|资源|记录|内容|作品|列表.*有|已有/.test(text)) {
+    return {
+      category: 'business_data',
+      status: 'NEEDS_SETUP',
+      defaultResolution: 'setup_required',
+    };
+  }
+  if (/App\s*已安装|已安装|设备已连接|网络正常|网络可用|截图|控件树/.test(text) || checkMode === 'auto_check') {
+    return {
+      category: 'platform',
+      status: 'READY',
+      defaultResolution: 'framework_checked',
+    };
+  }
+  return {
+    category: 'manual',
+    status: 'CONFIRM',
+    defaultResolution: 'user_confirmed',
+  };
+}
+
+function worsePreconditionStatus(left, right) {
+  return PRECONDITION_STATUS_PRIORITY[left] >= PRECONDITION_STATUS_PRIORITY[right] ? left : right;
+}
+
+function displayPreconditionStatus(status) {
+  return PRECONDITION_STATUS_LABELS[status] || status || '-';
+}
+
+function isolationRequirementFromNote(note = {}) {
+  const text = String(note.text || '');
+  const type = String(note.type || '');
+  if (type === 'isolation') {
+    if (/不要求|不需要|无需|允许降级|可降级|false|optional/i.test(text)) return false;
+    if (/必须|要求|需要|强制|true|required/i.test(text)) return true;
+  }
+  if (!/(冷启动|重启|重新启动|隔离|clean\s*restart|cold\s*start)/i.test(text)) return null;
+  if (/不要求|不需要|无需|允许降级|可降级|不必/.test(text)) return false;
+  if (/必须|要求|需要|强制/.test(text)) return true;
+  return null;
 }
 
 function reapplyNotes(caseJson, notes, options = {}) {
   const staleNotes = [];
   for (const note of notes) {
     if (note.source !== 'conversation' || note.stale) continue;
+    const isolationRequirement = isolationRequirementFromNote(note);
+    if (isolationRequirement !== null) {
+      caseJson.isolation = {
+        ...(caseJson.isolation || {}),
+        requireCleanRestart: isolationRequirement,
+        reason: note.text,
+      };
+      continue;
+    }
     const target = findStepForNote(caseJson, note, options);
     if (target) {
       target.hints = Array.from(new Set([...(target.hints || []), note.text]));
@@ -544,6 +645,7 @@ function collectIndexCases(rootDir) {
         caseNo: caseJson.identity?.caseNo || '',
         title: caseJson.identity?.title || path.basename(caseDir),
         caseKey: caseJson.identity?.caseKey || '',
+        preconditions: Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [],
         platforms: platformItems.map((item) => ({
           ...item,
           contextHref: path.relative(rootDir, item.contextPath).replace(/\\/g, '/'),
@@ -567,6 +669,41 @@ function collectIndexCases(rootDir) {
       if (noA || noB) return (noA || Number.MAX_SAFE_INTEGER) - (noB || Number.MAX_SAFE_INTEGER);
       return a.title.localeCompare(b.title, 'zh-CN');
     });
+}
+
+function indexPreconditionClass(item = {}) {
+  return className(classifyPrecondition(item).status);
+}
+
+function indexPreconditionShortText(text = '') {
+  const normalized = String(text || '').trim().replace(/\s+/g, ' ');
+  return normalized.length > 18 ? `${normalized.slice(0, 18)}...` : normalized;
+}
+
+function renderIndexPreconditionTags(preconditions = []) {
+  if (!preconditions.length) {
+    return `<div class="case-preconditions empty">
+      <span class="case-precondition-label">前置条件</span>
+      <div class="precondition-tags"><span class="precondition-tag none">无</span></div>
+    </div>`;
+  }
+  const visible = preconditions.slice(0, 5);
+  const tags = visible.map((item) => {
+    const classification = classifyPrecondition(item);
+    const statusText = displayPreconditionStatus(classification.status);
+    const modeText = displayPreconditionMode(item.checkMode);
+    const text = item.text || item.id || '';
+    return `<span class="precondition-tag ${escapeHtml(indexPreconditionClass(item))}" title="${escapeHtml(`${statusText} / ${modeText}: ${text}`)}">
+      <b>${escapeHtml(statusText)}</b><em>${escapeHtml(indexPreconditionShortText(text))}</em>
+    </span>`;
+  }).join('');
+  const more = preconditions.length > visible.length
+    ? `<span class="precondition-tag more" title="${escapeHtml(`还有 ${preconditions.length - visible.length} 条前置条件`)}">+${escapeHtml(preconditions.length - visible.length)}</span>`
+    : '';
+  return `<div class="case-preconditions">
+    <span class="case-precondition-label">前置条件</span>
+    <div class="precondition-tags">${tags}${more}</div>
+  </div>`;
 }
 
 function aggregateCaseSummary(platformItems = [], legacy) {
@@ -798,9 +935,16 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
     lines.push(`- 本次耗时：${formatDuration(metrics.durationMs || 0)}`);
     if (metrics.steps) lines.push(`- 步骤：${metrics.steps.passed || 0}/${metrics.steps.total || 0} 通过，${metrics.steps.failed || 0} 失败，${metrics.steps.unknown || 0} 未知，${metrics.steps.skipped || 0} 跳过`);
     if (metrics.preconditions) lines.push(`- 前置条件：${metrics.preconditions.passed || 0}/${metrics.preconditions.total || 0} 通过，${metrics.preconditions.failed || 0} 失败`);
-    if (metrics.actions) lines.push(`- 动作：${metrics.actions.total || 0} 次，点击 ${metrics.actions.tap || 0} 次，开关 ${metrics.actions.toggle || 0} 次，长按 ${metrics.actions.longPress || 0} 次，输入 ${metrics.actions.inputText || 0} 次，拉起 App ${metrics.actions.launchApp || 0} 次`);
+    if (metrics.actions) lines.push(`- 动作：${metrics.actions.total || 0} 次，点击 ${metrics.actions.tap || 0} 次，开关 ${metrics.actions.toggle || 0} 次，长按 ${metrics.actions.longPress || 0} 次，输入 ${metrics.actions.inputText || 0} 次，拉起 App ${metrics.actions.launchApp || 0} 次，冷启动 App ${metrics.actions.restartApp || 0} 次`);
     if (metrics.flows) lines.push(`- Flow：事件 ${metrics.flows.totalEvents || 0} 条，完成 ${metrics.flows.completed || 0} 个，失败 ${metrics.flows.failed || 0} 个，阻塞 ${metrics.flows.blocked || 0} 个`);
-    if (metrics.stability) lines.push(`- 稳定性：离开目标 App ${metrics.stability.appForegroundLossCount || 0} 次，重新拉起 ${metrics.stability.appRelaunchCount || 0} 次，已处理弹窗 ${metrics.stability.knownPopupHandledCount || 0} 次`);
+    if (metrics.stability) {
+      const isolationText = metrics.stability.isolationCompromised
+        ? `，隔离降级${metrics.stability.isolationRequired ? '（冷启动敏感）' : ''}${metrics.stability.isolationReason ? `：${metrics.stability.isolationReason}` : ''}`
+        : '，隔离正常';
+      const relaunchAttemptCount = metrics.stability.appRelaunchAttemptCount ?? metrics.stability.appRelaunchCount ?? 0;
+      const relaunchSuccessCount = metrics.stability.appRelaunchSuccessCount ?? metrics.stability.appRelaunchCount ?? 0;
+      lines.push(`- 稳定性：离开目标 App ${metrics.stability.appForegroundLossCount || 0} 次，拉起尝试 ${relaunchAttemptCount} 次，成功拉起 ${relaunchSuccessCount} 次，冷启动失败 ${metrics.stability.restartFailureCount || 0} 次，已处理弹窗 ${metrics.stability.knownPopupHandledCount || 0} 次${isolationText}`);
+    }
     if (metrics.artifacts) lines.push(`- 证据：截图 ${metrics.artifacts.screenshots || 0} 张，控件树 ${metrics.artifacts.layouts || 0} 份，日志 ${metrics.artifacts.logs || 0} 份`);
     if (metrics.eventCounts) {
       const eventSummary = Object.entries(metrics.eventCounts).map(([key, value]) => `${key} ${value}`).join('，');
@@ -869,6 +1013,22 @@ function eventAction(event) {
   return event.action?.type || event.action || '';
 }
 
+const STEP_EVIDENCE_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back']);
+
+function hasStepObservationAfter(events, stepId, index) {
+  return events.slice(index + 1).some((event) => event.type === 'observation' && eventStepId(event) === stepId);
+}
+
+function assertionEvidenceText(event) {
+  const refs = [
+    ...(Array.isArray(event.evidence) ? event.evidence : []),
+    typeof event.evidence === 'string' ? event.evidence : '',
+    event.evidenceObservation || '',
+    ...(Array.isArray(event.evidenceObservations) ? event.evidenceObservations : []),
+  ].filter(Boolean);
+  return refs.length ? `；证据：${refs.join('，')}` : '';
+}
+
 function eventSummary(event) {
   if (event.type === 'executionStart') return `开始执行 ${event.executionId || ''}`.trim();
   if (event.type === 'precondition') return `${displayStatus(event.status)} ${event.reason || event.text || ''}`.trim();
@@ -879,7 +1039,7 @@ function eventSummary(event) {
   if (event.type === 'flowScan') return `Flow 扫描 ${event.status || ''} / candidates=${event.candidateCount ?? 0}${Array.isArray(event.matchedFlowIds) && event.matchedFlowIds.length ? ` / matched=${event.matchedFlowIds.join(', ')}` : ''}${event.reason ? `：${event.reason}` : ''}`.trim();
   if (event.type === 'flow') return `${event.flowId || '-'} ${event.status || ''}${event.flowStepId ? ` / ${event.flowStepId}` : ''}${event.reason ? `：${event.reason}` : ''}`.trim();
   if (event.type === 'actionResult') return `${displayAction(eventAction(event))}${event.ok ? '成功' : '失败'}${event.error ? `：${event.error}` : ''}`;
-  if (event.type === 'assertion') return `${displayStatus(event.status)}${event.reason ? `：${event.reason}` : ''}`;
+  if (event.type === 'assertion') return `${displayStatus(event.status)}${event.reason ? `：${event.reason}` : ''}${assertionEvidenceText(event)}`;
   if (event.type === 'result') return `${displayStatus(event.status)}${event.reason ? `：${event.reason}` : ''}`;
   return event.reason || displayStatus(event.status) || '';
 }
@@ -887,7 +1047,7 @@ function eventSummary(event) {
 function deriveStepStatuses(caseJson, result, events) {
   const statuses = new Map(caseJson.steps.map((step) => [step.id, 'PENDING']));
   const stepById = new Map(caseJson.steps.map((step) => [step.id, step]));
-  for (const event of events) {
+  for (const [index, event] of events.entries()) {
     const stepId = eventStepId(event);
     if (!stepId || !statuses.has(stepId)) continue;
     const step = stepById.get(stepId);
@@ -896,7 +1056,11 @@ function deriveStepStatuses(caseJson, result, events) {
     } else if (event.type === 'decision' && event.decision === 'blocked') {
       statuses.set(stepId, 'BLOCKED');
     } else if (event.type === 'actionResult' && !stepRequiresAssertion(step)) {
-      statuses.set(stepId, event.ok === false ? 'FAIL' : 'PASS');
+      if (event.ok === false) {
+        statuses.set(stepId, 'FAIL');
+      } else if (STEP_EVIDENCE_ACTIONS.has(eventAction(event)) && hasStepObservationAfter(events, stepId, index)) {
+        statuses.set(stepId, 'PASS');
+      }
     }
   }
   if (result?.status === 'PASS') {
@@ -1009,7 +1173,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     ['步骤', metrics?.steps ? `${metrics.steps.passed || 0}/${metrics.steps.total || 0}` : `${caseJson.steps.length}`],
     ['操作次数', formatActionSummary(metrics?.actions)],
     ['证据', evidenceCount],
-    ['事件', metrics?.eventCounts ? Object.values(metrics.eventCounts).reduce((sum, value) => sum + Number(value || 0), 0) : events.length],
+    ['隔离', metrics?.stability ? (metrics.stability.isolationCompromised ? '降级' : '正常') : '-'],
   ].map(([label, value]) => `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('\n');
   const failedAssertion = [...events].reverse().find((event) => (
     event.type === 'assertion' &&
@@ -1192,6 +1356,9 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
   const sourceChangeBanner = showSourceChangeWarning
     ? `<div class="source-warning">源用例或执行契约已变更，当前报告只展示与最新 sourceSha1 和 caseContractSha 匹配的执行结果。</div>`
     : '';
+  const isolationBanner = metrics?.stability?.isolationCompromised
+    ? `<div class="isolation-warning">本次执行未完成干净冷启动隔离${metrics.stability.isolationRequired ? '，且用例依赖冷启动语义' : ''}：${escapeHtml(metrics.stability.isolationReason || 'App 重启失败，执行结果可信度已降级。')}</div>`
+    : '';
   const sourceChangeSection = showSourceChangeWarning
     ? `<section>
     <h2>源用例变更</h2>
@@ -1247,6 +1414,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     .fact strong { display: block; margin-top: 3px; font-size: 14px; word-break: break-word; }
     .fact small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; word-break: break-word; }
     .source-warning { margin: -4px 0 14px; padding: 10px 12px; border: 1px solid var(--blocked-line); border-radius: 8px; background: var(--blocked-soft); color: #7c4a03; font-weight: 700; }
+    .isolation-warning { margin: -4px 0 14px; padding: 10px 12px; border: 1px solid var(--blocked-line); border-radius: 8px; background: var(--blocked-soft); color: #7c4a03; font-weight: 800; }
     .evidence-card { display: block; min-width: 0; color: var(--text); font-weight: 500; }
     .evidence-card:hover { text-decoration: none; }
     .evidence-card img { width: 100%; aspect-ratio: 9 / 14; object-fit: cover; border: 1px solid var(--line); border-radius: 8px; background: #10151f; box-shadow: 0 8px 18px rgba(15, 23, 42, .12); }
@@ -1369,6 +1537,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     <span class="status ${escapeHtml(className(status))}">${escapeHtml(displayStatus(status))}</span>
   </header>
   ${sourceChangeBanner}
+  ${isolationBanner}
 
   <section class="hero-section">
     <div class="conclusion">
@@ -1736,6 +1905,7 @@ function renderIndexHtml(rootDir, cases = []) {
   const platformSummary = `<div class="platform-overview">${platformStats.map((item) => `<section class="platform-overview-card">
         <div class="platform-overview-head">
           <span>${escapeHtml(displayPlatform(item.platform))}</span>
+          <span class="platform-pass-rate"><em>通过率</em><b>${escapeHtml(item.passRate)}</b></span>
         </div>
         <div class="platform-status-grid">
           <div class="total"><span>用例</span><b>${escapeHtml(item.total)}</b></div>
@@ -1751,6 +1921,7 @@ function renderIndexHtml(rootDir, cases = []) {
       const statusClass = className(item.status);
       const caseNo = item.caseNo || `#${index + 1}`;
       const platforms = Array.isArray(item.platforms) ? item.platforms : [];
+      const preconditionTags = renderIndexPreconditionTags(item.preconditions || []);
       const platformDetails = platforms.length
         ? `<details class="platform-details">
           <summary>
@@ -1810,6 +1981,7 @@ function renderIndexHtml(rootDir, cases = []) {
           <h2><a href="${escapeHtml(item.contextHref)}">${escapeHtml(item.title)}</a></h2>
           <a class="case-open" href="${escapeHtml(item.contextHref)}">查看多端详情</a>
         </div>
+        ${preconditionTags}
         ${platformDetails}
       </div>`;
     }).join('\n')
@@ -1846,8 +2018,11 @@ function renderIndexHtml(rootDir, cases = []) {
     .metric strong { display:block; margin-top: 3px; font-size: 20px; }
     .platform-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 18px; }
     .platform-overview-card { min-height: 132px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
-    .platform-overview-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .platform-overview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .platform-overview-head span { color: var(--muted); font-size: 13px; font-weight: 800; }
+    .platform-pass-rate { display: inline-flex; flex: 0 0 auto; align-items: baseline; gap: 6px; min-height: 28px; padding: 4px 9px; border: 1px solid #bae6fd; border-radius: 999px; background: var(--accent-soft); color: var(--accent-strong); }
+    .platform-pass-rate em { color: var(--muted); font-size: 11px; font-style: normal; font-weight: 800; }
+    .platform-pass-rate b { color: var(--accent-strong); font-size: 15px; line-height: 1; font-variant-numeric: tabular-nums; }
     .platform-status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .platform-status-grid div { min-width: 0; padding: 9px 10px; border: 1px solid #e2edf7; border-radius: 6px; background: var(--surface-soft); }
     .platform-status-grid span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
@@ -1882,6 +2057,18 @@ function renderIndexHtml(rootDir, cases = []) {
     .case-no { color: var(--accent-strong); font-weight: 800; }
     .case-card h2 { min-width: 0; margin: 0; font-size: 16px; line-height: 1.38; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .case-open { flex: 0 0 auto; margin-left: auto; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; font-size: 12px; font-weight: 800; white-space: nowrap; }
+    .case-preconditions { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px; margin-top: 11px; min-width: 0; }
+    .case-precondition-label { color: var(--muted); font-size: 12px; font-weight: 800; line-height: 28px; white-space: nowrap; }
+    .precondition-tags { display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; }
+    .precondition-tag { display: inline-flex; align-items: center; min-width: 0; max-width: 260px; height: 28px; padding: 0 9px; border: 1px solid #cbd5e1; border-radius: 6px; background: var(--unknown-soft); color: #334155; font-size: 12px; font-weight: 800; white-space: nowrap; }
+    .precondition-tag b { flex: 0 0 auto; margin-right: 6px; font-size: 11px; color: inherit; }
+    .precondition-tag em { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-style: normal; color: #1f2937; }
+    .precondition-tag.ready { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
+    .precondition-tag.confirm { border-color: #bae6fd; background: #f0f9ff; color: var(--accent-strong); }
+    .precondition-tag.needs_setup { border-color: var(--blocked-line); background: var(--blocked-soft); color: var(--blocked); }
+    .precondition-tag.unknown { border-color: #cbd5e1; background: var(--unknown-soft); color: var(--unknown); }
+    .precondition-tag.unsupported { border-color: var(--fail-line); background: var(--fail-soft); color: var(--fail); }
+    .precondition-tag.none, .precondition-tag.more { max-width: none; color: var(--muted); background: #fff; }
     .case-conclusion { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 8px; min-width: 0; margin-top: 11px; color: #243447; font-size: 14px; line-height: 1.5; }
     .case-conclusion span { color: var(--muted); font-size: 12px; font-weight: 700; line-height: 1.75; }
     .case-conclusion strong { min-width: 0; color: #243447; font-size: 14px; font-weight: 700; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -1925,7 +2112,7 @@ function renderIndexHtml(rootDir, cases = []) {
     .platform-detail-meta b { color: #334155; font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .empty-panel p { margin: 0; color: var(--muted); font-size: 12px; }
     @media (max-width: 1060px) { .platform-status-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .platform-detail-meta { grid-template-columns: 76px 92px minmax(220px, 1fr) minmax(220px, 1fr); } }
-    @media (max-width: 760px) { main { width: calc(100vw - 20px); margin-top: 14px; } .platform-overview { grid-template-columns: 1fr; } h1 { font-size: 22px; } section { padding: 12px; } .case-header { align-items: flex-start; flex-direction: column; gap: 8px; } .case-open { margin-left: 0; } .case-kicker { min-width: 0; } .case-card h2 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; } .platform-details summary { grid-template-columns: 1fr; align-items: start; } .details-toggle { justify-self: start; } .platform-detail-main { grid-template-columns: 1fr; } .platform-report-link { justify-self: start; } .platform-detail-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); } .platform-time { grid-column: 1 / -1; } }
+    @media (max-width: 760px) { main { width: calc(100vw - 20px); margin-top: 14px; } .platform-overview { grid-template-columns: 1fr; } h1 { font-size: 22px; } section { padding: 12px; } .case-header { align-items: flex-start; flex-direction: column; gap: 8px; } .case-open { margin-left: 0; } .case-kicker { min-width: 0; } .case-card h2 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; } .case-preconditions { grid-template-columns: 1fr; gap: 6px; } .case-precondition-label { line-height: 1.2; } .precondition-tag { max-width: 100%; } .platform-details summary { grid-template-columns: 1fr; align-items: start; } .details-toggle { justify-self: start; } .platform-detail-main { grid-template-columns: 1fr; } .platform-report-link { justify-self: start; } .platform-detail-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); } .platform-time { grid-column: 1 / -1; } }
     @media (max-width: 520px) { .platform-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .platform-detail-meta { grid-template-columns: 1fr; } .platform-detail-meta div { white-space: normal; } }
   </style>
 </head>
@@ -1976,6 +2163,7 @@ module.exports = {
   caseContractSha,
   caseDirectoryName,
   casePlatformDir,
+  classifyPrecondition,
   caseRootFromCaseDir,
   caseRuntimeDir,
   casesRoot,
@@ -2005,8 +2193,11 @@ module.exports = {
   nextCaseNo,
   normalizeCaseNo,
   normalizePlatform,
+  normalizePreconditionText,
   platformStatePath,
+  PRECONDITION_STATUS_PRIORITY,
   syncCaseDirectory,
+  worsePreconditionStatus,
   workspaceRoot,
   writeCaseReports,
   writePlatformCaseReports,

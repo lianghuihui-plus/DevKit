@@ -10,7 +10,7 @@ const {
 } = require('../common');
 
 function usage() {
-  console.error('Usage: record-scan.js <case-dir> --platform <platform> [--cwd <workspace-cwd>] [--execution-id <id>] [--step-id <step-id>] [--matched-flow-ids <id,id>] [--status COMPLETED|EMPTY|FAILED] [--reason <text>]');
+  console.error('Usage: record-scan.js <case-dir> --platform <platform> --execution-id <id> [--cwd <workspace-cwd>] [--step-id <step-id>] [--matched-flow-ids <id,id>] [--status COMPLETED|EMPTY|FAILED] [--reason <text>]');
   process.exit(2);
 }
 
@@ -43,6 +43,7 @@ for (let i = 1; i < args.length; i++) {
 }
 
 if (!platform) usage();
+if (!executionId) usage();
 if (status && !['COMPLETED', 'EMPTY', 'FAILED'].includes(status)) usage();
 
 try {
@@ -84,7 +85,7 @@ try {
     '--record-json',
     JSON.stringify(event),
   ];
-  if (executionId) runCaseArgs.push('--execution-id', executionId);
+  runCaseArgs.push('--execution-id', executionId);
   const output = childProcess.execFileSync(process.execPath, runCaseArgs, { encoding: 'utf8' });
   const recorded = JSON.parse(output);
   console.log(JSON.stringify({ ...recorded, flowScan: event, flows: list.flows || [] }, null, 2));
@@ -125,7 +126,7 @@ function recordFailedScan(error) {
     '--record-json',
     JSON.stringify(event),
   ];
-  if (executionId) runCaseArgs.push('--execution-id', executionId);
+  runCaseArgs.push('--execution-id', executionId);
   try {
     childProcess.execFileSync(process.execPath, runCaseArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   } catch {

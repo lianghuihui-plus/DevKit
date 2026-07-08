@@ -7,9 +7,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { formatDuration, displayFailureCode } = require('./common');
+const { caseContractSha, formatDuration, displayFailureCode } = require('./common');
 
 const repo = path.resolve(__dirname, '..');
+process.env.MAVT_SELF_TEST = '1';
+process.env.MAVT_SELF_TEST_SKIP_CASE_RESTART = '1';
 
 function run(cmd, args, options = {}) {
   return childProcess.execFileSync(cmd, args, {
@@ -43,6 +45,72 @@ function write(file, text) {
 
 function json(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function recordPreconditions(caseDir, platform, executionId, status = 'PASS', reason = 'self-test precondition satisfied') {
+  const caseJson = json(path.join(caseDir, 'case.json'));
+  for (const item of caseJson.preconditions || []) {
+    const event = {
+      type: 'precondition',
+      id: item.id,
+      status,
+      reason,
+      resolution: status === 'PREPARED' ? 'self_test_prepare' : 'self_test',
+    };
+    run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-json', JSON.stringify(event), '--execution-id', executionId]);
+  }
+}
+
+function recordGlobalFlowScan(caseDir, platform, executionId, reason = 'self-test global Flow scan') {
+  run('node', ['scripts/flow/record-scan.js', caseDir, '--platform', platform, '--cwd', workspace, '--execution-id', executionId, '--reason', reason]);
+}
+
+function ensureObservationArtifacts(caseDir, platform, executionId, event) {
+  const execDir = path.join(caseDir, 'platforms', platform, 'executions', executionId);
+  const artifacts = event.artifacts || {};
+  const paths = [];
+  if (artifacts.screenshot) paths.push(artifacts.screenshot);
+  if (artifacts.layout) paths.push(artifacts.layout);
+  if (Array.isArray(artifacts.logs)) paths.push(...artifacts.logs);
+  for (const item of paths) {
+    write(path.join(execDir, item), `self-test artifact: ${item}\n`);
+  }
+}
+
+function recordObservationEvent(caseDir, platform, executionId, event) {
+  const observation = { ...event, source: 'observe.sh' };
+  ensureObservationArtifacts(caseDir, platform, executionId, observation);
+  return run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-observation-json', JSON.stringify(observation), '--execution-id', executionId], {
+    env: { ...process.env, MAVT_OBSERVATION_WRITER: '1' },
+  });
+}
+
+function recordStepObservation(caseDir, platform, executionId, stepId, label = `${stepId}-evidence`) {
+  const screenshot = `screenshots/${label}.png`;
+  recordObservationEvent(caseDir, platform, executionId, {
+    type: 'observation',
+    stepId,
+    label,
+    artifacts: { screenshot },
+  });
+  return screenshot;
+}
+
+function recordPassAssertion(caseDir, platform, executionId, stepId, reason, evidence) {
+  return run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-json', JSON.stringify({
+    type: 'assertion',
+    stepId,
+    status: 'PASS',
+    reason,
+    evidence: Array.isArray(evidence) ? evidence : [evidence],
+  }), '--execution-id', executionId]);
+}
+
+function recordActionResult(caseDir, platform, executionId, event) {
+  const actionEvent = { source: 'action.sh', ...event };
+  return run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-action-json', JSON.stringify(actionEvent), '--execution-id', executionId], {
+    env: { ...process.env, MAVT_ACTION_WRITER: '1' },
+  });
 }
 
 function treeSha256(root) {
@@ -96,6 +164,8 @@ write(caseFile, `# 登录成功
 const resolved = JSON.parse(run('node', ['scripts/resolve-execution-targets.js', path.join(sourceRoot, 'cases'), '--cwd', workspace]));
 assert.deepStrictEqual(resolved.markdownFiles, [caseFile]);
 assert.deepStrictEqual(resolved.existingCases, []);
+const parsedForIsolationContract = JSON.parse(run('node', ['scripts/parse-case.js', caseFile, '--cwd', workspace]));
+assert.strictEqual(json(path.join(parsedForIsolationContract.caseDir, 'case.json')).isolation.requireCleanRestart, 'auto');
 const deprecatedResolveCases = runAllowFailure('node', ['scripts/resolve-cases.js', path.join(sourceRoot, 'cases')]);
 assert.notStrictEqual(deprecatedResolveCases.status, 0);
 assert.ok(deprecatedResolveCases.stderr.includes('已废弃'));
@@ -164,7 +234,14 @@ const noLoginParsed = JSON.parse(run('node', ['scripts/parse-case.js', noLoginFi
 const noLoginCase = json(path.join(noLoginParsed.caseDir, 'case.json'));
 assert.ok(noLoginParsed.caseDir.includes('C002__未登录前置条件测试__ck-'));
 assert.strictEqual(noLoginCase.identity.caseNo, 'C002');
-assert.strictEqual(noLoginCase.preconditions[0].checkMode, 'auto_check');
+assert.strictEqual(noLoginCase.preconditions[0].checkMode, 'manual_context');
+assert.notStrictEqual(caseContractSha(noLoginCase), caseContractSha({
+  ...noLoginCase,
+  preconditions: [
+    ...noLoginCase.preconditions,
+    { id: 'pre-999', text: '账号具备灰度资格。', checkMode: 'manual_context', hints: [] },
+  ],
+}));
 
 const resolvedByNo = JSON.parse(run('node', ['scripts/resolve-case-ref.js', 'C001', '--cwd', workspace]));
 assert.strictEqual(resolvedByNo.caseNo, 'C001');
@@ -238,6 +315,21 @@ assert.strictEqual(migratedCase.identity.caseNo, 'C003');
 const resolvedLegacy = JSON.parse(run('node', ['scripts/resolve-case-ref.js', 'C003', '--cwd', workspace]));
 assert.strictEqual(resolvedLegacy.caseDir, assigned.updated[0].caseDir);
 
+const isolationNoteFile = path.join(sourceRoot, 'cases', 'isolation-note.md');
+write(isolationNoteFile, `# 隔离补充测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 查看页面入口。
+`);
+const isolationNoteParsed = JSON.parse(run('node', ['scripts/parse-case.js', isolationNoteFile, '--cwd', workspace]));
+run('node', ['scripts/apply-note.js', isolationNoteParsed.caseDir, '--type', 'isolation', '--text', '不需要冷启动，允许隔离降级执行']);
+const isolationNoteCase = json(path.join(isolationNoteParsed.caseDir, 'case.json'));
+assert.strictEqual(isolationNoteCase.isolation.requireCleanRestart, false);
+assert.ok(isolationNoteCase.isolation.reason.includes('允许隔离降级'));
+
 const loosePreconditionsFile = path.join(sourceRoot, 'cases', 'loose-preconditions.md');
 write(loosePreconditionsFile, `# 宽松前置条件格式测试
 
@@ -259,18 +351,66 @@ assert.deepStrictEqual(loosePreconditionsCase.preconditions.map((item) => item.t
   '网络正常。',
 ]);
 
+const preflightRiskFile = path.join(sourceRoot, 'cases', 'preflight-risk.md');
+write(preflightRiskFile, `# 前置条件预检风险测试
+
+## 前置条件
+- 已有一篇草稿。
+- 真实支付完成。
+
+## 步骤
+1. 预期看到订单详情。
+`);
+const preflightRiskParsed = JSON.parse(run('node', ['scripts/parse-case.js', preflightRiskFile, '--cwd', workspace]));
+const preflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', noLoginParsed.caseDir, loosePreconditionsParsed.caseDir, preflightRiskParsed.caseDir, '--cwd', workspace]));
+const preflightRiskCaseNo = json(path.join(preflightRiskParsed.caseDir, 'case.json')).identity.caseNo;
+assert.strictEqual(preflight.type, 'preconditionPreflight');
+assert.strictEqual(preflight.summary.totalCases, 3);
+assert.ok(preflight.groups.some((item) => item.status === 'READY' && item.text.includes('App 已安装')));
+assert.ok(preflight.groups.some((item) => item.status === 'CONFIRM' && item.text.includes('已登录')));
+assert.ok(preflight.groups.some((item) => item.status === 'CONFIRM' && item.text.includes('未登录')));
+assert.ok(preflight.groups.some((item) => item.status === 'NEEDS_SETUP' && item.text.includes('草稿')));
+assert.ok(preflight.groups.some((item) => item.status === 'UNSUPPORTED' && item.text.includes('真实支付')));
+assert.strictEqual(preflight.cases.find((item) => item.caseNo === preflightRiskCaseNo).status, 'UNSUPPORTED');
+
 run('node', ['scripts/update-env.js', noLoginParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-run('node', ['scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--start']);
-run('node', ['scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
-  type: 'assertion',
-  stepId: 'step-001',
-  status: 'PASS',
-  reason: '看到登录按钮',
-})]);
-run('node', ['scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS']);
+const noLoginStart = JSON.parse(run('node', ['scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId);
+recordGlobalFlowScan(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId);
+recordPassAssertion(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId, 'step-001', '看到登录按钮', recordStepObservation(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId, 'step-001', 'step-001-login'));
+run('node', ['scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', noLoginStart.executionId]);
 indexHtml = fs.readFileSync(path.join(workspace, 'index.html'), 'utf8');
 assert.ok(indexHtml.indexOf('C001') < indexHtml.indexOf('C002'));
 assert.ok(indexHtml.indexOf('C002') < indexHtml.indexOf('C003'));
+assert.ok(indexHtml.includes('class="case-preconditions"'));
+assert.ok(indexHtml.includes('class="precondition-tag confirm"'));
+assert.ok(indexHtml.includes('<b>需确认</b><em>未登录。</em>'));
+assert.ok(indexHtml.includes('class="precondition-tag needs_setup"'));
+assert.ok(indexHtml.includes('<b>需准备</b><em>已有一篇草稿。</em>'));
+assert.ok(indexHtml.includes('class="precondition-tag unsupported"'));
+assert.ok(indexHtml.includes('<b>不支持</b><em>真实支付完成。</em>'));
+
+const manyPreconditionsFile = path.join(sourceRoot, 'cases', 'many-preconditions.md');
+write(manyPreconditionsFile, `# 多前置条件展示测试
+
+## 前置条件
+- 条件一已满足。
+- 条件二已满足。
+- 条件三已满足。
+- 条件四已满足。
+- 条件五已满足。
+- 条件六已满足。
+
+## 步骤
+1. 预期看到首页。
+`);
+const manyPreconditionsParsed = JSON.parse(run('node', ['scripts/parse-case.js', manyPreconditionsFile, '--cwd', workspace]));
+run('node', ['scripts/render-index.js', workspace]);
+const manyPreconditionsIndex = fs.readFileSync(path.join(workspace, 'index.html'), 'utf8');
+assert.ok(manyPreconditionsIndex.includes('<b>需确认</b><em>条件五已满足。</em>'));
+assert.ok(!manyPreconditionsIndex.includes('<b>需确认</b><em>条件六已满足。</em>'));
+assert.ok(manyPreconditionsIndex.includes('还有 1 条前置条件'));
+assert.ok(manyPreconditionsParsed.caseDir.includes('多前置条件展示测试'));
 
 const multiPlatformFile = path.join(sourceRoot, 'cases', 'multi-platform.md');
 write(multiPlatformFile, `# 多平台隔离测试
@@ -284,6 +424,8 @@ write(multiPlatformFile, `# 多平台隔离测试
 const multiPlatformParsed = JSON.parse(run('node', ['scripts/parse-case.js', multiPlatformFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', multiPlatformParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const harmonyPlatformStart = JSON.parse(run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(multiPlatformParsed.caseDir, 'harmony', harmonyPlatformStart.executionId);
+recordGlobalFlowScan(multiPlatformParsed.caseDir, 'harmony', harmonyPlatformStart.executionId);
 run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'assertion',
   stepId: 'step-001',
@@ -297,12 +439,9 @@ const multiPlatformAndroidState = json(multiPlatformAndroidStatePath);
 multiPlatformAndroidState.dependencies = { mavtInputIme: { id: 'mavtInputIme', ok: true, required: true } };
 write(multiPlatformAndroidStatePath, `${JSON.stringify(multiPlatformAndroidState, null, 2)}\n`);
 const androidPlatformStart = JSON.parse(run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'android', '--start']));
-run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'android', '--record-json', JSON.stringify({
-  type: 'assertion',
-  stepId: 'step-001',
-  status: 'PASS',
-  reason: 'Android 看到首页',
-}), '--execution-id', androidPlatformStart.executionId]);
+recordPreconditions(multiPlatformParsed.caseDir, 'android', androidPlatformStart.executionId);
+recordGlobalFlowScan(multiPlatformParsed.caseDir, 'android', androidPlatformStart.executionId);
+recordPassAssertion(multiPlatformParsed.caseDir, 'android', androidPlatformStart.executionId, 'step-001', 'Android 看到首页', recordStepObservation(multiPlatformParsed.caseDir, 'android', androidPlatformStart.executionId, 'step-001', 'step-001-android-home'));
 run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'android', '--finalize', '--status', 'PASS', '--execution-id', androidPlatformStart.executionId]);
 run('node', ['scripts/update-env.js', multiPlatformParsed.caseDir, '--platform', 'ios', '--device', 'simulator', '--app', 'com.example.demo', '--entry', 'MainView']);
 const missingPlatformStart = runAllowFailure('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--start']);
@@ -333,7 +472,8 @@ assert.ok(indexHtml.indexOf('>iOS<') < indexHtml.indexOf('>Harmony<'));
 assert.ok(indexHtml.includes('<div class="total"><span>用例</span><b>'));
 assert.ok(!indexHtml.includes('共 '));
 assert.ok(!indexHtml.includes('class="summary status-breakdown"'));
-assert.ok(!indexHtml.includes('通过率'));
+assert.ok(!indexHtml.includes('<div class="pass-rate"><span>通过率</span><b>'));
+assert.ok(indexHtml.includes('<span class="platform-pass-rate"><em>通过率</em><b>100%</b>'));
 assert.ok(indexHtml.includes('class="platform-details"'));
 assert.ok(indexHtml.includes('class="platform-brief-list"'));
 assert.ok(indexHtml.includes('display: flex; flex-wrap: wrap; gap: 8px'));
@@ -387,12 +527,9 @@ write(partialPlatformFile, `# 部分平台未执行聚合测试
 const partialPlatformParsed = JSON.parse(run('node', ['scripts/parse-case.js', partialPlatformFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', partialPlatformParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const partialHarmonyStart = JSON.parse(run('node', ['scripts/run-case.js', partialPlatformParsed.caseDir, '--platform', 'harmony', '--start']));
-run('node', ['scripts/run-case.js', partialPlatformParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
-  type: 'assertion',
-  stepId: 'step-001',
-  status: 'PASS',
-  reason: 'Harmony 看到首页',
-}), '--execution-id', partialHarmonyStart.executionId]);
+recordPreconditions(partialPlatformParsed.caseDir, 'harmony', partialHarmonyStart.executionId);
+recordGlobalFlowScan(partialPlatformParsed.caseDir, 'harmony', partialHarmonyStart.executionId);
+recordPassAssertion(partialPlatformParsed.caseDir, 'harmony', partialHarmonyStart.executionId, 'step-001', 'Harmony 看到首页', recordStepObservation(partialPlatformParsed.caseDir, 'harmony', partialHarmonyStart.executionId, 'step-001', 'step-001-harmony-home'));
 run('node', ['scripts/run-case.js', partialPlatformParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', partialHarmonyStart.executionId]);
 run('node', ['scripts/update-env.js', partialPlatformParsed.caseDir, '--platform', 'ios', '--device', 'simulator', '--app', 'com.example.demo', '--entry', 'MainView']);
 const partialPlatformHtml = fs.readFileSync(path.join(partialPlatformParsed.caseDir, 'CONTEXT.html'), 'utf8');
@@ -515,7 +652,15 @@ run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--
   reason: 'App 已安装',
 })]);
 run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  reason: '重复确认 App 已安装',
+})]);
+recordGlobalFlowScan(parsed.caseDir, 'harmony', started.executionId);
+recordObservationEvent(parsed.caseDir, 'harmony', started.executionId, {
   type: 'observation',
+  stepId: 'step-001',
   label: 'step-001-before',
   artifacts: {
     screenshot: 'screenshots/step-001-before.png',
@@ -528,19 +673,19 @@ run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--
     entry: 'EntryAbility',
     inTargetApp: true,
   },
-})]);
+});
 run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'decision',
   stepId: 'step-001',
   decision: 'act',
   reason: '需要打开 App',
 })]);
-run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+recordActionResult(parsed.caseDir, 'harmony', started.executionId, {
   type: 'actionResult',
   stepId: 'step-001',
   action: 'launchApp',
   ok: true,
-})]);
+});
 run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'FAIL', '--reason', '示例失败', '--failure-code', 'ASSERTION_FAILED', '--failed-step', 'step-003']);
 state = json(path.join(parsed.caseDir, 'platforms', 'harmony', 'state.json'));
 assert.strictEqual(state.latestStatus, 'FAIL');
@@ -552,6 +697,7 @@ const latestExec = path.join(parsed.caseDir, 'platforms', 'harmony', 'executions
 const metrics = json(path.join(latestExec, 'metrics.json'));
 assert.strictEqual(metrics.preconditions.passed, 1);
 assert.strictEqual(metrics.actions.launchApp, 1);
+assert.strictEqual(metrics.actions.restartApp, 0);
 assert.strictEqual(metrics.artifacts.screenshots, 1);
 assert.strictEqual(metrics.eventCounts.observation, 1);
 const context = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
@@ -656,6 +802,8 @@ assert.ok(!staleSourceHtml.includes('示例失败'));
 assert.ok(!staleSourceHtml.includes(`executions/${state.latestExecutionId}/screenshots/step-001-before.png`));
 assert.ok(!staleSourceContext.includes('+08:00'));
 const currentSourceStart = JSON.parse(run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(parsed.caseDir, 'harmony', currentSourceStart.executionId);
+recordGlobalFlowScan(parsed.caseDir, 'harmony', currentSourceStart.executionId);
 run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'assertion',
   stepId: 'step-001',
@@ -668,12 +816,50 @@ assert.ok(currentSourceHtml.includes('新 source 已重新执行'));
 assert.ok(!currentSourceHtml.includes('源用例变更'));
 
 const invalidStart = JSON.parse(run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--start']));
-const invalidEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({ type: 'observation', label: 'bad', artifacts: { screenshot: '../bad.png' } }), '--execution-id', invalidStart.executionId]);
+recordPreconditions(parsed.caseDir, 'harmony', invalidStart.executionId);
+recordGlobalFlowScan(parsed.caseDir, 'harmony', invalidStart.executionId);
+const invalidEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({ type: 'observation', label: 'bad', scope: 'global', artifacts: { screenshot: '../bad.png' } }), '--execution-id', invalidStart.executionId]);
 assert.notStrictEqual(invalidEvent.status, 0);
 assert.ok(invalidEvent.stderr.includes('Invalid artifact path'));
+const forgedObservationEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'observation',
+  scope: 'global',
+  label: 'forged-observation',
+  source: 'observe.sh',
+  artifacts: { screenshot: 'screenshots/forged-observation.png' },
+}), '--execution-id', invalidStart.executionId]);
+assert.notStrictEqual(forgedObservationEvent.status, 0);
+assert.ok(forgedObservationEvent.stderr.includes('OBSERVATION_SOURCE_REQUIRED'));
+const missingActionSourceEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'launchApp',
+  ok: true,
+}), '--execution-id', invalidStart.executionId]);
+assert.notStrictEqual(missingActionSourceEvent.status, 0);
+assert.ok(missingActionSourceEvent.stderr.includes('ACTION_RESULT_SOURCE_REQUIRED'));
+const forgedActionSourceEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'actionResult',
+  stepId: 'step-001',
+  source: 'action.sh',
+  action: 'launchApp',
+  ok: true,
+}), '--execution-id', invalidStart.executionId]);
+assert.notStrictEqual(forgedActionSourceEvent.status, 0);
+assert.ok(forgedActionSourceEvent.stderr.includes('ACTION_RESULT_SOURCE_REQUIRED'));
+const missingStepFlowScanActionResult = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-action-json', JSON.stringify({
+  type: 'actionResult',
+  stepId: 'step-001',
+  source: 'action.sh',
+  action: 'tap',
+  ok: true,
+}), '--execution-id', invalidStart.executionId], { env: { ...process.env, MAVT_ACTION_WRITER: '1' } });
+assert.notStrictEqual(missingStepFlowScanActionResult.status, 0);
+assert.ok(missingStepFlowScanActionResult.stderr.includes('FLOW_SCAN_REQUIRED'));
 const invalidCoordinateEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'actionResult',
   stepId: 'step-001',
+  source: 'action.sh',
   action: 'tap',
   ok: true,
   x: 1,
@@ -685,6 +871,7 @@ assert.ok(invalidCoordinateEvent.stderr.includes('coordinate action missing coor
 const manualCoordinateEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'actionResult',
   stepId: 'step-001',
+  source: 'action.sh',
   action: 'tap',
   ok: true,
   x: 1,
@@ -695,6 +882,33 @@ const manualCoordinateEvent = runAllowFailure('node', ['scripts/run-case.js', pa
 assert.notStrictEqual(manualCoordinateEvent.status, 0);
 assert.ok(manualCoordinateEvent.stderr.includes('manual coordinateSource is not allowed'));
 run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'invalid event guard cleanup', '--execution-id', invalidStart.executionId]);
+
+const preconditionTerminalFile = path.join(sourceRoot, 'cases', 'precondition-terminal.md');
+write(preconditionTerminalFile, `# 前置条件终态自动收尾测试
+
+## 前置条件
+- 真实支付完成。
+
+## 步骤
+1. 预期看到支付成功页。
+`);
+const preconditionTerminalParsed = JSON.parse(run('node', ['scripts/parse-case.js', preconditionTerminalFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', preconditionTerminalParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const preconditionTerminalStart = JSON.parse(run('node', ['scripts/run-case.js', preconditionTerminalParsed.caseDir, '--platform', 'harmony', '--start']));
+const unknownPreconditionId = runAllowFailure('node', ['scripts/run-case.js', preconditionTerminalParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-999',
+  status: 'BLOCKED',
+  reason: '未知前置条件 id 不应触发收尾',
+}), '--execution-id', preconditionTerminalStart.executionId]);
+assert.notStrictEqual(unknownPreconditionId.status, 0);
+assert.ok(unknownPreconditionId.stderr.includes('PRECONDITION_REQUIRED'));
+assert.ok(!fs.existsSync(path.join(preconditionTerminalStart.execDir, 'result.json')));
+recordPreconditions(preconditionTerminalParsed.caseDir, 'harmony', preconditionTerminalStart.executionId, 'BLOCKED', '前置条件不支持自动处理');
+const preconditionTerminalResult = json(path.join(preconditionTerminalStart.execDir, 'result.json'));
+assert.strictEqual(preconditionTerminalResult.status, 'BLOCKED');
+assert.strictEqual(preconditionTerminalResult.failureCode, 'PRECONDITION_UNSUPPORTED');
+assert.strictEqual(json(path.join(preconditionTerminalStart.execDir, 'execution.json')).finalized, true);
 
 const passFile = path.join(sourceRoot, 'cases', 'pass.md');
 write(passFile, `# 通过证据测试
@@ -709,37 +923,107 @@ write(passFile, `# 通过证据测试
 const passParsed = JSON.parse(run('node', ['scripts/parse-case.js', passFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', passParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const passStart = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--start']));
-run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+const missingPrecondition = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '未写前置条件就进入步骤',
+}), '--execution-id', passStart.executionId]);
+assert.notStrictEqual(missingPrecondition.status, 0);
+assert.ok(missingPrecondition.stderr.includes('PRECONDITION_REQUIRED'));
+recordPreconditions(passParsed.caseDir, 'harmony', passStart.executionId);
+const missingGlobalFlowScan = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '未写全局 FlowScan 就进入步骤',
+}), '--execution-id', passStart.executionId]);
+assert.notStrictEqual(missingGlobalFlowScan.status, 0);
+assert.ok(missingGlobalFlowScan.stderr.includes('FLOW_SCAN_REQUIRED'));
+recordGlobalFlowScan(passParsed.caseDir, 'harmony', passStart.executionId);
+const passSkipStep = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-002',
+  status: 'PASS',
+  reason: '试图跳过第一步',
+}), '--execution-id', passStart.executionId]);
+assert.notStrictEqual(passSkipStep.status, 0);
+assert.ok(passSkipStep.stderr.includes('STEP_ORDER_VIOLATION'));
+assert.ok(!fs.existsSync(path.join(passStart.execDir, 'result.json')));
+const restartWithStepIdAction = runAllowFailure('./scripts/action.sh', ['--case-dir', passParsed.caseDir, '--platform', 'harmony', '--execution-id', passStart.executionId, '--step-id', 'step-001', '--type', 'restartApp', '--settle-ms', '0']);
+assert.notStrictEqual(restartWithStepIdAction.status, 0);
+assert.ok(restartWithStepIdAction.stderr.includes('STEP_ORDER_VIOLATION'));
+const restartWithStepIdRecord = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-action-json', JSON.stringify({
+  source: 'action.sh',
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'restartApp',
+  ok: true,
+}), '--execution-id', passStart.executionId], { env: { ...process.env, MAVT_ACTION_WRITER: '1' } });
+assert.notStrictEqual(restartWithStepIdRecord.status, 0);
+assert.ok(restartWithStepIdRecord.stderr.includes('STEP_ORDER_VIOLATION'));
+const passNakedAssertion = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '没有引用观察证据的裸断言',
+}), '--execution-id', passStart.executionId]);
+assert.notStrictEqual(passNakedAssertion.status, 0);
+assert.ok(passNakedAssertion.stderr.includes('ASSERTION_EVIDENCE_REQUIRED'));
+recordActionResult(passParsed.caseDir, 'harmony', passStart.executionId, {
   type: 'actionResult',
   stepId: 'step-001',
   action: 'launchApp',
   ok: true,
-})]);
-run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS']);
-const passResult = json(path.join(passStart.execDir, 'result.json'));
-assert.strictEqual(passResult.status, 'UNKNOWN');
-assert.strictEqual(passResult.failureCode, 'ASSERTION_UNKNOWN');
-assert.strictEqual(passResult.failedStep, 'step-002');
+});
+const passMissingEvidence = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', passStart.executionId]));
+assert.ok(fs.existsSync(passMissingEvidence.result));
+const passMissingEvidenceResult = json(path.join(passStart.execDir, 'result.json'));
+assert.strictEqual(passMissingEvidenceResult.status, 'FAIL');
+assert.strictEqual(passMissingEvidenceResult.requestedStatus, 'PASS');
+assert.strictEqual(passMissingEvidenceResult.failureCode, 'ASSERTION_UNKNOWN');
+assert.strictEqual(json(path.join(passStart.execDir, 'execution.json')).finalized, true);
 const passHtml = fs.readFileSync(path.join(passParsed.caseDir, 'CONTEXT.html'), 'utf8');
 assert.ok(passHtml.includes('预期看到首页'));
 assert.ok(!passHtml.match(/预期看到首页[\s\S]*?<span class="pill pass">通过<\/span>/));
+const passSuccessStart = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(passParsed.caseDir, 'harmony', passSuccessStart.executionId);
+recordGlobalFlowScan(passParsed.caseDir, 'harmony', passSuccessStart.executionId);
+recordActionResult(passParsed.caseDir, 'harmony', passSuccessStart.executionId, {
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'launchApp',
+  ok: true,
+});
+const paceEvidence = recordStepObservation(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-001', 'step-001-after');
+const repeatedObservePrecheck = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--check-budget', '--event-type', 'observation', '--step-id', 'step-001', '--execution-id', passSuccessStart.executionId]));
+assert.strictEqual(repeatedObservePrecheck.budgetOk, true);
+assert.strictEqual(repeatedObservePrecheck.paceHint?.level, 'WARN');
+assert.strictEqual(repeatedObservePrecheck.paceHint?.suggestedNextAction, 'assert_or_act');
+recordPassAssertion(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-001', 'App 已打开，当前页面满足第一步目标', paceEvidence);
+recordPassAssertion(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-002', '看到首页', recordStepObservation(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-002', 'step-002-after'));
+run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', passSuccessStart.executionId]);
+const passResult = json(path.join(passSuccessStart.execDir, 'result.json'));
+assert.strictEqual(passResult.status, 'PASS');
 const passStateBefore = json(path.join(passParsed.caseDir, 'platforms', 'harmony', 'state.json'));
-const duplicateFinalize = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', passStart.executionId]));
+const duplicateFinalize = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', passSuccessStart.executionId]));
 assert.strictEqual(duplicateFinalize.alreadyFinalized, true);
 const passStateAfter = json(path.join(passParsed.caseDir, 'platforms', 'harmony', 'state.json'));
 assert.strictEqual(passStateAfter.executionCount, passStateBefore.executionCount);
 indexHtml = fs.readFileSync(path.join(workspace, 'index.html'), 'utf8');
 assert.ok(indexHtml.includes('通过证据测试'));
-assert.ok(indexHtml.includes('未知'));
+assert.ok(indexHtml.includes('通过'));
 assert.ok(!indexHtml.includes('关键信息'));
 assert.ok(indexHtml.includes('class="platform-overview"'));
 assert.ok(indexHtml.includes('class="platform-status-grid"'));
+assert.ok(indexHtml.includes('class="platform-pass-rate"'));
 assert.ok(indexHtml.includes('grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px'));
 assert.ok(indexHtml.includes('min-height: 132px'));
 assert.ok(indexHtml.includes('padding: 16px 18px'));
 assert.ok(indexHtml.includes('font-size: 18px; line-height: 1.1'));
 assert.ok(!indexHtml.includes('class="overview-panel"'));
-assert.ok(!indexHtml.includes('通过率'));
+assert.ok(indexHtml.includes('<em>通过率</em><b>'));
+assert.ok(!indexHtml.includes('class="pass-rate"'));
 assert.ok(indexHtml.includes('class="case-kicker"'));
 assert.ok(!indexHtml.includes('class="case-conclusion"'));
 assert.ok(indexHtml.includes('class="platform-details"'));
@@ -752,12 +1036,10 @@ assert.ok(indexHtml.includes('font-variant-numeric: tabular-nums'));
 assert.ok(indexHtml.includes('-webkit-line-clamp: 2'));
 assert.ok(!indexHtml.includes('class="case-state"'));
 assert.ok(indexHtml.includes('执行结果'));
-assert.ok(indexHtml.includes('PASS 缺少步骤证据'));
-assert.ok(indexHtml.includes('断言证据不足'));
+assert.ok(!indexHtml.includes('PASS 缺少步骤证据'));
 assert.ok(!indexHtml.includes('PRECONDITION_NOT_MET'));
 assert.strictEqual(displayFailureCode('PRECONDITION_NOT_MET'), '前置条件不满足');
 assert.ok(!indexHtml.includes('<span>执行结果</span>ASSERTION_UNKNOWN'));
-assert.ok(indexHtml.includes('<span>执行结果</span><b>断言证据不足</b>'));
 assert.ok(indexHtml.includes('开始'));
 assert.ok(indexHtml.includes('结束'));
 assert.ok(!indexHtml.includes('+08:00'));
@@ -776,16 +1058,47 @@ write(unknownFile, `# 未知断言测试
 const unknownParsed = JSON.parse(run('node', ['scripts/parse-case.js', unknownFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', unknownParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const unknownStart = JSON.parse(run('node', ['scripts/run-case.js', unknownParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(unknownParsed.caseDir, 'harmony', unknownStart.executionId);
+recordGlobalFlowScan(unknownParsed.caseDir, 'harmony', unknownStart.executionId);
 run('node', ['scripts/run-case.js', unknownParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'assertion',
   stepId: 'step-001',
   status: 'UNKNOWN',
   reason: '证据不足',
-})]);
-run('node', ['scripts/run-case.js', unknownParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--failed-step', 'step-001']);
+}), '--execution-id', unknownStart.executionId]);
+run('node', ['scripts/run-case.js', unknownParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--failed-step', 'step-001', '--execution-id', unknownStart.executionId]);
+const unknownResult = json(path.join(unknownStart.execDir, 'result.json'));
+assert.strictEqual(unknownResult.status, 'FAIL');
+assert.strictEqual(unknownResult.requestedStatus, 'UNKNOWN');
+assert.strictEqual(unknownResult.failureCode, 'ASSERTION_UNKNOWN');
 const unknownMetrics = json(path.join(unknownStart.execDir, 'metrics.json'));
 assert.strictEqual(unknownMetrics.steps.failed, 0);
 assert.strictEqual(unknownMetrics.steps.unknown, 1);
+
+const blockingPriorityFile = path.join(sourceRoot, 'cases', 'blocking-priority.md');
+write(blockingPriorityFile, `# 阻塞优先级测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 预期看到首页。
+`);
+const blockingPriorityParsed = JSON.parse(run('node', ['scripts/parse-case.js', blockingPriorityFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const blockingPriorityStart = JSON.parse(run('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(blockingPriorityParsed.caseDir, 'harmony', blockingPriorityStart.executionId);
+recordGlobalFlowScan(blockingPriorityParsed.caseDir, 'harmony', blockingPriorityStart.executionId);
+run('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'UNKNOWN',
+  reason: '先记录一个证据不足断言',
+}), '--execution-id', blockingPriorityStart.executionId]);
+run('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'TOOL_ERROR', '--failed-step', 'step-001', '--reason', '随后工具失败应优先归为阻塞', '--execution-id', blockingPriorityStart.executionId]);
+const blockingPriorityResult = json(path.join(blockingPriorityStart.execDir, 'result.json'));
+assert.strictEqual(blockingPriorityResult.status, 'BLOCKED');
+assert.strictEqual(blockingPriorityResult.failureCode, 'TOOL_ERROR');
 
 const fakeAndroidBin = path.join(tmp, 'fake-android-bin');
 const fakeAdbLog = path.join(tmp, 'fake-adb.log');
@@ -797,6 +1110,10 @@ if [[ "\${args[0]:-}" == "-s" ]]; then
   args=("\${args[@]:2}")
 fi
 printf '%s\\n' "\${args[*]}" >> "$ADB_LOG"
+state_file="\${ADB_STATE:-}"
+if [[ -z "$state_file" ]]; then
+  state_file="$(dirname "$ADB_LOG")/fake-adb-state"
+fi
 if [[ "\${args[0]:-}" == "devices" ]]; then
   printf 'List of devices attached\\nemulator-5554\\tdevice\\n'
 elif [[ "\${args[0]:-}" == "install" ]]; then
@@ -828,16 +1145,34 @@ elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "am" && "\${args[2]:-}"
     printf 'SecurityException: Permission Denial: starting Intent not exported\\n' >&2
     exit 255
   fi
+  mkdir -p "$(dirname "$state_file")"
+  printf '34567\\n' > "$state_file"
   printf 'Starting: Intent { cmp=%s }\\n' "\${args[4]:-}"
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "am" && "\${args[2]:-}" == "force-stop" ]]; then
+  if [[ "\${ADB_FORCE_STOP_FAIL:-}" == "1" ]]; then
+    printf 'Failure [not stopped]\\n' >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$state_file")"
+  : > "$state_file"
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "am" && "\${args[2]:-}" == "broadcast" ]]; then
   printf 'Broadcast completed: result=-1, data="OK"\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "monkey" ]]; then
+  mkdir -p "$(dirname "$state_file")"
+  printf '45678\\n' > "$state_file"
+  printf 'Events injected: 1\\n'
 elif [[ "\${args[0]:-}" == "logcat" ]]; then
   printf 'fake android log\\n'
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "pidof" ]]; then
-  printf '23456\\n'
+  if [[ -s "$state_file" ]]; then
+    cat "$state_file"
+  else
+    exit 1
+  fi
 fi
 `);
 fs.chmodSync(fakeAdb, 0o755);
+const fakeAdbState = path.join(tmp, 'fake-adb-state');
 const fakeAndroidImeCache = path.join(tmp, 'fake-android-ime-cache');
 write(path.join(fakeAndroidImeCache, 'mavt-input.apk'), 'fake apk\n');
 write(path.join(fakeAndroidImeCache, 'source.sha256'), treeSha256(path.join(repo, 'scripts/platform/adapters/android/ime')));
@@ -845,6 +1180,7 @@ const fakeAndroidEnv = {
   ...process.env,
   PATH: `${fakeAndroidBin}:${process.env.PATH}`,
   ADB_LOG: fakeAdbLog,
+  ADB_STATE: fakeAdbState,
   MAVT_ACTION_SETTLE_MS: '0',
   MAVT_ANDROID_IME_BUILD_DIR: fakeAndroidImeCache,
 };
@@ -857,6 +1193,7 @@ assert.strictEqual(androidProbe.capabilities.screenshot, true);
 assert.strictEqual(androidProbe.capabilities.layout, true);
 assert.strictEqual(androidProbe.capabilities.foregroundApp, true);
 assert.strictEqual(androidProbe.capabilities.launchApp, true);
+assert.ok(androidProbe.capabilities.actions.includes('restartApp'));
 assert.ok(androidProbe.capabilities.actions.includes('tap'));
 assert.ok(androidProbe.capabilities.actions.includes('longPress'));
 assert.ok(androidProbe.capabilities.actions.includes('inputText'));
@@ -867,6 +1204,16 @@ assert.strictEqual(androidLaunchFallback.action, 'launchApp');
 assert.strictEqual(androidLaunchFallback.ok, true);
 assert.strictEqual(androidLaunchFallback.launchMethod, 'monkey-fallback');
 assert.ok(androidLaunchFallback.fallbackReason.includes('not exported'));
+
+fs.writeFileSync(fakeAdbState, '23456\n');
+const androidRestart = JSON.parse(run('./scripts/platform/adapters/android/atoms/restart-app.sh', ['--device', 'emulator-5554', '--app', 'com.example.demo', '--entry', 'MainActivity'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidRestart.action, 'restartApp');
+assert.strictEqual(androidRestart.ok, true);
+assert.strictEqual(androidRestart.restart, true);
+assert.strictEqual(androidRestart.coldStartVerified, true);
+assert.strictEqual(androidRestart.oldPid, '23456');
+assert.strictEqual(androidRestart.newPid, '34567');
+assert.strictEqual(androidRestart.stopMethod, 'am-force-stop');
 
 const androidFile = path.join(sourceRoot, 'cases', 'android.md');
 write(androidFile, `# Android 适配测试
@@ -899,7 +1246,9 @@ assert.ok(androidPreparedHtml.includes('class="dependency-card"'));
 assert.ok(!androidPreparedHtml.includes('<th>ID</th><th>名称</th><th>状态</th><th>阶段</th><th>必需</th><th>详情</th>'));
 const androidStart = JSON.parse(run('node', ['scripts/run-case.js', androidParsed.caseDir, '--platform', 'android', '--start']));
 assert.ok(androidStart.execDir.includes('/platforms/android/executions/'));
-const androidObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--label', 'step-001-before'], { env: fakeAndroidEnv }));
+recordPreconditions(androidParsed.caseDir, 'android', androidStart.executionId);
+recordGlobalFlowScan(androidParsed.caseDir, 'android', androidStart.executionId);
+const androidObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--label', 'step-001-before'], { env: fakeAndroidEnv }));
 assert.strictEqual(androidObservation.platform, 'android');
 assert.strictEqual(androidObservation.label, '001-step-001-before');
 assert.strictEqual(androidObservation.artifacts.screenshot, 'screenshots/001-step-001-before.png');
@@ -955,11 +1304,21 @@ assert.strictEqual(iosProbe.capabilities.implemented, true);
 assert.strictEqual(iosProbe.capabilities.screenshot, true);
 assert.strictEqual(iosProbe.capabilities.layout, true);
 assert.strictEqual(iosProbe.capabilities.foregroundApp, true);
+assert.ok(iosProbe.capabilities.actions.includes('restartApp'));
 assert.ok(iosProbe.capabilities.actions.includes('tap'));
 assert.ok(iosProbe.capabilities.actions.includes('longPress'));
 assert.ok(iosProbe.capabilities.actions.includes('inputText'));
 assert.ok(iosProbe.capabilities.actions.includes('back'));
 assert.ok(iosProbe.capabilities.actions.includes('home'));
+
+const iosRestart = JSON.parse(run('./scripts/platform/adapters/ios/atoms/restart-app.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo'], { env: fakeIosEnv }));
+assert.strictEqual(iosRestart.action, 'restartApp');
+assert.strictEqual(iosRestart.ok, true);
+assert.strictEqual(iosRestart.restart, true);
+assert.strictEqual(iosRestart.coldStartVerified, true);
+assert.strictEqual(iosRestart.verification, 'fake-appium-app-state');
+assert.strictEqual(iosRestart.stateAfterTerminate, 1);
+assert.strictEqual(iosRestart.stateAfterActivate, 4);
 
 const iosFile = path.join(sourceRoot, 'cases', 'ios.md');
 write(iosFile, `# iOS 适配测试
@@ -984,7 +1343,9 @@ const iosPreparedState = json(path.join(iosParsed.caseDir, 'platforms', 'ios', '
 assert.strictEqual(iosPreparedState.dependencies.iosAutomation.ok, true);
 const iosStart = JSON.parse(run('node', ['scripts/run-case.js', iosParsed.caseDir, '--platform', 'ios', '--start']));
 assert.ok(iosStart.execDir.includes('/platforms/ios/executions/'));
-const iosObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--label', 'step-001-before'], { env: fakeIosEnv }));
+recordPreconditions(iosParsed.caseDir, 'ios', iosStart.executionId);
+recordGlobalFlowScan(iosParsed.caseDir, 'ios', iosStart.executionId);
+const iosObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--label', 'step-001-before'], { env: fakeIosEnv }));
 assert.strictEqual(iosObservation.platform, 'ios');
 assert.strictEqual(iosObservation.label, '001-step-001-before');
 assert.strictEqual(iosObservation.artifacts.screenshot, 'screenshots/001-step-001-before.png');
@@ -1017,6 +1378,7 @@ run('node', ['scripts/run-case.js', iosParsed.caseDir, '--platform', 'ios', '--f
 const fakeBin = path.join(tmp, 'fake-bin');
 const fakeHdcLog = path.join(tmp, 'fake-hdc.log');
 const fakeHdcRemote = path.join(tmp, 'fake-hdc-remote');
+const fakeHdcState = path.join(tmp, 'fake-hdc-state');
 const fakeHdc = path.join(fakeBin, 'hdc');
 write(fakeHdc, `#!/usr/bin/env bash
 set -euo pipefail
@@ -1025,6 +1387,7 @@ if [[ "\${args[0]:-}" == "-t" ]]; then
   args=("\${args[@]:2}")
 fi
 printf '%s\\n' "\${args[*]}" >> "$HDC_LOG"
+state_file="\${HDC_STATE:-$HDC_REMOTE_DIR/state}"
 remote_key() {
   printf '%s' "$1" | sed 's#[^A-Za-z0-9._-]#_#g'
 }
@@ -1065,11 +1428,157 @@ elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uitest" && "\${args[2]
   printf 'Please confirm that the coordinate values are correct.\\n'
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}" == "dump" ]]; then
   printf 'AbilityRecord ID #1\\nstate #FOREGROUND\\nability type [PAGE]\\nbundle name [com.example.demo]\\nmain name [EntryAbility]\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}" == "force-stop" ]]; then
+  if [[ "\${HDC_FORCE_STOP_FAIL:-}" == "1" ]]; then
+    printf 'error: failed to force stop process.\\nError Code:10104002\\n' >&2
+    exit 1
+  fi
+  if [[ "\${args[3]:-}" == "-b" ]]; then
+    printf 'error: failed to force stop process.\\nError Code:10104002  Error Message:Failed to retrieve specified package information.\\n'
+    exit 0
+  fi
+  mkdir -p "$(dirname "$state_file")"
+  : > "$state_file"
+  printf 'force stop process successfully.\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}" == "start" ]]; then
+  mkdir -p "$(dirname "$state_file")"
+  printf '23456\\n' > "$state_file"
+  printf 'start ability successfully.\\n'
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "pidof" ]]; then
-  printf '12345\\n'
+  if [[ -s "$state_file" ]]; then
+    cat "$state_file"
+  else
+    exit 1
+  fi
 fi
 `);
 fs.chmodSync(fakeHdc, 0o755);
+const fakeEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, HDC_LOG: fakeHdcLog, HDC_REMOTE_DIR: fakeHdcRemote, HDC_STATE: fakeHdcState, MAVT_ACTION_SETTLE_MS: '0' };
+
+const restartFile = path.join(sourceRoot, 'cases', 'restart-isolation.md');
+write(restartFile, `# 每用例冷启动测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+`);
+const restartParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', restartParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const restartEnv = { ...fakeEnv };
+delete restartEnv.MAVT_SELF_TEST_SKIP_CASE_RESTART;
+fs.writeFileSync(fakeHdcLog, '');
+fs.writeFileSync(fakeHdcState, '12345\n');
+const restartStart = JSON.parse(run('node', ['scripts/run-case.js', restartParsed.caseDir, '--platform', 'harmony', '--start'], { env: restartEnv }));
+assert.strictEqual(restartStart.appRestart.action, 'restartApp');
+assert.strictEqual(restartStart.appRestart.ok, true);
+assert.strictEqual(restartStart.appRestart.restart, true);
+assert.strictEqual(restartStart.appRestart.coldStartVerified, true);
+assert.strictEqual(restartStart.appRestart.oldPid, '12345');
+assert.strictEqual(restartStart.appRestart.newPid, '23456');
+assert.strictEqual(restartStart.appRestart.stopMethod, 'aa-force-stop');
+const restartEvents = fs.readFileSync(restartStart.timeline, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+assert.ok(restartEvents.some((event) => event.type === 'actionResult' && event.action === 'restartApp' && event.ok === true && event.source === 'action.sh'));
+const fakeHdcRestartLog = fs.readFileSync(fakeHdcLog, 'utf8');
+assert.ok(fakeHdcRestartLog.includes('shell aa force-stop com.example.demo'));
+assert.ok(fakeHdcRestartLog.includes('shell aa start -b com.example.demo -a EntryAbility'));
+run('node', ['scripts/run-case.js', restartParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'restart isolation smoke test', '--execution-id', restartStart.executionId]);
+
+const restartDegradedFile = path.join(sourceRoot, 'cases', 'restart-degraded.md');
+write(restartDegradedFile, `# 普通交互隔离降级测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 查看页面入口。
+`);
+const restartDegradedParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartDegradedFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const restartDegradedStart = JSON.parse(run('node', ['scripts/run-case.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+assert.strictEqual(restartDegradedStart.appRestart.ok, false);
+assert.strictEqual(restartDegradedStart.isolation.compromised, true);
+assert.strictEqual(restartDegradedStart.isolation.required, false);
+assert.strictEqual(restartDegradedStart.finalized, null);
+assert.ok(!fs.existsSync(path.join(restartDegradedStart.execDir, 'result.json')));
+run('node', ['scripts/run-case.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'restart degraded smoke test', '--execution-id', restartDegradedStart.executionId]);
+const restartDegradedMetrics = json(path.join(restartDegradedStart.execDir, 'metrics.json'));
+assert.strictEqual(restartDegradedMetrics.stability.isolationCompromised, true);
+assert.strictEqual(restartDegradedMetrics.stability.restartFailureCount, 1);
+assert.strictEqual(restartDegradedMetrics.stability.appRelaunchAttemptCount, 1);
+assert.strictEqual(restartDegradedMetrics.stability.appRelaunchSuccessCount, 0);
+assert.strictEqual(restartDegradedMetrics.stability.appRelaunchCount, 0);
+
+const restartSensitiveFile = path.join(sourceRoot, 'cases', 'restart-sensitive.md');
+write(restartSensitiveFile, `# 首次进入冷启动敏感测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 首次进入页面。
+`);
+const restartSensitiveParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartSensitiveFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', restartSensitiveParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const restartSensitiveStart = JSON.parse(run('node', ['scripts/run-case.js', restartSensitiveParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+assert.strictEqual(restartSensitiveStart.appRestart.ok, false);
+assert.strictEqual(restartSensitiveStart.isolation.compromised, true);
+assert.strictEqual(restartSensitiveStart.isolation.required, true);
+assert.ok(restartSensitiveStart.finalized);
+const restartSensitiveResult = json(path.join(restartSensitiveStart.execDir, 'result.json'));
+assert.strictEqual(restartSensitiveResult.status, 'BLOCKED');
+assert.strictEqual(restartSensitiveResult.failureCode, 'CASE_RESTART_FAILED');
+assert.strictEqual(restartSensitiveStart.blockedOnStart, true);
+assert.strictEqual(restartSensitiveStart.nextAction, 'stop-current-case');
+
+const restartExplicitOptionalFile = path.join(sourceRoot, 'cases', 'restart-explicit-optional.md');
+write(restartExplicitOptionalFile, `# 首次进入但显式允许降级
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 首次进入页面。
+`);
+const restartExplicitOptionalParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartExplicitOptionalFile, '--cwd', workspace]));
+const restartExplicitOptionalCase = json(path.join(restartExplicitOptionalParsed.caseDir, 'case.json'));
+restartExplicitOptionalCase.isolation.requireCleanRestart = false;
+write(path.join(restartExplicitOptionalParsed.caseDir, 'case.json'), `${JSON.stringify(restartExplicitOptionalCase, null, 2)}\n`);
+run('node', ['scripts/update-env.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const restartExplicitOptionalStart = JSON.parse(run('node', ['scripts/run-case.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+assert.strictEqual(restartExplicitOptionalStart.isolation.required, false);
+assert.strictEqual(restartExplicitOptionalStart.isolation.requirementSource, 'case-contract');
+assert.strictEqual(restartExplicitOptionalStart.blockedOnStart, false);
+assert.strictEqual(restartExplicitOptionalStart.finalized, null);
+run('node', ['scripts/run-case.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'explicit optional restart smoke test', '--execution-id', restartExplicitOptionalStart.executionId]);
+
+const restartExplicitRequiredFile = path.join(sourceRoot, 'cases', 'restart-explicit-required.md');
+write(restartExplicitRequiredFile, `# 普通页面但显式要求冷启动
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 查看页面入口。
+`);
+const restartExplicitRequiredParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartExplicitRequiredFile, '--cwd', workspace]));
+const restartExplicitRequiredCase = json(path.join(restartExplicitRequiredParsed.caseDir, 'case.json'));
+restartExplicitRequiredCase.isolation.requireCleanRestart = true;
+write(path.join(restartExplicitRequiredParsed.caseDir, 'case.json'), `${JSON.stringify(restartExplicitRequiredCase, null, 2)}\n`);
+run('node', ['scripts/update-env.js', restartExplicitRequiredParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const restartExplicitRequiredStart = JSON.parse(run('node', ['scripts/run-case.js', restartExplicitRequiredParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+assert.strictEqual(restartExplicitRequiredStart.isolation.required, true);
+assert.strictEqual(restartExplicitRequiredStart.isolation.requirementSource, 'case-contract');
+assert.strictEqual(restartExplicitRequiredStart.blockedOnStart, true);
+assert.ok(restartExplicitRequiredStart.finalized);
+const restartExplicitRequiredResult = json(path.join(restartExplicitRequiredStart.execDir, 'result.json'));
+assert.strictEqual(restartExplicitRequiredResult.status, 'BLOCKED');
+assert.strictEqual(restartExplicitRequiredResult.failureCode, 'CASE_RESTART_FAILED');
 
 const injectedFile = path.join(sourceRoot, 'cases', 'injected-env.md');
 write(injectedFile, `# 环境注入测试
@@ -1083,9 +1592,11 @@ write(injectedFile, `# 环境注入测试
 const injectedParsed = JSON.parse(run('node', ['scripts/parse-case.js', injectedFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', injectedParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const injectedStart = JSON.parse(run('node', ['scripts/run-case.js', injectedParsed.caseDir, '--platform', 'harmony', '--start']));
-const fakeEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, HDC_LOG: fakeHdcLog, HDC_REMOTE_DIR: fakeHdcRemote, MAVT_ACTION_SETTLE_MS: '0' };
+recordPreconditions(injectedParsed.caseDir, 'harmony', injectedStart.executionId);
+recordGlobalFlowScan(injectedParsed.caseDir, 'harmony', injectedStart.executionId);
 const harmonyProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'harmony', '--device', '127.0.0.1:5555'], { env: fakeEnv }));
 assert.strictEqual(harmonyProbe.capabilities.layout, true);
+assert.ok(harmonyProbe.capabilities.actions.includes('restartApp'));
 assert.ok(harmonyProbe.capabilities.actions.includes('longPress'));
 let fakeHdcProbeLog = fs.readFileSync(fakeHdcLog, 'utf8');
 assert.ok(fakeHdcProbeLog.includes('shell uitest dumpLayout -p /data/local/tmp/mavt-probe.json -m true'));
@@ -1153,13 +1664,16 @@ assert.strictEqual(injectedDefaultTap.settleMs, 1000);
 assert.strictEqual(injectedDefaultTap.coordinateSource, 'visual');
 assert.ok(fs.readFileSync(path.join(repo, 'scripts', 'flow', 'action.sh'), 'utf8').includes('MAVT_ACTION_SETTLE_MS:-1000'));
 
+const missingObserveStepId = runAllowFailure('./scripts/observe.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--label', 'step-001-missing-step-id'], { env: fakeEnv });
+assert.notStrictEqual(missingObserveStepId.status, 0);
+assert.ok(missingObserveStepId.stderr.includes('OBSERVATION_SCOPE_REQUIRED'));
 const injectedObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--label', '../bad'], { env: fakeEnv }));
 assert.strictEqual(injectedObservation.label, '001-bad');
 assert.strictEqual(injectedObservation.stepId, 'step-001');
 assertLocalTime(injectedObservation.time);
 assert.strictEqual(injectedObservation.artifacts.screenshot, 'screenshots/001-bad.png');
 assert.strictEqual(injectedObservation.artifacts.layout, 'layouts/001-bad.json');
-const injectedObservation2 = JSON.parse(run('./scripts/observe.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--label', 'step-001-after'], { env: fakeEnv }));
+const injectedObservation2 = JSON.parse(run('./scripts/observe.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--label', 'step-001-after'], { env: fakeEnv }));
 assert.strictEqual(injectedObservation2.label, '002-step-001-after');
 assert.strictEqual(injectedObservation2.artifacts.screenshot, 'screenshots/002-step-001-after.png');
 run('node', ['scripts/render-context.js', injectedParsed.caseDir, '--platform', 'harmony']);
@@ -1209,6 +1723,7 @@ write(missingFlowScanFile, `# Flow 扫描缺失自动收尾测试
 const missingFlowScanParsed = JSON.parse(run('node', ['scripts/parse-case.js', missingFlowScanFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', missingFlowScanParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const missingFlowScanStart = JSON.parse(run('node', ['scripts/run-case.js', missingFlowScanParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(missingFlowScanParsed.caseDir, 'harmony', missingFlowScanStart.executionId);
 const missingFlowScanAction = runAllowFailure('./scripts/action.sh', ['--case-dir', missingFlowScanParsed.caseDir, '--platform', 'harmony', '--execution-id', missingFlowScanStart.executionId, '--step-id', 'step-001', '--type', 'toggle', '--x', '9', '--y', '10', '--coordinate-source', 'layout', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '控件树通知开关 bounds', '--settle-ms', '0'], { env: fakeEnv });
 assert.notStrictEqual(missingFlowScanAction.status, 0);
 assert.ok(missingFlowScanAction.stdout.includes('FLOW_SCAN_REQUIRED'));
@@ -1233,6 +1748,7 @@ write(globalOnlyFlowScanFile, `# 全局 Flow 扫描不能替代步骤扫描测�
 const globalOnlyFlowScanParsed = JSON.parse(run('node', ['scripts/parse-case.js', globalOnlyFlowScanFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', globalOnlyFlowScanParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const globalOnlyFlowScanStart = JSON.parse(run('node', ['scripts/run-case.js', globalOnlyFlowScanParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(globalOnlyFlowScanParsed.caseDir, 'harmony', globalOnlyFlowScanStart.executionId);
 run('node', ['scripts/flow/record-scan.js', globalOnlyFlowScanParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', globalOnlyFlowScanStart.executionId, '--reason', '只建立候选库，不绑定步骤']);
 const globalOnlyFlowScanAction = runAllowFailure('./scripts/action.sh', ['--case-dir', globalOnlyFlowScanParsed.caseDir, '--platform', 'harmony', '--execution-id', globalOnlyFlowScanStart.executionId, '--step-id', 'step-001', '--type', 'toggle', '--x', '9', '--y', '10', '--coordinate-source', 'layout', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '控件树通知开关 bounds', '--settle-ms', '0'], { env: fakeEnv });
 assert.notStrictEqual(globalOnlyFlowScanAction.status, 0);
@@ -1254,6 +1770,8 @@ write(toolErrorFile, `# 工具错误自动收尾测试
 const toolErrorParsed = JSON.parse(run('node', ['scripts/parse-case.js', toolErrorFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', toolErrorParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const toolErrorStart = JSON.parse(run('node', ['scripts/run-case.js', toolErrorParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(toolErrorParsed.caseDir, 'harmony', toolErrorStart.executionId);
+recordGlobalFlowScan(toolErrorParsed.caseDir, 'harmony', toolErrorStart.executionId);
 run('node', ['scripts/flow/record-scan.js', toolErrorParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', toolErrorStart.executionId, '--step-id', 'step-001', '--reason', '工具错误前已扫描 Flow']);
 const toolErrorAction = runAllowFailure('./scripts/action.sh', ['--case-dir', toolErrorParsed.caseDir, '--platform', 'harmony', '--execution-id', toolErrorStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '-1', '--y', '-1', '--coordinate-source', 'layout', '--target-bounds', '0,0,2,2', '--coordinate-evidence', '测试异常坐标', '--settle-ms', '0'], { env: fakeEnv });
 assert.notStrictEqual(toolErrorAction.status, 0);
@@ -1292,20 +1810,23 @@ rulesCase.globalRules = [{
 }];
 write(rulesCasePath, `${JSON.stringify(rulesCase, null, 2)}\n`);
 const rulesStart = JSON.parse(run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(rulesParsed.caseDir, 'harmony', rulesStart.executionId);
+recordGlobalFlowScan(rulesParsed.caseDir, 'harmony', rulesStart.executionId);
 run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'rule',
   ruleId: 'rule-001',
   status: 'MATCHED',
   stepId: 'step-001',
   reason: '检测到权限弹窗',
-})]);
-run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+}), '--execution-id', rulesStart.executionId]);
+run('node', ['scripts/flow/record-scan.js', rulesParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', rulesStart.executionId, '--step-id', 'step-001', '--reason', '规则动作前已扫描 Flow']);
+recordActionResult(rulesParsed.caseDir, 'harmony', rulesStart.executionId, {
   type: 'actionResult',
   stepId: 'step-001',
   action: 'tap',
   ok: true,
-})]);
-run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS']);
+});
+run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', rulesStart.executionId]);
 const rulesMetrics = json(path.join(rulesStart.execDir, 'metrics.json'));
 assert.strictEqual(rulesMetrics.eventCounts.rule, 1);
 assert.ok(rulesMetrics.caseContractSha);
@@ -1456,6 +1977,8 @@ write(flowCaseFile, `# Flow 执行测试
 const flowCaseParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowCaseFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const flowCaseStart = JSON.parse(run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId);
+recordGlobalFlowScan(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId);
 run('node', ['scripts/flow/record-scan.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowCaseStart.executionId, '--step-id', 'step-001', '--matched-flow-ids', flowStarted.flowId, '--reason', '步骤需要进入创作页，命中已录制 Flow']);
 run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'flow',
@@ -1479,32 +2002,29 @@ run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmo
   stepId: 'step-001',
   reason: '已进入创作页',
 })]);
-run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+recordObservationEvent(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId, {
   type: 'observation',
+  scope: 'global',
   label: 'flow-step-001-before',
   artifacts: {
     screenshot: 'screenshots/flow-step-001-before.png',
     layout: 'layouts/flow-step-001-before.json',
   },
-})]);
-run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+});
+recordObservationEvent(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId, {
   type: 'observation',
+  scope: 'global',
   label: '002-after-flow-step-001',
   artifacts: {
     screenshot: 'screenshots/002-after-flow-step-001.png',
     layout: 'layouts/002-after-flow-step-001.json',
   },
-})]);
-run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
-  type: 'assertion',
-  stepId: 'step-001',
-  status: 'PASS',
-  reason: '看到创作页',
-})]);
+});
+recordPassAssertion(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId, 'step-001', '看到创作页', recordStepObservation(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId, 'step-001', 'step-001-flow-result'));
 run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS']);
 const flowCaseMetrics = json(path.join(flowCaseStart.execDir, 'metrics.json'));
 assert.strictEqual(flowCaseMetrics.flows.totalEvents, 3);
-assert.strictEqual(flowCaseMetrics.flows.scans, 1);
+assert.strictEqual(flowCaseMetrics.flows.scans, 2);
 assert.strictEqual(flowCaseMetrics.flows.matched, 1);
 assert.strictEqual(flowCaseMetrics.flows.completed, 1);
 const flowCaseContext = fs.readFileSync(path.join(flowCaseParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
@@ -1536,6 +2056,8 @@ write(flowScanFailureFile, `# Flow 扫描失败事实测试
 const flowScanFailureParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowScanFailureFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const flowScanFailureStart = JSON.parse(run('node', ['scripts/run-case.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(flowScanFailureParsed.caseDir, 'harmony', flowScanFailureStart.executionId);
+recordGlobalFlowScan(flowScanFailureParsed.caseDir, 'harmony', flowScanFailureStart.executionId);
 const failedFlowScan = runAllowFailure('node', ['scripts/flow/record-scan.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowScanFailureStart.executionId, '--step-id', 'step-001', '--matched-flow-ids', 'flow-not-scanned', '--reason', '测试扫描失败']);
 assert.notStrictEqual(failedFlowScan.status, 0);
 assert.ok(failedFlowScan.stderr.includes('matched Flow 不在扫描结果中'));
@@ -1546,10 +2068,13 @@ assert.strictEqual(failedScanEvent.source, 'list-flows');
 assert.strictEqual(failedScanEvent.stepId, 'step-001');
 assert.ok(failedScanEvent.reason.includes('matched Flow 不在扫描结果中'));
 assert.deepStrictEqual(failedScanEvent.matchedFlowIds, []);
+const failedFlowScanActionPrecheck = runAllowFailure('node', ['scripts/run-case.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--check-budget', '--event-type', 'actionResult', '--action', 'tap', '--step-id', 'step-001', '--execution-id', flowScanFailureStart.executionId]);
+assert.notStrictEqual(failedFlowScanActionPrecheck.status, 0);
+assert.ok(failedFlowScanActionPrecheck.stderr.includes('FLOW_SCAN_REQUIRED'));
 run('node', ['scripts/run-case.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--failed-step', 'step-001', '--reason', '扫描失败后无法继续']);
 const flowScanFailureResult = json(path.join(flowScanFailureStart.execDir, 'result.json'));
 assert.strictEqual(flowScanFailureResult.status, 'BLOCKED');
-assert.strictEqual(flowScanFailureResult.failureCode, 'ACTION_TARGET_NOT_FOUND');
+assert.strictEqual(flowScanFailureResult.failureCode, 'FLOW_SCAN_MISSING');
 
 const flowGuardFile = path.join(sourceRoot, 'cases', 'flow-guard.md');
 write(flowGuardFile, `# Flow 扫描守卫测试
@@ -1563,9 +2088,10 @@ write(flowGuardFile, `# Flow 扫描守卫测试
 const flowGuardParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowGuardFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', flowGuardParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const flowGuardStart = JSON.parse(run('node', ['scripts/run-case.js', flowGuardParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(flowGuardParsed.caseDir, 'harmony', flowGuardStart.executionId);
 run('node', ['scripts/run-case.js', flowGuardParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--failed-step', 'step-001', '--reason', '未找到业务按钮']);
 const flowGuardResult = json(path.join(flowGuardStart.execDir, 'result.json'));
-assert.strictEqual(flowGuardResult.status, 'UNKNOWN');
+assert.strictEqual(flowGuardResult.status, 'BLOCKED');
 assert.strictEqual(flowGuardResult.failureCode, 'FLOW_SCAN_MISSING');
 assert.ok(flowGuardResult.reason.includes('Flow 扫描'));
 const flowGuardStepFile = path.join(sourceRoot, 'cases', 'flow-guard-step.md');
@@ -1581,10 +2107,12 @@ write(flowGuardStepFile, `# Flow 扫描步骤关联守卫测试
 const flowGuardStepParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowGuardStepFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', flowGuardStepParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const flowGuardStepStart = JSON.parse(run('node', ['scripts/run-case.js', flowGuardStepParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(flowGuardStepParsed.caseDir, 'harmony', flowGuardStepStart.executionId);
+recordGlobalFlowScan(flowGuardStepParsed.caseDir, 'harmony', flowGuardStepStart.executionId);
 run('node', ['scripts/flow/record-scan.js', flowGuardStepParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowGuardStepStart.executionId, '--step-id', 'step-001', '--reason', '第一步已扫描 Flow']);
 run('node', ['scripts/run-case.js', flowGuardStepParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--failed-step', 'step-002', '--reason', '第二步未找到业务按钮']);
 const flowGuardStepResult = json(path.join(flowGuardStepStart.execDir, 'result.json'));
-assert.strictEqual(flowGuardStepResult.status, 'UNKNOWN');
+assert.strictEqual(flowGuardStepResult.status, 'BLOCKED');
 assert.strictEqual(flowGuardStepResult.failureCode, 'FLOW_SCAN_MISSING');
 const flowGuardMatchedFile = path.join(sourceRoot, 'cases', 'flow-guard-matched.md');
 write(flowGuardMatchedFile, `# Flow 命中未处理守卫测试
@@ -1598,18 +2126,22 @@ write(flowGuardMatchedFile, `# Flow 命中未处理守卫测试
 const flowGuardMatchedParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowGuardMatchedFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', flowGuardMatchedParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const flowGuardMatchedStart = JSON.parse(run('node', ['scripts/run-case.js', flowGuardMatchedParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(flowGuardMatchedParsed.caseDir, 'harmony', flowGuardMatchedStart.executionId);
+recordGlobalFlowScan(flowGuardMatchedParsed.caseDir, 'harmony', flowGuardMatchedStart.executionId);
 run('node', ['scripts/flow/record-scan.js', flowGuardMatchedParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowGuardMatchedStart.executionId, '--step-id', 'step-001', '--matched-flow-ids', flowStarted.flowId, '--reason', '命中 Flow 但未处理']);
 run('node', ['scripts/run-case.js', flowGuardMatchedParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--failed-step', 'step-001', '--reason', '未找到业务按钮']);
 const flowGuardMatchedResult = json(path.join(flowGuardMatchedStart.execDir, 'result.json'));
-assert.strictEqual(flowGuardMatchedResult.status, 'UNKNOWN');
+assert.strictEqual(flowGuardMatchedResult.status, 'BLOCKED');
 assert.strictEqual(flowGuardMatchedResult.failureCode, 'FLOW_MATCH_UNRESOLVED');
 const flowGuardNoFailedStepParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowGuardStepFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', flowGuardNoFailedStepParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const flowGuardNoFailedStepStart = JSON.parse(run('node', ['scripts/run-case.js', flowGuardNoFailedStepParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(flowGuardNoFailedStepParsed.caseDir, 'harmony', flowGuardNoFailedStepStart.executionId);
+recordGlobalFlowScan(flowGuardNoFailedStepParsed.caseDir, 'harmony', flowGuardNoFailedStepStart.executionId);
 run('node', ['scripts/flow/record-scan.js', flowGuardNoFailedStepParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowGuardNoFailedStepStart.executionId, '--step-id', 'step-001', '--reason', '第一步已扫描 Flow']);
 run('node', ['scripts/run-case.js', flowGuardNoFailedStepParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--reason', '未传失败步骤']);
 const flowGuardNoFailedStepResult = json(path.join(flowGuardNoFailedStepStart.execDir, 'result.json'));
-assert.strictEqual(flowGuardNoFailedStepResult.status, 'UNKNOWN');
+assert.strictEqual(flowGuardNoFailedStepResult.status, 'BLOCKED');
 assert.strictEqual(flowGuardNoFailedStepResult.failureCode, 'FLOW_SCAN_MISSING');
 
 const budgetFile = path.join(sourceRoot, 'cases', 'budget.md');
@@ -1624,18 +2156,25 @@ write(budgetFile, `# 预算测试
 const budgetParsed = JSON.parse(run('node', ['scripts/parse-case.js', budgetFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', budgetParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const budgetStart = JSON.parse(run('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(budgetParsed.caseDir, 'harmony', budgetStart.executionId);
 for (let i = 0; i < 80; i++) {
-  run('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  recordObservationEvent(budgetParsed.caseDir, 'harmony', budgetStart.executionId, {
     type: 'observation',
+    scope: 'global',
     label: `obs-${i}`,
     artifacts: { screenshot: `screenshots/obs-${i}.png` },
-  })]);
+  });
 }
-const overBudget = runAllowFailure('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+write(path.join(budgetStart.execDir, 'screenshots/obs-80.png'), 'self-test artifact: screenshots/obs-80.png\n');
+const overBudget = runAllowFailure('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--record-observation-json', JSON.stringify({
   type: 'observation',
+  scope: 'global',
   label: 'obs-80',
+  source: 'observe.sh',
   artifacts: { screenshot: 'screenshots/obs-80.png' },
-})]);
+}), '--execution-id', budgetStart.executionId], {
+  env: { ...process.env, MAVT_OBSERVATION_WRITER: '1' },
+});
 assert.strictEqual(overBudget.status, 3);
 assert.ok(overBudget.stderr.includes('EXECUTION_BUDGET_EXCEEDED'));
 const budgetState = json(path.join(budgetParsed.caseDir, 'platforms', 'harmony', 'state.json'));

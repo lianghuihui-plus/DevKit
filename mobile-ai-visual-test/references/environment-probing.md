@@ -77,9 +77,9 @@ adb -s <device> logcat -d -t 200
 
 Android Unicode 输入依赖 MAVT Input IME。`probe-env` 只在 `capabilities.dependencies` 中报告 `mavtInputIme` 是否已安装并启用；`prepare-env` 负责构建/安装/启用该 IME；正式执行中的 `inputText` 只临时切换到已准备好的 IME 发送文本并恢复原输入法，禁止在业务步骤中安装或启用输入依赖。
 
-## 未实现平台
+## iOS
 
-iOS 当前仅预留接口。
+iOS 通过 Appium / WDA 适配。`probe-env` 检查 Xcode、simctl、Appium、XCUITest Driver 等基础能力；`prepare-env` 准备 Appium/WDA 会话并写入 `iosAutomation` 依赖状态。依赖未准备或能力不可用时，正式 execution 不应开始，已进入 execution 的平台能力问题按 `PLATFORM_UNIMPLEMENTED` 或 `TOOL_ERROR` 收尾为 `BLOCKED`。
 
 ## 确认规则
 

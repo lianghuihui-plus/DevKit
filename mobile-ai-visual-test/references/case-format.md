@@ -39,9 +39,18 @@
   },
   "preconditions": [],
   "steps": [],
+  "isolation": {
+    "requireCleanRestart": "auto"
+  },
   "globalRules": []
 }
 ```
+
+`isolation.requireCleanRestart` 控制用例对冷启动隔离的要求：
+
+- `true`：必须真实冷启动，`restartApp` 失败或不可验证时直接 `BLOCKED/CASE_RESTART_FAILED`。
+- `false`：允许隔离降级继续执行，但报告必须标记 `isolationCompromised`。
+- `"auto"`：由框架根据标题、前置条件和步骤中的冷启动敏感语义推断。
 
 ## caseNo 与目录
 
@@ -124,7 +133,7 @@ scripts/resolve-case-ref.js "登录成功"
 - `when`：由 agent 基于截图、控件树、日志和历史事实判断的命中条件。
 - `then`：命中后的建议决策，只能使用安全的结构化动作、`wait` 或 `blocked`。
 - `maxAttempts`：当前 execution 内最多命中次数，防止循环处理。
-- `onFailure`：规则动作无法完成时的状态，建议使用 `BLOCKED` 或 `UNKNOWN`。
+- `onFailure`：规则动作无法完成时的状态，建议优先使用 `BLOCKED`；`UNKNOWN` 仅用于规则事实层面的历史兼容或无法归类场景，不应作为正式断言证据不足的最终结果。
 
 执行约定：
 
@@ -141,7 +150,7 @@ scripts/resolve-case-ref.js "登录成功"
 2. 重放 `notes.jsonl`；无法匹配的补充标记为 stale，不删除。
 3. 追加系统记录并刷新报告。
 
-刷新 `case.json` 时必须保留已有 `globalRules`，除非输入源显式提供新的规则定义；规则变化和用户补充重放产生的步骤 `hints` 变化都会影响 `caseContractSha`，旧执行结果不得继续作为当前结果展示。
+刷新 `case.json` 时必须保留已有 `globalRules`，除非输入源显式提供新的规则定义；前置条件、规则变化和用户补充重放产生的步骤 `hints` 变化都会影响 `caseContractSha`，旧执行结果不得继续作为当前结果展示。
 
 ## 重复导入与执行
 

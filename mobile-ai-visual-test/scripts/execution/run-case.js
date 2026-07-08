@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const childProcess = require('child_process');
 const {
   appendJsonl,
   caseContractSha,
@@ -18,6 +19,7 @@ const {
 } = require('../common');
 
 const VALID_STATUS = new Set(['PASS', 'FAIL', 'BLOCKED', 'UNKNOWN']);
+const PRECONDITION_PASSING_STATUSES = new Set(['PASS', 'PREPARED']);
 const VALID_EVENT_TYPES = new Set([
   'executionStart',
   'environmentProbe',
@@ -36,7 +38,8 @@ const VALID_EVENT_TYPES = new Set([
   'result',
 ]);
 const VALID_DECISIONS = new Set(['act', 'assert_pass', 'assert_fail', 'wait', 'blocked']);
-const VALID_ACTIONS = new Set(['launchApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']);
+const VALID_ACTIONS = new Set(['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']);
+const STEP_EVIDENCE_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back']);
 const VALID_RULE_STATUSES = new Set(['MATCHED', 'SKIPPED', 'FAILED', 'BLOCKED', 'UNKNOWN']);
 const VALID_RULE_TYPES = new Set(['guard']);
 const VALID_RULE_FAILURES = new Set(['BLOCKED', 'UNKNOWN', 'FAIL']);
@@ -45,6 +48,19 @@ const VALID_FLOW_STATUSES = new Set(['STARTED', 'STEP_STARTED', 'STEP_COMPLETED'
 const TERMINAL_FLOW_STATUSES = new Set(['COMPLETED', 'FAILED', 'SKIPPED', 'BLOCKED']);
 const VALID_COORDINATE_SOURCES = new Set(['layout', 'visual', 'pixel', 'manual', 'flow']);
 const FLOW_GATED_FAILURES = new Set(['PAGE_LOAD_BLOCKED', 'ACTION_TARGET_NOT_FOUND', 'APP_CONTEXT_LOST']);
+const RESTART_SENSITIVE_PATTERN = /(首次|初次|第一次|新用户|无年级|重启|重新进入|再次进入|冷启动|启动后|同一次\s*App\s*启动|同一次app启动|默认开启|默认关闭|默认初始化|初始化|缓存|会话态|启动态|first\s*(launch|open|entry|start)|restart|cold\s*start|relaunch|initial|default)/i;
+const STEP_ORDER_GUARDED_EVENT_TYPES = new Set([
+  'observation',
+  'perception',
+  'decision',
+  'rule',
+  'flowScan',
+  'flow',
+  'actionResult',
+  'assertion',
+  'popup',
+  'appForeground',
+]);
 const DEFAULT_BUDGET = {
   maxDurationMs: 20 * 60 * 1000,
   maxObservations: 80,
@@ -59,7 +75,7 @@ function usage() {
   console.error([
     'Usage:',
     '  run-case.js <case-dir> --platform <platform> --start',
-    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--step-id <step-id>] [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--step-id <step-id>] [--scope global] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --record-json <json> [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --finalize --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>]',
@@ -138,6 +154,47 @@ function actionType(event) {
   return event.action?.type || event.action;
 }
 
+function eventStepId(event) {
+  return event?.stepId || event?.step?.id || '';
+}
+
+function eventArtifacts(event) {
+  return (event?.observation || event || {}).artifacts || {};
+}
+
+function normalizeEvidenceValue(value) {
+  return String(value || '').replace(/\\/g, '/').trim();
+}
+
+function assertionEvidenceRefs(event) {
+  const refs = [];
+  if (Array.isArray(event.evidence)) refs.push(...event.evidence);
+  if (typeof event.evidence === 'string') refs.push(event.evidence);
+  if (event.evidenceObservation) refs.push(event.evidenceObservation);
+  if (Array.isArray(event.evidenceObservations)) refs.push(...event.evidenceObservations);
+  return refs.map(normalizeEvidenceValue).filter(Boolean);
+}
+
+function observationEvidenceValues(event) {
+  const observation = event.observation || event;
+  const artifacts = eventArtifacts(event);
+  const values = [
+    observation.label,
+    artifacts.screenshot,
+    artifacts.layout,
+    ...(Array.isArray(artifacts.logs) ? artifacts.logs : []),
+  ];
+  return new Set(values.map(normalizeEvidenceValue).filter(Boolean));
+}
+
+function observationMatchesEvidenceRef(observation, ref) {
+  return observationEvidenceValues(observation).has(normalizeEvidenceValue(ref));
+}
+
+function observationArtifactRefs(observation) {
+  return new Set(artifactPaths(observation).map(normalizeEvidenceValue).filter(Boolean));
+}
+
 function isSafeRelativeArtifact(value) {
   return typeof value === 'string' &&
     value.length > 0 &&
@@ -159,6 +216,25 @@ function validateArtifacts(event) {
   }
 }
 
+function artifactPaths(event) {
+  const artifacts = (event.observation || event).artifacts || {};
+  const paths = [];
+  if (artifacts.screenshot) paths.push(artifacts.screenshot);
+  if (artifacts.layout) paths.push(artifacts.layout);
+  if (Array.isArray(artifacts.logs)) paths.push(...artifacts.logs);
+  return paths;
+}
+
+function validateArtifactFilesExist(execDir, event) {
+  if (!event || event.type !== 'observation') return;
+  for (const item of artifactPaths(event)) {
+    const file = path.join(execDir, item);
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      throw new Error(`OBSERVATION_ARTIFACT_MISSING: observation artifact does not exist: ${item}`);
+    }
+  }
+}
+
 function validateEvent(event) {
   if (!event.type || typeof event.type !== 'string') throw new Error('record-json missing required field: type');
   if (!VALID_EVENT_TYPES.has(event.type)) throw new Error(`Unsupported event type: ${event.type}`);
@@ -167,6 +243,7 @@ function validateEvent(event) {
   if (event.type === 'observation') {
     if (!event.label || typeof event.label !== 'string') throw new Error('observation missing required field: label');
     if (!event.artifacts || typeof event.artifacts !== 'object' || Array.isArray(event.artifacts)) throw new Error('observation missing required field: artifacts');
+    validateObservationScope(event);
     validateArtifacts(event);
   }
   if (event.type === 'actionResult') {
@@ -214,7 +291,19 @@ function validateEvent(event) {
   if (event.type === 'precondition' && !['PASS', 'PREPARED', 'FAIL', 'UNKNOWN', 'BLOCKED'].includes(event.status)) {
     throw new Error('precondition status must be PASS, PREPARED, FAIL, UNKNOWN, or BLOCKED');
   }
+  if (event.type === 'precondition' && (!event.id || typeof event.id !== 'string')) {
+    throw new Error('precondition event missing required field: id');
+  }
   validateArtifacts(event);
+}
+
+function validateObservationScope(event) {
+  if (eventStepId(event)) return;
+  if (event.scope === 'global' || event.global === true || event.observation?.scope === 'global') return;
+  if (/\bstep-\d{3}\b/i.test(event.label || '')) {
+    throw new Error('STEP_OBSERVATION_REQUIRES_STEP_ID: observation label looks step-scoped; pass --step-id for step evidence.');
+  }
+  throw new Error('OBSERVATION_SCOPE_REQUIRED: observation without stepId must explicitly set scope=global.');
 }
 
 function validateCoordinateMetadata(event, action) {
@@ -277,6 +366,15 @@ function validateRuleEventAgainstCase(event, caseJson) {
   if (!known) throw new Error(`rule event references unknown globalRule: ${event.ruleId}`);
 }
 
+function validatePreconditionEventAgainstCase(event, caseJson) {
+  if (event.type !== 'precondition') return;
+  const preconditions = Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [];
+  const known = preconditions.some((item) => item.id === event.id);
+  if (!known) {
+    throw new Error(`PRECONDITION_REQUIRED: precondition event references unknown case precondition id: ${event.id}`);
+  }
+}
+
 function budgetViolation(events, nextEvent, budget, startedAt) {
   const nextEvents = nextEvent ? [...events, nextEvent] : events;
   const now = new Date(nextEvent?.time || nowIso()).getTime();
@@ -320,20 +418,259 @@ function budgetViolation(events, nextEvent, budget, startedAt) {
   return null;
 }
 
+function paceHint(events, nextEvent) {
+  const stepId = eventStepId(nextEvent);
+  if (!stepId) return null;
+  const stepEvents = events.filter((event) => eventStepId(event) === stepId);
+  const observations = stepEvents.filter((event) => event.type === 'observation');
+  const agentFacts = stepEvents.filter((event) => ['perception', 'decision', 'rule', 'flow'].includes(event.type));
+  const hint = {
+    level: 'INFO',
+    stepId,
+    suggestedNextAction: 'continue',
+    message: '',
+  };
+  if (nextEvent?.type === 'observation' && observations.length >= 1) {
+    hint.level = 'WARN';
+    hint.suggestedNextAction = 'assert_or_act';
+    hint.message = `当前步骤 ${stepId} 已有 observation；如果页面状态已明确，请立即写带证据引用的 assertion，避免重复观察。`;
+    return hint;
+  }
+  if (['perception', 'decision'].includes(nextEvent?.type) && observations.length >= 1 && agentFacts.length >= 2) {
+    hint.level = 'WARN';
+    hint.suggestedNextAction = 'assert_or_act';
+    hint.message = `当前步骤 ${stepId} 已有 observation 和多条 agent 事实；若不会改变下一步动作，请停止补充解释性事实并尽快断言或执行动作。`;
+    return hint;
+  }
+  if (nextEvent?.type === 'actionResult' && actionType(nextEvent) === 'wait') {
+    const waits = stepEvents.filter((event) => event.type === 'actionResult' && actionType(event) === 'wait').length;
+    if (waits >= 1) {
+      hint.level = 'WARN';
+      hint.suggestedNextAction = 'observe_then_assert_or_fail';
+      hint.message = `当前步骤 ${stepId} 已等待过；再次等待后应立即 observe 并判断 PASS/FAIL/BLOCKED。`;
+      return hint;
+    }
+  }
+  return null;
+}
+
 function stepRequiresAssertion(step) {
   return step?.kind === 'assertion' || (Array.isArray(step?.assertions) && step.assertions.length > 0);
 }
 
 function stepEvidence(events, step) {
   const stepId = step.id;
-  return events.some((event) => {
-    const eventStepId = event.stepId || event.step?.id;
-    if (eventStepId !== stepId) return false;
+  return events.some((event, index) => {
+    if (eventStepId(event) !== stepId) return false;
     if (event.type === 'assertion') return event.status === 'PASS';
     if (stepRequiresAssertion(step)) return false;
-    if (event.type === 'actionResult') return event.ok === true;
+    if (event.type === 'actionResult' && event.ok === true && STEP_EVIDENCE_ACTIONS.has(actionType(event))) {
+      return events.slice(index + 1).some((next) => next.type === 'observation' && eventStepId(next) === stepId);
+    }
     return false;
   });
+}
+
+function preconditionFailureCode(status) {
+  if (status === 'FAIL') return 'PRECONDITION_FAILED';
+  if (status === 'UNKNOWN') return 'PRECONDITION_UNKNOWN';
+  if (status === 'BLOCKED') return 'PRECONDITION_UNSUPPORTED';
+  return 'PRECONDITION_REQUIRED';
+}
+
+function preconditionReadiness(caseJson, events, nextEvent) {
+  if (!nextEvent || !STEP_ORDER_GUARDED_EVENT_TYPES.has(nextEvent.type)) return { ok: true };
+  if (!eventStepId(nextEvent)) return { ok: true };
+  const preconditions = Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [];
+  if (!preconditions.length) return { ok: true };
+
+  const latestById = new Map();
+  for (const event of events) {
+    if (event.type === 'precondition' && event.id) latestById.set(event.id, event);
+  }
+  const missing = preconditions.filter((item) => !latestById.has(item.id));
+  if (missing.length) {
+    return {
+      ok: false,
+      failureCode: 'PRECONDITION_REQUIRED',
+      reason: `进入步骤前必须先处理所有前置条件，缺少: ${missing.map((item) => item.id).join(', ')}。`,
+    };
+  }
+  const blocking = preconditions
+    .map((item) => ({ item, event: latestById.get(item.id) }))
+    .filter(({ event }) => !PRECONDITION_PASSING_STATUSES.has(event.status));
+  if (blocking.length) {
+    const first = blocking[0];
+    return {
+      ok: false,
+      failureCode: preconditionFailureCode(first.event.status),
+      reason: `前置条件未满足，不能进入步骤: ${first.item.id} ${first.item.text || ''} (${first.event.status})${first.event.reason ? `；${first.event.reason}` : ''}`,
+    };
+  }
+  return { ok: true };
+}
+
+function preconditionTerminalOptions(event) {
+  if (event.type !== 'precondition') return null;
+  if (event.status === 'FAIL') {
+    return {
+      status: 'BLOCKED',
+      failureCode: 'PRECONDITION_FAILED',
+      reason: event.reason || `前置条件不满足: ${event.id}`,
+    };
+  }
+  if (event.status === 'UNKNOWN') {
+    return {
+      status: 'UNKNOWN',
+      failureCode: 'PRECONDITION_UNKNOWN',
+      reason: event.reason || `前置条件无法确认: ${event.id}`,
+    };
+  }
+  if (event.status === 'BLOCKED') {
+    return {
+      status: 'BLOCKED',
+      failureCode: 'PRECONDITION_UNSUPPORTED',
+      reason: event.reason || `前置条件不支持自动处理: ${event.id}`,
+    };
+  }
+  return null;
+}
+
+function globalFlowScanReadiness(events, nextEvent) {
+  if (!nextEvent || !STEP_ORDER_GUARDED_EVENT_TYPES.has(nextEvent.type)) return { ok: true };
+  if (!eventStepId(nextEvent)) return { ok: true };
+  if (nextEvent.type === 'actionResult' && nextEvent.failureCode === 'FLOW_SCAN_REQUIRED') return { ok: true };
+  const hasGlobalFlowScan = events.some((event) => isUsableFlowScan(event, null));
+  if (hasGlobalFlowScan) return { ok: true };
+  return {
+    ok: false,
+    failureCode: 'FLOW_SCAN_REQUIRED',
+    reason: '开始步骤事实前必须先写入可用的 execution 级全局 flowScan 事实；FAILED 扫描不能作为步骤前置。',
+  };
+}
+
+function assertionEvidenceReadiness(events, nextEvent, execDir = '') {
+  if (!nextEvent || nextEvent.type !== 'assertion' || nextEvent.status !== 'PASS') return { ok: true };
+  const stepId = eventStepId(nextEvent);
+  if (!stepId) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: 'assertion PASS 必须绑定 stepId，并引用当前步骤的观察证据。',
+    };
+  }
+  const refs = assertionEvidenceRefs(nextEvent);
+  if (!refs.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 必须通过 evidence 或 evidenceObservation 引用 ${stepId} 的 observation 证据。`,
+    };
+  }
+  const observations = events.filter((event) => event.type === 'observation' && eventStepId(event) === stepId && event.source === 'observe.sh');
+  if (!observations.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 前必须已有 ${stepId} 由 scripts/observe.sh 写入的 observation 证据。`,
+    };
+  }
+  const missing = refs.filter((ref) => !observations.some((observation) => observationMatchesEvidenceRef(observation, ref)));
+  if (missing.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 引用的证据不属于当前步骤 observation: ${missing.join(', ')}。`,
+    };
+  }
+  const missingArtifacts = [];
+  for (const ref of refs) {
+    for (const observation of observations) {
+      if (!observationMatchesEvidenceRef(observation, ref)) continue;
+      if (!observationArtifactRefs(observation).has(normalizeEvidenceValue(ref))) continue;
+      const file = path.join(execDir, ref);
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) missingArtifacts.push(ref);
+    }
+  }
+  if (missingArtifacts.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 引用的 observation 产物不存在: ${[...new Set(missingArtifacts)].join(', ')}。`,
+    };
+  }
+  return { ok: true };
+}
+
+function stepOrderReadiness(caseJson, events, nextEvent) {
+  if (!nextEvent || !STEP_ORDER_GUARDED_EVENT_TYPES.has(nextEvent.type)) return { ok: true };
+  const stepId = eventStepId(nextEvent);
+  if (stepId && nextEvent.type === 'actionResult' && actionType(nextEvent) === 'restartApp') {
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: 'restartApp 是 execution 级隔离动作，不能绑定步骤 stepId 或作为步骤证据。',
+    };
+  }
+  if (!stepId) {
+    if (nextEvent.type === 'actionResult' && actionRequiresStepId(actionType(nextEvent))) {
+      return {
+        ok: false,
+        failureCode: 'STEP_ORDER_VIOLATION',
+        reason: `业务动作必须绑定当前步骤 stepId: ${actionType(nextEvent)}。`,
+      };
+    }
+    return { ok: true };
+  }
+
+  const steps = Array.isArray(caseJson.steps) ? caseJson.steps : [];
+  const stepIndex = steps.findIndex((step) => step.id === stepId);
+  if (stepIndex === -1) {
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: `事件引用了不存在的步骤: ${stepId}。`,
+    };
+  }
+
+  const startedIndexes = events
+    .filter((event) => STEP_ORDER_GUARDED_EVENT_TYPES.has(event.type))
+    .map((event) => steps.findIndex((step) => step.id === eventStepId(event)))
+    .filter((index) => index >= 0);
+  const highestStartedIndex = startedIndexes.length ? Math.max(...startedIndexes) : -1;
+
+  if (highestStartedIndex === -1) {
+    if (stepIndex === 0) return { ok: true };
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: `必须从 ${steps[0]?.id || '第一个步骤'} 开始执行，不能先记录 ${stepId}。`,
+    };
+  }
+
+  if (stepIndex < highestStartedIndex) {
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: `已开始 ${steps[highestStartedIndex].id}，不能回头补写 ${stepId}。`,
+    };
+  }
+  if (stepIndex === highestStartedIndex) return { ok: true };
+  if (stepIndex === highestStartedIndex + 1) {
+    const previousStep = steps[highestStartedIndex];
+    if (stepEvidence(events, previousStep)) return { ok: true };
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: `进入 ${stepId} 前，必须先为 ${previousStep.id} 写入通过证据。`,
+    };
+  }
+
+  return {
+    ok: false,
+    failureCode: 'STEP_ORDER_VIOLATION',
+    reason: `必须按顺序执行；当前只能进入 ${steps[highestStartedIndex + 1]?.id || steps[highestStartedIndex].id}，不能先记录 ${stepId}。`,
+  };
 }
 
 function passReadiness(caseJson, events) {
@@ -351,11 +688,91 @@ function passReadiness(caseJson, events) {
   return { ok: true };
 }
 
-function statusFromEvents(caseJson, events, fallbackStatus) {
-  if (fallbackStatus !== 'PASS') return fallbackStatus;
-  const failedAssertion = events.find((event) => event.type === 'assertion' && event.status === 'FAIL');
-  if (failedAssertion) return 'FAIL';
-  return passReadiness(caseJson, events).ok ? fallbackStatus : 'UNKNOWN';
+function firstAssertion(events, status) {
+  return events.find((event) => event.type === 'assertion' && event.status === status) || null;
+}
+
+function statusForFailureCode(failureCode, fallbackStatus) {
+  if (!failureCode) return fallbackStatus;
+  if (['ASSERTION_FAILED', 'ASSERTION_UNKNOWN'].includes(failureCode)) return 'FAIL';
+  if (['ACTION_TARGET_NOT_FOUND', 'PAGE_LOAD_BLOCKED'].includes(failureCode)) return fallbackStatus === 'BLOCKED' ? 'BLOCKED' : 'FAIL';
+  if ([
+    'ENV_UNCONFIRMED',
+    'ENV_UNAVAILABLE',
+    'ENV_AMBIGUOUS',
+    'PLATFORM_UNIMPLEMENTED',
+    'PRECONDITION_FAILED',
+    'PRECONDITION_REQUIRED',
+    'PRECONDITION_UNKNOWN',
+    'PRECONDITION_UNSUPPORTED',
+    'FLOW_NOT_FOUND',
+    'FLOW_SCAN_REQUIRED',
+    'FLOW_STEP_UNMATCHED',
+    'FLOW_ACTION_FAILED',
+    'FLOW_UNSAFE',
+    'FLOW_SCAN_MISSING',
+    'FLOW_MATCH_UNRESOLVED',
+    'APP_CONTEXT_LOST',
+    'APP_LEFT_FOREGROUND',
+    'UNKNOWN_POPUP',
+    'CASE_TIMEOUT',
+    'CASE_RESTART_FAILED',
+    'EXECUTION_BUDGET_EXCEEDED',
+    'TOOL_ERROR',
+    'ACTION_RESULT_SOURCE_REQUIRED',
+    'ASSERTION_EVIDENCE_REQUIRED',
+  ].includes(failureCode)) return 'BLOCKED';
+  return fallbackStatus;
+}
+
+function failureCodeForcesBlocked(failureCode, fallbackStatus) {
+  return failureCode && statusForFailureCode(failureCode, fallbackStatus) === 'BLOCKED';
+}
+
+function normalizeResultStatus(caseJson, events, requested) {
+  const next = {
+    status: requested.status,
+    failureCode: requested.failureCode || null,
+    failedStep: requested.failedStep || null,
+    reason: requested.reason || '',
+  };
+  if (failureCodeForcesBlocked(next.failureCode, next.status)) {
+    next.status = 'BLOCKED';
+    return next;
+  }
+
+  const failedAssertion = firstAssertion(events, 'FAIL');
+  if (failedAssertion) {
+    next.status = 'FAIL';
+    next.failureCode = next.failureCode || 'ASSERTION_FAILED';
+    next.failedStep = next.failedStep || eventStepId(failedAssertion) || null;
+    next.reason = next.reason || failedAssertion.reason || '断言不通过。';
+    return next;
+  }
+
+  const unknownAssertion = firstAssertion(events, 'UNKNOWN');
+  if (unknownAssertion) {
+    next.status = 'FAIL';
+    next.failureCode = 'ASSERTION_UNKNOWN';
+    next.failedStep = next.failedStep || eventStepId(unknownAssertion) || null;
+    next.reason = next.reason || unknownAssertion.reason || '断言证据不足。';
+    return next;
+  }
+
+  if (next.status === 'PASS') {
+    const passEvidenceReadiness = passReadiness(caseJson, events);
+    if (!passEvidenceReadiness.ok) {
+      next.status = 'FAIL';
+      next.failureCode = passEvidenceReadiness.failureCode;
+      next.failedStep = next.failedStep || passEvidenceReadiness.failedStep || null;
+      next.reason = next.reason || passEvidenceReadiness.reason;
+      return next;
+    }
+  }
+
+  next.status = statusForFailureCode(next.failureCode, next.status);
+  if (next.status === 'UNKNOWN' && next.failureCode === 'ASSERTION_UNKNOWN') next.status = 'FAIL';
+  return next;
 }
 
 function countArtifacts(events) {
@@ -372,8 +789,8 @@ function countArtifacts(events) {
 }
 
 function buildMetrics(caseJson, state, events, result, executionState = {}) {
-  const actionTypes = ['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'launchApp', 'wait', 'home'];
-  const actions = { total: 0, tap: 0, toggle: 0, longPress: 0, inputText: 0, swipe: 0, back: 0, launchApp: 0, wait: 0, home: 0 };
+  const actionTypes = ['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'launchApp', 'restartApp', 'wait', 'home'];
+  const actions = { total: 0, tap: 0, toggle: 0, longPress: 0, inputText: 0, swipe: 0, back: 0, launchApp: 0, restartApp: 0, wait: 0, home: 0 };
   for (const event of events) {
     if (event.type !== 'actionResult') continue;
     const action = actionType(event);
@@ -388,8 +805,16 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     failed: 0,
     unknown: 0,
   };
+  const knownPreconditionIds = new Set(caseJson.preconditions.map((item) => item.id).filter(Boolean));
+  const latestPreconditionById = new Map();
   for (const event of events) {
     if (event.type !== 'precondition') continue;
+    if (!knownPreconditionIds.has(event.id)) continue;
+    latestPreconditionById.set(event.id, event);
+  }
+  for (const item of caseJson.preconditions) {
+    const event = latestPreconditionById.get(item.id);
+    if (!event) continue;
     if (event.status === 'PASS') preconditions.passed += 1;
     else if (event.status === 'PREPARED') preconditions.prepared += 1;
     else if (event.status === 'FAIL') preconditions.failed += 1;
@@ -425,9 +850,18 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
   const completed = Math.min(steps.passed + steps.failed + steps.blocked + steps.unknown, caseJson.steps.length);
   steps.skipped = result.status === 'PASS' ? 0 : Math.max(caseJson.steps.length - completed, 0);
 
+  const relaunchEvents = events.filter((event) => event.type === 'actionResult' && ['launchApp', 'restartApp'].includes(actionType(event)));
+  const relaunchSuccessCount = relaunchEvents.filter((event) => event.ok === true).length;
   const stability = {
     appForegroundLossCount: events.filter((event) => event.type === 'appForeground' && event.status === 'LEFT_TARGET').length,
-    appRelaunchCount: actions.launchApp,
+    appRelaunchCount: relaunchSuccessCount,
+    appRelaunchAttemptCount: relaunchEvents.length,
+    appRelaunchSuccessCount: relaunchSuccessCount,
+    restartFailureCount: events.filter((event) => event.type === 'actionResult' && actionType(event) === 'restartApp' && event.ok === false).length,
+    isolationClean: executionState.isolation?.clean !== false,
+    isolationCompromised: executionState.isolation?.clean === false,
+    isolationRequired: executionState.isolation?.required === true,
+    isolationReason: executionState.isolation?.reason || '',
     noChangeObservationCount: events.filter((event) => event.type === 'observation' && event.noChange === true).length,
     knownPopupHandledCount: events.filter((event) => event.type === 'popup' && event.status === 'HANDLED').length,
     unknownPopupCount: events.filter((event) => event.type === 'popup' && event.status !== 'HANDLED').length,
@@ -451,6 +885,7 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     sourceSha1: caseJson.identity.sourceSha1,
     caseContractSha: caseContractSha(caseJson),
     status: result.status,
+    requestedStatus: result.requestedStatus || result.status,
     failureCode: result.failureCode,
     startedAt: result.startedAt,
     endedAt: result.endedAt,
@@ -507,12 +942,21 @@ function finalize(caseDir, options) {
   const requestedStatus = status;
   const flowReadiness = flowFailureReadiness(eventsBeforeResult, options.failureCode, options.failedStep);
   if (!flowReadiness.ok) {
-    status = 'UNKNOWN';
+    status = 'BLOCKED';
     options.failureCode = flowReadiness.failureCode;
     options.reason = flowReadiness.reason;
   }
-  status = statusFromEvents(caseJson, eventsBeforeResult, status);
-  const readiness = requestedStatus === 'PASS' ? passReadiness(caseJson, eventsBeforeResult) : { ok: true };
+  const normalized = normalizeResultStatus(caseJson, eventsBeforeResult, {
+    status,
+    failureCode: options.failureCode || null,
+    failedStep: options.failedStep || null,
+    reason: options.reason || '',
+  });
+  status = normalized.status;
+  options.failureCode = normalized.failureCode;
+  options.failedStep = normalized.failedStep;
+  options.reason = normalized.reason;
+  const readiness = { ok: true };
   const result = {
     schemaVersion: 1,
     executionId,
@@ -521,6 +965,7 @@ function finalize(caseDir, options) {
     sourceSha1: caseJson.identity.sourceSha1,
     caseContractSha: caseContractSha(caseJson),
     status,
+    requestedStatus,
     failureCode: readiness.ok ? (options.failureCode || null) : readiness.failureCode,
     startedAt,
     endedAt,
@@ -529,7 +974,7 @@ function finalize(caseDir, options) {
     environment: state.environment || {},
     evidence: options.evidence || [],
   };
-  const resultEvent = { time: endedAt, type: 'result', status, reason: result.reason, failedStep: result.failedStep, failureCode: result.failureCode };
+  const resultEvent = { time: endedAt, type: 'result', status, requestedStatus, reason: result.reason, failedStep: result.failedStep, failureCode: result.failureCode };
   appendJsonl(timelinePath, resultEvent);
   const events = [...eventsBeforeResult, resultEvent];
   const metrics = buildMetrics(caseJson, state, events, result, executionState);
@@ -554,7 +999,9 @@ function finalize(caseDir, options) {
     endedAt,
     finalized: true,
     status,
+    requestedStatus,
     failureCode: result.failureCode,
+    isolation: executionState.isolation,
     budget: executionState.budget || DEFAULT_BUDGET,
   });
 
@@ -573,12 +1020,12 @@ function flowFailureReadiness(events, failureCode, failedStep) {
       reason: `缺少失败步骤和 Flow 扫描事实，不能直接判定 ${failureCode}。`,
     };
   }
-  const scans = events.filter((event) => event.type === 'flowScan' && event.stepId === failedStep);
+  const scans = events.filter((event) => event.type === 'flowScan' && event.stepId === failedStep && event.status !== 'FAILED');
   if (!scans.length) {
     return {
       ok: false,
       failureCode: 'FLOW_SCAN_MISSING',
-      reason: `缺少 Flow 扫描事实，不能直接判定 ${failureCode}。`,
+      reason: `缺少可用 Flow 扫描事实，不能直接判定 ${failureCode}。`,
     };
   }
   const matchedFlowIds = Array.from(new Set(scans.flatMap((event) => Array.isArray(event.matchedFlowIds) ? event.matchedFlowIds : [])));
@@ -598,26 +1045,93 @@ function flowFailureReadiness(events, failureCode, failedStep) {
 }
 
 function actionRequiresFlowScan(action) {
-  return action && !['launchApp', 'wait'].includes(action);
+  return action && !['launchApp', 'restartApp', 'wait'].includes(action);
+}
+
+function actionRequiresStepId(action) {
+  return action && !['launchApp', 'restartApp', 'wait'].includes(action);
+}
+
+function isUsableFlowScan(event, stepId = null) {
+  if (!event || event.type !== 'flowScan') return false;
+  if (event.source !== 'list-flows') return false;
+  if (event.status === 'FAILED') return false;
+  if (stepId !== null && event.stepId !== stepId) return false;
+  if (stepId === null && eventStepId(event)) return false;
+  return true;
 }
 
 function flowScanActionReadiness(events, action, stepId) {
   if (!actionRequiresFlowScan(action)) return { ok: true };
-  if (!events.some((event) => event.type === 'flowScan')) {
+  if (!events.some((event) => isUsableFlowScan(event, null))) {
     return {
       ok: false,
       failureCode: 'FLOW_SCAN_REQUIRED',
-      reason: '业务动作前必须先写入 flowScan 事实。',
+      reason: '业务动作前必须先写入可用的 execution 级 flowScan 事实。',
     };
   }
-  if (stepId && !events.some((event) => event.type === 'flowScan' && event.stepId === stepId)) {
+  if (stepId && !events.some((event) => isUsableFlowScan(event, stepId))) {
     return {
       ok: false,
       failureCode: 'FLOW_SCAN_REQUIRED',
-      reason: `业务动作前缺少当前步骤的 flowScan 事实: ${stepId}。全局扫描只用于建立候选库，不能替代步骤级扫描。`,
+      reason: `业务动作前缺少当前步骤的可用 flowScan 事实: ${stepId}。全局扫描只用于建立候选库，不能替代步骤级扫描；FAILED 扫描不能作为动作前置。`,
     };
   }
   return { ok: true };
+}
+
+function actionResultSourceReadiness(event, allowActionResult = false) {
+  if (!event || event.type !== 'actionResult') return { ok: true };
+  if (!allowActionResult) {
+    return {
+      ok: false,
+      failureCode: 'ACTION_RESULT_SOURCE_REQUIRED',
+      reason: '公开 record-json 不接受 actionResult；正式动作结果必须由顶层 scripts/action.sh 内部写入。',
+    };
+  }
+  if (process.env.MAVT_ACTION_WRITER !== '1') {
+    return {
+      ok: false,
+      failureCode: 'ACTION_RESULT_SOURCE_REQUIRED',
+      reason: 'actionResult 只能由顶层 scripts/action.sh 的内部写入通道记录。',
+    };
+  }
+  if (event.source === 'action.sh') return { ok: true };
+  return {
+    ok: false,
+    failureCode: 'ACTION_RESULT_SOURCE_REQUIRED',
+    reason: 'actionResult 必须由顶层 scripts/action.sh 写入；agent 事实请使用 perception/decision/flow/assertion。',
+  };
+}
+
+function observationSourceReadiness(event, allowObservation = false) {
+  if (!event || event.type !== 'observation') return { ok: true };
+  if (!allowObservation) {
+    return {
+      ok: false,
+      failureCode: 'OBSERVATION_SOURCE_REQUIRED',
+      reason: '公开 record-json 不接受 observation；正式观察必须由顶层 scripts/observe.sh 内部写入。',
+    };
+  }
+  if (process.env.MAVT_OBSERVATION_WRITER !== '1') {
+    return {
+      ok: false,
+      failureCode: 'OBSERVATION_SOURCE_REQUIRED',
+      reason: 'observation 只能由顶层 scripts/observe.sh 的内部写入通道记录。',
+    };
+  }
+  if (event.source === 'observe.sh') return { ok: true };
+  return {
+    ok: false,
+    failureCode: 'OBSERVATION_SOURCE_REQUIRED',
+    reason: 'observation 必须由顶层 scripts/observe.sh 写入；agent 事实请使用 perception/decision/flow/assertion。',
+  };
+}
+
+function actionResultFlowScanReadiness(events, event) {
+  if (!event || event.type !== 'actionResult') return { ok: true };
+  if (event.ok === false && event.failureCode === 'FLOW_SCAN_REQUIRED') return { ok: true };
+  return flowScanActionReadiness(events, actionType(event), eventStepId(event));
 }
 
 function requiredEnvironmentDependencies(platform) {
@@ -666,6 +1180,85 @@ function caseRuntimeDirs(caseDir) {
   return items;
 }
 
+function caseRestartDisabled(options) {
+  return process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_SKIP_CASE_RESTART === '1';
+}
+
+function summarizeCommandError(error) {
+  const stdout = error.stdout ? String(error.stdout).trim() : '';
+  const stderr = error.stderr ? String(error.stderr).trim() : '';
+  return [stderr, stdout].filter(Boolean).join('\n') || error.message || String(error);
+}
+
+function restartAppForExecution(caseDir, platform, executionId) {
+  const actionScript = path.join(__dirname, '..', 'action.sh');
+  const args = [
+    '--case-dir', caseDir,
+    '--platform', platform,
+    '--execution-id', executionId,
+    '--type', 'restartApp',
+    '--settle-ms', '1000',
+  ];
+  try {
+    const output = childProcess.execFileSync(actionScript, args, {
+      cwd: path.join(__dirname, '..', '..'),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, MAVT_RESTART_FAILURE_NON_TERMINAL: '1' },
+    });
+    return JSON.parse(output);
+  } catch (error) {
+    const reason = summarizeCommandError(error);
+    const wrapped = new Error(`CASE_RESTART_FAILED: 每个用例开始前必须尝试冷启动目标 App；当前 restartApp 入口异常，无法记录可降级的动作事实。\n${reason}`);
+    wrapped.cause = error;
+    throw wrapped;
+  }
+}
+
+function caseRequiresCleanRestart(caseJson = {}) {
+  const explicit = caseJson.isolation?.requireCleanRestart;
+  if (explicit === true || explicit === 'true' || explicit === 'required') return true;
+  if (explicit === false || explicit === 'false' || explicit === 'optional') return false;
+  const parts = [
+    caseJson.identity?.title,
+    ...(Array.isArray(caseJson.preconditions) ? caseJson.preconditions.map((item) => item.text) : []),
+    ...(Array.isArray(caseJson.steps) ? caseJson.steps.map((step) => step.sourceText) : []),
+  ].filter(Boolean);
+  return parts.some((text) => RESTART_SENSITIVE_PATTERN.test(String(text)));
+}
+
+function restartFailureReason(appRestart = {}) {
+  if (appRestart?.coldStartVerified === false) {
+    return appRestart.reason || 'restartApp 命令成功返回，但平台未能确认真实冷启动。';
+  }
+  return appRestart.error || appRestart.reason || appRestart.failureCode || '用例开始前未能完成 App 冷启动隔离。';
+}
+
+function buildIsolationState(caseJson, appRestart) {
+  if (appRestart?.skipped) {
+    return {
+      clean: true,
+      required: false,
+      skipped: true,
+      reason: appRestart.reason || 'restart skipped',
+    };
+  }
+  const required = caseRequiresCleanRestart(caseJson);
+  const ok = appRestart?.ok === true && appRestart?.coldStartVerified === true;
+  const explicit = caseJson.isolation?.requireCleanRestart;
+  const requirementSource = explicit === true || explicit === false || explicit === 'true' || explicit === 'false' || explicit === 'required' || explicit === 'optional'
+    ? 'case-contract'
+    : 'auto';
+  return {
+    clean: ok,
+    required,
+    requirementSource,
+    compromised: !ok,
+    failureCode: ok ? null : 'CASE_RESTART_FAILED',
+    reason: ok ? 'App cold restart verified by adapter.' : restartFailureReason(appRestart),
+  };
+}
+
 const args = process.argv.slice(2);
 if (!args.length) usage();
 const caseDir = path.resolve(args[0]);
@@ -680,7 +1273,10 @@ for (let i = 1; i < args.length; i++) {
     case '--event-type': options.eventType = args[++i]; break;
     case '--action': options.action = args[++i]; break;
     case '--step-id': options.stepId = args[++i]; break;
+    case '--scope': options.scope = args[++i]; break;
     case '--record-json': command = 'record'; options.recordJson = args[++i]; break;
+    case '--record-action-json': command = 'recordAction'; options.recordJson = args[++i]; break;
+    case '--record-observation-json': command = 'recordObservation'; options.recordJson = args[++i]; break;
     case '--finalize': command = 'finalize'; break;
     case '--legacy-runtime': options.legacyRuntime = true; break;
     case '--execution-id': options.executionId = args[++i]; break;
@@ -735,7 +1331,40 @@ try {
       sourceSha1: caseJson.identity.sourceSha1,
       caseContractSha: caseContractSha(caseJson),
     });
-    console.log(JSON.stringify({ executionId, execDir, timeline: path.join(execDir, 'timeline.jsonl') }, null, 2));
+    const appRestart = caseRestartDisabled(options)
+      ? { skipped: true, reason: 'MAVT_SELF_TEST_SKIP_CASE_RESTART=1' }
+      : restartAppForExecution(caseDir, options.platform, executionId);
+    const isolation = buildIsolationState(caseJson, appRestart);
+    writeExecutionState(execDir, {
+      schemaVersion: 1,
+      executionId,
+      startedAt: readExecutionState(execDir)?.startedAt || nowIso(),
+      finalized: false,
+      isolation,
+      budget: DEFAULT_BUDGET,
+    });
+    let finalized = null;
+    if (isolation.compromised && isolation.required) {
+      finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: 'CASE_RESTART_FAILED',
+        reason: `用例依赖冷启动隔离，但 App 重启失败，不能继续执行：${isolation.reason}`,
+        allowAlreadyFinalized: true,
+      });
+    }
+    const blockedOnStart = !!finalized;
+    console.log(JSON.stringify({
+      executionId,
+      execDir,
+      timeline: path.join(execDir, 'timeline.jsonl'),
+      appRestart,
+      isolation,
+      blockedOnStart,
+      nextAction: blockedOnStart ? 'stop-current-case' : 'continue-current-case',
+      finalized,
+    }, null, 2));
   } else if (command === 'checkBudget') {
     const runtimeDir = caseRuntimeDir(caseDir, options.platform);
     const executionId = options.executionId || latestExecutionId(runtimeDir);
@@ -750,11 +1379,26 @@ try {
       stepId: options.stepId,
       label: options.eventType === 'observation' ? 'budget-precheck' : undefined,
       artifacts: options.eventType === 'observation' ? {} : undefined,
+      scope: options.eventType === 'observation' ? options.scope : undefined,
       action: options.eventType === 'actionResult' ? options.action : undefined,
       ok: options.eventType === 'actionResult' ? true : undefined,
     });
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
+    const caseJson = readJson(path.join(caseDir, 'case.json'));
+    if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
+    const preconditionReady = preconditionReadiness(caseJson, events, event);
+    if (!preconditionReady.ok) {
+      throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
+    }
+    const globalFlowScanReady = globalFlowScanReadiness(events, event);
+    if (!globalFlowScanReady.ok) {
+      throw new Error(`${globalFlowScanReady.failureCode}: ${globalFlowScanReady.reason}`);
+    }
+    const stepOrderReady = stepOrderReadiness(caseJson, events, event);
+    if (!stepOrderReady.ok) {
+      throw new Error(`${stepOrderReady.failureCode}: ${stepOrderReady.reason}`);
+    }
     const flowScanReady = flowScanActionReadiness(events, options.action, options.stepId);
     if (!flowScanReady.ok) {
       throw new Error(`${flowScanReady.failureCode}: ${flowScanReady.reason}`);
@@ -780,8 +1424,10 @@ try {
       console.error(JSON.stringify({ executionId, budgetExceeded: true, ...violation, finalized }, null, 2));
       process.exit(3);
     }
-    console.log(JSON.stringify({ executionId, budgetOk: true, eventType: options.eventType }, null, 2));
-  } else if (command === 'record') {
+    console.log(JSON.stringify({ executionId, budgetOk: true, eventType: options.eventType, paceHint: paceHint(events, event) }, null, 2));
+  } else if (command === 'record' || command === 'recordAction' || command === 'recordObservation') {
+    const allowActionResult = command === 'recordAction';
+    const allowObservation = command === 'recordObservation';
     const runtimeDir = caseRuntimeDir(caseDir, options.platform);
     const executionId = options.executionId || latestExecutionId(runtimeDir);
     if (!executionId) throw new Error('No execution exists. Run --start first or pass --execution-id.');
@@ -794,8 +1440,44 @@ try {
     validateGlobalRules(caseJson);
     const event = normalizeEvent(JSON.parse(options.recordJson));
     validateRuleEventAgainstCase(event, caseJson);
+    validatePreconditionEventAgainstCase(event, caseJson);
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
+    const preconditionReady = preconditionReadiness(caseJson, events, event);
+    if (!preconditionReady.ok) {
+      throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
+    }
+    const globalFlowScanReady = globalFlowScanReadiness(events, event);
+    if (!globalFlowScanReady.ok) {
+      throw new Error(`${globalFlowScanReady.failureCode}: ${globalFlowScanReady.reason}`);
+    }
+    const stepOrderReady = stepOrderReadiness(caseJson, events, event);
+    if (!stepOrderReady.ok) {
+      throw new Error(`${stepOrderReady.failureCode}: ${stepOrderReady.reason}`);
+    }
+    const assertionEvidenceReady = assertionEvidenceReadiness(events, event, execDir);
+    if (!assertionEvidenceReady.ok) {
+      throw new Error(`${assertionEvidenceReady.failureCode}: ${assertionEvidenceReady.reason}`);
+    }
+    if (allowActionResult && event.type !== 'actionResult') {
+      throw new Error('ACTION_RESULT_SOURCE_REQUIRED: --record-action-json 只接受 actionResult。');
+    }
+    if (allowObservation && event.type !== 'observation') {
+      throw new Error('OBSERVATION_SOURCE_REQUIRED: --record-observation-json 只接受 observation。');
+    }
+    const actionSourceReady = actionResultSourceReadiness(event, allowActionResult);
+    if (!actionSourceReady.ok) {
+      throw new Error(`${actionSourceReady.failureCode}: ${actionSourceReady.reason}`);
+    }
+    const observationSourceReady = observationSourceReadiness(event, allowObservation);
+    if (!observationSourceReady.ok) {
+      throw new Error(`${observationSourceReady.failureCode}: ${observationSourceReady.reason}`);
+    }
+    validateArtifactFilesExist(execDir, event);
+    const actionFlowScanReady = actionResultFlowScanReadiness(events, event);
+    if (!actionFlowScanReady.ok) {
+      throw new Error(`${actionFlowScanReady.failureCode}: ${actionFlowScanReady.reason}`);
+    }
     const budget = executionState?.budget || DEFAULT_BUDGET;
     const violation = budgetViolation(events, event, budget, executionState?.startedAt);
     if (violation) {
@@ -819,7 +1501,17 @@ try {
       process.exit(3);
     }
     appendJsonl(timelinePath, event);
-    console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl') }, null, 2));
+    const terminalPrecondition = preconditionTerminalOptions(event);
+    if (terminalPrecondition) {
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        ...terminalPrecondition,
+      });
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), paceHint: paceHint(events, event), finalized }, null, 2));
+    } else {
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), paceHint: paceHint(events, event) }, null, 2));
+    }
   } else if (command === 'finalize') {
     console.log(JSON.stringify(finalize(caseDir, options), null, 2));
   } else {

@@ -31,6 +31,10 @@ function safeLabel(raw) {
   return String(raw || 'observe').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._-]+|[._-]+$/g, '').slice(0, 80) || 'observe';
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function rel(root, file) {
   return file && fs.existsSync(file) ? path.relative(root, file) : null;
 }
@@ -119,7 +123,7 @@ async function runProbe(argv) {
       foregroundApp: implemented,
       logs: implemented,
       launchApp: implemented,
-      actions: implemented ? ['launchApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait'] : [],
+      actions: implemented ? ['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait'] : [],
       screenCap: implemented,
       dumpLayout: implemented,
       implemented,
@@ -365,6 +369,30 @@ async function findEditableElement(target, sessionId) {
   throw new Error('No editable XCUI element found. Tap/focus an input field before inputText.');
 }
 
+async function queryAppState(target, sessionId) {
+  const response = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/app_state`, { bundleId: target.appId });
+  return response.value;
+}
+
+async function waitForAppState(target, sessionId, predicate, label, timeoutMs = 6000) {
+  const started = Date.now();
+  let lastState = null;
+  let lastError = null;
+  while (Date.now() - started < timeoutMs) {
+    try {
+      lastState = await queryAppState(target, sessionId);
+      if (predicate(lastState)) {
+        return { ok: true, state: lastState };
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(300);
+  }
+  const detail = lastError ? lastError.message : `last state=${lastState}`;
+  throw new Error(`iOS app state did not become ${label}: ${detail}`);
+}
+
 async function runAtom(atom, argv) {
   const parsed = parseArgs(argv);
   const target = buildTarget(parsed);
@@ -392,7 +420,16 @@ async function runAtom(atom, argv) {
       writeJson(atomResult('logs', { files: [path.resolve(outFile)] }));
       return;
     }
-    writeJson(actionResult(atom === 'launch-app' ? 'launchApp' : atom === 'long-press' ? 'longPress' : atom === 'input-text' ? 'inputText' : atom === 'keyevent' ? optionValue(rest, '--key', 'keyevent') : atom, { inputMethod: atom === 'input-text' ? 'wda-set-value' : undefined }));
+    writeJson(actionResult(atom === 'launch-app' ? 'launchApp' : atom === 'restart-app' ? 'restartApp' : atom === 'long-press' ? 'longPress' : atom === 'input-text' ? 'inputText' : atom === 'keyevent' ? optionValue(rest, '--key', 'keyevent') : atom, {
+      inputMethod: atom === 'input-text' ? 'wda-set-value' : undefined,
+      restart: atom === 'restart-app' ? true : undefined,
+      coldStartVerified: atom === 'restart-app' ? true : undefined,
+      verification: atom === 'restart-app' ? 'fake-appium-app-state' : undefined,
+      stateAfterTerminate: atom === 'restart-app' ? 1 : undefined,
+      stateAfterActivate: atom === 'restart-app' ? 4 : undefined,
+      stopMethod: atom === 'restart-app' ? 'appium-terminate-app' : undefined,
+      launchMethod: atom === 'restart-app' ? 'appium-terminate-activate' : undefined,
+    }));
     return;
   }
   if (atom === 'screenshot') {
@@ -444,6 +481,25 @@ async function runAtom(atom, argv) {
       await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/activate_app`, { bundleId: target.appId });
     });
     writeJson(actionResult('launchApp', { launchMethod: 'appium-activate-app' }));
+    return;
+  }
+  if (atom === 'restart-app') {
+    if (!target.appId) throw new Error('restart-app 需要 --app 或 --bundle');
+    await appium.withSession(target, async ({ sessionId }) => {
+      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/terminate_app`, { bundleId: target.appId });
+      const stopped = await waitForAppState(target, sessionId, (state) => Number(state) <= 1, 'not running after terminate_app');
+      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/activate_app`, { bundleId: target.appId });
+      const foreground = await waitForAppState(target, sessionId, (state) => Number(state) === 4, 'foreground after activate_app');
+      writeJson(actionResult('restartApp', {
+        restart: true,
+        coldStartVerified: true,
+        verification: 'appium-app-state',
+        stateAfterTerminate: stopped.state,
+        stateAfterActivate: foreground.state,
+        stopMethod: 'appium-terminate-app',
+        launchMethod: 'appium-terminate-activate',
+      }));
+    });
     return;
   }
   if (atom === 'tap') {

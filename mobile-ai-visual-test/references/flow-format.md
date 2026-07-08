@@ -112,7 +112,7 @@ flows/
 
 ## 执行接入
 
-Case Execution Mode 创建 execution 后、开始业务步骤探索前，agent 必须调用 `scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform <platform> --execution-id <id>`，读取可用 Flow，形成全局候选 Flow 清单，并立即写入带扫描来源的 `flowScan` 事实。每个业务步骤匹配或执行动作前，还必须调用带 `--step-id <step-id>` 的 `record-scan.js` 写入步骤级 `flowScan`；全局扫描不能替代步骤级扫描。
+Case Execution Mode 创建 execution 后、开始业务步骤探索前，agent 必须调用 `scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform <platform> --execution-id <id>`，读取可用 Flow，形成全局候选 Flow 清单，并立即写入带扫描来源的可用 `flowScan` 事实。每个业务步骤匹配或执行动作前，还必须调用带 `--step-id <step-id>` 的 `record-scan.js` 写入步骤级可用 `flowScan`；全局扫描不能替代步骤级扫描，`status=FAILED` 的扫描不能作为后续步骤或动作守卫的通过条件。
 
 ```bash
 scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform android --execution-id <id> --step-id step-002 --matched-flow-ids flow-xxxxxxxxxxxx
@@ -129,7 +129,7 @@ scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform android 
 - Flow 默认跨端通用；`recordingPlatform` 只表示录制环境，不表示适用平台。如果 Flow 的 `platform` 字段或名称后缀显式标识当前平台，例如 `-android`、`-ios`、`-harmony`，同语义下必须优先使用当前平台专用 Flow，再用通用 Flow 兜底。
 - 只把 Flow 当作参考路径，不盲目连续执行全部步骤。
 - 每次步骤级匹配前必须先用 `record-scan.js --step-id <step-id>` 写入 `flowScan` 事实，记录候选数量、扫描到的 Flow 和命中 Flow；没有命中时 `matchedFlowIds` 使用空数组。
-- 顶层动作入口会在带 `--step-id` 的非 `launchApp`、非 `wait` 业务动作前检查当前步骤是否已有 `flowScan` 事实；缺失时会以 `FLOW_SCAN_REQUIRED` 失败，agent 应先补写步骤级扫描事实而不是绕过入口。
+- `restartApp` 禁止绑定 `stepId`；顶层动作入口会在带 `--step-id` 的非 `launchApp`、非 `wait` 业务动作前检查当前步骤是否已有可用 `flowScan` 事实；缺失或扫描 `status=FAILED` 时会以 `FLOW_SCAN_REQUIRED` 失败，agent 应先补写成功的步骤级扫描事实或按扫描失败阻塞收尾，而不是绕过入口。
 - 执行 Flow 时使用 `record-scan.js` 输出中的 `steps`；如果需要查看完整 Markdown 说明，再打开对应 `flow.md`。
 - 每执行或跳过一个 Flow 步骤，都写入 `flow` 事件。
 - 匹配到 Flow 但决定不用时，必须写入 `SKIPPED` 并说明原因。

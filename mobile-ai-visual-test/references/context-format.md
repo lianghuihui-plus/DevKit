@@ -23,9 +23,9 @@
 
 其中 `index.html` 只承载工作空间总览、平台维度统计、case 卡片摘要和报告入口；完整步骤复盘、失败现场、截图证据和用户下次调整内容放在 `cases/<case>/CONTEXT.html` 或 `cases/<case>/platforms/<platform>/CONTEXT.html`。
 
-多平台 case 的总览卡片状态是聚合状态，不是 case 的真实单一结果；聚合规则按 `FAIL > BLOCKED > UNKNOWN > NOT_RUN > PASS`，只有所有已展示平台都通过时才显示通过。具体结论以平台标签和对应 `platforms/<platform>/CONTEXT.html` 为准。
+多平台 case 的总览卡片状态是聚合状态，不是 case 的真实单一结果；聚合规则按 `FAIL > BLOCKED > UNKNOWN > NOT_RUN > PASS`，只有所有已展示平台都通过时才显示通过。正式执行中，断言证据不足会在内部归一为 `FAIL/ASSERTION_UNKNOWN`，`UNKNOWN` 只作为历史兼容或异常状态参与聚合。具体结论以平台标签和对应 `platforms/<platform>/CONTEXT.html` 为准。
 
-当最新执行结果与当前 `sourceSha1` 或 `caseContractSha` 不匹配时，报告隐藏旧结果并显示“源用例或执行契约变更”；如果已经基于当前 source 和 contract 重新执行出新结果，不再显示变更警告。`caseContractSha` 至少覆盖 `sourceSha1`、`globalRules` 和用户补充重放产生的步骤 hints。
+当最新执行结果与当前 `sourceSha1` 或 `caseContractSha` 不匹配时，报告隐藏旧结果并显示“源用例或执行契约变更”；如果已经基于当前 source 和 contract 重新执行出新结果，不再显示变更警告。`caseContractSha` 至少覆盖 `sourceSha1`、`preconditions`、`globalRules` 和用户补充重放产生的步骤 hints。
 
 HTML 跳转链路：
 
@@ -35,9 +35,9 @@ index.html
        -> platforms/<platform>/CONTEXT.html
 ```
 
-- `index.html`：展示工作空间总览、用例维度统计、平台维度统计、每个 case 的多端结果摘要；case 标题和“查看多端详情”进入 `cases/<case>/CONTEXT.html`，平台 chip 的“查看报告”直达对应单平台报告。
+- `index.html`：展示工作空间总览、用例维度统计、平台维度统计、每个 case 的前置条件判断标签和多端结果摘要；case 标题和“查看多端详情”进入 `cases/<case>/CONTEXT.html`，平台 chip 的“查看报告”直达对应单平台报告。
 - `cases/<case>/CONTEXT.html`：展示单 case 的平台执行概览、共享前置条件、共享步骤、全局规则和用户补充；平台展示顺序统一为 Android、iOS、Harmony；平台概览固定按一个平台一行展示，适配三端；平台卡片只保留状态、中文执行结果、摘要、步骤、耗时、开始/结束时间和报告入口，不展示完整截图证据和完整 timeline；全局规则和用户补充上下独立展示，不并排。
-- `cases/<case>/platforms/<platform>/CONTEXT.html`：展示单平台最新执行详情，包括执行结论、失败证据、步骤复盘、Flow、规则、环境和调试信息；截图证据优先按 observation 的 `stepId` 融入对应步骤卡，缺少 `stepId` 且 label 中无法识别 `step-xxx` 时展示为未关联观察；截图在报告页内用 lightbox 预览，控件树和日志只提供原文件链接，不在 HTML 内嵌预览。
+- `cases/<case>/platforms/<platform>/CONTEXT.html`：展示单平台最新执行详情，包括执行结论、失败证据、步骤复盘、Flow、规则、环境和调试信息；截图证据优先按 observation 的 `stepId` 融入对应步骤卡；无 `stepId` 的观察必须显式标记 `scope=global`，作为平台诊断、环境快照或 Flow 辅助观察展示为未关联观察；截图在报告页内用 lightbox 预览，控件树和日志只提供原文件链接，不在 HTML 内嵌预览。
 
 ## result.json
 
@@ -51,6 +51,7 @@ index.html
   "sourceSha1": "source-xxxxxxxxxxxx",
   "caseContractSha": "contract-xxxxxxxxxxxx",
   "status": "FAIL",
+  "requestedStatus": "PASS",
   "failureCode": "ASSERTION_UNKNOWN",
   "startedAt": "2026-06-16T18:02:00+08:00",
   "endedAt": "2026-06-16T18:02:40+08:00",
@@ -73,6 +74,7 @@ index.html
 稳定字段：
 
 - status 和 failureCode
+- requestedStatus，即 agent 调用 finalize 时请求的原始状态
 - sourceSha1 和 caseContractSha
 - durationMs
 - environment
@@ -82,7 +84,8 @@ index.html
 - flow event counts
 - flow scan counts
 - rule event counts
-- app foreground loss / relaunch counts
+- app foreground loss / relaunch attempt and success counts
+- restart failure count and isolation status (`isolationClean` / `isolationCompromised` / `isolationRequired` / `isolationReason`)
 - popup counts
 - artifact counts
 
@@ -110,12 +113,21 @@ index.html
 报告、结果和统计都从事实源和当前用例契约渲染，不作为续跑入口。
 
 `execution.json` 记录预算、开始时间和 finalized 状态；finalized 后不得追加 timeline。
+步骤事实写入前，当前 execution 必须已有每条 `case.json.preconditions` 的 `precondition` 事实。`PASS` 和 `PREPARED` 表示允许进入步骤；缺失会被 `PRECONDITION_REQUIRED` 拒绝且不会写入 timeline，非通过状态会按 `PRECONDITION_FAILED`、`PRECONDITION_UNKNOWN` 或 `PRECONDITION_UNSUPPORTED` 写入结果并 finalize，可短路剩余前置条件。
+任何带 `stepId` 的步骤事实写入前，当前 execution 必须已有 execution 级全局可用 `flowScan` 事实；公开事实写入缺失或扫描 `status=FAILED` 时会被 `FLOW_SCAN_REQUIRED` 拒绝且不会写入 timeline；顶层 `scripts/action.sh` 发起的动作会写入失败 `actionResult`、结果和统计后收尾。
+无 `stepId` 的 `observation` 必须显式带 `scope=global` 或 `global=true`；疑似步骤观察的 label 不能替代 `stepId`。
+步骤事实必须按 `case.json.steps` 的顺序写入。带 `stepId` 的事实不能跳过前置步骤，不能在进入后续步骤后回头补写前置步骤；前一步没有通过证据时，后一步事实会被 `STEP_ORDER_VIOLATION` 拒绝且不会写入 timeline。
+步骤通过证据以当前 execution 的事实为准：普通操作步骤需要真实业务动作 `tap`、`toggle`、`longPress`、`inputText`、`swipe`、`back` 的 `actionResult ok=true` 且其后有同一步骤的 observation，或 `assertion PASS`；`assertion PASS` 必须通过 `evidence` 或 `evidenceObservation` 引用当前步骤已有且由 `scripts/observe.sh` 写入的 observation 截图、布局或 label，缺失时以 `ASSERTION_EVIDENCE_REQUIRED` 拒绝写入。断言型步骤必须有带 observation 证据引用的 `assertion PASS`。`launchApp`、`restartApp`、`wait`、`observation`、`perception`、`flowScan` 和 `flow` 是辅助证据，不单独让步骤通过。
+正式观察和动作结果必须分别由顶层 `scripts/observe.sh`、`scripts/action.sh` 自动写入；`run-case.js --record-json` 只用于写 agent 事实，直接手写 `observation` 会被 `OBSERVATION_SOURCE_REQUIRED` 拒绝，直接手写 `actionResult` 会被 `ACTION_RESULT_SOURCE_REQUIRED` 拒绝。
+请求 `--finalize --status PASS` 时，如果任一步骤缺少通过证据，框架会把本次结果写为 `FAIL/ASSERTION_UNKNOWN` 并 finalize，`requestedStatus` 保留原始请求，避免各报告产物对“证据不足”产生不同解释。
+用例开始时的 `restartApp` 失败、不可验证或缺少 `coldStartVerified=true` 会进入当前 execution 事实源；冷启动敏感用例自动写为 `BLOCKED/CASE_RESTART_FAILED`，普通用例可以继续，但 `metrics.stability.isolationCompromised=true`，平台报告必须展示非干净环境警告。`metrics.stability.appRelaunchAttemptCount` 表示拉起尝试次数，`appRelaunchSuccessCount` 表示成功拉起次数，兼容字段 `appRelaunchCount` 按成功次数写入。
 
 正式多平台执行的事件写入入口：
 
 ```bash
 scripts/run-case.js <case-dir> --platform <platform> --start
-scripts/run-case.js <case-dir> --platform <platform> --record-json '{"type":"observation", "...":"..."}'
+scripts/observe.sh --case-dir <case-dir> --platform <platform> --execution-id <id> --step-id <step-id> --label "<label>"
+scripts/run-case.js <case-dir> --platform <platform> --record-json '{"type":"assertion", "...":"..."}'
 scripts/run-case.js <case-dir> --platform <platform> --finalize --status FAIL --reason "..."
 ```
 
@@ -127,7 +139,7 @@ scripts/run-case.js <case-dir> --platform <platform> --finalize --status FAIL --
 
 ```bash
 scripts/run-case.js <case-dir> --legacy-runtime --start
-scripts/run-case.js <case-dir> --legacy-runtime --record-json '{"type":"observation", "...":"..."}'
+scripts/run-case.js <case-dir> --legacy-runtime --record-json '{"type":"decision", "...":"..."}'
 scripts/run-case.js <case-dir> --legacy-runtime --finalize --status FAIL --reason "..."
 ```
 

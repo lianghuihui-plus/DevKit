@@ -44,7 +44,7 @@ act(env, action) -> ActionResult
 
 ```bash
 scripts/probe-env.sh --platform <platform>
-scripts/observe.sh --case-dir <case-dir> --execution-id <id> --platform <platform> [--step-id <step-id>] ...
+scripts/observe.sh --case-dir <case-dir> --execution-id <id> --platform <platform> (--step-id <step-id>|--scope global) ...
 scripts/action.sh --case-dir <case-dir> --execution-id <id> --platform <platform> ...
 ```
 
@@ -54,6 +54,7 @@ agent 可直接调用的稳定入口只包括三类，主执行入口保持精�
 scripts/probe-env.sh
 scripts/resolve-execution-targets.js
 scripts/parse-case.js
+scripts/preflight-preconditions.js
 scripts/update-env.js
 scripts/prepare-env.sh
 scripts/run-case.js
@@ -82,7 +83,7 @@ scripts/platform/adapters/<platform>/observe.sh
 scripts/platform/adapters/<platform>/action.sh
 ```
 
-正式执行必须显式传 `--platform <harmony|android|ios>`，顶层 case-bound observe/action/run-case 会拒绝缺少平台参数的调用。无平台根运行态只用于历史产物兼容，需显式 `--legacy-runtime`。步骤内观察必须给 `scripts/observe.sh` 传 `--step-id <step-id>`；非步骤级环境快照或诊断观察可以不传。
+正式执行必须显式传 `--platform <harmony|android|ios>`，顶层 case-bound observe/action/run-case 会拒绝缺少平台参数的调用。无平台根运行态只用于历史产物兼容，需显式 `--legacy-runtime`。步骤内观察必须给 `scripts/observe.sh` 传 `--step-id <step-id>`；非步骤级环境快照或诊断观察必须显式传 `--scope global` 或 `--global-observation`。
 
 ## EnvironmentProbe
 
@@ -101,7 +102,7 @@ scripts/platform/adapters/<platform>/action.sh
     "foregroundApp": false,
     "logs": false,
     "launchApp": true,
-    "actions": ["launchApp", "tap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait"]
+    "actions": ["launchApp", "restartApp", "tap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait"]
   }
 }
 ```
@@ -131,9 +132,9 @@ scripts/platform/adapters/<platform>/action.sh
 }
 ```
 
-必填：`schemaVersion`、`type`、`platform`、`time`、`label`、`artifacts`、`capabilities`。
+必填：`schemaVersion`、`type`、`platform`、`time`、`label`、`artifacts`、`capabilities`、`source`。正式 case execution 中 `source` 必须为 `observe.sh`，并且只能由顶层 `scripts/observe.sh` 的内部写入通道生成。
 
-`artifacts` 只记录相对当前 execution 目录的路径。
+`artifacts` 只记录相对当前 execution 目录的路径；写入 observation 和 assertion 引用 observation 产物时，框架会校验对应文件存在。
 
 前台 App 和日志采集 best-effort；失败信息写入 `capabilities` 或 `raw`。
 
@@ -154,7 +155,7 @@ agent 只输出结构化动作：
 }
 ```
 
-动作集合：`launchApp`、`tap`、`toggle`、`longPress`、`inputText`、`swipe`、`back`、`home`、`wait`。
+动作集合：`launchApp`、`restartApp`、`tap`、`toggle`、`longPress`、`inputText`、`swipe`、`back`、`home`、`wait`。
 
 坐标动作必须说明坐标来源。`layout` 只能用于目标本身存在控件树节点的场景；H5 自绘、图片按钮、Canvas 等没有独立节点的目标必须使用 `visual` 或 `pixel`，并提供截图目标区域 `targetBounds` 和 `coordinateEvidence`。
 
@@ -248,11 +249,12 @@ Reporter 渲染 `CONTEXT.md`/`CONTEXT.html`。MetricsCollector 生成 `metrics.j
 
 报告和统计不得成为执行依据；下一次执行依据仍是 `source.md`、`case.json`、`notes.jsonl` 和已确认环境。
 
-- `scripts/run-case.js <case-dir> --platform <platform> --start` 创建当前平台 execution。
+- `scripts/run-case.js <case-dir> --platform <platform> --start` 创建当前平台 execution，并自动通过顶层动作入口写入 execution 级 `restartApp` 冷启动事实；冷启动失败或不可验证时根据 `case.json.isolation.requireCleanRestart` 和自动推断结果决定阻塞或隔离降级。
+- `scripts/preflight-preconditions.js <case-dir|caseNo|caseKey|title>... --cwd <workspace-cwd>` 在创建 execution 前批量归纳前置条件，输出 `READY`、`CONFIRM`、`NEEDS_SETUP`、`UNKNOWN`、`UNSUPPORTED` 分类，供用户决定哪些用例进入无人值守执行。
 - `scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>` 在 execution 创建前准备当前平台必需依赖，写入 `state.json.dependencies`，并刷新当前平台报告。
-- `scripts/observe.sh --case-dir <case-dir> --platform <platform> --execution-id <id> [--step-id <step-id>] ...` 采集观察并自动记录；步骤内观察必须传 `--step-id`，报告据此把截图证据关联到用例步骤。
-- `scripts/action.sh --case-dir <case-dir> --platform <platform> --execution-id <id> --step-id <step-id> ...` 执行动作并自动记录。
-- `scripts/run-case.js <case-dir> --platform <platform> --record-json <json>` 追加非平台事实事件。
+- `scripts/observe.sh --case-dir <case-dir> --platform <platform> --execution-id <id> (--step-id <step-id>|--scope global) ...` 采集观察并自动记录，内部写入 `source:"observe.sh"`；步骤内观察必须传 `--step-id`，报告据此把截图证据关联到用例步骤；非步骤观察必须显式标记全局。
+- `scripts/action.sh --case-dir <case-dir> --platform <platform> --execution-id <id> --step-id <step-id> ...` 执行动作并自动记录；`restartApp` 禁止绑定 `stepId`；非 `launchApp`、非 `wait` 的业务动作要求当前步骤已有 `COMPLETED` 或 `EMPTY` 的 `flowScan`，`FAILED` 扫描不能作为动作前置。
+- `scripts/run-case.js <case-dir> --platform <platform> --record-json <json>` 追加非平台事实事件；正式观察只能由 `scripts/observe.sh` 自动写入，直接手写 `observation` 会被 `OBSERVATION_SOURCE_REQUIRED` 拒绝；正式动作结果只能由 `scripts/action.sh` 自动写入，直接手写 `actionResult` 会被 `ACTION_RESULT_SOURCE_REQUIRED` 拒绝；`assertion PASS` 必须引用当前步骤已有且由 `scripts/observe.sh` 写入的 observation 截图、布局或 label，例如 `{"type":"assertion","stepId":"step-001","status":"PASS","reason":"截图显示首页","evidence":["screenshots/001-step-001-after.png"]}`，缺失时以 `ASSERTION_EVIDENCE_REQUIRED` 拒绝。
 - `scripts/run-case.js <case-dir> --platform <platform> --finalize --status <status>` 聚合结果并刷新当前平台报告。
 
 ## BusinessFlowRepository
@@ -271,7 +273,7 @@ scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform <platfor
 
 `start-recording.js` 会把录制环境写入 Flow `state.json`；后续 `flow/observe.sh` 和 `flow/action.sh` 未显式传平台、设备、应用或入口时，必须继承该环境。
 
-正式执行用例时，agent 必须在创建 execution 后调用 `scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform <platform> --execution-id <id>` 扫描 `<workspace-cwd>/flows/` 的可用 Flow，并读取脚本输出作为全局候选业务路径库。每个业务步骤匹配或动作前，必须再调用 `record-scan.js ... --step-id <step-id>` 写入步骤级 `flowScan`。脚本输出包含可执行参考步骤，并自动把带 `source=list-flows`、`flowsRoot`、`scannedFlowIds` 的 `flowScan` 事实写入当前 execution；不允许 agent 自己拼目录扫描或手写缺少扫描来源的 `flowScan`。带平台扫描默认只返回当前平台专用 Flow 和通用 Flow。
+正式执行用例时，agent 必须在创建 execution 后调用 `scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform <platform> --execution-id <id>` 扫描 `<workspace-cwd>/flows/` 的可用 Flow，并读取脚本输出作为全局候选业务路径库；任何带 `stepId` 的步骤事实都要求这个 execution 级全局扫描已存在且可用。每个业务步骤匹配或动作前，必须再调用 `record-scan.js ... --step-id <step-id>` 写入步骤级 `flowScan`。脚本输出包含可执行参考步骤，并自动把带 `source=list-flows`、`flowsRoot`、`scannedFlowIds` 的 `flowScan` 事实写入当前 execution；不允许 agent 自己拼目录扫描或手写缺少扫描来源的 `flowScan`。带平台扫描默认只返回当前平台专用 Flow 和通用 Flow。`status=FAILED` 的扫描事实只能用于审计失败原因，不能满足后续步骤或动作守卫。
 
 Flow 默认跨平台通用。录制时的 `recordingPlatform` 只表示采集环境；只有 `flow.json`/`state.json` 中存在 `platform` 字段，或 Flow 名称显式带有 `-android`、`-ios`、`-harmony` 这类平台标识时，才视为平台专用 Flow；同语义匹配时，当前平台专用 Flow 优先于通用 Flow。
 
@@ -310,4 +312,4 @@ Flow 默认跨平台通用。录制时的 `recordingPlatform` 只表示采集环
 
 `flow` 状态使用 `STARTED`、`STEP_STARTED`、`STEP_COMPLETED`、`COMPLETED`、`FAILED`、`SKIPPED`、`BLOCKED`。
 
-如果 agent 在未扫描 Flow 的情况下直接探索相似入口并失败，该执行不应直接判定业务阻塞；必须补做 Flow 扫描和匹配后再下结论。`PAGE_LOAD_BLOCKED`、`ACTION_TARGET_NOT_FOUND`、`APP_CONTEXT_LOST` 等结论缺少 `--failed-step` 或缺少同一失败步骤的 `flowScan` 事实时会被降级为 `UNKNOWN/FLOW_SCAN_MISSING`。
+如果 agent 在未扫描 Flow 的情况下直接探索相似入口并失败，该执行不应直接判定业务阻塞；必须补做 Flow 扫描和匹配后再下结论。`PAGE_LOAD_BLOCKED`、`ACTION_TARGET_NOT_FOUND`、`APP_CONTEXT_LOST` 等结论缺少 `--failed-step` 或缺少同一失败步骤的 `flowScan` 事实时会被归一为 `BLOCKED/FLOW_SCAN_MISSING`。
