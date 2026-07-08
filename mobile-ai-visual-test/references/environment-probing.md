@@ -38,7 +38,9 @@ scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>
 | --- | --- |
 | HarmonyOS | adapter 内部使用 `hdc`、`uitest screenCap`、`dumpLayout`、`aa dump`、`hilog`；`dumpLayout -m true` 或 `-b` 不可用时必须回退默认命令 |
 | Android | adapter 内部使用 `adb`、`screencap`、`uiautomator dump`、`dumpsys window/activity`、`logcat`；Unicode 输入依赖 MAVT Input IME |
-| iOS | 通过 Appium/WDA；检查 Xcode、simctl、Appium、XCUITest Driver；`prepare-env` 准备 `iosAutomation` |
+| iOS | 通过 Appium/WDA；检查 Xcode、simctl、Appium、XCUITest Driver；`prepare-env` 准备 `iosAutomation`；模拟器日志可用，真机日志暂不作为可用能力 |
+
+iOS 真机配置通过 `update-env.js` 固化到 case state，支持 `--device-type realDevice`、`--xcode-org-id`、`--xcode-signing-id`、`--updated-wda-bundle-id`、`--allow-provisioning-device-registration`、`--wda-launch-timeout` 等 WDA 参数；`scripts/platform/adapters/ios/prepare-real-device.sh` 仅作为人工预热/诊断入口，不写死业务变量。
 
 Android MAVT Input IME：
 

@@ -67,6 +67,14 @@ async function createSession(target, options = {}) {
   if (target.xcodeOrgId) alwaysMatch['appium:xcodeOrgId'] = target.xcodeOrgId;
   if (target.xcodeSigningId) alwaysMatch['appium:xcodeSigningId'] = target.xcodeSigningId;
   if (target.updatedWDABundleId) alwaysMatch['appium:updatedWDABundleId'] = target.updatedWDABundleId;
+  if (target.showXcodeLog !== undefined) alwaysMatch['appium:showXcodeLog'] = target.showXcodeLog;
+  if (target.showIOSLog !== undefined) alwaysMatch['appium:showIOSLog'] = target.showIOSLog;
+  if (target.useNewWDA !== undefined) alwaysMatch['appium:useNewWDA'] = target.useNewWDA;
+  if (target.allowProvisioningDeviceRegistration !== undefined) {
+    alwaysMatch['appium:allowProvisioningDeviceRegistration'] = target.allowProvisioningDeviceRegistration;
+  }
+  if (target.wdaLaunchTimeout !== undefined) alwaysMatch['appium:wdaLaunchTimeout'] = Number(target.wdaLaunchTimeout);
+  if (target.derivedDataPath) alwaysMatch['appium:derivedDataPath'] = target.derivedDataPath;
   const response = await request(target.appiumServer, 'POST', '/session', { capabilities: { alwaysMatch } }, options.timeoutMs || 180000);
   const sessionId = response.value?.sessionId || response.sessionId;
   if (!sessionId) throw new Error(`Appium did not return a session id: ${JSON.stringify(response).slice(0, 500)}`);

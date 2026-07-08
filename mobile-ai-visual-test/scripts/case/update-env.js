@@ -15,7 +15,15 @@ const {
 } = require('../common');
 
 function usage() {
-  console.error('用法: update-env.js <case-dir> [--platform <platform>] [--device <serial>] [--app <appId>] [--entry <entry>] [--bundle <bundleName>] [--ability <abilityName>] [--screen <WxH>]');
+  console.error('用法: update-env.js <case-dir> [--platform <platform>] [--device <serial>] [--app <appId>] [--entry <entry>] [--bundle <bundleName>] [--ability <abilityName>] [--screen <WxH>] [iOS WDA options]');
+  process.exit(2);
+}
+
+function parseBoolean(value, flag) {
+  if (value === undefined || value === null || value === '') return true;
+  if (['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase())) return true;
+  if (['0', 'false', 'no', 'off'].includes(String(value).toLowerCase())) return false;
+  console.error(`无效 ${flag}: ${value}`);
   process.exit(2);
 }
 
@@ -44,6 +52,27 @@ for (let i = 1; i < args.length; i++) {
       env.entry = env.abilityName;
       break;
     case '--screen': env.screen = args[++i]; break;
+    case '--device-type': env.deviceType = args[++i]; break;
+    case '--appium-server': env.appiumServer = args[++i]; break;
+    case '--wda-local-port': env.wdaLocalPort = args[++i]; break;
+    case '--web-driver-agent-url': env.webDriverAgentUrl = args[++i]; break;
+    case '--xcode-org-id': env.xcodeOrgId = args[++i]; break;
+    case '--xcode-signing-id': env.xcodeSigningId = args[++i]; break;
+    case '--updated-wda-bundle-id': env.updatedWDABundleId = args[++i]; break;
+    case '--show-xcode-log':
+      env.showXcodeLog = args[i + 1] && !args[i + 1].startsWith('--') ? parseBoolean(args[++i], '--show-xcode-log') : true;
+      break;
+    case '--show-ios-log':
+      env.showIOSLog = args[i + 1] && !args[i + 1].startsWith('--') ? parseBoolean(args[++i], '--show-ios-log') : true;
+      break;
+    case '--use-new-wda':
+      env.useNewWDA = args[i + 1] && !args[i + 1].startsWith('--') ? parseBoolean(args[++i], '--use-new-wda') : true;
+      break;
+    case '--allow-provisioning-device-registration':
+      env.allowProvisioningDeviceRegistration = args[i + 1] && !args[i + 1].startsWith('--') ? parseBoolean(args[++i], '--allow-provisioning-device-registration') : true;
+      break;
+    case '--wda-launch-timeout': env.wdaLaunchTimeout = args[++i]; break;
+    case '--derived-data-path': env.derivedDataPath = args[++i]; break;
     default: usage();
   }
 }

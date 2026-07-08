@@ -96,6 +96,21 @@ if (!has.platform) add("--platform", env.platform || platform);
 if (!has.device) add("--device", env.device);
 if (!has.app) add("--app", env.appId || env.bundleName);
 if (!has.entry) add("--entry", env.entry || env.abilityName);
+if ((env.platform || platform) === "ios") {
+  add("--device-type", env.deviceType);
+  add("--appium-server", env.appiumServer);
+  add("--wda-local-port", env.wdaLocalPort);
+  add("--web-driver-agent-url", env.webDriverAgentUrl);
+  add("--xcode-org-id", env.xcodeOrgId);
+  add("--xcode-signing-id", env.xcodeSigningId);
+  add("--updated-wda-bundle-id", env.updatedWDABundleId);
+  add("--show-xcode-log", env.showXcodeLog);
+  add("--show-ios-log", env.showIOSLog);
+  add("--use-new-wda", env.useNewWDA);
+  add("--allow-provisioning-device-registration", env.allowProvisioningDeviceRegistration);
+  add("--wda-launch-timeout", env.wdaLaunchTimeout);
+  add("--derived-data-path", env.derivedDataPath);
+}
 process.stdout.write(out.length ? `${out.join("\n")}\n` : "");
 ' "$@"
 }

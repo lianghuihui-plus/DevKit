@@ -99,6 +99,7 @@ async function runProbe(argv) {
 
   const hasTarget = !!target.device && (target.deviceType === 'simulator' ? simctl : true);
   const implemented = xcode && simctl && appiumCli && xcuitestDriver && hasTarget;
+  const logsImplemented = implemented && target.deviceType === 'simulator';
   writeJson({
     schemaVersion: 1,
     type: 'environmentProbe',
@@ -121,7 +122,7 @@ async function runProbe(argv) {
       screenshot: implemented,
       layout: implemented,
       foregroundApp: implemented,
-      logs: implemented,
+      logs: logsImplemented,
       launchApp: implemented,
       actions: implemented ? ['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait'] : [],
       screenCap: implemented,
@@ -360,13 +361,49 @@ function swipeAction(fromX, fromY, toX, toY, durationMs = 350) {
   };
 }
 
+function truthyAttribute(value) {
+  return value === true || String(value).toLowerCase() === 'true' || String(value) === '1';
+}
+
+function falseyAttribute(value) {
+  return value === false || String(value).toLowerCase() === 'false' || String(value) === '0';
+}
+
+async function getElementAttribute(target, sessionId, elementId, name) {
+  try {
+    const response = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/element/${elementId}/attribute/${name}`);
+    return response.value;
+  } catch {
+    return null;
+  }
+}
+
 async function findEditableElement(target, sessionId) {
+  const candidates = [];
   for (const cls of ['XCUIElementTypeTextField', 'XCUIElementTypeSearchField', 'XCUIElementTypeSecureTextField', 'XCUIElementTypeTextView']) {
     const response = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/elements`, { using: 'class name', value: cls });
     const elements = response.value || [];
-    if (elements.length) return elements[0]['element-6066-11e4-a52e-4f735466cecf'] || elements[0].ELEMENT;
+    for (const element of elements) {
+      const elementId = element['element-6066-11e4-a52e-4f735466cecf'] || element.ELEMENT;
+      if (!elementId) continue;
+      candidates.push({
+        elementId,
+        className: cls,
+        focused: await getElementAttribute(target, sessionId, elementId, 'focused'),
+        visible: await getElementAttribute(target, sessionId, elementId, 'visible'),
+        enabled: await getElementAttribute(target, sessionId, elementId, 'enabled'),
+      });
+    }
   }
-  throw new Error('No editable XCUI element found. Tap/focus an input field before inputText.');
+  if (!candidates.length) {
+    throw new Error('No editable XCUI element found. Tap/focus an input field before inputText.');
+  }
+  const focused = candidates.filter((item) => truthyAttribute(item.focused) && !falseyAttribute(item.enabled));
+  if (focused.length === 1) return { elementId: focused[0].elementId, selection: 'focused' };
+  const visible = candidates.filter((item) => !falseyAttribute(item.visible) && !falseyAttribute(item.enabled));
+  if (visible.length === 1) return { elementId: visible[0].elementId, selection: 'single-visible-editable' };
+  if (candidates.length === 1) return { elementId: candidates[0].elementId, selection: 'single-editable' };
+  throw new Error(`Multiple editable XCUI elements found (${candidates.length}). Tap/focus the target input before inputText.`);
 }
 
 async function queryAppState(target, sessionId) {
@@ -397,6 +434,9 @@ async function runAtom(atom, argv) {
   const parsed = parseArgs(argv);
   const target = buildTarget(parsed);
   const rest = parsed.rest;
+  if (atom === 'input-text' && (optionValue(rest, '--x') || optionValue(rest, '--y'))) {
+    throw new Error('iOS inputText 只向已聚焦输入框输入文本，不接受 --x/--y；请先调用 tap 聚焦目标输入框。');
+  }
   if (fakeEnabled()) {
     if (['screenshot', 'dump-tree'].includes(atom)) {
       const out = optionValue(rest, '--out');
@@ -543,10 +583,11 @@ async function runAtom(atom, argv) {
     const text = optionValue(rest, '--text');
     if (!text) throw new Error('inputText 需要 --text');
     await appium.withSession(target, async ({ sessionId }) => {
-      const elementId = await findEditableElement(target, sessionId);
+      const editable = await findEditableElement(target, sessionId);
+      const elementId = editable.elementId;
       await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${elementId}/value`, { text, value: Array.from(text) });
+      writeJson(actionResult('inputText', { inputMethod: 'wda-set-value', inputTarget: editable.selection }));
     });
-    writeJson(actionResult('inputText', { inputMethod: 'wda-set-value' }));
     return;
   }
   if (atom === 'keyevent') {

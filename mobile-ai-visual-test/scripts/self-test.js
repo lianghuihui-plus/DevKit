@@ -1306,10 +1306,18 @@ assert.strictEqual(iosProbe.capabilities.layout, true);
 assert.strictEqual(iosProbe.capabilities.foregroundApp, true);
 assert.ok(iosProbe.capabilities.actions.includes('restartApp'));
 assert.ok(iosProbe.capabilities.actions.includes('tap'));
+assert.ok(iosProbe.capabilities.actions.includes('toggle'));
 assert.ok(iosProbe.capabilities.actions.includes('longPress'));
 assert.ok(iosProbe.capabilities.actions.includes('inputText'));
+assert.ok(iosProbe.capabilities.actions.includes('swipe'));
 assert.ok(iosProbe.capabilities.actions.includes('back'));
 assert.ok(iosProbe.capabilities.actions.includes('home'));
+assert.ok(iosProbe.capabilities.actions.includes('wait'));
+assert.strictEqual(iosProbe.capabilities.logs, true);
+
+const iosRealDeviceProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'ios', '--device', fakeIosDevice, '--device-type', 'realDevice'], { env: fakeIosEnv }));
+assert.strictEqual(iosRealDeviceProbe.capabilities.deviceType, 'realDevice');
+assert.strictEqual(iosRealDeviceProbe.capabilities.logs, false);
 
 const iosRestart = JSON.parse(run('./scripts/platform/adapters/ios/atoms/restart-app.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo'], { env: fakeIosEnv }));
 assert.strictEqual(iosRestart.action, 'restartApp');
@@ -1330,9 +1338,31 @@ write(iosFile, `# iOS 适配测试
 1. 点击「登录」。
 `);
 const iosParsed = JSON.parse(run('node', ['scripts/parse-case.js', iosFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', iosParsed.caseDir, '--platform', 'ios', '--device', fakeIosDevice, '--app', 'com.example.demo']);
+run('node', [
+  'scripts/update-env.js',
+  iosParsed.caseDir,
+  '--platform', 'ios',
+  '--device', fakeIosDevice,
+  '--app', 'com.example.demo',
+  '--device-type', 'realDevice',
+  '--xcode-org-id', 'TEAM123456',
+  '--xcode-signing-id', 'Apple Development',
+  '--updated-wda-bundle-id', 'com.example.WebDriverAgentRunner',
+  '--allow-provisioning-device-registration',
+  '--wda-launch-timeout', '180000',
+  '--show-xcode-log', 'false',
+  '--use-new-wda', 'true',
+]);
 const iosStateBeforePrepare = json(path.join(iosParsed.caseDir, 'platforms', 'ios', 'state.json'));
 assert.strictEqual(iosStateBeforePrepare.environment.entry, undefined);
+assert.strictEqual(iosStateBeforePrepare.environment.deviceType, 'realDevice');
+assert.strictEqual(iosStateBeforePrepare.environment.xcodeOrgId, 'TEAM123456');
+assert.strictEqual(iosStateBeforePrepare.environment.xcodeSigningId, 'Apple Development');
+assert.strictEqual(iosStateBeforePrepare.environment.updatedWDABundleId, 'com.example.WebDriverAgentRunner');
+assert.strictEqual(iosStateBeforePrepare.environment.allowProvisioningDeviceRegistration, true);
+assert.strictEqual(iosStateBeforePrepare.environment.wdaLaunchTimeout, '180000');
+assert.strictEqual(iosStateBeforePrepare.environment.showXcodeLog, false);
+assert.strictEqual(iosStateBeforePrepare.environment.useNewWDA, true);
 const iosStartBeforePrepare = runAllowFailure('node', ['scripts/run-case.js', iosParsed.caseDir, '--platform', 'ios', '--start']);
 assert.notStrictEqual(iosStartBeforePrepare.status, 0);
 assert.ok(iosStartBeforePrepare.stderr.includes('iosAutomation'));
@@ -1359,14 +1389,28 @@ assert.strictEqual(iosAction.platform, 'ios');
 assert.strictEqual(iosAction.action, 'tap');
 assert.strictEqual(iosAction.ok, true);
 assert.strictEqual(iosAction.coordinateSource, 'layout');
+const iosToggle = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'toggle', '--x', '12', '--y', '22', '--coordinate-source', 'layout', '--target-bounds', '8,18,16,26', '--coordinate-evidence', 'ios xcuitest switch frame', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosToggle.action, 'toggle');
+assert.strictEqual(iosToggle.ok, true);
+assert.strictEqual(iosToggle.coordinateSource, 'layout');
 const iosLongPress = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'longPress', '--x', '30', '--y', '40', '--duration-ms', '900', '--coordinate-source', 'layout', '--target-bounds', '20,30,40,50', '--coordinate-evidence', 'ios xcuitest long press frame', '--settle-ms', '0'], { env: fakeIosEnv }));
 assert.strictEqual(iosLongPress.action, 'longPress');
 assert.strictEqual(iosLongPress.ok, true);
 assert.strictEqual(iosLongPress.durationMs, 900);
+const iosSwipe = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'swipe', '--from-x', '30', '--from-y', '200', '--to-x', '30', '--to-y', '80', '--duration-ms', '300', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosSwipe.action, 'swipe');
+assert.strictEqual(iosSwipe.ok, true);
 const iosInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', '中文输入', '--settle-ms', '0'], { env: fakeIosEnv }));
 assert.strictEqual(iosInput.action, 'inputText');
 assert.strictEqual(iosInput.ok, true);
 assert.strictEqual(iosInput.inputMethod, 'wda-set-value');
+const iosInputWithCoordinates = runAllowFailure('./scripts/platform/adapters/ios/action.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo', '--type', 'inputText', '--x', '1', '--y', '2', '--text', 'hello'], { env: fakeIosEnv });
+assert.notStrictEqual(iosInputWithCoordinates.status, 0);
+assert.ok(iosInputWithCoordinates.stderr.includes('iOS inputText 只向已聚焦输入框输入文本'));
+const iosWait = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosWait.action, 'wait');
+assert.strictEqual(iosWait.ok, true);
+assert.strictEqual(iosWait.ms, 0);
 const iosBack = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'back', '--settle-ms', '0'], { env: fakeIosEnv }));
 assert.strictEqual(iosBack.action, 'back');
 assert.strictEqual(iosBack.ok, true);

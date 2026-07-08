@@ -22,4 +22,8 @@ if [[ ! -x "$adapter" ]]; then
   exit 2
 fi
 
-exec "$adapter" "${args[@]}"
+if [[ ${#args[@]} -gt 0 ]]; then
+  exec "$adapter" "${args[@]}"
+else
+  exec "$adapter"
+fi

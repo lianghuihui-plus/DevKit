@@ -50,7 +50,7 @@
 | --- | --- |
 | Android | `inputText` 不接受 `x/y`；必须先 `tap` 聚焦，再输入；中文等非 ASCII 依赖已由 `prepare-env.sh` 准备好的 MAVT Input IME |
 | HarmonyOS | `inputText` 原子命令需要 `x/y/text`；这是平台约束，不推广到 Android |
-| iOS | 通过 Appium/WDA 适配；能力未准备按 `PLATFORM_UNIMPLEMENTED` 或 `TOOL_ERROR` |
+| iOS | `inputText` 不接受 `x/y`；优先写入已聚焦输入框，仅在页面只有一个可见输入框时兜底；多输入框页面必须先 `tap` 聚焦目标输入框 |
 
 ## launchApp / restartApp
 

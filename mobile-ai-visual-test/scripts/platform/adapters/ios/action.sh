@@ -13,30 +13,53 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+normalize_action() {
+  node -e '
+const event = JSON.parse(process.argv[1]);
+event.action = process.argv[2];
+console.log(JSON.stringify(event, null, 2));
+' "$1" "$2"
+}
+
+run_atom() {
+  local action="$1"
+  shift
+  local output
+  local status
+  set +e
+  output="$("$@" 2> >(cat >&2))"
+  status=$?
+  set -e
+  if [[ $status -ne 0 ]]; then
+    return "$status"
+  fi
+  normalize_action "$output" "$action"
+}
+
 case "$type" in
   wait)
-    exec "$atoms_dir/wait.sh" "${args[@]}"
+    run_atom "$type" "$atoms_dir/wait.sh" "${args[@]}"
     ;;
   launchApp)
-    exec "$atoms_dir/launch-app.sh" "${args[@]}"
+    run_atom "$type" "$atoms_dir/launch-app.sh" "${args[@]}"
     ;;
   restartApp)
-    exec "$atoms_dir/restart-app.sh" "${args[@]}"
+    run_atom "$type" "$atoms_dir/restart-app.sh" "${args[@]}"
     ;;
   tap|toggle)
-    exec "$atoms_dir/tap.sh" "${args[@]}"
+    run_atom "$type" "$atoms_dir/tap.sh" "${args[@]}"
     ;;
   longPress)
-    exec "$atoms_dir/long-press.sh" "${args[@]}"
+    run_atom "$type" "$atoms_dir/long-press.sh" "${args[@]}"
     ;;
   inputText)
-    exec "$atoms_dir/input-text.sh" "${args[@]}"
+    run_atom "$type" "$atoms_dir/input-text.sh" "${args[@]}"
     ;;
   swipe)
-    exec "$atoms_dir/swipe.sh" "${args[@]}"
+    run_atom "$type" "$atoms_dir/swipe.sh" "${args[@]}"
     ;;
   back|home)
-    exec "$atoms_dir/keyevent.sh" "${args[@]}" --key "$type"
+    run_atom "$type" "$atoms_dir/keyevent.sh" "${args[@]}" --key "$type"
     ;;
   *)
     echo "iOS 适配器不支持的动作: ${type:-unknown}" >&2

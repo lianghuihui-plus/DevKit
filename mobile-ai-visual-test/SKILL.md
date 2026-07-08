@@ -1,6 +1,6 @@
 ---
 name: mobile-ai-visual-test
-description: 当需要基于 Markdown 人工用例，对移动端应用进行 AI 黑盒视觉自动化测试时使用；支持按平台适配截图、控件树、启动应用和受控操作，当前已实现 HarmonyOS 与 Android 适配，并为 iOS 预留适配接口。
+description: 当需要基于 Markdown 人工用例，对移动端应用进行 AI 黑盒视觉自动化测试时使用；支持按平台适配截图、控件树、启动应用和受控操作，当前已实现 HarmonyOS、Android 与 iOS 适配。
 ---
 
 # 移动端 AI 视觉测试
