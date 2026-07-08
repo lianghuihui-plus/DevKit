@@ -31,6 +31,7 @@ Case Execution Mode 先读：
 
 按需再读：
 
+- `references/installation.md`：面向人工的三端安装教程和环境准备说明。
 - `references/case-format.md`：Markdown、`case.json`、`notes.jsonl`、`source.md`。
 - `references/action-schema.md`：动作参数、坐标证据和平台动作差异。
 - `references/context-format.md`：`timeline`、`result`、`metrics`、`CONTEXT`、`index`。

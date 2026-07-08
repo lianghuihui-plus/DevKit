@@ -71,12 +71,38 @@ const actions = [];
 if (canLaunchApp) actions.push("launchApp", "restartApp");
 if (canUseUitest) actions.push("tap", "toggle", "longPress", "inputText", "swipe", "back", "home");
 if (hasTarget) actions.push("wait");
+const diagnostics = [];
+function diag(id, level, message, howToFix, check) {
+  diagnostics.push({ id, level, message, howToFix, check });
+}
+if (!hdc) {
+  diag("hdcMissing", "ERROR", "未找到 hdc", "安装 DevEco Studio 或 HarmonyOS Command Line Tools，并把 hdc 加入 PATH；详见 references/installation.md#harmonyos", "command -v hdc");
+} else if (!device) {
+  diag("harmonyTargetMissing", "ERROR", "未发现可用 HarmonyOS 设备", "连接真机或启动模拟器，确认 hdc list targets 能看到目标设备；详见 references/installation.md#harmonyos", "hdc list targets");
+}
+if (hasTarget && !uitestVersion) {
+  diag("harmonyUitestMissing", "ERROR", "HarmonyOS uitest 不可用", "确认设备支持 uitest，并执行 hdc shell uitest --version 验证", "hdc shell uitest --version");
+}
+if (hasTarget && !screenCap) {
+  diag("harmonyScreenshotUnavailable", "ERROR", "HarmonyOS 截图能力不可用", "确认设备已解锁且 uitest screenCap 可执行", "hdc shell uitest screenCap -p /data/local/tmp/mavt-probe.png");
+}
+if (hasTarget && !dumpLayout) {
+  diag("harmonyLayoutUnavailable", "ERROR", "HarmonyOS 控件树能力不可用", "确认 uitest dumpLayout 可执行；详见 references/installation.md#harmonyos", "hdc shell uitest dumpLayout -p /data/local/tmp/mavt-probe.json");
+}
+if (hasTarget && !aaDump) {
+  diag("harmonyAaDumpUnavailable", "ERROR", "HarmonyOS 启动或前台应用识别能力不可用", "确认 aa dump 可执行；launchApp/restartApp 依赖该能力", "hdc shell aa dump");
+}
+if (hasTarget && !hilog) {
+  diag("harmonyLogsUnavailable", "WARN", "HarmonyOS hilog 不可用", "确认 hdc shell hilog 可执行；日志缺失不阻塞核心视觉测试", "hdc shell hilog");
+}
 const data = {
   schemaVersion: 1,
   type: "environmentProbe",
   platform: "harmony",
   device,
   targets: (process.argv[2] || "").split(/\r?\n/).filter(Boolean),
+  ready: !diagnostics.some((item) => item.level === "ERROR"),
+  diagnostics,
   capabilities: {
     connector: "hdc",
     hdc,

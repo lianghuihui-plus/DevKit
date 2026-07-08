@@ -100,12 +100,47 @@ async function runProbe(argv) {
   const hasTarget = !!target.device && (target.deviceType === 'simulator' ? simctl : true);
   const implemented = xcode && simctl && appiumCli && xcuitestDriver && hasTarget;
   const logsImplemented = implemented && target.deviceType === 'simulator';
+  const diagnostics = [];
+  const addDiagnostic = (id, level, message, howToFix, check) => {
+    diagnostics.push({ id, level, message, howToFix, check });
+  };
+  if (!xcode) {
+    addDiagnostic('iosXcodeMissing', 'ERROR', '未找到 Xcode', '安装 Xcode 并确认 xcodebuild -version 可执行；详见 references/installation.md#ios-模拟器', 'xcodebuild -version');
+  }
+  if (!simctl) {
+    addDiagnostic('iosSimctlMissing', 'ERROR', '未找到 xcrun/simctl', '安装 Xcode Command Line Tools，并确认 xcrun simctl list 可执行', 'xcrun simctl list devices');
+  }
+  if (!appiumCli) {
+    addDiagnostic('iosAppiumMissing', 'ERROR', '未找到 Appium CLI', '执行 npm install -g appium 安装 Appium；详见 references/installation.md#ios-模拟器', 'appium -v');
+  }
+  if (appiumCli && !xcuitestDriver) {
+    addDiagnostic('iosXcuitestDriverMissing', 'ERROR', '未安装 Appium XCUITest Driver', '执行 appium driver install xcuitest；详见 references/installation.md#ios-模拟器', 'appium driver list --installed');
+  }
+  if (!target.device) {
+    addDiagnostic('iosDeviceMissing', 'ERROR', '未发现可用 iOS 设备', '启动一个 iOS 模拟器，或为真机传入 --device <udid> --device-type realDevice；详见 references/installation.md#ios-真机', 'xcrun simctl list devices booted');
+  }
+  if (target.deviceType === 'realDevice') {
+    if (!target.xcodeOrgId || !target.xcodeSigningId || !target.updatedWDABundleId) {
+      addDiagnostic('iosRealDeviceSigningIncomplete', 'WARN', 'iOS 真机 WDA 签名参数不完整', '正式真机执行前请通过 update-env.js 固化 Team ID、Signing ID 和 WDA bundle id；详见 references/installation.md#ios-真机', 'scripts/update-env.js <case-dir> --platform ios --device-type realDevice ...');
+    }
+    if (!logsImplemented) {
+      addDiagnostic('iosRealDeviceLogsUnavailable', 'WARN', 'iOS 真机日志暂不作为可用能力', '这是当前适配限制，不影响截图、控件树和动作能力', 'scripts/probe-env.sh --platform ios --device <udid> --device-type realDevice');
+    }
+  }
+  if (appiumCli && !appiumServer) {
+    addDiagnostic('iosAppiumServerNotReady', 'WARN', 'Appium server 当前不可连接', 'prepare-env 会尝试启动 Appium server；也可以手动执行 appium --address 127.0.0.1 --port 4723', 'curl http://127.0.0.1:4723/status');
+  }
+  if (appiumServer && !wda) {
+    addDiagnostic('iosWdaNotReady', 'WARN', 'WDA 当前不可确认', 'prepare-env 会创建 Appium session 验证 WDA；真机首次运行可能需要信任开发者证书', 'scripts/prepare-env.sh --case-dir <case-dir> --platform ios');
+  }
   writeJson({
     schemaVersion: 1,
     type: 'environmentProbe',
     platform: 'ios',
     device: target.device || null,
     targets: booted.map((item) => item.udid),
+    ready: !diagnostics.some((item) => item.level === 'ERROR'),
+    diagnostics,
     capabilities: {
       connector: 'appium-xcuitest',
       deviceType: target.deviceType,

@@ -82,12 +82,39 @@ const dependencies = JSON.parse(process.argv[9] || "[]");
 const hasTarget = adb && !!device;
 const actions = [];
 if (hasTarget) actions.push("launchApp", "restartApp", "tap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait");
+const diagnostics = [];
+function diag(id, level, message, howToFix, check) {
+  diagnostics.push({ id, level, message, howToFix, check });
+}
+if (!adb) {
+  diag("adbMissing", "ERROR", "未找到 adb", "安装 Android SDK Platform Tools，并把 platform-tools 加入 PATH；详见 references/installation.md#android", "command -v adb");
+} else if (!device) {
+  diag("androidDeviceMissing", "ERROR", "未发现可用 Android 设备", "连接设备并开启 USB 调试，确认 adb devices 中状态为 device；详见 references/installation.md#android", "adb devices");
+}
+if (hasTarget && !screenshot) {
+  diag("androidScreenshotUnavailable", "ERROR", "Android 截图能力不可用", "确认设备已解锁并允许调试，然后重试 scripts/probe-env.sh --platform android", "adb exec-out screencap -p");
+}
+if (hasTarget && !layout) {
+  diag("androidLayoutUnavailable", "ERROR", "Android 控件树能力不可用", "确认 uiautomator dump 可执行，必要时解锁设备并保持目标页面前台", "adb shell uiautomator dump");
+}
+if (hasTarget && !foregroundApp) {
+  diag("androidForegroundUnavailable", "ERROR", "Android 前台应用识别不可用", "确认 dumpsys window/activity 可执行，并保持设备处于可调试状态", "adb shell dumpsys window");
+}
+if (hasTarget && !logs) {
+  diag("androidLogsUnavailable", "WARN", "Android 日志能力不可用", "确认 adb logcat 可执行；日志缺失不阻塞核心视觉测试", "adb logcat -d");
+}
+const ime = dependencies.find((item) => item && item.id === "mavtInputIme");
+if (hasTarget && ime && !ime.ok) {
+  diag("androidImeNotReady", "INFO", "MAVT Input IME 尚未准备", "执行 scripts/prepare-env.sh --case-dir <case-dir> --platform android 自动构建、安装并启用输入法", "scripts/prepare-env.sh --case-dir <case-dir> --platform android");
+}
 console.log(JSON.stringify({
   schemaVersion: 1,
   type: "environmentProbe",
   platform: "android",
   device,
   targets,
+  ready: !diagnostics.some((item) => item.level === "ERROR"),
+  diagnostics,
   capabilities: {
     connector: "adb",
     adb,

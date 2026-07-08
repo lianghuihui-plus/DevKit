@@ -567,6 +567,8 @@ const probeNoHdc = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'harm
 assert.strictEqual(probeNoHdc.capabilities.hdc, false);
 assert.strictEqual(probeNoHdc.capabilities.launchApp, false);
 assert.deepStrictEqual(probeNoHdc.capabilities.actions, []);
+assert.strictEqual(probeNoHdc.ready, false);
+assert.ok(probeNoHdc.diagnostics.some((item) => item.id === 'hdcMissing' && item.level === 'ERROR'));
 const probeWithApp = runAllowFailure('./scripts/probe-env.sh', ['--platform', 'harmony', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 assert.notStrictEqual(probeWithApp.status, 0);
 assert.ok(probeWithApp.stderr.includes('probe-env 只探测平台/设备能力'));
@@ -1188,6 +1190,9 @@ const fakeAndroidEnv = {
 const androidProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'android'], { env: fakeAndroidEnv }));
 assert.strictEqual(androidProbe.platform, 'android');
 assert.deepStrictEqual(androidProbe.targets, ['emulator-5554']);
+assert.strictEqual(androidProbe.ready, true);
+assert.ok(Array.isArray(androidProbe.diagnostics));
+assert.ok(!androidProbe.diagnostics.some((item) => item.level === 'ERROR'));
 assert.strictEqual(androidProbe.capabilities.adb, true);
 assert.strictEqual(androidProbe.capabilities.screenshot, true);
 assert.strictEqual(androidProbe.capabilities.layout, true);
@@ -1198,6 +1203,9 @@ assert.ok(androidProbe.capabilities.actions.includes('tap'));
 assert.ok(androidProbe.capabilities.actions.includes('longPress'));
 assert.ok(androidProbe.capabilities.actions.includes('inputText'));
 assert.ok(androidProbe.capabilities.dependencies.some((item) => item.id === 'mavtInputIme'));
+const androidProbeNoAdb = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'android'], { env: { ...process.env, PATH: `${path.dirname(process.execPath)}:/bin:/usr/bin` } }));
+assert.strictEqual(androidProbeNoAdb.ready, false);
+assert.ok(androidProbeNoAdb.diagnostics.some((item) => item.id === 'adbMissing' && item.level === 'ERROR'));
 
 const androidLaunchFallback = JSON.parse(run('./scripts/platform/adapters/android/atoms/launch-app.sh', ['--device', 'emulator-5554', '--app', 'com.example.demo', '--entry', 'PrivateActivity'], { env: fakeAndroidEnv }));
 assert.strictEqual(androidLaunchFallback.action, 'launchApp');
@@ -1304,6 +1312,9 @@ assert.strictEqual(iosProbe.capabilities.implemented, true);
 assert.strictEqual(iosProbe.capabilities.screenshot, true);
 assert.strictEqual(iosProbe.capabilities.layout, true);
 assert.strictEqual(iosProbe.capabilities.foregroundApp, true);
+assert.strictEqual(iosProbe.ready, true);
+assert.ok(Array.isArray(iosProbe.diagnostics));
+assert.ok(!iosProbe.diagnostics.some((item) => item.level === 'ERROR'));
 assert.ok(iosProbe.capabilities.actions.includes('restartApp'));
 assert.ok(iosProbe.capabilities.actions.includes('tap'));
 assert.ok(iosProbe.capabilities.actions.includes('toggle'));
@@ -1318,6 +1329,8 @@ assert.strictEqual(iosProbe.capabilities.logs, true);
 const iosRealDeviceProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'ios', '--device', fakeIosDevice, '--device-type', 'realDevice'], { env: fakeIosEnv }));
 assert.strictEqual(iosRealDeviceProbe.capabilities.deviceType, 'realDevice');
 assert.strictEqual(iosRealDeviceProbe.capabilities.logs, false);
+assert.strictEqual(iosRealDeviceProbe.ready, true);
+assert.ok(iosRealDeviceProbe.diagnostics.some((item) => item.id === 'iosRealDeviceLogsUnavailable' && item.level === 'WARN'));
 
 const iosRestart = JSON.parse(run('./scripts/platform/adapters/ios/atoms/restart-app.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo'], { env: fakeIosEnv }));
 assert.strictEqual(iosRestart.action, 'restartApp');
@@ -1639,6 +1652,9 @@ const injectedStart = JSON.parse(run('node', ['scripts/run-case.js', injectedPar
 recordPreconditions(injectedParsed.caseDir, 'harmony', injectedStart.executionId);
 recordGlobalFlowScan(injectedParsed.caseDir, 'harmony', injectedStart.executionId);
 const harmonyProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'harmony', '--device', '127.0.0.1:5555'], { env: fakeEnv }));
+assert.strictEqual(harmonyProbe.ready, true);
+assert.ok(Array.isArray(harmonyProbe.diagnostics));
+assert.ok(!harmonyProbe.diagnostics.some((item) => item.level === 'ERROR'));
 assert.strictEqual(harmonyProbe.capabilities.layout, true);
 assert.ok(harmonyProbe.capabilities.actions.includes('restartApp'));
 assert.ok(harmonyProbe.capabilities.actions.includes('longPress'));

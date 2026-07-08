@@ -23,6 +23,8 @@ scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>
 
 批量执行时，一次用户确认可以复用，但 `update-env.js` 和 `prepare-env.sh` 必须对每个待执行 case 分别调用，因为 `run-case.js --start` 读取的是当前 case 自己的 `platforms/<platform>/state.json`。
 
+面向人工的安装教程见 `installation.md`。执行流程中只输出简短诊断和修复提示，不展开完整安装教程。
+
 ## 探测内容
 
 - 可用设备和屏幕尺寸。
@@ -31,6 +33,33 @@ scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>
 - 平台依赖状态。
 
 目标 App 当前是否在前台属于 observation，不属于 `probe-env` 固化内容。
+
+`probe-env` 必须输出机器可读诊断：
+
+```json
+{
+  "ready": false,
+  "diagnostics": [
+    {
+      "id": "adbMissing",
+      "level": "ERROR",
+      "message": "未找到 adb",
+      "howToFix": "安装 Android SDK Platform Tools，并把 platform-tools 加入 PATH；详见 references/installation.md#android",
+      "check": "command -v adb"
+    }
+  ]
+}
+```
+
+诊断级别：
+
+| level | 含义 | 执行处理 |
+| --- | --- | --- |
+| `ERROR` | 缺少关键能力 | 不进入环境确认 |
+| `WARN` | 非核心能力缺失或降级 | 提示用户，可继续 |
+| `INFO` | 下一步提示 | 不阻塞 |
+
+`ready` 只表示 `diagnostics` 中没有 `ERROR`。真正开始执行仍以 `prepare-env.sh` 和 `run-case.js --start` 的守卫为准。
 
 ## 平台说明
 
