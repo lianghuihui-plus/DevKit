@@ -1,11 +1,25 @@
 ---
 name: cm-ai-git-commit
-description: 当用户在 CodeMao 或 CM 项目中提交代码，或明确需要 CodeMao AI 代码提交、CM AI 提交、TAPD 链接、[AI] commit message 格式时使用。
+description: 仅当用户明确要求 CodeMao/CM AI 代码提交，或明确提到 TAPD 链接、[AI] commit message、公司/CodeMao 提交规范时使用；普通 git 提交、常规 commit、未提到 TAPD 或 [AI] 格式的提交请求不要触发。
 ---
 
 # CodeMao AI 代码提交
 
 扫描代码仓库未提交变更，根据当前上下文推断提交范围，询问 TAPD 链接，生成提交信息，经用户确认后提交。
+
+## 触发边界
+
+仅在用户请求中出现以下明确意图时使用本 Skill：
+
+- 用户明确说 `CodeMao AI 提交`、`CM AI 提交`、`AI 代码提交`、`按 CodeMao 提交规范提交`。
+- 用户明确要求提交信息包含 TAPD 链接或 `[AI]` 格式。
+- 用户提供 TAPD 链接并要求提交代码。
+
+以下情况不要使用本 Skill，按普通 git 提交流程处理：
+
+- 用户只说 `提交代码`、`帮我 commit`、`git commit`、`提交一下` 等普通提交请求。
+- 用户没有提到 TAPD、`[AI]`、CodeMao/CM AI 提交规范。
+- 用户只是询问 git 状态、查看 diff、暂存文件或生成普通 commit message。
 
 ## 定位代码仓库
 
@@ -132,4 +146,3 @@ git diff --cached --name-only
 - 提交失败时，先报告失败原因，再根据错误处理。
 - 未经用户确认提交文件和提交信息前，不得执行 `git commit`。
 - 提交前暂存区文件列表与用户确认文件列表不一致时，不得执行 `git commit`。
-
