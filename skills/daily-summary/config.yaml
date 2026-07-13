@@ -3,9 +3,9 @@
 # 数据源开关
 sources:
   git: true
-  hermes: true
+  hermes: false
   cursor: true
-  openclaw: true
+  openclaw: false
   claude: true
   codex: true
 
