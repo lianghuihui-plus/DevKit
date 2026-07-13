@@ -913,14 +913,19 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
       }
     }
   }
-  const flowEvents = events.filter((event) => event.type === 'flow');
-  if (flowEvents.length) {
+  const flowFacts = events.filter((event) => event.type === 'flow' || event.scope === 'precondition-flow');
+  if (flowFacts.length) {
     lines.push('');
     lines.push('## 前置条件 Flow');
-    for (const event of flowEvents) {
+    for (const event of flowFacts) {
+      const factStatus = event.type === 'observation'
+        ? `${event.phase || 'observation'}${event.ok === false || event.failureCode ? ' / OBSERVATION_FAILED' : ''}`
+        : event.type === 'actionResult'
+          ? `${event.action || '-'} / ${event.ok ? 'ACTION_OK' : 'ACTION_FAILED'}`
+          : event.status;
       const parts = [
         event.flowId,
-        event.status,
+        factStatus,
         event.preconditionId,
         event.flowStepId,
         event.failureCode,
@@ -939,7 +944,7 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
     lines.push('## 执行统计');
     lines.push(`- 本次耗时：${formatDuration(metrics.durationMs || 0)}`);
     if (metrics.steps) lines.push(`- 步骤：${metrics.steps.passed || 0}/${metrics.steps.total || 0} 通过，${metrics.steps.failed || 0} 失败，${metrics.steps.unknown || 0} 未知，${metrics.steps.skipped || 0} 跳过`);
-    if (metrics.preconditions) lines.push(`- 前置条件：${metrics.preconditions.passed || 0}/${metrics.preconditions.total || 0} 通过，${metrics.preconditions.failed || 0} 失败`);
+    if (metrics.preconditions) lines.push(`- 前置条件：${metrics.preconditions.passed || 0}/${metrics.preconditions.total || 0} 通过，${metrics.preconditions.prepared || 0} 已准备，${metrics.preconditions.blocked || 0} 阻塞，${metrics.preconditions.failed || 0} 失败，${metrics.preconditions.unknown || 0} 未知`);
     if (metrics.actions) lines.push(`- 动作：${metrics.actions.total || 0} 次，点击 ${metrics.actions.tap || 0} 次，开关 ${metrics.actions.toggle || 0} 次，长按 ${metrics.actions.longPress || 0} 次，输入 ${metrics.actions.inputText || 0} 次，拉起 App ${metrics.actions.launchApp || 0} 次，冷启动 App ${metrics.actions.restartApp || 0} 次`);
     if (metrics.flows) lines.push(`- 前置条件 Flow：计划 ${metrics.flows.planned || 0} 个，动作 ${metrics.flows.actions || 0} 次，完成 ${metrics.flows.completed || 0} 个，已满足 ${metrics.flows.alreadySatisfied || 0} 个，失败 ${metrics.flows.failed || 0} 个，阻塞 ${metrics.flows.blocked || 0} 个`);
     if (metrics.stability) {
@@ -1227,7 +1232,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     ...Array.from(observationGroups.keys())
       .filter((stepId) => stepId !== 'unlinked' && !stepById.has(stepId))
       .flatMap((stepId) => observationGroups.get(stepId) || []),
-  ];
+  ].filter((event) => event.scope !== 'precondition-flow');
   const unlinkedObservationSection = unlinkedObservationEvents.length
     ? `<details class="unlinked-observations">
     <summary>未关联观察</summary>
@@ -1236,7 +1241,9 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     : '';
   const globalRules = Array.isArray(caseJson.globalRules) ? caseJson.globalRules : [];
   const ruleEvents = events.filter((event) => event.type === 'rule');
-  const flowEvents = events.filter((event) => event.type === 'flow');
+  const flowEvents = events.filter((event) => event.type === 'flow' || event.scope === 'precondition-flow');
+  const flowObservationEvents = flowEvents.filter((event) => event.type === 'observation');
+  const flowShotCards = flowObservationEvents.map(renderScreenshotCard).filter(Boolean).join('');
   const globalRuleRows = globalRules.length
     ? globalRules.map((rule) => {
       const appliesTo = Array.isArray(rule.appliesTo) ? rule.appliesTo.join(', ') : rule.appliesTo || 'any_step';
@@ -1260,14 +1267,21 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
       </tr>`).join('\n')
     : '<tr><td colspan="5">暂无规则执行事实。</td></tr>';
   const flowRows = flowEvents.length
-    ? flowEvents.map((event) => `<tr>
+    ? flowEvents.map((event) => {
+      const status = event.type === 'observation'
+        ? `${event.phase || 'observation'}${event.ok === false || event.failureCode ? ' / FAILED' : ''}`
+        : event.type === 'actionResult'
+          ? `${event.action || '-'} / ${event.ok ? 'OK' : 'FAILED'}`
+          : event.status || '-';
+      return `<tr>
         <td>${escapeHtml(formatDisplayTime(event.time))}</td>
         <td>${escapeHtml(event.flowId || '-')}</td>
-        <td>${escapeHtml(event.status || '-')}</td>
+        <td>${escapeHtml(status)}</td>
         <td>${escapeHtml(event.flowStepId || '-')}</td>
         <td>${escapeHtml(event.preconditionId || '-')}</td>
-        <td>${escapeHtml(event.reason || event.failureCode || '-')}</td>
-      </tr>`).join('\n')
+        <td>${escapeHtml(event.reason || event.failureCode || event.label || '-')}</td>
+      </tr>`;
+    }).join('\n')
     : '<tr><td colspan="6">暂无前置条件 Flow 执行事实。</td></tr>';
   const preconditionRows = (caseJson.preconditions || []).length
     ? caseJson.preconditions.map((item) => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.text)}</td><td>${escapeHtml(displayPreconditionMode(item.checkMode))}</td></tr>`).join('\n')
@@ -1599,6 +1613,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
           <thead><tr><th style="width:210px">时间</th><th style="width:170px">Flow</th><th style="width:110px">状态</th><th style="width:130px">Flow 步骤</th><th style="width:110px">前置条件</th><th>原因</th></tr></thead>
           <tbody>${flowRows}</tbody>
         </table></div>
+      ${flowShotCards ? `<div class="shot-strip" style="margin-top:12px">${flowShotCards}</div>` : ''}
     </section>
 
       <section class="debug-section">

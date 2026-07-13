@@ -6,7 +6,6 @@ const path = require('path');
 const {
   casesRoot,
   normalizeCaseNo,
-  normalizePreconditionText,
   normalizePlatform,
   nowIso,
   PRECONDITION_STATUS_PRIORITY,
@@ -15,7 +14,7 @@ const {
   worsePreconditionStatus,
   workspaceRoot,
 } = require('./common');
-const { buildPreconditionPlan, planFlowSummaries } = require('./lib/precondition-flow');
+const { buildPreconditionPlan, planFlowSummaries, trimFlowName } = require('./lib/precondition-flow');
 
 function usage() {
   console.error('Usage: preflight-preconditions.js <case-dir|caseNo|caseKey|title>... --platform <harmony|android|ios> [--cwd <workspace-cwd>] [--all]');
@@ -74,10 +73,11 @@ function buildGroups(cases) {
   const groupMap = new Map();
   for (const item of cases) {
     for (const precondition of item.preconditions) {
-      const key = normalizePreconditionText(precondition.text);
+      const textKey = trimFlowName(precondition.text);
+      const key = JSON.stringify([textKey, precondition.resolution, precondition.flowId || '']);
       if (!groupMap.has(key)) {
         groupMap.set(key, {
-          key,
+          key: textKey,
           text: precondition.text,
           category: precondition.category,
           status: precondition.status,

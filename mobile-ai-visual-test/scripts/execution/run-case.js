@@ -53,6 +53,8 @@ const VALID_PRECONDITION_FLOW_FAILURES = new Set([
   'PRECONDITION_FLOW_INVALID',
   'PRECONDITION_FLOW_CHANGED',
   'PRECONDITION_FLOW_START_MISMATCH',
+  'PRECONDITION_FLOW_OBSERVATION_FAILED',
+  'PRECONDITION_FLOW_ACTION_MISMATCH',
   'PRECONDITION_FLOW_ACTION_FAILED',
   'PRECONDITION_FLOW_TARGET_NOT_REACHED',
   'PRECONDITION_FLOW_UNSAFE',
@@ -87,7 +89,7 @@ function usage() {
   console.error([
     'Usage:',
     '  run-case.js <case-dir> --platform <platform> --start [--precondition-plan-sha <sha>]',
-    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--step-id <step-id>] [--scope global|precondition-flow] [--precondition-id <id>] [--flow-id <id>] [--flow-step-id <id>] [--phase <phase>] [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--action-json <json>] [--step-id <step-id>] [--scope global|precondition-flow] [--precondition-id <id>] [--flow-id <id>] [--flow-step-id <id>] [--phase <phase>] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --record-json <json> [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --finalize --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>]',
@@ -406,6 +408,21 @@ function planEntryFor(executionState, preconditionId) {
   return executionState?.preconditionPlan?.preconditions?.find((item) => item.id === preconditionId) || null;
 }
 
+function flowLifecycle(events, preconditionId, flowId) {
+  const lifecycle = { state: 'NOT_STARTED', started: null, terminal: null };
+  for (const event of events) {
+    if (event.type !== 'flow' || event.usage !== 'precondition' || event.preconditionId !== preconditionId || event.flowId !== flowId) continue;
+    if (event.status === 'STARTED') {
+      lifecycle.state = 'STARTED';
+      lifecycle.started = event;
+    } else if (TERMINAL_FLOW_STATUSES.has(event.status)) {
+      lifecycle.state = event.status;
+      lifecycle.terminal = event;
+    }
+  }
+  return lifecycle;
+}
+
 function activePreconditionFlow(events) {
   let active = null;
   for (const event of events) {
@@ -416,13 +433,71 @@ function activePreconditionFlow(events) {
   return active;
 }
 
+function pendingFlowTerminal(events) {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event.type !== 'flow' || event.usage !== 'precondition' || !TERMINAL_FLOW_STATUSES.has(event.status)) continue;
+    const hasPreconditionTerminal = events.slice(index + 1).some((item) => item.type === 'precondition' && item.id === event.preconditionId);
+    if (!hasPreconditionTerminal) return event;
+  }
+  return null;
+}
+
+function observationFailureCode(event) {
+  const observation = event?.observation || event || {};
+  return event?.failureCode || observation.failureCode || observation.raw?.failureCode || null;
+}
+
+function usableFlowObservation(event) {
+  if (!event || event.type !== 'observation' || event.scope !== PRECONDITION_FLOW_SCOPE) return false;
+  const observation = event.observation || event;
+  if (event.ok === false || observation.ok === false || observationFailureCode(event)) return false;
+  const artifacts = eventArtifacts(event);
+  const hasArtifact = Boolean(artifacts.screenshot || artifacts.layout);
+  const app = observation.app || event.app;
+  const hasAppFact = Boolean(app && typeof app === 'object' && (typeof app.inTargetApp === 'boolean' || app.foregroundApp || app.activity));
+  return hasArtifact || hasAppFact;
+}
+
 function matchingObservations(events, event, phase, flowStepId) {
   return events.filter((item) => item.type === 'observation' &&
+    usableFlowObservation(item) &&
     item.scope === PRECONDITION_FLOW_SCOPE &&
     item.preconditionId === event.preconditionId &&
     item.flowId === event.flowId &&
     item.phase === phase &&
     (flowStepId === undefined || item.flowStepId === flowStepId));
+}
+
+function actionSpecFromEvent(event) {
+  if (event?.requestedAction && typeof event.requestedAction === 'object' && !Array.isArray(event.requestedAction)) return event.requestedAction;
+  const fields = ['target', 'x', 'y', 'text', 'fromX', 'fromY', 'toX', 'toY', 'durationMs', 'ms', 'reason', 'velocity', 'coordinateSource', 'targetBounds', 'coordinateEvidence'];
+  const action = { type: actionType(event) };
+  for (const field of fields) if (event?.[field] !== undefined) action[field] = event[field];
+  return action;
+}
+
+function actionValueEqual(field, expected, actual) {
+  if (['x', 'y', 'fromX', 'fromY', 'toX', 'toY', 'durationMs', 'ms', 'velocity'].includes(field)) {
+    return Number.isFinite(Number(expected)) && Number(expected) === Number(actual);
+  }
+  if (Array.isArray(expected)) return Array.isArray(actual) && JSON.stringify(expected.map(Number)) === JSON.stringify(actual.map(Number));
+  return expected === actual;
+}
+
+function flowActionReadiness(expectedStep, event) {
+  const expected = expectedStep?.action || {};
+  const actual = actionSpecFromEvent(event);
+  if (expected.type !== actual.type) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_ACTION_MISMATCH', reason: `Flow step ${expectedStep?.id || '-'} 要求 ${expected.type || '-'}，实际为 ${actual.type || '-'}` };
+  }
+  for (const [field, value] of Object.entries(expected)) {
+    if (field === 'type') continue;
+    if (!actionValueEqual(field, value, actual[field])) {
+      return { ok: false, failureCode: 'PRECONDITION_FLOW_ACTION_MISMATCH', reason: `Flow step ${expectedStep.id} 动作参数不一致: ${field}` };
+    }
+  }
+  return { ok: true };
 }
 
 function evidenceObservation(events, event, phase, flowStepId) {
@@ -433,6 +508,10 @@ function evidenceObservation(events, event, phase, flowStepId) {
 }
 
 function preconditionOrderReadiness(caseJson, events, nextEvent) {
+  const pending = pendingFlowTerminal(events);
+  if (pending && !(nextEvent?.type === 'precondition' && nextEvent.id === pending.preconditionId)) {
+    return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow ${pending.flowId} 已终结，下一事实必须是前置条件 ${pending.preconditionId} 的对应终态。` };
+  }
   const preconditionId = nextEvent?.type === 'precondition'
     ? nextEvent.id
     : nextEvent?.preconditionId;
@@ -452,8 +531,8 @@ function preconditionOrderReadiness(caseJson, events, nextEvent) {
       reason: `前置条件必须按 case.json 顺序处理；${preconditionId} 之前尚未通过: ${missingPrior.map((item) => item.id).join(', ')}`,
     };
   }
-  if (latestById.has(preconditionId) && nextEvent.type !== 'precondition') {
-    return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `前置条件 ${preconditionId} 已有终态事实，不能继续追加 Flow 事件。` };
+  if (latestById.has(preconditionId)) {
+    return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `前置条件 ${preconditionId} 已有终态事实，不能重复写入或继续追加 Flow 事件。` };
   }
   const active = activePreconditionFlow(events);
   if (active && active.preconditionId !== preconditionId) {
@@ -488,9 +567,10 @@ function preconditionFlowReadiness(caseJson, executionState, events, nextEvent) 
   }
   const active = activePreconditionFlow(events);
   const expectedStep = currentFlowStep(planEntry, events);
+  const lifecycle = flowLifecycle(events, preconditionId, planEntry.flowId);
   if (nextEvent.scope === PRECONDITION_FLOW_SCOPE) {
     if (nextEvent.phase === 'entry-check') {
-      if (active) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: 'Flow 已开始，不能重复写 entry-check observation。' };
+      if (lifecycle.state !== 'NOT_STARTED') return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow 已处于 ${lifecycle.state}，不能重复写 entry-check observation。` };
       return { ok: true };
     }
     if (!active || active.preconditionId !== preconditionId || active.flowId !== planEntry.flowId) {
@@ -506,6 +586,10 @@ function preconditionFlowReadiness(caseJson, executionState, events, nextEvent) 
     if (nextEvent.type === 'actionResult') {
       const before = matchingObservations(events, nextEvent, 'before', nextEvent.flowStepId);
       if (!before.length) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow action 前缺少 before observation: ${nextEvent.flowStepId}` };
+      if (!(nextEvent.ok === false && nextEvent.failureCode === 'PRECONDITION_FLOW_ACTION_MISMATCH')) {
+        const actionReady = flowActionReadiness(expectedStep, nextEvent);
+        if (!actionReady.ok) return actionReady;
+      }
     }
     if (nextEvent.type === 'observation' && nextEvent.phase === 'after') {
       const action = events.findLast((event) => event.type === 'actionResult' &&
@@ -520,13 +604,14 @@ function preconditionFlowReadiness(caseJson, executionState, events, nextEvent) 
   }
   if (nextEvent.type === 'flow') {
     if (nextEvent.status === 'STARTED') {
+      if (lifecycle.state !== 'NOT_STARTED') return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Precondition Flow 已处于 ${lifecycle.state}，不能再次 STARTED。` };
       if (active) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: '已有未结束的 Precondition Flow。' };
       if (!matchingObservations(events, nextEvent, 'entry-check').length) {
         return { ok: false, failureCode: 'PRECONDITION_FLOW_START_MISMATCH', reason: 'Flow STARTED 前缺少 entry-check observation。' };
       }
       return { ok: true };
     }
-    if (nextEvent.status === 'BLOCKED' && nextEvent.failureCode === 'PRECONDITION_FLOW_START_MISMATCH' && !active) {
+    if (nextEvent.status === 'BLOCKED' && nextEvent.failureCode === 'PRECONDITION_FLOW_START_MISMATCH' && !active && lifecycle.state === 'NOT_STARTED') {
       if (!evidenceObservation(events, nextEvent, 'entry-check')) {
         return { ok: false, failureCode: 'PRECONDITION_FLOW_START_MISMATCH', reason: 'Flow 起点不匹配必须引用 entry-check observation。' };
       }
@@ -540,7 +625,8 @@ function preconditionFlowReadiness(caseJson, executionState, events, nextEvent) 
         return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `当前应完成 Flow step: ${expectedStep?.id || 'none'}` };
       }
       const action = events.findLast((event) => event.type === 'actionResult' && event.scope === PRECONDITION_FLOW_SCOPE && event.preconditionId === preconditionId && event.flowId === planEntry.flowId && event.flowStepId === nextEvent.flowStepId && event.ok === true);
-      if (!action || !evidenceObservation(events, nextEvent, 'after', nextEvent.flowStepId)) {
+      const actionReady = action ? flowActionReadiness(expectedStep, action) : { ok: false };
+      if (!action || !actionReady.ok || !evidenceObservation(events, nextEvent, 'after', nextEvent.flowStepId)) {
         return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow STEP_COMPLETED 缺少成功动作或 after observation 证据: ${nextEvent.flowStepId}` };
       }
     }
@@ -748,6 +834,53 @@ function preconditionTerminalOptions(event) {
   return null;
 }
 
+function preconditionFlowTechnicalFailure(event) {
+  if (event?.scope !== PRECONDITION_FLOW_SCOPE) return null;
+  if (event.type === 'observation' && (event.ok === false || observationFailureCode(event))) {
+    return {
+      flowStatus: 'BLOCKED',
+      failureCode: 'PRECONDITION_FLOW_OBSERVATION_FAILED',
+      reason: event.raw?.error || event.observation?.raw?.error || '前置条件 Flow observation 采集失败。',
+    };
+  }
+  if (event.type === 'actionResult' && event.ok === false) {
+    return {
+      flowStatus: 'FAILED',
+      failureCode: VALID_PRECONDITION_FLOW_FAILURES.has(event.failureCode) ? event.failureCode : 'PRECONDITION_FLOW_ACTION_FAILED',
+      reason: event.error || event.raw?.error || event.reason || '前置条件 Flow 动作执行失败。',
+    };
+  }
+  return null;
+}
+
+function appendPreconditionFlowFailure(timelinePath, event, failure) {
+  const time = nowIso();
+  const flowEvent = {
+    time,
+    type: 'flow',
+    usage: 'precondition',
+    preconditionId: event.preconditionId,
+    flowId: event.flowId,
+    flowStepId: event.flowStepId,
+    status: failure.flowStatus || 'BLOCKED',
+    failureCode: failure.failureCode,
+    reason: failure.reason,
+  };
+  const preconditionEvent = {
+    time,
+    type: 'precondition',
+    id: event.preconditionId,
+    status: 'BLOCKED',
+    resolution: 'flow',
+    flowId: event.flowId,
+    failureCode: failure.failureCode,
+    reason: failure.reason,
+  };
+  appendJsonl(timelinePath, flowEvent);
+  appendJsonl(timelinePath, preconditionEvent);
+  return { flowEvent, preconditionEvent };
+}
+
 function assertionEvidenceReadiness(events, nextEvent, execDir = '') {
   if (!nextEvent || nextEvent.type !== 'assertion' || nextEvent.status !== 'PASS') return { ok: true };
   const stepId = eventStepId(nextEvent);
@@ -888,6 +1021,53 @@ function passReadiness(caseJson, events) {
   return { ok: true };
 }
 
+function finalizeReadiness(caseJson, executionState, events) {
+  const active = activePreconditionFlow(events);
+  if (active) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Precondition Flow 尚未终结: ${active.preconditionId}/${active.flowId}` };
+  }
+  const pending = pendingFlowTerminal(events);
+  if (pending) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow ${pending.flowId} 已终结，但缺少前置条件 ${pending.preconditionId} 的对应终态。` };
+  }
+  const latestById = new Map();
+  for (const event of events) if (event.type === 'precondition' && event.id) latestById.set(event.id, event);
+  let blocked = false;
+  for (const item of caseJson.preconditions || []) {
+    const fact = latestById.get(item.id);
+    if (!fact) {
+      if (blocked) continue;
+      return { ok: false, failureCode: 'PRECONDITION_REQUIRED', reason: `finalize 前缺少前置条件终态: ${item.id}` };
+    }
+    if (blocked) {
+      return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `阻塞前置条件之后仍存在额外前置条件事实: ${item.id}` };
+    }
+    const planEntry = planEntryFor(executionState, item.id);
+    if (planEntry?.resolution === 'flow') {
+      if (fact.status === 'PASS') {
+        const evidence = evidenceObservation(events, { ...fact, preconditionId: item.id, flowId: planEntry.flowId }, 'entry-check');
+        if (fact.resolution !== 'already_satisfied' || fact.flowId !== planEntry.flowId || !evidence) {
+          return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件 ${item.id} 的 already_satisfied 事实不完整。` };
+        }
+      } else if (fact.status === 'PREPARED') {
+        const lifecycle = flowLifecycle(events, item.id, planEntry.flowId);
+        if (fact.flowId !== planEntry.flowId || lifecycle.state !== 'COMPLETED' || fact.evidenceObservation !== lifecycle.terminal?.evidenceObservation) {
+          return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件 ${item.id} 的 PREPARED 事实与 Flow COMPLETED 不一致。` };
+        }
+      } else if (fact.status === 'BLOCKED') {
+        const lifecycle = flowLifecycle(events, item.id, planEntry.flowId);
+        if (!['FAILED', 'BLOCKED'].includes(lifecycle.state) || fact.flowId !== planEntry.flowId || fact.failureCode !== lifecycle.terminal?.failureCode) {
+          return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件 ${item.id} 的失败终态不一致。` };
+        }
+      } else {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件 ${item.id} 不支持终态 ${fact.status}。` };
+      }
+    }
+    if (!PRECONDITION_PASSING_STATUSES.has(fact.status)) blocked = true;
+  }
+  return { ok: true };
+}
+
 function firstAssertion(events, status) {
   return events.find((event) => event.type === 'assertion' && event.status === status) || null;
 }
@@ -997,6 +1177,7 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     total: caseJson.preconditions.length,
     passed: 0,
     prepared: 0,
+    blocked: 0,
     failed: 0,
     unknown: 0,
   };
@@ -1012,6 +1193,7 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     if (!event) continue;
     if (event.status === 'PASS') preconditions.passed += 1;
     else if (event.status === 'PREPARED') preconditions.prepared += 1;
+    else if (event.status === 'BLOCKED') preconditions.blocked += 1;
     else if (event.status === 'FAIL') preconditions.failed += 1;
     else preconditions.unknown += 1;
   }
@@ -1063,14 +1245,23 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
   };
   const flowEvents = events.filter((event) => event.type === 'flow');
   const preconditionFlowActions = events.filter((event) => event.type === 'actionResult' && event.scope === PRECONDITION_FLOW_SCOPE);
+  const flowInstances = new Map();
+  for (const event of flowEvents) {
+    const key = `${event.preconditionId || ''}\0${event.flowId || ''}`;
+    const instance = flowInstances.get(key) || { started: false, terminal: null };
+    if (event.status === 'STARTED') instance.started = true;
+    if (TERMINAL_FLOW_STATUSES.has(event.status)) instance.terminal = event.status;
+    flowInstances.set(key, instance);
+  }
+  const instanceValues = Array.from(flowInstances.values());
   const flows = {
     totalEvents: flowEvents.length,
     usage: 'precondition',
     planned: planFlowSummaries(executionState.preconditionPlan || { preconditions: [] }).length,
-    started: flowEvents.filter((event) => event.status === 'STARTED').length,
-    completed: flowEvents.filter((event) => event.status === 'COMPLETED').length,
-    failed: flowEvents.filter((event) => event.status === 'FAILED').length,
-    blocked: flowEvents.filter((event) => event.status === 'BLOCKED').length,
+    started: instanceValues.filter((item) => item.started).length,
+    completed: instanceValues.filter((item) => item.terminal === 'COMPLETED').length,
+    failed: instanceValues.filter((item) => item.terminal === 'FAILED').length,
+    blocked: instanceValues.filter((item) => item.terminal === 'BLOCKED').length,
     alreadySatisfied: events.filter((event) => event.type === 'precondition' && event.resolution === 'already_satisfied' && event.flowId).length,
     actions: preconditionFlowActions.length,
   };
@@ -1139,6 +1330,8 @@ function finalize(caseDir, options) {
   }
   const eventsBeforeResult = existingEvents.filter((event) => event.type !== 'result');
   const requestedStatus = status;
+  const readiness = options.legacyRuntime || options.allowIncompletePreconditions ? { ok: true } : finalizeReadiness(caseJson, executionState, eventsBeforeResult);
+  if (!readiness.ok) throw new Error(`${readiness.failureCode}: ${readiness.reason}`);
   const normalized = normalizeResultStatus(caseJson, eventsBeforeResult, {
     status,
     failureCode: options.failureCode || null,
@@ -1149,7 +1342,6 @@ function finalize(caseDir, options) {
   options.failureCode = normalized.failureCode;
   options.failedStep = normalized.failedStep;
   options.reason = normalized.reason;
-  const readiness = { ok: true };
   const result = {
     schemaVersion: 1,
     executionId,
@@ -1161,11 +1353,11 @@ function finalize(caseDir, options) {
     flowAssets: planFlowSummaries(executionState.preconditionPlan || { preconditions: [] }),
     status,
     requestedStatus,
-    failureCode: readiness.ok ? (options.failureCode || null) : readiness.failureCode,
+    failureCode: options.failureCode || null,
     startedAt,
     endedAt,
-    failedStep: readiness.ok ? (options.failedStep || null) : readiness.failedStep,
-    reason: readiness.ok ? (options.reason || (status === 'PASS' ? '执行通过。' : 'Execution finalized by agent.')) : readiness.reason,
+    failedStep: options.failedStep || null,
+    reason: options.reason || (status === 'PASS' ? '执行通过。' : 'Execution finalized by agent.'),
     environment: state.environment || {},
     evidence: options.evidence || [],
   };
@@ -1400,6 +1592,7 @@ for (let i = 1; i < args.length; i++) {
     case '--check-budget': command = 'checkBudget'; break;
     case '--event-type': options.eventType = args[++i]; break;
     case '--action': options.action = args[++i]; break;
+    case '--action-json': options.actionJson = args[++i]; break;
     case '--step-id': options.stepId = args[++i]; break;
     case '--scope': options.scope = args[++i]; break;
     case '--precondition-id': options.preconditionId = args[++i]; break;
@@ -1498,6 +1691,7 @@ try {
         failureCode: 'CASE_RESTART_FAILED',
         reason: `用例依赖冷启动隔离，但 App 重启失败，不能继续执行：${isolation.reason}`,
         allowAlreadyFinalized: true,
+        allowIncompletePreconditions: true,
       });
     }
     const blockedOnStart = !!finalized;
@@ -1522,6 +1716,9 @@ try {
     if (!executionState) throw new Error(`Execution was not started: ${executionId}`);
     if (executionState?.finalized) throw new Error(`Execution already finalized: ${executionId}`);
     if (!options.eventType) throw new Error('Missing --event-type');
+    const requestedAction = options.actionJson ? JSON.parse(options.actionJson) : null;
+    const requestedActionFields = requestedAction ? { ...requestedAction } : {};
+    delete requestedActionFields.type;
     const event = normalizeEvent({
       type: options.eventType,
       stepId: options.stepId,
@@ -1532,8 +1729,10 @@ try {
       flowId: options.flowId,
       flowStepId: options.flowStepId,
       phase: options.eventType === 'observation' ? options.phase : undefined,
-      action: options.eventType === 'actionResult' ? options.action : undefined,
+      action: options.eventType === 'actionResult' ? (options.action || requestedAction?.type) : undefined,
       ok: options.eventType === 'actionResult' ? true : undefined,
+      ...(options.eventType === 'actionResult' ? requestedActionFields : {}),
+      requestedAction: options.eventType === 'actionResult' ? requestedAction || undefined : undefined,
     });
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
@@ -1557,23 +1756,29 @@ try {
     }
     const violation = budgetViolation(events, event, executionState?.budget || DEFAULT_BUDGET, executionState?.startedAt);
     if (violation) {
+      const finalViolation = event.scope === PRECONDITION_FLOW_SCOPE
+        ? { failureCode: 'PRECONDITION_FLOW_BUDGET_EXCEEDED', reason: violation.reason }
+        : violation;
       const budgetEvent = {
         time: nowIso(),
         type: 'budgetExceeded',
         status: 'BLOCKED',
-        failureCode: violation.failureCode,
-        reason: violation.reason,
+        failureCode: finalViolation.failureCode,
+        reason: finalViolation.reason,
       };
       appendJsonl(timelinePath, budgetEvent);
+      if (event.scope === PRECONDITION_FLOW_SCOPE) {
+        appendPreconditionFlowFailure(timelinePath, event, { flowStatus: 'BLOCKED', ...finalViolation });
+      }
       const finalized = finalize(caseDir, {
         platform: options.platform,
         executionId,
         status: 'BLOCKED',
-        failureCode: violation.failureCode,
-        reason: violation.reason,
+        failureCode: finalViolation.failureCode,
+        reason: finalViolation.reason,
         allowAlreadyFinalized: true,
       });
-      console.error(JSON.stringify({ executionId, budgetExceeded: true, ...violation, finalized }, null, 2));
+      console.error(JSON.stringify({ executionId, budgetExceeded: true, ...finalViolation, finalized }, null, 2));
       process.exit(3);
     }
     console.log(JSON.stringify({ executionId, budgetOk: true, eventType: options.eventType, paceHint: paceHint(events, event) }, null, 2));
@@ -1633,28 +1838,45 @@ try {
     const budget = executionState?.budget || DEFAULT_BUDGET;
     const violation = budgetViolation(events, event, budget, executionState?.startedAt);
     if (violation) {
+      const finalViolation = event.scope === PRECONDITION_FLOW_SCOPE
+        ? { failureCode: 'PRECONDITION_FLOW_BUDGET_EXCEEDED', reason: violation.reason }
+        : violation;
       const budgetEvent = {
         time: nowIso(),
         type: 'budgetExceeded',
         status: 'BLOCKED',
-        failureCode: violation.failureCode,
-        reason: violation.reason,
+        failureCode: finalViolation.failureCode,
+        reason: finalViolation.reason,
       };
       appendJsonl(timelinePath, budgetEvent);
+      if (event.scope === PRECONDITION_FLOW_SCOPE) {
+        appendPreconditionFlowFailure(timelinePath, event, { flowStatus: 'BLOCKED', ...finalViolation });
+      }
       const finalized = finalize(caseDir, {
         platform: options.platform,
         executionId,
         status: 'BLOCKED',
-        failureCode: violation.failureCode,
-        reason: violation.reason,
+        failureCode: finalViolation.failureCode,
+        reason: finalViolation.reason,
         allowAlreadyFinalized: true,
       });
-      console.error(JSON.stringify({ executionId, budgetExceeded: true, ...violation, finalized }, null, 2));
+      console.error(JSON.stringify({ executionId, budgetExceeded: true, ...finalViolation, finalized }, null, 2));
       process.exit(3);
     }
     appendJsonl(timelinePath, event);
+    const flowTechnicalFailure = preconditionFlowTechnicalFailure(event);
     const terminalPrecondition = preconditionTerminalOptions(event);
-    if (terminalPrecondition) {
+    if (flowTechnicalFailure) {
+      appendPreconditionFlowFailure(timelinePath, event, flowTechnicalFailure);
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: flowTechnicalFailure.failureCode,
+        reason: flowTechnicalFailure.reason,
+      });
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), flowTechnicalFailure, finalized }, null, 2));
+    } else if (terminalPrecondition) {
       const finalized = finalize(caseDir, {
         platform: options.platform,
         executionId,

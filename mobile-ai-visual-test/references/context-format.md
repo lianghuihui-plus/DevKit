@@ -76,7 +76,7 @@ finalized 后不得追加 timeline。
 
 每次执行都写，即使环境或前置条件阶段失败。
 
-稳定维度：status、requestedStatus、failureCode、sourceSha1、caseContractSha、preconditionPlanSha、durationMs、environment、precondition counts、step counts、action counts、precondition Flow planned/started/completed/failed/blocked/alreadySatisfied/actions、rule counts、foreground loss、restart/isolation、popup counts、artifact counts。
+稳定维度：status、requestedStatus、failureCode、sourceSha1、caseContractSha、preconditionPlanSha、durationMs、environment、precondition passed/prepared/blocked/failed/unknown counts、step counts、action counts、precondition Flow planned/started/completed/failed/blocked/alreadySatisfied/actions、rule counts、foreground loss、restart/isolation、popup counts、artifact counts。
 
 `durationMs = endedAt - startedAt`，只覆盖当前 case。
 
@@ -114,6 +114,7 @@ FAIL > BLOCKED > UNKNOWN > NOT_RUN > PASS
 
 - 步骤截图按 observation 的 `stepId` 归入步骤卡。
 - 无 `stepId` 的 observation 必须标记全局诊断或辅助观察。
+- `scope=precondition-flow` 的 observation 按 preconditionId、flowId、flowStepId 和 phase 展示在 Flow 区域，不归入“未关联观察”。
 - 截图用 lightbox；控件树和日志只提供文件链接。
 
 ## 写入入口

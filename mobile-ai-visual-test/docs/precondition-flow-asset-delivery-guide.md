@@ -92,7 +92,7 @@ Flow 是受版本控制的静态资产，用于把应用从一个固定起点带
 | `platform` | 是 | string | `universal`、`harmony`、`android` 或 `ios` |
 | `startCondition` | 是 | object | Flow 可以开始执行的固定页面状态 |
 | `endCondition` | 是 | object | Flow 成功完成后的固定页面状态 |
-| `steps` | 是 | array | 一个或多个顺序动作，最多建议 5 个 |
+| `steps` | 是 | array | 一个或多个顺序动作，硬上限 5 个 |
 
 不要增加 `status`。文件存在且通过校验即视为可用资产。
 
@@ -180,7 +180,7 @@ trim(casePrecondition.text) === trim(flow.name)
 - 每个 step 只包含一个动作。
 - 按实际执行顺序排列。
 - `instruction` 必须说明操作目标，不能只写“点击”“继续”或“执行下一步”。
-- 一个前置条件 Flow 的动作预算为 5，交付的 `steps` 不应超过 5 个。
+- 一个前置条件 Flow 的动作预算为 5，`steps` 超过 5 个会在加载阶段被拒绝。
 - 不要在 step 中写断言、测试预期或 case 业务步骤。
 - 不要把多个动作组合成一个 step。
 

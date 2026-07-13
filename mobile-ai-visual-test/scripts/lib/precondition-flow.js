@@ -16,6 +16,9 @@ const FLOW_USAGE = 'precondition';
 const UNIVERSAL_PLATFORM = 'universal';
 const SUPPORTED_PLATFORMS = new Set(['harmony', 'android', 'ios']);
 const VALID_ACTIONS = new Set(['launchApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']);
+const VALID_COORDINATE_SOURCES = new Set(['layout', 'visual', 'pixel', 'flow']);
+const MAX_ACTIONS_PER_FLOW = 5;
+const MAX_ACTIONS_PER_CASE = 12;
 const DESTRUCTIVE_PATTERN = /(清数据|卸载|真实支付|支付完成|真实扣款|删除|发布|修改真实|线上|生产|删除资料)/i;
 
 function trimFlowName(value) {
@@ -68,6 +71,67 @@ function validateCondition(condition, label, flowJsonPath) {
   }
 }
 
+function finiteNumber(value) {
+  return value !== '' && value !== null && value !== undefined && Number.isFinite(Number(value));
+}
+
+function positiveInteger(value) {
+  return Number.isInteger(Number(value)) && Number(value) > 0;
+}
+
+function validateCoordinateAction(action, label, flowJsonPath) {
+  const hasTarget = Boolean(trimFlowName(action.target));
+  const hasX = action.x !== undefined;
+  const hasY = action.y !== undefined;
+  if (!hasTarget && !hasX && !hasY) {
+    throw new Error(`${flowJsonPath}: ${label} requires target or x/y coordinates`);
+  }
+  if (hasX !== hasY || (hasX && (!finiteNumber(action.x) || !finiteNumber(action.y)))) {
+    throw new Error(`${flowJsonPath}: ${label} coordinates require finite x and y`);
+  }
+  if (!hasX) return;
+  if (!VALID_COORDINATE_SOURCES.has(action.coordinateSource)) {
+    throw new Error(`${flowJsonPath}: ${label} coordinates require coordinateSource layout, visual, pixel, or flow`);
+  }
+  if (!trimFlowName(action.coordinateEvidence)) {
+    throw new Error(`${flowJsonPath}: ${label} coordinates require coordinateEvidence`);
+  }
+  if (['visual', 'pixel', 'flow'].includes(action.coordinateSource) &&
+    (!Array.isArray(action.targetBounds) || action.targetBounds.length !== 4 || !action.targetBounds.every(finiteNumber))) {
+    throw new Error(`${flowJsonPath}: ${label} ${action.coordinateSource} coordinates require targetBounds [x1,y1,x2,y2]`);
+  }
+}
+
+function validateFlowAction(action, label, flowJsonPath) {
+  if (!action || typeof action !== 'object' || Array.isArray(action)) {
+    throw new Error(`${flowJsonPath}: ${label} must be an object`);
+  }
+  if (!VALID_ACTIONS.has(action.type)) throw new Error(`${flowJsonPath}: unsupported ${label}.type: ${action.type}`);
+  if (['tap', 'toggle', 'longPress'].includes(action.type)) validateCoordinateAction(action, label, flowJsonPath);
+  if (action.type === 'longPress' && action.durationMs !== undefined && !positiveInteger(action.durationMs)) {
+    throw new Error(`${flowJsonPath}: ${label}.durationMs must be a positive integer`);
+  }
+  if (action.type === 'inputText') {
+    if (!trimFlowName(action.target)) throw new Error(`${flowJsonPath}: ${label}.target is required for inputText`);
+    if (typeof action.text !== 'string' || action.text.length === 0) throw new Error(`${flowJsonPath}: ${label}.text is required for inputText`);
+  }
+  if (action.type === 'swipe') {
+    for (const field of ['fromX', 'fromY', 'toX', 'toY']) {
+      if (!finiteNumber(action[field])) throw new Error(`${flowJsonPath}: ${label}.${field} is required for swipe`);
+    }
+    if (action.velocity !== undefined && !positiveInteger(action.velocity)) {
+      throw new Error(`${flowJsonPath}: ${label}.velocity must be a positive integer`);
+    }
+  }
+  if (action.type === 'wait') {
+    if (!positiveInteger(action.ms)) throw new Error(`${flowJsonPath}: ${label}.ms must be a positive integer for wait`);
+    if (!trimFlowName(action.reason)) throw new Error(`${flowJsonPath}: ${label}.reason is required for wait`);
+  }
+  if (action.type === 'launchApp' && !trimFlowName(action.reason)) {
+    throw new Error(`${flowJsonPath}: ${label}.reason is required for launchApp`);
+  }
+}
+
 function validateFlow(flow, flowJsonPath, expectedPlatform) {
   if (!flow || typeof flow !== 'object' || Array.isArray(flow)) throw new Error(`${flowJsonPath}: flow.json must be an object`);
   if (flow.schemaVersion !== FLOW_SCHEMA_VERSION) throw new Error(`${flowJsonPath}: schemaVersion must be ${FLOW_SCHEMA_VERSION}`);
@@ -83,6 +147,9 @@ function validateFlow(flow, flowJsonPath, expectedPlatform) {
     throw new Error(`${flowJsonPath}: startCondition and endCondition must be distinguishable`);
   }
   if (!Array.isArray(flow.steps) || flow.steps.length === 0) throw new Error(`${flowJsonPath}: steps must contain at least one action`);
+  if (flow.steps.length > MAX_ACTIONS_PER_FLOW) {
+    throw new Error(`PRECONDITION_FLOW_BUDGET_EXCEEDED: ${flowJsonPath}: steps exceed ${MAX_ACTIONS_PER_FLOW}`);
+  }
   const ids = new Set();
   for (const [index, step] of flow.steps.entries()) {
     const label = `steps[${index}]`;
@@ -91,9 +158,8 @@ function validateFlow(flow, flowJsonPath, expectedPlatform) {
     if (ids.has(step.id)) throw new Error(`${flowJsonPath}: duplicate Flow step id: ${step.id}`);
     ids.add(step.id);
     if (!trimFlowName(step.instruction)) throw new Error(`${flowJsonPath}: ${label}.instruction is required`);
-    if (!step.action || typeof step.action !== 'object' || Array.isArray(step.action)) throw new Error(`${flowJsonPath}: ${label}.action must be an object`);
-    if (!VALID_ACTIONS.has(step.action.type)) throw new Error(`${flowJsonPath}: unsupported ${label}.action.type: ${step.action.type}`);
-    const safetyText = [step.instruction, step.action.target, step.action.text].filter(Boolean).join(' ');
+    validateFlowAction(step.action, `${label}.action`, flowJsonPath);
+    const safetyText = [step.instruction, step.action.target, step.action.text, step.action.reason].filter(Boolean).join(' ');
     if (DESTRUCTIVE_PATTERN.test(safetyText)) throw new Error(`${flowJsonPath}: unsafe Flow action is not allowed: ${safetyText}`);
   }
   flowAssetSha(flowJsonPath, flow);
@@ -221,6 +287,12 @@ function buildPreconditionPlan(caseJson, cwd, platform) {
     preconditions: (Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [])
       .map((item) => planEntry(item, flowIndex)),
   };
+  const plannedActions = plan.preconditions
+    .filter((item) => item.resolution === 'flow')
+    .reduce((total, item) => total + item.flow.steps.length, 0);
+  if (plannedActions > MAX_ACTIONS_PER_CASE) {
+    throw new Error(`PRECONDITION_FLOW_BUDGET_EXCEEDED: case precondition Flow actions exceed ${MAX_ACTIONS_PER_CASE}: ${plannedActions}`);
+  }
   plan.preconditionPlanSha = `precondition-plan-${sha1BufferParts([JSON.stringify(planHashInput(plan))]).slice(0, 12)}`;
   return plan;
 }
@@ -240,9 +312,12 @@ function planFlowSummaries(plan) {
 
 module.exports = {
   FLOW_SCHEMA_VERSION,
+  MAX_ACTIONS_PER_CASE,
+  MAX_ACTIONS_PER_FLOW,
   buildPreconditionPlan,
   loadPreconditionFlows,
   planFlowSummaries,
   trimFlowName,
   validateFlow,
+  validateFlowAction,
 };

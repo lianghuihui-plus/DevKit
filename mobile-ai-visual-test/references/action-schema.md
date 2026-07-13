@@ -9,6 +9,7 @@
 - 动作必须结构化，agent 不直接拼设备命令。
 - 正式执行只走 `scripts/action.sh --case-dir <case-dir> --platform <platform> --execution-id <id> ...`。
 - `actionResult` 只能由 `action.sh` 写入 timeline。
+- 前置条件 Flow 动作在 adapter 调用前，必须由 `run-case.js` 对照 execution 冻结计划校验；失败时不得触发设备动作。
 - adapter 和 atoms 不读写 case、不写 timeline、不做业务判断。
 
 ## 动作集合
@@ -79,4 +80,5 @@ atoms 只做最小能力：`tap`、`long-press`、`swipe`、`input-text`、`scre
 - 动作成功后默认等待 1000ms，可用 `--settle-ms` 或 `MAVT_ACTION_SETTLE_MS` 覆盖。
 - 同一操作最多尝试 2 次。
 - 单个前置条件 Flow 最多 5 个 UI 动作，单 case 全部前置条件 Flow 最多 12 个 UI 动作。
+- Flow actionResult 保存规范化的 `requestedAction`，用于执行后再次核对动作类型和 Flow 已定义参数。
 - 目标 App 离开前台后每次最多恢复 1 次，累计 2 次停止当前 case。

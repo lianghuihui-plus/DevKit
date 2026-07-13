@@ -21,6 +21,9 @@ from_y=""
 to_x=""
 to_y=""
 duration_ms=""
+wait_ms=""
+reason=""
+velocity=""
 coordinate_source=""
 target_bounds=""
 coordinate_evidence=""
@@ -71,6 +74,9 @@ while [[ $# -gt 0 ]]; do
     --to-x) to_x="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --to-y) to_y="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --duration-ms) duration_ms="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --ms) wait_ms="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --reason) reason="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --velocity) velocity="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --coordinate-source) coordinate_source="${2:-}"; shift 2 ;;
     --target-bounds) target_bounds="${2:-}"; shift 2 ;;
     --coordinate-evidence) coordinate_evidence="${2:-}"; shift 2 ;;
@@ -101,6 +107,7 @@ if [[ -n "$case_dir" ]]; then
     exit 2
   fi
   mavt_validate_coordinate_action case "$action_type" "$x" "$y" "$coordinate_source" "$coordinate_evidence" "$target_bounds"
+  requested_action="$(mavt_action_request_json "$action_type" "$target" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$wait_ms" "$reason" "$velocity" "$coordinate_source" "$target_bounds" "$coordinate_evidence")"
   runtime_dir="$case_dir"
   if [[ -n "$platform" ]]; then
     runtime_dir="$case_dir/platforms/$platform"
@@ -131,7 +138,7 @@ if [[ -n "$case_dir" ]]; then
   if [[ -n "$platform" ]]; then
     precheck_args+=(--platform "$platform")
   fi
-  precheck_args+=(--check-budget --event-type actionResult --action "$action_type" --execution-id "$execution_id")
+  precheck_args+=(--check-budget --event-type actionResult --action "$action_type" --action-json "$requested_action" --execution-id "$execution_id")
   if [[ -n "$step_id" ]]; then
     precheck_args+=(--step-id "$step_id")
   elif [[ "$scope" == "precondition-flow" ]]; then
@@ -150,6 +157,15 @@ if [[ -n "$case_dir" ]]; then
       printf '%s\n' "$precheck_output" >&2
       exit "$precheck_status"
     fi
+    if [[ "$precheck_output" == *"PRECONDITION_FLOW_ACTION_MISMATCH"* && "$scope" == "precondition-flow" ]]; then
+      result="$(mavt_action_failure_json "$action_type" "$precheck_output" "$precheck_status")"
+      result="$(mavt_add_action_metadata "$result" "$x" "$y" "$target" "$coordinate_source" "$target_bounds" "$coordinate_evidence" "$duration_ms" "$settle_ms" "$action_type")"
+      result="$(mavt_add_requested_action "$result" "$requested_action")"
+      result="$(mavt_add_precondition_flow_scope "$result" "PRECONDITION_FLOW_ACTION_MISMATCH")"
+      MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
+      printf '%s\n' "$result"
+      exit "$precheck_status"
+    fi
     if [[ "$precheck_output" == *"PRECONDITION_"* ]]; then
       printf '%s\n' "$precheck_output" >&2
       exit "$precheck_status"
@@ -162,6 +178,7 @@ event.failureCode = process.argv[2];
 console.log(JSON.stringify(event, null, 2));
 ' "$result" "$failure_code")"
     result="$(mavt_add_action_metadata "$result" "$x" "$y" "$target" "$coordinate_source" "$target_bounds" "$coordinate_evidence" "$duration_ms" "$settle_ms" "$action_type")"
+    result="$(mavt_add_requested_action "$result" "$requested_action")"
     if [[ -n "$step_id" ]]; then
       result="$(node -e '
 const event = JSON.parse(process.argv[1]);
@@ -193,6 +210,7 @@ console.log(JSON.stringify(event, null, 2));
     result="$(mavt_action_failure_json "$action_type" "$adapter_output" "$adapter_status")"
   fi
   result="$(mavt_add_action_metadata "$result" "$x" "$y" "$target" "$coordinate_source" "$target_bounds" "$coordinate_evidence" "$duration_ms" "$settle_ms" "$action_type")"
+  result="$(mavt_add_requested_action "$result" "$requested_action")"
   if [[ -n "$step_id" ]]; then
     result="$(node -e '
 const event = JSON.parse(process.argv[1]);

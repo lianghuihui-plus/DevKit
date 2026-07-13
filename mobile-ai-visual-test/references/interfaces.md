@@ -105,6 +105,7 @@ adapter 内部可以调用 atoms，但不得：
   "schemaVersion": 1,
   "type": "observation",
   "source": "observe.sh",
+  "ok": true,
   "platform": "android",
   "stepId": "step-001",
   "label": "001-step-001-before",
@@ -122,6 +123,8 @@ adapter 内部可以调用 atoms，但不得：
 ```
 
 步骤内观察必须传 `--step-id <step-id>`。全局诊断观察必须显式传 `--scope global` 或 `--global-observation`。前置条件 Flow 观察使用 `--scope precondition-flow`，绑定 `preconditionId`、`flowId` 和 `phase`，不得绑定 `stepId`。
+
+前置条件 Flow observation 只有在 `ok=true` 且包含截图、布局或有效前台应用事实时才能作为证据；失败 observation 仍写 timeline，但带 `ok=false` 和专用失败码。
 
 ## ActionResult
 
@@ -144,6 +147,8 @@ adapter 内部可以调用 atoms，但不得：
 ```
 
 动作集合和坐标要求见 `action-schema.md`。前置条件 Flow 动作使用 `scope=precondition-flow`，并绑定 `preconditionId`、`flowId`、`flowStepId`；它不属于 case step。
+
+Flow 动作执行前由 `run-case.js` 对照 `execution.json` 中冻结的 action 做硬校验，actionResult 同时保存 `requestedAction` 供执行后复核。
 
 ## Agent 事实
 
@@ -206,6 +211,8 @@ Flow 事件只允许服务于前置条件：
 ```
 
 `status` 允许 `STARTED`、`STEP_COMPLETED`、`COMPLETED`、`FAILED`、`BLOCKED`。`STARTED` 前必须有 `entry-check` observation；`STEP_COMPLETED` 前必须有同 Flow step 的成功 actionResult 和 `after` observation；`COMPLETED` 前必须有 `end-check` observation。完整协议见 `flow-format.md`。
+
+Flow 终态不可逆；终态后的下一条相关事实必须是同一前置条件的对应终态，之后不得重新 entry-check 或 STARTED。
 
 ## Result
 

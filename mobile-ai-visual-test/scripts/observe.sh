@@ -166,6 +166,11 @@ process.stdin.on("end", () => {
   event.flowId = flowId;
   if (flowStepId) event.flowStepId = flowStepId;
   event.phase = phase;
+  const artifacts = event.observation?.artifacts || event.artifacts || {};
+  const app = event.observation?.app || event.app || {};
+  const usable = Boolean(artifacts.screenshot || artifacts.layout || typeof app.inTargetApp === "boolean" || app.foregroundApp || app.activity);
+  if (event.ok === undefined) event.ok = usable;
+  if (event.ok === false || !usable) event.failureCode = "PRECONDITION_FLOW_OBSERVATION_FAILED";
   if (event.observation && typeof event.observation === "object") {
     event.observation.scope = "precondition-flow";
     event.observation.preconditionId = preconditionId;
@@ -177,6 +182,17 @@ process.stdin.on("end", () => {
 });
 ' "$precondition_id" "$flow_id" "$flow_step_id" "$phase")"
   fi
+	if [[ "$scope" == "precondition-flow" && $adapter_status -eq 0 ]]; then
+	  flow_observation_ok="$(printf '%s' "$observation" | node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => process.stdout.write(JSON.parse(input).ok === false ? "false" : "true"));
+')"
+	  if [[ "$flow_observation_ok" == "false" ]]; then
+	    adapter_status=1
+	  fi
+	fi
 	  MAVT_OBSERVATION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-observation-json "$observation" --execution-id "$execution_id" >/dev/null
   if [[ $adapter_status -ne 0 ]]; then
     if [[ "$scope" == "precondition-flow" ]]; then

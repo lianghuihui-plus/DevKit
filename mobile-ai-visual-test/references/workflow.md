@@ -100,6 +100,8 @@ scripts/run-case.js <case-dir> --platform <platform> --finalize \
 
 finalize 写 `result.json`、`metrics.json`，锁定 `execution.json`，刷新 case 报告和 workspace 总览。finalized 后不得追加 timeline。
 
+finalize 前会校验前置条件事实形成连续闭环、没有活动 Flow，并且每个 Flow 终态都有对应的前置条件终态；不满足时拒绝生成结果产物。execution start 阶段的冷启动硬失败是唯一允许在前置条件开始前直接收尾的内部路径。
+
 ## 批量和无人值守规则
 
 - 批量执行必须逐 case 闭环，一个 case finalized 后才能开始下一个。

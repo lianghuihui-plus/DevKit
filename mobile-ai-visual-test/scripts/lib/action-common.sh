@@ -115,40 +115,6 @@ process.stdout.write(out.length ? `${out.join("\n")}\n` : "");
 ' "$@"
 }
 
-mavt_flow_platform() {
-  node -e '
-const fs = require("fs");
-const path = require("path");
-const statePath = path.join(process.argv[1], "state.json");
-const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
-process.stdout.write(state.environment?.platform || "");
-' "$1"
-}
-
-mavt_flow_env_args() {
-  node -e '
-const fs = require("fs");
-const path = require("path");
-const flowDir = process.argv[1];
-const has = {
-  device: process.argv[2] === "1",
-  app: process.argv[3] === "1",
-  entry: process.argv[4] === "1"
-};
-const statePath = path.join(flowDir, "state.json");
-const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {};
-const env = state.environment || {};
-const out = [];
-function add(flag, value) {
-  if (value !== undefined && value !== null && String(value) !== "") out.push(flag, String(value));
-}
-if (!has.device) add("--device", env.device);
-if (!has.app) add("--app", env.appId || env.bundleName);
-if (!has.entry) add("--entry", env.entry || env.abilityName);
-process.stdout.write(out.length ? `${out.join("\n")}\n` : "");
-' "$@"
-}
-
 mavt_sleep_ms() {
   sleep "$(node -e '
 const value = Number(process.argv[1] || 0);
@@ -216,6 +182,8 @@ const status = Number(process.argv[3] || 1);
 console.log(JSON.stringify({
   schemaVersion: 1,
   type: "observation",
+  ok: false,
+  failureCode: status === 64 ? "PLATFORM_UNIMPLEMENTED" : "TOOL_ERROR",
   platform: null,
   time: localIso(),
   label,
@@ -232,6 +200,48 @@ console.log(JSON.stringify({
   }
 }, null, 2));
 ' "$@"
+}
+
+mavt_action_request_json() {
+  node -e '
+const values = process.argv.slice(1);
+const [type, target, x, y, text, fromX, fromY, toX, toY, durationMs, ms, reason, velocity, coordinateSource, targetBounds, coordinateEvidence] = values;
+const request = { type };
+function addString(key, value) { if (value !== "") request[key] = value; }
+function addNumber(key, value) {
+  if (value === "") return;
+  const number = Number(value);
+  request[key] = Number.isFinite(number) ? number : value;
+}
+addString("target", target);
+addNumber("x", x);
+addNumber("y", y);
+addString("text", text);
+addNumber("fromX", fromX);
+addNumber("fromY", fromY);
+addNumber("toX", toX);
+addNumber("toY", toY);
+addNumber("durationMs", durationMs);
+addNumber("ms", ms);
+addString("reason", reason);
+addNumber("velocity", velocity);
+addString("coordinateSource", coordinateSource);
+if (targetBounds) {
+  const bounds = targetBounds.split(",").map((item) => Number(item.trim()));
+  if (bounds.length !== 4 || bounds.some((item) => !Number.isFinite(item))) throw new Error(`Invalid --target-bounds: ${targetBounds}`);
+  request.targetBounds = bounds;
+}
+addString("coordinateEvidence", coordinateEvidence);
+process.stdout.write(JSON.stringify(request));
+' "$@"
+}
+
+mavt_add_requested_action() {
+  node -e '
+const event = JSON.parse(process.argv[1]);
+event.requestedAction = JSON.parse(process.argv[2]);
+console.log(JSON.stringify(event, null, 2));
+' "$1" "$2"
 }
 
 mavt_add_action_metadata() {

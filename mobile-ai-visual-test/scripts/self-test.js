@@ -656,12 +656,14 @@ run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--
   status: 'PASS',
   reason: 'App 已安装',
 })]);
-run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+const duplicatePrecondition = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'precondition',
   id: 'pre-001',
   status: 'PASS',
   reason: '重复确认 App 已安装',
 })]);
+assert.notStrictEqual(duplicatePrecondition.status, 0);
+assert.ok(duplicatePrecondition.stderr.includes('STEP_ORDER_VIOLATION'));
 recordGlobalFlowScan(parsed.caseDir, 'harmony', started.executionId);
 recordObservationEvent(parsed.caseDir, 'harmony', started.executionId, {
   type: 'observation',
@@ -1540,6 +1542,7 @@ assert.ok(restartEvents.some((event) => event.type === 'actionResult' && event.a
 const fakeHdcRestartLog = fs.readFileSync(fakeHdcLog, 'utf8');
 assert.ok(fakeHdcRestartLog.includes('shell aa force-stop com.example.demo'));
 assert.ok(fakeHdcRestartLog.includes('shell aa start -b com.example.demo -a EntryAbility'));
+recordPreconditions(restartParsed.caseDir, 'harmony', restartStart.executionId);
 run('node', ['scripts/run-case.js', restartParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'restart isolation smoke test', '--execution-id', restartStart.executionId]);
 
 const restartDegradedFile = path.join(sourceRoot, 'cases', 'restart-degraded.md');
@@ -1560,6 +1563,7 @@ assert.strictEqual(restartDegradedStart.isolation.compromised, true);
 assert.strictEqual(restartDegradedStart.isolation.required, false);
 assert.strictEqual(restartDegradedStart.finalized, null);
 assert.ok(!fs.existsSync(path.join(restartDegradedStart.execDir, 'result.json')));
+recordPreconditions(restartDegradedParsed.caseDir, 'harmony', restartDegradedStart.executionId);
 run('node', ['scripts/run-case.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'restart degraded smoke test', '--execution-id', restartDegradedStart.executionId]);
 const restartDegradedMetrics = json(path.join(restartDegradedStart.execDir, 'metrics.json'));
 assert.strictEqual(restartDegradedMetrics.stability.isolationCompromised, true);
@@ -1611,6 +1615,7 @@ assert.strictEqual(restartExplicitOptionalStart.isolation.required, false);
 assert.strictEqual(restartExplicitOptionalStart.isolation.requirementSource, 'case-contract');
 assert.strictEqual(restartExplicitOptionalStart.blockedOnStart, false);
 assert.strictEqual(restartExplicitOptionalStart.finalized, null);
+recordPreconditions(restartExplicitOptionalParsed.caseDir, 'harmony', restartExplicitOptionalStart.executionId);
 run('node', ['scripts/run-case.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'explicit optional restart smoke test', '--execution-id', restartExplicitOptionalStart.executionId]);
 
 const restartExplicitRequiredFile = path.join(sourceRoot, 'cases', 'restart-explicit-required.md');
@@ -1878,6 +1883,19 @@ const androidPreconditionFlow = {
 };
 write(path.join(preconditionFlowDir, 'flow.json'), `${JSON.stringify(universalPreconditionFlow, null, 2)}\n`);
 write(path.join(preconditionFlowDir, 'android', 'flow.json'), `${JSON.stringify(androidPreconditionFlow, null, 2)}\n`);
+const { validateFlow: validatePreconditionFlow } = require('./lib/precondition-flow');
+assert.throws(() => validatePreconditionFlow({
+  ...universalPreconditionFlow,
+  steps: [{ id: 'flow-step-001', instruction: '输入内容', action: { type: 'inputText', target: '输入框' } }],
+}, path.join(preconditionFlowDir, 'flow.json'), 'universal'), /text is required/);
+assert.throws(() => validatePreconditionFlow({
+  ...universalPreconditionFlow,
+  steps: Array.from({ length: 6 }, (_, index) => ({
+    id: `flow-step-${String(index + 1).padStart(3, '0')}`,
+    instruction: `等待页面稳定 ${index + 1}`,
+    action: { type: 'wait', ms: 100, reason: '等待页面稳定' },
+  })),
+}, path.join(preconditionFlowDir, 'flow.json'), 'universal'), /PRECONDITION_FLOW_BUDGET_EXCEEDED/);
 
 const harmonyFlowIndex = JSON.parse(run('node', ['scripts/flow/load-precondition-flows.js', '--platform', 'harmony', '--cwd', workspace]));
 assert.strictEqual(harmonyFlowIndex.flows.length, 1);
@@ -1924,6 +1942,15 @@ const strictFlowParsed = JSON.parse(run('node', ['scripts/parse-case.js', strict
 const strictFlowPreflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', strictFlowParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
 assert.strictEqual(strictFlowPreflight.summary.flowMatchedPreconditions, 0);
 assert.notStrictEqual(strictFlowPreflight.cases[0].preconditions[0].resolution, 'flow');
+const mixedStrictFlowPreflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', preconditionFlowParsed.caseDir, strictFlowParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
+const exactFlowGroup = mixedStrictFlowPreflight.groups.find((item) => item.text === '进入创作页');
+const punctuatedFlowGroup = mixedStrictFlowPreflight.groups.find((item) => item.text === '进入创作页。');
+assert.ok(exactFlowGroup);
+assert.ok(punctuatedFlowGroup);
+assert.strictEqual(exactFlowGroup.resolution, 'flow');
+assert.strictEqual(punctuatedFlowGroup.resolution, 'confirm');
+assert.deepStrictEqual(exactFlowGroup.caseRefs, ['C025']);
+assert.deepStrictEqual(punctuatedFlowGroup.caseRefs, ['C026']);
 
 const preconditionFlowStart = JSON.parse(run('node', [
   'scripts/run-case.js',
@@ -2031,6 +2058,16 @@ run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform'
   evidenceObservation: endFlowObservation.label,
   reason: 'end-check observation 显示已到达 Flow 终点',
 }), '--execution-id', preconditionFlowStart.executionId]);
+const repeatedTerminalFlow = runAllowFailure('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
+  status: 'STARTED',
+  reason: '不应允许终态后重新开始',
+}), '--execution-id', preconditionFlowStart.executionId]);
+assert.notStrictEqual(repeatedTerminalFlow.status, 0);
+assert.ok(repeatedTerminalFlow.stderr.includes('STEP_ORDER_VIOLATION'));
 run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'precondition',
   id: 'pre-002',
@@ -2053,7 +2090,118 @@ assert.strictEqual(preconditionFlowMetrics.flows.completed, 1);
 assert.strictEqual(preconditionFlowMetrics.flows.actions, 1);
 const preconditionFlowContext = fs.readFileSync(path.join(preconditionFlowParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
 assert.ok(preconditionFlowContext.includes('## 前置条件 Flow'));
+assert.ok(preconditionFlowContext.includes('before'));
+assert.ok(preconditionFlowContext.includes('ACTION_OK'));
 assert.ok(!preconditionFlowContext.includes('Flow 扫描'));
+const preconditionFlowHtml = fs.readFileSync(path.join(preconditionFlowParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+assert.ok(preconditionFlowHtml.includes('pre-002-flow-step-001-before'));
+
+const actionMismatch = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+]));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'user_confirmed',
+  reason: '用户已确认登录态',
+}), '--execution-id', actionMismatch.executionId]);
+run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionMismatch.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv });
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
+  status: 'STARTED',
+  reason: '起点匹配',
+}), '--execution-id', actionMismatch.executionId]);
+const activeFlowFinalize = runAllowFailure('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--reason', '不应允许活动 Flow 收尾', '--execution-id', actionMismatch.executionId]);
+assert.notStrictEqual(activeFlowFinalize.status, 0);
+assert.ok(activeFlowFinalize.stderr.includes('PRECONDITION_FLOW_INVALID'));
+run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionMismatch.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--phase', 'before',
+], { env: fakeEnv });
+const mismatchedAction = runAllowFailure('./scripts/action.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionMismatch.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--type', 'wait',
+  '--ms', '100',
+  '--reason', '错误动作',
+], { env: fakeEnv });
+assert.notStrictEqual(mismatchedAction.status, 0);
+assert.ok(`${mismatchedAction.stdout}\n${mismatchedAction.stderr}`.includes('PRECONDITION_FLOW_ACTION_MISMATCH'));
+const actionMismatchResult = json(path.join(actionMismatch.execDir, 'result.json'));
+const actionMismatchMetrics = json(path.join(actionMismatch.execDir, 'metrics.json'));
+assert.strictEqual(actionMismatchResult.status, 'BLOCKED');
+assert.strictEqual(actionMismatchResult.failureCode, 'PRECONDITION_FLOW_ACTION_MISMATCH');
+assert.strictEqual(actionMismatchMetrics.preconditions.blocked, 1);
+const actionMismatchEvents = fs.readFileSync(path.join(actionMismatch.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+assert.ok(actionMismatchEvents.some((event) => event.type === 'actionResult' && event.ok === false && event.failureCode === 'PRECONDITION_FLOW_ACTION_MISMATCH'));
+assert.ok(actionMismatchEvents.some((event) => event.type === 'flow' && event.status === 'FAILED' && event.failureCode === 'PRECONDITION_FLOW_ACTION_MISMATCH'));
+assert.ok(actionMismatchEvents.some((event) => event.type === 'precondition' && event.status === 'BLOCKED' && event.failureCode === 'PRECONDITION_FLOW_ACTION_MISMATCH'));
+
+const observationFailure = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+]));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'user_confirmed',
+  reason: '用户已确认登录态',
+}), '--execution-id', observationFailure.executionId]);
+const failingHdcBin = path.join(tmp, 'failing-hdc-bin');
+const failingHdc = path.join(failingHdcBin, 'hdc');
+write(failingHdc, '#!/usr/bin/env bash\nprintf "forced observation failure\\n" >&2\nexit 9\n');
+fs.chmodSync(failingHdc, 0o755);
+const failedEntryObservation = runAllowFailure('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', observationFailure.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: { ...fakeEnv, PATH: `${failingHdcBin}:${process.env.PATH}` } });
+assert.notStrictEqual(failedEntryObservation.status, 0);
+const observationFailureResult = json(path.join(observationFailure.execDir, 'result.json'));
+const observationFailureMetrics = json(path.join(observationFailure.execDir, 'metrics.json'));
+assert.strictEqual(observationFailureResult.status, 'BLOCKED');
+assert.strictEqual(observationFailureResult.failureCode, 'PRECONDITION_FLOW_OBSERVATION_FAILED');
+assert.strictEqual(observationFailureMetrics.preconditions.blocked, 1);
+const observationFailureEvents = fs.readFileSync(path.join(observationFailure.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+const failedObservationEvent = observationFailureEvents.find((event) => event.type === 'observation' && event.scope === 'precondition-flow');
+assert.strictEqual(failedObservationEvent.ok, false);
+assert.strictEqual(failedObservationEvent.failureCode, 'PRECONDITION_FLOW_OBSERVATION_FAILED');
+assert.ok(observationFailureEvents.some((event) => event.type === 'flow' && event.status === 'BLOCKED'));
 
 const startMismatch = JSON.parse(run('node', [
   'scripts/run-case.js',

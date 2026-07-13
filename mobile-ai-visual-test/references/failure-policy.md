@@ -27,6 +27,8 @@
 | `PRECONDITION_FLOW_INVALID` | `BLOCKED` | Flow 资产或事件序列非法 |
 | `PRECONDITION_FLOW_CHANGED` | `BLOCKED` | preflight 后 Flow 或计划发生变化 |
 | `PRECONDITION_FLOW_START_MISMATCH` | `BLOCKED` | 当前页面不满足 Flow 固定起点 |
+| `PRECONDITION_FLOW_OBSERVATION_FAILED` | `BLOCKED` | Flow 观察未获得截图、布局或有效前台事实 |
+| `PRECONDITION_FLOW_ACTION_MISMATCH` | `BLOCKED` | 实际动作与 execution 中冻结的 Flow action 不一致 |
 | `PRECONDITION_FLOW_ACTION_FAILED` | `BLOCKED` | Flow 动作执行失败 |
 | `PRECONDITION_FLOW_TARGET_NOT_REACHED` | `BLOCKED` | Flow 结束后未达到固定终点 |
 | `PRECONDITION_FLOW_UNSAFE` | `BLOCKED` | Flow 包含不安全动作 |
@@ -66,4 +68,6 @@
 - 每个 execution 开始必须尝试 `restartApp`；冷启动敏感用例失败时为 `BLOCKED/CASE_RESTART_FAILED`。
 - 单 case 默认 20 分钟；普通预算超限为 `EXECUTION_BUDGET_EXCEEDED`。
 - 前置条件 Flow 每个条件默认最多 5 个动作，单 case 默认最多 12 个；超限为 `PRECONDITION_FLOW_BUDGET_EXCEEDED`。
+- Flow observation 失败仍写入 timeline 供审计，但不能作为 STARTED、STEP_COMPLETED、COMPLETED 或 already-satisfied 的证据。
+- Flow observation/action 的确定性技术失败由框架写入 Flow 和前置条件阻塞终态并立即收尾。
 - 明确断言失败、前置条件终态、环境不可用、工具错误、未知弹窗、破坏性风险或预算超限时立即停止当前 case。

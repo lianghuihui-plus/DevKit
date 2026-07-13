@@ -66,6 +66,8 @@ stateDiagram-v2
 - `entry-check` 在任何 Flow 动作前执行；终点已满足则不重复操作。
 - 起点不匹配时不尝试探索或纠偏，直接 `PRECONDITION_FLOW_START_MISMATCH`。
 - 每个 Flow step 强制 `before observation -> action -> after observation`。
+- Flow observation 必须获得截图、布局或有效前台事实；失败 observation 只保留审计记录，不能作为证据。
+- Flow action 在平台执行前严格对照 execution 冻结计划，类型或已定义参数不一致时不触发设备动作。
 - Flow 完成后必须重新观察终点；动作成功不等于前置条件达成。
 - Flow observation/action 使用独立 `precondition-flow` scope，不绑定 case `stepId`。
 
@@ -110,6 +112,7 @@ flowchart LR
 - 前置条件按 case 顺序写入，全部通过或准备完成后才能进入步骤。
 - Flow 事件必须绑定计划中的 `preconditionId`、`flowId` 和合法 `flowStepId`。
 - 同一时间只能有一个活动 Flow；起点、步骤前后和终点都要求对应 observation/action 证据。
+- Flow 终态不可逆，必须紧接同一前置条件终态；finalize 拒绝活动或悬空 Flow。
 - 步骤顺序、assertion evidence 和 observation/action 来源继续由原守卫校验。
 - 报告重算当前计划哈希；Flow 资产变化后隐藏旧结果。
 

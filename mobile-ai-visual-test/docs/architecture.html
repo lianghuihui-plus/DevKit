@@ -90,6 +90,8 @@ stateDiagram-v2
       <li><code>preconditionPlanSha</code> 防止 preflight 与执行之间的 Flow 资产漂移。</li>
       <li>Flow 必须绑定计划中的 <code>preconditionId</code>、<code>flowId</code> 和合法 <code>flowStepId</code>。</li>
       <li>起点、每步前后和终点都必须有对应 observation/action 证据，同一时间只能有一个活动 Flow。</li>
+      <li>失败 observation 只保留审计记录，不能作为 Flow 证据；Flow action 在平台执行前严格对照 execution 冻结计划。</li>
+      <li>Flow 终态不可逆，必须紧接同一前置条件终态；finalize 拒绝活动或悬空 Flow。</li>
       <li>Flow observation/action 使用独立 <code>precondition-flow</code> scope，不绑定 case <code>stepId</code>。</li>
       <li>前置条件全部 PASS/PREPARED 后才进入业务步骤；Flow 事实不能成为业务步骤通过证据。</li>
       <li>报告重算计划哈希，Flow 资产变化后隐藏旧结果。</li>
