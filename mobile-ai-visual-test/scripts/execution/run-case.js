@@ -7,6 +7,7 @@ const childProcess = require('child_process');
 const {
   appendJsonl,
   caseContractSha,
+  caseRootFromCaseDir,
   caseRuntimeDir,
   ensureDir,
   nowIso,
@@ -17,6 +18,7 @@ const {
   writeCaseReports,
   writeJson,
 } = require('../common');
+const { buildPreconditionPlan, planFlowSummaries } = require('../lib/precondition-flow');
 
 const VALID_STATUS = new Set(['PASS', 'FAIL', 'BLOCKED', 'UNKNOWN']);
 const PRECONDITION_PASSING_STATUSES = new Set(['PASS', 'PREPARED']);
@@ -28,7 +30,6 @@ const VALID_EVENT_TYPES = new Set([
   'perception',
   'decision',
   'rule',
-  'flowScan',
   'flow',
   'actionResult',
   'assertion',
@@ -43,18 +44,27 @@ const STEP_EVIDENCE_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText'
 const VALID_RULE_STATUSES = new Set(['MATCHED', 'SKIPPED', 'FAILED', 'BLOCKED', 'UNKNOWN']);
 const VALID_RULE_TYPES = new Set(['guard']);
 const VALID_RULE_FAILURES = new Set(['BLOCKED', 'UNKNOWN', 'FAIL']);
-const VALID_FLOW_SCAN_STATUSES = new Set(['COMPLETED', 'EMPTY', 'FAILED']);
-const VALID_FLOW_STATUSES = new Set(['STARTED', 'STEP_STARTED', 'STEP_COMPLETED', 'COMPLETED', 'FAILED', 'SKIPPED', 'BLOCKED']);
-const TERMINAL_FLOW_STATUSES = new Set(['COMPLETED', 'FAILED', 'SKIPPED', 'BLOCKED']);
+const VALID_FLOW_STATUSES = new Set(['STARTED', 'STEP_COMPLETED', 'COMPLETED', 'FAILED', 'BLOCKED']);
+const TERMINAL_FLOW_STATUSES = new Set(['COMPLETED', 'FAILED', 'BLOCKED']);
+const PRECONDITION_FLOW_SCOPE = 'precondition-flow';
+const VALID_PRECONDITION_FLOW_PHASES = new Set(['entry-check', 'before', 'after', 'end-check']);
+const VALID_PRECONDITION_FLOW_FAILURES = new Set([
+  'PRECONDITION_FLOW_AMBIGUOUS',
+  'PRECONDITION_FLOW_INVALID',
+  'PRECONDITION_FLOW_CHANGED',
+  'PRECONDITION_FLOW_START_MISMATCH',
+  'PRECONDITION_FLOW_ACTION_FAILED',
+  'PRECONDITION_FLOW_TARGET_NOT_REACHED',
+  'PRECONDITION_FLOW_UNSAFE',
+  'PRECONDITION_FLOW_BUDGET_EXCEEDED',
+]);
 const VALID_COORDINATE_SOURCES = new Set(['layout', 'visual', 'pixel', 'manual', 'flow']);
-const FLOW_GATED_FAILURES = new Set(['PAGE_LOAD_BLOCKED', 'ACTION_TARGET_NOT_FOUND', 'APP_CONTEXT_LOST']);
 const RESTART_SENSITIVE_PATTERN = /(首次|初次|第一次|新用户|无年级|重启|重新进入|再次进入|冷启动|启动后|同一次\s*App\s*启动|同一次app启动|默认开启|默认关闭|默认初始化|初始化|缓存|会话态|启动态|first\s*(launch|open|entry|start)|restart|cold\s*start|relaunch|initial|default)/i;
 const STEP_ORDER_GUARDED_EVENT_TYPES = new Set([
   'observation',
   'perception',
   'decision',
   'rule',
-  'flowScan',
   'flow',
   'actionResult',
   'assertion',
@@ -69,13 +79,15 @@ const DEFAULT_BUDGET = {
   maxStepWaits: 8,
   maxKnownPopups: 5,
   maxNoChangeObservations: 5,
+  maxPreconditionActions: 12,
+  maxActionsPerPrecondition: 5,
 };
 
 function usage() {
   console.error([
     'Usage:',
-    '  run-case.js <case-dir> --platform <platform> --start',
-    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--step-id <step-id>] [--scope global] [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --start [--precondition-plan-sha <sha>]',
+    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--step-id <step-id>] [--scope global|precondition-flow] [--precondition-id <id>] [--flow-id <id>] [--flow-step-id <id>] [--phase <phase>] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --record-json <json> [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --finalize --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>]',
@@ -252,6 +264,7 @@ function validateEvent(event) {
     if (!VALID_ACTIONS.has(action)) throw new Error(`Unsupported actionResult action: ${action}`);
     if (typeof event.ok !== 'boolean') throw new Error('actionResult missing required boolean field: ok');
     validateCoordinateMetadata(event, action);
+    validatePreconditionFlowScope(event);
   }
   if (event.type === 'decision') {
     if (!event.decision || !VALID_DECISIONS.has(event.decision)) throw new Error(`Unsupported decision: ${event.decision}`);
@@ -260,30 +273,16 @@ function validateEvent(event) {
     if (!event.ruleId || typeof event.ruleId !== 'string') throw new Error('rule event missing required field: ruleId');
     if (!event.status || !VALID_RULE_STATUSES.has(event.status)) throw new Error(`Unsupported rule status: ${event.status}`);
   }
-  if (event.type === 'flowScan') {
-    if (!event.status || !VALID_FLOW_SCAN_STATUSES.has(event.status)) throw new Error(`Unsupported flowScan status: ${event.status}`);
-    if (event.source !== 'list-flows') throw new Error('flowScan source must be list-flows');
-    if (!event.flowsRoot || typeof event.flowsRoot !== 'string') throw new Error('flowScan missing flowsRoot');
-    if (!Array.isArray(event.scannedFlowIds) || !event.scannedFlowIds.every((item) => typeof item === 'string')) {
-      throw new Error('flowScan scannedFlowIds must be a string array');
-    }
-    if (event.candidateCount !== undefined && (!Number.isInteger(event.candidateCount) || event.candidateCount < 0)) throw new Error('flowScan candidateCount must be a non-negative integer');
-    if (event.candidateCount !== undefined && event.candidateCount !== event.scannedFlowIds.length) {
-      throw new Error('flowScan candidateCount must match scannedFlowIds length');
-    }
-    if (event.matchedFlowIds !== undefined && (!Array.isArray(event.matchedFlowIds) || !event.matchedFlowIds.every((item) => typeof item === 'string'))) {
-      throw new Error('flowScan matchedFlowIds must be a string array');
-    }
-    if (Array.isArray(event.matchedFlowIds)) {
-      const scanned = new Set(event.scannedFlowIds);
-      const unknown = event.matchedFlowIds.filter((flowId) => !scanned.has(flowId));
-      if (unknown.length) throw new Error(`flowScan matchedFlowIds not found in scannedFlowIds: ${unknown.join(', ')}`);
-    }
-  }
   if (event.type === 'flow') {
     if (!event.flowId || typeof event.flowId !== 'string') throw new Error('flow event missing required field: flowId');
     if (!event.status || !VALID_FLOW_STATUSES.has(event.status)) throw new Error(`Unsupported flow status: ${event.status}`);
     if (event.flowStepId !== undefined && typeof event.flowStepId !== 'string') throw new Error('flowStepId must be a string');
+    if (event.usage !== 'precondition') throw new Error('flow event usage must be precondition');
+    if (!event.preconditionId || typeof event.preconditionId !== 'string') throw new Error('precondition flow event missing preconditionId');
+    if (event.stepId) throw new Error('precondition flow event cannot bind stepId');
+    if (['FAILED', 'BLOCKED'].includes(event.status) && !VALID_PRECONDITION_FLOW_FAILURES.has(event.failureCode)) {
+      throw new Error('failed or blocked precondition flow event requires a valid PRECONDITION_FLOW_* failureCode');
+    }
   }
   if (event.type === 'assertion' && !['PASS', 'FAIL', 'UNKNOWN'].includes(event.status)) {
     throw new Error('assertion status must be PASS, FAIL, or UNKNOWN');
@@ -299,11 +298,39 @@ function validateEvent(event) {
 
 function validateObservationScope(event) {
   if (eventStepId(event)) return;
+  if (event.scope === PRECONDITION_FLOW_SCOPE) {
+    validatePreconditionFlowScope(event);
+    return;
+  }
   if (event.scope === 'global' || event.global === true || event.observation?.scope === 'global') return;
   if (/\bstep-\d{3}\b/i.test(event.label || '')) {
     throw new Error('STEP_OBSERVATION_REQUIRES_STEP_ID: observation label looks step-scoped; pass --step-id for step evidence.');
   }
   throw new Error('OBSERVATION_SCOPE_REQUIRED: observation without stepId must explicitly set scope=global.');
+}
+
+function validatePreconditionFlowScope(event) {
+  if (event.scope !== PRECONDITION_FLOW_SCOPE) {
+    if (event.preconditionId || event.flowId || event.flowStepId || event.phase) {
+      throw new Error('PRECONDITION_FLOW_SCOPE_REQUIRED: preconditionId/flowId/flowStepId/phase require scope=precondition-flow');
+    }
+    return;
+  }
+  if (event.stepId) throw new Error('PRECONDITION_FLOW_SCOPE_INVALID: precondition-flow event cannot bind stepId');
+  if (!event.preconditionId || typeof event.preconditionId !== 'string') throw new Error('precondition-flow event missing preconditionId');
+  if (!event.flowId || typeof event.flowId !== 'string') throw new Error('precondition-flow event missing flowId');
+  if (event.type === 'observation') {
+    if (!VALID_PRECONDITION_FLOW_PHASES.has(event.phase)) throw new Error('precondition-flow observation requires phase entry-check, before, after, or end-check');
+    if (['before', 'after'].includes(event.phase) && (!event.flowStepId || typeof event.flowStepId !== 'string')) {
+      throw new Error(`precondition-flow ${event.phase} observation requires flowStepId`);
+    }
+    if (['entry-check', 'end-check'].includes(event.phase) && event.flowStepId) {
+      throw new Error(`precondition-flow ${event.phase} observation cannot bind flowStepId`);
+    }
+  }
+  if (event.type === 'actionResult' && (!event.flowStepId || typeof event.flowStepId !== 'string')) {
+    throw new Error('precondition-flow actionResult requires flowStepId');
+  }
 }
 
 function validateCoordinateMetadata(event, action) {
@@ -375,6 +402,178 @@ function validatePreconditionEventAgainstCase(event, caseJson) {
   }
 }
 
+function planEntryFor(executionState, preconditionId) {
+  return executionState?.preconditionPlan?.preconditions?.find((item) => item.id === preconditionId) || null;
+}
+
+function activePreconditionFlow(events) {
+  let active = null;
+  for (const event of events) {
+    if (event.type !== 'flow' || event.usage !== 'precondition') continue;
+    if (event.status === 'STARTED') active = { preconditionId: event.preconditionId, flowId: event.flowId };
+    if (active && event.preconditionId === active.preconditionId && event.flowId === active.flowId && TERMINAL_FLOW_STATUSES.has(event.status)) active = null;
+  }
+  return active;
+}
+
+function matchingObservations(events, event, phase, flowStepId) {
+  return events.filter((item) => item.type === 'observation' &&
+    item.scope === PRECONDITION_FLOW_SCOPE &&
+    item.preconditionId === event.preconditionId &&
+    item.flowId === event.flowId &&
+    item.phase === phase &&
+    (flowStepId === undefined || item.flowStepId === flowStepId));
+}
+
+function evidenceObservation(events, event, phase, flowStepId) {
+  const ref = normalizeEvidenceValue(event.evidenceObservation);
+  if (!ref) return null;
+  return matchingObservations(events, event, phase, flowStepId)
+    .find((observation) => observationMatchesEvidenceRef(observation, ref)) || null;
+}
+
+function preconditionOrderReadiness(caseJson, events, nextEvent) {
+  const preconditionId = nextEvent?.type === 'precondition'
+    ? nextEvent.id
+    : nextEvent?.preconditionId;
+  if (!preconditionId) return { ok: true };
+  const preconditions = Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [];
+  const index = preconditions.findIndex((item) => item.id === preconditionId);
+  if (index < 0) return { ok: false, failureCode: 'PRECONDITION_REQUIRED', reason: `unknown precondition: ${preconditionId}` };
+  const latestById = new Map();
+  for (const event of events) {
+    if (event.type === 'precondition' && event.id) latestById.set(event.id, event);
+  }
+  const missingPrior = preconditions.slice(0, index).filter((item) => !PRECONDITION_PASSING_STATUSES.has(latestById.get(item.id)?.status));
+  if (missingPrior.length) {
+    return {
+      ok: false,
+      failureCode: 'PRECONDITION_REQUIRED',
+      reason: `前置条件必须按 case.json 顺序处理；${preconditionId} 之前尚未通过: ${missingPrior.map((item) => item.id).join(', ')}`,
+    };
+  }
+  if (latestById.has(preconditionId) && nextEvent.type !== 'precondition') {
+    return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `前置条件 ${preconditionId} 已有终态事实，不能继续追加 Flow 事件。` };
+  }
+  const active = activePreconditionFlow(events);
+  if (active && active.preconditionId !== preconditionId) {
+    return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `必须先结束当前 Precondition Flow: ${active.preconditionId}/${active.flowId}` };
+  }
+  return { ok: true };
+}
+
+function currentFlowStep(planEntry, events) {
+  const completed = new Set(events.filter((event) => event.type === 'flow' &&
+    event.preconditionId === planEntry.id &&
+    event.flowId === planEntry.flowId &&
+    event.status === 'STEP_COMPLETED')
+    .map((event) => event.flowStepId));
+  return planEntry.flow?.steps?.find((step) => !completed.has(step.id)) || null;
+}
+
+function preconditionFlowReadiness(caseJson, executionState, events, nextEvent) {
+  const isFlowScoped = nextEvent?.scope === PRECONDITION_FLOW_SCOPE || nextEvent?.type === 'flow';
+  const isFlowPrecondition = nextEvent?.type === 'precondition' && planEntryFor(executionState, nextEvent.id)?.resolution === 'flow';
+  if (!isFlowScoped && !isFlowPrecondition) return { ok: true };
+  const preconditionId = nextEvent.type === 'precondition' ? nextEvent.id : nextEvent.preconditionId;
+  const planEntry = planEntryFor(executionState, preconditionId);
+  if (!planEntry || planEntry.resolution !== 'flow') {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Precondition Flow 不在 execution 计划中: ${preconditionId}` };
+  }
+  if (nextEvent.flowId && nextEvent.flowId !== planEntry.flowId) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_CHANGED', reason: `Flow 与 execution 计划不一致: ${nextEvent.flowId} != ${planEntry.flowId}` };
+  }
+  if (nextEvent.flowStepId && !planEntry.flow.steps.some((step) => step.id === nextEvent.flowStepId)) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow step 不在 execution 计划中: ${nextEvent.flowStepId}` };
+  }
+  const active = activePreconditionFlow(events);
+  const expectedStep = currentFlowStep(planEntry, events);
+  if (nextEvent.scope === PRECONDITION_FLOW_SCOPE) {
+    if (nextEvent.phase === 'entry-check') {
+      if (active) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: 'Flow 已开始，不能重复写 entry-check observation。' };
+      return { ok: true };
+    }
+    if (!active || active.preconditionId !== preconditionId || active.flowId !== planEntry.flowId) {
+      return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Precondition Flow 尚未 STARTED: ${preconditionId}/${planEntry.flowId}` };
+    }
+    if (nextEvent.phase === 'end-check') {
+      if (expectedStep) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow 尚有未完成步骤: ${expectedStep.id}` };
+      return { ok: true };
+    }
+    if (!expectedStep || nextEvent.flowStepId !== expectedStep.id) {
+      return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `当前应执行 Flow step: ${expectedStep?.id || 'none'}` };
+    }
+    if (nextEvent.type === 'actionResult') {
+      const before = matchingObservations(events, nextEvent, 'before', nextEvent.flowStepId);
+      if (!before.length) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow action 前缺少 before observation: ${nextEvent.flowStepId}` };
+    }
+    if (nextEvent.type === 'observation' && nextEvent.phase === 'after') {
+      const action = events.findLast((event) => event.type === 'actionResult' &&
+        event.scope === PRECONDITION_FLOW_SCOPE &&
+        event.preconditionId === preconditionId &&
+        event.flowId === planEntry.flowId &&
+        event.flowStepId === nextEvent.flowStepId &&
+        event.ok === true);
+      if (!action) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow after observation 前缺少成功 actionResult: ${nextEvent.flowStepId}` };
+    }
+    return { ok: true };
+  }
+  if (nextEvent.type === 'flow') {
+    if (nextEvent.status === 'STARTED') {
+      if (active) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: '已有未结束的 Precondition Flow。' };
+      if (!matchingObservations(events, nextEvent, 'entry-check').length) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_START_MISMATCH', reason: 'Flow STARTED 前缺少 entry-check observation。' };
+      }
+      return { ok: true };
+    }
+    if (nextEvent.status === 'BLOCKED' && nextEvent.failureCode === 'PRECONDITION_FLOW_START_MISMATCH' && !active) {
+      if (!evidenceObservation(events, nextEvent, 'entry-check')) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_START_MISMATCH', reason: 'Flow 起点不匹配必须引用 entry-check observation。' };
+      }
+      return { ok: true };
+    }
+    if (!active || active.preconditionId !== preconditionId || active.flowId !== planEntry.flowId) {
+      return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: 'Precondition Flow 没有活动的 STARTED 事实。' };
+    }
+    if (nextEvent.status === 'STEP_COMPLETED') {
+      if (!expectedStep || nextEvent.flowStepId !== expectedStep.id) {
+        return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `当前应完成 Flow step: ${expectedStep?.id || 'none'}` };
+      }
+      const action = events.findLast((event) => event.type === 'actionResult' && event.scope === PRECONDITION_FLOW_SCOPE && event.preconditionId === preconditionId && event.flowId === planEntry.flowId && event.flowStepId === nextEvent.flowStepId && event.ok === true);
+      if (!action || !evidenceObservation(events, nextEvent, 'after', nextEvent.flowStepId)) {
+        return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow STEP_COMPLETED 缺少成功动作或 after observation 证据: ${nextEvent.flowStepId}` };
+      }
+    }
+    if (nextEvent.status === 'COMPLETED') {
+      if (expectedStep) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow 尚有未完成步骤: ${expectedStep.id}` };
+      if (!evidenceObservation(events, nextEvent, 'end-check')) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_TARGET_NOT_REACHED', reason: 'Flow COMPLETED 必须引用 end-check observation。' };
+      }
+    }
+    return { ok: true };
+  }
+  if (nextEvent.type === 'precondition') {
+    if (nextEvent.status === 'PASS') {
+      if (nextEvent.resolution !== 'already_satisfied' || nextEvent.flowId !== planEntry.flowId || !evidenceObservation(events, { ...nextEvent, preconditionId, flowId: planEntry.flowId }, 'entry-check')) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_TARGET_NOT_REACHED', reason: 'Flow 前置条件 PASS 必须以 already_satisfied 引用 entry-check 终点证据。' };
+      }
+    } else if (nextEvent.status === 'PREPARED') {
+      const completed = events.findLast((event) => event.type === 'flow' && event.preconditionId === preconditionId && event.flowId === planEntry.flowId && event.status === 'COMPLETED');
+      if (nextEvent.resolution !== 'flow' || nextEvent.flowId !== planEntry.flowId || !completed || nextEvent.evidenceObservation !== completed.evidenceObservation) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_TARGET_NOT_REACHED', reason: 'Flow 前置条件 PREPARED 必须引用已完成 Flow 的终点证据。' };
+      }
+    } else if (nextEvent.status === 'BLOCKED') {
+      const terminal = events.findLast((event) => event.type === 'flow' && event.preconditionId === preconditionId && event.flowId === planEntry.flowId && ['FAILED', 'BLOCKED'].includes(event.status));
+      if (!terminal || nextEvent.flowId !== planEntry.flowId || nextEvent.failureCode !== terminal.failureCode) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: 'Flow 前置条件 BLOCKED 必须与 Flow 失败终态使用同一个 failureCode。' };
+      }
+    } else {
+      return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件不支持状态: ${nextEvent.status}` };
+    }
+  }
+  return { ok: true };
+}
+
 function budgetViolation(events, nextEvent, budget, startedAt) {
   const nextEvents = nextEvent ? [...events, nextEvent] : events;
   const now = new Date(nextEvent?.time || nowIso()).getTime();
@@ -403,7 +602,7 @@ function budgetViolation(events, nextEvent, budget, startedAt) {
     const stepId = event.stepId || event.step?.id;
     if (!stepId) continue;
     const item = byStep.get(stepId) || { total: 0, waits: 0 };
-    if (['observation', 'decision', 'rule', 'flowScan', 'flow', 'actionResult', 'assertion', 'perception'].includes(event.type)) item.total += 1;
+    if (['observation', 'decision', 'rule', 'flow', 'actionResult', 'assertion', 'perception'].includes(event.type)) item.total += 1;
     if (event.type === 'actionResult' && actionType(event) === 'wait') item.waits += 1;
     byStep.set(stepId, item);
   }
@@ -413,6 +612,19 @@ function budgetViolation(events, nextEvent, budget, startedAt) {
     }
     if (item.waits > budget.maxStepWaits) {
       return { failureCode: 'EXECUTION_BUDGET_EXCEEDED', reason: `step wait count exceeded for ${stepId}: ${item.waits} > ${budget.maxStepWaits}` };
+    }
+  }
+  const preconditionActions = nextEvents.filter((event) => event.type === 'actionResult' && event.scope === PRECONDITION_FLOW_SCOPE);
+  if (preconditionActions.length > budget.maxPreconditionActions) {
+    return { failureCode: 'PRECONDITION_FLOW_BUDGET_EXCEEDED', reason: `precondition Flow action count exceeded: ${preconditionActions.length} > ${budget.maxPreconditionActions}` };
+  }
+  const actionsByPrecondition = new Map();
+  for (const event of preconditionActions) {
+    actionsByPrecondition.set(event.preconditionId, (actionsByPrecondition.get(event.preconditionId) || 0) + 1);
+  }
+  for (const [preconditionId, count] of actionsByPrecondition.entries()) {
+    if (count > budget.maxActionsPerPrecondition) {
+      return { failureCode: 'PRECONDITION_FLOW_BUDGET_EXCEEDED', reason: `precondition Flow action count exceeded for ${preconditionId}: ${count} > ${budget.maxActionsPerPrecondition}` };
     }
   }
   return null;
@@ -529,24 +741,11 @@ function preconditionTerminalOptions(event) {
   if (event.status === 'BLOCKED') {
     return {
       status: 'BLOCKED',
-      failureCode: 'PRECONDITION_UNSUPPORTED',
+      failureCode: VALID_PRECONDITION_FLOW_FAILURES.has(event.failureCode) ? event.failureCode : 'PRECONDITION_UNSUPPORTED',
       reason: event.reason || `前置条件不支持自动处理: ${event.id}`,
     };
   }
   return null;
-}
-
-function globalFlowScanReadiness(events, nextEvent) {
-  if (!nextEvent || !STEP_ORDER_GUARDED_EVENT_TYPES.has(nextEvent.type)) return { ok: true };
-  if (!eventStepId(nextEvent)) return { ok: true };
-  if (nextEvent.type === 'actionResult' && nextEvent.failureCode === 'FLOW_SCAN_REQUIRED') return { ok: true };
-  const hasGlobalFlowScan = events.some((event) => isUsableFlowScan(event, null));
-  if (hasGlobalFlowScan) return { ok: true };
-  return {
-    ok: false,
-    failureCode: 'FLOW_SCAN_REQUIRED',
-    reason: '开始步骤事实前必须先写入可用的 execution 级全局 flowScan 事实；FAILED 扫描不能作为步骤前置。',
-  };
 }
 
 function assertionEvidenceReadiness(events, nextEvent, execDir = '') {
@@ -613,6 +812,7 @@ function stepOrderReadiness(caseJson, events, nextEvent) {
     };
   }
   if (!stepId) {
+    if (nextEvent.scope === PRECONDITION_FLOW_SCOPE) return { ok: true };
     if (nextEvent.type === 'actionResult' && actionRequiresStepId(actionType(nextEvent))) {
       return {
         ok: false,
@@ -696,6 +896,7 @@ function statusForFailureCode(failureCode, fallbackStatus) {
   if (!failureCode) return fallbackStatus;
   if (['ASSERTION_FAILED', 'ASSERTION_UNKNOWN'].includes(failureCode)) return 'FAIL';
   if (['ACTION_TARGET_NOT_FOUND', 'PAGE_LOAD_BLOCKED'].includes(failureCode)) return fallbackStatus === 'BLOCKED' ? 'BLOCKED' : 'FAIL';
+  if (VALID_PRECONDITION_FLOW_FAILURES.has(failureCode)) return 'BLOCKED';
   if ([
     'ENV_UNCONFIRMED',
     'ENV_UNAVAILABLE',
@@ -705,13 +906,6 @@ function statusForFailureCode(failureCode, fallbackStatus) {
     'PRECONDITION_REQUIRED',
     'PRECONDITION_UNKNOWN',
     'PRECONDITION_UNSUPPORTED',
-    'FLOW_NOT_FOUND',
-    'FLOW_SCAN_REQUIRED',
-    'FLOW_STEP_UNMATCHED',
-    'FLOW_ACTION_FAILED',
-    'FLOW_UNSAFE',
-    'FLOW_SCAN_MISSING',
-    'FLOW_MATCH_UNRESOLVED',
     'APP_CONTEXT_LOST',
     'APP_LEFT_FOREGROUND',
     'UNKNOWN_POPUP',
@@ -868,15 +1062,17 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     unknownPopupCount: events.filter((event) => event.type === 'popup' && event.status !== 'HANDLED').length,
   };
   const flowEvents = events.filter((event) => event.type === 'flow');
-  const flowScanEvents = events.filter((event) => event.type === 'flowScan');
+  const preconditionFlowActions = events.filter((event) => event.type === 'actionResult' && event.scope === PRECONDITION_FLOW_SCOPE);
   const flows = {
     totalEvents: flowEvents.length,
-    scans: flowScanEvents.length,
-    matched: flowScanEvents.filter((event) => Array.isArray(event.matchedFlowIds) && event.matchedFlowIds.length > 0).length,
+    usage: 'precondition',
+    planned: planFlowSummaries(executionState.preconditionPlan || { preconditions: [] }).length,
     started: flowEvents.filter((event) => event.status === 'STARTED').length,
     completed: flowEvents.filter((event) => event.status === 'COMPLETED').length,
     failed: flowEvents.filter((event) => event.status === 'FAILED').length,
     blocked: flowEvents.filter((event) => event.status === 'BLOCKED').length,
+    alreadySatisfied: events.filter((event) => event.type === 'precondition' && event.resolution === 'already_satisfied' && event.flowId).length,
+    actions: preconditionFlowActions.length,
   };
 
   return {
@@ -885,6 +1081,8 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     executionId: result.executionId,
     sourceSha1: caseJson.identity.sourceSha1,
     caseContractSha: caseContractSha(caseJson),
+    preconditionPlanSha: executionState.preconditionPlanSha || null,
+    flowAssets: planFlowSummaries(executionState.preconditionPlan || { preconditions: [] }),
     status: result.status,
     requestedStatus: result.requestedStatus || result.status,
     failureCode: result.failureCode,
@@ -941,12 +1139,6 @@ function finalize(caseDir, options) {
   }
   const eventsBeforeResult = existingEvents.filter((event) => event.type !== 'result');
   const requestedStatus = status;
-  const flowReadiness = flowFailureReadiness(eventsBeforeResult, options.failureCode, options.failedStep);
-  if (!flowReadiness.ok) {
-    status = 'BLOCKED';
-    options.failureCode = flowReadiness.failureCode;
-    options.reason = flowReadiness.reason;
-  }
   const normalized = normalizeResultStatus(caseJson, eventsBeforeResult, {
     status,
     failureCode: options.failureCode || null,
@@ -965,6 +1157,8 @@ function finalize(caseDir, options) {
     platform: options.platform || state.environment?.platform || null,
     sourceSha1: caseJson.identity.sourceSha1,
     caseContractSha: caseContractSha(caseJson),
+    preconditionPlanSha: executionState.preconditionPlanSha || null,
+    flowAssets: planFlowSummaries(executionState.preconditionPlan || { preconditions: [] }),
     status,
     requestedStatus,
     failureCode: readiness.ok ? (options.failureCode || null) : readiness.failureCode,
@@ -1003,6 +1197,8 @@ function finalize(caseDir, options) {
     requestedStatus,
     failureCode: result.failureCode,
     isolation: executionState.isolation,
+    preconditionPlan: executionState.preconditionPlan,
+    preconditionPlanSha: executionState.preconditionPlanSha,
     budget: executionState.budget || DEFAULT_BUDGET,
   });
 
@@ -1012,74 +1208,10 @@ function finalize(caseDir, options) {
   return { executionId, execDir, result: path.join(execDir, 'result.json'), metrics: path.join(execDir, 'metrics.json'), timeline: timelinePath };
 }
 
-function flowFailureReadiness(events, failureCode, failedStep) {
-  if (!FLOW_GATED_FAILURES.has(failureCode)) return { ok: true };
-  if (!failedStep) {
-    return {
-      ok: false,
-      failureCode: 'FLOW_SCAN_MISSING',
-      reason: `缺少失败步骤和 Flow 扫描事实，不能直接判定 ${failureCode}。`,
-    };
-  }
-  const scans = events.filter((event) => event.type === 'flowScan' && event.stepId === failedStep && event.status !== 'FAILED');
-  if (!scans.length) {
-    return {
-      ok: false,
-      failureCode: 'FLOW_SCAN_MISSING',
-      reason: `缺少可用 Flow 扫描事实，不能直接判定 ${failureCode}。`,
-    };
-  }
-  const matchedFlowIds = Array.from(new Set(scans.flatMap((event) => Array.isArray(event.matchedFlowIds) ? event.matchedFlowIds : [])));
-  if (!matchedFlowIds.length) return { ok: true };
-  const unresolved = matchedFlowIds.filter((flowId) => !events.some((event) => {
-    return event.type === 'flow' &&
-      event.stepId === failedStep &&
-      event.flowId === flowId &&
-      TERMINAL_FLOW_STATUSES.has(event.status);
-  }));
-  if (!unresolved.length) return { ok: true };
-  return {
-    ok: false,
-    failureCode: 'FLOW_MATCH_UNRESOLVED',
-    reason: `命中的 Flow 缺少完成、跳过、失败或阻塞事实，不能直接判定 ${failureCode}: ${unresolved.join(', ')}。`,
-  };
-}
-
-function actionRequiresFlowScan(action) {
-  return action && !['launchApp', 'restartApp', 'wait'].includes(action);
-}
-
 function actionRequiresStepId(action) {
   return action && !['launchApp', 'restartApp', 'wait'].includes(action);
 }
 
-function isUsableFlowScan(event, stepId = null) {
-  if (!event || event.type !== 'flowScan') return false;
-  if (event.source !== 'list-flows') return false;
-  if (event.status === 'FAILED') return false;
-  if (stepId !== null && event.stepId !== stepId) return false;
-  if (stepId === null && eventStepId(event)) return false;
-  return true;
-}
-
-function flowScanActionReadiness(events, action, stepId) {
-  if (!actionRequiresFlowScan(action)) return { ok: true };
-  if (!events.some((event) => isUsableFlowScan(event, null))) {
-    return {
-      ok: false,
-      failureCode: 'FLOW_SCAN_REQUIRED',
-      reason: '业务动作前必须先写入可用的 execution 级 flowScan 事实。',
-    };
-  }
-  if (stepId && !events.some((event) => isUsableFlowScan(event, stepId))) {
-    return {
-      ok: false,
-      failureCode: 'FLOW_SCAN_REQUIRED',
-      reason: `业务动作前缺少当前步骤的可用 flowScan 事实: ${stepId}。全局扫描只用于建立候选库，不能替代步骤级扫描；FAILED 扫描不能作为动作前置。`,
-    };
-  }
-  return { ok: true };
-}
 
 function actionResultSourceReadiness(event, allowActionResult = false) {
   if (!event || event.type !== 'actionResult') return { ok: true };
@@ -1129,11 +1261,6 @@ function observationSourceReadiness(event, allowObservation = false) {
   };
 }
 
-function actionResultFlowScanReadiness(events, event) {
-  if (!event || event.type !== 'actionResult') return { ok: true };
-  if (event.ok === false && event.failureCode === 'FLOW_SCAN_REQUIRED') return { ok: true };
-  return flowScanActionReadiness(events, actionType(event), eventStepId(event));
-}
 
 function requiredEnvironmentDependencies(platform) {
   if (platform === 'android') return ['mavtInputIme'];
@@ -1275,6 +1402,11 @@ for (let i = 1; i < args.length; i++) {
     case '--action': options.action = args[++i]; break;
     case '--step-id': options.stepId = args[++i]; break;
     case '--scope': options.scope = args[++i]; break;
+    case '--precondition-id': options.preconditionId = args[++i]; break;
+    case '--flow-id': options.flowId = args[++i]; break;
+    case '--flow-step-id': options.flowStepId = args[++i]; break;
+    case '--phase': options.phase = args[++i]; break;
+    case '--precondition-plan-sha': options.preconditionPlanSha = args[++i]; break;
     case '--record-json': command = 'record'; options.recordJson = args[++i]; break;
     case '--record-action-json': command = 'recordAction'; options.recordJson = args[++i]; break;
     case '--record-observation-json': command = 'recordObservation'; options.recordJson = args[++i]; break;
@@ -1308,6 +1440,13 @@ try {
     if (missingDependencies.length) {
       throw new Error(`Environment dependencies are not prepared. Run scripts/prepare-env.sh --case-dir <case-dir> --platform ${options.platform} before --start. Missing: ${missingDependencies.join(', ')}`);
     }
+    const preconditionPlan = buildPreconditionPlan(caseJson, caseRootFromCaseDir(caseDir), options.platform);
+    if (options.preconditionPlanSha && options.preconditionPlanSha !== preconditionPlan.preconditionPlanSha) {
+      throw new Error(`PRECONDITION_FLOW_CHANGED: precondition plan changed after preflight: ${options.preconditionPlanSha} != ${preconditionPlan.preconditionPlanSha}`);
+    }
+    if (!options.preconditionPlanSha && process.env.MAVT_SELF_TEST !== '1') {
+      throw new Error('PRECONDITION_FLOW_CHANGED: --start must pass --precondition-plan-sha from preflight-preconditions.js.');
+    }
     const active = findUnfinalizedExecution(caseDir);
     if (active) {
       throw new Error(`Unfinalized execution exists: ${active.executionId} in ${active.caseDir}. Finalize it before starting another execution.`);
@@ -1321,6 +1460,8 @@ try {
       executionId,
       startedAt: nowIso(),
       finalized: false,
+      preconditionPlan,
+      preconditionPlanSha: preconditionPlan.preconditionPlanSha,
       budget: DEFAULT_BUDGET,
     });
     appendJsonl(path.join(execDir, 'timeline.jsonl'), {
@@ -1331,6 +1472,8 @@ try {
       caseKey: caseJson.identity.caseKey,
       sourceSha1: caseJson.identity.sourceSha1,
       caseContractSha: caseContractSha(caseJson),
+      preconditionPlanSha: preconditionPlan.preconditionPlanSha,
+      flowAssets: planFlowSummaries(preconditionPlan),
     });
     const appRestart = caseRestartDisabled(options)
       ? { skipped: true, reason: 'MAVT_SELF_TEST_SKIP_CASE_RESTART=1' }
@@ -1342,6 +1485,8 @@ try {
       startedAt: readExecutionState(execDir)?.startedAt || nowIso(),
       finalized: false,
       isolation,
+      preconditionPlan,
+      preconditionPlanSha: preconditionPlan.preconditionPlanSha,
       budget: DEFAULT_BUDGET,
     });
     let finalized = null;
@@ -1362,6 +1507,8 @@ try {
       timeline: path.join(execDir, 'timeline.jsonl'),
       appRestart,
       isolation,
+      preconditionPlanSha: preconditionPlan.preconditionPlanSha,
+      flowAssets: planFlowSummaries(preconditionPlan),
       blockedOnStart,
       nextAction: blockedOnStart ? 'stop-current-case' : 'continue-current-case',
       finalized,
@@ -1380,7 +1527,11 @@ try {
       stepId: options.stepId,
       label: options.eventType === 'observation' ? 'budget-precheck' : undefined,
       artifacts: options.eventType === 'observation' ? {} : undefined,
-      scope: options.eventType === 'observation' ? options.scope : undefined,
+      scope: options.scope,
+      preconditionId: options.preconditionId,
+      flowId: options.flowId,
+      flowStepId: options.flowStepId,
+      phase: options.eventType === 'observation' ? options.phase : undefined,
       action: options.eventType === 'actionResult' ? options.action : undefined,
       ok: options.eventType === 'actionResult' ? true : undefined,
     });
@@ -1392,17 +1543,17 @@ try {
     if (!preconditionReady.ok) {
       throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
     }
-    const globalFlowScanReady = globalFlowScanReadiness(events, event);
-    if (!globalFlowScanReady.ok) {
-      throw new Error(`${globalFlowScanReady.failureCode}: ${globalFlowScanReady.reason}`);
+    const preconditionOrderReady = preconditionOrderReadiness(caseJson, events, event);
+    if (!preconditionOrderReady.ok) {
+      throw new Error(`${preconditionOrderReady.failureCode}: ${preconditionOrderReady.reason}`);
+    }
+    const preconditionFlowReady = preconditionFlowReadiness(caseJson, executionState, events, event);
+    if (!preconditionFlowReady.ok) {
+      throw new Error(`${preconditionFlowReady.failureCode}: ${preconditionFlowReady.reason}`);
     }
     const stepOrderReady = stepOrderReadiness(caseJson, events, event);
     if (!stepOrderReady.ok) {
       throw new Error(`${stepOrderReady.failureCode}: ${stepOrderReady.reason}`);
-    }
-    const flowScanReady = flowScanActionReadiness(events, options.action, options.stepId);
-    if (!flowScanReady.ok) {
-      throw new Error(`${flowScanReady.failureCode}: ${flowScanReady.reason}`);
     }
     const violation = budgetViolation(events, event, executionState?.budget || DEFAULT_BUDGET, executionState?.startedAt);
     if (violation) {
@@ -1448,9 +1599,13 @@ try {
     if (!preconditionReady.ok) {
       throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
     }
-    const globalFlowScanReady = globalFlowScanReadiness(events, event);
-    if (!globalFlowScanReady.ok) {
-      throw new Error(`${globalFlowScanReady.failureCode}: ${globalFlowScanReady.reason}`);
+    const preconditionOrderReady = preconditionOrderReadiness(caseJson, events, event);
+    if (!preconditionOrderReady.ok) {
+      throw new Error(`${preconditionOrderReady.failureCode}: ${preconditionOrderReady.reason}`);
+    }
+    const preconditionFlowReady = preconditionFlowReadiness(caseJson, executionState, events, event);
+    if (!preconditionFlowReady.ok) {
+      throw new Error(`${preconditionFlowReady.failureCode}: ${preconditionFlowReady.reason}`);
     }
     const stepOrderReady = stepOrderReadiness(caseJson, events, event);
     if (!stepOrderReady.ok) {
@@ -1475,10 +1630,6 @@ try {
       throw new Error(`${observationSourceReady.failureCode}: ${observationSourceReady.reason}`);
     }
     validateArtifactFilesExist(execDir, event);
-    const actionFlowScanReady = actionResultFlowScanReadiness(events, event);
-    if (!actionFlowScanReady.ok) {
-      throw new Error(`${actionFlowScanReady.failureCode}: ${actionFlowScanReady.reason}`);
-    }
     const budget = executionState?.budget || DEFAULT_BUDGET;
     const violation = budgetViolation(events, event, budget, executionState?.startedAt);
     if (violation) {

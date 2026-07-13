@@ -576,12 +576,23 @@ function reportCaseContractSha(report = {}) {
     '';
 }
 
-function reportMatchesCaseSource(caseJson, report = {}) {
+function reportMatchesCaseSource(caseJson, report = {}, options = {}) {
   const caseSha = caseJson.identity?.sourceSha1 || '';
   const sourceSha = reportSourceSha(report);
   const expectedContractSha = caseContractSha(caseJson);
   const actualContractSha = reportCaseContractSha(report);
-  if (actualContractSha) return actualContractSha === expectedContractSha;
+  if (actualContractSha && actualContractSha !== expectedContractSha) return false;
+  const actualPlanSha = report.result?.preconditionPlanSha || report.metrics?.preconditionPlanSha || '';
+  if (actualPlanSha && options.caseDir && options.platform) {
+    try {
+      const { buildPreconditionPlan } = require('./precondition-flow');
+      const currentPlan = buildPreconditionPlan(caseJson, caseRootFromCaseDir(options.caseDir), options.platform);
+      if (currentPlan.preconditionPlanSha !== actualPlanSha) return false;
+    } catch {
+      return false;
+    }
+  }
+  if (actualContractSha) return true;
   const hasRules = Array.isArray(caseJson.globalRules) && caseJson.globalRules.length > 0;
   if (hasRules) return false;
   return !caseSha || !sourceSha || caseSha === sourceSha;
@@ -593,7 +604,7 @@ function readCaseRuntimeSummary(caseDir, caseJson, platform = '') {
   const latest = latestResultExecutionDir(runtimeDir);
   const result = latest ? readJson(path.join(latest, 'result.json'), null) : null;
   const metrics = latest ? readJson(path.join(latest, 'metrics.json'), null) : null;
-  const current = reportMatchesCaseSource(caseJson, { result, metrics });
+  const current = reportMatchesCaseSource(caseJson, { result, metrics }, { caseDir, platform });
   const currentResult = current ? result : null;
   const currentMetrics = current ? metrics : null;
   const status = currentResult?.status || (!result ? state.latestStatus : 'NOT_RUN') || 'NOT_RUN';
@@ -765,7 +776,7 @@ function readLatestExecutionReport(caseDir, options = {}) {
 function writeCaseReports(caseDir, caseJson, state = {}, notes = [], report = null, options = {}) {
   const runtimeDir = caseRuntimeDir(caseDir, options.platform);
   const rawReport = report || readLatestExecutionReport(caseDir, options);
-  const sourceMatches = reportMatchesCaseSource(caseJson, rawReport);
+  const sourceMatches = reportMatchesCaseSource(caseJson, rawReport, { caseDir, platform: options.platform });
   const latestReport = sourceMatches ? rawReport : { latest: rawReport.latest, result: null, metrics: null, events: [] };
   const reportState = sourceMatches ? state : {
     ...state,
@@ -809,7 +820,6 @@ function summarizeTimeline(events = []) {
     actions: events.filter((event) => event.type === 'actionResult'),
     decisions: events.filter((event) => event.type === 'decision'),
     rules: events.filter((event) => event.type === 'rule'),
-    flowScans: events.filter((event) => event.type === 'flowScan'),
     flows: events.filter((event) => event.type === 'flow'),
     assertions: events.filter((event) => event.type === 'assertion'),
     preconditions: events.filter((event) => event.type === 'precondition'),
@@ -903,21 +913,16 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
       }
     }
   }
-  const flowScanEvents = events.filter((event) => event.type === 'flowScan');
   const flowEvents = events.filter((event) => event.type === 'flow');
-  if (flowScanEvents.length || flowEvents.length) {
+  if (flowEvents.length) {
     lines.push('');
-    lines.push('## 业务路径 Flow');
-    for (const event of flowScanEvents) {
-      const matched = Array.isArray(event.matchedFlowIds) && event.matchedFlowIds.length ? ` / matched=${event.matchedFlowIds.join(', ')}` : '';
-      lines.push(`- ${formatDisplayTime(event.time)}：Flow 扫描 / ${event.status} / candidates=${event.candidateCount ?? 0}${matched}${event.stepId ? ` / ${event.stepId}` : ''}${event.reason ? ` / ${event.reason}` : ''}`);
-    }
+    lines.push('## 前置条件 Flow');
     for (const event of flowEvents) {
       const parts = [
         event.flowId,
         event.status,
+        event.preconditionId,
         event.flowStepId,
-        event.stepId,
         event.failureCode,
         event.reason,
       ].filter(Boolean);
@@ -936,7 +941,7 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
     if (metrics.steps) lines.push(`- 步骤：${metrics.steps.passed || 0}/${metrics.steps.total || 0} 通过，${metrics.steps.failed || 0} 失败，${metrics.steps.unknown || 0} 未知，${metrics.steps.skipped || 0} 跳过`);
     if (metrics.preconditions) lines.push(`- 前置条件：${metrics.preconditions.passed || 0}/${metrics.preconditions.total || 0} 通过，${metrics.preconditions.failed || 0} 失败`);
     if (metrics.actions) lines.push(`- 动作：${metrics.actions.total || 0} 次，点击 ${metrics.actions.tap || 0} 次，开关 ${metrics.actions.toggle || 0} 次，长按 ${metrics.actions.longPress || 0} 次，输入 ${metrics.actions.inputText || 0} 次，拉起 App ${metrics.actions.launchApp || 0} 次，冷启动 App ${metrics.actions.restartApp || 0} 次`);
-    if (metrics.flows) lines.push(`- Flow：事件 ${metrics.flows.totalEvents || 0} 条，完成 ${metrics.flows.completed || 0} 个，失败 ${metrics.flows.failed || 0} 个，阻塞 ${metrics.flows.blocked || 0} 个`);
+    if (metrics.flows) lines.push(`- 前置条件 Flow：计划 ${metrics.flows.planned || 0} 个，动作 ${metrics.flows.actions || 0} 次，完成 ${metrics.flows.completed || 0} 个，已满足 ${metrics.flows.alreadySatisfied || 0} 个，失败 ${metrics.flows.failed || 0} 个，阻塞 ${metrics.flows.blocked || 0} 个`);
     if (metrics.stability) {
       const isolationText = metrics.stability.isolationCompromised
         ? `，隔离降级${metrics.stability.isolationRequired ? '（冷启动敏感）' : ''}${metrics.stability.isolationReason ? `：${metrics.stability.isolationReason}` : ''}`
@@ -957,7 +962,7 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
     lines.push('');
     lines.push('## 执行事实');
     lines.push(`- timeline：executions/${metrics?.executionId || state.latestExecutionId}/timeline.jsonl`);
-    lines.push(`- observation：${timeline.observations.length} 条，action：${timeline.actions.length} 条，decision：${timeline.decisions.length} 条，rule：${timeline.rules.length} 条，flowScan：${timeline.flowScans.length} 条，flow：${timeline.flows.length} 条，assertion：${timeline.assertions.length} 条`);
+    lines.push(`- observation：${timeline.observations.length} 条，action：${timeline.actions.length} 条，decision：${timeline.decisions.length} 条，rule：${timeline.rules.length} 条，flow：${timeline.flows.length} 条，assertion：${timeline.assertions.length} 条`);
     if (timeline.latestObservation) {
       const observation = timeline.latestObservation.observation || timeline.latestObservation;
       if (observation.app) {
@@ -978,7 +983,7 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
   if (showSourceChangeWarning) {
     lines.push('');
     lines.push('## 源用例变更');
-    lines.push('- 检测到 Markdown 内容或执行契约已变化，旧执行结果已隐藏。');
+    lines.push('- 检测到 Markdown 内容、执行契约或前置条件 Flow 已变化，旧执行结果已隐藏。');
     if (caseJson.staleNotes?.length) {
       lines.push('');
       lines.push('## 失效补充');
@@ -1002,8 +1007,8 @@ function eventStepId(event) {
 
 function isFlowObservation(event, label = event.label || event.observation?.label || '') {
   if (event.type !== 'observation') return false;
-  if (event.scope === 'flowRecording' || event.observation?.scope === 'flowRecording') return true;
-  if (event.flowId || event.flowStepId || event.recordingId || event.observation?.flowId || event.observation?.flowStepId || event.observation?.recordingId) return true;
+  if (event.scope === 'precondition-flow' || event.observation?.scope === 'precondition-flow') return true;
+  if (event.flowId || event.flowStepId || event.observation?.flowId || event.observation?.flowStepId) return true;
   const text = String(label);
   return /(?:^|[-_])flow[-_]step[-_]\d{3}(?:[-_]|$)/.test(text) ||
     /(?:^|[-_])(?:before|after)[-_]flow(?:[-_]|$)/.test(text);
@@ -1036,8 +1041,7 @@ function eventSummary(event) {
   if (event.type === 'perception') return event.pageState || event.summary || '页面理解';
   if (event.type === 'decision') return `决策：${displayDecision(event.decision)}${event.reason ? `，${event.reason}` : ''}`;
   if (event.type === 'rule') return `${event.ruleId || '-'} ${event.status || ''}${event.reason ? `：${event.reason}` : ''}`.trim();
-  if (event.type === 'flowScan') return `Flow 扫描 ${event.status || ''} / candidates=${event.candidateCount ?? 0}${Array.isArray(event.matchedFlowIds) && event.matchedFlowIds.length ? ` / matched=${event.matchedFlowIds.join(', ')}` : ''}${event.reason ? `：${event.reason}` : ''}`.trim();
-  if (event.type === 'flow') return `${event.flowId || '-'} ${event.status || ''}${event.flowStepId ? ` / ${event.flowStepId}` : ''}${event.reason ? `：${event.reason}` : ''}`.trim();
+  if (event.type === 'flow') return `${event.flowId || '-'} ${event.status || ''}${event.preconditionId ? ` / ${event.preconditionId}` : ''}${event.flowStepId ? ` / ${event.flowStepId}` : ''}${event.reason ? `：${event.reason}` : ''}`.trim();
   if (event.type === 'actionResult') return `${displayAction(eventAction(event))}${event.ok ? '成功' : '失败'}${event.error ? `：${event.error}` : ''}`;
   if (event.type === 'assertion') return `${displayStatus(event.status)}${event.reason ? `：${event.reason}` : ''}${assertionEvidenceText(event)}`;
   if (event.type === 'result') return `${displayStatus(event.status)}${event.reason ? `：${event.reason}` : ''}`;
@@ -1232,7 +1236,6 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     : '';
   const globalRules = Array.isArray(caseJson.globalRules) ? caseJson.globalRules : [];
   const ruleEvents = events.filter((event) => event.type === 'rule');
-  const flowScanEvents = events.filter((event) => event.type === 'flowScan');
   const flowEvents = events.filter((event) => event.type === 'flow');
   const globalRuleRows = globalRules.length
     ? globalRules.map((rule) => {
@@ -1256,26 +1259,16 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
         <td>${escapeHtml(event.reason || '-')}</td>
       </tr>`).join('\n')
     : '<tr><td colspan="5">暂无规则执行事实。</td></tr>';
-  const flowRows = flowScanEvents.length || flowEvents.length
-    ? [
-      ...flowScanEvents.map((event) => `<tr>
-        <td>${escapeHtml(formatDisplayTime(event.time))}</td>
-        <td>${escapeHtml(Array.isArray(event.matchedFlowIds) && event.matchedFlowIds.length ? event.matchedFlowIds.join(', ') : '-')}</td>
-        <td>${escapeHtml(`扫描/${event.status || '-'}`)}</td>
-        <td>${escapeHtml(`候选 ${event.candidateCount ?? 0}`)}</td>
-        <td>${escapeHtml(eventStepId(event) || '-')}</td>
-        <td>${escapeHtml(event.reason || '-')}</td>
-      </tr>`),
-      ...flowEvents.map((event) => `<tr>
+  const flowRows = flowEvents.length
+    ? flowEvents.map((event) => `<tr>
         <td>${escapeHtml(formatDisplayTime(event.time))}</td>
         <td>${escapeHtml(event.flowId || '-')}</td>
         <td>${escapeHtml(event.status || '-')}</td>
         <td>${escapeHtml(event.flowStepId || '-')}</td>
-        <td>${escapeHtml(eventStepId(event) || '-')}</td>
+        <td>${escapeHtml(event.preconditionId || '-')}</td>
         <td>${escapeHtml(event.reason || event.failureCode || '-')}</td>
-      </tr>`),
-    ].join('\n')
-    : '<tr><td colspan="6">暂无业务路径执行事实。</td></tr>';
+      </tr>`).join('\n')
+    : '<tr><td colspan="6">暂无前置条件 Flow 执行事实。</td></tr>';
   const preconditionRows = (caseJson.preconditions || []).length
     ? caseJson.preconditions.map((item) => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.text)}</td><td>${escapeHtml(displayPreconditionMode(item.checkMode))}</td></tr>`).join('\n')
     : '<tr><td colspan="3">无</td></tr>';
@@ -1354,7 +1347,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     : '尚未执行';
   const showSourceChangeWarning = !result && (state.contractMismatch || caseJson.sourceChanged || caseJson.staleNotes?.length);
   const sourceChangeBanner = showSourceChangeWarning
-    ? `<div class="source-warning">源用例或执行契约已变更，当前报告只展示与最新 sourceSha1 和 caseContractSha 匹配的执行结果。</div>`
+    ? `<div class="source-warning">源用例、执行契约或前置条件 Flow 已变更，当前报告只展示与最新 sourceSha1、caseContractSha 和 preconditionPlanSha 匹配的执行结果。</div>`
     : '';
   const isolationBanner = metrics?.stability?.isolationCompromised
     ? `<div class="isolation-warning">本次执行未完成干净冷启动隔离${metrics.stability.isolationRequired ? '，且用例依赖冷启动语义' : ''}：${escapeHtml(metrics.stability.isolationReason || 'App 重启失败，执行结果可信度已降级。')}</div>`
@@ -1362,7 +1355,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
   const sourceChangeSection = showSourceChangeWarning
     ? `<section>
     <h2>源用例变更</h2>
-    <p class="empty">Markdown 内容或执行契约已变化，当前报告只展示与最新 sourceSha1 和 caseContractSha 匹配的执行结果。</p>
+    <p class="empty">Markdown 内容、执行契约或前置条件 Flow 已变化，当前报告只展示与最新 sourceSha1、caseContractSha 和 preconditionPlanSha 匹配的执行结果。</p>
     ${(caseJson.staleNotes || []).length ? `<div class="table-wrap"><table>
       <thead><tr><th style="width:210px">时间</th><th>补充</th><th>原因</th></tr></thead>
       <tbody>${caseJson.staleNotes.map((note) => `<tr><td>${escapeHtml(formatDisplayTime(note.time))}</td><td>${escapeHtml(note.text || '')}</td><td>${escapeHtml(note.reason || '')}</td></tr>`).join('\n')}</tbody>
@@ -1601,9 +1594,9 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     </section>
 
       <section class="debug-section">
-      <h2>业务路径 Flow</h2>
+      <h2>前置条件 Flow</h2>
       <div class="table-wrap"><table>
-          <thead><tr><th style="width:210px">时间</th><th style="width:170px">Flow</th><th style="width:110px">状态</th><th style="width:130px">Flow 步骤</th><th style="width:110px">用例步骤</th><th>原因</th></tr></thead>
+          <thead><tr><th style="width:210px">时间</th><th style="width:170px">Flow</th><th style="width:110px">状态</th><th style="width:130px">Flow 步骤</th><th style="width:110px">前置条件</th><th>原因</th></tr></thead>
           <tbody>${flowRows}</tbody>
         </table></div>
     </section>

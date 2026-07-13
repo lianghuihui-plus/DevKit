@@ -1,128 +1,136 @@
-# 业务路径 Flow
+# 前置条件 Flow
 
-> 负责：Flow 录制、存储、扫描、匹配、使用和终态事实。
-> 不负责：通用步骤证据、环境确认、完整动作规则。
-> 参见：`workflow.md`、`interfaces.md`、`action-schema.md`、`failure-policy.md`。
+> 本文件负责：Flow 资产结构、严格匹配、执行状态机和证据要求。
+> Flow 当前只服务于前置条件；业务步骤不使用 Flow。
+> 面向人工或外部 Agent 的产物交付说明见 `../docs/precondition-flow-asset-delivery-guide.md`。
 
-## 定位
-
-BusinessFlow 沉淀“业务上怎么走”的人工经验，例如登录、进入创作页、打开业务入口。Flow 是参考路径，不是强制回放脚本；执行时仍由 agent 观察、判断、选择动作并记录事实。
-
-## 录制前置
-
-必须明确：
-
-- `name`：如“进入创作页”。
-- `intent`：如“进入创作页,打开创作入口”。
-- `platform`：录制平台。
-- `flowScope`：`universal` 或 `platform`。
-
-缺少 `name` 必须询问；缺少 `intent` 可给候选但必须等用户确认。
-
-## 录制入口
-
-```bash
-scripts/flow/start-recording.js --name "进入创作页" --intent "进入创作页,打开创作入口" --platform android --flow-scope universal --cwd <workspace-cwd> --device <device> --app <appId> --entry <entry>
-scripts/flow/observe.sh --flow-dir <flow-dir> --recording-id <id> --label 001-before
-scripts/flow/action.sh --flow-dir <flow-dir> --recording-id <id> --instruction "点击底部创作入口" --type tap --x 520 --y 1800 --target "创作" --coordinate-source visual --target-bounds 500,1760,560,1840 --coordinate-evidence "截图中底部创作入口像素区域" --success-hint "进入创作页"
-scripts/flow/observe.sh --flow-dir <flow-dir> --recording-id <id> --label 001-after
-scripts/flow/finalize-recording.js <flow-dir> --recording-id <id> --status READY
-```
-
-每条人工指令都按 `observe before -> action -> observe after` 记录。只有用户明确说完成录制时才能 finalize。READY 前至少要有 1 个完整步骤。
-
-## 录制禁止
-
-Flow Recording Mode 禁止：
-
-- 自动查找、解析、启动或执行 case。
-- 调用 `scripts/run-case.js`。
-- 调用顶层 case-bound `observe.sh --case-dir` 或 `action.sh --case-dir`。
-- 使用最近 case、execution 或失败现场作为录制入口。
-- 没有用户步骤指令时自行探索。
-- 用户未确认结束前 finalize。
-
-## 存储
+## 目录结构
 
 ```text
 flows/
-  <flow-slug>__<flowId>/
-    flow.md
-    flow.json
-    state.json
-    recordings/<recordingId>/
-      timeline.jsonl
-      screenshots/
-      layouts/
-      logs/
+  preconditions/
+    <business>/
+      flow.json                 # 通用版本
+      assets/                   # 可选参考图
+      harmony/flow.json         # 可选平台覆盖
+      android/flow.json
+      ios/flow.json
 ```
 
-`flow.json` 核心字段：
+通用版本直接放在业务目录，不增加 `universal/` 层。平台文件存在时优先于通用文件，且二者 `name` 必须一致。
+
+## flow.json
 
 ```json
 {
-  "schemaVersion": 1,
-  "id": "flow-xxxxxxxxxxxx",
+  "schemaVersion": 2,
+  "id": "flow-enter-creation",
   "name": "进入创作页",
-  "intent": ["进入创作页", "打开创作入口"],
-  "recordingPlatform": "android",
-  "flowScope": "universal",
-  "status": "READY",
+  "usage": "precondition",
+  "platform": "universal",
+  "startCondition": {
+    "description": "App 已在首页且底部创作入口可见",
+    "referenceImage": "assets/home.png"
+  },
+  "endCondition": {
+    "description": "创作页标题或创作工具区可见",
+    "referenceImage": "assets/creation.png"
+  },
   "steps": [
     {
       "id": "flow-step-001",
-      "humanInstruction": "点击底部创作入口",
-      "beforeObservation": {"screenshot": "...", "layout": "..."},
-      "action": {"type": "tap", "x": 520, "y": 1800, "target": "创作", "coordinateSource": "visual", "targetBounds": [500,1760,560,1840]},
-      "afterObservation": {"screenshot": "...", "layout": "..."},
-      "successHint": "进入创作页"
+      "instruction": "点击底部创作入口",
+      "action": {
+        "type": "tap",
+        "target": "创作入口"
+      }
     }
-  ],
-  "safety": {"destructive": false, "requiresConfirmation": false}
+  ]
 }
 ```
 
-## 执行接入
+约束：
 
-创建 execution 后，步骤前写全局扫描：
+- `schemaVersion` 固定为 `2`，用于拒绝旧录制格式和支持未来显式迁移。
+- `usage` 固定为 `precondition`，为未来步骤 Flow 保留概念边界。
+- `platform` 为 `universal`、`harmony`、`android` 或 `ios`，且必须与目录位置一致。
+- `name` 是唯一匹配键；同一平台解析后不得出现重名。
+- `startCondition` 和 `endCondition` 必填且必须可区分；`referenceImage` 可选、只能是资产目录内的安全相对路径。
+- `steps` 至少一项，每个 `id` 唯一，动作必须属于框架安全动作集合。
+- 不需要 `status`。目录中的有效资产即为可用资产；格式错误、歧义或不安全动作会在加载阶段失败。
 
-```bash
-scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform android --execution-id <id>
+## 匹配和计划
+
+匹配规则只有一条：
+
+```text
+trim(casePrecondition.text) === trim(flow.name)
 ```
 
-每个步骤动作或匹配前写步骤扫描：
+不做别名、关键词、标点归一、大小写转换、模糊或语义匹配。平台覆盖优先，通用版本兜底。
 
 ```bash
-scripts/flow/record-scan.js <case-dir> --cwd <workspace-cwd> --platform android --execution-id <id> --step-id step-002 --matched-flow-ids flow-xxxxxxxxxxxx
+scripts/preflight-preconditions.js <case-dir...> --cwd <workspace-cwd> --platform <platform>
 ```
 
-默认只返回当前平台专用 Flow 和通用 Flow；其他平台专用 Flow 只用于审计或调试。
+预检对每个前置条件生成一个 resolution：
 
-## 匹配和使用
+| resolution | 处理方式 |
+| --- | --- |
+| `flow` | 自动执行命中的前置条件 Flow |
+| `framework` | 用框架已有能力判断 |
+| `confirm` | 无人值守开始前由用户确认 |
+| `external_setup` | 用户在执行前准备外部业务状态 |
+| `unsupported` | 当前不可执行，剔除、跳过或阻塞 |
 
-必须检查 Flow 的场景：
+预检同时返回 `preconditionPlanSha`。执行开始时必须原样传入：
 
-- 登录、进入页面、打开入口、选择 tab、从首页进入功能。
-- 用例步骤从页面内操作开始，但当前页面不在目标业务上下文。
+```bash
+scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan-sha <sha>
+```
 
-匹配依据：`name`、`intent`、`humanInstruction`、`successHint`、当前 observation、步骤文本和前置条件。
+Flow 文件、参考图、平台覆盖或前置条件计划发生变化都会改变哈希，旧计划不得继续执行。
 
-使用规则：
+## 执行状态机
 
-- 平台专用 Flow 优先，通用 Flow 兜底；`recordingPlatform` 不是适用平台。
-- Flow 只作为参考，不盲目连续执行全部步骤。
-- 每执行、跳过、失败或完成一个 Flow，都写 `flow` 事件。
-- 匹配到但不用时写 `SKIPPED` 并说明原因。
-- Flow 完成后仍要用当前 case 的 observation 写步骤断言。
+对每个 `resolution=flow` 的前置条件，按 case 顺序执行：
 
-`flow` 事件示例：
+1. 用 `observe.sh --scope precondition-flow ... --phase entry-check` 采集入口证据。
+2. 若入口已满足 `endCondition`，写 `precondition PASS`，`resolution=already_satisfied`，不执行动作。
+3. 若不满足终点且不满足 `startCondition`，写 `flow BLOCKED/PRECONDITION_FLOW_START_MISMATCH`，再写同码 `precondition BLOCKED`。
+4. 起点匹配时写 `flow STARTED`。
+5. 每个 Flow step 执行 `before observation -> action -> after observation -> flow STEP_COMPLETED`。
+6. 全部动作完成后用 `--phase end-check` 采集终点证据。
+7. 终点满足时写 `flow COMPLETED`，再写 `precondition PREPARED`；否则写失败 Flow 和同码前置条件终态。
+
+Flow 事件都必须带：
 
 ```json
-{"type":"flow","flowId":"flow-xxxxxxxxxxxx","status":"STARTED","stepId":"step-001","reason":"当前步骤要求进入创作页"}
-{"type":"flow","flowId":"flow-xxxxxxxxxxxx","flowStepId":"flow-step-001","status":"STEP_COMPLETED","stepId":"step-001","reason":"已点击创作入口"}
-{"type":"flow","flowId":"flow-xxxxxxxxxxxx","status":"COMPLETED","stepId":"step-001","reason":"已进入创作页"}
+{
+  "type": "flow",
+  "usage": "precondition",
+  "preconditionId": "precondition-001",
+  "flowId": "flow-enter-creation",
+  "status": "STARTED"
+}
 ```
 
-## 失败判定前置
+Flow observation/action 使用 `scope=precondition-flow`，不得绑定 case `stepId`。`before`、`after` 必须绑定 `flowStepId`；`entry-check`、`end-check` 不得绑定 `flowStepId`。
 
-判定 `PAGE_LOAD_BLOCKED`、`ACTION_TARGET_NOT_FOUND`、`APP_CONTEXT_LOST` 前，失败步骤必须已有对应 `flowScan`。若命中 Flow，每个命中 Flow 都必须已有同 `stepId` 的终态事实：`COMPLETED`、`FAILED`、`SKIPPED` 或 `BLOCKED`。
+## 作用域示例
+
+```bash
+scripts/observe.sh --case-dir <case-dir> --platform <platform> --execution-id <id> \
+  --scope precondition-flow --precondition-id <precondition-id> --flow-id <flow-id> --phase entry-check
+
+scripts/action.sh --case-dir <case-dir> --platform <platform> --execution-id <id> \
+  --scope precondition-flow --precondition-id <precondition-id> --flow-id <flow-id> \
+  --flow-step-id <flow-step-id> --type tap --target "创作入口" ...
+```
+
+## 预算和安全
+
+- 每个前置条件默认最多 5 个 Flow 动作，单 case 默认最多 12 个 Flow 动作。
+- Flow 资产不能包含清数据、卸载、真实支付、删除、发布、修改真实资料等破坏性动作。
+- Flow 动作失败、终点未到达或预算超限都以 `PRECONDITION_FLOW_*` 专用失败码阻塞当前 case。
+- Flow 完成只证明前置条件已达成，不能作为任何业务步骤的通过证据。

@@ -74,7 +74,7 @@ Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、�
 | `unknown` | 无法可靠判断 |
 | `unsupported` | 当前框架不支持自动判断 |
 
-执行前预检见 `workflow.md`；运行期状态见 `failure-policy.md`。
+执行前预检见 `workflow.md`；运行期状态见 `failure-policy.md`。Flow 不写入 `case.json`：当 `text` 去除首尾空白后与前置条件 Flow 的 `name` 严格全等时，由 preflight 自动生成 `resolution=flow`。
 
 ## steps
 
@@ -100,7 +100,7 @@ Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、�
 
 ## source.md
 
-保存原始用例文本，是稳定输入源。原始 Markdown 变化会更新 `sourceSha1`；报告发现 `sourceSha1` 或 `caseContractSha` 不匹配时，应隐藏旧结果并提示重新执行。
+保存原始用例文本，是稳定输入源。原始 Markdown 变化会更新 `sourceSha1`；报告发现 `sourceSha1`、`caseContractSha` 或 `preconditionPlanSha` 不匹配时，应隐藏旧结果并提示重新执行。
 
 ## notes.jsonl
 

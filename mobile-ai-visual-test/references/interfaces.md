@@ -21,13 +21,13 @@ Skill 协议层
   scripts/run-case.js
   scripts/observe.sh
   scripts/action.sh
-  scripts/flow/*.js|*.sh
 
 内部实现层
   scripts/case/
   scripts/execution/
   scripts/report/
   scripts/lib/
+  scripts/flow/
 
 平台能力层
   scripts/platform/
@@ -43,7 +43,7 @@ agent 只调用稳定入口层。内部实现层、平台 adapter 和 atoms 不�
 | --- | --- |
 | `scripts/resolve-execution-targets.js` | 分流已有 case 与 Markdown 输入 |
 | `scripts/parse-case.js` | 创建或刷新 case 资产 |
-| `scripts/preflight-preconditions.js` | 执行前批量归纳前置条件 |
+| `scripts/preflight-preconditions.js` | 严格匹配前置条件 Flow 并生成带哈希的执行计划 |
 | `scripts/probe-env.sh` | 探测平台和设备能力 |
 | `scripts/update-env.js` | 固化设备、App 和入口到平台 state |
 | `scripts/prepare-env.sh` | 准备平台依赖 |
@@ -52,11 +52,6 @@ agent 只调用稳定入口层。内部实现层、平台 adapter 和 atoms 不�
 | `scripts/action.sh` | 执行动作并写入 actionResult |
 | `scripts/render-context.js` | 重渲染 case 报告 |
 | `scripts/render-index.js` | 重渲染 workspace 总览 |
-| `scripts/flow/start-recording.js` | 创建 Flow 录制会话 |
-| `scripts/flow/observe.sh` | 录制 Flow observation |
-| `scripts/flow/action.sh` | 录制 Flow action |
-| `scripts/flow/finalize-recording.js` | 生成 Flow 资产 |
-| `scripts/flow/record-scan.js` | 扫描可用 Flow 并写入 execution |
 
 正式 case-bound 入口必须显式传 `--platform <harmony|android|ios>`。
 
@@ -126,7 +121,7 @@ adapter 内部可以调用 atoms，但不得：
 }
 ```
 
-步骤内观察必须传 `--step-id <step-id>`。全局诊断观察必须显式传 `--scope global` 或 `--global-observation`。
+步骤内观察必须传 `--step-id <step-id>`。全局诊断观察必须显式传 `--scope global` 或 `--global-observation`。前置条件 Flow 观察使用 `--scope precondition-flow`，绑定 `preconditionId`、`flowId` 和 `phase`，不得绑定 `stepId`。
 
 ## ActionResult
 
@@ -148,7 +143,7 @@ adapter 内部可以调用 atoms，但不得：
 }
 ```
 
-动作集合和坐标要求见 `action-schema.md`。
+动作集合和坐标要求见 `action-schema.md`。前置条件 Flow 动作使用 `scope=precondition-flow`，并绑定 `preconditionId`、`flowId`、`flowStepId`；它不属于 case step。
 
 ## Agent 事实
 
@@ -160,7 +155,7 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实：
 | `perception` | 影响后续动作的视觉理解 |
 | `decision` | 影响后续动作或断言的决策 |
 | `rule` | 全局规则或弹窗规则处理 |
-| `flow` | Flow 使用、跳过、失败或完成事实 |
+| `flow` | 前置条件 Flow 的开始、步骤完成、完成或失败事实 |
 | `assertion` | 步骤断言结果 |
 
 不要为了说明想法写入不会影响执行的事实。
@@ -194,24 +189,23 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实：
 
 证据要求和 PASS 归一规则见 `failure-policy.md`。
 
-## FlowScan
+## Precondition Flow
 
-`flowScan` 必须由 `scripts/flow/record-scan.js` 写入：
+Flow 事件只允许服务于前置条件：
 
 ```json
 {
-  "type": "flowScan",
-  "source": "list-flows",
-  "status": "COMPLETED",
-  "flowsRoot": "flows",
-  "candidateCount": 2,
-  "scannedFlowIds": ["flow-xxx"],
-  "matchedFlowIds": ["flow-xxx"],
-  "stepId": "step-002"
+  "type": "flow",
+  "usage": "precondition",
+  "preconditionId": "precondition-001",
+  "flowId": "flow-enter-creation",
+  "flowStepId": "flow-step-001",
+  "status": "STEP_COMPLETED",
+  "reason": "动作成功且 after observation 已确认"
 }
 ```
 
-Flow 录制、扫描和使用规则见 `flow-format.md`。
+`status` 允许 `STARTED`、`STEP_COMPLETED`、`COMPLETED`、`FAILED`、`BLOCKED`。`STARTED` 前必须有 `entry-check` observation；`STEP_COMPLETED` 前必须有同 Flow step 的成功 actionResult 和 `after` observation；`COMPLETED` 前必须有 `end-check` observation。完整协议见 `flow-format.md`。
 
 ## Result
 

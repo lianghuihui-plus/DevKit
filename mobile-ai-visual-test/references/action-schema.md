@@ -39,8 +39,8 @@
 | `layout` | 目标有控件树或布局节点 | 坐标来自目标节点 bounds |
 | `visual` | 截图可见但无独立节点 | 提供截图目标区域 |
 | `pixel` | 基于像素识别 | 提供像素目标区域 |
-| `flow` | 沿用 Flow 坐标 | 提供原 Flow bounds 和证据 |
-| `manual` | 仅 Flow 录制 | 正式 case 禁用 |
+| `flow` | 前置条件 Flow 资产提供坐标 | 提供 Flow 原始 bounds 和当前页面证据 |
+| `manual` | 历史值 | 正式执行禁用 |
 
 禁止用相邻文本、输入框、容器 bounds、缩放预览或大概位置猜坐标。坐标动作未命中后必须重新 observe 并更新证据，不能重复同一坐标硬试。
 
@@ -78,5 +78,5 @@ atoms 只做最小能力：`tap`、`long-press`、`swipe`、`input-text`、`scre
 
 - 动作成功后默认等待 1000ms，可用 `--settle-ms` 或 `MAVT_ACTION_SETTLE_MS` 覆盖。
 - 同一操作最多尝试 2 次。
-- 单个前置条件最多 5 个 UI 动作，全部前置条件最多 12 个 UI 动作。
+- 单个前置条件 Flow 最多 5 个 UI 动作，单 case 全部前置条件 Flow 最多 12 个 UI 动作。
 - 目标 App 离开前台后每次最多恢复 1 次，累计 2 次停止当前 case。

@@ -5,9 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const {
   casesRoot,
-  classifyPrecondition,
   normalizeCaseNo,
   normalizePreconditionText,
+  normalizePlatform,
   nowIso,
   PRECONDITION_STATUS_PRIORITY,
   readCaseEntries,
@@ -15,9 +15,10 @@ const {
   worsePreconditionStatus,
   workspaceRoot,
 } = require('./common');
+const { buildPreconditionPlan, planFlowSummaries } = require('./lib/precondition-flow');
 
 function usage() {
-  console.error('Usage: preflight-preconditions.js <case-dir|caseNo|caseKey|title>... [--cwd <workspace-cwd>] [--all]');
+  console.error('Usage: preflight-preconditions.js <case-dir|caseNo|caseKey|title>... --platform <harmony|android|ios> [--cwd <workspace-cwd>] [--all]');
   process.exit(2);
 }
 
@@ -46,19 +47,13 @@ function resolveCase(ref, entries, root) {
   return finalMatches[0];
 }
 
-function summarizeCase(entry) {
+function summarizeCase(entry, root, platform) {
   const identity = entry.caseJson.identity || {};
-  const preconditions = Array.isArray(entry.caseJson.preconditions) ? entry.caseJson.preconditions : [];
+  const preconditionPlan = buildPreconditionPlan(entry.caseJson, root, platform);
   let caseStatus = 'READY';
-  const summarized = preconditions.map((item) => {
-    const classification = classifyPrecondition(item);
-    caseStatus = worsePreconditionStatus(caseStatus, classification.status);
-    return {
-      id: item.id,
-      text: item.text || '',
-      checkMode: item.checkMode || '',
-      ...classification,
-    };
+  const summarized = preconditionPlan.preconditions.map((item) => {
+    caseStatus = worsePreconditionStatus(caseStatus, item.status);
+    return { ...item, flow: undefined };
   });
   return {
     caseNo: normalizeCaseNo(identity.caseNo),
@@ -68,6 +63,9 @@ function summarizeCase(entry) {
     status: caseStatus,
     executableByDefault: caseStatus === 'READY',
     requiresUserDecision: caseStatus !== 'READY',
+    preconditionPlanSha: preconditionPlan.preconditionPlanSha,
+    flowMatches: planFlowSummaries(preconditionPlan),
+    preconditionPlan,
     preconditions: summarized,
   };
 }
@@ -83,7 +81,12 @@ function buildGroups(cases) {
           text: precondition.text,
           category: precondition.category,
           status: precondition.status,
+          resolution: precondition.resolution,
           defaultResolution: precondition.defaultResolution,
+          flowId: precondition.flowId,
+          flowName: precondition.flowName,
+          flowPath: precondition.flowPath,
+          flowSha1: precondition.flowSha1,
           caseRefs: [],
           preconditionRefs: [],
         });
@@ -111,14 +114,20 @@ function main() {
 
   let cwd = process.cwd();
   let all = false;
+  let platform = '';
   const refs = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--cwd') cwd = path.resolve(args[++i]);
     else if (arg === '--all') all = true;
+    else if (arg === '--platform') {
+      platform = normalizePlatform(args[++i]);
+      if (!platform) usage();
+    }
     else refs.push(arg);
   }
   if (!all && refs.length === 0) usage();
+  if (!platform) usage();
 
   const root = workspaceRoot(cwd);
   const rootCases = casesRoot(root);
@@ -127,7 +136,7 @@ function main() {
       a.caseDir.localeCompare(b.caseDir);
   });
   const selected = all ? entries : refs.map((ref) => resolveCase(ref, entries, rootCases));
-  const cases = selected.map(summarizeCase);
+  const cases = selected.map((entry) => summarizeCase(entry, root, platform));
   const groups = buildGroups(cases);
   const summary = {
     totalCases: cases.length,
@@ -137,6 +146,8 @@ function main() {
     unknownCases: cases.filter((item) => item.status === 'UNKNOWN').length,
     blockedCases: cases.filter((item) => item.status === 'UNSUPPORTED').length,
     totalPreconditions: cases.reduce((sum, item) => sum + item.preconditions.length, 0),
+    flowMatchedPreconditions: cases.reduce((sum, item) => sum + item.preconditions.filter((precondition) => precondition.resolution === 'flow').length, 0),
+    flowMatchedCases: cases.filter((item) => item.flowMatches.length > 0).length,
     groups: groups.length,
   };
 
@@ -145,6 +156,7 @@ function main() {
     type: 'preconditionPreflight',
     generatedAt: nowIso(),
     workspaceRoot: root,
+    platform,
     summary,
     groups,
     cases,

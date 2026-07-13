@@ -62,7 +62,10 @@ function recordPreconditions(caseDir, platform, executionId, status = 'PASS', re
 }
 
 function recordGlobalFlowScan(caseDir, platform, executionId, reason = 'self-test global Flow scan') {
-  run('node', ['scripts/flow/record-scan.js', caseDir, '--platform', platform, '--cwd', workspace, '--execution-id', executionId, '--reason', reason]);
+  void caseDir;
+  void platform;
+  void executionId;
+  void reason;
 }
 
 function ensureObservationArtifacts(caseDir, platform, executionId, event) {
@@ -362,7 +365,7 @@ write(preflightRiskFile, `# 前置条件预检风险测试
 1. 预期看到订单详情。
 `);
 const preflightRiskParsed = JSON.parse(run('node', ['scripts/parse-case.js', preflightRiskFile, '--cwd', workspace]));
-const preflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', noLoginParsed.caseDir, loosePreconditionsParsed.caseDir, preflightRiskParsed.caseDir, '--cwd', workspace]));
+const preflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', noLoginParsed.caseDir, loosePreconditionsParsed.caseDir, preflightRiskParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
 const preflightRiskCaseNo = json(path.join(preflightRiskParsed.caseDir, 'case.json')).identity.caseNo;
 assert.strictEqual(preflight.type, 'preconditionPreflight');
 assert.strictEqual(preflight.summary.totalCases, 3);
@@ -781,7 +784,7 @@ run('node', ['scripts/apply-note.js', parsed.caseDir, '--text', '执行后补充
 let refreshedHtml = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
 let refreshedContext = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
 assert.ok(refreshedHtml.includes('未执行'));
-assert.ok(refreshedHtml.includes('源用例或执行契约已变更'));
+assert.ok(refreshedHtml.includes('源用例、执行契约或前置条件 Flow 已变更'));
 assert.ok(!refreshedHtml.includes('示例失败'));
 assert.ok(!refreshedHtml.includes(`executions/${state.latestExecutionId}/screenshots/step-001-before.png`));
 assert.ok(refreshedContext.includes('旧执行结果已隐藏'));
@@ -849,15 +852,14 @@ const forgedActionSourceEvent = runAllowFailure('node', ['scripts/run-case.js', 
 }), '--execution-id', invalidStart.executionId]);
 assert.notStrictEqual(forgedActionSourceEvent.status, 0);
 assert.ok(forgedActionSourceEvent.stderr.includes('ACTION_RESULT_SOURCE_REQUIRED'));
-const missingStepFlowScanActionResult = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-action-json', JSON.stringify({
+const stepActionWithoutFlowScan = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-action-json', JSON.stringify({
   type: 'actionResult',
   stepId: 'step-001',
   source: 'action.sh',
   action: 'tap',
   ok: true,
 }), '--execution-id', invalidStart.executionId], { env: { ...process.env, MAVT_ACTION_WRITER: '1' } });
-assert.notStrictEqual(missingStepFlowScanActionResult.status, 0);
-assert.ok(missingStepFlowScanActionResult.stderr.includes('FLOW_SCAN_REQUIRED'));
+assert.strictEqual(stepActionWithoutFlowScan.status, 0);
 const invalidCoordinateEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'actionResult',
   stepId: 'step-001',
@@ -934,14 +936,14 @@ const missingPrecondition = runAllowFailure('node', ['scripts/run-case.js', pass
 assert.notStrictEqual(missingPrecondition.status, 0);
 assert.ok(missingPrecondition.stderr.includes('PRECONDITION_REQUIRED'));
 recordPreconditions(passParsed.caseDir, 'harmony', passStart.executionId);
-const missingGlobalFlowScan = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+const assertionStillNeedsEvidenceWithoutFlowScan = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'assertion',
   stepId: 'step-001',
   status: 'PASS',
-  reason: '未写全局 FlowScan 就进入步骤',
+  reason: '步骤不再需要 FlowScan，但仍然需要观察证据',
 }), '--execution-id', passStart.executionId]);
-assert.notStrictEqual(missingGlobalFlowScan.status, 0);
-assert.ok(missingGlobalFlowScan.stderr.includes('FLOW_SCAN_REQUIRED'));
+assert.notStrictEqual(assertionStillNeedsEvidenceWithoutFlowScan.status, 0);
+assert.ok(assertionStillNeedsEvidenceWithoutFlowScan.stderr.includes('ASSERTION_EVIDENCE_REQUIRED'));
 recordGlobalFlowScan(passParsed.caseDir, 'harmony', passStart.executionId);
 const passSkipStep = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'assertion',
@@ -1264,7 +1266,6 @@ assert.strictEqual(androidObservation.artifacts.layout, 'layouts/001-step-001-be
 assert.strictEqual(androidObservation.app.foregroundApp, 'com.example.demo');
 assert.strictEqual(androidObservation.app.entry, 'MainActivity');
 assert.strictEqual(androidObservation.app.inTargetApp, true);
-run('node', ['scripts/flow/record-scan.js', androidParsed.caseDir, '--platform', 'android', '--cwd', workspace, '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--reason', 'Android 动作前已扫描 Flow，无可用候选']);
 const androidAction = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '1', '--y', '2', '--coordinate-source', 'layout', '--target-bounds', '0,0,2,3', '--coordinate-evidence', 'android uiautomator bounds', '--settle-ms', '0'], { env: fakeAndroidEnv }));
 assert.strictEqual(androidAction.platform, 'android');
 assert.strictEqual(androidAction.action, 'tap');
@@ -1396,7 +1397,6 @@ assert.strictEqual(iosObservation.artifacts.layout, 'layouts/001-step-001-before
 assert.strictEqual(iosObservation.app.foregroundApp, 'com.example.demo');
 assert.strictEqual(iosObservation.app.entry, null);
 assert.strictEqual(iosObservation.app.inTargetApp, true);
-run('node', ['scripts/flow/record-scan.js', iosParsed.caseDir, '--platform', 'ios', '--cwd', workspace, '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--reason', 'iOS 动作前已扫描 Flow，无可用候选']);
 const iosAction = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '10', '--y', '20', '--coordinate-source', 'layout', '--target-bounds', '8,18,12,22', '--coordinate-evidence', 'ios xcuitest frame', '--settle-ms', '0'], { env: fakeIosEnv }));
 assert.strictEqual(iosAction.platform, 'ios');
 assert.strictEqual(iosAction.action, 'tap');
@@ -1689,18 +1689,6 @@ assert.ok(harmonyInputWithoutCoordinates.stderr.includes('inputText 需要 --x �
 const harmonyInvalidTap = runAllowFailure('./scripts/platform/adapters/harmony/action.sh', ['--device', '127.0.0.1:5555', '--type', 'tap', '--x', '-1', '--y', '-1'], { env: fakeEnv });
 assert.notStrictEqual(harmonyInvalidTap.status, 0);
 assert.ok(harmonyInvalidTap.stderr.includes('Please confirm that the coordinate values are correct'));
-const invalidManualFlowScan = runAllowFailure('node', ['scripts/run-case.js', injectedParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
-  type: 'flowScan',
-  status: 'EMPTY',
-  candidateCount: 0,
-  matchedFlowIds: [],
-  stepId: 'step-001',
-  reason: '业务动作前已扫描 Flow，无可用候选',
-}), '--execution-id', injectedStart.executionId]);
-assert.notStrictEqual(invalidManualFlowScan.status, 0);
-assert.ok(invalidManualFlowScan.stderr.includes('flowScan source must be list-flows'));
-run('node', ['scripts/flow/record-scan.js', injectedParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', injectedStart.executionId, '--reason', '只建立候选库，不绑定步骤']);
-run('node', ['scripts/flow/record-scan.js', injectedParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--reason', '业务动作前已扫描 Flow，无可用候选']);
 const injectedToggle = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'toggle', '--x', '9', '--y', '10', '--coordinate-source', 'layout', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '控件树通知开关 bounds', '--settle-ms', '0'], { env: fakeEnv }));
 assert.strictEqual(injectedToggle.action, 'toggle');
 assert.strictEqual(injectedToggle.ok, true);
@@ -1722,7 +1710,6 @@ assert.strictEqual(injectedDefaultWait.settleMs, undefined);
 const injectedDefaultTap = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '9', '--y', '10', '--coordinate-source', 'visual', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '截图像素区域中心'], { env: defaultSettleEnv }));
 assert.strictEqual(injectedDefaultTap.settleMs, 1000);
 assert.strictEqual(injectedDefaultTap.coordinateSource, 'visual');
-assert.ok(fs.readFileSync(path.join(repo, 'scripts', 'flow', 'action.sh'), 'utf8').includes('MAVT_ACTION_SETTLE_MS:-1000'));
 
 const missingObserveStepId = runAllowFailure('./scripts/observe.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--label', 'step-001-missing-step-id'], { env: fakeEnv });
 assert.notStrictEqual(missingObserveStepId.status, 0);
@@ -1771,53 +1758,6 @@ assert.ok(injectedHtml.includes('切换开关成功'));
 assert.ok(!injectedHtml.includes('actionResult'));
 run('node', ['scripts/run-case.js', injectedParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', '环境注入测试完成', '--execution-id', injectedStart.executionId]);
 
-const missingFlowScanFile = path.join(sourceRoot, 'cases', 'missing-flow-scan.md');
-write(missingFlowScanFile, `# Flow 扫描缺失自动收尾测试
-
-## 前置条件
-- App 已安装。
-
-## 步骤
-1. 点击业务按钮。
-`);
-const missingFlowScanParsed = JSON.parse(run('node', ['scripts/parse-case.js', missingFlowScanFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', missingFlowScanParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-const missingFlowScanStart = JSON.parse(run('node', ['scripts/run-case.js', missingFlowScanParsed.caseDir, '--platform', 'harmony', '--start']));
-recordPreconditions(missingFlowScanParsed.caseDir, 'harmony', missingFlowScanStart.executionId);
-const missingFlowScanAction = runAllowFailure('./scripts/action.sh', ['--case-dir', missingFlowScanParsed.caseDir, '--platform', 'harmony', '--execution-id', missingFlowScanStart.executionId, '--step-id', 'step-001', '--type', 'toggle', '--x', '9', '--y', '10', '--coordinate-source', 'layout', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '控件树通知开关 bounds', '--settle-ms', '0'], { env: fakeEnv });
-assert.notStrictEqual(missingFlowScanAction.status, 0);
-assert.ok(missingFlowScanAction.stdout.includes('FLOW_SCAN_REQUIRED'));
-const missingFlowScanResult = json(path.join(missingFlowScanStart.execDir, 'result.json'));
-assert.strictEqual(missingFlowScanResult.status, 'BLOCKED');
-assert.strictEqual(missingFlowScanResult.failureCode, 'FLOW_SCAN_REQUIRED');
-assert.strictEqual(missingFlowScanResult.failedStep, 'step-001');
-assert.strictEqual(json(path.join(missingFlowScanStart.execDir, 'execution.json')).finalized, true);
-const missingFlowScanEvents = fs.readFileSync(path.join(missingFlowScanStart.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
-assert.ok(missingFlowScanEvents.some((event) => event.type === 'actionResult' && event.failureCode === 'FLOW_SCAN_REQUIRED'));
-assert.ok(missingFlowScanEvents.some((event) => event.type === 'result' && event.failureCode === 'FLOW_SCAN_REQUIRED'));
-
-const globalOnlyFlowScanFile = path.join(sourceRoot, 'cases', 'global-only-flow-scan.md');
-write(globalOnlyFlowScanFile, `# 全局 Flow 扫描不能替代步骤扫描测试
-
-## 前置条件
-- App 已安装。
-
-## 步骤
-1. 点击业务按钮。
-`);
-const globalOnlyFlowScanParsed = JSON.parse(run('node', ['scripts/parse-case.js', globalOnlyFlowScanFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', globalOnlyFlowScanParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-const globalOnlyFlowScanStart = JSON.parse(run('node', ['scripts/run-case.js', globalOnlyFlowScanParsed.caseDir, '--platform', 'harmony', '--start']));
-recordPreconditions(globalOnlyFlowScanParsed.caseDir, 'harmony', globalOnlyFlowScanStart.executionId);
-run('node', ['scripts/flow/record-scan.js', globalOnlyFlowScanParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', globalOnlyFlowScanStart.executionId, '--reason', '只建立候选库，不绑定步骤']);
-const globalOnlyFlowScanAction = runAllowFailure('./scripts/action.sh', ['--case-dir', globalOnlyFlowScanParsed.caseDir, '--platform', 'harmony', '--execution-id', globalOnlyFlowScanStart.executionId, '--step-id', 'step-001', '--type', 'toggle', '--x', '9', '--y', '10', '--coordinate-source', 'layout', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '控件树通知开关 bounds', '--settle-ms', '0'], { env: fakeEnv });
-assert.notStrictEqual(globalOnlyFlowScanAction.status, 0);
-assert.ok(globalOnlyFlowScanAction.stdout.includes('全局扫描只用于建立候选库'));
-const globalOnlyFlowScanResult = json(path.join(globalOnlyFlowScanStart.execDir, 'result.json'));
-assert.strictEqual(globalOnlyFlowScanResult.status, 'BLOCKED');
-assert.strictEqual(globalOnlyFlowScanResult.failureCode, 'FLOW_SCAN_REQUIRED');
-assert.strictEqual(globalOnlyFlowScanResult.failedStep, 'step-001');
-
 const toolErrorFile = path.join(sourceRoot, 'cases', 'tool-error.md');
 write(toolErrorFile, `# 工具错误自动收尾测试
 
@@ -1832,7 +1772,6 @@ run('node', ['scripts/update-env.js', toolErrorParsed.caseDir, '--platform', 'ha
 const toolErrorStart = JSON.parse(run('node', ['scripts/run-case.js', toolErrorParsed.caseDir, '--platform', 'harmony', '--start']));
 recordPreconditions(toolErrorParsed.caseDir, 'harmony', toolErrorStart.executionId);
 recordGlobalFlowScan(toolErrorParsed.caseDir, 'harmony', toolErrorStart.executionId);
-run('node', ['scripts/flow/record-scan.js', toolErrorParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', toolErrorStart.executionId, '--step-id', 'step-001', '--reason', '工具错误前已扫描 Flow']);
 const toolErrorAction = runAllowFailure('./scripts/action.sh', ['--case-dir', toolErrorParsed.caseDir, '--platform', 'harmony', '--execution-id', toolErrorStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '-1', '--y', '-1', '--coordinate-source', 'layout', '--target-bounds', '0,0,2,2', '--coordinate-evidence', '测试异常坐标', '--settle-ms', '0'], { env: fakeEnv });
 assert.notStrictEqual(toolErrorAction.status, 0);
 const toolErrorResult = json(path.join(toolErrorStart.execDir, 'result.json'));
@@ -1879,7 +1818,6 @@ run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony'
   stepId: 'step-001',
   reason: '检测到权限弹窗',
 }), '--execution-id', rulesStart.executionId]);
-run('node', ['scripts/flow/record-scan.js', rulesParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', rulesStart.executionId, '--step-id', 'step-001', '--reason', '规则动作前已扫描 Flow']);
 recordActionResult(rulesParsed.caseDir, 'harmony', rulesStart.executionId, {
   type: 'actionResult',
   stepId: 'step-001',
@@ -1917,292 +1855,291 @@ const refreshedRulesCase = json(rulesCasePath);
 assert.strictEqual(refreshedRulesCase.globalRules.length, 1);
 assert.strictEqual(refreshedRulesCase.globalRules[0].when, '出现新的权限弹窗');
 
-const missingIntentFlow = runAllowFailure('node', ['scripts/flow/start-recording.js', '--name', '缺少意图', '--platform', 'harmony', '--cwd', workspace]);
-assert.notStrictEqual(missingIntentFlow.status, 0);
-assert.ok(missingIntentFlow.stderr.includes('必须提供 --intent'));
-const missingPlatformFlow = runAllowFailure('node', ['scripts/flow/start-recording.js', '--name', '缺少平台', '--intent', '缺少平台', '--cwd', workspace]);
-assert.notStrictEqual(missingPlatformFlow.status, 0);
-assert.ok(missingPlatformFlow.stderr.includes('必须提供有效 --platform'));
-const flowStarted = JSON.parse(run('node', ['scripts/flow/start-recording.js', '--name', '进入创作页', '--intent', '进入创作页,打开创作入口', '--platform', 'harmony', '--cwd', workspace]));
-assert.ok(flowStarted.flowDir.includes('进入创作页__flow-'));
-assert.ok(flowStarted.recordingId);
-assert.strictEqual(flowStarted.flowScope, 'universal');
-assert.strictEqual(flowStarted.recordingPlatform, 'harmony');
-assert.strictEqual(flowStarted.platform, null);
-const sameNameHarmonyFlow = JSON.parse(run('node', ['scripts/flow/start-recording.js', '--name', '同名平台 Flow', '--intent', '同名平台 Flow', '--platform', 'harmony', '--flow-scope', 'platform', '--cwd', workspace]));
-const sameNameAndroidFlow = JSON.parse(run('node', ['scripts/flow/start-recording.js', '--name', '同名平台 Flow', '--intent', '同名平台 Flow', '--platform', 'android', '--flow-scope', 'platform', '--cwd', workspace]));
-assert.notStrictEqual(sameNameHarmonyFlow.flowId, sameNameAndroidFlow.flowId);
-assert.notStrictEqual(sameNameHarmonyFlow.flowDir, sameNameAndroidFlow.flowDir);
-assert.strictEqual(sameNameHarmonyFlow.platform, 'harmony');
-assert.strictEqual(sameNameAndroidFlow.platform, 'android');
-assert.ok(fs.statSync(path.join(repo, 'scripts/flow/start-recording.js')).mode & 0o111);
-assert.ok(fs.statSync(path.join(repo, 'scripts/flow/finalize-recording.js')).mode & 0o111);
-const emptyFlowStarted = JSON.parse(run('node', ['scripts/flow/start-recording.js', '--name', '空录制', '--intent', '空录制', '--platform', 'harmony', '--cwd', workspace]));
-const emptyReady = runAllowFailure('node', ['scripts/flow/finalize-recording.js', emptyFlowStarted.flowDir, '--recording-id', emptyFlowStarted.recordingId, '--status', 'READY']);
-assert.notStrictEqual(emptyReady.status, 0);
-assert.ok(emptyReady.stderr.includes('READY Flow requires at least one recorded step'));
-const inheritedFlowStarted = JSON.parse(run('node', ['scripts/flow/start-recording.js', '--name', '继承环境', '--intent', '继承环境', '--cwd', workspace, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']));
-fs.writeFileSync(fakeHdcLog, '');
-const inheritedFlowObserve = JSON.parse(run('./scripts/flow/observe.sh', ['--flow-dir', inheritedFlowStarted.flowDir, '--recording-id', inheritedFlowStarted.recordingId, '--label', '001-before'], { env: fakeEnv }));
-assert.strictEqual(inheritedFlowObserve.app.appId, 'com.example.demo');
-assert.strictEqual(inheritedFlowObserve.app.inTargetApp, true);
-const inheritedFlowAction = JSON.parse(run('./scripts/flow/action.sh', ['--flow-dir', inheritedFlowStarted.flowDir, '--recording-id', inheritedFlowStarted.recordingId, '--instruction', '启动目标 App', '--type', 'launchApp', '--settle-ms', '0'], { env: fakeEnv }));
-assert.strictEqual(inheritedFlowAction.actionResult.ok, true);
-const inheritedFlowLog = fs.readFileSync(fakeHdcLog, 'utf8');
-assert.ok(inheritedFlowLog.includes('shell uitest dumpLayout'));
-assert.ok(inheritedFlowLog.includes('shell uitest dumpLayout -p /data/local/tmp/mavt-001-before.json -m true -b com.example.demo'));
-assert.ok(inheritedFlowLog.includes('shell uitest dumpLayout -p /data/local/tmp/mavt-001-before.json -m true'));
-assert.ok(inheritedFlowLog.includes('shell uitest dumpLayout -p /data/local/tmp/mavt-001-before.json -b com.example.demo'));
-assert.ok(inheritedFlowLog.includes('shell uitest dumpLayout -p /data/local/tmp/mavt-001-before.json'));
-assert.ok(inheritedFlowLog.includes('-b com.example.demo'));
-assert.ok(inheritedFlowLog.includes('shell aa start -b com.example.demo -a EntryAbility'));
-const failedFlowStarted = JSON.parse(run('node', ['scripts/flow/start-recording.js', '--name', '失败录制', '--intent', '失败录制', '--cwd', workspace, '--platform', 'android', '--device', 'emulator-5554', '--app', 'com.example.demo', '--entry', 'EntryAbility']));
-write(path.join(failedFlowStarted.recordingDir, 'timeline.jsonl'), `${JSON.stringify({ time: '2026-01-01T00:00:00.000+08:00', type: 'flowRecordingStart', flowId: failedFlowStarted.flowId, recordingId: failedFlowStarted.recordingId, name: '失败录制', intent: ['失败录制'] })}\n${JSON.stringify({ time: '2026-01-01T00:00:01.000+08:00', type: 'observation', label: '001-before', artifacts: { screenshot: 'screenshots/001-before.png' } })}\n${JSON.stringify({ time: '2026-01-01T00:00:02.000+08:00', type: 'flowAction', humanInstruction: '点击失败入口', action: { type: 'tap', x: 1, y: 2, coordinateSource: 'layout', coordinateEvidence: '测试 bounds' }, actionResult: { type: 'actionResult', action: 'tap', ok: false, error: 'failed' } })}\n${JSON.stringify({ time: '2026-01-01T00:00:03.000+08:00', type: 'observation', label: '001-after', artifacts: { screenshot: 'screenshots/001-after.png' } })}\n`);
-const failedFlowReady = runAllowFailure('node', ['scripts/flow/finalize-recording.js', failedFlowStarted.flowDir, '--recording-id', failedFlowStarted.recordingId, '--status', 'READY']);
-assert.notStrictEqual(failedFlowReady.status, 0);
-assert.ok(failedFlowReady.stderr.includes('READY Flow step action failed'));
-const flowObserveBefore = JSON.parse(run('./scripts/flow/observe.sh', ['--flow-dir', flowStarted.flowDir, '--recording-id', flowStarted.recordingId, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--label', '001-before'], { env: fakeEnv }));
-assert.strictEqual(flowObserveBefore.artifacts.screenshot, 'screenshots/001-before.png');
-const flowAction = JSON.parse(run('./scripts/flow/action.sh', ['--flow-dir', flowStarted.flowDir, '--recording-id', flowStarted.recordingId, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--instruction', '点击底部创作入口', '--type', 'tap', '--x', '520', '--y', '1800', '--target', '创作', '--coordinate-source', 'visual', '--target-bounds', '500,1760,560,1840', '--coordinate-evidence', '底部创作入口像素区域', '--success-hint', '进入创作页', '--settle-ms', '0'], { env: fakeEnv }));
-assert.strictEqual(flowAction.type, 'flowAction');
-assert.strictEqual(flowAction.humanInstruction, '点击底部创作入口');
-assert.strictEqual(flowAction.actionResult.ok, true);
-assert.strictEqual(flowAction.action.coordinateSource, 'visual');
-assert.deepStrictEqual(flowAction.action.targetBounds, [500, 1760, 560, 1840]);
-const flowObserveAfter = JSON.parse(run('./scripts/flow/observe.sh', ['--flow-dir', flowStarted.flowDir, '--recording-id', flowStarted.recordingId, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--label', '001-after'], { env: fakeEnv }));
-assert.strictEqual(flowObserveAfter.artifacts.layout, 'layouts/001-after.json');
-const flowFinalized = JSON.parse(run('node', ['scripts/flow/finalize-recording.js', flowStarted.flowDir, '--recording-id', flowStarted.recordingId, '--status', 'READY']));
-assert.ok(fs.existsSync(flowFinalized.flowJson));
-assert.ok(fs.existsSync(flowFinalized.flowMd));
-const flowJson = json(flowFinalized.flowJson);
-assert.strictEqual(flowJson.id, flowStarted.flowId);
-assert.strictEqual(flowJson.status, 'READY');
-assert.strictEqual(flowJson.flowScope, 'universal');
-assert.strictEqual(flowJson.recordingPlatform, 'harmony');
-assert.strictEqual(flowJson.platform, undefined);
-assertLocalTime(flowJson.updatedAt);
-assert.strictEqual(flowJson.steps.length, 1);
-assert.strictEqual(flowJson.steps[0].humanInstruction, '点击底部创作入口');
-assert.strictEqual(flowJson.steps[0].beforeObservation.screenshot, `recordings/${flowStarted.recordingId}/screenshots/001-before.png`);
-assert.strictEqual(flowJson.steps[0].afterObservation.layout, `recordings/${flowStarted.recordingId}/layouts/001-after.json`);
-assert.strictEqual(flowJson.steps[0].successHint, '进入创作页');
-assert.strictEqual(flowJson.steps[0].action.coordinateSource, 'visual');
-assert.deepStrictEqual(flowJson.steps[0].action.targetBounds, [500, 1760, 560, 1840]);
-const flowMd = fs.readFileSync(flowFinalized.flowMd, 'utf8');
-assert.ok(flowMd.includes('# 进入创作页'));
-assert.ok(flowMd.includes('点击底部创作入口'));
-const androidSpecificFlow = JSON.parse(run('node', ['scripts/flow/start-recording.js', '--name', '进入创作页-android', '--intent', '进入创作页,打开创作入口', '--platform', 'android', '--flow-scope', 'platform', '--cwd', workspace]));
-assert.strictEqual(androidSpecificFlow.flowScope, 'platform');
-assert.strictEqual(androidSpecificFlow.platform, 'android');
-write(path.join(androidSpecificFlow.recordingDir, 'timeline.jsonl'), `${JSON.stringify({ time: '2026-01-01T00:00:00.000+08:00', type: 'flowRecordingStart', flowId: androidSpecificFlow.flowId, recordingId: androidSpecificFlow.recordingId, name: '进入创作页-android', intent: ['进入创作页', '打开创作入口'], recordingPlatform: 'android', flowScope: 'platform', platform: 'android' })}\n${JSON.stringify({ time: '2026-01-01T00:00:01.000+08:00', type: 'observation', label: '001-before', artifacts: { screenshot: 'screenshots/001-before.png' } })}\n${JSON.stringify({ time: '2026-01-01T00:00:02.000+08:00', type: 'flowAction', humanInstruction: '点击 Android 创作入口', action: { type: 'tap', x: 1, y: 2, coordinateSource: 'layout', coordinateEvidence: 'android bounds' }, actionResult: { type: 'actionResult', action: 'tap', ok: true }, successHint: '进入创作页' })}\n${JSON.stringify({ time: '2026-01-01T00:00:03.000+08:00', type: 'observation', label: '001-after', artifacts: { screenshot: 'screenshots/001-after.png' } })}\n`);
-const androidSpecificFinalized = JSON.parse(run('node', ['scripts/flow/finalize-recording.js', androidSpecificFlow.flowDir, '--recording-id', androidSpecificFlow.recordingId, '--status', 'READY']));
-const androidSpecificJson = json(androidSpecificFinalized.flowJson);
-assert.strictEqual(androidSpecificJson.flowScope, 'platform');
-assert.strictEqual(androidSpecificJson.recordingPlatform, 'android');
-assert.strictEqual(androidSpecificJson.platform, 'android');
-const listedFlows = JSON.parse(run('node', ['scripts/flow/list-flows.js', '--cwd', workspace]));
-assert.ok(listedFlows.flows.length >= 2);
-const genericListedFlow = listedFlows.flows.find((item) => item.flowId === flowStarted.flowId);
-assert.strictEqual(genericListedFlow.status, 'READY');
-assert.strictEqual(genericListedFlow.flowScope, 'universal');
-assert.strictEqual(genericListedFlow.recordingPlatform, 'harmony');
-assert.deepStrictEqual(genericListedFlow.intent, ['进入创作页', '打开创作入口']);
-assert.deepStrictEqual(genericListedFlow.successHints, ['进入创作页']);
-assert.strictEqual(genericListedFlow.steps.length, 1);
-assert.strictEqual(genericListedFlow.steps[0].id, 'flow-step-001');
-assert.strictEqual(genericListedFlow.steps[0].humanInstruction, '点击底部创作入口');
-assert.strictEqual(genericListedFlow.steps[0].action.type, 'tap');
-assert.strictEqual(genericListedFlow.steps[0].action.x, '520');
-assert.strictEqual(genericListedFlow.steps[0].beforeObservation.screenshot, `recordings/${flowStarted.recordingId}/screenshots/001-before.png`);
-const androidListedFlows = JSON.parse(run('node', ['scripts/flow/list-flows.js', '--cwd', workspace, '--platform', 'android']));
-assert.strictEqual(androidListedFlows.flows[0].flowId, androidSpecificFlow.flowId);
-assert.strictEqual(androidListedFlows.flows[0].platform, 'android');
-assert.strictEqual(androidListedFlows.flows[0].flowScope, 'platform');
-assert.strictEqual(androidListedFlows.flows[0].recordingPlatform, 'android');
-assert.strictEqual(androidListedFlows.flows[0].platformSpecific, true);
-const harmonyListedFlows = JSON.parse(run('node', ['scripts/flow/list-flows.js', '--cwd', workspace, '--platform', 'harmony']));
-assert.ok(!harmonyListedFlows.flows.some((item) => item.flowId === androidSpecificFlow.flowId));
-const allHarmonyListedFlows = JSON.parse(run('node', ['scripts/flow/list-flows.js', '--cwd', workspace, '--platform', 'harmony', '--all']));
-assert.ok(allHarmonyListedFlows.flows.some((item) => item.flowId === androidSpecificFlow.flowId));
+const preconditionFlowDir = path.join(workspace, 'flows', 'preconditions', 'enter-creation-page');
+const universalPreconditionFlow = {
+  schemaVersion: 2,
+  id: 'flow-enter-creation-page-universal',
+  name: '进入创作页',
+  usage: 'precondition',
+  platform: 'universal',
+  startCondition: { description: '当前位于首页，底部展示创作入口' },
+  endCondition: { description: '当前位于创作页，页面展示创作标题' },
+  steps: [{
+    id: 'flow-step-001',
+    instruction: '点击底部创作入口',
+    action: { type: 'tap', target: '创作入口' },
+  }],
+};
+const androidPreconditionFlow = {
+  ...universalPreconditionFlow,
+  id: 'flow-enter-creation-page-android',
+  platform: 'android',
+  startCondition: { description: '当前位于 Android 首页，底部展示创作入口' },
+};
+write(path.join(preconditionFlowDir, 'flow.json'), `${JSON.stringify(universalPreconditionFlow, null, 2)}\n`);
+write(path.join(preconditionFlowDir, 'android', 'flow.json'), `${JSON.stringify(androidPreconditionFlow, null, 2)}\n`);
 
-const flowCaseFile = path.join(sourceRoot, 'cases', 'flow-case.md');
-write(flowCaseFile, `# Flow 执行测试
+const harmonyFlowIndex = JSON.parse(run('node', ['scripts/flow/load-precondition-flows.js', '--platform', 'harmony', '--cwd', workspace]));
+assert.strictEqual(harmonyFlowIndex.flows.length, 1);
+assert.strictEqual(harmonyFlowIndex.flows[0].flowId, universalPreconditionFlow.id);
+assert.strictEqual(harmonyFlowIndex.flows[0].platform, 'universal');
+const androidFlowIndex = JSON.parse(run('node', ['scripts/flow/load-precondition-flows.js', '--platform', 'android', '--cwd', workspace]));
+assert.strictEqual(androidFlowIndex.flows[0].flowId, androidPreconditionFlow.id);
+assert.strictEqual(androidFlowIndex.flows[0].platform, 'android');
+assert.ok(!fs.existsSync(path.join(repo, 'scripts', 'flow', 'start-recording.js')));
+assert.ok(!fs.existsSync(path.join(repo, 'scripts', 'flow', 'record-scan.js')));
+
+const preconditionFlowCaseFile = path.join(sourceRoot, 'cases', 'precondition-flow.md');
+write(preconditionFlowCaseFile, `# 前置条件 Flow 执行测试
 
 ## 前置条件
-- App 已安装。
+- 用户已登录
+- 进入创作页
 
 ## 步骤
-1. 使用 ${flowStarted.flowId} 进入创作页。
+1. 验证创作页内容。
 `);
-const flowCaseParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowCaseFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-const flowCaseStart = JSON.parse(run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--start']));
-recordPreconditions(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId);
-recordGlobalFlowScan(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId);
-run('node', ['scripts/flow/record-scan.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowCaseStart.executionId, '--step-id', 'step-001', '--matched-flow-ids', flowStarted.flowId, '--reason', '步骤需要进入创作页，命中已录制 Flow']);
-run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+const preconditionFlowParsed = JSON.parse(run('node', ['scripts/parse-case.js', preconditionFlowCaseFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const preconditionFlowPreflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
+assert.strictEqual(preconditionFlowPreflight.summary.flowMatchedPreconditions, 1);
+assert.strictEqual(preconditionFlowPreflight.cases[0].preconditions[0].resolution, 'confirm');
+assert.strictEqual(preconditionFlowPreflight.cases[0].preconditions[1].resolution, 'flow');
+assert.strictEqual(preconditionFlowPreflight.cases[0].preconditions[1].flowId, universalPreconditionFlow.id);
+assert.ok(preconditionFlowPreflight.cases[0].preconditionPlanSha.startsWith('precondition-plan-'));
+const wrongFlowPlan = runAllowFailure('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--start', '--precondition-plan-sha', 'precondition-plan-wrong']);
+assert.notStrictEqual(wrongFlowPlan.status, 0);
+assert.ok(wrongFlowPlan.stderr.includes('PRECONDITION_FLOW_CHANGED'));
+
+const strictFlowCaseFile = path.join(sourceRoot, 'cases', 'precondition-flow-strict.md');
+write(strictFlowCaseFile, `# 前置条件 Flow 严格匹配测试
+
+## 前置条件
+- 进入创作页。
+
+## 步骤
+1. 验证页面。
+`);
+const strictFlowParsed = JSON.parse(run('node', ['scripts/parse-case.js', strictFlowCaseFile, '--cwd', workspace]));
+const strictFlowPreflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', strictFlowParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
+assert.strictEqual(strictFlowPreflight.summary.flowMatchedPreconditions, 0);
+assert.notStrictEqual(strictFlowPreflight.cases[0].preconditions[0].resolution, 'flow');
+
+const preconditionFlowStart = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+]));
+const preconditionFlowExecution = json(path.join(preconditionFlowStart.execDir, 'execution.json'));
+assert.strictEqual(preconditionFlowExecution.preconditionPlanSha, preconditionFlowPreflight.cases[0].preconditionPlanSha);
+assert.strictEqual(preconditionFlowExecution.preconditionPlan.preconditions[1].flowId, universalPreconditionFlow.id);
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'user_confirmed',
+  reason: '用户已确认登录态',
+}), '--execution-id', preconditionFlowStart.executionId]);
+
+const entryObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv }));
+assert.strictEqual(entryObservation.scope, 'precondition-flow');
+assert.strictEqual(entryObservation.phase, 'entry-check');
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'flow',
-  flowId: flowStarted.flowId,
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
   status: 'STARTED',
-  stepId: 'step-001',
-  reason: '当前步骤要求进入创作页',
-})]);
-run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  reason: 'entry-check observation 显示当前位于 Flow 起点',
+}), '--execution-id', preconditionFlowStart.executionId]);
+
+const beforeFlowStep = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--phase', 'before',
+], { env: fakeEnv }));
+assert.strictEqual(beforeFlowStep.flowStepId, 'flow-step-001');
+const preconditionFlowAction = JSON.parse(run('./scripts/action.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--type', 'tap',
+  '--target', '创作入口',
+  '--x', '9',
+  '--y', '10',
+  '--coordinate-source', 'visual',
+  '--target-bounds', '1,2,30,40',
+  '--coordinate-evidence', '当前截图中创作入口区域',
+  '--settle-ms', '0',
+], { env: fakeEnv }));
+assert.strictEqual(preconditionFlowAction.scope, 'precondition-flow');
+assert.strictEqual(preconditionFlowAction.preconditionId, 'pre-002');
+const afterFlowStep = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--phase', 'after',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'flow',
-  flowId: flowStarted.flowId,
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
   flowStepId: 'flow-step-001',
   status: 'STEP_COMPLETED',
-  stepId: 'step-001',
-  reason: '已参考录制路径点击创作入口',
-})]);
-run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  evidenceObservation: afterFlowStep.label,
+  reason: '动作成功且已完成动作后观察',
+}), '--execution-id', preconditionFlowStart.executionId]);
+const endFlowObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'end-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'flow',
-  flowId: flowStarted.flowId,
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
   status: 'COMPLETED',
-  stepId: 'step-001',
-  reason: '已进入创作页',
-})]);
-recordObservationEvent(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId, {
-  type: 'observation',
-  scope: 'global',
-  label: 'flow-step-001-before',
-  artifacts: {
-    screenshot: 'screenshots/flow-step-001-before.png',
-    layout: 'layouts/flow-step-001-before.json',
-  },
-});
-recordObservationEvent(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId, {
-  type: 'observation',
-  scope: 'global',
-  label: '002-after-flow-step-001',
-  artifacts: {
-    screenshot: 'screenshots/002-after-flow-step-001.png',
-    layout: 'layouts/002-after-flow-step-001.json',
-  },
-});
-recordPassAssertion(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId, 'step-001', '看到创作页', recordStepObservation(flowCaseParsed.caseDir, 'harmony', flowCaseStart.executionId, 'step-001', 'step-001-flow-result'));
-run('node', ['scripts/run-case.js', flowCaseParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS']);
-const flowCaseMetrics = json(path.join(flowCaseStart.execDir, 'metrics.json'));
-assert.strictEqual(flowCaseMetrics.flows.totalEvents, 3);
-assert.strictEqual(flowCaseMetrics.flows.scans, 2);
-assert.strictEqual(flowCaseMetrics.flows.matched, 1);
-assert.strictEqual(flowCaseMetrics.flows.completed, 1);
-const flowCaseContext = fs.readFileSync(path.join(flowCaseParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
-assert.ok(flowCaseContext.includes('## 业务路径 Flow'));
-assert.ok(flowCaseContext.includes('Flow 扫描'));
-assert.ok(flowCaseContext.includes(flowStarted.flowId));
-assert.ok(flowCaseContext.includes('COMPLETED'));
-const flowCaseHtml = fs.readFileSync(path.join(flowCaseParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
-assert.ok(flowCaseHtml.includes('业务路径 Flow'));
-assert.ok(flowCaseHtml.includes('Flow 扫描'));
-assert.ok(flowCaseHtml.includes('已进入创作页'));
-assert.ok(flowCaseHtml.includes('步骤复盘'));
-assert.ok(flowCaseHtml.includes('未关联观察'));
-assert.ok(flowCaseHtml.includes('flow-step-001-before.png'));
-assert.ok(flowCaseHtml.includes('002-after-flow-step-001.png'));
-const flowStepReviewCard = flowCaseHtml.match(/<article class="step-review-card">[\s\S]*?step-001[\s\S]*?<\/article>/)?.[0] || '';
-assert.ok(!flowStepReviewCard.includes('flow-step-001-before.png'));
-assert.ok(!flowStepReviewCard.includes('002-after-flow-step-001.png'));
+  evidenceObservation: endFlowObservation.label,
+  reason: 'end-check observation 显示已到达 Flow 终点',
+}), '--execution-id', preconditionFlowStart.executionId]);
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-002',
+  status: 'PREPARED',
+  resolution: 'flow',
+  flowId: universalPreconditionFlow.id,
+  evidenceObservation: endFlowObservation.label,
+  reason: 'Flow 已完成并验证终点',
+}), '--execution-id', preconditionFlowStart.executionId]);
+const preconditionFlowStepEvidence = recordStepObservation(preconditionFlowParsed.caseDir, 'harmony', preconditionFlowStart.executionId, 'step-001', 'precondition-flow-case-step');
+recordPassAssertion(preconditionFlowParsed.caseDir, 'harmony', preconditionFlowStart.executionId, 'step-001', '创作页内容符合预期', preconditionFlowStepEvidence);
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', preconditionFlowStart.executionId]);
+const preconditionFlowResult = json(path.join(preconditionFlowStart.execDir, 'result.json'));
+const preconditionFlowMetrics = json(path.join(preconditionFlowStart.execDir, 'metrics.json'));
+assert.strictEqual(preconditionFlowResult.status, 'PASS');
+assert.strictEqual(preconditionFlowResult.preconditionPlanSha, preconditionFlowPreflight.cases[0].preconditionPlanSha);
+assert.strictEqual(preconditionFlowResult.flowAssets[0].flowSha1, preconditionFlowPreflight.cases[0].flowMatches[0].flowSha1);
+assert.strictEqual(preconditionFlowMetrics.flows.planned, 1);
+assert.strictEqual(preconditionFlowMetrics.flows.completed, 1);
+assert.strictEqual(preconditionFlowMetrics.flows.actions, 1);
+const preconditionFlowContext = fs.readFileSync(path.join(preconditionFlowParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(preconditionFlowContext.includes('## 前置条件 Flow'));
+assert.ok(!preconditionFlowContext.includes('Flow 扫描'));
 
-const flowScanFailureFile = path.join(sourceRoot, 'cases', 'flow-scan-failure.md');
-write(flowScanFailureFile, `# Flow 扫描失败事实测试
+const startMismatch = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+]));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'user_confirmed',
+  reason: '用户已确认登录态',
+}), '--execution-id', startMismatch.executionId]);
+const mismatchObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', startMismatch.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
+  status: 'BLOCKED',
+  failureCode: 'PRECONDITION_FLOW_START_MISMATCH',
+  evidenceObservation: mismatchObservation.label,
+  reason: '当前页面既不是起点也不是终点',
+}), '--execution-id', startMismatch.executionId]);
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-002',
+  status: 'BLOCKED',
+  resolution: 'flow',
+  flowId: universalPreconditionFlow.id,
+  failureCode: 'PRECONDITION_FLOW_START_MISMATCH',
+  evidenceObservation: mismatchObservation.label,
+  reason: 'Flow 起点不匹配',
+}), '--execution-id', startMismatch.executionId]);
+const startMismatchResult = json(path.join(startMismatch.execDir, 'result.json'));
+assert.strictEqual(startMismatchResult.status, 'BLOCKED');
+assert.strictEqual(startMismatchResult.failureCode, 'PRECONDITION_FLOW_START_MISMATCH');
 
-## 前置条件
-- App 已安装。
-
-## 步骤
-1. 进入业务页。
-`);
-const flowScanFailureParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowScanFailureFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-const flowScanFailureStart = JSON.parse(run('node', ['scripts/run-case.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--start']));
-recordPreconditions(flowScanFailureParsed.caseDir, 'harmony', flowScanFailureStart.executionId);
-recordGlobalFlowScan(flowScanFailureParsed.caseDir, 'harmony', flowScanFailureStart.executionId);
-const failedFlowScan = runAllowFailure('node', ['scripts/flow/record-scan.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowScanFailureStart.executionId, '--step-id', 'step-001', '--matched-flow-ids', 'flow-not-scanned', '--reason', '测试扫描失败']);
-assert.notStrictEqual(failedFlowScan.status, 0);
-assert.ok(failedFlowScan.stderr.includes('matched Flow 不在扫描结果中'));
-const flowScanFailureEvents = fs.readFileSync(path.join(flowScanFailureStart.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
-const failedScanEvent = flowScanFailureEvents.find((event) => event.type === 'flowScan' && event.status === 'FAILED');
-assert.ok(failedScanEvent);
-assert.strictEqual(failedScanEvent.source, 'list-flows');
-assert.strictEqual(failedScanEvent.stepId, 'step-001');
-assert.ok(failedScanEvent.reason.includes('matched Flow 不在扫描结果中'));
-assert.deepStrictEqual(failedScanEvent.matchedFlowIds, []);
-const failedFlowScanActionPrecheck = runAllowFailure('node', ['scripts/run-case.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--check-budget', '--event-type', 'actionResult', '--action', 'tap', '--step-id', 'step-001', '--execution-id', flowScanFailureStart.executionId]);
-assert.notStrictEqual(failedFlowScanActionPrecheck.status, 0);
-assert.ok(failedFlowScanActionPrecheck.stderr.includes('FLOW_SCAN_REQUIRED'));
-run('node', ['scripts/run-case.js', flowScanFailureParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--failed-step', 'step-001', '--reason', '扫描失败后无法继续']);
-const flowScanFailureResult = json(path.join(flowScanFailureStart.execDir, 'result.json'));
-assert.strictEqual(flowScanFailureResult.status, 'BLOCKED');
-assert.strictEqual(flowScanFailureResult.failureCode, 'FLOW_SCAN_MISSING');
-
-const flowGuardFile = path.join(sourceRoot, 'cases', 'flow-guard.md');
-write(flowGuardFile, `# Flow 扫描守卫测试
-
-## 前置条件
-- App 已安装。
-
-## 步骤
-1. 点击业务页按钮。
-`);
-const flowGuardParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowGuardFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', flowGuardParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-const flowGuardStart = JSON.parse(run('node', ['scripts/run-case.js', flowGuardParsed.caseDir, '--platform', 'harmony', '--start']));
-recordPreconditions(flowGuardParsed.caseDir, 'harmony', flowGuardStart.executionId);
-run('node', ['scripts/run-case.js', flowGuardParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--failed-step', 'step-001', '--reason', '未找到业务按钮']);
-const flowGuardResult = json(path.join(flowGuardStart.execDir, 'result.json'));
-assert.strictEqual(flowGuardResult.status, 'BLOCKED');
-assert.strictEqual(flowGuardResult.failureCode, 'FLOW_SCAN_MISSING');
-assert.ok(flowGuardResult.reason.includes('Flow 扫描'));
-const flowGuardStepFile = path.join(sourceRoot, 'cases', 'flow-guard-step.md');
-write(flowGuardStepFile, `# Flow 扫描步骤关联守卫测试
-
-## 前置条件
-- App 已安装。
-
-## 步骤
-1. 进入业务页。
-2. 点击业务页按钮。
-`);
-const flowGuardStepParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowGuardStepFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', flowGuardStepParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-const flowGuardStepStart = JSON.parse(run('node', ['scripts/run-case.js', flowGuardStepParsed.caseDir, '--platform', 'harmony', '--start']));
-recordPreconditions(flowGuardStepParsed.caseDir, 'harmony', flowGuardStepStart.executionId);
-recordGlobalFlowScan(flowGuardStepParsed.caseDir, 'harmony', flowGuardStepStart.executionId);
-run('node', ['scripts/flow/record-scan.js', flowGuardStepParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowGuardStepStart.executionId, '--step-id', 'step-001', '--reason', '第一步已扫描 Flow']);
-run('node', ['scripts/run-case.js', flowGuardStepParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--failed-step', 'step-002', '--reason', '第二步未找到业务按钮']);
-const flowGuardStepResult = json(path.join(flowGuardStepStart.execDir, 'result.json'));
-assert.strictEqual(flowGuardStepResult.status, 'BLOCKED');
-assert.strictEqual(flowGuardStepResult.failureCode, 'FLOW_SCAN_MISSING');
-const flowGuardMatchedFile = path.join(sourceRoot, 'cases', 'flow-guard-matched.md');
-write(flowGuardMatchedFile, `# Flow 命中未处理守卫测试
-
-## 前置条件
-- App 已安装。
-
-## 步骤
-1. 进入业务页。
-`);
-const flowGuardMatchedParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowGuardMatchedFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', flowGuardMatchedParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-const flowGuardMatchedStart = JSON.parse(run('node', ['scripts/run-case.js', flowGuardMatchedParsed.caseDir, '--platform', 'harmony', '--start']));
-recordPreconditions(flowGuardMatchedParsed.caseDir, 'harmony', flowGuardMatchedStart.executionId);
-recordGlobalFlowScan(flowGuardMatchedParsed.caseDir, 'harmony', flowGuardMatchedStart.executionId);
-run('node', ['scripts/flow/record-scan.js', flowGuardMatchedParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowGuardMatchedStart.executionId, '--step-id', 'step-001', '--matched-flow-ids', flowStarted.flowId, '--reason', '命中 Flow 但未处理']);
-run('node', ['scripts/run-case.js', flowGuardMatchedParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--failed-step', 'step-001', '--reason', '未找到业务按钮']);
-const flowGuardMatchedResult = json(path.join(flowGuardMatchedStart.execDir, 'result.json'));
-assert.strictEqual(flowGuardMatchedResult.status, 'BLOCKED');
-assert.strictEqual(flowGuardMatchedResult.failureCode, 'FLOW_MATCH_UNRESOLVED');
-const flowGuardNoFailedStepParsed = JSON.parse(run('node', ['scripts/parse-case.js', flowGuardStepFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', flowGuardNoFailedStepParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-const flowGuardNoFailedStepStart = JSON.parse(run('node', ['scripts/run-case.js', flowGuardNoFailedStepParsed.caseDir, '--platform', 'harmony', '--start']));
-recordPreconditions(flowGuardNoFailedStepParsed.caseDir, 'harmony', flowGuardNoFailedStepStart.executionId);
-recordGlobalFlowScan(flowGuardNoFailedStepParsed.caseDir, 'harmony', flowGuardNoFailedStepStart.executionId);
-run('node', ['scripts/flow/record-scan.js', flowGuardNoFailedStepParsed.caseDir, '--platform', 'harmony', '--cwd', workspace, '--execution-id', flowGuardNoFailedStepStart.executionId, '--step-id', 'step-001', '--reason', '第一步已扫描 Flow']);
-run('node', ['scripts/run-case.js', flowGuardNoFailedStepParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'ACTION_TARGET_NOT_FOUND', '--reason', '未传失败步骤']);
-const flowGuardNoFailedStepResult = json(path.join(flowGuardNoFailedStepStart.execDir, 'result.json'));
-assert.strictEqual(flowGuardNoFailedStepResult.status, 'BLOCKED');
-assert.strictEqual(flowGuardNoFailedStepResult.failureCode, 'FLOW_SCAN_MISSING');
+const alreadySatisfied = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+]));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'user_confirmed',
+  reason: '用户已确认登录态',
+}), '--execution-id', alreadySatisfied.executionId]);
+const alreadySatisfiedObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', alreadySatisfied.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-002',
+  status: 'PASS',
+  resolution: 'already_satisfied',
+  flowId: universalPreconditionFlow.id,
+  evidenceObservation: alreadySatisfiedObservation.label,
+  reason: 'entry-check observation 显示已经满足 Flow 终点',
+}), '--execution-id', alreadySatisfied.executionId]);
+const alreadySatisfiedStepEvidence = recordStepObservation(preconditionFlowParsed.caseDir, 'harmony', alreadySatisfied.executionId, 'step-001', 'already-satisfied-case-step');
+recordPassAssertion(preconditionFlowParsed.caseDir, 'harmony', alreadySatisfied.executionId, 'step-001', '创作页内容符合预期', alreadySatisfiedStepEvidence);
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', alreadySatisfied.executionId]);
+const alreadySatisfiedMetrics = json(path.join(alreadySatisfied.execDir, 'metrics.json'));
+assert.strictEqual(alreadySatisfiedMetrics.flows.started, 0);
+assert.strictEqual(alreadySatisfiedMetrics.flows.alreadySatisfied, 1);
 
 const budgetFile = path.join(sourceRoot, 'cases', 'budget.md');
 write(budgetFile, `# 预算测试

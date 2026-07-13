@@ -6,6 +6,10 @@ source "$script_dir/lib/action-common.sh"
 case_dir=""
 execution_id=""
 step_id=""
+scope=""
+precondition_id=""
+flow_id=""
+flow_step_id=""
 action_type=""
 settle_ms="${MAVT_ACTION_SETTLE_MS:-1000}"
 target=""
@@ -27,11 +31,32 @@ has_device=0
 has_app=0
 has_entry=0
 
+mavt_add_precondition_flow_scope() {
+  local value="$1"
+  if [[ "$scope" != "precondition-flow" ]]; then
+    printf '%s' "$value"
+    return
+  fi
+  node -e '
+const event = JSON.parse(process.argv[1]);
+event.scope = "precondition-flow";
+event.preconditionId = process.argv[2];
+event.flowId = process.argv[3];
+event.flowStepId = process.argv[4];
+if (process.argv[5]) event.failureCode = process.argv[5];
+console.log(JSON.stringify(event, null, 2));
+' "$value" "$precondition_id" "$flow_id" "$flow_step_id" "${2:-}"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --case-dir) case_dir="${2:-}"; shift 2 ;;
     --execution-id) execution_id="${2:-}"; shift 2 ;;
     --step-id) step_id="${2:-}"; shift 2 ;;
+    --scope) scope="${2:-}"; shift 2 ;;
+    --precondition-id) precondition_id="${2:-}"; shift 2 ;;
+    --flow-id) flow_id="${2:-}"; shift 2 ;;
+    --flow-step-id) flow_step_id="${2:-}"; shift 2 ;;
     --platform) platform="${2:-}"; has_platform=1; args+=("$1" "$2"); shift 2 ;;
     --device) has_device=1; args+=("$1" "$2"); shift 2 ;;
     --app|--bundle) has_app=1; args+=("$1" "$2"); shift 2 ;;
@@ -65,6 +90,14 @@ if [[ -n "$case_dir" ]]; then
   fi
   if [[ "$action_type" == "restartApp" && -n "$step_id" ]]; then
     echo "STEP_ORDER_VIOLATION: restartApp 是 execution 级隔离动作，不能绑定步骤 stepId 或作为步骤证据。" >&2
+    exit 2
+  fi
+  if [[ -n "$step_id" && "$scope" == "precondition-flow" ]]; then
+    echo "PRECONDITION_FLOW_SCOPE_INVALID: precondition-flow action 不能绑定 --step-id。" >&2
+    exit 2
+  fi
+  if [[ "$scope" == "precondition-flow" && ( -z "$precondition_id" || -z "$flow_id" || -z "$flow_step_id" ) ]]; then
+    echo "PRECONDITION_FLOW_SCOPE_REQUIRED: precondition-flow action 必须传 --precondition-id、--flow-id 和 --flow-step-id。" >&2
     exit 2
   fi
   mavt_validate_coordinate_action case "$action_type" "$x" "$y" "$coordinate_source" "$coordinate_evidence" "$target_bounds"
@@ -101,6 +134,8 @@ if [[ -n "$case_dir" ]]; then
   precheck_args+=(--check-budget --event-type actionResult --action "$action_type" --execution-id "$execution_id")
   if [[ -n "$step_id" ]]; then
     precheck_args+=(--step-id "$step_id")
+  elif [[ "$scope" == "precondition-flow" ]]; then
+    precheck_args+=(--scope precondition-flow --precondition-id "$precondition_id" --flow-id "$flow_id" --flow-step-id "$flow_step_id")
   fi
   set +e
   precheck_output="$("$script_dir/run-case.js" "${precheck_args[@]}" 2>&1)"
@@ -120,9 +155,6 @@ if [[ -n "$case_dir" ]]; then
       exit "$precheck_status"
     fi
     failure_code="TOOL_ERROR"
-    if [[ "$precheck_output" == *"FLOW_SCAN_REQUIRED"* ]]; then
-      failure_code="FLOW_SCAN_REQUIRED"
-    fi
     result="$(mavt_action_failure_json "$action_type" "$precheck_output" "$precheck_status")"
     result="$(node -e '
 const event = JSON.parse(process.argv[1]);
@@ -137,6 +169,7 @@ event.stepId = process.argv[2];
 console.log(JSON.stringify(event, null, 2));
 ' "$result" "$step_id")"
     fi
+    result="$(mavt_add_precondition_flow_scope "$result")"
     MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
     finalize_args=("${run_case_args[@]}" --finalize --status BLOCKED --failure-code "$failure_code" --reason "$precheck_output" --execution-id "$execution_id")
     if [[ -n "$step_id" ]]; then
@@ -167,8 +200,17 @@ event.stepId = process.argv[2];
 console.log(JSON.stringify(event, null, 2));
 ' "$result" "$step_id")"
   fi
+  if [[ $adapter_status -ne 0 && "$scope" == "precondition-flow" ]]; then
+    result="$(mavt_add_precondition_flow_scope "$result" "PRECONDITION_FLOW_ACTION_FAILED")"
+  else
+    result="$(mavt_add_precondition_flow_scope "$result")"
+  fi
   MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
   if [[ $adapter_status -ne 0 ]]; then
+    if [[ "$scope" == "precondition-flow" ]]; then
+      printf '%s\n' "$result"
+      exit "$adapter_status"
+    fi
     failure_code="TOOL_ERROR"
     if [[ $adapter_status -eq 64 ]]; then
       failure_code="PLATFORM_UNIMPLEMENTED"

@@ -9,6 +9,10 @@ label=""
 has_label=0
 step_id=""
 scope=""
+precondition_id=""
+flow_id=""
+flow_step_id=""
+phase=""
 out=""
 args=()
 platform=""
@@ -22,6 +26,10 @@ while [[ $# -gt 0 ]]; do
     --execution-id) execution_id="${2:-}"; shift 2 ;;
     --step-id) step_id="${2:-}"; shift 2 ;;
     --scope) scope="${2:-}"; shift 2 ;;
+    --precondition-id) precondition_id="${2:-}"; shift 2 ;;
+    --flow-id) flow_id="${2:-}"; shift 2 ;;
+    --flow-step-id) flow_step_id="${2:-}"; shift 2 ;;
+    --phase) phase="${2:-}"; shift 2 ;;
     --global-observation) scope="global"; shift ;;
     --platform) platform="${2:-}"; has_platform=1; args+=("$1" "$2"); shift 2 ;;
     --device) has_device=1; args+=("$1" "$2"); shift 2 ;;
@@ -44,8 +52,16 @@ if [[ -n "$case_dir" ]]; then
   if [[ -z "$execution_id" ]]; then
     execution_id="$(mavt_latest_execution_id "$runtime_dir")"
   fi
-  if [[ -z "$step_id" && "$scope" != "global" ]]; then
-    echo "OBSERVATION_SCOPE_REQUIRED: case-bound observe 必须传 --step-id；全局诊断观察必须显式传 --scope global 或 --global-observation。" >&2
+  if [[ -n "$step_id" && "$scope" == "precondition-flow" ]]; then
+    echo "PRECONDITION_FLOW_SCOPE_INVALID: precondition-flow observation 不能绑定 --step-id。" >&2
+    exit 2
+  fi
+  if [[ "$scope" == "precondition-flow" && ( -z "$precondition_id" || -z "$flow_id" || -z "$phase" ) ]]; then
+    echo "PRECONDITION_FLOW_SCOPE_REQUIRED: precondition-flow observation 必须传 --precondition-id、--flow-id 和 --phase。" >&2
+    exit 2
+  fi
+  if [[ -z "$step_id" && "$scope" != "global" && "$scope" != "precondition-flow" ]]; then
+    echo "OBSERVATION_SCOPE_REQUIRED: case-bound observe 必须传 --step-id；全局诊断观察传 --scope global；前置 Flow 观察传 --scope precondition-flow。" >&2
     exit 2
   fi
   env_args=()
@@ -76,6 +92,11 @@ if [[ -n "$case_dir" ]]; then
     precheck_args+=(--step-id "$step_id")
   elif [[ "$scope" == "global" ]]; then
     precheck_args+=(--scope global)
+  elif [[ "$scope" == "precondition-flow" ]]; then
+    precheck_args+=(--scope precondition-flow --precondition-id "$precondition_id" --flow-id "$flow_id" --phase "$phase")
+    if [[ -n "$flow_step_id" ]]; then
+      precheck_args+=(--flow-step-id "$flow_step_id")
+    fi
   fi
 	  set +e
 	  precheck_output="$("$script_dir/run-case.js" "${precheck_args[@]}" 2>&1)"
@@ -86,6 +107,9 @@ if [[ -n "$case_dir" ]]; then
 	    exit "$precheck_status"
 	  fi
 	  printf '%s' "$precheck_output" | mavt_emit_pace_hint
+  if [[ "$scope" == "precondition-flow" && $has_label -eq 0 ]]; then
+    label="${precondition_id}-${flow_step_id:-flow}-${phase}"
+  fi
   numbered_label="$(mavt_numbered_observe_label "$case_dir" "$execution_id" "$label" "$platform")"
   args+=("--label" "$numbered_label")
   set +e
@@ -128,9 +152,37 @@ process.stdin.on("end", () => {
   process.stdout.write(`${JSON.stringify(event, null, 2)}\n`);
 });
 ')"
+  elif [[ "$scope" == "precondition-flow" ]]; then
+    observation="$(printf '%s' "$observation" | node -e '
+const [preconditionId, flowId, flowStepId, phase] = process.argv.slice(1);
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const event = JSON.parse(input);
+  event.source = "observe.sh";
+  event.scope = "precondition-flow";
+  event.preconditionId = preconditionId;
+  event.flowId = flowId;
+  if (flowStepId) event.flowStepId = flowStepId;
+  event.phase = phase;
+  if (event.observation && typeof event.observation === "object") {
+    event.observation.scope = "precondition-flow";
+    event.observation.preconditionId = preconditionId;
+    event.observation.flowId = flowId;
+    if (flowStepId) event.observation.flowStepId = flowStepId;
+    event.observation.phase = phase;
+  }
+  process.stdout.write(`${JSON.stringify(event, null, 2)}\n`);
+});
+' "$precondition_id" "$flow_id" "$flow_step_id" "$phase")"
   fi
 	  MAVT_OBSERVATION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-observation-json "$observation" --execution-id "$execution_id" >/dev/null
   if [[ $adapter_status -ne 0 ]]; then
+    if [[ "$scope" == "precondition-flow" ]]; then
+      printf '%s\n' "$observation"
+      exit "$adapter_status"
+    fi
     failure_code="TOOL_ERROR"
     if [[ $adapter_status -eq 64 ]]; then
       failure_code="PLATFORM_UNIMPLEMENTED"

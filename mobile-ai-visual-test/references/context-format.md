@@ -25,7 +25,7 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 
 当前 execution 的事实源。报告、结果和统计都从 timeline 和当前 `case.json` 渲染。
 
-事件类型：`executionStart`、`environmentProbe`、`precondition`、`observation`、`perception`、`decision`、`rule`、`flowScan`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。
+事件类型：`executionStart`、`environmentProbe`、`precondition`、`observation`、`perception`、`decision`、`rule`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。`flow` 及 `scope=precondition-flow` 的 observation/actionResult 只属于前置条件。
 
 事件 schema 见 `interfaces.md`。
 
@@ -59,6 +59,7 @@ finalized 后不得追加 timeline。
   "platform": "android",
   "sourceSha1": "source-xxxxxxxxxxxx",
   "caseContractSha": "contract-xxxxxxxxxxxx",
+  "preconditionPlanSha": "precondition-plan-xxxxxxxxxxxx",
   "status": "FAIL",
   "requestedStatus": "PASS",
   "failureCode": "ASSERTION_UNKNOWN",
@@ -69,13 +70,13 @@ finalized 后不得追加 timeline。
 }
 ```
 
-`status` 是归一结果，`requestedStatus` 是 agent 原始请求。`sourceSha1` 和 `caseContractSha` 用于判断旧结果是否仍适用。
+`status` 是归一结果，`requestedStatus` 是 agent 原始请求。`sourceSha1`、`caseContractSha` 和 `preconditionPlanSha` 用于判断旧结果是否仍适用；Flow 资产变化后旧结果不再展示。
 
 ## metrics.json
 
 每次执行都写，即使环境或前置条件阶段失败。
 
-稳定维度：status、requestedStatus、failureCode、sourceSha1、caseContractSha、durationMs、environment、precondition counts、step counts、action counts、flow counts、rule counts、foreground loss、restart/isolation、popup counts、artifact counts。
+稳定维度：status、requestedStatus、failureCode、sourceSha1、caseContractSha、preconditionPlanSha、durationMs、environment、precondition counts、step counts、action counts、precondition Flow planned/started/completed/failed/blocked/alreadySatisfied/actions、rule counts、foreground loss、restart/isolation、popup counts、artifact counts。
 
 `durationMs = endedAt - startedAt`，只覆盖当前 case。
 
@@ -91,7 +92,7 @@ cases/<case>/platforms/<platform>/state.json
 
 ## 源契约变化
 
-当最新结果与当前 `sourceSha1` 或 `caseContractSha` 不匹配：
+当最新结果与当前 `sourceSha1`、`caseContractSha` 或重新计算的 `preconditionPlanSha` 不匹配：
 
 - 隐藏旧结果。
 - 显示“源用例或执行契约变更”。
