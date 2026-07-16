@@ -7,13 +7,18 @@ const {
   renderIndexForRoot,
   workspaceRoot,
 } = require('../common');
+const { parseCliArgsOrExit } = require('../lib/cli-args');
 
 function usage() {
   console.error('Usage: render-index.js [workspace-cwd]');
   process.exit(2);
 }
 
-const input = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd();
+const parsedArgs = parseCliArgsOrExit(process.argv.slice(2), {
+  context: 'render-index.js',
+  maxPositionals: 1,
+});
+const input = parsedArgs.positionals[0] ? path.resolve(parsedArgs.positionals[0]) : process.cwd();
 const rootDir = workspaceRoot(input);
 const casesRoot = path.join(rootDir, 'cases');
 

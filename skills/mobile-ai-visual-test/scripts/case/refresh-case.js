@@ -17,13 +17,18 @@ const {
   writePlatformCaseReports,
   writeJson,
 } = require('../common');
+const { parseCliArgsOrExit } = require('../lib/cli-args');
 
 function usage() {
   console.error('用法: refresh-case.js <case-dir>');
   process.exit(2);
 }
 
-const caseDir = process.argv[2] ? path.resolve(process.argv[2]) : null;
+const parsedArgs = parseCliArgsOrExit(process.argv.slice(2), {
+  context: 'refresh-case.js',
+  maxPositionals: 1,
+});
+const caseDir = parsedArgs.positionals[0] ? path.resolve(parsedArgs.positionals[0]) : null;
 if (!caseDir) usage();
 
 const casePath = path.join(caseDir, 'case.json');

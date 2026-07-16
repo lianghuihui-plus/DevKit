@@ -23,6 +23,7 @@ const {
   writeJson,
   writeText,
 } = require('../common');
+const { parseCliArgsOrExit } = require('../lib/cli-args');
 
 function usage() {
   console.error('用法: parse-case.js <case.md> [--cwd <workspace-cwd>] [--refresh-from-input]');
@@ -32,14 +33,15 @@ function usage() {
 const args = process.argv.slice(2);
 if (!args.length) usage();
 
-let caseFile = null;
-let cwd = process.cwd();
-let refreshFromInput = false;
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--cwd') cwd = path.resolve(args[++i]);
-  else if (args[i] === '--refresh-from-input') refreshFromInput = true;
-  else if (!caseFile) caseFile = args[i];
-}
+const parsedArgs = parseCliArgsOrExit(args, {
+  context: 'parse-case.js',
+  valueOptions: ['--cwd'],
+  booleanOptions: ['--refresh-from-input'],
+  maxPositionals: 1,
+});
+const caseFile = parsedArgs.positionals[0] || null;
+const cwd = parsedArgs.values['--cwd'] ? path.resolve(parsedArgs.values['--cwd']) : process.cwd();
+const refreshFromInput = parsedArgs.values['--refresh-from-input'] === true;
 if (!caseFile) usage();
 
 const parsed = parseMarkdownCase(caseFile, cwd);

@@ -14,6 +14,7 @@ const {
   worsePreconditionStatus,
   workspaceRoot,
 } = require('./common');
+const { parseCliArgsOrExit } = require('./lib/cli-args');
 const { buildPreconditionPlan, planFlowSummaries, trimFlowName } = require('./lib/precondition-flow');
 
 function usage() {
@@ -112,20 +113,15 @@ function main() {
   const args = process.argv.slice(2);
   if (!args.length) usage();
 
-  let cwd = process.cwd();
-  let all = false;
-  let platform = '';
-  const refs = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--cwd') cwd = path.resolve(args[++i]);
-    else if (arg === '--all') all = true;
-    else if (arg === '--platform') {
-      platform = normalizePlatform(args[++i]);
-      if (!platform) usage();
-    }
-    else refs.push(arg);
-  }
+  const parsedArgs = parseCliArgsOrExit(args, {
+    context: 'preflight-preconditions.js',
+    valueOptions: ['--cwd', '--platform'],
+    booleanOptions: ['--all'],
+  });
+  const cwd = parsedArgs.values['--cwd'] ? path.resolve(parsedArgs.values['--cwd']) : process.cwd();
+  const all = parsedArgs.values['--all'] === true;
+  const platform = normalizePlatform(parsedArgs.values['--platform']);
+  const refs = parsedArgs.positionals;
   if (!all && refs.length === 0) usage();
   if (!platform) usage();
 

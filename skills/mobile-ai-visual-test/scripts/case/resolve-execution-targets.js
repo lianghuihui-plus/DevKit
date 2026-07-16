@@ -10,6 +10,7 @@ const {
   readCaseEntries,
   workspaceRoot,
 } = require('../common');
+const { parseCliArgsOrExit } = require('../lib/cli-args');
 
 function usage() {
   console.error('Usage: resolve-execution-targets.js <case-ref|case.md|dir> [...] [--cwd <workspace-cwd>]');
@@ -85,12 +86,12 @@ function toSummary(entry) {
 const args = process.argv.slice(2);
 if (!args.length) usage();
 
-let cwd = process.cwd();
-const inputs = [];
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--cwd') cwd = path.resolve(args[++i]);
-  else inputs.push(args[i]);
-}
+const parsedArgs = parseCliArgsOrExit(args, {
+  context: 'resolve-execution-targets.js',
+  valueOptions: ['--cwd'],
+});
+const cwd = parsedArgs.values['--cwd'] ? path.resolve(parsedArgs.values['--cwd']) : process.cwd();
+const inputs = parsedArgs.positionals;
 if (!inputs.length) usage();
 
 try {

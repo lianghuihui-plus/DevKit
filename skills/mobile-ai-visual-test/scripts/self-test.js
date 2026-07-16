@@ -163,6 +163,38 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'havt-self-test-'));
 const workspace = path.join(tmp, 'workspace');
 const sourceRoot = path.join(tmp, 'source');
 fs.mkdirSync(workspace);
+const untouchedNodeCliWorkspace = path.join(tmp, 'node-cli-untouched');
+for (const [script, scriptArgs] of [
+  ['scripts/resolve-execution-targets.js', [path.join(tmp, 'missing-case.md'), '--cwd', untouchedNodeCliWorkspace, '--definitely-unknown', 'value']],
+  ['scripts/parse-case.js', [path.join(tmp, 'missing-case.md'), '--cwd', untouchedNodeCliWorkspace, '--definitely-unknown', 'value']],
+  ['scripts/preflight-preconditions.js', [path.join(tmp, 'missing-case'), '--platform', 'harmony', '--cwd', untouchedNodeCliWorkspace, '--definitely-unknown', 'value']],
+  ['scripts/refresh-case.js', [path.join(tmp, 'missing-case'), '--definitely-unknown', 'value']],
+  ['scripts/render-index.js', [untouchedNodeCliWorkspace, '--definitely-unknown', 'value']],
+]) {
+  const result = runAllowFailure('node', [script, ...scriptArgs]);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('未知参数'));
+}
+assert.strictEqual(fs.existsSync(untouchedNodeCliWorkspace), false);
+for (const [script, scriptArgs] of [
+  ['scripts/resolve-execution-targets.js', ['--cwd']],
+  ['scripts/parse-case.js', [path.join(tmp, 'missing-case.md'), '--cwd']],
+  ['scripts/preflight-preconditions.js', [path.join(tmp, 'missing-case'), '--platform']],
+]) {
+  const result = runAllowFailure('node', [script, ...scriptArgs]);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('缺少参数值'));
+}
+for (const [script, scriptArgs] of [
+  ['scripts/parse-case.js', [path.join(tmp, 'missing-case.md'), 'extra']],
+  ['scripts/refresh-case.js', [path.join(tmp, 'missing-case'), 'extra']],
+  ['scripts/render-index.js', [untouchedNodeCliWorkspace, 'extra']],
+]) {
+  const result = runAllowFailure('node', [script, ...scriptArgs]);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('多余位置参数'));
+}
+assert.strictEqual(fs.existsSync(untouchedNodeCliWorkspace), false);
 for (const platform of ['harmony', 'android', 'ios']) {
   assertUnknownStableArgument('./scripts/probe-env.sh', platform);
   assertUnknownStableArgument('./scripts/prepare-env.sh', platform);
