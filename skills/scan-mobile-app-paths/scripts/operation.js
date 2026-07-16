@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+'use strict';
+
+const path = require('path');
+const { parseArgs, required, resolveScanDir, loadScan, readJson, loadFrontier, now, commitEvent, output, main, fail, safeSegment } = require('./lib/common');
+const { operationFile } = require('./lib/operation-journal');
+
+main(() => {
+  const args = parseArgs(); const command = args._[0] || 'list'; const { scanDir } = resolveScanDir(required(args, 'scanDir')); const scan = loadScan(scanDir, { mutable: command === 'reconcile' });
+  if (command === 'list') { const fs = require('fs'); const dir = path.join(scanDir, 'operations'); const items = fs.existsSync(dir) ? fs.readdirSync(dir).filter(name => name.endsWith('.json')).sort().map(name => readJson(path.join(dir, name))) : []; return output({ schemaVersion: 1, ok: true, items }); }
+  if (command !== 'reconcile') fail(`Unknown operation command: ${command}`, 'COMMAND_INVALID');
+  if (scan.status !== 'PAUSED') fail('Unknown operation reconciliation requires PAUSED', 'RUN_STATE_INVALID'); const operationId = safeSegment(required(args, 'operationId'), 'operationId'); const operation = readJson(operationFile(scanDir, operationId)); if (operation.status !== 'UNKNOWN_OUTCOME') fail('Operation is not awaiting reconciliation', 'OPERATION_STATE_INVALID');
+  const resolution = required(args, 'resolution').toUpperCase(); if (!['NO_EFFECT', 'EFFECT_OBSERVED'].includes(resolution)) fail('--resolution must be NO_EFFECT or EFFECT_OBSERVED', 'OPERATION_RESOLUTION_INVALID'); const observationId = required(args, 'observationId'); const observation = readJson(path.join(scanDir, 'evidence', 'observations', observationId, 'observation.json'));
+  if (observation.captureStatus !== 'COMPLETE' || observation.contextId !== operation.contextId || observation.foreground?.bundleName !== scan.target.bundleName) fail('Reconciliation requires a complete observation in the target App/context', 'OPERATION_RECONCILIATION_EVIDENCE_INVALID');
+  operation.status = resolution === 'NO_EFFECT' ? 'RESOLVED_NO_EFFECT' : 'RESOLVED_EFFECT'; operation.resolutionObservationId = observationId; operation.resolvedAt = now(); operation.reasonCode = resolution; operation.evidenceRef = `evidence/observations/${observationId}/observation.json`; const ops = [{ path: `operations/${operationId}.json`, op: 'REPLACE', value: operation }];
+  if (operation.owner?.type === 'ATTEMPT' && operation.owner.id) {
+    const attempt = readJson(path.join(scanDir, 'attempts', `${operation.owner.id}.json`), null); if (attempt) { attempt.status = 'FAILED'; attempt.reasonCode = resolution === 'NO_EFFECT' ? 'OPERATION_CONFIRMED_NO_EFFECT' : 'OPERATION_EFFECT_ABANDONED'; attempt.updatedAt = now(); ops.push({ path: `attempts/${attempt.attemptId}.json`, op: 'REPLACE', value: attempt }); const frontier = loadFrontier(scanDir, operation.contextId); const item = frontier.items.find(entry => entry.id === attempt.frontierId); if (item?.status === 'CLAIMED') { item.status = resolution === 'NO_EFFECT' && Number(item.attempts || 0) < 3 ? 'RETRYABLE' : 'FAILED'; item.reasonCode = attempt.reasonCode; item.claimToken = null; item.claimedAttemptId = null; item.resolvedAt = now(); item.lastAttemptId = attempt.attemptId; ops.push({ path: `contexts/${operation.contextId}/frontier.json`, op: 'UPSERT', collection: 'items', keyFields: ['id'], value: item }); } if (attempt.navigationExecutionId) { const navigation = readJson(path.join(scanDir, 'evidence', 'navigations', `${attempt.navigationExecutionId}.json`), null); if (navigation?.status === 'PLANNED') { navigation.status = 'CANCELLED'; navigation.reasonCode = attempt.reasonCode; navigation.finishedAt = now(); ops.push({ path: `evidence/navigations/${attempt.navigationExecutionId}.json`, op: 'REPLACE', value: navigation }); } } }
+  }
+  commitEvent(scanDir, 'deviceOperationReconciled', { contextId: operation.contextId, operationId, resolution, observationId, operation }, ops); output({ schemaVersion: 1, ok: true, operation, runStatus: 'PAUSED', nextStep: 'VERIFY_CONTEXT_AND_CURSOR_BEFORE_RESUME' });
+});
