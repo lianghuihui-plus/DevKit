@@ -64,7 +64,8 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 - Flow 观察和动作必须使用 `--scope precondition-flow`，绑定 `preconditionId`、`flowId`，步骤内事实另绑定 `flowStepId`；不得绑定 case `stepId`。
 - 每个 case 的 `--start` 都是新的 execution 边界，并自动记录 execution 级 `restartApp` 事实。
 - 步骤事实必须按 `case.json.steps` 顺序写入；进入后续步骤后不能回头补写前置步骤事实。
-- `assertion PASS` 必须绑定 `stepId`，并引用当前步骤由 `observe.sh` 写入的 observation 证据。
+- 每个业务步骤都必须以 `assertion PASS` 作为通过证据；成功 actionResult 和动作后的 observation 只是必要过程事实，不能单独完成步骤或推进到下一步。
+- `assertion PASS` 必须绑定 `stepId`，引用当前步骤最新 observation 的截图，并且前一条相关视觉理解必须是引用同一截图、包含 `reason` 的 `perception status=USABLE`；observation `label` 不能作为业务证据。
 - 请求 PASS 但任一步骤缺通过证据时，框架归一为 `FAIL/ASSERTION_UNKNOWN`。
 - `paceHint` 只是节奏提醒，不改变结果，也不能替代正式证据。
 

@@ -84,7 +84,7 @@ Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、�
 - `assertion`：主要验证预期结果。
 - `setup`：用例内准备动作。
 
-断言型步骤必须满足 `failure-policy.md` 的证据规则。
+所有 kind 的业务步骤都必须以 `assertion PASS` 作为最终通过证据，并满足 `failure-policy.md` 的视觉证据规则。`action` 和 `setup` 发生动作时，成功动作与动作后 observation 只记录过程是否完成，不能替代步骤断言。
 
 ## globalRules
 

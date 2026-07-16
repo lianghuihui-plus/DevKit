@@ -51,9 +51,11 @@
 
 ## 证据和顺序
 
-- 普通操作步骤：业务动作 `ok=true`，且动作后有同一步骤 observation。
-- 断言型步骤：`assertion PASS` 必须引用同一步骤 observation。
+- 所有业务步骤：只有 `assertion PASS` 才是步骤通过证据；发生业务动作时，`ok=true` 和动作后的同步骤 observation 是必要过程事实，但不能单独完成步骤。
+- 每个 `assertion PASS` 都必须引用同一步骤最新 observation 的截图，并且此前有引用同一截图、包含 `reason` 的 `perception status=USABLE`。
 - 页面已满足当前步骤时，也要先 observe，再写带证据的 PASS。
+- observation `label` 只用于定位和展示，不能作为业务 assertion 的证据；布局和日志只能补充截图证据。
+- 最新 perception 为 `UNUSABLE`、`UNCERTAIN`，或最新 observation 之后又执行了动作时，禁止请求 PASS；必须重新观察和判断，或按现有失败策略收尾。
 - `launchApp`、`restartApp`、`wait`、单独的 observation/perception/decision/rule，以及任何前置条件 Flow 事实都不能单独作为业务步骤通过证据。
 - 第一个步骤事实属于 `case.json.steps[0]`；前一步有通过证据后才能进入下一步；进入后续步骤后不能回补。
 

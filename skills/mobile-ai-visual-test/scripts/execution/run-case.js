@@ -39,8 +39,8 @@ const VALID_EVENT_TYPES = new Set([
   'result',
 ]);
 const VALID_DECISIONS = new Set(['act', 'assert_pass', 'assert_fail', 'wait', 'blocked']);
+const VALID_PERCEPTION_STATUSES = new Set(['USABLE', 'UNUSABLE', 'UNCERTAIN']);
 const VALID_ACTIONS = new Set(['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']);
-const STEP_EVIDENCE_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back']);
 const VALID_RULE_STATUSES = new Set(['MATCHED', 'SKIPPED', 'FAILED', 'BLOCKED', 'UNKNOWN']);
 const VALID_RULE_TYPES = new Set(['guard']);
 const VALID_RULE_FAILURES = new Set(['BLOCKED', 'UNKNOWN', 'FAIL']);
@@ -270,6 +270,9 @@ function validateEvent(event) {
   }
   if (event.type === 'decision') {
     if (!event.decision || !VALID_DECISIONS.has(event.decision)) throw new Error(`Unsupported decision: ${event.decision}`);
+  }
+  if (event.type === 'perception' && event.status !== undefined && !VALID_PERCEPTION_STATUSES.has(event.status)) {
+    throw new Error('perception status must be USABLE, UNUSABLE, or UNCERTAIN');
   }
   if (event.type === 'rule') {
     if (!event.ruleId || typeof event.ruleId !== 'string') throw new Error('rule event missing required field: ruleId');
@@ -752,21 +755,9 @@ function paceHint(events, nextEvent) {
   return null;
 }
 
-function stepRequiresAssertion(step) {
-  return step?.kind === 'assertion' || (Array.isArray(step?.assertions) && step.assertions.length > 0);
-}
-
 function stepEvidence(events, step) {
   const stepId = step.id;
-  return events.some((event, index) => {
-    if (eventStepId(event) !== stepId) return false;
-    if (event.type === 'assertion') return event.status === 'PASS';
-    if (stepRequiresAssertion(step)) return false;
-    if (event.type === 'actionResult' && event.ok === true && STEP_EVIDENCE_ACTIONS.has(actionType(event))) {
-      return events.slice(index + 1).some((next) => next.type === 'observation' && eventStepId(next) === stepId);
-    }
-    return false;
-  });
+  return events.some((event) => eventStepId(event) === stepId && event.type === 'assertion' && event.status === 'PASS');
 }
 
 function preconditionFailureCode(status) {
@@ -915,6 +906,14 @@ function assertionEvidenceReadiness(events, nextEvent, execDir = '') {
       reason: `assertion PASS 引用的证据不属于当前步骤 observation: ${missing.join(', ')}。`,
     };
   }
+  const nonArtifactRefs = refs.filter((ref) => !observations.some((observation) => observationArtifactRefs(observation).has(ref)));
+  if (nonArtifactRefs.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 只能引用 observation 产物，label 不能作为业务证据: ${nonArtifactRefs.join(', ')}。`,
+    };
+  }
   const missingArtifacts = [];
   for (const ref of refs) {
     for (const observation of observations) {
@@ -929,6 +928,38 @@ function assertionEvidenceReadiness(events, nextEvent, execDir = '') {
       ok: false,
       failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
       reason: `assertion PASS 引用的 observation 产物不存在: ${[...new Set(missingArtifacts)].join(', ')}。`,
+    };
+  }
+  const latestObservation = observations[observations.length - 1];
+  const latestObservationData = latestObservation.observation || latestObservation;
+  const latestScreenshot = normalizeEvidenceValue(latestObservationData.artifacts?.screenshot);
+  if (!latestScreenshot || !refs.includes(latestScreenshot)) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 必须引用 ${stepId} 最新 observation 的截图证据。`,
+    };
+  }
+  const latestObservationIndex = events.lastIndexOf(latestObservation);
+  const factsAfterObservation = events.slice(latestObservationIndex + 1)
+    .filter((event) => eventStepId(event) === stepId);
+  const actionAfterObservation = factsAfterObservation.find((event) => event.type === 'actionResult');
+  if (actionAfterObservation) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 前发生了未重新观察的动作；请重新 observe ${stepId} 并基于新截图判断。`,
+    };
+  }
+  const latestPerception = factsAfterObservation
+    .filter((event) => event.type === 'perception')
+    .slice(-1)[0];
+  const perceptionRefs = latestPerception ? assertionEvidenceRefs(latestPerception) : [];
+  if (!latestPerception || latestPerception.status !== 'USABLE' || !perceptionRefs.includes(latestScreenshot) || !String(latestPerception.reason || '').trim()) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 前必须为 ${stepId} 最新截图写入 status=USABLE、evidence 指向该截图且包含 reason 的 perception。`,
     };
   }
   return { ok: true };
@@ -1199,7 +1230,6 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
   }
 
   const stepStatus = new Map();
-  const stepById = new Map(caseJson.steps.map((step) => [step.id, step]));
   for (const event of events) {
     const stepId = event.stepId || event.step?.id;
     if (!stepId) continue;
@@ -1209,8 +1239,6 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
       else if (event.status === 'UNKNOWN') stepStatus.set(stepId, 'unknown');
     } else if (event.type === 'decision' && event.decision === 'blocked') {
       stepStatus.set(stepId, 'blocked');
-    } else if (event.type === 'actionResult' && event.ok !== false && !stepRequiresAssertion(stepById.get(stepId))) {
-      stepStatus.set(stepId, 'passed');
     }
   }
   const failedStepKnown = result.failedStep && stepStatus.has(result.failedStep);

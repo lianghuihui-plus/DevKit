@@ -84,10 +84,10 @@ scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan
 从 `case.json.steps[0]` 开始：
 
 1. 用 `observe.sh ... --step-id <step-id>` 采集当前证据。
-2. agent 基于最新 observation 做视觉理解和决策。
+2. agent 实际查看最新 observation 的截图；证据足以判断时写引用该截图、包含 `reason` 的 `perception status=USABLE`，否则不得请求 PASS。
 3. 需要动作时用 `action.sh ... --step-id <step-id>`。
 4. 动作后再次 observe 验证结果。
-5. 目标满足时立即写引用当前步骤 observation 的 `assertion PASS`；明确不满足时写失败断言或按失败策略收尾。
+5. 每个步骤的目标满足时立即写引用当前步骤最新截图的 `assertion PASS`；明确不满足时写失败断言或按失败策略收尾。成功 actionResult 和动作后的 observation 不能单独完成步骤，observation `label` 只用于定位和展示，不能作为业务证据。
 
 步骤阶段禁止 Flow 扫描、匹配和执行。前置条件 Flow 的 observation、action 和完成事件也不能充当业务步骤证据。
 

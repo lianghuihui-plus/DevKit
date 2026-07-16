@@ -106,7 +106,18 @@ function recordStepObservation(caseDir, platform, executionId, stepId, label = `
   return screenshot;
 }
 
+function recordUsablePerception(caseDir, platform, executionId, stepId, evidence, reason = 'self-test visual evidence is usable') {
+  return run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-json', JSON.stringify({
+    type: 'perception',
+    stepId,
+    status: 'USABLE',
+    evidence: Array.isArray(evidence) ? evidence : [evidence],
+    reason,
+  }), '--execution-id', executionId]);
+}
+
 function recordPassAssertion(caseDir, platform, executionId, stepId, reason, evidence) {
+  recordUsablePerception(caseDir, platform, executionId, stepId, evidence);
   return run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-json', JSON.stringify({
     type: 'assertion',
     stepId,
@@ -1013,12 +1024,20 @@ recordActionResult(passParsed.caseDir, 'harmony', passStart.executionId, {
   action: 'launchApp',
   ok: true,
 });
+recordActionResult(passParsed.caseDir, 'harmony', passStart.executionId, {
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'back',
+  ok: true,
+});
+recordStepObservation(passParsed.caseDir, 'harmony', passStart.executionId, 'step-001', 'step-001-action-after');
 const passMissingEvidence = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', passStart.executionId]));
 assert.ok(fs.existsSync(passMissingEvidence.result));
 const passMissingEvidenceResult = json(path.join(passStart.execDir, 'result.json'));
 assert.strictEqual(passMissingEvidenceResult.status, 'FAIL');
 assert.strictEqual(passMissingEvidenceResult.requestedStatus, 'PASS');
 assert.strictEqual(passMissingEvidenceResult.failureCode, 'ASSERTION_UNKNOWN');
+assert.strictEqual(passMissingEvidenceResult.failedStep, 'step-001');
 assert.strictEqual(json(path.join(passStart.execDir, 'execution.json')).finalized, true);
 const passHtml = fs.readFileSync(path.join(passParsed.caseDir, 'CONTEXT.html'), 'utf8');
 assert.ok(passHtml.includes('预期看到首页'));
@@ -1032,11 +1051,44 @@ recordActionResult(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 
   action: 'launchApp',
   ok: true,
 });
+recordActionResult(passParsed.caseDir, 'harmony', passSuccessStart.executionId, {
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'back',
+  ok: true,
+});
 const paceEvidence = recordStepObservation(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-001', 'step-001-after');
 const repeatedObservePrecheck = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--check-budget', '--event-type', 'observation', '--step-id', 'step-001', '--execution-id', passSuccessStart.executionId]));
 assert.strictEqual(repeatedObservePrecheck.budgetOk, true);
 assert.strictEqual(repeatedObservePrecheck.paceHint?.level, 'WARN');
 assert.strictEqual(repeatedObservePrecheck.paceHint?.suggestedNextAction, 'assert_or_act');
+const actionAndObservationCannotAdvance = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'decision',
+  stepId: 'step-002',
+  decision: 'assert_pass',
+  reason: '动作成功并有后续 observation 仍不能代替步骤 PASS 断言',
+}), '--execution-id', passSuccessStart.executionId]);
+assert.notStrictEqual(actionAndObservationCannotAdvance.status, 0);
+assert.ok(actionAndObservationCannotAdvance.stderr.includes('进入 step-002 前，必须先为 step-001 写入通过证据'));
+const passWithoutPerception = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '引用了截图但没有当前视觉判断',
+  evidence: [paceEvidence],
+}), '--execution-id', passSuccessStart.executionId]);
+assert.notStrictEqual(passWithoutPerception.status, 0);
+assert.ok(passWithoutPerception.stderr.includes('status=USABLE'));
+recordUsablePerception(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-001', paceEvidence);
+const passWithLabelEvidence = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: 'label 不能充当业务证据',
+  evidence: ['step-001-after'],
+}), '--execution-id', passSuccessStart.executionId]);
+assert.notStrictEqual(passWithLabelEvidence.status, 0);
+assert.ok(passWithLabelEvidence.stderr.includes('label 不能作为业务证据'));
 recordPassAssertion(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-001', 'App 已打开，当前页面满足第一步目标', paceEvidence);
 recordPassAssertion(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-002', '看到首页', recordStepObservation(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-002', 'step-002-after'));
 run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', passSuccessStart.executionId]);
@@ -1909,6 +1961,7 @@ recordActionResult(rulesParsed.caseDir, 'harmony', rulesStart.executionId, {
   action: 'tap',
   ok: true,
 });
+recordPassAssertion(rulesParsed.caseDir, 'harmony', rulesStart.executionId, 'step-001', '规则动作完成后页面状态符合步骤预期', recordStepObservation(rulesParsed.caseDir, 'harmony', rulesStart.executionId, 'step-001', 'step-001-rule-after'));
 run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', rulesStart.executionId]);
 const rulesMetrics = json(path.join(rulesStart.execDir, 'metrics.json'));
 assert.strictEqual(rulesMetrics.eventCounts.rule, 1);

@@ -162,6 +162,8 @@ adapter 内部可以调用 atoms，但不得：
 
 动作集合和坐标要求见 `action-schema.md`。前置条件 Flow 动作使用 `scope=precondition-flow`，并绑定 `preconditionId`、`flowId`、`flowStepId`；它不属于 case step。
 
+业务步骤中的 `actionResult ok=true` 只证明动作执行成功。即使随后已有同步骤 observation，也不能单独完成步骤或进入下一步；每个业务步骤最终都必须写入满足下述视觉证据门禁的 `assertion PASS`。
+
 Flow 动作执行前由 `run-case.js` 对照 `execution.json` 中冻结的 action 做硬校验，actionResult 同时保存 `requestedAction` 供执行后复核。
 
 ## Agent 事实
@@ -179,6 +181,20 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实：
 
 不要为了说明想法写入不会影响执行的事实。
 
+用于支持业务 `assertion PASS` 的 `perception` 必须绑定当前步骤最新 observation 的截图：
+
+```json
+{
+  "type": "perception",
+  "stepId": "step-001",
+  "status": "USABLE",
+  "evidence": ["screenshots/001-step-001-after.png"],
+  "reason": "已实际查看当前截图，内容完整且足以判断本步骤"
+}
+```
+
+`status` 可为 `USABLE`、`UNUSABLE` 或 `UNCERTAIN`。只有 `USABLE` 且包含 `reason` 的当前截图 perception 可以支持 PASS；其他 perception 仍可用于记录影响后续动作的视觉理解，但不能作为通过门禁。
+
 `precondition` 最小模板：
 
 ```json
@@ -194,7 +210,7 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实：
 
 ## Assertion
 
-`assertion PASS` 必须引用当前步骤已有 observation 证据：
+每个业务步骤都必须以 `assertion PASS` 作为通过证据。PASS 必须引用当前步骤最新 observation 的截图，并且此前已有引用同一截图的 `perception status=USABLE`：
 
 ```json
 {
@@ -205,6 +221,8 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实：
   "evidence": ["screenshots/001-step-001-after.png"]
 }
 ```
+
+业务 assertion 的 `evidence` 只能引用 observation 产物路径；`label` 只用于定位和展示。前置条件 Flow 的 `evidenceObservation` 标识协议不受此规则影响。
 
 证据要求和 PASS 归一规则见 `failure-policy.md`。
 

@@ -1023,12 +1023,6 @@ function eventAction(event) {
   return event.action?.type || event.action || '';
 }
 
-const STEP_EVIDENCE_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back']);
-
-function hasStepObservationAfter(events, stepId, index) {
-  return events.slice(index + 1).some((event) => event.type === 'observation' && eventStepId(event) === stepId);
-}
-
 function assertionEvidenceText(event) {
   const refs = [
     ...(Array.isArray(event.evidence) ? event.evidence : []),
@@ -1055,21 +1049,15 @@ function eventSummary(event) {
 
 function deriveStepStatuses(caseJson, result, events) {
   const statuses = new Map(caseJson.steps.map((step) => [step.id, 'PENDING']));
-  const stepById = new Map(caseJson.steps.map((step) => [step.id, step]));
-  for (const [index, event] of events.entries()) {
+  for (const event of events) {
     const stepId = eventStepId(event);
     if (!stepId || !statuses.has(stepId)) continue;
-    const step = stepById.get(stepId);
     if (event.type === 'assertion') {
       statuses.set(stepId, event.status || 'UNKNOWN');
     } else if (event.type === 'decision' && event.decision === 'blocked') {
       statuses.set(stepId, 'BLOCKED');
-    } else if (event.type === 'actionResult' && !stepRequiresAssertion(step)) {
-      if (event.ok === false) {
-        statuses.set(stepId, 'FAIL');
-      } else if (STEP_EVIDENCE_ACTIONS.has(eventAction(event)) && hasStepObservationAfter(events, stepId, index)) {
-        statuses.set(stepId, 'PASS');
-      }
+    } else if (event.type === 'actionResult' && event.ok === false) {
+      statuses.set(stepId, 'FAIL');
     }
   }
   if (result?.status === 'PASS') {
@@ -1079,10 +1067,6 @@ function deriveStepStatuses(caseJson, result, events) {
     statuses.set(result.failedStep, result.status === 'BLOCKED' ? 'BLOCKED' : result.status === 'UNKNOWN' ? 'UNKNOWN' : 'FAIL');
   }
   return statuses;
-}
-
-function stepRequiresAssertion(step) {
-  return step?.kind === 'assertion' || (Array.isArray(step?.assertions) && step.assertions.length > 0);
 }
 
 function executionRelativePath(executionId, artifactPath) {
