@@ -17,38 +17,53 @@ function parseOptionalNumber(value) {
   return Number.isFinite(number) ? number : undefined;
 }
 
+function invalidArgument(message) {
+  const error = new Error(message);
+  error.exitCode = 2;
+  return error;
+}
+
+function requiredValue(argv, index, option) {
+  if (index >= argv.length) throw invalidArgument(`${option} 缺少参数值`);
+  return argv[index];
+}
+
 function parseArgs(argv) {
   const options = { rest: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     switch (arg) {
       case '--device':
-        options.device = argv[++i];
+        options.device = requiredValue(argv, ++i, arg);
         break;
       case '--app':
       case '--bundle':
-        options.appId = argv[++i];
+        options.appId = requiredValue(argv, ++i, arg);
+        break;
+      case '--entry':
+      case '--ability':
+        options.entry = requiredValue(argv, ++i, arg);
         break;
       case '--device-type':
-        options.deviceType = argv[++i];
+        options.deviceType = requiredValue(argv, ++i, arg);
         break;
       case '--appium-server':
-        options.appiumServer = argv[++i];
+        options.appiumServer = requiredValue(argv, ++i, arg);
         break;
       case '--wda-local-port':
-        options.wdaLocalPort = argv[++i];
+        options.wdaLocalPort = requiredValue(argv, ++i, arg);
         break;
       case '--web-driver-agent-url':
-        options.webDriverAgentUrl = argv[++i];
+        options.webDriverAgentUrl = requiredValue(argv, ++i, arg);
         break;
       case '--xcode-org-id':
-        options.xcodeOrgId = argv[++i];
+        options.xcodeOrgId = requiredValue(argv, ++i, arg);
         break;
       case '--xcode-signing-id':
-        options.xcodeSigningId = argv[++i];
+        options.xcodeSigningId = requiredValue(argv, ++i, arg);
         break;
       case '--updated-wda-bundle-id':
-        options.updatedWDABundleId = argv[++i];
+        options.updatedWDABundleId = requiredValue(argv, ++i, arg);
         break;
       case '--show-xcode-log':
         options.showXcodeLog = argv[i + 1] && !argv[i + 1].startsWith('--') ? parseBoolean(argv[++i]) : true;
@@ -63,10 +78,10 @@ function parseArgs(argv) {
         options.allowProvisioningDeviceRegistration = argv[i + 1] && !argv[i + 1].startsWith('--') ? parseBoolean(argv[++i]) : true;
         break;
       case '--wda-launch-timeout':
-        options.wdaLaunchTimeout = argv[++i];
+        options.wdaLaunchTimeout = requiredValue(argv, ++i, arg);
         break;
       case '--derived-data-path':
-        options.derivedDataPath = argv[++i];
+        options.derivedDataPath = requiredValue(argv, ++i, arg);
         break;
       default:
         options.rest.push(arg);
@@ -74,6 +89,15 @@ function parseArgs(argv) {
     }
   }
   return options;
+}
+
+function validateRestArgs(args, allowedOptions, context) {
+  const allowed = new Set(allowedOptions || []);
+  for (let i = 0; i < args.length; i += 1) {
+    const option = args[i];
+    if (!allowed.has(option)) throw invalidArgument(`${context} 未知参数: ${option}`);
+    requiredValue(args, ++i, option);
+  }
 }
 
 function run(command, args, options = {}) {
@@ -151,4 +175,5 @@ module.exports = {
   parseArgs,
   parseBoolean,
   run,
+  validateRestArgs,
 };

@@ -55,6 +55,20 @@ agent 只调用稳定入口层。内部实现层、平台 adapter 和 atoms 不�
 
 正式 case-bound 入口必须显式传 `--platform <harmony|android|ios>`。
 
+### 参数所有权
+
+稳定入口必须在调用平台 adapter、写 timeline 或触发 finalize 前拒绝未知参数，参数错误统一退出 `2`。平台分发器只选择 adapter，不解释业务参数；adapter 和 atom 继续做防御性校验，不得静默忽略未知参数。
+
+| 参数类型 | 所属层 | 是否下传到 adapter |
+| --- | --- | --- |
+| `case-dir`、`execution-id`、`step-id`、`scope`、Flow 绑定参数 | 稳定入口 | 否 |
+| `reason`、`target`、`coordinate-*`、`settle-ms` | 稳定入口的审计或编排信息 | 否 |
+| `type`、坐标、`text`、`ms`、`velocity`、`duration-ms` | 统一动作参数 | 是，仅传动作所需字段 |
+| `device`、`app/bundle`、`entry/ability` | 平台环境参数 | 是 |
+| iOS Appium/WDA 参数 | `update-env.js` 固化的 state | 仅在 case-bound 入口解析完成后注入 iOS adapter |
+
+新增参数时必须先在本节和对应领域契约中确定所有权，再修改稳定入口与 adapter；不能依靠底层忽略多余参数维持兼容。
+
 ## PlatformAdapter
 
 平台 adapter 对外提供统一能力：

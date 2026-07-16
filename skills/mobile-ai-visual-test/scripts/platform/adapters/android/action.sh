@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 atoms_dir="$script_dir/atoms"
+source "$script_dir/../../../lib/action-common.sh"
 
 device=""
 bundle=""
@@ -49,6 +50,9 @@ if [[ -z "$type" ]]; then
   echo "缺少 --type" >&2
   exit 2
 fi
+
+adapter_action="$(mavt_action_request_json "$type" "" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$ms" "" "$velocity" "" "" "")"
+mavt_validate_action_request "$script_dir/../../../lib/action-contract.js" "$adapter_action" "Android adapter"
 
 device_args=()
 if [[ -n "$device" ]]; then
@@ -102,11 +106,18 @@ case "$type" in
     run_atom "$type" "$atoms_dir/input-text.sh" "${device_args[@]}" --text "$text"
     ;;
   swipe)
-    duration_args=()
-    if [[ -n "$velocity" ]]; then
-      duration_args=(--duration-ms "$velocity")
-    fi
-    run_atom "$type" "$atoms_dir/swipe.sh" "${device_args[@]}" --from-x "$from_x" --from-y "$from_y" --to-x "$to_x" --to-y "$to_y" "${duration_args[@]}"
+    swipe_duration_ms="$(node -e '
+const { swipeDurationMs } = require(process.argv[1]);
+process.stdout.write(String(swipeDurationMs({
+  type: "swipe",
+  fromX: process.argv[2],
+  fromY: process.argv[3],
+  toX: process.argv[4],
+  toY: process.argv[5],
+  velocity: process.argv[6] || 600,
+})));
+' "$script_dir/../../../lib/action-contract.js" "$from_x" "$from_y" "$to_x" "$to_y" "${velocity:-600}")"
+    run_atom "$type" "$atoms_dir/swipe.sh" "${device_args[@]}" --from-x "$from_x" --from-y "$from_y" --to-x "$to_x" --to-y "$to_y" --duration-ms "$swipe_duration_ms"
     ;;
   back)
     run_atom "$type" "$atoms_dir/keyevent.sh" "${device_args[@]}" --key BACK

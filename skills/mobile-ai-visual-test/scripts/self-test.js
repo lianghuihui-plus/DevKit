@@ -8,6 +8,7 @@ const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
 const { caseContractSha, formatDuration, displayFailureCode } = require('./common');
+const { swipeDurationMs, validateAction } = require('./lib/action-contract');
 
 const repo = path.resolve(__dirname, '..');
 process.env.MAVT_SELF_TEST = '1';
@@ -36,6 +37,12 @@ function runAllowFailure(cmd, args, options = {}) {
       stderr: error.stderr || '',
     };
   }
+}
+
+function assertUnknownStableArgument(cmd, platform) {
+  const result = runAllowFailure(cmd, ['--platform', platform, '--definitely-unknown', 'value']);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('未知参数'));
 }
 
 function write(file, text) {
@@ -145,6 +152,30 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'havt-self-test-'));
 const workspace = path.join(tmp, 'workspace');
 const sourceRoot = path.join(tmp, 'source');
 fs.mkdirSync(workspace);
+for (const platform of ['harmony', 'android', 'ios']) {
+  assertUnknownStableArgument('./scripts/probe-env.sh', platform);
+  assertUnknownStableArgument('./scripts/prepare-env.sh', platform);
+  assertUnknownStableArgument('./scripts/observe.sh', platform);
+  assertUnknownStableArgument('./scripts/action.sh', platform);
+}
+for (const command of [
+  ['./scripts/platform/adapters/harmony/prepare-env.sh', ['--definitely-unknown', 'value']],
+  ['./scripts/platform/adapters/android/prepare-env.sh', ['--definitely-unknown', 'value']],
+  ['node', ['scripts/platform/adapters/ios/lib/ios-driver.js', 'prepare', '--definitely-unknown', 'value']],
+]) {
+  const result = runAllowFailure(command[0], command[1]);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('未知参数'));
+}
+assert.strictEqual(swipeDurationMs({ type: 'swipe', fromX: 10, fromY: 10, toX: 10, toY: 130, velocity: 600 }), 200);
+assert.throws(
+  () => validateAction({ type: 'swipe', fromX: 10, fromY: 10, toX: 10, toY: 130, velocity: 199 }),
+  /velocity must be an integer from 200 to 40000 px\/s/,
+);
+assert.throws(
+  () => validateAction({ type: 'swipe', fromX: 10, fromY: 10, toX: 10, toY: 130, durationMs: 200 }),
+  /durationMs is not allowed for swipe/,
+);
 assert.strictEqual(formatDuration(850), '850ms');
 assert.strictEqual(formatDuration(12300), '12s');
 assert.strictEqual(formatDuration(200000), '3m 20s');
@@ -1260,6 +1291,13 @@ const androidStart = JSON.parse(run('node', ['scripts/run-case.js', androidParse
 assert.ok(androidStart.execDir.includes('/platforms/android/executions/'));
 recordPreconditions(androidParsed.caseDir, 'android', androidStart.executionId);
 recordGlobalFlowScan(androidParsed.caseDir, 'android', androidStart.executionId);
+const androidTimelinePath = path.join(androidStart.execDir, 'timeline.jsonl');
+const androidTimelineBeforeInvalidAction = fs.readFileSync(androidTimelinePath, 'utf8');
+const androidInvalidActionArgument = runAllowFailure('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--definitely-unknown', 'value'], { env: fakeAndroidEnv });
+assert.strictEqual(androidInvalidActionArgument.status, 2);
+assert.ok(androidInvalidActionArgument.stderr.includes('action.sh 未知参数'));
+assert.strictEqual(fs.readFileSync(androidTimelinePath, 'utf8'), androidTimelineBeforeInvalidAction);
+assert.ok(!fs.existsSync(path.join(androidStart.execDir, 'result.json')));
 const androidObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--label', 'step-001-before'], { env: fakeAndroidEnv }));
 assert.strictEqual(androidObservation.platform, 'android');
 assert.strictEqual(androidObservation.label, '001-step-001-before');
@@ -1278,6 +1316,11 @@ assert.strictEqual(androidLongPress.action, 'longPress');
 assert.strictEqual(androidLongPress.ok, true);
 assert.strictEqual(androidLongPress.durationMs, 900);
 assert.strictEqual(androidLongPress.coordinateSource, 'layout');
+const androidSwipe = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'swipe', '--from-x', '10', '--from-y', '10', '--to-x', '10', '--to-y', '130', '--velocity', '600', '--settle-ms', '0'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidSwipe.action, 'swipe');
+assert.strictEqual(androidSwipe.ok, true);
+assert.strictEqual(androidSwipe.durationMs, 200);
+assert.strictEqual(androidSwipe.requestedAction.velocity, 600);
 const androidInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', 'hello world', '--settle-ms', '0'], { env: fakeAndroidEnv }));
 assert.strictEqual(androidInput.action, 'inputText');
 assert.strictEqual(androidInput.ok, true);
@@ -1287,6 +1330,12 @@ assert.strictEqual(androidUnicodeInput.ok, true);
 assert.strictEqual(androidUnicodeInput.inputMethod, 'mavt-input-ime');
 assert.strictEqual(androidUnicodeInput.inputStateUsage, 'diagnostic_only');
 assert.strictEqual(androidUnicodeInput.preInputState.hasEditableConnection, false);
+const androidWaitReason = '等待 Android 页面稳定';
+const androidWait = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--reason', androidWaitReason], { env: fakeAndroidEnv }));
+assert.strictEqual(androidWait.action, 'wait');
+assert.strictEqual(androidWait.ok, true);
+assert.strictEqual(androidWait.ms, 0);
+assert.strictEqual(androidWait.requestedAction.reason, androidWaitReason);
 run('node', ['scripts/run-case.js', androidParsed.caseDir, '--platform', 'android', '--finalize', '--status', 'UNKNOWN', '--reason', 'Android adapter smoke test complete', '--execution-id', androidStart.executionId]);
 const fakeAdbOutput = fs.readFileSync(fakeAdbLog, 'utf8');
 assert.ok(fakeAdbOutput.includes('shell am start -n com.example.demo/.PrivateActivity'));
@@ -1295,6 +1344,7 @@ assert.ok(fakeAdbOutput.includes('exec-out screencap -p'));
 assert.ok(fakeAdbOutput.includes('shell uiautomator dump'));
 assert.ok(fakeAdbOutput.includes('shell input tap 1 2'));
 assert.ok(fakeAdbOutput.includes('shell input swipe 3 4 3 4 900'));
+assert.ok(fakeAdbOutput.includes('shell input swipe 10 10 10 130 200'));
 assert.ok(fakeAdbOutput.includes('shell input text hello%sworld'));
 assert.ok(fakeAdbOutput.includes('install -r'));
 assert.strictEqual((fakeAdbOutput.match(/install -r/g) || []).length, 1);
@@ -1391,6 +1441,13 @@ const iosStart = JSON.parse(run('node', ['scripts/run-case.js', iosParsed.caseDi
 assert.ok(iosStart.execDir.includes('/platforms/ios/executions/'));
 recordPreconditions(iosParsed.caseDir, 'ios', iosStart.executionId);
 recordGlobalFlowScan(iosParsed.caseDir, 'ios', iosStart.executionId);
+const iosTimelinePath = path.join(iosStart.execDir, 'timeline.jsonl');
+const iosTimelineBeforeInvalidAction = fs.readFileSync(iosTimelinePath, 'utf8');
+const iosInvalidActionArgument = runAllowFailure('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--definitely-unknown', 'value'], { env: fakeIosEnv });
+assert.strictEqual(iosInvalidActionArgument.status, 2);
+assert.ok(iosInvalidActionArgument.stderr.includes('action.sh 未知参数'));
+assert.strictEqual(fs.readFileSync(iosTimelinePath, 'utf8'), iosTimelineBeforeInvalidAction);
+assert.ok(!fs.existsSync(path.join(iosStart.execDir, 'result.json')));
 const iosObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--label', 'step-001-before'], { env: fakeIosEnv }));
 assert.strictEqual(iosObservation.platform, 'ios');
 assert.strictEqual(iosObservation.label, '001-step-001-before');
@@ -1412,9 +1469,12 @@ const iosLongPress = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosPar
 assert.strictEqual(iosLongPress.action, 'longPress');
 assert.strictEqual(iosLongPress.ok, true);
 assert.strictEqual(iosLongPress.durationMs, 900);
-const iosSwipe = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'swipe', '--from-x', '30', '--from-y', '200', '--to-x', '30', '--to-y', '80', '--duration-ms', '300', '--settle-ms', '0'], { env: fakeIosEnv }));
+const iosSwipe = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'swipe', '--from-x', '30', '--from-y', '200', '--to-x', '30', '--to-y', '80', '--settle-ms', '0'], { env: fakeIosEnv }));
 assert.strictEqual(iosSwipe.action, 'swipe');
 assert.strictEqual(iosSwipe.ok, true);
+assert.strictEqual(iosSwipe.durationMs, 200);
+assert.strictEqual(iosSwipe.velocity, 600);
+assert.strictEqual(iosSwipe.requestedAction.velocity, undefined);
 const iosInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', '中文输入', '--settle-ms', '0'], { env: fakeIosEnv }));
 assert.strictEqual(iosInput.action, 'inputText');
 assert.strictEqual(iosInput.ok, true);
@@ -1422,10 +1482,15 @@ assert.strictEqual(iosInput.inputMethod, 'wda-set-value');
 const iosInputWithCoordinates = runAllowFailure('./scripts/platform/adapters/ios/action.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo', '--type', 'inputText', '--x', '1', '--y', '2', '--text', 'hello'], { env: fakeIosEnv });
 assert.notStrictEqual(iosInputWithCoordinates.status, 0);
 assert.ok(iosInputWithCoordinates.stderr.includes('iOS inputText 只向已聚焦输入框输入文本'));
-const iosWait = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0'], { env: fakeIosEnv }));
+const iosUnknownAtomArgument = runAllowFailure('./scripts/platform/adapters/ios/action.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo', '--type', 'tap', '--x', '1', '--y', '2', '--definitely-unknown', 'value'], { env: fakeIosEnv });
+assert.strictEqual(iosUnknownAtomArgument.status, 2);
+assert.ok(iosUnknownAtomArgument.stderr.includes('iOS tap 未知参数'));
+const iosWaitReason = '等待 iOS 页面稳定';
+const iosWait = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--reason', iosWaitReason], { env: fakeIosEnv }));
 assert.strictEqual(iosWait.action, 'wait');
 assert.strictEqual(iosWait.ok, true);
 assert.strictEqual(iosWait.ms, 0);
+assert.strictEqual(iosWait.requestedAction.reason, iosWaitReason);
 const iosBack = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'back', '--settle-ms', '0'], { env: fakeIosEnv }));
 assert.strictEqual(iosBack.action, 'back');
 assert.strictEqual(iosBack.ok, true);
@@ -1656,6 +1721,13 @@ run('node', ['scripts/update-env.js', injectedParsed.caseDir, '--platform', 'har
 const injectedStart = JSON.parse(run('node', ['scripts/run-case.js', injectedParsed.caseDir, '--platform', 'harmony', '--start']));
 recordPreconditions(injectedParsed.caseDir, 'harmony', injectedStart.executionId);
 recordGlobalFlowScan(injectedParsed.caseDir, 'harmony', injectedStart.executionId);
+const harmonyTimelinePath = path.join(injectedStart.execDir, 'timeline.jsonl');
+const harmonyTimelineBeforeInvalidAction = fs.readFileSync(harmonyTimelinePath, 'utf8');
+const harmonyInvalidActionArgument = runAllowFailure('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--definitely-unknown', 'value'], { env: fakeEnv });
+assert.strictEqual(harmonyInvalidActionArgument.status, 2);
+assert.ok(harmonyInvalidActionArgument.stderr.includes('action.sh 未知参数'));
+assert.strictEqual(fs.readFileSync(harmonyTimelinePath, 'utf8'), harmonyTimelineBeforeInvalidAction);
+assert.ok(!fs.existsSync(path.join(injectedStart.execDir, 'result.json')));
 const harmonyProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'harmony', '--device', '127.0.0.1:5555'], { env: fakeEnv }));
 assert.strictEqual(harmonyProbe.ready, true);
 assert.ok(Array.isArray(harmonyProbe.diagnostics));
@@ -1704,14 +1776,22 @@ const injectedLongPress = JSON.parse(run('./scripts/action.sh', ['--case-dir', i
 assert.strictEqual(injectedLongPress.action, 'longPress');
 assert.strictEqual(injectedLongPress.ok, true);
 assert.strictEqual(injectedLongPress.durationMs, 850);
+const harmonySwipe = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'swipe', '--from-x', '10', '--from-y', '10', '--to-x', '10', '--to-y', '130', '--velocity', '600', '--settle-ms', '0'], { env: fakeEnv }));
+assert.strictEqual(harmonySwipe.action, 'swipe');
+assert.strictEqual(harmonySwipe.ok, true);
+assert.strictEqual(harmonySwipe.velocity, 600);
+assert.strictEqual(harmonySwipe.requestedAction.velocity, 600);
 const fakeHdcActionLog = fs.readFileSync(fakeHdcLog, 'utf8');
 assert.ok(fakeHdcActionLog.includes('shell aa start -b com.example.demo -a EntryAbility'));
 assert.ok(fakeHdcActionLog.includes('shell uitest uiInput click 9 10'));
 assert.ok(fakeHdcActionLog.includes('shell uitest uiInput swipe 11 12 11 12 850'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput swipe 10 10 10 130 600'));
 const defaultSettleEnv = { ...fakeEnv };
 delete defaultSettleEnv.MAVT_ACTION_SETTLE_MS;
-const injectedDefaultWait = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0'], { env: defaultSettleEnv }));
+const harmonyWaitReason = '等待 Harmony 页面稳定';
+const injectedDefaultWait = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--reason', harmonyWaitReason], { env: defaultSettleEnv }));
 assert.strictEqual(injectedDefaultWait.settleMs, undefined);
+assert.strictEqual(injectedDefaultWait.requestedAction.reason, harmonyWaitReason);
 const injectedDefaultTap = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '9', '--y', '10', '--coordinate-source', 'visual', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '截图像素区域中心'], { env: defaultSettleEnv }));
 assert.strictEqual(injectedDefaultTap.settleMs, 1000);
 assert.strictEqual(injectedDefaultTap.coordinateSource, 'visual');
@@ -1883,7 +1963,14 @@ const androidPreconditionFlow = {
 };
 write(path.join(preconditionFlowDir, 'flow.json'), `${JSON.stringify(universalPreconditionFlow, null, 2)}\n`);
 write(path.join(preconditionFlowDir, 'android', 'flow.json'), `${JSON.stringify(androidPreconditionFlow, null, 2)}\n`);
-const { validateFlow: validatePreconditionFlow } = require('./lib/precondition-flow');
+const {
+  validateFlow: validatePreconditionFlow,
+  validateFlowAction: validatePreconditionFlowAction,
+} = require('./lib/precondition-flow');
+assert.throws(
+  () => validatePreconditionFlowAction({ type: 'swipe', fromX: 10, fromY: 10, toX: 10, toY: 130, velocity: 199 }, 'steps[0].action', 'flow.json'),
+  /velocity must be an integer from 200 to 40000 px\/s/,
+);
 assert.throws(() => validatePreconditionFlow({
   ...universalPreconditionFlow,
   steps: [{ id: 'flow-step-001', instruction: '输入内容', action: { type: 'inputText', target: '输入框' } }],
@@ -2330,5 +2417,137 @@ assert.strictEqual(budgetExecState.finalized, true);
 const afterFinalized = runAllowFailure('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({ type: 'decision', decision: 'act' })]);
 assert.notStrictEqual(afterFinalized.status, 0);
 assert.ok(afterFinalized.stderr.includes('Execution already finalized'));
+
+const waitReasonFlowDir = path.join(workspace, 'flows', 'preconditions', 'wait-for-stable-page');
+const waitReasonFlow = {
+  schemaVersion: 2,
+  id: 'flow-wait-for-stable-page',
+  name: '等待页面稳定',
+  usage: 'precondition',
+  platform: 'universal',
+  startCondition: { description: '当前页面已打开但仍在加载' },
+  endCondition: { description: '当前页面内容已稳定展示' },
+  steps: [{
+    id: 'flow-step-wait-001',
+    instruction: '等待页面稳定',
+    action: { type: 'wait', ms: 1, reason: '等待页面稳定' },
+  }],
+};
+write(path.join(waitReasonFlowDir, 'flow.json'), `${JSON.stringify(waitReasonFlow, null, 2)}\n`);
+const waitReasonFlowCaseFile = path.join(sourceRoot, 'cases', 'wait-reason-flow.md');
+write(waitReasonFlowCaseFile, `# Flow wait reason 执行测试
+
+## 前置条件
+- 等待页面稳定
+
+## 步骤
+1. 验证页面已稳定。
+`);
+const waitReasonFlowParsed = JSON.parse(run('node', ['scripts/parse-case.js', waitReasonFlowCaseFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const waitReasonFlowPreflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
+assert.strictEqual(waitReasonFlowPreflight.summary.flowMatchedPreconditions, 1);
+assert.strictEqual(waitReasonFlowPreflight.cases[0].preconditions[0].flowId, waitReasonFlow.id);
+const waitReasonFlowStart = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', waitReasonFlowPreflight.cases[0].preconditionPlanSha,
+]));
+const waitReasonEntryObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-001',
+  flowId: waitReasonFlow.id,
+  status: 'STARTED',
+  evidenceObservation: waitReasonEntryObservation.label,
+  reason: 'entry-check observation 显示当前位于 Flow 起点',
+}), '--execution-id', waitReasonFlowStart.executionId]);
+run('./scripts/observe.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--flow-step-id', 'flow-step-wait-001',
+  '--phase', 'before',
+], { env: fakeEnv });
+const waitReasonFlowAction = JSON.parse(run('./scripts/action.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--flow-step-id', 'flow-step-wait-001',
+  '--type', 'wait',
+  '--ms', '1',
+  '--reason', '等待页面稳定',
+], { env: fakeEnv }));
+assert.strictEqual(waitReasonFlowAction.ok, true);
+assert.deepStrictEqual(waitReasonFlowAction.requestedAction, waitReasonFlow.steps[0].action);
+const waitReasonAfterObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--flow-step-id', 'flow-step-wait-001',
+  '--phase', 'after',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-001',
+  flowId: waitReasonFlow.id,
+  flowStepId: 'flow-step-wait-001',
+  status: 'STEP_COMPLETED',
+  evidenceObservation: waitReasonAfterObservation.label,
+  reason: 'wait 动作成功且已完成动作后观察',
+}), '--execution-id', waitReasonFlowStart.executionId]);
+const waitReasonEndObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--phase', 'end-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-001',
+  flowId: waitReasonFlow.id,
+  status: 'COMPLETED',
+  evidenceObservation: waitReasonEndObservation.label,
+  reason: 'end-check observation 显示页面已稳定',
+}), '--execution-id', waitReasonFlowStart.executionId]);
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PREPARED',
+  resolution: 'flow',
+  flowId: waitReasonFlow.id,
+  evidenceObservation: waitReasonEndObservation.label,
+  reason: '等待页面稳定 Flow 已完成',
+}), '--execution-id', waitReasonFlowStart.executionId]);
+const waitReasonStepEvidence = recordStepObservation(waitReasonFlowParsed.caseDir, 'harmony', waitReasonFlowStart.executionId, 'step-001', 'wait-reason-step');
+recordPassAssertion(waitReasonFlowParsed.caseDir, 'harmony', waitReasonFlowStart.executionId, 'step-001', '页面已稳定', waitReasonStepEvidence);
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', waitReasonFlowStart.executionId]);
+const waitReasonFlowResult = json(path.join(waitReasonFlowStart.execDir, 'result.json'));
+assert.strictEqual(waitReasonFlowResult.status, 'PASS');
 
 console.log(`self-test passed: ${tmp}`);

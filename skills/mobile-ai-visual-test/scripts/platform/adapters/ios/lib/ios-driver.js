@@ -12,7 +12,23 @@ const {
   listBootedSimulators,
   parseArgs,
   run,
+  validateRestArgs,
 } = require('./device-target');
+const { swipeDurationMs } = require('../../../../lib/action-contract');
+
+const ATOM_OPTIONS = Object.freeze({
+  'screenshot': ['--out'],
+  'dump-tree': ['--out'],
+  'foreground': [],
+  'logs': ['--out-dir', '--label'],
+  'launch-app': [],
+  'restart-app': [],
+  'tap': ['--x', '--y'],
+  'long-press': ['--x', '--y', '--duration-ms'],
+  'swipe': ['--from-x', '--from-y', '--to-x', '--to-y', '--velocity'],
+  'input-text': ['--x', '--y', '--text'],
+  'keyevent': ['--key'],
+});
 
 function writeJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
@@ -49,6 +65,7 @@ function fakeEnabled() {
 
 async function runProbe(argv) {
   const parsed = parseArgs(argv);
+  validateRestArgs(parsed.rest, [], 'iOS probe');
   const target = buildTarget(parsed);
   const booted = fakeEnabled()
     ? [{ name: 'Fake iPhone', udid: target.device || 'FAKE-IOS-SIMULATOR', state: 'Booted', deviceType: 'simulator' }]
@@ -196,6 +213,7 @@ async function waitForAppium(target, timeoutMs = 20000) {
 
 async function runPrepare(argv) {
   const parsed = parseArgs(argv);
+  validateRestArgs(parsed.rest, [], 'iOS prepare');
   const target = buildTarget(parsed);
   const deps = [];
   const xcodeVersion = fakeEnabled() ? 'Fake Xcode' : (commandExists('xcodebuild') ? run('xcodebuild', ['-version'], { timeout: 10000 }).stdout.trim() : '');
@@ -268,6 +286,7 @@ async function runPrepare(argv) {
 
 async function runObserve(argv) {
   const parsed = parseArgs(argv);
+  validateRestArgs(parsed.rest, ['--out', '--label'], 'iOS observe');
   const target = buildTarget(parsed);
   const out = optionValue(parsed.rest, '--out');
   const label = safeLabel(optionValue(parsed.rest, '--label', 'observe'));
@@ -465,10 +484,31 @@ async function waitForAppState(target, sessionId, predicate, label, timeoutMs = 
   throw new Error(`iOS app state did not become ${label}: ${detail}`);
 }
 
+function resolveSwipeExecution(rest) {
+  const action = {
+    type: 'swipe',
+    fromX: optionValue(rest, '--from-x'),
+    fromY: optionValue(rest, '--from-y'),
+    toX: optionValue(rest, '--to-x'),
+    toY: optionValue(rest, '--to-y'),
+    velocity: optionValue(rest, '--velocity', '600'),
+  };
+  return {
+    ...action,
+    velocity: Number(action.velocity),
+    durationMs: swipeDurationMs(action),
+  };
+}
+
 async function runAtom(atom, argv) {
   const parsed = parseArgs(argv);
+  if (!Object.prototype.hasOwnProperty.call(ATOM_OPTIONS, atom)) {
+    throw new Error(`unsupported ios atom: ${atom}`);
+  }
+  validateRestArgs(parsed.rest, ATOM_OPTIONS[atom], `iOS ${atom}`);
   const target = buildTarget(parsed);
   const rest = parsed.rest;
+  const swipeExecution = atom === 'swipe' ? resolveSwipeExecution(rest) : null;
   if (atom === 'input-text' && (optionValue(rest, '--x') || optionValue(rest, '--y'))) {
     throw new Error('iOS inputText 只向已聚焦输入框输入文本，不接受 --x/--y；请先调用 tap 聚焦目标输入框。');
   }
@@ -504,6 +544,8 @@ async function runAtom(atom, argv) {
       stateAfterActivate: atom === 'restart-app' ? 4 : undefined,
       stopMethod: atom === 'restart-app' ? 'appium-terminate-app' : undefined,
       launchMethod: atom === 'restart-app' ? 'appium-terminate-activate' : undefined,
+      velocity: swipeExecution?.velocity,
+      durationMs: swipeExecution?.durationMs,
     }));
     return;
   }
@@ -601,17 +643,20 @@ async function runAtom(atom, argv) {
     return;
   }
   if (atom === 'swipe') {
-    const fromX = optionValue(rest, '--from-x');
-    const fromY = optionValue(rest, '--from-y');
-    const toX = optionValue(rest, '--to-x');
-    const toY = optionValue(rest, '--to-y');
-    const durationMs = Number(optionValue(rest, '--duration-ms', '350'));
-    if (!fromX || !fromY || !toX || !toY) throw new Error('swipe 需要 --from-x --from-y --to-x --to-y');
     await appium.withSession(target, async ({ sessionId }) => {
-      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, swipeAction(fromX, fromY, toX, toY, durationMs));
+      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, swipeAction(
+        swipeExecution.fromX,
+        swipeExecution.fromY,
+        swipeExecution.toX,
+        swipeExecution.toY,
+        swipeExecution.durationMs,
+      ));
       await appium.request(target.appiumServer, 'DELETE', `/session/${sessionId}/actions`, {});
     });
-    writeJson(actionResult('swipe'));
+    writeJson(actionResult('swipe', {
+      velocity: swipeExecution.velocity,
+      durationMs: swipeExecution.durationMs,
+    }));
     return;
   }
   if (atom === 'input-text') {
@@ -654,5 +699,5 @@ async function main() {
 
 main().catch((error) => {
   console.error(error.message || String(error));
-  process.exit(1);
+  process.exit(error.exitCode || 1);
 });

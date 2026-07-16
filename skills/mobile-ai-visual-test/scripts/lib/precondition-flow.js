@@ -10,6 +10,7 @@ const {
   readJson,
   workspaceRoot,
 } = require('./common');
+const { validateAction } = require('./action-contract');
 
 const FLOW_SCHEMA_VERSION = 2;
 const FLOW_USAGE = 'precondition';
@@ -107,10 +108,8 @@ function validateFlowAction(action, label, flowJsonPath) {
     throw new Error(`${flowJsonPath}: ${label} must be an object`);
   }
   if (!VALID_ACTIONS.has(action.type)) throw new Error(`${flowJsonPath}: unsupported ${label}.type: ${action.type}`);
+  validateAction(action, { context: `${flowJsonPath}: ${label}` });
   if (['tap', 'toggle', 'longPress'].includes(action.type)) validateCoordinateAction(action, label, flowJsonPath);
-  if (action.type === 'longPress' && action.durationMs !== undefined && !positiveInteger(action.durationMs)) {
-    throw new Error(`${flowJsonPath}: ${label}.durationMs must be a positive integer`);
-  }
   if (action.type === 'inputText') {
     if (!trimFlowName(action.target)) throw new Error(`${flowJsonPath}: ${label}.target is required for inputText`);
     if (typeof action.text !== 'string' || action.text.length === 0) throw new Error(`${flowJsonPath}: ${label}.text is required for inputText`);
@@ -118,9 +117,6 @@ function validateFlowAction(action, label, flowJsonPath) {
   if (action.type === 'swipe') {
     for (const field of ['fromX', 'fromY', 'toX', 'toY']) {
       if (!finiteNumber(action[field])) throw new Error(`${flowJsonPath}: ${label}.${field} is required for swipe`);
-    }
-    if (action.velocity !== undefined && !positiveInteger(action.velocity)) {
-      throw new Error(`${flowJsonPath}: ${label}.velocity must be a positive integer`);
     }
   }
   if (action.type === 'wait') {

@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 atoms_dir="$script_dir/atoms"
+source "$script_dir/../../../lib/action-common.sh"
 
 device=""
 bundle=""
@@ -18,7 +19,7 @@ from_y=""
 to_x=""
 to_y=""
 ms=""
-velocity="600"
+velocity=""
 duration_ms=""
 
 while [[ $# -gt 0 ]]; do
@@ -53,6 +54,9 @@ if [[ -z "$type" ]]; then
   echo "缺少 --type" >&2
   exit 2
 fi
+
+adapter_action="$(mavt_action_request_json "$type" "" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$ms" "" "$velocity" "" "" "")"
+mavt_validate_action_request "$script_dir/../../../lib/action-contract.js" "$adapter_action" "Harmony adapter"
 
 device_args=()
 if [[ -n "$device" ]]; then
@@ -102,7 +106,7 @@ case "$type" in
     run_atom "$type" "$atoms_dir/input-text.sh" "${device_args[@]}" --x "$x" --y "$y" --text "$text"
     ;;
   swipe)
-    run_atom "$type" "$atoms_dir/swipe.sh" "${device_args[@]}" --from-x "$from_x" --from-y "$from_y" --to-x "$to_x" --to-y "$to_y" --velocity "$velocity"
+    run_atom "$type" "$atoms_dir/swipe.sh" "${device_args[@]}" --from-x "$from_x" --from-y "$from_y" --to-x "$to_x" --to-y "$to_y" --velocity "${velocity:-600}"
     ;;
   back)
     run_atom "$type" "$atoms_dir/keyevent.sh" "${device_args[@]}" --key Back

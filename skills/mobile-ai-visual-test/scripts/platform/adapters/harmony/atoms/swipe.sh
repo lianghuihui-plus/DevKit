@@ -15,12 +15,19 @@ while [[ $# -gt 0 ]]; do
     --from-y) from_y="${2:-}"; shift 2 ;;
     --to-x) to_x="${2:-}"; shift 2 ;;
     --to-y) to_y="${2:-}"; shift 2 ;;
-    --velocity|--duration-ms) velocity="${2:-}"; shift 2 ;;
+    --velocity) velocity="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
 
 [[ -n "$from_x" && -n "$from_y" && -n "$to_x" && -n "$to_y" ]] || { echo "swipe 需要 --from-x --from-y --to-x --to-y" >&2; exit 2; }
+if ! node -e '
+const value = Number(process.argv[1]);
+process.exit(Number.isInteger(value) && value >= 200 && value <= 40000 ? 0 : 1);
+' "$velocity"; then
+  echo "swipe --velocity 必须是 200-40000 px/s 的整数" >&2
+  exit 2
+fi
 
 hdc_prefix=(hdc)
 if [[ -n "$device" ]]; then
@@ -41,5 +48,5 @@ function localIso(date = new Date()) {
   const pad = (value, size = 2) => String(value).padStart(size, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
-console.log(JSON.stringify({schemaVersion:1,type:"actionResult",platform:"harmony",time:localIso(),action:"swipe",ok:true}, null, 2));
-'
+console.log(JSON.stringify({schemaVersion:1,type:"actionResult",platform:"harmony",time:localIso(),action:"swipe",ok:true,velocity:Number(process.argv[1])}, null, 2));
+' "$velocity"

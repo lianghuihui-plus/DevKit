@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
     --app|--bundle) has_app=1; args+=("$1" "$2"); shift 2 ;;
     --label) label="${2:-}"; has_label=1; shift 2 ;;
     --out) out="${2:-}"; args+=("$1" "$2"); shift 2 ;;
-    *) args+=("$1"); shift ;;
+    *) echo "observe.sh 未知参数: $1" >&2; exit 2 ;;
   esac
 done
 

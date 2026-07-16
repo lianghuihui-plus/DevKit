@@ -5,10 +5,12 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 atoms_dir="$script_dir/atoms"
 
 type=""
+ms=""
 args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --type) type="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --type) type="${2:-}"; shift 2 ;;
+    --ms) ms="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -38,7 +40,7 @@ run_atom() {
 
 case "$type" in
   wait)
-    run_atom "$type" "$atoms_dir/wait.sh" "${args[@]}"
+    run_atom "$type" "$atoms_dir/wait.sh" --ms "${ms:-1000}"
     ;;
   launchApp)
     run_atom "$type" "$atoms_dir/launch-app.sh" "${args[@]}"

@@ -5,7 +5,7 @@ ms="1000"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ms) ms="${2:-}"; shift 2 ;;
-    *) shift ;;
+    *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
 sleep "$(node -e 'console.log((Number(process.argv[1] || 1000) / 1000).toFixed(3))' "$ms")"

@@ -15,12 +15,19 @@ while [[ $# -gt 0 ]]; do
     --from-y) from_y="${2:-}"; shift 2 ;;
     --to-x) to_x="${2:-}"; shift 2 ;;
     --to-y) to_y="${2:-}"; shift 2 ;;
-    --duration-ms|--velocity) duration_ms="${2:-}"; shift 2 ;;
+    --duration-ms) duration_ms="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
 
 [[ -n "$from_x" && -n "$from_y" && -n "$to_x" && -n "$to_y" ]] || { echo "swipe 需要 --from-x --from-y --to-x --to-y" >&2; exit 2; }
+if [[ -n "$duration_ms" ]] && ! node -e '
+const value = Number(process.argv[1]);
+process.exit(Number.isInteger(value) && value > 0 ? 0 : 1);
+' "$duration_ms"; then
+  echo "swipe 需要正数 --duration-ms" >&2
+  exit 2
+fi
 
 adb_prefix=(adb)
 if [[ -n "$device" ]]; then
@@ -41,5 +48,6 @@ function localIso(date = new Date()) {
   const pad = (value, size = 2) => String(value).padStart(size, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
-console.log(JSON.stringify({schemaVersion:1,type:"actionResult",platform:"android",time:localIso(),action:"swipe",ok:true}, null, 2));
-'
+const durationMs = process.argv[1] ? Number(process.argv[1]) : undefined;
+console.log(JSON.stringify({schemaVersion:1,type:"actionResult",platform:"android",time:localIso(),action:"swipe",ok:true,durationMs}, null, 2));
+' "$duration_ms"

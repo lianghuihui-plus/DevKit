@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --device|--app|--bundle|--entry|--ability) shift 2 ;;
+    *) echo "未知参数: $1" >&2; exit 2 ;;
+  esac
+done
+
 node -e '
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();

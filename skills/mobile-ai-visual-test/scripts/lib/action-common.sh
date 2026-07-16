@@ -236,6 +236,25 @@ process.stdout.write(JSON.stringify(request));
 ' "$@"
 }
 
+mavt_validate_action_request() {
+  node -e '
+const { validateAction } = require(process.argv[1]);
+try {
+  validateAction(JSON.parse(process.argv[2]), { context: process.argv[3] || "action.sh" });
+} catch (error) {
+  console.error(error.message || String(error));
+  process.exit(error.exitCode || 2);
+}
+' "$1" "$2" "${3:-action.sh}"
+}
+
+mavt_resolve_swipe_velocity() {
+  node -e '
+const { resolveSwipeVelocity } = require(process.argv[1]);
+process.stdout.write(String(resolveSwipeVelocity(JSON.parse(process.argv[2]))));
+' "$1" "$2"
+}
+
 mavt_add_requested_action() {
   node -e '
 const event = JSON.parse(process.argv[1]);

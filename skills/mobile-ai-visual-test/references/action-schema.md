@@ -27,6 +27,10 @@
 {"type":"wait","ms":1000,"reason":"等待页面稳定"}
 ```
 
+`swipe.velocity` 的统一单位是 `px/s`，必须是 `200-40000` 的整数，缺省值为 `600`。HarmonyOS adapter 原样传递速度；Android 和 iOS adapter 按滑动距离换算平台所需时长：`durationMs = max(1, round(distance / velocity * 1000))`。`durationMs` 是 `longPress` 参数，不作为公开 `swipe` 参数。
+
+动作字段由 `scripts/lib/action-contract.js` 统一校验，直接动作和前置条件 Flow 必须使用相同的字段、类型和数值范围；未知字段或动作不支持的字段在设备调用前拒绝。
+
 ## 坐标证据
 
 `tap`、`toggle`、`longPress` 使用 `x/y` 时必须传：

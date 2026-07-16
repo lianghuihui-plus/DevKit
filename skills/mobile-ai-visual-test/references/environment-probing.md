@@ -14,12 +14,12 @@
 ## 入口
 
 ```bash
-scripts/probe-env.sh --platform <platform> [--device <device>]
+scripts/probe-env.sh --platform <platform> [--device <device>] [--device-type <simulator|realDevice>]
 scripts/update-env.js <case-dir> --platform <platform> --device <device> --app <appId> --entry <entry>
 scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>
 ```
 
-`probe-env` 只探测平台和设备能力，不接收目标 App 或入口参数。`update-env.js` 固化目标信息。`prepare-env.sh` 准备平台依赖并写入 `caseDir/platforms/<platform>/state.json.dependencies`。
+`probe-env` 只探测平台和设备能力，不接收目标 App 或入口参数；`--device-type` 仅用于 iOS。`update-env.js` 固化目标信息。`prepare-env.sh` 准备平台依赖并写入 `caseDir/platforms/<platform>/state.json.dependencies`。
 
 批量执行时，一次用户确认可以复用，但 `update-env.js` 和 `prepare-env.sh` 必须对每个待执行 case 分别调用，因为 `run-case.js --start` 读取的是当前 case 自己的 `platforms/<platform>/state.json`。
 

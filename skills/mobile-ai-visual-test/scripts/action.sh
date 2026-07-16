@@ -75,13 +75,13 @@ while [[ $# -gt 0 ]]; do
     --to-y) to_y="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --duration-ms) duration_ms="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --ms) wait_ms="${2:-}"; args+=("$1" "$2"); shift 2 ;;
-    --reason) reason="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --reason) reason="${2:-}"; shift 2 ;;
     --velocity) velocity="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --coordinate-source) coordinate_source="${2:-}"; shift 2 ;;
     --target-bounds) target_bounds="${2:-}"; shift 2 ;;
     --coordinate-evidence) coordinate_evidence="${2:-}"; shift 2 ;;
     --settle-ms) settle_ms="${2:-}"; shift 2 ;;
-    *) args+=("$1"); shift ;;
+    *) echo "action.sh 未知参数: $1" >&2; exit 2 ;;
   esac
 done
 
@@ -108,6 +108,11 @@ if [[ -n "$case_dir" ]]; then
   fi
   mavt_validate_coordinate_action case "$action_type" "$x" "$y" "$coordinate_source" "$coordinate_evidence" "$target_bounds"
   requested_action="$(mavt_action_request_json "$action_type" "$target" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$wait_ms" "$reason" "$velocity" "$coordinate_source" "$target_bounds" "$coordinate_evidence")"
+  mavt_validate_action_request "$script_dir/lib/action-contract.js" "$requested_action"
+  if [[ "$action_type" == "swipe" && -z "$velocity" ]]; then
+    velocity="$(mavt_resolve_swipe_velocity "$script_dir/lib/action-contract.js" "$requested_action")"
+    args+=(--velocity "$velocity")
+  fi
   runtime_dir="$case_dir"
   if [[ -n "$platform" ]]; then
     runtime_dir="$case_dir/platforms/$platform"

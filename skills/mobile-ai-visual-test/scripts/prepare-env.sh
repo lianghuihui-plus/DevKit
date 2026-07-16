@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
     --device) has_device=1; args+=("$1" "$2"); shift 2 ;;
     --app|--bundle) has_app=1; args+=("$1" "$2"); shift 2 ;;
     --entry|--ability) has_entry=1; args+=("$1" "$2"); shift 2 ;;
-    *) args+=("$1"); shift ;;
+    *) echo "prepare-env 未知参数: $1" >&2; exit 2 ;;
   esac
 done
 
