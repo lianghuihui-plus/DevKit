@@ -102,7 +102,7 @@ const STEP_ORDER_GUARDED_EVENT_TYPES = new Set([
   'appForeground',
 ]);
 const DEFAULT_BUDGET = {
-  maxDurationMs: 20 * 60 * 1000,
+  maxDurationMs: 30 * 60 * 1000,
   maxObservations: 80,
   maxActions: 60,
   maxStepEvents: 24,

@@ -79,7 +79,7 @@
 ## 冷启动、预算和停止
 
 - 每个 execution 开始必须尝试 `restartApp`；冷启动敏感用例失败时为 `BLOCKED/CASE_RESTART_FAILED`。
-- 单 case 默认 20 分钟；普通预算超限为 `EXECUTION_BUDGET_EXCEEDED`。
+- 单 case 默认 30 分钟；超时为 `CASE_TIMEOUT`，其他普通预算超限为 `EXECUTION_BUDGET_EXCEEDED`。
 - 前置条件 Flow 每个条件默认最多 5 个动作，单 case 默认最多 12 个；超限为 `PRECONDITION_FLOW_BUDGET_EXCEEDED`。
 - Flow observation 失败仍写入 timeline 供审计，但不能作为 STARTED、STEP_COMPLETED、COMPLETED 或 already-satisfied 的证据。
 - Flow observation/action 的确定性技术失败由框架写入 Flow 和前置条件阻塞终态并立即收尾。

@@ -2678,6 +2678,7 @@ write(budgetFile, `# 预算测试
 const budgetParsed = JSON.parse(run('node', ['scripts/parse-case.js', budgetFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', budgetParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const budgetStart = JSON.parse(run('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--start']));
+assert.strictEqual(json(path.join(budgetStart.execDir, 'execution.json')).budget.maxDurationMs, 30 * 60 * 1000);
 recordPreconditions(budgetParsed.caseDir, 'harmony', budgetStart.executionId);
 for (let i = 0; i < 80; i++) {
   recordObservationEvent(budgetParsed.caseDir, 'harmony', budgetStart.executionId, {
