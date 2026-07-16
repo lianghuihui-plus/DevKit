@@ -10,15 +10,18 @@ has_platform=0
 has_device=0
 has_app=0
 has_entry=0
+device=""
+app=""
+entry=""
 args=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --case-dir) case_dir="${2:-}"; shift 2 ;;
     --platform) platform="${2:-}"; has_platform=1; args+=("$1" "$2"); shift 2 ;;
-    --device) has_device=1; args+=("$1" "$2"); shift 2 ;;
-    --app|--bundle) has_app=1; args+=("$1" "$2"); shift 2 ;;
-    --entry|--ability) has_entry=1; args+=("$1" "$2"); shift 2 ;;
+    --device) has_device=1; device="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --app|--bundle) has_app=1; app="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --entry|--ability) has_entry=1; entry="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     *) echo "prepare-env 未知参数: $1" >&2; exit 2 ;;
   esac
 done
@@ -30,6 +33,7 @@ fi
 
 if [[ -n "$case_dir" ]]; then
   env_args=()
+  mavt_validate_case_env_binding "$case_dir" "$platform" "$device" "$app" "$entry"
   while IFS= read -r item; do
     [[ -n "$item" ]] && env_args+=("$item")
   done < <(mavt_case_env_args "$case_dir" "$has_platform" "$has_device" "$has_app" "$has_entry" "$platform")

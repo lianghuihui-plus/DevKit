@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+const { failureLabel } = require('./failure-catalog');
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -29,6 +31,7 @@ const EVENT_LABELS = {
   environmentProbe: '环境探测',
   precondition: '前置条件',
   observation: '截图观察',
+  evidenceCheck: '视觉证据复核',
   perception: '页面理解',
   decision: '执行决策',
   rule: '规则命中',
@@ -47,6 +50,7 @@ const DECISION_LABELS = {
   assert_fail: '断言失败',
   wait: '等待',
   blocked: '阻塞',
+  retry_visual_input: '重试视觉输入',
 };
 
 const ACTION_LABELS = {
@@ -85,6 +89,7 @@ const PRECONDITION_MODE_LABELS = {
 
 const FAILURE_CODE_LABELS = {
   ENV_UNCONFIRMED: '环境未确认',
+  ENVIRONMENT_BINDING_MISMATCH: '正式环境绑定不一致',
   ENV_UNAVAILABLE: '环境不可用',
   ENV_AMBIGUOUS: '环境信息不明确',
   PLATFORM_UNIMPLEMENTED: '平台能力未实现',
@@ -97,6 +102,9 @@ const FAILURE_CODE_LABELS = {
   ASSERTION_FAILED: '断言不通过',
   ASSERTION_UNKNOWN: '断言证据不足',
   ASSERTION_EVIDENCE_REQUIRED: '断言缺少观察证据',
+  OBSERVATION_ARTIFACT_INVALID: '截图产物无效',
+  OBSERVATION_ARTIFACT_CHANGED: '截图产物已变化',
+  VISUAL_INPUT_UNVERIFIABLE: '视觉输入无法可靠验证',
   STEP_ORDER_VIOLATION: '步骤顺序违规',
   ACTION_RESULT_SOURCE_REQUIRED: '动作结果来源无效',
   ACTION_TARGET_NOT_FOUND: '未找到操作目标',
@@ -116,6 +124,9 @@ const FAILURE_CODE_LABELS = {
   CASE_RESTART_FAILED: '用例冷启动失败',
   EXECUTION_BUDGET_EXCEEDED: '执行预算超限',
   TOOL_ERROR: '工具执行异常',
+  EVENT_SOURCE_REQUIRED: '框架事件来源无效',
+  CASE_CONTRACT_INVALID: '用例执行契约无效',
+  CASE_STEPS_REQUIRED: '用例缺少测试步骤',
 };
 
 function displayStatus(value) {
@@ -161,7 +172,7 @@ function displayPreconditionMode(value) {
 }
 
 function displayFailureCode(value) {
-  return FAILURE_CODE_LABELS[value] || value || '';
+  return failureLabel(value) || FAILURE_CODE_LABELS[value] || value || '';
 }
 
 function formatDuration(ms) {

@@ -28,7 +28,7 @@ cases/C001__ck-xxxxxxxxxxxx/
 
 ## Markdown 约定
 
-Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、全局规则或补充说明。格式不要求完全统一；无法稳定结构化的内容保留到 `source.md` 和 notes，由 agent 执行时结合上下文判断。
+Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、全局规则或补充说明。步骤标题支持 `步骤`、`测试步骤`、`操作步骤`、`Steps`、`Test Steps`，支持有序列表和常见 Markdown 表格；独立预期结果按顺序绑定步骤。无法稳定结构化的内容保留到 `source.md`，但零步骤属于契约错误 `CASE_STEPS_REQUIRED`，不得进入 execution。
 
 ## case.json
 
@@ -114,7 +114,7 @@ Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、�
 
 ## caseContractSha
 
-执行契约摘要，至少覆盖 `sourceSha1`、`preconditions`、`steps`、`globalRules`、notes 重放 hints 和 `isolation`。result 的 contract 与当前 case 不一致时，不展示为当前有效结果。
+执行契约摘要覆盖 schema/parser 版本、`sourceSha1`、完整规范化 `preconditions`、`steps`、`globalRules`、notes 重放 hints 和 `isolation`。result 的 contract 与当前 case 不一致时，不展示为当前有效结果。
 
 ## 编号与刷新
 

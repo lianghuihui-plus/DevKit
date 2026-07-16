@@ -64,7 +64,7 @@ agent 只调用稳定入口层。内部实现层、平台 adapter 和 atoms 不�
 | `case-dir`、`execution-id`、`step-id`、`scope`、Flow 绑定参数 | 稳定入口 | 否 |
 | `reason`、`target`、`coordinate-*`、`settle-ms` | 稳定入口的审计或编排信息 | 否 |
 | `type`、坐标、`text`、`ms`、`velocity`、`duration-ms` | 统一动作参数 | 是，仅传动作所需字段 |
-| `device`、`app/bundle`、`entry/ability` | 平台环境参数 | 是 |
+| `device`、`app/bundle`、`entry/ability` | 平台环境参数；case-bound 时必须等于已确认 state | 是 |
 | iOS Appium/WDA 参数 | `update-env.js` 固化的 state | 仅在 case-bound 入口解析完成后注入 iOS adapter |
 
 新增参数时必须先在本节和对应领域契约中确定所有权，再修改稳定入口与 adapter；不能依靠底层忽略多余参数维持兼容。
@@ -132,9 +132,21 @@ adapter 内部可以调用 atoms，但不得：
     "screenshot": "screenshots/001-step-001-before.png",
     "layout": "layouts/001-step-001-before.json",
     "logs": "logs/001-step-001-before.log"
+  },
+  "artifactMetadata": {
+    "screenshot": {
+      "sha256": "<64-hex>",
+      "bytes": 123456,
+      "format": "png",
+      "width": 1080,
+      "height": 2400,
+      "decodeStatus": "VALID"
+    }
   }
 }
 ```
+
+`artifactMetadata.screenshot` 由顶层观察证据链生成，不由平台 adapter 或 agent 填写。新 observation 的截图必须记录采集时 SHA-256、字节数、尺寸和解码状态；`decodeStatus` 为 `VALID`、`UNSUPPORTED` 或 `INVALID`，其中 `UNSUPPORTED` 表示当前像素检查器不支持该合法编码特征，不等于文件损坏。`trailingBytes` 记录 `IEND` 后被通用图片解码器忽略的附加字节，仅作为采集诊断，不把可完整解码的 PNG 判坏。后续 perception 与 assertion 会重新读取文件并校验 SHA-256。旧 execution 缺少该字段时仍可读取，但不能据此证明采集后文件未变化。
 
 步骤内观察必须传 `--step-id <step-id>`。全局诊断观察必须显式传 `--scope global` 或 `--global-observation`。前置条件 Flow 观察使用 `--scope precondition-flow`，绑定 `preconditionId`、`flowId` 和 `phase`，不得绑定 `stepId`。
 
@@ -168,7 +180,7 @@ Flow 动作执行前由 `run-case.js` 对照 `execution.json` 中冻结的 actio
 
 ## Agent 事实
 
-agent 可通过 `run-case.js --record-json` 写入非平台事实：
+agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionStart`、`environmentProbe`、`observation`、`evidenceCheck`、`actionResult`、`budgetExceeded`、`result` 属于框架事件，公开入口一律拒绝：
 
 | 类型 | 用途 |
 | --- | --- |
@@ -194,6 +206,54 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实：
 ```
 
 `status` 可为 `USABLE`、`UNUSABLE` 或 `UNCERTAIN`。只有 `USABLE` 且包含 `reason` 的当前截图 perception 可以支持 PASS；其他 perception 仍可用于记录影响后续动作的视觉理解，但不能作为通过门禁。
+
+当 Agent 图片预览疑似出现黑屏、黑块、花屏或解码异常时，perception 使用结构化声明：
+
+```json
+{
+  "type": "perception",
+  "stepId": "step-001",
+  "status": "UNCERTAIN",
+  "attemptId": "preview-attempt-001",
+  "presentationMode": "scaled",
+  "evidence": ["screenshots/001-step-001-after.png"],
+  "qualityClaim": {
+    "source": "agent_preview",
+    "kind": "VERTICAL_BLACK_BLOCKS",
+    "coordinateSpace": "normalized",
+    "regions": [{"x": 0.4, "y": 0.1, "width": 0.08, "height": 0.8}]
+  },
+  "reason": "Agent 预览中疑似存在竖向黑块"
+}
+```
+
+`kind` 支持 `BLACK_SCREEN`、`BLACK_BLOCKS`、`VERTICAL_BLACK_BLOCKS`、`VISUAL_CORRUPTION`、`PREVIEW_DECODE_ERROR`。区域坐标均为相对原图宽高的 `0..1` 值；黑块声明必须提供区域。`run-case.js` 自动补充 `inputArtifact`，其中 `sourceVerified` 表示当前文件哈希仍等于采集时哈希，`presentationVerified=false` 明确表示框架无法证明 Agent 平台最终呈现的预览像素与原图完全相同。
+
+若 Agent 请求 `UNUSABLE`，但原始像素未命中声明或无法确定性验证，框架会保留 `requestedStatus=UNUSABLE` 并把正式 perception 归一为 `UNCERTAIN`。有限重试前写同一步骤的 `decision=retry_visual_input`；第二次 perception 必须使用新的 `attemptId`、`retryOf=<首次 attemptId>` 和 `presentationMode=original|reopen|scaled`。重新查看同一原图是合法重试，不要求重新截图。
+
+## EvidenceCheck
+
+`evidenceCheck` 是 `run-case.js` 根据 `qualityClaim` 生成的框架事实，公开 `--record-json` 不接受手写：
+
+```json
+{
+  "type": "evidenceCheck",
+  "source": "run-case.js",
+  "checkId": "evidence-check-001",
+  "stepId": "step-001",
+  "artifactSha256": "<64-hex>",
+  "sourceVerified": true,
+  "presentationVerified": false,
+  "attemptId": "preview-attempt-001",
+  "retryOf": null,
+  "presentationMode": "scaled",
+  "verdict": "CLAIM_NOT_PRESENT_IN_SOURCE",
+  "pixelStats": [],
+  "reason": "原始 PNG 的声明区域不存在对应近黑像素特征"
+}
+```
+
+`verdict` 为 `SOURCE_INVALID`、`SOURCE_CHANGED`、`CLAIM_PRESENT_IN_SOURCE`、`CLAIM_NOT_PRESENT_IN_SOURCE` 或 `UNVERIFIABLE`。`CLAIM_PRESENT_IN_SOURCE` 只证明原始像素包含声明特征，不等同于截图损坏，也不能自动区分合法 UI、设备画面和采集异常。
 
 `precondition` 最小模板：
 
@@ -256,4 +316,6 @@ Flow 终态不可逆；终态后的下一条相关事实必须是同一前置条
 - 公开 `run-case.js --record-json` 不接受正式 `actionResult`。
 - 正式观察必须走 `observe.sh`。
 - 正式动作必须走 `action.sh`。
+- `evidenceCheck` 只能由 `run-case.js` 根据结构化 `qualityClaim` 生成。
 - 直接手写观察或动作结果会被拒绝。
+- 公开入口不得写框架事件；填写伪造的 `source` 不能提升写入权限。

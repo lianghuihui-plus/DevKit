@@ -15,10 +15,19 @@ const {
   readJson,
   readJsonl,
   refreshIndexForCase,
+  validateCaseExecutionContract,
   writeCaseReports,
   writeJson,
 } = require('../common');
 const { buildPreconditionPlan, planFlowSummaries } = require('../lib/precondition-flow');
+const { failureStatus } = require('../lib/failure-catalog');
+const {
+  enrichObservationScreenshot,
+  inspectPng,
+  screenshotMetadata,
+  validateQualityClaim,
+  verifyQualityClaim,
+} = require('../lib/image-evidence');
 
 const VALID_STATUS = new Set(['PASS', 'FAIL', 'BLOCKED', 'UNKNOWN']);
 const PRECONDITION_PASSING_STATUSES = new Set(['PASS', 'PREPARED']);
@@ -27,6 +36,7 @@ const VALID_EVENT_TYPES = new Set([
   'environmentProbe',
   'precondition',
   'observation',
+  'evidenceCheck',
   'perception',
   'decision',
   'rule',
@@ -38,8 +48,26 @@ const VALID_EVENT_TYPES = new Set([
   'budgetExceeded',
   'result',
 ]);
-const VALID_DECISIONS = new Set(['act', 'assert_pass', 'assert_fail', 'wait', 'blocked']);
+const AGENT_WRITABLE_EVENT_TYPES = new Set([
+  'precondition',
+  'perception',
+  'decision',
+  'rule',
+  'flow',
+  'assertion',
+  'popup',
+  'appForeground',
+]);
+const VALID_DECISIONS = new Set(['act', 'assert_pass', 'assert_fail', 'wait', 'blocked', 'retry_visual_input']);
+const VALID_PRESENTATION_MODES = new Set(['scaled', 'original', 'reopen']);
 const VALID_PERCEPTION_STATUSES = new Set(['USABLE', 'UNUSABLE', 'UNCERTAIN']);
+const EVIDENCE_CHECK_VERDICTS = new Set([
+  'SOURCE_INVALID',
+  'SOURCE_CHANGED',
+  'CLAIM_PRESENT_IN_SOURCE',
+  'CLAIM_NOT_PRESENT_IN_SOURCE',
+  'UNVERIFIABLE',
+]);
 const VALID_ACTIONS = new Set(['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']);
 const VALID_RULE_STATUSES = new Set(['MATCHED', 'SKIPPED', 'FAILED', 'BLOCKED', 'UNKNOWN']);
 const VALID_RULE_TYPES = new Set(['guard']);
@@ -249,6 +277,146 @@ function validateArtifactFilesExist(execDir, event) {
   }
 }
 
+function latestStepObservation(events, stepId) {
+  return events
+    .filter((event) => event.type === 'observation' && eventStepId(event) === stepId && event.source === 'observe.sh')
+    .slice(-1)[0] || null;
+}
+
+function screenshotBindingReadiness(observation, execDir) {
+  const screenshot = normalizeEvidenceValue(eventArtifacts(observation).screenshot);
+  if (!screenshot) {
+    return { ok: false, failureCode: 'ASSERTION_EVIDENCE_REQUIRED', reason: 'observation 缺少截图产物。' };
+  }
+  const file = path.join(execDir, screenshot);
+  const actual = inspectPng(file);
+  if (actual.decodeStatus === 'INVALID') {
+    return {
+      ok: false,
+      failureCode: 'OBSERVATION_ARTIFACT_INVALID',
+      reason: `截图产物无法解码: ${screenshot}${actual.error ? `；${actual.error}` : ''}`,
+      screenshot,
+      actual,
+    };
+  }
+  const recorded = screenshotMetadata(observation);
+  if (recorded?.sha256 && recorded.sha256 !== actual.sha256) {
+    return {
+      ok: false,
+      failureCode: 'OBSERVATION_ARTIFACT_CHANGED',
+      reason: `截图产物在 observation 后发生变化: ${screenshot}`,
+      screenshot,
+      recorded,
+      actual,
+    };
+  }
+  return {
+    ok: true,
+    screenshot,
+    recorded,
+    actual,
+    sourceVerified: Boolean(recorded?.sha256 && recorded.sha256 === actual.sha256),
+  };
+}
+
+function preparePerceptionEvidence(events, event, execDir) {
+  if (event.type !== 'perception') return { event, evidenceCheck: null };
+  const stepId = eventStepId(event);
+  if (!stepId) return { event, evidenceCheck: null };
+  const observation = latestStepObservation(events, stepId);
+  if (!observation) {
+    if (event.qualityClaim) throw new Error('ASSERTION_EVIDENCE_REQUIRED: 带 qualityClaim 的 perception 前必须有当前步骤 observation。');
+    return { event, evidenceCheck: null };
+  }
+  const binding = screenshotBindingReadiness(observation, execDir);
+  const refs = assertionEvidenceRefs(event);
+  if (event.qualityClaim && (!binding.screenshot || !refs.includes(binding.screenshot))) {
+    throw new Error('ASSERTION_EVIDENCE_REQUIRED: 带 qualityClaim 的 perception 必须引用当前步骤最新 observation 的截图。');
+  }
+  if (!binding.screenshot || !refs.includes(binding.screenshot)) return { event, evidenceCheck: null };
+
+  event.inputArtifact = {
+    path: binding.screenshot,
+    sha256: binding.actual?.sha256 || null,
+    width: binding.actual?.width || binding.recorded?.width || null,
+    height: binding.actual?.height || binding.recorded?.height || null,
+    sourceVerified: binding.ok === true && binding.sourceVerified === true,
+    presentationVerified: false,
+  };
+  if (!event.qualityClaim) {
+    if (!binding.ok) throw new Error(`${binding.failureCode}: ${binding.reason}`);
+    return { event, evidenceCheck: null };
+  }
+
+  const priorAttempts = events.filter((item) =>
+    item.type === 'perception' &&
+    eventStepId(item) === stepId &&
+    item.qualityClaim,
+  );
+  if (priorAttempts.length >= 2) {
+    throw new Error('VISUAL_INPUT_RETRY_EXHAUSTED: 同一步骤最多允许首次图片异常检查和一次有限重试。');
+  }
+  const priorAttempt = priorAttempts.slice(-1)[0] || null;
+  if (!priorAttempt && event.retryOf) {
+    throw new Error('VISUAL_INPUT_RETRY_INVALID: 首次图片异常检查不能包含 retryOf。');
+  }
+  if (priorAttempt) {
+    if (event.retryOf !== priorAttempt.attemptId || event.attemptId === priorAttempt.attemptId) {
+      throw new Error(`VISUAL_INPUT_RETRY_INVALID: 重试必须使用新的 attemptId，并以 retryOf=${priorAttempt.attemptId} 绑定首次检查。`);
+    }
+    const priorIndex = events.lastIndexOf(priorAttempt);
+    const retryDecision = events.slice(priorIndex + 1).some((item) =>
+      item.type === 'decision' &&
+      item.decision === 'retry_visual_input' &&
+      eventStepId(item) === stepId,
+    );
+    if (!retryDecision) {
+      throw new Error('VISUAL_INPUT_RETRY_DECISION_REQUIRED: 第二次图片检查前必须写 retry_visual_input decision。');
+    }
+  }
+
+  let verification = verifyQualityClaim(
+    path.join(execDir, binding.screenshot),
+    event.qualityClaim,
+    binding.recorded?.sha256 || '',
+  );
+  if (!binding.recorded?.sha256 && !['SOURCE_INVALID', 'SOURCE_CHANGED'].includes(verification.verdict)) {
+    verification = {
+      ...verification,
+      verdict: 'UNVERIFIABLE',
+      reason: '旧 observation 没有采集时 SHA-256，无法确认 Agent 声明对应的原始字节未发生变化。',
+    };
+  }
+  const checkNumber = events.filter((item) => item.type === 'evidenceCheck').length + 1;
+  const checkId = `evidence-check-${String(checkNumber).padStart(3, '0')}`;
+  const evidenceCheck = {
+    schemaVersion: 1,
+    time: nowIso(),
+    type: 'evidenceCheck',
+    source: 'run-case.js',
+    checkId,
+    stepId,
+    evidence: [binding.screenshot],
+    artifactSha256: verification.artifactSha256 || binding.actual?.sha256 || null,
+    sourceVerified: binding.ok === true && binding.sourceVerified === true,
+    presentationVerified: false,
+    attemptId: event.attemptId,
+    retryOf: event.retryOf || null,
+    presentationMode: event.presentationMode,
+    claim: verification.claim || event.qualityClaim,
+    verdict: verification.verdict,
+    reason: verification.reason,
+    image: verification.image || (binding.actual ? { width: binding.actual.width, height: binding.actual.height } : undefined),
+    pixelStats: verification.pixelStats || [],
+  };
+  event.evidenceCheckId = checkId;
+  if (event.status === 'UNUSABLE' && verification.verdict !== 'CLAIM_PRESENT_IN_SOURCE') {
+    event.requestedStatus = 'UNUSABLE';
+    event.status = 'UNCERTAIN';
+  }
+  return { event, evidenceCheck };
+}
+
 function validateEvent(event) {
   if (!event.type || typeof event.type !== 'string') throw new Error('record-json missing required field: type');
   if (!VALID_EVENT_TYPES.has(event.type)) throw new Error(`Unsupported event type: ${event.type}`);
@@ -270,9 +438,23 @@ function validateEvent(event) {
   }
   if (event.type === 'decision') {
     if (!event.decision || !VALID_DECISIONS.has(event.decision)) throw new Error(`Unsupported decision: ${event.decision}`);
+    if (event.decision === 'retry_visual_input' && !eventStepId(event)) throw new Error('retry_visual_input decision 必须绑定 stepId');
   }
   if (event.type === 'perception' && event.status !== undefined && !VALID_PERCEPTION_STATUSES.has(event.status)) {
     throw new Error('perception status must be USABLE, UNUSABLE, or UNCERTAIN');
+  }
+  if (event.type === 'perception' && event.qualityClaim !== undefined) {
+    if (!event.stepId) throw new Error('带 qualityClaim 的 perception 必须绑定 stepId');
+    if (!['UNUSABLE', 'UNCERTAIN'].includes(event.status)) throw new Error('带 qualityClaim 的 perception status 必须是 UNUSABLE 或 UNCERTAIN');
+    if (!String(event.reason || '').trim()) throw new Error('带 qualityClaim 的 perception 必须包含 reason');
+    if (!event.attemptId || typeof event.attemptId !== 'string') throw new Error('带 qualityClaim 的 perception 必须包含 attemptId');
+    if (!VALID_PRESENTATION_MODES.has(event.presentationMode)) throw new Error('带 qualityClaim 的 perception presentationMode 必须是 scaled、original 或 reopen');
+    if (event.retryOf !== undefined && typeof event.retryOf !== 'string') throw new Error('perception retryOf 必须是字符串');
+    event.qualityClaim = validateQualityClaim(event.qualityClaim);
+  }
+  if (event.type === 'evidenceCheck') {
+    if (event.source !== 'run-case.js') throw new Error('evidenceCheck source must be run-case.js');
+    if (!EVIDENCE_CHECK_VERDICTS.has(event.verdict)) throw new Error(`Unsupported evidenceCheck verdict: ${event.verdict}`);
   }
   if (event.type === 'rule') {
     if (!event.ruleId || typeof event.ruleId !== 'string') throw new Error('rule event missing required field: ruleId');
@@ -940,6 +1122,8 @@ function assertionEvidenceReadiness(events, nextEvent, execDir = '') {
       reason: `assertion PASS 必须引用 ${stepId} 最新 observation 的截图证据。`,
     };
   }
+  const screenshotBinding = screenshotBindingReadiness(latestObservation, execDir);
+  if (!screenshotBinding.ok) return screenshotBinding;
   const latestObservationIndex = events.lastIndexOf(latestObservation);
   const factsAfterObservation = events.slice(latestObservationIndex + 1)
     .filter((event) => eventStepId(event) === stepId);
@@ -960,6 +1144,13 @@ function assertionEvidenceReadiness(events, nextEvent, execDir = '') {
       ok: false,
       failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
       reason: `assertion PASS 前必须为 ${stepId} 最新截图写入 status=USABLE、evidence 指向该截图且包含 reason 的 perception。`,
+    };
+  }
+  if (screenshotBinding.recorded?.sha256 && latestPerception.inputArtifact?.sha256 !== screenshotBinding.recorded.sha256) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 前的 perception 未绑定 ${stepId} 最新截图的采集时 SHA-256。`,
     };
   }
   return { ok: true };
@@ -1103,32 +1294,61 @@ function firstAssertion(events, status) {
   return events.find((event) => event.type === 'assertion' && event.status === status) || null;
 }
 
+function eventFailedWithCode(event, failureCode) {
+  if (!event) return false;
+  const code = event.failureCode || event.causeFailureCode || observationFailureCode(event);
+  const failed = event.ok === false || event.observation?.ok === false || event.status === 'BLOCKED' || event.status === 'FAILED';
+  return failed && code === failureCode;
+}
+
+function finalizeFailureReadiness(events, requested, execDir) {
+  const failureCode = requested.failureCode || null;
+  if (failureCode === 'TOOL_ERROR') {
+    const supported = events.some((event) => ['observation', 'actionResult', 'budgetExceeded'].includes(event.type) && eventFailedWithCode(event, 'TOOL_ERROR'));
+    if (!supported) {
+      return {
+        ok: false,
+        failureCode: 'TOOL_ERROR_EVIDENCE_REQUIRED',
+        reason: 'TOOL_ERROR 必须由失败的 observation、actionResult 或框架技术事件支持；Agent 图片预览异常请使用结构化 qualityClaim。',
+      };
+    }
+  }
+  if (failureCode === 'OBSERVATION_ARTIFACT_INVALID') {
+    const supported = events.some((event) => eventFailedWithCode(event, 'OBSERVATION_ARTIFACT_INVALID') ||
+      (event.type === 'evidenceCheck' && event.verdict === 'SOURCE_INVALID'));
+    if (!supported) {
+      return { ok: false, failureCode: 'OBSERVATION_ARTIFACT_INVALID', reason: '缺少原始截图解码失败事实。' };
+    }
+  }
+  if (failureCode === 'OBSERVATION_ARTIFACT_CHANGED') {
+    let supported = events.some((event) => event.type === 'evidenceCheck' && event.verdict === 'SOURCE_CHANGED');
+    if (!supported) {
+      for (const observation of events.filter((event) => event.type === 'observation' && screenshotMetadata(event)?.sha256)) {
+        const readiness = screenshotBindingReadiness(observation, execDir);
+        if (!readiness.ok && readiness.failureCode === 'OBSERVATION_ARTIFACT_CHANGED') supported = true;
+      }
+    }
+    if (!supported) return { ok: false, failureCode: 'OBSERVATION_ARTIFACT_CHANGED', reason: '缺少截图 SHA-256 变化事实。' };
+  }
+  if (failureCode === 'VISUAL_INPUT_UNVERIFIABLE') {
+    const stepId = requested.failedStep || events.filter((event) => event.type === 'evidenceCheck').slice(-1)[0]?.stepId;
+    const checks = events.filter((event) => event.type === 'evidenceCheck' && (!stepId || eventStepId(event) === stepId));
+    const latestPerception = events.filter((event) => event.type === 'perception' && (!stepId || eventStepId(event) === stepId)).slice(-1)[0];
+    const attemptIds = new Set(checks.map((item) => item.attemptId).filter(Boolean));
+    const retryLinked = checks.some((item) => item.retryOf && attemptIds.has(item.retryOf) && item.attemptId !== item.retryOf);
+    if (checks.length < 2 || attemptIds.size < 2 || !retryLinked || !latestPerception || !['UNUSABLE', 'UNCERTAIN'].includes(latestPerception.status)) {
+      return {
+        ok: false,
+        failureCode: 'VISUAL_INPUT_EVIDENCE_REQUIRED',
+        reason: 'VISUAL_INPUT_UNVERIFIABLE 需要首次检查和一次带新 attemptId、retryOf 绑定及 retry_visual_input decision 的有限重试。',
+      };
+    }
+  }
+  return { ok: true };
+}
+
 function statusForFailureCode(failureCode, fallbackStatus) {
-  if (!failureCode) return fallbackStatus;
-  if (['ASSERTION_FAILED', 'ASSERTION_UNKNOWN'].includes(failureCode)) return 'FAIL';
-  if (['ACTION_TARGET_NOT_FOUND', 'PAGE_LOAD_BLOCKED'].includes(failureCode)) return fallbackStatus === 'BLOCKED' ? 'BLOCKED' : 'FAIL';
-  if (VALID_PRECONDITION_FLOW_FAILURES.has(failureCode)) return 'BLOCKED';
-  if ([
-    'ENV_UNCONFIRMED',
-    'ENV_UNAVAILABLE',
-    'ENV_AMBIGUOUS',
-    'PLATFORM_UNIMPLEMENTED',
-    'PRECONDITION_FAILED',
-    'PRECONDITION_REQUIRED',
-    'PRECONDITION_UNKNOWN',
-    'PRECONDITION_UNSUPPORTED',
-    'APP_CONTEXT_LOST',
-    'APP_LEFT_FOREGROUND',
-    'UNKNOWN_POPUP',
-    'CASE_TIMEOUT',
-    'CASE_RESTART_FAILED',
-    'EXECUTION_BUDGET_EXCEEDED',
-    'TOOL_ERROR',
-    'ACTION_RESULT_SOURCE_REQUIRED',
-    'OBSERVATION_SOURCE_REQUIRED',
-    'ASSERTION_EVIDENCE_REQUIRED',
-  ].includes(failureCode)) return 'BLOCKED';
-  return fallbackStatus;
+  return failureStatus(failureCode, fallbackStatus);
 }
 
 function failureCodeForcesBlocked(failureCode, fallbackStatus) {
@@ -1241,13 +1461,14 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
       stepStatus.set(stepId, 'blocked');
     }
   }
-  const failedStepKnown = result.failedStep && stepStatus.has(result.failedStep);
+  const knownCaseStep = result.failedStep && caseJson.steps.some((step) => step.id === result.failedStep);
+  const failedStepKnown = knownCaseStep && stepStatus.has(result.failedStep);
   const steps = {
     total: caseJson.steps.length,
     passed: Array.from(stepStatus.values()).filter((value) => value === 'passed').length,
-    failed: Array.from(stepStatus.values()).filter((value) => value === 'failed').length + (result.failedStep && !failedStepKnown ? 1 : 0),
-    blocked: Array.from(stepStatus.values()).filter((value) => value === 'blocked').length + (result.status === 'BLOCKED' && !failedStepKnown ? 1 : 0),
-    unknown: Array.from(stepStatus.values()).filter((value) => value === 'unknown').length + (result.status === 'UNKNOWN' && !failedStepKnown ? 1 : 0),
+    failed: Array.from(stepStatus.values()).filter((value) => value === 'failed').length + (knownCaseStep && result.status === 'FAIL' && !failedStepKnown ? 1 : 0),
+    blocked: Array.from(stepStatus.values()).filter((value) => value === 'blocked').length + (knownCaseStep && result.status === 'BLOCKED' && !failedStepKnown ? 1 : 0),
+    unknown: Array.from(stepStatus.values()).filter((value) => value === 'unknown').length + (knownCaseStep && result.status === 'UNKNOWN' && !failedStepKnown ? 1 : 0),
     skipped: 0,
     failedStepId: result.failedStep || null,
   };
@@ -1293,6 +1514,15 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     alreadySatisfied: events.filter((event) => event.type === 'precondition' && event.resolution === 'already_satisfied' && event.flowId).length,
     actions: preconditionFlowActions.length,
   };
+  const evidenceChecks = events.filter((event) => event.type === 'evidenceCheck');
+  const visualEvidence = {
+    checks: evidenceChecks.length,
+    claimPresent: evidenceChecks.filter((event) => event.verdict === 'CLAIM_PRESENT_IN_SOURCE').length,
+    claimAbsent: evidenceChecks.filter((event) => event.verdict === 'CLAIM_NOT_PRESENT_IN_SOURCE').length,
+    unverifiable: evidenceChecks.filter((event) => event.verdict === 'UNVERIFIABLE').length,
+    sourceInvalid: evidenceChecks.filter((event) => event.verdict === 'SOURCE_INVALID').length,
+    sourceChanged: evidenceChecks.filter((event) => event.verdict === 'SOURCE_CHANGED').length,
+  };
 
   return {
     schemaVersion: 1,
@@ -1311,8 +1541,10 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     environment: state.environment || {},
     preconditions,
     steps,
+    executionPhase: result.failedStep ? 'step' : preconditions.blocked || preconditions.failed || preconditions.unknown ? 'precondition' : result.status === 'BLOCKED' ? 'environment-or-framework' : 'completed',
     actions,
     flows,
+    visualEvidence,
     stability,
     artifacts: countArtifacts(events),
     budget: executionState.budget || DEFAULT_BUDGET,
@@ -1323,10 +1555,75 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
   };
 }
 
+function completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionState, draft, options = {}) {
+  const statePath = path.join(runtimeDir, 'state.json');
+  const timelinePath = path.join(execDir, 'timeline.jsonl');
+  const draftPath = path.join(execDir, 'result.draft.json');
+  const result = draft.result;
+  const metrics = draft.metrics;
+  const resultEvent = draft.resultEvent;
+  if (result.executionId !== executionState.executionId || result.caseContractSha !== caseContractSha(caseJson)) {
+    throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: finalize draft 与当前 execution 或 case contract 不一致，不能自动恢复。');
+  }
+  let events = readJsonl(timelinePath);
+  if (!events.some((event) => event.type === 'result' && event.source === 'run-case.js')) {
+    appendJsonl(timelinePath, resultEvent);
+    events = [...events.filter((event) => event.type !== 'result'), resultEvent];
+  }
+  writeJson(path.join(execDir, 'result.json'), result);
+  writeJson(path.join(execDir, 'metrics.json'), metrics);
+
+  const state = readJson(statePath, {
+    schemaVersion: 1,
+    executionCount: 0,
+    statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 },
+    environment: {},
+  });
+  const committed = Array.isArray(state.committedExecutionIds) ? state.committedExecutionIds : [];
+  if (!options.skipStateApply && !committed.includes(result.executionId)) {
+    state.executionCount = (state.executionCount || 0) + 1;
+    state.latestStatus = result.status;
+    state.latestExecutionId = result.executionId;
+    state.latestFailedStep = result.failedStep;
+    state.latestFailureCode = result.failureCode;
+    state.statusCounts = state.statusCounts || { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 };
+    state.statusCounts[result.status] = (state.statusCounts[result.status] || 0) + 1;
+    if (result.status === 'PASS') state.lastPassedAt = result.endedAt;
+    if (result.status !== 'PASS') state.lastFailedAt = result.endedAt;
+    state.committedExecutionIds = [...committed, result.executionId];
+    writeJson(statePath, state);
+  }
+  writeExecutionState(execDir, {
+    ...executionState,
+    schemaVersion: 1,
+    executionId: result.executionId,
+    startedAt: result.startedAt,
+    endedAt: result.endedAt,
+    lifecycle: 'FINALIZED',
+    finalized: true,
+    status: result.status,
+    requestedStatus: result.requestedStatus,
+    failureCode: result.failureCode,
+  });
+  if (fs.existsSync(draftPath)) fs.unlinkSync(draftPath);
+  const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
+  writeCaseReports(caseDir, caseJson, state, notes, { result, metrics, events }, { platform: options.platform });
+  refreshIndexForCase(caseDir);
+  return {
+    executionId: result.executionId,
+    execDir,
+    result: path.join(execDir, 'result.json'),
+    metrics: path.join(execDir, 'metrics.json'),
+    timeline: timelinePath,
+    recovered: options.recovered === true,
+  };
+}
+
 function finalize(caseDir, options) {
   const runtimeDir = caseRuntimeDir(caseDir, options.platform);
   const caseJson = readJson(path.join(caseDir, 'case.json'));
   if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
+  validateCaseExecutionContract(caseJson);
   validateGlobalRules(caseJson);
   const statePath = path.join(runtimeDir, 'state.json');
   const state = readJson(statePath, { schemaVersion: 1, executionCount: 0, statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 }, environment: {} });
@@ -1347,19 +1644,77 @@ function finalize(caseDir, options) {
   }
   const timelinePath = path.join(execDir, 'timeline.jsonl');
   const existingEvents = readJsonl(timelinePath);
-  const existingResult = readJson(path.join(execDir, 'result.json'), null);
-  const hasResultEvent = existingEvents.some((event) => event.type === 'result');
+  const resultPath = path.join(execDir, 'result.json');
+  const metricsPath = path.join(execDir, 'metrics.json');
+  const draftPath = path.join(execDir, 'result.draft.json');
+  const existingResult = readJson(resultPath, null);
+  const existingMetrics = readJson(metricsPath, null);
+  const existingDraft = readJson(draftPath, null);
   const startedAt = options.startedAt || existingEvents[0]?.time || nowIso();
   const endedAt = nowIso();
   let status = options.status || 'BLOCKED';
   if (!VALID_STATUS.has(status)) throw new Error(`Invalid status: ${status}`);
-  if ((executionState.finalized || existingResult || hasResultEvent) && !options.allowAlreadyFinalized) {
-    return { executionId, execDir, result: path.join(execDir, 'result.json'), metrics: path.join(execDir, 'metrics.json'), timeline: timelinePath, alreadyFinalized: true };
+  if (executionState.finalized && existingResult && existingMetrics) {
+    if (fs.existsSync(draftPath)) fs.unlinkSync(draftPath);
+    return { executionId, execDir, result: resultPath, metrics: metricsPath, timeline: timelinePath, alreadyFinalized: true };
+  }
+  if (!executionState.finalized && existingResult && existingMetrics) {
+    const recoveryEvent = existingEvents.find((event) => event.type === 'result' && event.source === 'run-case.js') || {
+      time: existingResult.endedAt || endedAt,
+      type: 'result',
+      source: 'run-case.js',
+      status: existingResult.status,
+      requestedStatus: existingResult.requestedStatus,
+      reason: existingResult.reason,
+      failedStep: existingResult.failedStep,
+      failureCode: existingResult.failureCode,
+    };
+    return completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionState, {
+      schemaVersion: 1,
+      result: existingResult,
+      metrics: existingMetrics,
+      resultEvent: recoveryEvent,
+    }, { platform: options.platform, recovered: true });
+  }
+  if (existingDraft?.result && existingDraft?.metrics && existingDraft?.resultEvent) {
+    return completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionState, existingDraft, {
+      platform: options.platform,
+      recovered: true,
+      skipStateApply: executionState.finalized === true,
+    });
+  }
+  if (existingResult && !existingMetrics) {
+    const recoveryEvent = existingEvents.find((event) => event.type === 'result' && event.source === 'run-case.js') || {
+      time: existingResult.endedAt || endedAt,
+      type: 'result',
+      source: 'run-case.js',
+      status: existingResult.status,
+      requestedStatus: existingResult.requestedStatus,
+      reason: existingResult.reason,
+      failedStep: existingResult.failedStep,
+      failureCode: existingResult.failureCode,
+    };
+    const recoveryEvents = [...existingEvents.filter((event) => event.type !== 'result'), recoveryEvent];
+    const recoveryMetrics = buildMetrics(caseJson, state, recoveryEvents, existingResult, executionState);
+    writeJson(draftPath, { schemaVersion: 1, result: existingResult, metrics: recoveryMetrics, resultEvent: recoveryEvent });
+    return completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionState, {
+      result: existingResult,
+      metrics: recoveryMetrics,
+      resultEvent: recoveryEvent,
+    }, { platform: options.platform, recovered: true, skipStateApply: executionState.finalized === true });
   }
   const eventsBeforeResult = existingEvents.filter((event) => event.type !== 'result');
   const requestedStatus = status;
   const readiness = options.legacyRuntime || options.allowIncompletePreconditions ? { ok: true } : finalizeReadiness(caseJson, executionState, eventsBeforeResult);
   if (!readiness.ok) throw new Error(`${readiness.failureCode}: ${readiness.reason}`);
+  const failureReadiness = options.legacyRuntime
+    ? { ok: true }
+    : finalizeFailureReadiness(eventsBeforeResult, {
+      status,
+      failureCode: options.failureCode || null,
+      failedStep: options.failedStep || null,
+    }, execDir);
+  if (!failureReadiness.ok) throw new Error(`${failureReadiness.failureCode}: ${failureReadiness.reason}`);
   const normalized = normalizeResultStatus(caseJson, eventsBeforeResult, {
     status,
     failureCode: options.failureCode || null,
@@ -1389,43 +1744,23 @@ function finalize(caseDir, options) {
     environment: state.environment || {},
     evidence: options.evidence || [],
   };
-  const resultEvent = { time: endedAt, type: 'result', status, requestedStatus, reason: result.reason, failedStep: result.failedStep, failureCode: result.failureCode };
-  appendJsonl(timelinePath, resultEvent);
+  const resultEvent = { time: endedAt, type: 'result', source: 'run-case.js', status, requestedStatus, reason: result.reason, failedStep: result.failedStep, failureCode: result.failureCode };
   const events = [...eventsBeforeResult, resultEvent];
   const metrics = buildMetrics(caseJson, state, events, result, executionState);
-
-  writeJson(path.join(execDir, 'result.json'), result);
-  writeJson(path.join(execDir, 'metrics.json'), metrics);
-
-  state.executionCount = (state.executionCount || 0) + 1;
-  state.latestStatus = status;
-  state.latestExecutionId = executionId;
-  state.latestFailedStep = result.failedStep;
-  state.latestFailureCode = result.failureCode;
-  state.statusCounts = state.statusCounts || { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 };
-  state.statusCounts[status] = (state.statusCounts[status] || 0) + 1;
-  if (status === 'PASS') state.lastPassedAt = endedAt;
-  if (status !== 'PASS') state.lastFailedAt = endedAt;
-  writeJson(statePath, state);
+  const draft = { schemaVersion: 1, result, metrics, resultEvent };
+  writeJson(draftPath, draft);
   writeExecutionState(execDir, {
+    ...executionState,
     schemaVersion: 1,
     executionId,
     startedAt,
-    endedAt,
-    finalized: true,
-    status,
-    requestedStatus,
-    failureCode: result.failureCode,
-    isolation: executionState.isolation,
-    preconditionPlan: executionState.preconditionPlan,
-    preconditionPlanSha: executionState.preconditionPlanSha,
-    budget: executionState.budget || DEFAULT_BUDGET,
+    lifecycle: 'FINALIZING',
+    finalized: false,
   });
-
-  const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
-  writeCaseReports(caseDir, caseJson, state, notes, { result, metrics, events }, { platform: options.platform });
-  refreshIndexForCase(caseDir);
-  return { executionId, execDir, result: path.join(execDir, 'result.json'), metrics: path.join(execDir, 'metrics.json'), timeline: timelinePath };
+  if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_FINALIZE_INTERRUPT === 'after-draft') {
+    throw new Error('MAVT_SELF_TEST_FINALIZE_INTERRUPT: after-draft');
+  }
+  return completeFinalization(caseDir, runtimeDir, caseJson, execDir, readExecutionState(execDir), draft, { platform: options.platform });
 }
 
 function actionRequiresStepId(action) {
@@ -1651,6 +1986,7 @@ try {
     const runtimeDir = caseRuntimeDir(caseDir, options.platform);
     const caseJson = readJson(path.join(caseDir, 'case.json'));
     if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
+    validateCaseExecutionContract(caseJson);
     validateGlobalRules(caseJson);
     const state = readJson(path.join(runtimeDir, 'state.json'), null);
     const missingEnv = requiredEnvironmentFields(state).filter((field) => !state?.environment?.[field]);
@@ -1680,6 +2016,7 @@ try {
       schemaVersion: 1,
       executionId,
       startedAt: nowIso(),
+      lifecycle: 'STARTING',
       finalized: false,
       preconditionPlan,
       preconditionPlanSha: preconditionPlan.preconditionPlanSha,
@@ -1688,6 +2025,7 @@ try {
     appendJsonl(path.join(execDir, 'timeline.jsonl'), {
       time: nowIso(),
       type: 'executionStart',
+      source: 'run-case.js',
       executionId,
       platform: options.platform || state.environment?.platform || null,
       caseKey: caseJson.identity.caseKey,
@@ -1696,14 +2034,45 @@ try {
       preconditionPlanSha: preconditionPlan.preconditionPlanSha,
       flowAssets: planFlowSummaries(preconditionPlan),
     });
-    const appRestart = caseRestartDisabled(options)
-      ? { skipped: true, reason: 'MAVT_SELF_TEST_SKIP_CASE_RESTART=1' }
-      : restartAppForExecution(caseDir, options.platform, executionId);
+    if (state.environmentProbe) {
+      appendJsonl(path.join(execDir, 'timeline.jsonl'), {
+        time: nowIso(),
+        type: 'environmentProbe',
+        source: 'run-case.js',
+        platform: options.platform,
+        ...state.environmentProbe,
+      });
+    }
+    let appRestart;
+    try {
+      appRestart = caseRestartDisabled(options)
+        ? { skipped: true, reason: 'MAVT_SELF_TEST_SKIP_CASE_RESTART=1' }
+        : restartAppForExecution(caseDir, options.platform, executionId);
+    } catch (error) {
+      const reason = error.message || String(error);
+      writeExecutionState(execDir, {
+        ...readExecutionState(execDir),
+        lifecycle: 'BLOCKED_START',
+        finalized: false,
+        isolation: { clean: false, required: true, reason },
+      });
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: 'CASE_RESTART_FAILED',
+        reason,
+        allowIncompletePreconditions: true,
+      });
+      console.error(JSON.stringify({ executionId, blockedOnStart: true, nextAction: 'stop-current-case', failureCode: 'CASE_RESTART_FAILED', reason, finalized }, null, 2));
+      process.exit(3);
+    }
     const isolation = buildIsolationState(caseJson, appRestart);
     writeExecutionState(execDir, {
       schemaVersion: 1,
       executionId,
       startedAt: readExecutionState(execDir)?.startedAt || nowIso(),
+      lifecycle: 'RUNNING',
       finalized: false,
       isolation,
       preconditionPlan,
@@ -1766,6 +2135,7 @@ try {
     const events = readJsonl(timelinePath);
     const caseJson = readJson(path.join(caseDir, 'case.json'));
     if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
+    validateCaseExecutionContract(caseJson);
     const preconditionReady = preconditionReadiness(caseJson, events, event);
     if (!preconditionReady.ok) {
       throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
@@ -1790,6 +2160,7 @@ try {
       const budgetEvent = {
         time: nowIso(),
         type: 'budgetExceeded',
+        source: 'run-case.js',
         status: 'BLOCKED',
         failureCode: finalViolation.failureCode,
         reason: finalViolation.reason,
@@ -1822,8 +2193,21 @@ try {
     if (executionState?.finalized) throw new Error(`Execution already finalized: ${executionId}`);
     const caseJson = readJson(path.join(caseDir, 'case.json'));
     if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
+    validateCaseExecutionContract(caseJson);
     validateGlobalRules(caseJson);
-    const event = normalizeEvent(JSON.parse(options.recordJson));
+    let event = normalizeEvent(JSON.parse(options.recordJson));
+    if (event.type === 'evidenceCheck') {
+      throw new Error('EVIDENCE_CHECK_SOURCE_REQUIRED: evidenceCheck 只能由 run-case.js 根据结构化 qualityClaim 生成。');
+    }
+    if (command === 'record' && event.type === 'observation') {
+      throw new Error('OBSERVATION_SOURCE_REQUIRED: 公开 --record-json 不接受 observation；正式观察必须由顶层 scripts/observe.sh 内部写入。');
+    }
+    if (command === 'record' && event.type === 'actionResult') {
+      throw new Error('ACTION_RESULT_SOURCE_REQUIRED: 公开 --record-json 不接受 actionResult；正式动作结果必须由顶层 scripts/action.sh 内部写入。');
+    }
+    if (command === 'record' && !AGENT_WRITABLE_EVENT_TYPES.has(event.type)) {
+      throw new Error(`EVENT_SOURCE_REQUIRED: 公开 --record-json 不接受框架事件 ${event.type}。`);
+    }
     validateRuleEventAgainstCase(event, caseJson);
     validatePreconditionEventAgainstCase(event, caseJson);
     const timelinePath = path.join(execDir, 'timeline.jsonl');
@@ -1863,6 +2247,12 @@ try {
       throw new Error(`${observationSourceReady.failureCode}: ${observationSourceReady.reason}`);
     }
     validateArtifactFilesExist(execDir, event);
+    if (allowObservation && event.type === 'observation' && !screenshotMetadata(event)) {
+      event = enrichObservationScreenshot(event, execDir);
+    }
+    const preparedPerception = preparePerceptionEvidence(events, event, execDir);
+    event = preparedPerception.event;
+    if (preparedPerception.evidenceCheck) validateEvent(preparedPerception.evidenceCheck);
     const budget = executionState?.budget || DEFAULT_BUDGET;
     const violation = budgetViolation(events, event, budget, executionState?.startedAt);
     if (violation) {
@@ -1872,6 +2262,7 @@ try {
       const budgetEvent = {
         time: nowIso(),
         type: 'budgetExceeded',
+        source: 'run-case.js',
         status: 'BLOCKED',
         failureCode: finalViolation.failureCode,
         reason: finalViolation.reason,
@@ -1892,8 +2283,16 @@ try {
       process.exit(3);
     }
     appendJsonl(timelinePath, event);
+    if (preparedPerception.evidenceCheck) appendJsonl(timelinePath, preparedPerception.evidenceCheck);
     const flowTechnicalFailure = preconditionFlowTechnicalFailure(event);
     const terminalPrecondition = preconditionTerminalOptions(event);
+    const evidenceTechnicalFailure = event.failureCode === 'OBSERVATION_ARTIFACT_INVALID'
+      ? { failureCode: 'OBSERVATION_ARTIFACT_INVALID', reason: event.reason || '截图产物无法解码。' }
+      : preparedPerception.evidenceCheck?.verdict === 'SOURCE_INVALID'
+        ? { failureCode: 'OBSERVATION_ARTIFACT_INVALID', reason: preparedPerception.evidenceCheck.reason }
+        : preparedPerception.evidenceCheck?.verdict === 'SOURCE_CHANGED'
+          ? { failureCode: 'OBSERVATION_ARTIFACT_CHANGED', reason: preparedPerception.evidenceCheck.reason }
+          : null;
     if (flowTechnicalFailure) {
       appendPreconditionFlowFailure(timelinePath, event, flowTechnicalFailure);
       const finalized = finalize(caseDir, {
@@ -1904,6 +2303,16 @@ try {
         reason: flowTechnicalFailure.reason,
       });
       console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), flowTechnicalFailure, finalized }, null, 2));
+    } else if (evidenceTechnicalFailure) {
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: evidenceTechnicalFailure.failureCode,
+        failedStep: eventStepId(event) || null,
+        reason: evidenceTechnicalFailure.reason,
+      });
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), evidenceTechnicalFailure, finalized }, null, 2));
     } else if (terminalPrecondition) {
       const finalized = finalize(caseDir, {
         platform: options.platform,
@@ -1912,7 +2321,10 @@ try {
       });
       console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), paceHint: paceHint(events, event), finalized }, null, 2));
     } else {
-      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), paceHint: paceHint(events, event) }, null, 2));
+      const nextAction = event.type === 'perception' && event.qualityClaim
+        ? (event.retryOf ? 'finalize-visual-input-unverifiable-or-continue' : 'retry-visual-input')
+        : undefined;
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), paceHint: paceHint(events, event), nextAction }, null, 2));
     }
   } else if (command === 'finalize') {
     console.log(JSON.stringify(finalize(caseDir, options), null, 2));

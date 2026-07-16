@@ -33,6 +33,9 @@ has_platform=0
 has_device=0
 has_app=0
 has_entry=0
+device=""
+app=""
+entry=""
 
 mavt_add_precondition_flow_scope() {
   local value="$1"
@@ -61,9 +64,9 @@ while [[ $# -gt 0 ]]; do
     --flow-id) flow_id="${2:-}"; shift 2 ;;
     --flow-step-id) flow_step_id="${2:-}"; shift 2 ;;
     --platform) platform="${2:-}"; has_platform=1; args+=("$1" "$2"); shift 2 ;;
-    --device) has_device=1; args+=("$1" "$2"); shift 2 ;;
-    --app|--bundle) has_app=1; args+=("$1" "$2"); shift 2 ;;
-    --entry|--ability) has_entry=1; args+=("$1" "$2"); shift 2 ;;
+    --device) has_device=1; device="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --app|--bundle) has_app=1; app="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --entry|--ability) has_entry=1; entry="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --type) action_type="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --target) target="${2:-}"; shift 2 ;;
     --x) x="${2:-}"; args+=("$1" "$2"); shift 2 ;;
@@ -108,7 +111,7 @@ if [[ -n "$case_dir" ]]; then
   fi
   mavt_validate_coordinate_action case "$action_type" "$x" "$y" "$coordinate_source" "$coordinate_evidence" "$target_bounds"
   requested_action="$(mavt_action_request_json "$action_type" "$target" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$wait_ms" "$reason" "$velocity" "$coordinate_source" "$target_bounds" "$coordinate_evidence")"
-  mavt_validate_action_request "$script_dir/lib/action-contract.js" "$requested_action"
+  mavt_validate_action_request "$script_dir/lib/action-contract.js" "$requested_action" "action.sh" "$platform"
   if [[ "$action_type" == "swipe" && -z "$velocity" ]]; then
     velocity="$(mavt_resolve_swipe_velocity "$script_dir/lib/action-contract.js" "$requested_action")"
     args+=(--velocity "$velocity")
@@ -121,6 +124,7 @@ if [[ -n "$case_dir" ]]; then
     execution_id="$(mavt_latest_execution_id "$runtime_dir")"
   fi
   env_args=()
+  mavt_validate_case_env_binding "$case_dir" "$platform" "$device" "$app" "$entry"
   while IFS= read -r item; do
     [[ -n "$item" ]] && env_args+=("$item")
   done < <(mavt_case_env_args "$case_dir" "$has_platform" "$has_device" "$has_app" "$has_entry" "$platform")

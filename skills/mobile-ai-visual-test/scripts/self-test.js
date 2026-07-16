@@ -7,8 +7,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
+const zlib = require('zlib');
 const { caseContractSha, formatDuration, displayFailureCode } = require('./common');
-const { swipeDurationMs, validateAction } = require('./lib/action-contract');
+const { swipeDurationMs, validateAction, validateActionAsset, validateActionExecution } = require('./lib/action-contract');
+const { inspectPng, verifyQualityClaim } = require('./lib/image-evidence');
 
 const repo = path.resolve(__dirname, '..');
 process.env.MAVT_SELF_TEST = '1';
@@ -50,6 +52,61 @@ function write(file, text) {
   fs.writeFileSync(file, text);
 }
 
+let pngCrcTable = null;
+
+function pngCrc32(buffer) {
+  if (!pngCrcTable) {
+    pngCrcTable = [];
+    for (let n = 0; n < 256; n++) {
+      let value = n;
+      for (let bit = 0; bit < 8; bit++) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+      pngCrcTable[n] = value >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = pngCrcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, 'ascii');
+  const result = Buffer.alloc(12 + data.length);
+  result.writeUInt32BE(data.length, 0);
+  typeBuffer.copy(result, 4);
+  data.copy(result, 8);
+  result.writeUInt32BE(pngCrc32(Buffer.concat([typeBuffer, data])), 8 + data.length);
+  return result;
+}
+
+function testPngBuffer(width = 4, height = 4, pixel = () => [255, 255, 255, 255]) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const rows = [];
+  for (let y = 0; y < height; y++) {
+    const row = Buffer.alloc(1 + width * 4);
+    row[0] = 0;
+    for (let x = 0; x < width; x++) {
+      const rgba = pixel(x, y);
+      for (let channel = 0; channel < 4; channel++) row[1 + x * 4 + channel] = rgba[channel];
+    }
+    rows.push(row);
+  }
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(Buffer.concat(rows))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function writeTestPng(file, options = {}) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, testPngBuffer(options.width, options.height, options.pixel));
+}
+
 function json(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
@@ -83,7 +140,8 @@ function ensureObservationArtifacts(caseDir, platform, executionId, event) {
   if (artifacts.layout) paths.push(artifacts.layout);
   if (Array.isArray(artifacts.logs)) paths.push(...artifacts.logs);
   for (const item of paths) {
-    write(path.join(execDir, item), `self-test artifact: ${item}\n`);
+    if (item === artifacts.screenshot) writeTestPng(path.join(execDir, item));
+    else write(path.join(execDir, item), `self-test artifact: ${item}\n`);
   }
 }
 
@@ -160,6 +218,34 @@ function assertLocalTime(value) {
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'havt-self-test-'));
+const sharedTestPng = path.join(tmp, 'shared-test.png');
+writeTestPng(sharedTestPng);
+const sharedTestPngMetadata = inspectPng(sharedTestPng);
+assert.strictEqual(sharedTestPngMetadata.decodeStatus, 'VALID');
+assert.strictEqual(sharedTestPngMetadata.width, 4);
+assert.strictEqual(sharedTestPngMetadata.height, 4);
+const trailingBytesPng = path.join(tmp, 'trailing-bytes.png');
+fs.writeFileSync(trailingBytesPng, Buffer.concat([fs.readFileSync(sharedTestPng), Buffer.from('stale-remote-tail')]));
+const trailingBytesMetadata = inspectPng(trailingBytesPng);
+assert.strictEqual(trailingBytesMetadata.decodeStatus, 'VALID');
+assert.strictEqual(trailingBytesMetadata.trailingBytes, Buffer.byteLength('stale-remote-tail'));
+const blackStripePng = path.join(tmp, 'black-stripe.png');
+writeTestPng(blackStripePng, {
+  width: 10,
+  height: 10,
+  pixel: (x) => (x >= 4 && x < 6 ? [0, 0, 0, 255] : [255, 255, 255, 255]),
+});
+const blackStripeClaim = {
+  source: 'agent_preview',
+  kind: 'VERTICAL_BLACK_BLOCKS',
+  coordinateSpace: 'normalized',
+  regions: [{ x: 0.4, y: 0, width: 0.2, height: 1 }],
+};
+assert.strictEqual(verifyQualityClaim(blackStripePng, blackStripeClaim).verdict, 'CLAIM_PRESENT_IN_SOURCE');
+assert.strictEqual(verifyQualityClaim(sharedTestPng, blackStripeClaim).verdict, 'CLAIM_NOT_PRESENT_IN_SOURCE');
+const corruptTestPng = path.join(tmp, 'corrupt.png');
+write(corruptTestPng, 'not a png');
+assert.strictEqual(inspectPng(corruptTestPng).decodeStatus, 'INVALID');
 const workspace = path.join(tmp, 'workspace');
 const sourceRoot = path.join(tmp, 'source');
 fs.mkdirSync(workspace);
@@ -218,6 +304,16 @@ assert.throws(
 assert.throws(
   () => validateAction({ type: 'swipe', fromX: 10, fromY: 10, toX: 10, toY: 130, durationMs: 200 }),
   /durationMs is not allowed for swipe/,
+);
+assert.doesNotThrow(() => validateActionAsset({ type: 'tap', target: '登录按钮' }));
+assert.throws(
+  () => validateActionExecution({ type: 'tap', target: '登录按钮' }, { platform: 'harmony' }),
+  /requires executable x and y coordinates/,
+);
+assert.doesNotThrow(() => validateActionExecution({ type: 'inputText', x: 10, y: 20, text: '测试' }, { platform: 'harmony' }));
+assert.throws(
+  () => validateActionExecution({ type: 'inputText', x: 10, y: 20, text: 'test' }, { platform: 'android' }),
+  /does not accept x or y/,
 );
 assert.strictEqual(formatDuration(850), '850ms');
 assert.strictEqual(formatDuration(12300), '12s');
@@ -1216,10 +1312,117 @@ run('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform'
   status: 'UNKNOWN',
   reason: '先记录一个证据不足断言',
 }), '--execution-id', blockingPriorityStart.executionId]);
-run('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'TOOL_ERROR', '--failed-step', 'step-001', '--reason', '随后工具失败应优先归为阻塞', '--execution-id', blockingPriorityStart.executionId]);
+const unsupportedToolError = runAllowFailure('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'TOOL_ERROR', '--failed-step', 'step-001', '--reason', '不能只凭 Agent 结论写工具失败', '--execution-id', blockingPriorityStart.executionId]);
+assert.notStrictEqual(unsupportedToolError.status, 0);
+assert.ok(unsupportedToolError.stderr.includes('TOOL_ERROR_EVIDENCE_REQUIRED'));
+recordActionResult(blockingPriorityParsed.caseDir, 'harmony', blockingPriorityStart.executionId, {
+  type: 'actionResult',
+  action: 'wait',
+  ok: false,
+  failureCode: 'TOOL_ERROR',
+  error: 'self-test deterministic tool failure',
+});
+run('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'TOOL_ERROR', '--failed-step', 'step-001', '--reason', '已有正式工具失败事实，应优先归为阻塞', '--execution-id', blockingPriorityStart.executionId]);
 const blockingPriorityResult = json(path.join(blockingPriorityStart.execDir, 'result.json'));
 assert.strictEqual(blockingPriorityResult.status, 'BLOCKED');
 assert.strictEqual(blockingPriorityResult.failureCode, 'TOOL_ERROR');
+
+const visualEvidenceFile = path.join(sourceRoot, 'cases', 'visual-evidence.md');
+write(visualEvidenceFile, `# 视觉输入复核测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 预期看到首页。
+`);
+const visualEvidenceParsed = JSON.parse(run('node', ['scripts/parse-case.js', visualEvidenceFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const visualEvidenceStart = JSON.parse(run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(visualEvidenceParsed.caseDir, 'harmony', visualEvidenceStart.executionId);
+const visualEvidenceScreenshot = recordStepObservation(visualEvidenceParsed.caseDir, 'harmony', visualEvidenceStart.executionId, 'step-001', 'visual-evidence-source');
+let visualEvents = fs.readFileSync(path.join(visualEvidenceStart.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+const visualObservation = visualEvents.findLast((event) => event.type === 'observation');
+assert.strictEqual(visualObservation.artifactMetadata.screenshot.decodeStatus, 'VALID');
+assert.strictEqual(visualObservation.artifactMetadata.screenshot.sha256.length, 64);
+const previewArtifactPerception = {
+  type: 'perception',
+  stepId: 'step-001',
+  status: 'UNUSABLE',
+  attemptId: 'preview-attempt-001',
+  presentationMode: 'scaled',
+  evidence: [visualEvidenceScreenshot],
+  qualityClaim: blackStripeClaim,
+  reason: 'Agent 预览中疑似存在竖向黑块',
+};
+run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify(previewArtifactPerception), '--execution-id', visualEvidenceStart.executionId]);
+const duplicatePreviewAttempt = runAllowFailure('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify(previewArtifactPerception), '--execution-id', visualEvidenceStart.executionId]);
+assert.notStrictEqual(duplicatePreviewAttempt.status, 0);
+assert.ok(duplicatePreviewAttempt.stderr.includes('VISUAL_INPUT_RETRY_INVALID'));
+run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'decision',
+  stepId: 'step-001',
+  decision: 'retry_visual_input',
+  reason: '以原始尺寸重新打开同一原图',
+}), '--execution-id', visualEvidenceStart.executionId]);
+run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  ...previewArtifactPerception,
+  attemptId: 'preview-attempt-002',
+  retryOf: 'preview-attempt-001',
+  presentationMode: 'original',
+}), '--execution-id', visualEvidenceStart.executionId]);
+visualEvents = fs.readFileSync(path.join(visualEvidenceStart.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+const visualChecks = visualEvents.filter((event) => event.type === 'evidenceCheck');
+assert.strictEqual(visualChecks.length, 2);
+assert.deepStrictEqual(visualChecks.map((event) => event.attemptId), ['preview-attempt-001', 'preview-attempt-002']);
+assert.ok(visualChecks.every((event) => event.source === 'run-case.js' && event.verdict === 'CLAIM_NOT_PRESENT_IN_SOURCE'));
+const normalizedPreviewPerception = visualEvents.filter((event) => event.type === 'perception').slice(-1)[0];
+assert.strictEqual(normalizedPreviewPerception.status, 'UNCERTAIN');
+assert.strictEqual(normalizedPreviewPerception.requestedStatus, 'UNUSABLE');
+assert.strictEqual(normalizedPreviewPerception.inputArtifact.sha256, visualObservation.artifactMetadata.screenshot.sha256);
+assert.strictEqual(normalizedPreviewPerception.inputArtifact.sourceVerified, true);
+assert.strictEqual(normalizedPreviewPerception.inputArtifact.presentationVerified, false);
+const forgedEvidenceCheck = runAllowFailure('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'evidenceCheck',
+  source: 'run-case.js',
+  verdict: 'CLAIM_NOT_PRESENT_IN_SOURCE',
+}), '--execution-id', visualEvidenceStart.executionId]);
+assert.notStrictEqual(forgedEvidenceCheck.status, 0);
+assert.ok(forgedEvidenceCheck.stderr.includes('EVIDENCE_CHECK_SOURCE_REQUIRED'));
+run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'VISUAL_INPUT_UNVERIFIABLE', '--failed-step', 'step-001', '--reason', '两次预览均与原始像素复核冲突', '--execution-id', visualEvidenceStart.executionId]);
+const visualEvidenceResult = json(path.join(visualEvidenceStart.execDir, 'result.json'));
+const visualEvidenceMetrics = json(path.join(visualEvidenceStart.execDir, 'metrics.json'));
+assert.strictEqual(visualEvidenceResult.failureCode, 'VISUAL_INPUT_UNVERIFIABLE');
+assert.strictEqual(visualEvidenceMetrics.visualEvidence.checks, 2);
+assert.strictEqual(visualEvidenceMetrics.visualEvidence.claimAbsent, 2);
+
+const changedEvidenceFile = path.join(sourceRoot, 'cases', 'changed-evidence.md');
+write(changedEvidenceFile, `# 截图哈希变化测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 预期看到首页。
+`);
+const changedEvidenceParsed = JSON.parse(run('node', ['scripts/parse-case.js', changedEvidenceFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', changedEvidenceParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const changedEvidenceStart = JSON.parse(run('node', ['scripts/run-case.js', changedEvidenceParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(changedEvidenceParsed.caseDir, 'harmony', changedEvidenceStart.executionId);
+const changedScreenshot = recordStepObservation(changedEvidenceParsed.caseDir, 'harmony', changedEvidenceStart.executionId, 'step-001', 'changed-evidence-source');
+recordUsablePerception(changedEvidenceParsed.caseDir, 'harmony', changedEvidenceStart.executionId, 'step-001', changedScreenshot);
+writeTestPng(path.join(changedEvidenceStart.execDir, changedScreenshot), { pixel: () => [0, 0, 0, 255] });
+const changedAssertion = runAllowFailure('node', ['scripts/run-case.js', changedEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '不应接受被替换的截图',
+  evidence: [changedScreenshot],
+}), '--execution-id', changedEvidenceStart.executionId]);
+assert.notStrictEqual(changedAssertion.status, 0);
+assert.ok(changedAssertion.stderr.includes('OBSERVATION_ARTIFACT_CHANGED'));
+run('node', ['scripts/run-case.js', changedEvidenceParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'OBSERVATION_ARTIFACT_CHANGED', '--failed-step', 'step-001', '--reason', '截图哈希发生变化', '--execution-id', changedEvidenceStart.executionId]);
+assert.strictEqual(json(path.join(changedEvidenceStart.execDir, 'result.json')).failureCode, 'OBSERVATION_ARTIFACT_CHANGED');
 
 const fakeAndroidBin = path.join(tmp, 'fake-android-bin');
 const fakeAdbLog = path.join(tmp, 'fake-adb.log');
@@ -1240,7 +1443,7 @@ if [[ "\${args[0]:-}" == "devices" ]]; then
 elif [[ "\${args[0]:-}" == "install" ]]; then
   printf 'Success\\n'
 elif [[ "\${args[0]:-}" == "exec-out" && "\${args[1]:-}" == "screencap" ]]; then
-  printf 'fake-png'
+  cat "$MAVT_TEST_PNG"
 elif [[ "\${args[0]:-}" == "pull" ]]; then
   dest="\${args[2]}"
   mkdir -p "$(dirname "$dest")"
@@ -1302,6 +1505,7 @@ const fakeAndroidEnv = {
   PATH: `${fakeAndroidBin}:${process.env.PATH}`,
   ADB_LOG: fakeAdbLog,
   ADB_STATE: fakeAdbState,
+  MAVT_TEST_PNG: sharedTestPng,
   MAVT_ACTION_SETTLE_MS: '0',
   MAVT_ANDROID_IME_BUILD_DIR: fakeAndroidImeCache,
 };
@@ -1437,6 +1641,7 @@ assert.ok(fakeAdbOutput.includes('shell am broadcast -a mavt.android.ime.INPUT_T
 const fakeIosEnv = {
   ...process.env,
   MAVT_IOS_FAKE: '1',
+  MAVT_TEST_PNG: sharedTestPng,
   MAVT_ACTION_SETTLE_MS: '0',
 };
 const fakeIosDevice = '00000000-0000-0000-0000-000000000000';
@@ -1604,7 +1809,7 @@ if [[ "\${args[0]:-}" == "file" && "\${args[1]:-}" == "recv" ]]; then
   dest="\${args[3]}"
   mkdir -p "$(dirname "$dest")"
   if [[ "$src" == *.png ]]; then
-    printf 'fake-png' > "$dest"
+    cp "$MAVT_TEST_PNG" "$dest"
   elif [[ -f "$HDC_REMOTE_DIR/$(remote_key "$src")" ]]; then
     cp "$HDC_REMOTE_DIR/$(remote_key "$src")" "$dest"
   else
@@ -1661,7 +1866,7 @@ elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "pidof" ]]; then
 fi
 `);
 fs.chmodSync(fakeHdc, 0o755);
-const fakeEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, HDC_LOG: fakeHdcLog, HDC_REMOTE_DIR: fakeHdcRemote, HDC_STATE: fakeHdcState, MAVT_ACTION_SETTLE_MS: '0' };
+const fakeEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, HDC_LOG: fakeHdcLog, HDC_REMOTE_DIR: fakeHdcRemote, HDC_STATE: fakeHdcState, MAVT_TEST_PNG: sharedTestPng, MAVT_ACTION_SETTLE_MS: '0' };
 
 const restartFile = path.join(sourceRoot, 'cases', 'restart-isolation.md');
 write(restartFile, `# 每用例冷启动测试
@@ -2121,8 +2326,8 @@ assert.ok(exactFlowGroup);
 assert.ok(punctuatedFlowGroup);
 assert.strictEqual(exactFlowGroup.resolution, 'flow');
 assert.strictEqual(punctuatedFlowGroup.resolution, 'confirm');
-assert.deepStrictEqual(exactFlowGroup.caseRefs, ['C025']);
-assert.deepStrictEqual(punctuatedFlowGroup.caseRefs, ['C026']);
+assert.deepStrictEqual(exactFlowGroup.caseRefs, ['C027']);
+assert.deepStrictEqual(punctuatedFlowGroup.caseRefs, ['C028']);
 
 const preconditionFlowStart = JSON.parse(run('node', [
   'scripts/run-case.js',
@@ -2482,7 +2687,7 @@ for (let i = 0; i < 80; i++) {
     artifacts: { screenshot: `screenshots/obs-${i}.png` },
   });
 }
-write(path.join(budgetStart.execDir, 'screenshots/obs-80.png'), 'self-test artifact: screenshots/obs-80.png\n');
+writeTestPng(path.join(budgetStart.execDir, 'screenshots/obs-80.png'));
 const overBudget = runAllowFailure('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--record-observation-json', JSON.stringify({
   type: 'observation',
   scope: 'global',
@@ -2634,5 +2839,91 @@ recordPassAssertion(waitReasonFlowParsed.caseDir, 'harmony', waitReasonFlowStart
 run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', waitReasonFlowStart.executionId]);
 const waitReasonFlowResult = json(path.join(waitReasonFlowStart.execDir, 'result.json'));
 assert.strictEqual(waitReasonFlowResult.status, 'PASS');
+
+const commonHeadingFile = path.join(sourceRoot, 'cases', 'common-heading.md');
+write(commonHeadingFile, `# 常见步骤标题测试
+
+## 测试步骤
+1. 点击登录按钮。
+
+## 预期结果
+- 成功进入首页。
+`);
+const commonHeadingParsed = JSON.parse(run('node', ['scripts/parse-case.js', commonHeadingFile, '--cwd', workspace]));
+const commonHeadingCase = json(path.join(commonHeadingParsed.caseDir, 'case.json'));
+assert.strictEqual(commonHeadingCase.steps.length, 1);
+assert.strictEqual(commonHeadingCase.steps[0].expected, '成功进入首页。');
+
+const zeroStepFile = path.join(sourceRoot, 'cases', 'zero-step.md');
+write(zeroStepFile, `# 零步骤拒绝测试
+
+## 补充说明
+当前文档没有可执行步骤。
+`);
+const zeroStepParse = runAllowFailure('node', ['scripts/parse-case.js', zeroStepFile, '--cwd', workspace]);
+assert.notStrictEqual(zeroStepParse.status, 0);
+assert.ok(zeroStepParse.stderr.includes('CASE_STEPS_REQUIRED'));
+
+assert.notStrictEqual(caseContractSha({
+  identity: { sourceSha1: 'source-fixed' },
+  preconditions: [],
+  steps: [{ id: 'step-001', index: 1, sourceText: '点击 A', kind: 'action', goal: 'tap', hints: [] }],
+  globalRules: [],
+}), caseContractSha({
+  identity: { sourceSha1: 'source-fixed' },
+  preconditions: [],
+  steps: [{ id: 'step-001', index: 1, sourceText: '点击 B', kind: 'action', goal: 'tap', hints: [] }],
+  globalRules: [],
+}));
+
+run('node', ['scripts/update-env.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const recoveryStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const mismatchedEnvironment = runAllowFailure('./scripts/action.sh', [
+  '--case-dir', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', recoveryStart.executionId,
+  '--device', 'different-device',
+  '--type', 'wait',
+  '--ms', '1',
+]);
+assert.strictEqual(mismatchedEnvironment.status, 2);
+assert.ok(mismatchedEnvironment.stderr.includes('ENVIRONMENT_BINDING_MISMATCH'));
+const forgedFrameworkResult = runAllowFailure('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'result',
+  status: 'PASS',
+  reason: '伪造框架终态',
+}), '--execution-id', recoveryStart.executionId]);
+assert.notStrictEqual(forgedFrameworkResult.status, 0);
+assert.ok(forgedFrameworkResult.stderr.includes('EVENT_SOURCE_REQUIRED'));
+const recoveryStateBefore = json(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+const interruptedFinalize = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--finalize',
+  '--status', 'BLOCKED',
+  '--failure-code', 'CASE_TIMEOUT',
+  '--reason', '恢复测试',
+  '--execution-id', recoveryStart.executionId,
+], { env: { ...process.env, MAVT_SELF_TEST_FINALIZE_INTERRUPT: 'after-draft' } });
+assert.notStrictEqual(interruptedFinalize.status, 0);
+assert.ok(fs.existsSync(path.join(recoveryStart.execDir, 'result.draft.json')));
+const recoveredFinalize = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--finalize',
+  '--status', 'BLOCKED',
+  '--failure-code', 'CASE_TIMEOUT',
+  '--reason', '恢复测试',
+  '--execution-id', recoveryStart.executionId,
+]));
+assert.strictEqual(recoveredFinalize.recovered, true);
+assert.ok(fs.existsSync(path.join(recoveryStart.execDir, 'result.json')));
+assert.ok(fs.existsSync(path.join(recoveryStart.execDir, 'metrics.json')));
+assert.ok(!fs.existsSync(path.join(recoveryStart.execDir, 'result.draft.json')));
+const recoveredExecution = json(path.join(recoveryStart.execDir, 'execution.json'));
+assert.strictEqual(recoveredExecution.lifecycle, 'FINALIZED');
+const recoveryStateAfter = json(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.strictEqual(recoveryStateAfter.executionCount, recoveryStateBefore.executionCount + 1);
+assert.strictEqual(recoveryStateAfter.committedExecutionIds.filter((id) => id === recoveryStart.executionId).length, 1);
 
 console.log(`self-test passed: ${tmp}`);

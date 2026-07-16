@@ -40,6 +40,7 @@ flows/
     {
       "id": "flow-step-001",
       "instruction": "点击底部创作入口",
+      "riskClass": "reversible_local",
       "action": {
         "type": "tap",
         "target": "创作入口"
@@ -57,6 +58,7 @@ flows/
 - `name` 是唯一匹配键；同一平台解析后不得出现重名。
 - `startCondition` 和 `endCondition` 必填且必须可区分；`referenceImage` 可选、只能是资产目录内的安全相对路径。
 - `steps` 至少一项且不超过 5 项，每个 `id` 唯一；动作必须属于安全动作集合并提供该动作所需的完整参数。
+- `riskClass` 可为安全声明；`destructive`、`irreversible`、`external_side_effect` 一律拒绝。框架同时对中英文支付、删除、卸载、发布、生产数据等高风险语义做静态拒绝。
 - 不需要 `status`。目录中的有效资产即为可用资产；格式错误、歧义或不安全动作会在加载阶段失败。
 
 ## 匹配和计划
@@ -103,7 +105,7 @@ Flow 文件、参考图、平台覆盖或前置条件计划发生变化都会改
 6. 全部动作完成后用 `--phase end-check` 采集终点证据。
 7. 终点满足时写 `flow COMPLETED`，再写 `precondition PREPARED`；否则写失败 Flow 和同码前置条件终态。
 
-只有 `ok=true` 且包含截图、布局或有效前台应用事实的 Flow observation 才能作为证据。工具失败或没有获得有效观察能力时，框架写 `PRECONDITION_FLOW_OBSERVATION_FAILED` 并收尾。动作执行前会严格比较冻结 action；类型或 Flow 已定义参数不一致时，不调用平台 adapter，写 `PRECONDITION_FLOW_ACTION_MISMATCH` 并收尾。
+只有 `ok=true` 且包含截图、布局或有效前台应用事实的 Flow observation 才能作为证据。截图存在但 PNG 无法解码时，observation 记录 `causeFailureCode=OBSERVATION_ARTIFACT_INVALID`，Flow 仍按 `PRECONDITION_FLOW_OBSERVATION_FAILED` 收尾。工具失败或没有获得有效观察能力时同样使用该 Flow 专用失败码。动作执行前会严格比较冻结 action；类型或 Flow 已定义参数不一致时，不调用平台 adapter，写 `PRECONDITION_FLOW_ACTION_MISMATCH` 并收尾。
 
 Flow 的 COMPLETED、FAILED、BLOCKED 都是不可逆终态。写入终态后必须立即写同一前置条件的 PREPARED 或 BLOCKED；在此之前不能写其他事实，也不能重新开始 Flow。finalize 会拒绝活动 Flow、缺少配对前置条件终态或缺少前置条件事实的 execution。
 

@@ -19,6 +19,8 @@ platform=""
 has_platform=0
 has_device=0
 has_app=0
+device=""
+app=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,8 +34,8 @@ while [[ $# -gt 0 ]]; do
     --phase) phase="${2:-}"; shift 2 ;;
     --global-observation) scope="global"; shift ;;
     --platform) platform="${2:-}"; has_platform=1; args+=("$1" "$2"); shift 2 ;;
-    --device) has_device=1; args+=("$1" "$2"); shift 2 ;;
-    --app|--bundle) has_app=1; args+=("$1" "$2"); shift 2 ;;
+    --device) has_device=1; device="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --app|--bundle) has_app=1; app="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --label) label="${2:-}"; has_label=1; shift 2 ;;
     --out) out="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     *) echo "observe.sh 未知参数: $1" >&2; exit 2 ;;
@@ -65,6 +67,7 @@ if [[ -n "$case_dir" ]]; then
     exit 2
   fi
   env_args=()
+  mavt_validate_case_env_binding "$case_dir" "$platform" "$device" "$app" ""
   while IFS= read -r item; do
     [[ -n "$item" ]] && env_args+=("$item")
   done < <(mavt_case_env_args "$case_dir" "$has_platform" "$has_device" "$has_app" "1" "$platform")
@@ -182,6 +185,19 @@ process.stdin.on("end", () => {
 });
 ' "$precondition_id" "$flow_id" "$flow_step_id" "$phase")"
   fi
+	observation="$(printf '%s' "$observation" | node "$script_dir/lib/image-evidence.js" enrich-observation "$out")"
+	artifact_failure_code="$(printf '%s' "$observation" | node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const event = JSON.parse(input);
+  process.stdout.write(event.causeFailureCode || (event.failureCode === "OBSERVATION_ARTIFACT_INVALID" ? event.failureCode : ""));
+});
+')"
+	if [[ -n "$artifact_failure_code" ]]; then
+	  adapter_status=1
+	fi
 	if [[ "$scope" == "precondition-flow" && $adapter_status -eq 0 ]]; then
 	  flow_observation_ok="$(printf '%s' "$observation" | node -e '
 let input = "";
@@ -203,7 +219,28 @@ process.stdin.on("end", () => process.stdout.write(JSON.parse(input).ok === fals
     if [[ $adapter_status -eq 64 ]]; then
       failure_code="PLATFORM_UNIMPLEMENTED"
     fi
-    finalize_args=("${run_case_args[@]}" --finalize --status BLOCKED --failure-code "$failure_code" --reason "$adapter_output" --execution-id "$execution_id")
+	observation_failure_code="$(printf '%s' "$observation" | node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const event = JSON.parse(input);
+  process.stdout.write(event.causeFailureCode || event.failureCode || event.raw?.failureCode || "");
+});
+')"
+	if [[ -n "$observation_failure_code" ]]; then
+	  failure_code="$observation_failure_code"
+	fi
+	failure_reason="$(printf '%s' "$observation" | node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const event = JSON.parse(input);
+  process.stdout.write(event.reason || event.raw?.error || "observation failed");
+});
+')"
+    finalize_args=("${run_case_args[@]}" --finalize --status BLOCKED --failure-code "$failure_code" --reason "$failure_reason" --execution-id "$execution_id")
     if [[ -n "$step_id" ]]; then
       finalize_args+=(--failed-step "$step_id")
     fi

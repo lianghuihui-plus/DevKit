@@ -18,6 +18,7 @@ const {
   reapplyNotes,
   desiredCaseDir,
   syncCaseDirectory,
+  validateCaseExecutionContract,
   writeCaseReports,
   writePlatformCaseReports,
   writeJson,
@@ -58,6 +59,7 @@ const previous = readJson(casePath, null);
 const notes = readJsonl(notesPath);
 let selected = parsed;
 let sourceEventType = 'source_changed';
+let sourceChangeDetected = false;
 if (previous && fs.existsSync(sourceSnapshotPath) && !refreshFromInput) {
   const snapshotText = fs.readFileSync(sourceSnapshotPath, 'utf8');
   const snapshotStat = fs.statSync(sourceSnapshotPath);
@@ -67,6 +69,7 @@ if (previous && fs.existsSync(sourceSnapshotPath) && !refreshFromInput) {
     sourceMode: 'snapshot',
   });
   selected = snapshotParsed;
+  sourceChangeDetected = parsed.caseJson.identity.sourceSha1 !== snapshotParsed.caseJson.identity.sourceSha1;
   sourceEventType = 'source_snapshot_changed';
 } else if (previous && refreshFromInput) {
   sourceEventType = 'source_refreshed_from_input';
@@ -92,6 +95,7 @@ if (previous && previous.identity.sourceSha1 !== caseJson.identity.sourceSha1) {
 }
 
 caseJson = reapplyNotes(caseJson, notes, { strictStepText: sourceChanged });
+validateCaseExecutionContract(caseJson);
 if (!existingCaseDir) {
   const targetDir = desiredCaseDir(root, caseJson);
   if (targetDir !== caseDir) {
@@ -120,7 +124,14 @@ const reports = writeCaseReports(caseDir, caseJson, state, finalNotes);
 writePlatformCaseReports(caseDir, caseJson, finalNotes);
 const indexHtml = refreshIndexForCase(caseDir);
 
-console.log(JSON.stringify({ caseDir, caseJson: finalCasePath, ...reports, indexHtml }, null, 2));
+console.log(JSON.stringify({
+  caseDir,
+  caseJson: finalCasePath,
+  sourceChangeDetected,
+  requiresExplicitRefresh: sourceChangeDetected && !refreshFromInput,
+  ...reports,
+  indexHtml,
+}, null, 2));
 
 function findExistingCaseDir(root, caseKey) {
   if (!fs.existsSync(root)) return null;

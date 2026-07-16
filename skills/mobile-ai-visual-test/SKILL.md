@@ -28,7 +28,7 @@ description: 当需要基于 Markdown 人工用例，对移动端应用进行 AI
 
 1. 校验当前目录就是测试工作空间；只检查当前目录，不递归、不向上查找、不自动切换目录。
 2. 用 `scripts/resolve-execution-targets.js <输入...> --cwd <workspace-cwd>` 解析目标。
-3. 对 Markdown 输入用 `scripts/parse-case.js` 创建或刷新用例；已有 case 使用返回的 `caseDir`。
+3. 对 Markdown 输入用 `scripts/parse-case.js` 创建用例；已有 case 要采用本次外部 Markdown 时显式传 `--refresh-from-input`。解析后必须至少有一个步骤，否则停止。
 4. 用 `scripts/probe-env.sh --platform <platform>` 探测环境；一次用户确认后，对每个 case 用 `scripts/update-env.js` 固化设备、App 和入口。
 5. 用 `scripts/preflight-preconditions.js <case-dir...> --cwd <workspace-cwd> --platform <platform>` 生成确定的前置条件计划。严格同名命中的 Flow 自动执行；未命中的条件继续按 `framework`、`confirm`、`external_setup` 或 `unsupported` 处理，并在无人值守开始前集中请用户确认。
 6. 对每个 case 调用 `scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>`；依赖未准备不得开始 execution。
@@ -58,6 +58,7 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 ## 关键执行规则
 
 - 正式执行必须显式传 `--platform <harmony|android|ios>`；无平台根运行态只用于 `--legacy-runtime` 兼容旧产物。
+- case-bound 的设备、App 和入口以已确认平台 `state.json` 为准；显式参数只能与已确认值相同，不一致时以 `ENVIRONMENT_BINDING_MISMATCH` 拒绝且不得调用 adapter。
 - Flow 资产位于 `flows/preconditions/<business>/flow.json`，平台覆盖位于 `flows/preconditions/<business>/<platform>/flow.json`；不增加 `universal/` 目录层级。
 - 前置条件文本与 Flow `name` 只做首尾空白清理后严格全等匹配；不做别名、模糊或语义匹配。
 - preflight 返回的 `preconditionPlanSha` 必须原样传给 `--start`；资产或计划变化时重新 preflight。
@@ -66,6 +67,8 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 - 步骤事实必须按 `case.json.steps` 顺序写入；进入后续步骤后不能回头补写前置步骤事实。
 - 每个业务步骤都必须以 `assertion PASS` 作为通过证据；成功 actionResult 和动作后的 observation 只是必要过程事实，不能单独完成步骤或推进到下一步。
 - `assertion PASS` 必须绑定 `stepId`，引用当前步骤最新 observation 的截图，并且前一条相关视觉理解必须是引用同一截图、包含 `reason` 的 `perception status=USABLE`；observation `label` 不能作为业务证据。
+- 新 observation 的截图必须由顶层证据链记录 SHA-256、尺寸和 PNG 解码状态；perception 与 assertion 会复核同一路径仍对应采集时字节。
+- Agent 预览中疑似出现黑屏、黑块或花屏时，先写带 `attemptId`、`presentationMode` 的 `UNCERTAIN` 或请求 `UNUSABLE` 结构化 `qualityClaim`；有限重试前写 `retry_visual_input` decision，第二次 perception 用新 `attemptId` 和 `retryOf` 绑定首次检查。框架按需生成不可手写的 `evidenceCheck`。
 - 请求 PASS 但任一步骤缺通过证据时，框架归一为 `FAIL/ASSERTION_UNKNOWN`。
 - `paceHint` 只是节奏提醒，不改变结果，也不能替代正式证据。
 

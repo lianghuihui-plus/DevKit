@@ -79,6 +79,29 @@ function validateAction(action, options = {}) {
   return action;
 }
 
+function validateActionAsset(action, options = {}) {
+  return validateAction(action, options);
+}
+
+function validateActionExecution(action, options = {}) {
+  const context = options.context || 'action execution';
+  const platform = String(options.platform || '').trim().toLowerCase();
+  validateAction(action, { context });
+  if (!['harmony', 'android', 'ios'].includes(platform)) fail(context, `unsupported platform: ${platform || 'unknown'}`);
+  if (['tap', 'toggle', 'longPress'].includes(action.type) && (!finiteNumber(action.x) || !finiteNumber(action.y))) {
+    fail(context, `${action.type} requires executable x and y coordinates on ${platform}`);
+  }
+  if (action.type === 'inputText') {
+    if (platform === 'harmony' && (!finiteNumber(action.x) || !finiteNumber(action.y))) {
+      fail(context, 'HarmonyOS inputText requires executable x and y coordinates');
+    }
+    if (['android', 'ios'].includes(platform) && (action.x !== undefined || action.y !== undefined)) {
+      fail(context, `${platform} inputText targets the focused field and does not accept x or y`);
+    }
+  }
+  return action;
+}
+
 function resolveSwipeVelocity(action) {
   validateAction(action, { context: 'swipe' });
   return action.velocity === undefined ? SWIPE_DEFAULT_VELOCITY : Number(action.velocity);
@@ -101,4 +124,6 @@ module.exports = {
   resolveSwipeVelocity,
   swipeDurationMs,
   validateAction,
+  validateActionAsset,
+  validateActionExecution,
 };

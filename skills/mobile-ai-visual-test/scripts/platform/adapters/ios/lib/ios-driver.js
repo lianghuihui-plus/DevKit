@@ -303,7 +303,8 @@ async function runObserve(argv) {
   let screen = null;
 
   if (fakeEnabled()) {
-    fs.writeFileSync(screenshotPath, 'fake-ios-png');
+    if (process.env.MAVT_TEST_PNG && fs.existsSync(process.env.MAVT_TEST_PNG)) fs.copyFileSync(process.env.MAVT_TEST_PNG, screenshotPath);
+    else fs.writeFileSync(screenshotPath, 'fake-ios-png');
     fs.writeFileSync(sourcePath, `<?xml version="1.0" encoding="UTF-8"?><AppiumAUT><XCUIElementTypeApplication bundleId="${target.appId || 'com.example.demo'}" name="Demo" x="0" y="0" width="393" height="852"/></AppiumAUT>`);
     fs.writeFileSync(logPath, 'fake ios log\n');
     foreground = { bundleId: target.appId || 'com.example.demo', pid: 1234, name: 'Demo' };

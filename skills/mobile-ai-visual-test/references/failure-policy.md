@@ -34,12 +34,16 @@
 | `PRECONDITION_FLOW_UNSAFE` | `BLOCKED` | Flow 包含不安全动作 |
 | `PRECONDITION_FLOW_BUDGET_EXCEEDED` | `BLOCKED` | 前置条件 Flow 动作超预算 |
 | `ENV_UNCONFIRMED` | `BLOCKED` | 环境未确认 |
+| `ENVIRONMENT_BINDING_MISMATCH` | `BLOCKED` | 正式调用显式环境与已确认 state 不一致 |
 | `ENV_UNAVAILABLE` | `BLOCKED` | 平台或设备不可用 |
 | `ENV_AMBIGUOUS` | `BLOCKED` | 设备、App 或入口歧义 |
 | `PLATFORM_UNIMPLEMENTED` | `BLOCKED` | 平台能力未实现 |
-| `TOOL_ERROR` | `BLOCKED` | 工具或底层命令异常 |
+| `TOOL_ERROR` | `BLOCKED` | 工具或底层命令异常；必须有失败 observation、actionResult 或框架技术事件支持 |
 | `ACTION_RESULT_SOURCE_REQUIRED` | `BLOCKED` | actionResult 来源非法 |
 | `OBSERVATION_SOURCE_REQUIRED` | `BLOCKED` | observation 来源非法 |
+| `OBSERVATION_ARTIFACT_INVALID` | `BLOCKED` | 截图文件缺失有效 PNG 结构或无法解码 |
+| `OBSERVATION_ARTIFACT_CHANGED` | `BLOCKED` | 截图当前 SHA-256 与 observation 采集时记录不一致 |
+| `VISUAL_INPUT_UNVERIFIABLE` | `BLOCKED` | 原图有效，但 Agent 图片输入经过一次结构化复核重试后仍无法可靠判断 |
 | `CASE_RESTART_FAILED` | `BLOCKED` | 用例冷启动失败或不可验证 |
 | `ACTION_TARGET_NOT_FOUND` | `FAIL`/`BLOCKED` | 业务步骤目标不可定位；上下文丢失时阻塞 |
 | `PAGE_LOAD_BLOCKED` | `FAIL`/`BLOCKED` | 业务页面加载失败或长期无目标状态 |
@@ -48,6 +52,9 @@
 | `UNKNOWN_POPUP` | `BLOCKED` | 未知弹窗无法安全处理 |
 | `CASE_TIMEOUT` | `BLOCKED` | 单 case 超时 |
 | `EXECUTION_BUDGET_EXCEEDED` | `BLOCKED` | 普通 observation、action、wait 等预算超限 |
+| `EVENT_SOURCE_REQUIRED` | `BLOCKED` | 公开入口尝试写框架所有事件 |
+| `CASE_STEPS_REQUIRED` | `BLOCKED` | 用例未解析出任何可执行步骤 |
+| `EXECUTION_RECOVERY_CONTRACT_CHANGED` | `BLOCKED` | 半提交 draft 与当前 execution 或 case contract 不一致，禁止自动恢复 |
 
 ## 证据和顺序
 
@@ -56,6 +63,10 @@
 - 页面已满足当前步骤时，也要先 observe，再写带证据的 PASS。
 - observation `label` 只用于定位和展示，不能作为业务 assertion 的证据；布局和日志只能补充截图证据。
 - 最新 perception 为 `UNUSABLE`、`UNCERTAIN`，或最新 observation 之后又执行了动作时，禁止请求 PASS；必须重新观察和判断，或按现有失败策略收尾。
+- 新 observation 自动记录截图 SHA-256、尺寸和 PNG 解码状态；perception 和 assertion 使用截图前必须确认当前文件仍对应采集时 SHA-256。
+- 黑屏、黑块、花屏或预览解码异常首先属于 Agent 图片输入声明。Agent 必须写引用最新截图的结构化 `qualityClaim`，框架生成 `evidenceCheck` 后才能决定重试或收尾；仅凭自然语言 reason 或一次预览异常不得使用 `TOOL_ERROR`。
+- 原始像素未命中声明或当前规则无法验证时，请求的 `UNUSABLE` 会归一为 `UNCERTAIN`。`CLAIM_PRESENT_IN_SOURCE` 只证明原图存在相应像素特征，不自动证明截图损坏。
+- `VISUAL_INPUT_UNVERIFIABLE` 需要同一步骤两个不同 `attemptId` 的 `evidenceCheck`；第二次必须由 `retry_visual_input` decision 触发并用 `retryOf` 绑定首次检查。重复提交同一个 perception 不算重试。
 - `launchApp`、`restartApp`、`wait`、单独的 observation/perception/decision/rule，以及任何前置条件 Flow 事实都不能单独作为业务步骤通过证据。
 - 第一个步骤事实属于 `case.json.steps[0]`；前一步有通过证据后才能进入下一步；进入后续步骤后不能回补。
 

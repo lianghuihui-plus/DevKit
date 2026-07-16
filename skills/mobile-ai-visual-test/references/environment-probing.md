@@ -34,6 +34,8 @@ scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>
 
 目标 App 当前是否在前台属于 observation，不属于 `probe-env` 固化内容。
 
+截图 capability 只表示平台 adapter 能采集文件。正式 `observe.sh` 还会在稳定入口层统一验证 PNG 解码并记录 SHA-256、尺寸和字节数；该证据校验不属于平台 adapter，也不新增平台依赖。
+
 `probe-env` 必须输出机器可读诊断：
 
 ```json
@@ -83,6 +85,8 @@ Android MAVT Input IME：
 - 多个候选存在时，执行前让用户指定。
 - 关键能力不可用时，不开始执行。
 - 用户确认后同步写入每个目标 case 的平台 state 和工作空间级 `platforms/<platform>.json`。
+- 在合法工作空间中，`probe-env.sh` 同时保存 `platforms/<platform>-probe.json`；`update-env.js` 把其哈希和能力摘要绑定到 case state，`--start` 再写入只读 `environmentProbe` 框架事件。
+- case-bound 的 `action.sh`、`observe.sh`、`prepare-env.sh` 不允许用不同的显式设备、App 或入口覆盖 state；不一致返回 `ENVIRONMENT_BINDING_MISMATCH`。
 - `run-case.js --start` 会拒绝未准备的必需依赖。
 
 ## 与业务前置条件的边界

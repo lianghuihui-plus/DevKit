@@ -50,23 +50,67 @@ function stableJson(value) {
 
 function caseContractSha(caseJson = {}) {
   const contract = {
+    schemaVersion: caseJson.schemaVersion || 1,
+    parserVersion: caseJson.parserVersion || 1,
     sourceSha1: caseJson.identity?.sourceSha1 || '',
     preconditions: Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [],
+    steps: Array.isArray(caseJson.steps)
+      ? caseJson.steps.map((step) => ({
+        id: step.id,
+        index: step.index,
+        kind: step.kind,
+        goal: step.goal,
+        sourceText: step.sourceText,
+        target: step.target,
+        value: step.value,
+        expected: step.expected,
+        assertions: Array.isArray(step.assertions) ? step.assertions : [],
+        hints: Array.isArray(step.hints) ? step.hints : [],
+      }))
+      : [],
     globalRules: Array.isArray(caseJson.globalRules) ? caseJson.globalRules : [],
   };
   if (caseJson.isolation && typeof caseJson.isolation === 'object') {
     contract.isolation = caseJson.isolation;
   }
-  const stepHints = Array.isArray(caseJson.steps)
-    ? caseJson.steps
-      .map((step) => ({
-        id: step.id,
-        hints: Array.isArray(step.hints) ? step.hints.filter(Boolean) : [],
-      }))
-      .filter((item) => item.id && item.hints.length)
-    : [];
-  if (stepHints.length) contract.stepHints = stepHints;
   return `contract-${sha1(stableJson(contract)).slice(0, 12)}`;
+}
+
+function validateCaseExecutionContract(caseJson = {}) {
+  const error = (code, reason) => {
+    const failure = new Error(`${code}: ${reason}`);
+    failure.failureCode = code;
+    return failure;
+  };
+  if (!caseJson || typeof caseJson !== 'object' || Array.isArray(caseJson)) {
+    throw error('CASE_CONTRACT_INVALID', 'case.json 必须是对象。');
+  }
+  if (!caseJson.identity?.caseKey || !caseJson.identity?.sourceSha1) {
+    throw error('CASE_CONTRACT_INVALID', 'case.json 缺少 identity.caseKey 或 identity.sourceSha1。');
+  }
+  if (!Array.isArray(caseJson.steps) || caseJson.steps.length === 0) {
+    throw error('CASE_STEPS_REQUIRED', '用例至少需要一个可执行测试步骤。');
+  }
+  const ids = new Set();
+  for (const [index, step] of caseJson.steps.entries()) {
+    if (!step || typeof step !== 'object' || Array.isArray(step)) {
+      throw error('CASE_CONTRACT_INVALID', `steps[${index}] 必须是对象。`);
+    }
+    if (!step.id || typeof step.id !== 'string') {
+      throw error('CASE_STEP_ID_REQUIRED', `steps[${index}] 缺少 id。`);
+    }
+    if (ids.has(step.id)) {
+      throw error('CASE_STEP_ID_DUPLICATED', `步骤 id 重复: ${step.id}`);
+    }
+    ids.add(step.id);
+    if (Number(step.index) !== index + 1) {
+      throw error('CASE_STEP_INDEX_INVALID', `${step.id} 的 index 必须为 ${index + 1}。`);
+    }
+    if (!String(step.sourceText || '').trim()) {
+      throw error('CASE_STEP_SOURCE_REQUIRED', `${step.id} 缺少 sourceText。`);
+    }
+  }
+  return caseJson;
 }
 
 function ensureDir(dir) {
@@ -88,7 +132,10 @@ function readJson(file, fallback = null) {
 }
 
 function writeJson(file, data) {
-  writeText(file, `${JSON.stringify(data, null, 2)}\n`);
+  ensureDir(path.dirname(file));
+  const temp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`);
+  fs.renameSync(temp, file);
 }
 
 function appendJsonl(file, data) {
@@ -329,11 +376,29 @@ function parsePreconditions(lines) {
     .filter(Boolean);
 }
 
+function parseStepTable(lines) {
+  const rows = lines
+    .map((line) => line.trim())
+    .filter((line) => /^\|.*\|$/.test(line))
+    .map((line) => line.slice(1, -1).split('|').map((cell) => cell.trim()));
+  if (rows.length < 2 || !rows[1].every((cell) => /^:?-{3,}:?$/.test(cell))) return [];
+  const headers = rows[0].map((cell) => cell.toLowerCase().replace(/\s+/g, ''));
+  const stepIndex = headers.findIndex((header) => /^(步骤|测试步骤|操作步骤|step|steps|action|操作|动作|描述)$/.test(header));
+  const expectedIndex = headers.findIndex((header) => /^(预期|预期结果|期望|期望结果|expected|expectedresult)$/.test(header));
+  if (stepIndex < 0) return [];
+  return rows.slice(2)
+    .filter((row) => row.some(Boolean))
+    .map((row) => ({ sourceText: String(row[stepIndex] || '').trim(), expected: String(row[expectedIndex] || '').trim() || undefined }))
+    .filter((item) => item.sourceText);
+}
+
 function parseOrderedSteps(lines) {
+  const table = parseStepTable(lines);
+  if (table.length) return table;
   return lines
-    .map((line) => line.match(/^\s*\d+[.)、]\s+(.+?)\s*$/))
+    .map((line) => line.match(/^\s*\d+[.)、]\s*(.+?)\s*$/))
     .filter(Boolean)
-    .map((match) => match[1].trim());
+    .map((match) => ({ sourceText: match[1].trim() }));
 }
 
 function classifyStep(text) {
@@ -386,13 +451,20 @@ function parseMarkdownCase(file, cwd = process.cwd(), options = {}) {
     checkMode: inferPreconditionMode(text),
     hints: [],
   }));
-  const steps = parseOrderedSteps(sectionLines(markdown, ['步骤', 'steps'])).map((sourceText, idx) => ({
+  const parsedSteps = parseOrderedSteps(sectionLines(markdown, ['步骤', '测试步骤', '操作步骤', 'steps', 'test steps']));
+  const expectedResults = parsePreconditions(sectionLines(markdown, ['预期结果', '期望结果', 'expected result', 'expected results']));
+  const steps = parsedSteps.map((parsedStep, idx) => {
+    const sourceText = parsedStep.sourceText;
+    const expected = parsedStep.expected || expectedResults[idx] || (parsedSteps.length === 1 ? expectedResults[0] : undefined);
+    return {
     id: `step-${pad3(idx + 1)}`,
     index: idx + 1,
     sourceText,
     hints: [],
     ...classifyStep(sourceText),
-  }));
+      ...(expected ? { expected } : {}),
+    };
+  });
   const root = workspaceRoot(cwd);
   const caseDir = path.join(root, 'cases', `${slugify(title)}__${caseKey}`);
   return {
@@ -400,6 +472,7 @@ function parseMarkdownCase(file, cwd = process.cwd(), options = {}) {
     sourceMarkdown: markdown,
     caseJson: {
       schemaVersion: 1,
+      parserVersion: 2,
       identity: {
         caseKey,
         title,
@@ -522,6 +595,17 @@ function reapplyNotes(caseJson, notes, options = {}) {
   }
   caseJson.staleNotes = staleNotes;
   return caseJson;
+}
+
+function resolveNotes(caseJson, notes = []) {
+  const stale = new Map((caseJson.staleNotes || []).map((note) => [
+    `${note.time || ''}\0${note.appliesTo || ''}\0${note.text || ''}`,
+    note,
+  ]));
+  return notes.map((note) => {
+    const resolved = stale.get(`${note.time || ''}\0${note.appliesTo || ''}\0${note.text || ''}`);
+    return resolved ? { ...note, ...resolved, stale: true, applied: false } : note;
+  });
 }
 
 function findStepForNote(caseJson, note, options = {}) {
@@ -774,6 +858,7 @@ function readLatestExecutionReport(caseDir, options = {}) {
 }
 
 function writeCaseReports(caseDir, caseJson, state = {}, notes = [], report = null, options = {}) {
+  const resolvedNotes = resolveNotes(caseJson, notes);
   const runtimeDir = caseRuntimeDir(caseDir, options.platform);
   const rawReport = report || readLatestExecutionReport(caseDir, options);
   const sourceMatches = reportMatchesCaseSource(caseJson, rawReport, { caseDir, platform: options.platform });
@@ -786,12 +871,17 @@ function writeCaseReports(caseDir, caseJson, state = {}, notes = [], report = nu
     latestFailureCode: null,
     contractMismatch: Boolean(rawReport.result || rawReport.metrics || rawReport.events?.length),
   };
-  writeText(path.join(runtimeDir, 'CONTEXT.md'), renderContext(caseJson, reportState, latestReport.result, latestReport.metrics, notes, latestReport.events));
   if (options.platform) {
-    writeText(path.join(runtimeDir, 'CONTEXT.html'), renderContextHtml(caseJson, reportState, latestReport.result, latestReport.metrics, notes, latestReport.events, { runtimeDir, executionDir: latestReport.latest }));
-    writeText(path.join(caseDir, 'CONTEXT.html'), renderCaseOverviewHtml(caseDir, caseJson, notes));
+    writeText(path.join(runtimeDir, 'CONTEXT.md'), renderContext(caseJson, reportState, latestReport.result, latestReport.metrics, resolvedNotes, latestReport.events));
+    writeText(path.join(caseDir, 'CONTEXT.md'), renderCaseOverviewMarkdown(caseDir, caseJson, resolvedNotes));
   } else {
-    writeText(path.join(runtimeDir, 'CONTEXT.html'), renderCaseOverviewHtml(caseDir, caseJson, notes));
+    writeText(path.join(runtimeDir, 'CONTEXT.md'), renderCaseOverviewMarkdown(caseDir, caseJson, resolvedNotes));
+  }
+  if (options.platform) {
+    writeText(path.join(runtimeDir, 'CONTEXT.html'), renderContextHtml(caseJson, reportState, latestReport.result, latestReport.metrics, resolvedNotes, latestReport.events, { runtimeDir, executionDir: latestReport.latest }));
+    writeText(path.join(caseDir, 'CONTEXT.html'), renderCaseOverviewHtml(caseDir, caseJson, resolvedNotes));
+  } else {
+    writeText(path.join(runtimeDir, 'CONTEXT.html'), renderCaseOverviewHtml(caseDir, caseJson, resolvedNotes));
   }
   return {
     context: path.join(runtimeDir, 'CONTEXT.md'),
@@ -956,6 +1046,7 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
       lines.push(`- 稳定性：离开目标 App ${metrics.stability.appForegroundLossCount || 0} 次，拉起尝试 ${relaunchAttemptCount} 次，成功拉起 ${relaunchSuccessCount} 次，冷启动失败 ${metrics.stability.restartFailureCount || 0} 次，已处理弹窗 ${metrics.stability.knownPopupHandledCount || 0} 次${isolationText}`);
     }
     if (metrics.artifacts) lines.push(`- 证据：截图 ${metrics.artifacts.screenshots || 0} 张，控件树 ${metrics.artifacts.layouts || 0} 份，日志 ${metrics.artifacts.logs || 0} 份`);
+    if (metrics.visualEvidence) lines.push(`- 视觉复核：${metrics.visualEvidence.checks || 0} 次，原图命中 ${metrics.visualEvidence.claimPresent || 0} 次，原图未命中 ${metrics.visualEvidence.claimAbsent || 0} 次，无法验证 ${metrics.visualEvidence.unverifiable || 0} 次`);
     if (metrics.eventCounts) {
       const eventSummary = Object.entries(metrics.eventCounts).map(([key, value]) => `${key} ${value}`).join('，');
       lines.push(`- 事件：${eventSummary || '无'}`);
@@ -1037,6 +1128,7 @@ function eventSummary(event) {
   if (event.type === 'executionStart') return `开始执行 ${event.executionId || ''}`.trim();
   if (event.type === 'precondition') return `${displayStatus(event.status)} ${event.reason || event.text || ''}`.trim();
   if (event.type === 'observation') return event.label || '截图观察';
+  if (event.type === 'evidenceCheck') return `${event.verdict || 'UNVERIFIABLE'}${event.reason ? `：${event.reason}` : ''}`;
   if (event.type === 'perception') return event.pageState || event.summary || '页面理解';
   if (event.type === 'decision') return `决策：${displayDecision(event.decision)}${event.reason ? `，${event.reason}` : ''}`;
   if (event.type === 'rule') return `${event.ruleId || '-'} ${event.status || ''}${event.reason ? `：${event.reason}` : ''}`.trim();
@@ -1108,10 +1200,14 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
   function renderScreenshotCard(event) {
     const observation = event.observation || event;
     const artifacts = observation.artifacts || {};
+    const screenshotMetadata = observation.artifactMetadata?.screenshot || {};
     const screenshot = executionRelativePath(executionId, artifacts.screenshot);
     if (!screenshot) return '';
     const imageIndex = lightboxImageIndex++;
     const artifactLinks = renderArtifactLinks(artifacts);
+    const integrity = screenshotMetadata.decodeStatus
+      ? `${screenshotMetadata.decodeStatus}${screenshotMetadata.width && screenshotMetadata.height ? ` · ${screenshotMetadata.width}×${screenshotMetadata.height}` : ''}${screenshotMetadata.sha256 ? ` · SHA-256 ${screenshotMetadata.sha256.slice(0, 12)}` : ''}`
+      : '';
     return `<div class="shot-card">
         <div class="shot-head">
           <div class="shot-label">${escapeHtml(observation.label || '截图观察')}</div>
@@ -1123,7 +1219,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
               <img class="shot-thumb" src="${escapeHtml(screenshot)}" alt="${escapeHtml(observation.label || '截图')}">
             </button>
           </div>
-          <div class="shot-links">${artifactLinks || '-'}</div>
+          <div class="shot-links">${artifactLinks || '-'}${integrity ? `<span class="shot-integrity">${escapeHtml(integrity)}</span>` : ''}</div>
         </div>
       </div>`;
   }
@@ -1463,6 +1559,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     .shot-time { min-width: 0; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .shot-links { display: grid; align-content: start; gap: 4px; min-width: 0; color: var(--muted); font-size: 12px; }
     .shot-links a { display: flex; align-items: center; width: 100%; min-height: 22px; padding: 0 8px; border: 1px solid #d8e8f6; border-radius: 6px; background: var(--surface-soft); color: var(--accent-strong); font-size: 12px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .shot-integrity { display: block; overflow-wrap: anywhere; line-height: 1.45; }
     .unlinked-observations { margin-top: 12px; padding: 12px; border: 1px dashed #cbd5e1; border-radius: 8px; background: var(--unknown-soft); }
     .unlinked-observations > summary { cursor: pointer; color: var(--muted); font-weight: 900; list-style: none; }
     .unlinked-observations > summary::-webkit-details-marker { display: none; }
@@ -1891,6 +1988,49 @@ function renderCaseOverviewHtml(caseDir, caseJson, notes = []) {
 `;
 }
 
+function renderCaseOverviewMarkdown(caseDir, caseJson, notes = []) {
+  const platforms = collectCasePlatforms(caseDir, caseJson);
+  const aggregate = aggregateCaseSummary(platforms, readCaseRuntimeSummary(caseDir, caseJson, ''));
+  const lines = [
+    `# ${caseJson.identity?.caseNo ? `${caseJson.identity.caseNo} ` : ''}${caseJson.identity?.title || '未命名用例'}`,
+    '',
+    `- 编号：${caseJson.identity?.caseNo || '-'}`,
+    `- 汇总状态：${displayStatus(aggregate.status || 'NOT_RUN')}`,
+    `- caseKey：${caseJson.identity?.caseKey || '-'}`,
+    `- sourceSha1：${caseJson.identity?.sourceSha1 || '-'}`,
+    `- caseContractSha：${caseContractSha(caseJson)}`,
+    '',
+    '## 平台执行',
+    '',
+  ];
+  if (platforms.length) {
+    lines.push('| 平台 | 状态 | 步骤 | 失败码 | 结论 |', '| --- | --- | --- | --- | --- |');
+    for (const platform of platforms) {
+      lines.push(`| ${displayPlatform(platform.platform)} | ${displayStatus(platform.status)} | ${platform.stepsSummary || '-'} | ${platform.failureCode || '-'} | ${String(platform.reason || platformConclusion(platform) || '-').replace(/\|/g, '\\|')} |`);
+    }
+  } else {
+    lines.push('暂无平台执行记录。');
+  }
+  lines.push('', '## 前置条件', '');
+  if ((caseJson.preconditions || []).length) {
+    for (const item of caseJson.preconditions) lines.push(`- ${item.id}：${item.text}`);
+  } else lines.push('- 无');
+  lines.push('', '## 测试步骤', '');
+  if ((caseJson.steps || []).length) {
+    for (const step of caseJson.steps) lines.push(`${step.index}. ${step.sourceText}${step.expected ? `（预期：${step.expected}）` : ''}`);
+  } else lines.push('无');
+  const effectiveNotes = notes.filter((note) => note.source === 'conversation' && !note.stale);
+  if (effectiveNotes.length) {
+    lines.push('', '## 用户补充', '');
+    for (const note of effectiveNotes) lines.push(`- ${formatDisplayTime(note.time)}：${note.text}`);
+  }
+  if (caseJson.staleNotes?.length) {
+    lines.push('', '## 已失效补充', '');
+    for (const note of caseJson.staleNotes) lines.push(`- ${formatDisplayTime(note.time)}：${note.text}（${note.reason}）`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 function renderIndexHtml(rootDir, cases = []) {
   const total = cases.length;
   const platformStats = summarizeIndexPlatforms(cases);
@@ -2153,6 +2293,7 @@ function summarizeIndexPlatforms(cases = []) {
 module.exports = {
   appendJsonl,
   caseContractSha,
+  validateCaseExecutionContract,
   caseDirectoryName,
   casePlatformDir,
   classifyPrecondition,
@@ -2173,6 +2314,7 @@ module.exports = {
   readJsonl,
   readText,
   reapplyNotes,
+  resolveNotes,
   renderContext,
   renderContextHtml,
   renderIndexHtml,

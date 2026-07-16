@@ -17,7 +17,8 @@ index.html
 | `index.html` | 工作空间总览、平台统计、通过率、case 卡片、前置条件标签、多端摘要 |
 | `cases/<case>/CONTEXT.html` | 单 case 多平台概览、共享前置条件、步骤、规则和用户补充 |
 | `cases/<case>/platforms/<platform>/CONTEXT.html` | 单平台执行详情、失败现场、步骤复盘、Flow、环境和调试信息 |
-| `CONTEXT.md` | 便于 diff 的文本报告 |
+| `cases/<case>/CONTEXT.md` | 与根 HTML 同步刷新的多平台文本概览，便于 diff |
+| `cases/<case>/platforms/<platform>/CONTEXT.md` | 单平台文本详情 |
 
 case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 
@@ -25,7 +26,7 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 
 当前 execution 的事实源。报告、结果和统计都从 timeline 和当前 `case.json` 渲染。
 
-事件类型：`executionStart`、`environmentProbe`、`precondition`、`observation`、`perception`、`decision`、`rule`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。`flow` 及 `scope=precondition-flow` 的 observation/actionResult 只属于前置条件。
+事件类型：`executionStart`、`environmentProbe`、`precondition`、`observation`、`evidenceCheck`、`perception`、`decision`、`rule`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。`evidenceCheck` 只能由 `run-case.js` 根据 perception 的结构化 `qualityClaim` 生成；`flow` 及 `scope=precondition-flow` 的 observation/actionResult 只属于前置条件。
 
 事件 schema 见 `interfaces.md`。
 
@@ -39,6 +40,7 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
   "executionId": "20260708-101500-001-abcd",
   "startedAt": "2026-07-08T10:15:00+08:00",
   "endedAt": "2026-07-08T10:18:00+08:00",
+  "lifecycle": "FINALIZED",
   "finalized": true,
   "status": "PASS",
   "requestedStatus": "PASS",
@@ -47,7 +49,7 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 }
 ```
 
-finalized 后不得追加 timeline。
+生命周期为 `STARTING -> RUNNING -> FINALIZING -> FINALIZED`，冷启动入口异常可进入 `BLOCKED_START` 后由框架收尾。`FINALIZING` 使用 `result.draft.json` 恢复半提交；`state.json.committedExecutionIds` 保证累计统计只应用一次。finalized 后不得追加 timeline。
 
 ## result.json
 
@@ -76,7 +78,7 @@ finalized 后不得追加 timeline。
 
 每次执行都写，即使环境或前置条件阶段失败。
 
-稳定维度：status、requestedStatus、failureCode、sourceSha1、caseContractSha、preconditionPlanSha、durationMs、environment、precondition passed/prepared/blocked/failed/unknown counts、step counts、action counts、precondition Flow planned/started/completed/failed/blocked/alreadySatisfied/actions、rule counts、foreground loss、restart/isolation、popup counts、artifact counts。
+稳定维度：status、requestedStatus、failureCode、sourceSha1、caseContractSha、preconditionPlanSha、durationMs、environment、executionPhase、precondition passed/prepared/blocked/failed/unknown counts、step counts、action counts、precondition Flow planned/started/completed/failed/blocked/alreadySatisfied/actions、visual evidence checks/claimPresent/claimAbsent/unverifiable/sourceInvalid/sourceChanged、rule counts、foreground loss、restart/isolation、popup counts、artifact counts。环境或前置条件阻塞不得虚构 blocked step。
 
 `durationMs = endedAt - startedAt`，只覆盖当前 case。
 
@@ -116,6 +118,8 @@ FAIL > BLOCKED > UNKNOWN > NOT_RUN > PASS
 - 无 `stepId` 的 observation 必须标记全局诊断或辅助观察。
 - `scope=precondition-flow` 的 observation 按 preconditionId、flowId、flowStepId 和 phase 展示在 Flow 区域，不归入“未关联观察”。
 - 截图用 lightbox；控件树和日志只提供文件链接。
+- 新截图卡同时展示 PNG 解码状态、尺寸和 SHA-256 短摘要；完整值保存在 observation 的 `artifactMetadata.screenshot`。
+- `evidenceCheck` 按 `stepId` 展示在对应步骤事实中；它是原始文件与 Agent 声明的复核记录，不是业务 PASS 证据。
 
 ## 写入入口
 

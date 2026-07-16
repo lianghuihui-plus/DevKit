@@ -96,7 +96,7 @@ if (!has.platform) add("--platform", env.platform || platform);
 if (!has.device) add("--device", env.device);
 if (!has.app) add("--app", env.appId || env.bundleName);
 if (!has.entry) add("--entry", env.entry || env.abilityName);
-if ((env.platform || platform) === "ios") {
+if (String(env.platform || platform).toLowerCase() === "ios") {
   add("--device-type", env.deviceType);
   add("--appium-server", env.appiumServer);
   add("--wda-local-port", env.wdaLocalPort);
@@ -113,6 +113,43 @@ if ((env.platform || platform) === "ios") {
 }
 process.stdout.write(out.length ? `${out.join("\n")}\n` : "");
 ' "$@"
+}
+
+mavt_validate_case_env_binding() {
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const caseDir = path.resolve(process.argv[1]);
+const platform = String(process.argv[2] || "").trim().toLowerCase();
+const explicit = {
+  device: process.argv[3] || "",
+  app: process.argv[4] || "",
+  entry: process.argv[5] || "",
+};
+const statePath = path.join(caseDir, "platforms", platform, "state.json");
+if (!fs.existsSync(statePath)) {
+  console.error(`ENV_UNCONFIRMED: 缺少平台环境状态: ${statePath}`);
+  process.exit(2);
+}
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const env = state.environment || {};
+const savedPlatform = String(env.platform || "").trim().toLowerCase();
+if (savedPlatform && savedPlatform !== platform) {
+  console.error(`ENVIRONMENT_BINDING_MISMATCH: 已确认平台 ${savedPlatform} 与正式执行平台 ${platform} 不一致。`);
+  process.exit(2);
+}
+const saved = {
+  device: String(env.device || ""),
+  app: String(env.appId || env.bundleName || ""),
+  entry: String(env.entry || env.abilityName || ""),
+};
+for (const key of Object.keys(explicit)) {
+  if (explicit[key] && explicit[key] !== saved[key]) {
+    console.error(`ENVIRONMENT_BINDING_MISMATCH: 显式 ${key}=${explicit[key]} 与已确认环境 ${saved[key] || "<empty>"} 不一致。`);
+    process.exit(2);
+  }
+}
+' "$1" "$2" "${3:-}" "${4:-}" "${5:-}"
 }
 
 mavt_sleep_ms() {
@@ -238,14 +275,18 @@ process.stdout.write(JSON.stringify(request));
 
 mavt_validate_action_request() {
   node -e '
-const { validateAction } = require(process.argv[1]);
+const { validateAction, validateActionExecution } = require(process.argv[1]);
 try {
-  validateAction(JSON.parse(process.argv[2]), { context: process.argv[3] || "action.sh" });
+  const action = JSON.parse(process.argv[2]);
+  const context = process.argv[3] || "action.sh";
+  const platform = process.argv[4] || "";
+  if (platform) validateActionExecution(action, { context, platform });
+  else validateAction(action, { context });
 } catch (error) {
   console.error(error.message || String(error));
   process.exit(error.exitCode || 2);
 }
-' "$1" "$2" "${3:-action.sh}"
+' "$1" "$2" "${3:-action.sh}" "${4:-}"
 }
 
 mavt_resolve_swipe_velocity() {

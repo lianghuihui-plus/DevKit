@@ -10,7 +10,7 @@ const {
   readJson,
   workspaceRoot,
 } = require('./common');
-const { validateAction } = require('./action-contract');
+const { validateActionAsset } = require('./action-contract');
 
 const FLOW_SCHEMA_VERSION = 2;
 const FLOW_USAGE = 'precondition';
@@ -20,7 +20,8 @@ const VALID_ACTIONS = new Set(['launchApp', 'tap', 'toggle', 'longPress', 'input
 const VALID_COORDINATE_SOURCES = new Set(['layout', 'visual', 'pixel', 'flow']);
 const MAX_ACTIONS_PER_FLOW = 5;
 const MAX_ACTIONS_PER_CASE = 12;
-const DESTRUCTIVE_PATTERN = /(清数据|卸载|真实支付|支付完成|真实扣款|删除|发布|修改真实|线上|生产|删除资料)/i;
+const DESTRUCTIVE_PATTERN = /(清\s*数据|卸载|真实\s*支付|支付\s*完成|真实\s*扣款|删除|发布|修改\s*真实|线上|生产|删除\s*资料|clear\s+(app\s+)?data|uninstall|real\s*pay(?:ment)?|complete\s+payment|charge\s+(real|actual)|delete\s+(account|profile|data|record|content)|publish|production|purchase|buy\s+now)/i;
+const UNSAFE_RISK_CLASSES = new Set(['destructive', 'irreversible', 'external_side_effect']);
 
 function trimFlowName(value) {
   return String(value || '').trim();
@@ -108,7 +109,7 @@ function validateFlowAction(action, label, flowJsonPath) {
     throw new Error(`${flowJsonPath}: ${label} must be an object`);
   }
   if (!VALID_ACTIONS.has(action.type)) throw new Error(`${flowJsonPath}: unsupported ${label}.type: ${action.type}`);
-  validateAction(action, { context: `${flowJsonPath}: ${label}` });
+  validateActionAsset(action, { context: `${flowJsonPath}: ${label}` });
   if (['tap', 'toggle', 'longPress'].includes(action.type)) validateCoordinateAction(action, label, flowJsonPath);
   if (action.type === 'inputText') {
     if (!trimFlowName(action.target)) throw new Error(`${flowJsonPath}: ${label}.target is required for inputText`);
@@ -154,6 +155,10 @@ function validateFlow(flow, flowJsonPath, expectedPlatform) {
     if (ids.has(step.id)) throw new Error(`${flowJsonPath}: duplicate Flow step id: ${step.id}`);
     ids.add(step.id);
     if (!trimFlowName(step.instruction)) throw new Error(`${flowJsonPath}: ${label}.instruction is required`);
+    if (step.riskClass !== undefined && typeof step.riskClass !== 'string') throw new Error(`${flowJsonPath}: ${label}.riskClass must be a string`);
+    if (UNSAFE_RISK_CLASSES.has(String(step.riskClass || '').trim().toLowerCase())) {
+      throw new Error(`${flowJsonPath}: unsafe Flow riskClass is not allowed: ${step.riskClass}`);
+    }
     validateFlowAction(step.action, `${label}.action`, flowJsonPath);
     const safetyText = [step.instruction, step.action.target, step.action.text, step.action.reason].filter(Boolean).join(' ');
     if (DESTRUCTIVE_PATTERN.test(safetyText)) throw new Error(`${flowJsonPath}: unsafe Flow action is not allowed: ${safetyText}`);

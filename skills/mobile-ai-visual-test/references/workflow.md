@@ -24,7 +24,7 @@ Flow 只属于前置条件阶段，业务步骤阶段没有 Flow。
 
 ```bash
 scripts/resolve-execution-targets.js <输入...> --cwd <workspace-cwd>
-scripts/parse-case.js <markdown-file> --cwd <workspace-cwd>
+scripts/parse-case.js <markdown-file> --cwd <workspace-cwd> [--refresh-from-input]
 ```
 
 ## 环境探测和确认
@@ -65,7 +65,7 @@ scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>
 scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan-sha <sha>
 ```
 
-`--start` 会创建 execution、写 `executionStart`、固定完整前置条件计划并尝试 `restartApp`。若计划哈希与 preflight 不一致，必须重新 preflight；若输出 `blockedOnStart=true` 或 `nextAction=stop-current-case`，停止当前 case。
+`--start` 会校验非空用例契约，创建 execution、写 `executionStart` 和已固化的 `environmentProbe` 摘要、固定完整前置条件计划并尝试 `restartApp`。若计划哈希与 preflight 不一致，必须重新 preflight；若输出 `blockedOnStart=true` 或 `nextAction=stop-current-case`，停止当前 case。
 
 ### 2. 前置条件
 
@@ -84,7 +84,7 @@ scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan
 从 `case.json.steps[0]` 开始：
 
 1. 用 `observe.sh ... --step-id <step-id>` 采集当前证据。
-2. agent 实际查看最新 observation 的截图；证据足以判断时写引用该截图、包含 `reason` 的 `perception status=USABLE`，否则不得请求 PASS。
+2. agent 实际查看最新 observation 的截图；证据足以判断时写引用该截图、包含 `reason` 的 `perception status=USABLE`。若预览疑似存在黑屏、黑块、花屏或解码异常，写带异常类型和归一化区域的 `qualityClaim`；`run-case.js` 会绑定采集时 SHA-256、复核原始 PNG 并生成 `evidenceCheck`。复核完成前不得请求 PASS，也不得仅凭预览异常以 `TOOL_ERROR` 收尾。
 3. 需要动作时用 `action.sh ... --step-id <step-id>`。
 4. 动作后再次 observe 验证结果。
 5. 每个步骤的目标满足时立即写引用当前步骤最新截图的 `assertion PASS`；明确不满足时写失败断言或按失败策略收尾。成功 actionResult 和动作后的 observation 不能单独完成步骤，observation `label` 只用于定位和展示，不能作为业务证据。
@@ -98,7 +98,7 @@ scripts/run-case.js <case-dir> --platform <platform> --finalize \
   --status <PASS|FAIL|BLOCKED|UNKNOWN> --reason "<reason>" --execution-id <id>
 ```
 
-finalize 写 `result.json`、`metrics.json`，锁定 `execution.json`，刷新 case 报告和 workspace 总览。finalized 后不得追加 timeline。
+finalize 经 `FINALIZING` draft 原子写 `result.json`、`metrics.json`，锁定 `execution.json`，刷新 case 报告和 workspace 总览。finalize 可重入；上次在半提交阶段中断时，同一命令会补齐缺失产物且累计统计只提交一次。finalized 后不得追加 timeline。
 
 finalize 前会校验前置条件事实形成连续闭环、没有活动 Flow，并且每个 Flow 终态都有对应的前置条件终态；不满足时拒绝生成结果产物。execution start 阶段的冷启动硬失败是唯一允许在前置条件开始前直接收尾的内部路径。
 
@@ -107,5 +107,5 @@ finalize 前会校验前置条件事实形成连续闭环、没有活动 Flow，
 - 批量执行必须逐 case 闭环，一个 case finalized 后才能开始下一个。
 - 不复用上一 case 页面状态，不从中间步骤继续。
 - 无人值守开始后不再询问业务状态，不安装或修复依赖，不修改 skill 代码。
-- 能力缺口按 `TOOL_ERROR` 或 `PLATFORM_UNIMPLEMENTED` 收尾。
+- 底层命令失败按 `TOOL_ERROR`，未实现能力按 `PLATFORM_UNIMPLEMENTED` 收尾；原始截图有效但 Agent 图片输入经过一次复核重试仍无法可靠判断时使用 `VISUAL_INPUT_UNVERIFIABLE`。
 - 当前 observation 足以判断时立即写事实，不反复追加无新证据的解释事件。

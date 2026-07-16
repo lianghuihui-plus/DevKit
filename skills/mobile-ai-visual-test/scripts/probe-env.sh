@@ -36,4 +36,15 @@ fi
 args=(--platform "$platform")
 [[ -n "$device" ]] && args+=(--device "$device")
 [[ -n "$device_type" ]] && args+=(--device-type "$device_type")
-exec "$script_dir/platform/probe-env.sh" "${args[@]}"
+probe_output="$("$script_dir/platform/probe-env.sh" "${args[@]}")"
+node -e '
+const fs = require("fs");
+const path = require("path");
+const { writeJson } = require(process.argv[1]);
+const cwd = path.resolve(process.cwd());
+const probe = JSON.parse(process.argv[2]);
+if (fs.existsSync(path.join(cwd, "workspace.json"))) {
+  writeJson(path.join(cwd, "platforms", `${String(probe.platform || process.argv[3]).toLowerCase()}-probe.json`), probe);
+}
+' "$script_dir/lib/common.js" "$probe_output" "$platform"
+printf '%s\n' "$probe_output"

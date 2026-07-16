@@ -22,6 +22,7 @@ if [[ -n "$device" ]]; then
   hdc_prefix=(hdc -t "$device")
 fi
 
+"${hdc_prefix[@]}" shell rm -f "$remote" >/dev/null 2>&1 || true
 "${hdc_prefix[@]}" shell uitest screenCap -p "$remote" >/dev/null
 "${hdc_prefix[@]}" file recv "$remote" "$out" >/dev/null
 

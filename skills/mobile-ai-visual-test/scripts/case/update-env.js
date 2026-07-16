@@ -10,6 +10,7 @@ const {
   readJson,
   readJsonl,
   refreshIndexForCase,
+  sha1,
   writeCaseReports,
   writeJson,
 } = require('../common');
@@ -82,10 +83,23 @@ if (!platform) {
   console.error('环境信息不完整，缺少或无效: platform');
   process.exit(1);
 }
+env.platform = platform;
 const runtimeDir = caseRuntimeDir(caseDir, platform);
 const statePath = path.join(runtimeDir, 'state.json');
 const state = readJson(statePath, { schemaVersion: 1, executionCount: 0, statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 } });
 state.environment = { ...(state.environment || {}), ...env };
+const workspaceRoot = caseRootFromCaseDir(caseDir);
+const probePath = path.join(workspaceRoot, 'platforms', `${platform}-probe.json`);
+const probeSnapshot = readJson(probePath, null);
+if (probeSnapshot) {
+  state.environmentProbe = {
+    path: path.relative(workspaceRoot, probePath).replace(/\\/g, '/'),
+    sha1: `probe-${sha1(JSON.stringify(probeSnapshot)).slice(0, 12)}`,
+    ready: probeSnapshot.ready === true,
+    capabilities: probeSnapshot.capabilities || {},
+    devices: Array.isArray(probeSnapshot.devices) ? probeSnapshot.devices.map((device) => device.id || device.serial || device.name).filter(Boolean) : [],
+  };
+}
 const missing = requiredEnvironmentFields(platform).filter((field) => !state.environment[field]);
 if (missing.length) {
   console.error(`环境信息不完整，缺少: ${missing.join(', ')}`);
@@ -97,6 +111,7 @@ writeJson(path.join(caseRootFromCaseDir(caseDir), 'platforms', `${platform}.json
   schemaVersion: 1,
   platform,
   environment: state.environment,
+  environmentProbe: state.environmentProbe || null,
   confirmedAt: state.environmentConfirmedAt,
 });
 
