@@ -5,16 +5,19 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const {
   parseArgs, required, resolveScanDir, loadScan, loadGraph, loadFrontier, readJson, contextDir,
-  writeJsonAtomic, nextId, now, event, commitEvent, output, main, fail, bool, jsonArg, safeSegment
+  nextId, now, event, commitEvent, output, main, fail, bool, jsonArg, safeSegment
 } = require('./lib/common');
 const { bridge } = require('./lib/runtime-client');
-const { assessAction } = require('./lib/safety');
-const { buildFingerprint, compareFingerprint, observationVisual } = require('./lib/fingerprint');
 const { assertCapacity, assertExecutionWindow } = require('./lib/budget');
-const { resolveSyntheticAction } = require('./lib/synthetic-data');
 const { activeContextId } = require('./lib/run-protocol');
-const { recordDeviceAction, recordColdStart } = require('./lib/action-metrics');
+const { recordColdStart } = require('./lib/action-metrics');
 const { startDeviceOperation, finishDeviceOperation } = require('./lib/operation-journal');
+const { matchVisualEquivalence } = require('./lib/visual-equivalence');
+const { compareStateEquivalence, isSamePage } = require('./lib/state-equivalence');
+const { loadStateEquivalence, recordStateEquivalenceRule, makeStateEquivalenceReview } = require('./lib/state-equivalence-store');
+const { loadObservationBundle } = require('./lib/observation-store');
+const { assessReplayableAction, executePathStepAction } = require('./lib/path-replay-engine');
+const { completeDeviceActionSuccess, completeDeviceActionUnknownOutcome } = require('./lib/device-action-executor');
 
 function observe(scanDir, contextId, trigger) {
   const child = spawnSync(process.execPath, [
@@ -35,15 +38,27 @@ function stateVisual(graph, stateId) {
 }
 
 function observedFingerprint(scanDir, observationId) {
-  const dir = path.join(scanDir, 'evidence', 'observations', observationId);
-  const observation = readJson(path.join(dir, 'observation.json'));
-  const layout = readJson(path.join(dir, 'layout.json'));
-  return { observation, fingerprint: buildFingerprint(layout, observation.foreground, observationVisual(observation)) };
+  return loadObservationBundle(scanDir, observationId);
 }
 
-function compareState(scanDir, graph, stateId, observationId) {
+function compareStateResult(scanDir, graph, contextId, stateId, observationId) {
   const { visual } = stateVisual(graph, stateId);
-  return compareFingerprint(visual.fingerprint, observedFingerprint(scanDir, observationId).fingerprint);
+  return compareStateEquivalence({
+    expected: { fingerprint: visual.fingerprint },
+    observed: observedFingerprint(scanDir, observationId),
+    expectedReachableStateId: stateId,
+    expectedVisualStateId: visual.id,
+    contextId,
+    rules: loadStateEquivalence(scanDir, contextId).rules
+  });
+}
+
+function compareState(scanDir, graph, contextId, stateId, observationId) {
+  return compareStateResult(scanDir, graph, contextId, stateId, observationId).status;
+}
+
+function restoreOp(result) {
+  return { path: `evidence/restores/${result.restoreId}.json`, op: 'REPLACE', value: result };
 }
 
 function deriveCheckpoint(result, edges) {
@@ -63,24 +78,11 @@ function deriveCheckpoint(result, edges) {
 }
 
 function validateEquivalence(scanDir, graph, checkpoint, observationId, comparison, assessment) {
-  if (comparison !== 'PROBABLE') fail(`Restore equivalence requires PROBABLE comparison, observed ${comparison}`, 'RESTORE_EQUIVALENCE_INVALID');
+  if (!['PROBABLE', 'UNCERTAIN'].includes(comparison)) fail(`Restore equivalence requires a reviewable comparison, observed ${comparison}`, 'RESTORE_EQUIVALENCE_INVALID');
   const { visual } = stateVisual(graph, checkpoint.expectedReachableStateId);
   const observed = observedFingerprint(scanDir, observationId);
-  if (visual.fingerprint?.visualDynamic !== true) fail('Restore equivalence is only allowed for an expected dynamic VisualState', 'RESTORE_EQUIVALENCE_INVALID');
-  if (!visual.fingerprint.layoutHash || visual.fingerprint.layoutHash !== observed.fingerprint.layoutHash) fail('Restore equivalence requires an identical normalized layout', 'RESTORE_EQUIVALENCE_INVALID');
   if (assessment?.status !== 'EXPECTED_STATE_EQUIVALENT' || assessment.expectedReachableStateId !== checkpoint.expectedReachableStateId || assessment.observedSha256 !== observed.fingerprint.screenshotSha256 || !String(assessment.rationale || '').trim()) fail('Restore equivalence assessment is missing or not bound to the current evidence', 'RESTORE_EQUIVALENCE_INVALID');
-  return {
-    schemaVersion: 1,
-    status: 'EXPECTED_STATE_EQUIVALENT',
-    expectedReachableStateId: checkpoint.expectedReachableStateId,
-    observationId,
-    comparison,
-    expectedScreenshotSha256: visual.fingerprint.screenshotSha256,
-    observedSha256: observed.fingerprint.screenshotSha256,
-    layoutHash: observed.fingerprint.layoutHash,
-    rationale: String(assessment.rationale).trim(),
-    reviewedAt: now()
-  };
+  return { ...makeStateEquivalenceReview({ visual, observed, observationId, comparison, assessment: { ...assessment, expectedReachableStateId: checkpoint.expectedReachableStateId } }), expectedReachableStateId: checkpoint.expectedReachableStateId, restoreId: assessment.restoreId || null, attemptId: assessment.attemptId || null };
 }
 
 main(() => {
@@ -132,11 +134,9 @@ main(() => {
     };
     const currentMetrics = metrics();
     currentMetrics.restoreAttempts = (currentMetrics.restoreAttempts || 0) + 1;
-    commitEvent(scanDir, 'restoreAttemptMetricRecorded', { contextId, restoreId, restoreAttempts: currentMetrics.restoreAttempts }, [{ path: `contexts/${contextId}/metrics.json`, op: 'REPLACE', value: currentMetrics }]);
-    writeJsonAtomic(path.join(scanDir, 'evidence', 'restores', `${restoreId}.json`), result);
+    commitEvent(scanDir, 'restoreStarted', { contextId, restoreId, reachableStateId: targetId, restoreAttempts: currentMetrics.restoreAttempts }, [restoreOp(result), { path: `contexts/${contextId}/metrics.json`, op: 'REPLACE', value: currentMetrics }]);
   }
 
-  const resultFile = path.join(scanDir, 'evidence', 'restores', `${result.restoreId}.json`);
   const operationOwner = args.attemptId ? { type: 'ATTEMPT', id: safeSegment(args.attemptId, 'attemptId') } : { type: 'RESTORE', id: result.restoreId };
   const targetStateId = result.reachableStateId;
   const targetState = graph.reachableStates.find(item => item.id === targetStateId);
@@ -152,10 +152,22 @@ main(() => {
   });
   if (fixedEdgeIds) { result.verificationExecutionId = args.verificationExecutionId || null; result.fixedEdgeIds = [...fixedEdgeIds]; result.fixedTransitionFingerprints = [...(fixedFingerprints || [])]; }
 
-  const save = () => {
+  const save = (eventType = 'restoreUpdated', data = {}) => {
     result.schemaVersion = 2;
     result.updatedAt = now();
-    writeJsonAtomic(resultFile, result);
+    commitEvent(scanDir, eventType, { contextId, restoreId: result.restoreId, ...data }, [restoreOp(result)]);
+  };
+
+  const failRestore = (reasonCode, data = {}) => {
+    if (['SUCCEEDED', 'FAILED'].includes(result.status)) return result;
+    result.status = 'FAILED';
+    result.reasonCode = reasonCode;
+    if (data.terminalObservationId !== undefined) result.terminalObservationId = data.terminalObservationId;
+    if (data.mismatch !== undefined) result.mismatch = data.mismatch;
+    if (data.checkpoint !== undefined) result.checkpoint = data.checkpoint;
+    result.finishedAt = now();
+    save('restoreResult', { status: result.status, reasonCode, terminalObservationId: result.terminalObservationId || null });
+    return result;
   };
 
   const finish = (terminalObservationId) => {
@@ -164,23 +176,34 @@ main(() => {
     result.mismatch = null;
     result.checkpoint = null;
     result.finishedAt = now();
-    save();
-    event(scanDir, 'restoreResult', result);
+    save('restoreResult', { status: result.status, terminalObservationId });
     output({ schemaVersion: 1, ok: true, restoreResult: result });
   };
 
   const requestReview = (stage, expectedReachableStateId, observationId, comparison, edgeIndex = 0, edgeId = null) => {
-    if (!allowInterruption) fail(`Restore verification mismatch at ${expectedReachableStateId}: ${comparison}`, 'RESTORE_STATE_MISMATCH');
     const checkpoint = { stage, edgeIndex, edgeId, expectedReachableStateId, observationId, comparison };
+    const mismatch = { stage, expectedReachableStateId, observationId, comparison, edgeId };
+    if (!allowInterruption) {
+      failRestore('RESTORE_STATE_MISMATCH', { terminalObservationId: observationId, mismatch, checkpoint });
+      fail(`Restore verification mismatch at ${expectedReachableStateId}: ${comparison}`, 'RESTORE_STATE_MISMATCH');
+    }
     result.status = 'REVIEW_REQUIRED';
     result.terminalObservationId = observationId;
-    result.mismatch = { stage, expectedReachableStateId, observationId, comparison, edgeId };
+    result.mismatch = mismatch;
     result.checkpoint = checkpoint;
     result.reviewRequestedAt = now();
     result.finishedAt = null;
-    save();
-    event(scanDir, 'restoreReviewRequired', result);
+    save('restoreReviewRequired', { stage, expectedReachableStateId, observationId, comparison, edgeIndex, edgeId });
     output({ schemaVersion: 1, ok: true, restoreResult: result });
+  };
+
+  const acceptCachedEquivalence = (checkpoint, observationId, comparison) => {
+    const matched = matchVisualEquivalence(scanDir, contextId, graph, checkpoint.expectedReachableStateId, observationId, comparison);
+    if (!matched) return false;
+    result.equivalenceReviews ||= [];
+    result.equivalenceReviews.push(matched.review);
+    save('restoreEquivalentStateAccepted', matched.review);
+    return true;
   };
 
   const replayFrom = (edgeIndex, currentObservationId, reviewedStateId = null) => {
@@ -190,68 +213,101 @@ main(() => {
     }
     const edge = edges[edgeIndex];
     if (edgeIndex > 0 && edges[edgeIndex - 1].toReachableStateId !== edge.fromReachableStateId) fail(`Replay path is discontinuous at ${edge.id}`, 'RESTORE_PATH_INVALID');
-    const beforeComparison = reviewedStateId === edge.fromReachableStateId ? 'REVIEW_CONFIRMED' : compareState(scanDir, graph, edge.fromReachableStateId, currentObservationId);
-    if (!['EXACT', 'REVIEW_CONFIRMED'].includes(beforeComparison)) return requestReview('BEFORE_EDGE', edge.fromReachableStateId, currentObservationId, beforeComparison, edgeIndex, edge.id);
+    const beforeComparison = reviewedStateId === edge.fromReachableStateId ? 'REVIEW_CONFIRMED' : compareState(scanDir, graph, contextId, edge.fromReachableStateId, currentObservationId);
+    if (!['REVIEW_CONFIRMED'].includes(beforeComparison) && !isSamePage(beforeComparison)) {
+      const checkpoint = { stage: 'BEFORE_EDGE', edgeIndex, edgeId: edge.id, expectedReachableStateId: edge.fromReachableStateId, observationId: currentObservationId, comparison: beforeComparison };
+      if (!acceptCachedEquivalence(checkpoint, currentObservationId, beforeComparison)) return requestReview('BEFORE_EDGE', edge.fromReachableStateId, currentObservationId, beforeComparison, edgeIndex, edge.id);
+    }
 
-    const safety = assessAction(edge.action, scan.target);
-    if (!safety.allowed || edge.replayPolicy === 'NONREPEATABLE') fail(`Replay blocked at ${edge.id}`, 'RESTORE_UNSAFE');
+    const safety = assessReplayableAction(edge.action, scan, edge.replayPolicy, 'RESTORE_UNSAFE');
     const currentMetrics = metrics();
     assertExecutionWindow(scan, contextId, loadGraph(scanDir, contextId), loadFrontier(scanDir, contextId), currentMetrics);
     assertCapacity(scan, contextId, loadGraph(scanDir, contextId), loadFrontier(scanDir, contextId), currentMetrics, 'actions', 1);
-    const replayAction = edge.replayPolicy === 'REGENERATE_SYNTHETIC' ? resolveSyntheticAction(edge.action, `${result.restoreId}:${edge.id}`) : edge.action;
-    const bounds = replayAction.fallbackBounds;
-    const x = bounds ? Math.round((bounds[0] + bounds[2]) / 2) : replayAction.x;
-    const y = bounds ? Math.round((bounds[1] + bounds[3]) / 2) : replayAction.y;
-    const operation = startDeviceOperation(scanDir, contextId, { kind: actionCategory === 'verification' ? 'VERIFICATION_REPLAY_ACTION' : 'RESTORE_REPLAY_ACTION', owner: operationOwner, idempotency: 'SAFE_RETRY_AFTER_OBSERVATION' }); recordDeviceAction(scanDir, contextId, actionCategory); let deviceResult;
-    try { deviceResult = bridge('action', { device: scan.target.deviceId, actionType: replayAction.type, x, y, fromX: replayAction.fromX, fromY: replayAction.fromY, toX: replayAction.toX, toY: replayAction.toY, value: replayAction.value, key: replayAction.key, durationMs: replayAction.durationMs }); }
-    catch (error) { finishDeviceOperation(scanDir, operation, 'UNKNOWN_OUTCOME', { reasonCode: error.code || 'RESTORE_ACTION_FAILED' }); error.code = 'OPERATION_OUTCOME_UNKNOWN'; throw error; }
+    const executed = executePathStepAction(scanDir, {
+      scan,
+      contextId,
+      beforeObservationId: currentObservationId,
+      action: edge.action,
+      safety,
+      owner: operationOwner,
+      role: actionCategory === 'verification' ? 'VERIFICATION_REPLAY_ACTION' : 'RESTORE_REPLAY_ACTION',
+      category: actionCategory,
+      locatorResolution: 'COORDINATE_ONLY',
+      idempotency: 'SAFE_RETRY_AFTER_OBSERVATION',
+      failureReasonCode: actionCategory === 'verification' ? 'VERIFICATION_ACTION_FAILED' : 'RESTORE_ACTION_FAILED',
+      syntheticSeed: `${result.restoreId}:${edge.id}`
+    });
     result.actionsReplayed += 1;
-    const afterObservationId = observe(scanDir, contextId, 'RESTORE_ACTION');
-    const comparison = compareState(scanDir, graph, edge.toReachableStateId, afterObservationId);
-    result.steps.push({ edgeId: edge.id, beforeObservationId: currentObservationId, afterObservationId, action: replayAction, deviceResult, verificationStatus: comparison });
-    save(); finishDeviceOperation(scanDir, operation, 'SUCCEEDED', { evidenceRef: `evidence/restores/${result.restoreId}.json` });
-    if (comparison !== 'EXACT') return requestReview('AFTER_EDGE', edge.toReachableStateId, afterObservationId, comparison, edgeIndex, edge.id);
+    let afterObservationId = null;
+    let comparison = null;
+    try {
+      afterObservationId = observe(scanDir, contextId, 'RESTORE_ACTION');
+      comparison = compareState(scanDir, graph, contextId, edge.toReachableStateId, afterObservationId);
+      result.steps.push({ edgeId: edge.id, beforeObservationId: currentObservationId, afterObservationId, action: executed.actionResult.action, deviceResult: executed.actionResult.deviceResult, verificationStatus: comparison });
+      save('restoreStepCompleted', { edgeId: edge.id, afterObservationId, comparison });
+      completeDeviceActionSuccess(scanDir, executed.operation, { ...executed.actionResult, afterObservationId, finishedAt: now() }, { eventType: null, evidenceRef: `evidence/restores/${result.restoreId}.json` });
+    } catch (error) {
+      completeDeviceActionUnknownOutcome(scanDir, executed.operation, { ...executed.actionResult, afterObservationId }, { reasonCode: error.code || 'RESTORE_AFTER_ACTION_EVIDENCE_FAILED', evidenceRef: `evidence/restores/${result.restoreId}.json`, writeEvidence: false });
+      error.code = 'OPERATION_OUTCOME_UNKNOWN';
+      throw error;
+    }
+    if (!isSamePage(comparison)) {
+      const checkpoint = { stage: 'AFTER_EDGE', edgeIndex, edgeId: edge.id, expectedReachableStateId: edge.toReachableStateId, observationId: afterObservationId, comparison };
+      if (!acceptCachedEquivalence(checkpoint, afterObservationId, comparison)) return requestReview('AFTER_EDGE', edge.toReachableStateId, afterObservationId, comparison, edgeIndex, edge.id);
+    }
     return replayFrom(edgeIndex + 1, afterObservationId, edge.toReachableStateId);
   };
 
   const continueFromCheckpoint = (checkpoint, observationId, equivalenceAssessment = null) => {
-    const comparison = compareState(scanDir, graph, checkpoint.expectedReachableStateId, observationId);
-    if (comparison !== 'EXACT') {
+    const comparison = compareState(scanDir, graph, contextId, checkpoint.expectedReachableStateId, observationId);
+    if (!isSamePage(comparison)) {
       if (!equivalenceAssessment) return requestReview(checkpoint.stage, checkpoint.expectedReachableStateId, observationId, comparison, checkpoint.edgeIndex, checkpoint.edgeId);
-      const accepted = validateEquivalence(scanDir, graph, checkpoint, observationId, comparison, equivalenceAssessment);
+      const accepted = validateEquivalence(scanDir, graph, checkpoint, observationId, comparison, { ...equivalenceAssessment, restoreId: result.restoreId, attemptId: args.attemptId || null });
       result.equivalenceReviews ||= [];
       result.equivalenceReviews.push(accepted);
-      event(scanDir, 'restoreEquivalentStateAccepted', { contextId, restoreId: result.restoreId, ...accepted });
+      recordStateEquivalenceRule(scanDir, contextId, graph, checkpoint, accepted);
     }
     result.status = 'IN_PROGRESS';
     result.mismatch = null;
     result.checkpoint = null;
     result.finishedAt = null;
-    save();
+    save('restoreCheckpointResolved', { checkpoint, observationId, equivalenceAccepted: Boolean(equivalenceAssessment) });
     if (checkpoint.stage === 'ROOT') return finish(observationId);
     if (checkpoint.stage === 'BEFORE_EDGE') return replayFrom(checkpoint.edgeIndex, observationId, checkpoint.expectedReachableStateId);
     if (checkpoint.stage === 'AFTER_EDGE') return replayFrom(checkpoint.edgeIndex + 1, observationId, checkpoint.expectedReachableStateId);
     fail(`Unsupported restore checkpoint stage: ${checkpoint.stage}`, 'RESTORE_CHECKPOINT_INVALID');
   };
 
-  if (command === 'resume') {
-    const checkpoint = deriveCheckpoint(result, edges);
-    const observationId = required(args, 'observationId');
-    const assessment = args.equivalenceAssessment ? jsonArg(args.equivalenceAssessment, null, 'equivalenceAssessment JSON') : null;
-    event(scanDir, 'restoreResumed', { contextId, restoreId: result.restoreId, checkpoint, observationId, equivalenceRequested: Boolean(assessment) });
-    return continueFromCheckpoint(checkpoint, observationId, assessment);
-  }
+  const executeRestore = () => {
+    if (command === 'resume') {
+      const checkpoint = deriveCheckpoint(result, edges);
+      const observationId = required(args, 'observationId');
+      const assessment = args.equivalenceAssessment ? jsonArg(args.equivalenceAssessment, null, 'equivalenceAssessment JSON') : null;
+      event(scanDir, 'restoreResumed', { contextId, restoreId: result.restoreId, checkpoint, observationId, equivalenceRequested: Boolean(assessment) });
+      return continueFromCheckpoint(checkpoint, observationId, assessment);
+    }
 
-  assertCapacity(scan, contextId, loadGraph(scanDir, contextId), loadFrontier(scanDir, contextId), metrics(), 'coldStarts');
-  const coldStartOperation = startDeviceOperation(scanDir, contextId, { kind: actionCategory === 'verification' ? 'VERIFICATION_COLD_START' : 'RESTORE_COLD_START', owner: operationOwner, idempotency: 'SAFE_RETRY_AFTER_OBSERVATION' }); recordColdStart(scanDir, contextId); let restart;
-  try { restart = bridge('restart', { device: scan.target.deviceId, bundleName: scan.target.bundleName, entryAbility: scan.target.entryAbility, settleMs: args.settleMs || process.env.SMAP_RESTART_SETTLE_MS || 1200 }); }
-  catch (error) { finishDeviceOperation(scanDir, coldStartOperation, 'UNKNOWN_OUTCOME', { reasonCode: error.code || 'RESTORE_COLD_START_FAILED' }); error.code = 'OPERATION_OUTCOME_UNKNOWN'; throw error; }
-  if (restart.coldStartVerified !== true) fail('Restore cold start could not verify target App foreground', 'COLD_START_UNVERIFIED');
-  const rootObservationId = observe(scanDir, contextId, 'RESTORE_COLD_START'); finishDeviceOperation(scanDir, coldStartOperation, 'SUCCEEDED', { evidenceRef: `evidence/observations/${rootObservationId}/observation.json` });
-  if (!edges.length) {
-    const comparison = compareState(scanDir, graph, targetStateId, rootObservationId);
-    if (comparison !== 'EXACT') return requestReview('ROOT', targetStateId, rootObservationId, comparison);
-    return finish(rootObservationId);
+    assertCapacity(scan, contextId, loadGraph(scanDir, contextId), loadFrontier(scanDir, contextId), metrics(), 'coldStarts');
+    const coldStartOperation = startDeviceOperation(scanDir, contextId, { kind: actionCategory === 'verification' ? 'VERIFICATION_COLD_START' : 'RESTORE_COLD_START', owner: operationOwner, idempotency: 'SAFE_RETRY_AFTER_OBSERVATION' }); recordColdStart(scanDir, contextId); let restart;
+    try { restart = bridge('restart', { device: scan.target.deviceId, bundleName: scan.target.bundleName, entryAbility: scan.target.entryAbility, settleMs: args.settleMs || process.env.SMAP_RESTART_SETTLE_MS || 1200 }); }
+    catch (error) { finishDeviceOperation(scanDir, coldStartOperation, 'UNKNOWN_OUTCOME', { reasonCode: error.code || 'RESTORE_COLD_START_FAILED' }); error.code = 'OPERATION_OUTCOME_UNKNOWN'; throw error; }
+    if (restart.coldStartVerified !== true) fail('Restore cold start could not verify target App foreground', 'COLD_START_UNVERIFIED');
+    const rootObservationId = observe(scanDir, contextId, 'RESTORE_COLD_START'); finishDeviceOperation(scanDir, coldStartOperation, 'SUCCEEDED', { evidenceRef: `evidence/observations/${rootObservationId}/observation.json` });
+    if (!edges.length) {
+      const comparison = compareState(scanDir, graph, contextId, targetStateId, rootObservationId);
+      if (!isSamePage(comparison)) {
+        const checkpoint = { stage: 'ROOT', edgeIndex: 0, edgeId: null, expectedReachableStateId: targetStateId, observationId: rootObservationId, comparison };
+        if (!acceptCachedEquivalence(checkpoint, rootObservationId, comparison)) return requestReview('ROOT', targetStateId, rootObservationId, comparison);
+      }
+      return finish(rootObservationId);
+    }
+    return replayFrom(0, rootObservationId);
+  };
+
+  try {
+    return executeRestore();
+  } catch (error) {
+    if (error.code !== 'OPERATION_OUTCOME_UNKNOWN' && result?.status === 'IN_PROGRESS') failRestore(error.code || 'RESTORE_FAILED');
+    throw error;
   }
-  return replayFrom(0, rootObservationId);
 });

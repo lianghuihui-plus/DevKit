@@ -8,10 +8,11 @@ const crypto = require('crypto');
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'PARTIAL', 'BLOCKED', 'FAILED']);
 const MUTABLE_STATUSES = new Set(['CREATED', 'PLAN_CONFIRMED', 'CONTEXT_READY', 'SCANNING', 'PAUSED']);
 
-function fail(message, code = 'SMAP_ERROR', exitCode = 2) {
+function fail(message, code = 'SMAP_ERROR', exitCode = 2, details = null) {
   const error = new Error(message);
   error.code = code;
   error.exitCode = exitCode;
+  if (details) error.details = details;
   throw error;
 }
 
@@ -37,6 +38,12 @@ function parseArgs(argv = process.argv.slice(2)) {
 function required(args, key, label = `--${key.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}`) {
   if (args[key] === undefined || args[key] === true || String(args[key]).trim() === '') fail(`${label} is required`, 'ARG_REQUIRED');
   return String(args[key]);
+}
+
+function requiredId(args, key, label = `--${key.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}`) {
+  const value = required(args, key, label);
+  if (['undefined', 'null', 'none', '[object Object]'].includes(value.trim().toLowerCase())) fail(`${label} must be a concrete id value`, `${key.replace(/[A-Z]/g, c => `_${c}`).toUpperCase()}_INVALID`);
+  return value;
 }
 
 function bool(value, fallback = false) {
@@ -220,7 +227,17 @@ function commitEventLocked(scanDir, type, data = {}, projectionOps = []) {
 function commitEvent(scanDir, type, data = {}, projectionOps = []) { return withRunLock(scanDir, () => commitEventLocked(scanDir, type, data, projectionOps)); }
 
 function nextIdLocked(scanDir, type, prefix) {
-  const scan = loadScan(scanDir, { mutable: true }); scan.counters = { ...(scan.counters || {}) }; scan.counters[type] = (scan.counters[type] || 0) + 1; saveScan(scanDir, scan); return `${prefix}-${String(scan.counters[type]).padStart(4, '0')}`;
+  const scan = loadScan(scanDir, { mutable: true });
+  const allocatedAt = now();
+  scan.counters = { ...(scan.counters || {}) };
+  scan.counters[type] = (scan.counters[type] || 0) + 1;
+  scan.updatedAt = allocatedAt;
+  const id = `${prefix}-${String(scan.counters[type]).padStart(4, '0')}`;
+  const appended = require('./event-store').append(scanDir, { type: 'idAllocated', at: allocatedAt, scanId: scan.scanId, idType: type, idPrefix: prefix, allocatedId: id, counterValue: scan.counters[type], projectionOps: [{ path: 'scan.json', op: 'REPLACE', value: scan }] });
+  const ops = appended.record.projectionOps || [];
+  require('./event-store').applyProjectionOps(scanDir, ops);
+  require('./event-store').markApplied(scanDir, appended.head, ops);
+  return id;
 }
 function nextId(scanDir, type, prefix) { return withRunLock(scanDir, () => nextIdLocked(scanDir, type, prefix)); }
 
@@ -245,10 +262,23 @@ function emptyGraph(contextId) {
 function transition(scanDir, to, reasonCode = null) {
   const lockFile = path.join(scanDir, '.write.lock');
   if (!exists(lockFile)) withRunLock(scanDir, () => require('./recovery').recoverCommittedEvents(scanDir));
-  return withRunLock(scanDir, () => {
+  return withRunLock(scanDir, () => transitionLocked(scanDir, to, reasonCode, null, {}, []));
+}
+
+function transitionWithOps(scanDir, to, reasonCode = null, eventType = null, data = {}, extraOps = []) {
+  const lockFile = path.join(scanDir, '.write.lock');
+  if (!exists(lockFile)) withRunLock(scanDir, () => require('./recovery').recoverCommittedEvents(scanDir));
+  return withRunLock(scanDir, () => transitionLocked(scanDir, to, reasonCode, eventType, data, extraOps));
+}
+
+function transitionWithOpsLocked(scanDir, to, reasonCode = null, eventType = null, data = {}, extraOps = []) {
+  return transitionLocked(scanDir, to, reasonCode, eventType, data, extraOps);
+}
+
+function transitionLocked(scanDir, to, reasonCode = null, eventType = null, data = {}, extraOps = []) {
   const scan = loadScan(scanDir, { mutable: true });
   const allowed = {
-    CREATED: ['PLAN_CONFIRMED', 'BLOCKED', 'FAILED'],
+    CREATED: ['PLAN_CONFIRMED', 'PAUSED', 'BLOCKED', 'FAILED'],
     PLAN_CONFIRMED: ['CONTEXT_READY', 'PAUSED', 'BLOCKED', 'FAILED'],
     CONTEXT_READY: ['SCANNING', 'PAUSED', 'BLOCKED', 'FAILED'],
     SCANNING: ['PAUSED', 'COMPLETED', 'PARTIAL', 'BLOCKED', 'FAILED'],
@@ -278,17 +308,16 @@ function transition(scanDir, to, reasonCode = null) {
   }
   if (TERMINAL_STATUSES.has(to)) scan.finalizedAt = scan.updatedAt;
   const type = TERMINAL_STATUSES.has(to) ? 'scanFinalized' : to === 'PAUSED' ? 'scanPaused' : to === 'SCANNING' && from === 'PAUSED' ? 'scanResumed' : 'scanStatusChanged';
-  const projectionOps = [{ path: 'scan.json', op: 'REPLACE', value: scan }]; if (projectedMetrics && projectedMetricsFile) projectionOps.push({ path: relativeInside(scanDir, projectedMetricsFile), op: 'REPLACE', value: projectedMetrics });
-  const appended = require('./event-store').append(scanDir, { type, at: scan.updatedAt, scanId: scan.scanId, from, to, reasonCode, projectionOps }); const ops = appended.record.projectionOps || []; require('./event-store').applyProjectionOps(scanDir, ops); require('./event-store').markApplied(scanDir, appended.head, ops);
+  const projectionOps = [...extraOps, { path: 'scan.json', op: 'REPLACE', value: scan }]; if (projectedMetrics && projectedMetricsFile) projectionOps.push({ path: relativeInside(scanDir, projectedMetricsFile), op: 'REPLACE', value: projectedMetrics });
+  const appended = require('./event-store').append(scanDir, { type: eventType || type, at: scan.updatedAt, scanId: scan.scanId, from, to, reasonCode, ...data, projectionOps }); const ops = appended.record.projectionOps || []; require('./event-store').applyProjectionOps(scanDir, ops); require('./event-store').markApplied(scanDir, appended.head, ops);
   return scan;
-  });
 }
 
 function output(value) { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }
 
 function main(fn) {
   Promise.resolve().then(fn).catch(error => {
-    process.stderr.write(`${JSON.stringify({ schemaVersion: 1, ok: false, error: { code: error.code || 'SMAP_ERROR', message: error.message } })}\n`);
+    process.stderr.write(`${JSON.stringify({ schemaVersion: 1, ok: false, error: { code: error.code || 'SMAP_ERROR', message: error.message, ...(error.details || {}) } })}\n`);
     process.exitCode = error.exitCode || 2;
   });
 }
@@ -306,9 +335,9 @@ function relativeInside(base, file) {
 }
 
 module.exports = {
-  TERMINAL_STATUSES, MUTABLE_STATUSES, fail, parseArgs, required, bool, number, jsonArg, now, compactLocalTimestamp, compareTimestamps,
+  TERMINAL_STATUSES, MUTABLE_STATUSES, fail, parseArgs, required, requiredId, bool, number, jsonArg, now, compactLocalTimestamp, compareTimestamps,
   ensureDir, exists, readJson, writeJsonAtomic, writeTextAtomic, appendJsonl, sha256, stableStringify,
   hashObject, slug, safeSegment, assertAbsolute, resolveScanDir, timelineEvents, withFileLock, withRunLock, loadScan, saveScan, event, commitEvent, commitEventLocked, nextId, nextIdLocked, contextDir,
-  loadGraph, saveGraph, loadFrontier, saveFrontier, emptyGraph, transition, output, main, versionKey,
+  loadGraph, saveGraph, loadFrontier, saveFrontier, emptyGraph, transition, transitionWithOps, transitionWithOpsLocked, output, main, versionKey,
   relativeInside
 };

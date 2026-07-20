@@ -28,6 +28,7 @@ main(() => {
     writeJsonAtomic(appFile, app);
   }
   ensureDir(path.join(root, 'runs'));
+  ensureDir(path.join(root, 'maps'));
   ensureDir(path.join(root, 'snapshots', 'generations'));
   if (!exists(path.join(root, 'run-index.json'))) writeJsonAtomic(path.join(root, 'run-index.json'), { schemaVersion: 1, appKey: app.appKey, runs: [] });
   output({ schemaVersion: 1, ok: true, appMapRoot: root, app });

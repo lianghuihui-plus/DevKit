@@ -46,12 +46,12 @@ function validateRun(scan) {
   oneOf(scan.scanScope, SCAN_SCOPES, 'scanScope');
   if (scan.scanMode === 'goal-directed' && scan.scanScope !== 'targeted') fail('goal-directed mode requires targeted scope', 'SCAN_INVALID');
   if (scan.scanMode === 'exploration' && scan.scanScope !== 'full') fail('exploration mode requires full scope', 'SCAN_INVALID');
-  const protocol = Number(scan.graphProtocolVersion || 1); const v3 = Number(scan.schemaVersion) >= 3 || protocol >= 3;
-  if (v3) {
+  const protocol = Number(scan.graphProtocolVersion || 1); const currentRun = Number(scan.schemaVersion) >= 3 || protocol >= 3;
+  if (currentRun) {
     oneOf(scan.contextId, CONTEXTS, 'contextId');
-    if (scan.plannedContextIds !== undefined || scan.activeContextId !== undefined || scan.budgetsByContext !== undefined) fail('V3 Run must use contextId and budget only', 'SCAN_INVALID');
-    if (!scan.budget || typeof scan.budget !== 'object') fail('V3 Run budget is required', 'SCAN_INVALID');
-    for (const key of ['maxActiveMinutes', 'maxDepth', 'maxDeviceActions', 'maxStates', 'maxColdStarts']) if (!Number.isFinite(Number(scan.budget[key])) || Number(scan.budget[key]) < 0) fail(`V3 budget.${key} is invalid`, 'SCAN_INVALID');
+    if (scan.plannedContextIds !== undefined || scan.activeContextId !== undefined || scan.budgetsByContext !== undefined) fail('Run must use contextId and budget only', 'SCAN_INVALID');
+    if (!scan.budget || typeof scan.budget !== 'object') fail('Run budget is required', 'SCAN_INVALID');
+    for (const key of ['maxActiveMinutes', 'maxDepth', 'maxDeviceActions', 'maxStates', 'maxColdStarts']) if (!Number.isFinite(Number(scan.budget[key])) || Number(scan.budget[key]) < 0) fail(`budget.${key} is invalid`, 'SCAN_INVALID');
     oneOf(scan.navigationPolicy || 'adaptive', ['adaptive', 'always-replay'], 'navigationPolicy');
     oneOf(scan.verificationRule, ['CANONICAL_SCREEN_PATH', 'CONFIRMED_TARGET_PATH'], 'verificationRule');
     if (scan.scanMode === 'exploration' && scan.verificationRule !== 'CANONICAL_SCREEN_PATH') fail('exploration requires CANONICAL_SCREEN_PATH', 'SCAN_INVALID');

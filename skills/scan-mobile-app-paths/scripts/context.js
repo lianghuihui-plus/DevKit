@@ -5,7 +5,7 @@ const path = require('path');
 const { parseArgs, required, resolveScanDir, loadScan, contextDir, readJson, jsonArg, now, event, commitEvent, transition, output, main, fail } = require('./lib/common');
 const { buildPlan, planHash } = require('./lib/plan');
 const { resolveBudget, assertProfileForMode } = require('./lib/budget');
-const { isV3, runContextId, runBudget } = require('./lib/run-protocol');
+const { isCurrentRun, runContextId, runBudget } = require('./lib/run-protocol');
 
 function projectedTransition(scanDir, scan, to, reasonCode, contextId, eventType, data = {}, extraOps = []) {
   const allowed = {
@@ -16,8 +16,8 @@ function projectedTransition(scanDir, scan, to, reasonCode, contextId, eventType
     PAUSED: ['SCANNING', 'COMPLETED', 'PARTIAL', 'BLOCKED', 'FAILED']
   };
   if (!(allowed[scan.status] || []).includes(to)) fail(`Invalid Run transition ${scan.status} -> ${to}`, 'RUN_TRANSITION_INVALID');
-  const from = scan.status; const transitionedAt = now(); const activeContext = isV3(scan) ? scan.contextId : contextId || scan.activeContextId || null; const ops = [...extraOps];
-  if (!isV3(scan) && contextId) scan.activeContextId = contextId;
+  const from = scan.status; const transitionedAt = now(); const activeContext = isCurrentRun(scan) ? scan.contextId : contextId || scan.activeContextId || null; const ops = [...extraOps];
+  if (!isCurrentRun(scan) && contextId) scan.activeContextId = contextId;
   if (from === 'SCANNING' && to !== 'SCANNING' && activeContext) {
     const metricsFile = path.join(contextDir(scanDir, activeContext), 'metrics.json'); const metrics = readJson(metricsFile, {});
     if (metrics.activeStartedAt) metrics.activeDurationMs = (metrics.activeDurationMs || 0) + Math.max(0, Date.parse(transitionedAt) - Date.parse(metrics.activeStartedAt));
@@ -42,7 +42,7 @@ main(() => {
     const before = loadScan(scanDir, { mutable: true }); if (before.status !== 'CREATED') fail('Plan confirmation requires CREATED status', 'RUN_STATE_INVALID');
     const plan = buildPlan(scanDir); const expectedHash = planHash(plan); const confirmedHash = required(args, 'planHash');
     if (confirmedHash !== expectedHash) fail('Plan has changed or was not presented; run show-plan.js again', 'PLAN_HASH_MISMATCH');
-    const confirmedAt = now(); const scan = projectedTransition(scanDir, before, 'PLAN_CONFIRMED', null, isV3(before) ? before.contextId : undefined, 'scanPlanConfirmed', { planHash: expectedHash, contextId: isV3(before) ? before.contextId : undefined, budget: isV3(before) ? before.budget : undefined, budgetsByContext: isV3(before) ? undefined : before.budgetsByContext, profile: before.profile, verificationRule: before.verificationRule || null }, [{ path: 'plan.json', op: 'REPLACE', value: { ...plan, planHash: expectedHash, confirmedAt } }]);
+    const confirmedAt = now(); const scan = projectedTransition(scanDir, before, 'PLAN_CONFIRMED', null, isCurrentRun(before) ? before.contextId : undefined, 'scanPlanConfirmed', { planHash: expectedHash, contextId: isCurrentRun(before) ? before.contextId : undefined, budget: isCurrentRun(before) ? before.budget : undefined, budgetsByContext: isCurrentRun(before) ? undefined : before.budgetsByContext, profile: before.profile, verificationRule: before.verificationRule || null }, [{ path: 'plan.json', op: 'REPLACE', value: { ...plan, planHash: expectedHash, confirmedAt } }]);
     return output({ schemaVersion: 1, ok: true, status: scan.status, planHash: expectedHash });
   }
   if (command === 'configure-plan') {
@@ -50,19 +50,19 @@ main(() => {
     if (!args.profile && !args.budget) fail('Plan configuration requires --profile and/or --budget', 'PLAN_CONFIGURATION_REQUIRED');
     const profile = String(args.profile || scan.profile); assertProfileForMode(profile, scan.scanMode);
     const overrides = args.budget ? jsonArg(args.budget, null, 'budget JSON') : {};
-    if (isV3(scan) && Object.keys(overrides).some(key => !['maxActiveMinutes', 'maxDepth'].includes(key))) fail('V3 user budget may override only maxActiveMinutes and maxDepth', 'BUDGET_FIELD_INTERNAL');
+    if (isCurrentRun(scan) && Object.keys(overrides).some(key => !['maxActiveMinutes', 'maxDepth'].includes(key))) fail('User budget may override only maxActiveMinutes and maxDepth', 'BUDGET_FIELD_INTERNAL');
     const budget = resolveBudget(profile, overrides);
     scan.profile = profile;
-    if (isV3(scan)) scan.budget = budget; else scan.budgetsByContext = Object.fromEntries(scan.plannedContextIds.map(id => [id, { ...budget }]));
+    if (isCurrentRun(scan)) scan.budget = budget; else scan.budgetsByContext = Object.fromEntries(scan.plannedContextIds.map(id => [id, { ...budget }]));
     scan.budgetRevision = (scan.budgetRevision || 1) + 1; scan.updatedAt = now();
-    commitEvent(scanDir, 'scanPlanConfigured', { profile, budgetRevision: scan.budgetRevision, contextId: isV3(scan) ? scan.contextId : undefined, budget: isV3(scan) ? scan.budget : undefined, budgetsByContext: isV3(scan) ? undefined : scan.budgetsByContext }, [{ path: 'scan.json', op: 'REPLACE', value: scan }]);
+    commitEvent(scanDir, 'scanPlanConfigured', { profile, budgetRevision: scan.budgetRevision, contextId: isCurrentRun(scan) ? scan.contextId : undefined, budget: isCurrentRun(scan) ? scan.budget : undefined, budgetsByContext: isCurrentRun(scan) ? undefined : scan.budgetsByContext }, [{ path: 'scan.json', op: 'REPLACE', value: scan }]);
     const plan = buildPlan(scanDir); const hash = planHash(plan); return output({ schemaVersion: 1, ok: true, planHash: hash, plan, confirmationRequired: true });
   }
   if (command === 'pause') {
     const scan = transition(scanDir, 'PAUSED', args.reasonCode || 'USER_PAUSED'); return output({ schemaVersion: 1, ok: true, status: scan.status });
   }
-  const scanForContext = loadScan(scanDir); const contextId = args.context ? String(args.context) : isV3(scanForContext) ? runContextId(scanForContext) : required(args, 'context');
-  if (isV3(scanForContext) && contextId !== runContextId(scanForContext)) fail('Context differs from the fixed Run context', 'CONTEXT_INVALID');
+  const scanForContext = loadScan(scanDir); const contextId = args.context ? String(args.context) : isCurrentRun(scanForContext) ? runContextId(scanForContext) : required(args, 'context');
+  if (isCurrentRun(scanForContext) && contextId !== runContextId(scanForContext)) fail('Context differs from the fixed Run context', 'CONTEXT_INVALID');
   const file = path.join(contextDir(scanDir, contextId), 'context.json');
   if (command === 'show') return output(readJson(file));
   if (command === 'mismatch') {
@@ -87,7 +87,7 @@ main(() => {
     };
     context.lastPreparationId = preparationId; context.pendingPreparationId = null;
     const ops = [{ path: `contexts/${contextId}/context.json`, op: 'REPLACE', value: context }];
-    if (!isV3(scan)) scan.activeContextId = contextId;
+    if (!isCurrentRun(scan)) scan.activeContextId = contextId;
     if (scan.status === 'PLAN_CONFIRMED') projectedTransition(scanDir, scan, 'CONTEXT_READY', null, contextId, 'contextVerified', { contextId, verification: context.verification }, ops);
     else commitEvent(scanDir, 'contextVerified', { contextId, verification: context.verification }, [...ops, { path: 'scan.json', op: 'REPLACE', value: scan }]);
     return output({ schemaVersion: 1, ok: true, context });
@@ -100,14 +100,14 @@ main(() => {
   }
   if (command === 'manual-transition') {
     const scan = loadScan(scanDir, { mutable: true }); if (scan.status !== 'PAUSED') fail('Manual context transition requires PAUSED status', 'RUN_STATE_INVALID');
-    if (isV3(scan)) fail('Protocol v3 Run cannot switch context', 'CONTEXT_IMMUTABLE');
+    if (isCurrentRun(scan)) fail('Run cannot switch context', 'CONTEXT_IMMUTABLE');
     event(scanDir, 'contextTransitionManual', { fromContextId: args.from || null, toContextId: contextId, source: 'PLAN_CONFIRMED' });
     return output({ schemaVersion: 1, ok: true, replayableEdgeCreated: false });
   }
   if (command === 'update-budget') {
     const scan = loadScan(scanDir, { mutable: true }); if (scan.status !== 'PAUSED') fail('Budget can only be updated while PAUSED', 'RUN_STATE_INVALID');
     const updates = jsonArg(required(args, 'budget'), null, 'budget JSON'); const current = runBudget(scan, contextId);
-    if (isV3(scan) && Object.keys(updates).some(key => !['maxActiveMinutes', 'maxDepth'].includes(key))) fail('Only maxActiveMinutes and maxDepth may be increased by the user', 'BUDGET_FIELD_INTERNAL');
+    if (isCurrentRun(scan) && Object.keys(updates).some(key => !['maxActiveMinutes', 'maxDepth'].includes(key))) fail('Only maxActiveMinutes and maxDepth may be increased by the user', 'BUDGET_FIELD_INTERNAL');
     for (const [key, value] of Object.entries(updates)) {
       if (!(key in current) || !Number.isFinite(Number(value)) || Number(value) < Number(current[key])) fail(`Budget ${key} may only be increased`, 'BUDGET_UPDATE_INVALID');
       current[key] = Number(value);

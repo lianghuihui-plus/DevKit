@@ -15,7 +15,7 @@ function contextMetrics(graph, frontier, runtime = {}) {
     coverageSemantics: 'discovered-safe-candidate-groups', actions: runtime.actions || 0,
     explorationActions: runtime.explorationActions || 0, navigationActions: runtime.navigationActions || 0, recoveryActions: runtime.recoveryActions || 0, verificationActions: runtime.verificationActions || 0, interruptionActions: runtime.interruptionActions || 0,
     coldStarts: runtime.coldStarts || 0, cursorReuseHits: runtime.cursorReuseHits || 0, cursorInvalidations: runtime.cursorInvalidations || 0, backtrackNavigations: runtime.backtrackNavigations || 0, graphPathNavigations: runtime.graphPathNavigations || 0, coldReplayNavigations: runtime.coldReplayNavigations || 0, deviceMutationSeq: runtime.deviceMutationSeq || 0, observations,
-    observationSamples, observationStabilityWaitMs, dynamicVisualObservations: runtime.dynamicVisualObservations || 0,
+    observationSamples, observationStabilityWaitMs, visualVarianceObservations: runtime.visualVarianceObservations || 0,
     averageSamplesPerObservation: observations ? observationSamples / observations : null,
     averageStabilityWaitMs: observations ? observationStabilityWaitMs / observations : null,
     restoreAttempts: runtime.restoreAttempts || 0, noStateChangeActions: runtime.noStateChangeActions || 0,

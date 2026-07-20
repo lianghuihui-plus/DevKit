@@ -31,6 +31,8 @@ function upsertVisualState(graph, input) {
   if (exact) {
     if (exact.logicalScreenKey !== input.logicalScreenKey) fail(`VisualState ${exact.id} already belongs to LogicalScreen ${exact.logicalScreenKey}; requested ${input.logicalScreenKey}`, 'LOGICAL_SCREEN_CONFLICT');
     if (!exact.evidenceObservationIds.includes(input.observationId)) exact.evidenceObservationIds.push(input.observationId);
+    exact.visualReviewIds ||= [];
+    if (input.visualReviewId && !exact.visualReviewIds.includes(input.visualReviewId)) exact.visualReviewIds.push(input.visualReviewId);
     exact.dedupe = { status: 'EXACT', duplicateGroupId: null, reviewStatus: 'NOT_REQUIRED' };
     const screen = byId(graph.logicalScreens, input.logicalScreenKey, 'LogicalScreen');
     if (!screen.visualStateIds.includes(exact.id)) screen.visualStateIds.push(exact.id);
@@ -44,7 +46,8 @@ function upsertVisualState(graph, input) {
     availableIn: [graph.contextId], fingerprint: input.fingerprint,
     dedupe: probable ? { status: 'PROBABLE', duplicateGroupId: `dup-${hashObject([probable.id, id]).slice(-12)}`, reviewStatus: 'REQUIRED' }
       : { status: 'UNCERTAIN', duplicateGroupId: null, reviewStatus: 'NOT_REQUIRED' },
-    evidenceObservationIds: [input.observationId]
+    evidenceObservationIds: [input.observationId],
+    visualReviewIds: input.visualReviewId ? [input.visualReviewId] : []
   };
   graph.visualStates.push(visualState);
   const screen = byId(graph.logicalScreens, input.logicalScreenKey, 'LogicalScreen');

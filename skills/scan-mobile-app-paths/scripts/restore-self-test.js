@@ -73,8 +73,10 @@ if (command[0] === 'file' && command[1] === 'recv') {
 process.exit(0);
 `;
 
-fs.writeFileSync(path.join(bin, 'hdc'), fakeHdc, { mode: 0o755 });
-fs.writeFileSync(path.join(bin, 'devecocli'), '#!/usr/bin/env node\nconsole.log("fake-device connected")\n', { mode: 0o755 });
+fs.writeFileSync(path.join(bin, 'hdc.js'), fakeHdc, { mode: 0o644 });
+fs.writeFileSync(path.join(bin, 'hdc'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(bin, 'hdc.js'))} "$@"\n`, { mode: 0o755 });
+fs.writeFileSync(path.join(bin, 'devecocli.js'), 'console.log("fake-device connected")\n', { mode: 0o644 });
+fs.writeFileSync(path.join(bin, 'devecocli'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(bin, 'devecocli.js'))} "$@"\n`, { mode: 0o755 });
 
 const env = {
   ...process.env,
@@ -91,14 +93,47 @@ const env = {
   SMAP_OBSERVATION_VISUAL_FALLBACK_MS: '0'
 };
 
+function visualAssessment(pageName = '自测页面') {
+  return JSON.stringify({ status: 'ACCEPTED', pageUsable: true, pageKind: 'page', pageName, confidence: 'HIGH', rationale: 'self-test accepted visual evidence' });
+}
+
+function argValue(args, name) {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : null;
+}
+
 function run(file, args = []) {
-  const result = spawnSync(path.join(scripts, file), args, { encoding: 'utf8', env, timeout: 30000 });
+  let actualArgs = [...args];
+  if (file === 'graph.js' && actualArgs[0] === 'upsert-visual' && !actualArgs.includes('--visual-review-id')) {
+    const scanDir = argValue(actualArgs, '--scan-dir');
+    const contextId = argValue(actualArgs, '--context') || 'guest';
+    const observationId = argValue(actualArgs, '--observation-id');
+    const name = argValue(actualArgs, '--name') || argValue(actualArgs, '--logical-screen-key') || '根页面';
+    const review = run('visual-review.js', ['record', '--scan-dir', scanDir, '--context', contextId, '--observation-id', observationId, '--review-type', 'ROOT_STATE', '--assessment', visualAssessment(name)]).visualReview;
+    actualArgs = [...actualArgs, '--visual-review-id', review.visualReviewId];
+  }
+  const result = runRaw(file, actualArgs);
   if (result.status !== 0) throw new Error(`${file} failed (${result.status}): ${result.stderr}\n${result.stdout}`);
+  let parsed;
   try {
-    return JSON.parse(result.stdout);
+    parsed = JSON.parse(result.stdout);
   } catch (error) {
     throw new Error(`${file} returned invalid JSON: ${error.message}\n${result.stdout}`);
   }
+  if (file === 'execute-frontier.js' && parsed?.attempt?.status === 'AWAITING_VISUAL_REVIEW') {
+    const scanDir = argValue(actualArgs, '--scan-dir');
+    const contextId = argValue(actualArgs, '--context') || 'guest';
+    const attempt = parsed.attempt;
+    const accepted = run('visual-review.js', ['record', '--scan-dir', scanDir, '--context', contextId, '--attempt-id', attempt.attemptId, '--observation-id', attempt.reviewObservationId, '--review-type', 'PAGE_OUTCOME', '--assessment', visualAssessment('动作结果')]);
+    parsed = { ...parsed, attempt: accepted.attempt, visualReview: accepted.visualReview };
+  }
+  return parsed;
+}
+
+function runRaw(file, args = []) {
+  const command = file.endsWith('.js') ? process.execPath : path.join(scripts, file);
+  const commandArgs = file.endsWith('.js') ? [path.join(scripts, file), ...args] : args;
+  return spawnSync(command, commandArgs, { encoding: 'utf8', env, timeout: 30000 });
 }
 
 let tests = 0;
@@ -133,7 +168,7 @@ function prepareRun(appMapRoot, scanId) {
     '--arrival-signature', JSON.stringify({ backBehaviorKey: 'root-exit' }),
     '--depth', JSON.stringify({ pathDepth: 0, routeDepth: 0, modalDepth: 0 })
   ]).reachableState.id;
-  return { scanDir, observationId, reachableStateId };
+  return { scanDir, observationId, reachableStateId, visualStateId };
 }
 
 function addAndClaim(scanDir, reachableStateId, candidateGroupKey) {
@@ -216,7 +251,7 @@ try {
   fs.writeFileSync(restartModeFile, 'preserve');
   const dynamic = prepareRun(appMapRoot, 'restore-dynamic');
   const dynamicRootObservation = JSON.parse(fs.readFileSync(path.join(dynamic.scanDir, 'evidence', 'observations', dynamic.observationId, 'observation.json'), 'utf8'));
-  check(dynamicRootObservation.stability.status, 'LAYOUT_STABLE_VISUAL_DYNAMIC');
+  check(dynamicRootObservation.stability.status, 'LAYOUT_STABLE_VISUAL_VARIANCE');
   fs.writeFileSync(restartModeFile, '');
   fs.writeFileSync(stateFile, 'home');
   const dynamicFrontier = addAndClaim(dynamic.scanDir, dynamic.reachableStateId, 'home/dynamic-restore');
@@ -225,29 +260,56 @@ try {
     '--frontier-id', dynamicFrontier.id, '--claim-token', dynamicFrontier.claimToken
   ]);
   let dynamicAttempt = dynamicPrepared.attempt;
-  check(dynamicAttempt.status, 'AWAITING_RESTORE_REVIEW');
-  check(dynamicAttempt.restoreMismatch.comparison, 'PROBABLE');
-  check(dynamicPrepared.reviewRequest.dispositions.includes('EXPECTED_STATE_EQUIVALENT'), true);
-  const reviewObservation = JSON.parse(fs.readFileSync(path.join(dynamic.scanDir, 'evidence', 'observations', dynamicAttempt.reviewObservationId, 'observation.json'), 'utf8'));
-  const assessment = {
-    status: 'EXPECTED_STATE_EQUIVALENT',
-    expectedReachableStateId: dynamic.reachableStateId,
-    observedSha256: reviewObservation.stability.finalScreenshotSha256,
-    rationale: '页面布局与语义一致，仅动态视觉内容变化'
-  };
-  dynamicAttempt = run('execute-frontier.js', [
-    'review-restore', '--scan-dir', dynamic.scanDir, '--context', 'guest',
-    '--attempt-id', dynamicAttempt.attemptId,
-    '--observation-id', dynamicAttempt.reviewObservationId,
-    '--disposition', 'EXPECTED_STATE_EQUIVALENT',
-    '--visual-assessment', JSON.stringify(assessment)
-  ]).attempt;
   check(dynamicAttempt.status, 'READY_FOR_ACTION');
-  check(dynamicAttempt.restoreResults[0].equivalenceReviews.length, 1);
-  check(dynamicAttempt.restoreResults[0].equivalenceReviews[0].observedSha256, assessment.observedSha256);
+  check(dynamicPrepared.reviewRequest, undefined);
+  check(dynamicAttempt.restoreResults[0].equivalenceReviews.length, 0);
   check(resolveNoStateChange(dynamic.scanDir, dynamicAttempt).status, 'NO_STATE_CHANGE');
   check(run('finalize-scan.js', ['--scan-dir', dynamic.scanDir, '--status', 'COMPLETED']).scan.status, 'COMPLETED');
   check(dynamicRootObservation.capturedAt.endsWith(expectedOffset), true);
+
+  fs.writeFileSync(stateFile, 'home');
+  fs.writeFileSync(restartModeFile, '');
+  const nonDynamic = prepareRun(appMapRoot, 'restore-nondynamic-equivalence');
+  const nonDynamicGraph = JSON.parse(fs.readFileSync(path.join(nonDynamic.scanDir, 'contexts', 'guest', 'graph.json'), 'utf8'));
+  check(Object.keys(nonDynamicGraph.visualStates.find(item => item.id === nonDynamic.visualStateId).fingerprint).sort(), ['ability', 'app', 'layoutHash', 'schemaVersion', 'screenshotSha256', 'semantic', 'stableIds', 'stableRoles', 'stableTexts']);
+  fs.writeFileSync(stateFile, 'animated-1');
+  fs.writeFileSync(restartModeFile, 'preserve');
+  const nonDynamicFrontier = addAndClaim(nonDynamic.scanDir, nonDynamic.reachableStateId, 'home/nondynamic-equivalence');
+  const nonDynamicPrepared = run('execute-frontier.js', [
+    'prepare', '--scan-dir', nonDynamic.scanDir, '--context', 'guest',
+    '--frontier-id', nonDynamicFrontier.id, '--claim-token', nonDynamicFrontier.claimToken
+  ]);
+  let nonDynamicAttempt = nonDynamicPrepared.attempt;
+  check(nonDynamicAttempt.status, 'READY_FOR_ACTION');
+  check(nonDynamicPrepared.reviewRequest, undefined);
+  check(nonDynamicAttempt.restoreResults[0].equivalenceReviews.length, 0);
+  fs.writeFileSync(restartModeFile, '');
+
+  const failedRestoreRun = prepareRun(appMapRoot, 'restore-failure-closure');
+  fs.writeFileSync(stateFile, 'startup-popup');
+  fs.writeFileSync(restartModeFile, 'preserve');
+  const failedRestoreResult = runRaw('restore-node.js', [
+    '--scan-dir', failedRestoreRun.scanDir,
+    '--context', 'guest',
+    '--reachable-state-id', failedRestoreRun.reachableStateId
+  ]);
+  check(failedRestoreResult.status !== 0, true);
+  check(failedRestoreResult.stderr.includes('RESTORE_STATE_MISMATCH'), true);
+  const restoreFiles = fs.readdirSync(path.join(failedRestoreRun.scanDir, 'evidence', 'restores')).filter(name => name.endsWith('.json'));
+  check(restoreFiles.length, 1);
+  const failedRestoreFile = path.join(failedRestoreRun.scanDir, 'evidence', 'restores', restoreFiles[0]);
+  const failedRestore = JSON.parse(fs.readFileSync(failedRestoreFile, 'utf8'));
+  check(failedRestore.status, 'FAILED');
+  check(failedRestore.reasonCode, 'RESTORE_STATE_MISMATCH');
+  check(Boolean(failedRestore.finishedAt), true);
+  check(run('finalize-scan.js', ['--scan-dir', failedRestoreRun.scanDir, '--status', 'PARTIAL']).scan.status, 'PARTIAL');
+  const danglingRestore = { ...failedRestore, status: 'IN_PROGRESS', finishedAt: null, reasonCode: null };
+  fs.writeFileSync(failedRestoreFile, `${JSON.stringify(danglingRestore, null, 2)}\n`);
+  const invalidClosure = runRaw('validate-run.js', ['--scan-dir', failedRestoreRun.scanDir, '--status', 'PARTIAL']);
+  check(invalidClosure.status !== 0, true);
+  check(invalidClosure.stderr.includes('RESTORE_EXECUTION_UNFINISHED'), true);
+  fs.writeFileSync(stateFile, 'home');
+  fs.writeFileSync(restartModeFile, '');
 
   run('register-run.js', ['--scan-dir', stable.scanDir]);
   run('register-run.js', ['--scan-dir', dynamic.scanDir]);

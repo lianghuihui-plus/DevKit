@@ -1,4 +1,4 @@
-# SMAP V3 技术架构
+# SMAP 技术架构
 
 ## 目录
 
@@ -12,7 +12,7 @@
 8. [发现与验证分层](#8-发现与验证分层)
 9. [预算模型](#9-预算模型)
 10. [事件、恢复与终态](#10-事件恢复与终态)
-11. [兼容与聚合](#11-兼容与聚合)
+11. [Canonical Map 与兼容](#11-canonical-map-与兼容)
 12. [模块职责](#12-模块职责)
 
 ## 1. 目标与模式
@@ -23,7 +23,7 @@ SMAP 以黑盒方式扫描 HarmonyOS App 的稳定可达状态和交互路径。
 - 每个动作保留完整的 before/action/after 证据。
 - 区分“本次观察到转换”与“已从冷启动验证路径”。
 - 在同样图、Cursor、Frontier、预算和目标输入下产生确定性调度结果。
-- 允许旧 Run 只读参与新 Snapshot，而不改写历史事实。
+- 允许旧 Run 只读登记为执行历史，但当前 Snapshot 的地图事实来自 canonical map。
 
 系统只有两种模式：
 
@@ -44,31 +44,31 @@ Agent Orchestrator
   -> Deterministic Core
        -> Budget / Safety / Fingerprint / Graph / Event / Recovery / Validation
   -> Harmony Runtime Bridge
+  -> Canonical Map
   -> Snapshot / Dashboard
 ```
 
-- Agent 负责页面语义、有限候选、弹窗分类与结构化视觉判断。
+- Agent 负责页面语义、有限候选、弹窗分类与结构化视觉判断；脚本只记录和校验 VisualReview，不实现页面视觉算法。
 - Scheduler 决定下一项是发现、验证还是停止。
 - Scan Engine 固化 Claim、导航、动作、审查和事务提交。
 - Deterministic Core 负责所有可验证不变量。
 - Runtime Bridge 只暴露探测、前台、重启、稳定采样所需原子动作。
-- Snapshot/Dashboard 只消费已校验事实。
+- Canonical Map 保存每个 context 的当前路径地图；Snapshot/Dashboard 只消费 canonical map 与已登记执行历史。
 
 ## 3. 单 Context Run
 
-新 Run 使用 Protocol V3：
+新 Run 使用 当前结构：
 
 ```text
 scan.json
-  schemaVersion: 3
-  graphProtocolVersion: 3
-  attemptProtocolVersion: 3
   contextId: guest | authenticated
   budget: {...}
   verificationRule: CANONICAL_SCREEN_PATH | CONFIRMED_TARGET_PATH
 ```
 
-一个 Run 固定一个登录态和一个活动设备 Cursor，不再维护 `plannedContextIds`、动态 `activeContextId` 或 `budgetsByContext`。两个登录态分别扫描、分别计时、分别终结，再由 Snapshot 聚合。
+一个 Run 固定一个登录态和一个活动设备 Cursor，不再维护 `plannedContextIds`、动态 `activeContextId` 或 `budgetsByContext`。两个登录态分别扫描、分别计时、分别终结，并分别扩展 `maps/guest` 与 `maps/authenticated`。
+
+正式 Run 在计划确认后才创建。`preview-plan.js` 只读取 App 根、目标输入和配置，生成确定性 `planHash`；`init-scan.js --confirmed-plan-hash` 在哈希匹配时一次性落盘 Run、计划、目标产物和基础投影。
 
 Run 开始前人工登录/退出不计活动时间。计划确认后执行受控冷启动建立根证据；该冷启动不清数据，也不代表洁净环境。
 
@@ -88,7 +88,9 @@ Runtime Bridge 的单次采样包含截图、控件树、前台 App/Ability 和�
 允许的终态：
 
 - `STABLE`：截图、规范布局和前台连续一致。
-- `LAYOUT_STABLE_VISUAL_DYNAMIC`：布局稳定、无加载语义，但视觉持续动态。
+- `LAYOUT_STABLE_VISUAL_VARIANCE`：布局稳定、无加载语义，但截图持续波动。
+
+页面比较由独立状态等价能力负责。`EXACT` 仍只表示 normalized layout 与截图哈希都一致；恢复、来源确认和路径验证可以在 dump 树语义锚点充分时得到 `SAME_PAGE`。语义指纹包括稳定文本、id、角色、标题、导航项、主操作和粗粒度结构哈希，用于覆盖截图波动、列表数据变化和局部配置变化。脚本无法自动证明但仍可人工确认的状态写入 `state-equivalence.json`，后续恢复同一 ReachableState 时可复用规则；目标查找的最终成功仍必须走目标验证的强匹配。
 
 超时或前台不连贯的样本只能写诊断，不能成为图或目标证据。
 
@@ -100,7 +102,7 @@ Runtime Bridge 的单次采样包含截图、控件树、前台 App/Ability 和�
 - `Edge`：一次已观察转换及其安全、重放和证据属性。
 - `Path`：由 Edge ID 构成的规范可达路径。
 
-布局和截图都相同才为 `EXACT`；布局相同但截图不同最多为 `PROBABLE`。`wait` 不是图动作。动作后状态与来源 `EXACT` 时记录 `NO_STATE_CHANGE`，不生成 Edge。
+布局和截图都相同才为 `EXACT`；语义锚点充分但截图或局部结构变化时可为 `SAME_PAGE`。`wait` 不是图动作。动作后状态与来源 `EXACT` 时记录 `NO_STATE_CHANGE`，不生成 Edge；`SAME_PAGE` 只用于恢复、来源确认和路径验证，不用于证明动作无效果。
 
 ## 5. Live Cursor
 
@@ -134,6 +136,7 @@ Navigation Planner 采用从低成本到高成本的确定性顺序：
 | 等级 | 模式 | 使用条件 | 成本 |
 | --- | --- | --- | --- |
 | L0 | `LIVE_CURSOR` | 已在目标来源状态 | 0 或一次复核 |
+| L0.5 | `SOURCE_MATCH` | 原本会冷重放，但当前屏幕经多证据匹配确认就是目标来源状态 | 一次轻量观测 |
 | L1 | `BACKTRACK` | 已采证 BACK 能力精确到达目标 | 1 |
 | L2 | `GRAPH_PATH` | 当前状态到目标存在安全可重放路径 | 路径动作成本 |
 | L4 | `COLD_REPLAY` | Cursor 无效、无图路径或前级失败 | 冷启动 + 根路径 |
@@ -172,6 +175,8 @@ CLAIMED
   -> SOURCE_READY
   -> READY_FOR_ACTION
   -> ACTION_SUCCEEDED
+  -> AWAITING_VISUAL_REVIEW
+     -> PAGE_OUTCOME VisualReview(ACCEPTED)
   -> AWAITING_OUTCOME_REVIEW
      -> PAGE | BUSINESS_MODAL -> READY_TO_COMMIT -> COMMITTED
      -> NO_STATE_CHANGE -> terminal without Edge
@@ -180,7 +185,7 @@ CLAIMED
      -> SYSTEM_OR_UNKNOWN -> PAUSED
 ```
 
-Attempt 固定 `claimToken`、候选哈希、来源状态、NavigationPlan、Cursor epoch 和 before Observation。重复 prepare 复用同一 Attempt；动作失败释放 Claim 为 `RETRYABLE` 或 `FAILED` 并使 Cursor 失效。
+Attempt 固定 `claimToken`、候选哈希、来源状态、NavigationPlan、Cursor epoch 和 before Observation。动作后 Observation 必须先绑定 `PAGE_OUTCOME` VisualReview，才允许进入结构化 outcome review；入图提交还会再次校验该 VisualReview 为 `ACCEPTED`。重复 prepare 复用同一 Attempt；动作失败释放 Claim 为 `RETRYABLE` 或 `FAILED` 并使 Cursor 失效。
 
 ## 8. 发现与验证分层
 
@@ -236,7 +241,17 @@ validate intent
 
 `event-head.json` 保存最后事件序号和 timeline byte offset，避免每次动作扫描完整 timeline；`projection-state.json` 保存最后应用水位和关键投影摘要。正常恢复只读取水位之后的新事件，只有摘要不一致时才从 timeline 定向重建损坏的 Graph、Frontier、Cursor、Queue 等投影。
 
+产物按写入语义分三类，由 `scripts/lib/artifact-registry.js` 统一判定：
+
+- Projection：Run 状态、Context、Graph、Frontier、Cursor、Queue、Attempt、Operation、Goal、BackCapability、StateEquivalence、只读兼容的 VisualEquivalence、Continuation `known/contexts`，以及状态型的 preparation/restore/navigation execution JSON；必须由 timeline 的 projectionOps 重建和比对。
+- Evidence：Observation 截图/布局、ActionResult、VerificationExecution 证据和日志；允许写入后被引用校验，不作为状态投影反复修改。
+- Generated：merged map、report、Snapshot generation 和 Dashboard；从已校验事实重新生成，不参与 Run projection 恢复。
+
+所有 Run 内 ID 通过 `idAllocated` 事件推进 counter。ID 允许因失败或中断产生空洞，但不得存在 timeline 外的 counter 递增，避免恢复或重建后复用 ID。
+
 所有可能改变设备状态的冷启动、候选动作、导航、恢复、BACK 和弹窗清理都先写 Operation Journal。执行进程消失且 Operation 仍为 `STARTED` 时结果不可推断：标记 `UNKNOWN_OUTCOME`、失效 Cursor、关联 Attempt 标记 `UNKNOWN_EFFECT` 并暂停 Run。
+
+Restore 是 Navigation 与 Verification 共用的执行子状态机。调用方允许人工复核时可停在 `REVIEW_REQUIRED` 等待处理；调用方不允许复核时，状态不匹配、预算拒绝或恢复链错误必须先写 `FAILED` 再向外返回失败。Run 终结为 `PARTIAL` 或 `COMPLETED` 前，`validate-run.js` 必须确认不存在 `IN_PROGRESS` Restore。
 
 终态语义：
 
@@ -244,9 +259,11 @@ validate intent
 - `PARTIAL`：仍有待办、预算耗尽或用户主动截断，可创建 Continuation。
 - `BLOCKED` / `FAILED`：环境或不可恢复错误。
 
+硬预算耗尽是正常收敛原因。`nextWork()` 必须返回 `STOP` 和建议 `PARTIAL`，`finalize-scan.js` 先关闭活动计时窗口再做终结校验，避免超时 Run 卡在 `SCANNING`。
+
 终态事件写入后 Run 不可变。`PAUSED` 是非终态，可原地恢复且暂停时间不计活动预算。
 
-## 11. 兼容与聚合
+## 11. Canonical Map 与兼容
 
 兼容访问集中在 `lib/run-protocol.js`：
 
@@ -255,27 +272,35 @@ runContextIds(scan)
 runContextId(scan)
 activeContextId(scan)
 runBudget(scan, contextId)
-isV3(scan)
 ```
 
-新 writer 只写 V3。Reader、校验、报告、重建、Run Index、Snapshot 和 Dashboard 继续读取 V1/V2；历史多 Context Run 不能被 V3 的单 Context 校验误拒绝。
+新 writer 只写当前结构。Reader、校验、报告、重建和 Run Index 通过兼容访问器读取历史结构；历史多 Context Run 不能被当前结构的单 Context 校验误拒绝。
 
 历史 Edge 的验证等级按可证明证据保守映射：只有从冷启动开始、根和每步精确匹配、动作与最终转换证据完整时才视为已验证；坐标或证据不足时为不稳定/未验证。
 
-Snapshot 按 App、环境和版本聚合通过校验的 `COMPLETED` 与 `PARTIAL` Run。相同转换指纹的较新事实可继承验证；transition fingerprint 改变时不可继承。`mapRevisionId` 只表达扫描血缘。
+`maps/<context>` 是该登录态唯一可持续扩展的 canonical map，包含 graph、frontier、verification queue、back capabilities 和等价规则。`init-scan.js` 从当前 canonical map 种下 session 投影；`register-run.js` 在 Run 终结后把 `COMPLETED/PARTIAL` 的 graph/frontier/queue 同步回 canonical map，并用 `mapBaseRevisionId` 防止落后 session 覆盖较新的地图。
+
+Canonical map 支持受控编辑。`map-edit.js` 通过 `lib/canonical-map-editor.js` 先生成 preview，列出级联影响并绑定当前 `mapRevisionId`；apply 时在锁内重新计算并校验 `confirmHash` 和 revision，随后写入新 revision 与 `canonicalMapEdited` 事件。编辑只影响 `maps/<context>`，历史 Run 证据保持不可变。Dashboard 后续 UI 只能复用这套 preview/apply 能力，不能直接修改 JSON。
+
+Snapshot 不再跨 scan 聚合 graph。`build-snapshot.js` 读取 canonical map 生成不可变 generation；`run-index.json` 只提供执行历史、耗时和动作指标。跨 session 的旧证据通过 `evidenceObservationRefs`、`provenance` 和 `sourceRunId` 指向源 Run，不复制到当前 session。
 
 ## 12. 模块职责
 
-- `lib/run-protocol.js`：V1/V2/V3 版本访问。
+- `lib/run-protocol.js`：协议访问。
+- `lib/observation-store.js`：Observation、layout、screenshot 路径、fingerprint 与语义节点的统一读取入口。
 - `lib/budget.js` / `lib/action-metrics.js`：简化预算、活动时间和分类动作指标。
 - `lib/live-cursor.js`：Cursor lease、epoch、复核、建立和失效。
 - `lib/navigation-planner.js` / `navigate-source.js`：分级导航计划与执行。
+- `lib/path-replay-engine.js`：导航/恢复路径步骤的安全判定、定位类型归一和统一设备动作执行入口。
 - `back-capability.js` / `lib/back-capability-store.js`：BACK 实际采证。
 - `lib/frontier-scheduler.js`：位置感知 Frontier 排序。
 - `next-work.js` / `lib/work-scheduler.js`：发现、验证、停止统一调度。
-- `lib/verification-store.js` / `verify-path.js`：规范路径任务和冷启动验证。
-- `execute-frontier.js` / `action-runner.js` / `commit-attempt.js`：Attempt 因果链和事务提交。
-- `restore-node.js`：L4 冷启动恢复与验证底层执行器。
+- `lib/verification-store.js` / `lib/verification-result.js` / `verify-path.js`：规范路径任务、恢复链验证判定和冷启动验证。
+- `lib/review-policy.js`：Restore/Outcome 人工复核请求、可选 disposition 和等价复核可用性。
+- `lib/device-action-executor.js` / `action-runner.js` / `popup-dismiss-runner.js` / `back-capability.js` / `navigate-source.js` / `restore-node.js`：候选动作、弹窗清理、BACK 能力采证、导航执行和恢复回放的 ActionResult/Restore 证据、Operation Journal 与 bridge 下发。
+- `execute-frontier.js` / `commit-attempt.js`：Attempt 因果链和事务提交。
 - `lib/recovery.js` / `rebuild-run.js`：事件投影恢复和可重建性。
 - `validate-run.js`：协议、证据、预算、Cursor、队列与终态校验。
-- `build-snapshot.js` / `build-dashboard.js`：不可变聚合与离线展示。
+- `lib/canonical-map-store.js`：canonical map 初始化、session seed、revision guard 和同步。
+- `lib/canonical-map-editor.js` / `map-edit.js`：canonical map 受控删除、reset、引用清理、preview/apply 和审计事件。
+- `build-snapshot.js` / `build-dashboard.js`：从 canonical map 生成不可变 Snapshot 与离线展示。

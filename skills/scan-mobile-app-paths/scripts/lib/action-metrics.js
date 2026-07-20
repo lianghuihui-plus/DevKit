@@ -17,7 +17,7 @@ function recordColdStart(scanDir, contextId) {
 }
 
 function recordNavigationMode(scanDir, contextId, mode) {
-  const keys = { LIVE_CURSOR: 'cursorReuseHits', BACKTRACK: 'backtrackNavigations', GRAPH_PATH: 'graphPathNavigations', COLD_REPLAY: 'coldReplayNavigations' }; const key = keys[mode]; if (!key) fail(`Unknown navigation mode ${mode}`, 'NAVIGATION_MODE_INVALID');
+  const keys = { LIVE_CURSOR: 'cursorReuseHits', SOURCE_MATCH: 'sourceMatchNavigations', BACKTRACK: 'backtrackNavigations', GRAPH_PATH: 'graphPathNavigations', COLD_REPLAY: 'coldReplayNavigations' }; const key = keys[mode]; if (!key) fail(`Unknown navigation mode ${mode}`, 'NAVIGATION_MODE_INVALID');
   const file = path.join(contextDir(scanDir, contextId), 'metrics.json'); const metrics = readJson(file, {}); metrics[key] = Number(metrics[key] || 0) + 1; commitEvent(scanDir, 'navigationModeMetricRecorded', { contextId, mode, count: metrics[key] }, [{ path: `contexts/${contextId}/metrics.json`, op: 'REPLACE', value: metrics }]); return metrics;
 }
 

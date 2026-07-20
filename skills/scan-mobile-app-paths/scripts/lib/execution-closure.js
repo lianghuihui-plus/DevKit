@@ -27,7 +27,7 @@ function validateProjectionWatermark(scanDir) {
 }
 
 function validateExecutionClosure(scanDir, scan, requestedStatus) {
-  const summary = { projection: null, operations: 0, navigationExecutions: 0, verificationTasks: 0, verificationExecutions: 0 };
+  const summary = { projection: null, operations: 0, navigationExecutions: 0, restores: 0, verificationTasks: 0, verificationExecutions: 0 };
   if (Number(scan.eventProtocolVersion || 1) >= 2 && Number(scan.projectionProtocolVersion || 1) >= 2) summary.projection = validateProjectionWatermark(scanDir);
 
   if (Number(scan.eventProtocolVersion || 1) >= 2) for (const file of jsonFiles(path.join(scanDir, 'operations'))) {
@@ -41,6 +41,19 @@ function validateExecutionClosure(scanDir, scan, requestedStatus) {
     const execution = readJson(file); summary.navigationExecutions += 1;
     if (['PLANNED', 'IN_PROGRESS'].includes(execution.status)) fail(`Navigation execution ${execution.navigationExecutionId} is unfinished`, 'NAVIGATION_EXECUTION_UNFINISHED');
     if (!execution.navigationExecutionId || path.basename(file, '.json') !== execution.navigationExecutionId || !execution.navigationPlanId || !execution.planFingerprint) fail('Navigation execution identity is invalid', 'NAVIGATION_EXECUTION_INVALID');
+  }
+
+  for (const file of jsonFiles(path.join(scanDir, 'evidence', 'restores'))) {
+    const restore = readJson(file); summary.restores += 1;
+    const terminalRequested = ['COMPLETED', 'PARTIAL', 'FAILED', 'BLOCKED'].includes(requestedStatus);
+    if (!restore.restoreId || path.basename(file, '.json') !== restore.restoreId || !runContextIds(scan).includes(restore.contextId) || !['IN_PROGRESS', 'SUCCEEDED', 'FAILED', 'REVIEW_REQUIRED'].includes(restore.status)) fail('Restore identity or status is invalid', 'RESTORE_EXECUTION_INVALID');
+    if (restore.status === 'IN_PROGRESS') fail(`Restore ${restore.restoreId} is unfinished`, 'RESTORE_EXECUTION_UNFINISHED');
+    if (terminalRequested && restore.status === 'REVIEW_REQUIRED' && requestedStatus !== 'BLOCKED') fail(`Restore ${restore.restoreId} still requires review`, 'RESTORE_EXECUTION_UNFINISHED');
+    if (restore.status === 'SUCCEEDED') {
+      if (!restore.finishedAt || !restore.terminalObservationId) fail(`Restore ${restore.restoreId} lacks success closure evidence`, 'RESTORE_EXECUTION_INVALID');
+      if (!fs.existsSync(path.join(scanDir, 'evidence', 'observations', restore.terminalObservationId, 'observation.json'))) fail(`Restore ${restore.restoreId} terminal observation is missing`, 'RESTORE_EXECUTION_INVALID');
+    }
+    if (restore.status === 'FAILED' && (!restore.finishedAt || !restore.reasonCode)) fail(`Restore ${restore.restoreId} lacks failure closure evidence`, 'RESTORE_EXECUTION_INVALID');
   }
 
   if (Number(scan.verificationProtocolVersion || 1) >= 2) {

@@ -2,15 +2,11 @@
 'use strict';
 
 const path = require('path');
-const { parseArgs, required, resolveScanDir, loadScan, loadGraph, loadFrontier, nextId, jsonArg, writeJsonAtomic, readJson, contextDir, now, event, output, main, fail, safeSegment } = require('./lib/common');
+const { parseArgs, required, resolveScanDir, loadScan, loadGraph, loadFrontier, jsonArg, readJson, contextDir, output, main, fail, safeSegment } = require('./lib/common');
 const { assertCapacity } = require('./lib/budget');
 const { validateDismissAction } = require('./lib/popup-policy');
-const { bridge } = require('./lib/runtime-client');
 const { runContextIds } = require('./lib/run-protocol');
-const { recordDeviceAction } = require('./lib/action-metrics');
-const { startDeviceOperation, finishDeviceOperation } = require('./lib/operation-journal');
-
-function center(bounds) { return bounds && bounds.length === 4 ? { x: Math.round((Number(bounds[0]) + Number(bounds[2])) / 2), y: Math.round((Number(bounds[1]) + Number(bounds[3])) / 2) } : {}; }
+const { executeDeviceAction, completeDeviceActionSuccess } = require('./lib/device-action-executor');
 
 main(() => {
   const args = parseArgs(); const { scanDir } = resolveScanDir(required(args, 'scanDir')); const scan = loadScan(scanDir, { mutable: true });
@@ -26,12 +22,22 @@ main(() => {
   }
   const { action, safety } = validateDismissAction(jsonArg(required(args, 'action'), null, 'dismiss action JSON'), scan.target);
   const metricsFile = path.join(contextDir(scanDir, contextId), 'metrics.json'); const metrics = readJson(metricsFile); assertCapacity(scan, contextId, loadGraph(scanDir, contextId), loadFrontier(scanDir, contextId), metrics, 'actions');
-  const actionId = nextId(scanDir, 'action', 'act'); const startedAt = now(); const point = center(action.fallbackBounds);
-  const operation = startDeviceOperation(scanDir, contextId, { kind: 'POPUP_DISMISSAL', owner: { type: ownerType, id: ownerId }, idempotency: 'SAFE_RETRY_AFTER_OBSERVATION' }); recordDeviceAction(scanDir, contextId, 'interruption'); let deviceResult;
-  try { deviceResult = bridge('action', { device: scan.target.deviceId, actionType: action.type, x: action.x ?? point.x, y: action.y ?? point.y, key: action.key }); }
-  catch (error) { finishDeviceOperation(scanDir, operation, 'UNKNOWN_OUTCOME', { reasonCode: error.code || 'POPUP_DISMISSAL_FAILED' }); error.code = 'OPERATION_OUTCOME_UNKNOWN'; throw error; }
-  const actionResult = { schemaVersion: 1, actionId, role: 'POPUP_DISMISSAL', contextId, owner: { type: ownerType, id: ownerId }, beforeObservationId: observationId, action, safety, locatorResolution: 'COORDINATE_ONLY', startedAt, finishedAt: now(), status: 'SUCCEEDED', deviceResult };
-  writeJsonAtomic(path.join(scanDir, 'evidence', 'actions', `${actionId}.json`), actionResult);
-  finishDeviceOperation(scanDir, operation, 'SUCCEEDED', { evidenceRef: `evidence/actions/${actionId}.json` });
-  event(scanDir, 'popupDismissalActionResult', { contextId, ownerType, ownerId, observationId, actionId, status: 'SUCCEEDED' }); output({ schemaVersion: 1, ok: true, actionResult });
+  const owner = { type: ownerType, id: ownerId };
+  const { actionResult, operation } = executeDeviceAction(scanDir, {
+    scan,
+    contextId,
+    beforeObservationId: observationId,
+    action,
+    safety,
+    role: 'POPUP_DISMISSAL',
+    category: 'interruption',
+    owner,
+    idempotency: 'SAFE_RETRY_AFTER_OBSERVATION',
+    actionResultExtra: { role: 'POPUP_DISMISSAL', owner },
+    failureReasonCode: 'POPUP_DISMISSAL_FAILED',
+    emitActionResultEvents: false,
+    writeUnknownEvidence: false
+  });
+  completeDeviceActionSuccess(scanDir, operation, actionResult, { eventType: 'popupDismissalActionResult', eventPayload: { contextId, ownerType, ownerId, observationId, actionId: actionResult.actionId, status: 'SUCCEEDED' } });
+  output({ schemaVersion: 1, ok: true, actionResult });
 });

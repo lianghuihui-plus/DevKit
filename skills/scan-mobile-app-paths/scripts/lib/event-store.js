@@ -25,7 +25,7 @@ function stableStringify(value) {
   return JSON.stringify(value);
 }
 function documentHash(file) { return fs.existsSync(file) ? sha256(stableStringify(readJson(file))) : null; }
-function trackedProjectionPath(relative) { return /^(scan\.json|target\.json|plan\.json|continuation\.json|contexts\/[^/]+\/(context|graph|frontier|metrics|live-cursor|verification-queue|back-capabilities)\.json|attempts\/[^/]+\.json|operations\/[^/]+\.json|evidence\/navigations\/[^/]+\.json)$/.test(relative); }
+function trackedProjectionPath(relative) { return require('./artifact-registry').isProjectionPath(relative); }
 function timelineFile(scanDir) { return path.join(scanDir, 'timeline.jsonl'); }
 function headFile(scanDir) { return path.join(scanDir, 'event-head.json'); }
 function projectionStateFile(scanDir) { return path.join(scanDir, 'projection-state.json'); }

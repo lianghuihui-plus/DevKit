@@ -9,6 +9,8 @@ const { updateCanonicalPaths, actionKey } = require('./lib/graph-store');
 const { normalizeGraphForConsumption, assertConsumableGraph } = require('./lib/graph-normalization');
 const { validate } = require('./validate-run');
 const { runContextIds } = require('./lib/run-protocol');
+const { legacyRestoreVerification } = require('./lib/verification-result');
+const { canonicalContexts, loadCanonicalContext } = require('./lib/canonical-map-store');
 
 function compareRuns(left, right) {
   return compareTimestamps(left.finalizedAt, right.finalizedAt) || String(left.scanId).localeCompare(String(right.scanId));
@@ -47,7 +49,7 @@ function runExecution(root, registered) {
       observations: Number(metric.observations || 0),
       observationSamples: Number(metric.observationSamples || 0),
       observationStabilityWaitMs: Number(metric.observationStabilityWaitMs || 0),
-      dynamicVisualObservations: Number(metric.dynamicVisualObservations || 0),
+      visualVarianceObservations: Number(metric.visualVarianceObservations || 0),
       restoreAttempts: Number(metric.restoreAttempts || 0),
       interruptionActions: Number(metric.interruptionActions || 0),
       noStateChangeActions: Number(metric.noStateChangeActions || 0),
@@ -56,9 +58,9 @@ function runExecution(root, registered) {
     };
   });
   const totals = contexts.reduce((sum, context) => {
-    for (const key of ['activeDurationMs', 'actions', 'explorationActions', 'navigationActions', 'recoveryActions', 'verificationActions', 'coldStarts', 'cursorReuseHits', 'cursorInvalidations', 'backtrackNavigations', 'graphPathNavigations', 'coldReplayNavigations', 'observations', 'observationSamples', 'observationStabilityWaitMs', 'dynamicVisualObservations', 'restoreAttempts', 'interruptionActions', 'noStateChangeActions']) sum[key] += context[key];
+    for (const key of ['activeDurationMs', 'actions', 'explorationActions', 'navigationActions', 'recoveryActions', 'verificationActions', 'coldStarts', 'cursorReuseHits', 'cursorInvalidations', 'backtrackNavigations', 'graphPathNavigations', 'coldReplayNavigations', 'observations', 'observationSamples', 'observationStabilityWaitMs', 'visualVarianceObservations', 'restoreAttempts', 'interruptionActions', 'noStateChangeActions']) sum[key] += context[key];
     addCounts(sum.frontierCounts, context.frontierCounts); return sum;
-  }, { activeDurationMs: 0, actions: 0, explorationActions: 0, navigationActions: 0, recoveryActions: 0, verificationActions: 0, coldStarts: 0, cursorReuseHits: 0, cursorInvalidations: 0, backtrackNavigations: 0, graphPathNavigations: 0, coldReplayNavigations: 0, observations: 0, observationSamples: 0, observationStabilityWaitMs: 0, dynamicVisualObservations: 0, restoreAttempts: 0, interruptionActions: 0, noStateChangeActions: 0, frontierCounts: {} });
+  }, { activeDurationMs: 0, actions: 0, explorationActions: 0, navigationActions: 0, recoveryActions: 0, verificationActions: 0, coldStarts: 0, cursorReuseHits: 0, cursorInvalidations: 0, backtrackNavigations: 0, graphPathNavigations: 0, coldReplayNavigations: 0, observations: 0, observationSamples: 0, observationStabilityWaitMs: 0, visualVarianceObservations: 0, restoreAttempts: 0, interruptionActions: 0, noStateChangeActions: 0, frontierCounts: {} });
   const startedAt = scan.startedAt || scan.createdAt || registered.startedAt || null; const finalizedAt = scan.finalizedAt || registered.finalizedAt || null;
   const startedMs = Date.parse(startedAt || ''); const finalizedMs = Date.parse(finalizedAt || '');
   return {
@@ -86,8 +88,9 @@ function verificationFact(root, runId, edge) {
   if (edge.verification?.transitionFingerprint) return { ...edge.verification, sourceRunId: runId };
   const attemptFile = edge.attemptId ? path.join(root, 'runs', runId, 'attempts', `${edge.attemptId}.json`) : null; if (!attemptFile || !fs.existsSync(attemptFile)) return { discoveryStatus: 'OBSERVED', replayStatus: 'UNVERIFIED', transitionFingerprint: null, verificationRefs: [], sourceRunId: runId, legacyReason: 'ATTEMPT_MISSING' };
   const attempt = readJson(attemptFile); const restores = attempt.restoreResults || []; const successful = restores.find(item => item.status === 'SUCCEEDED'); if (!successful) return { discoveryStatus: 'OBSERVED', replayStatus: 'UNVERIFIED', transitionFingerprint: null, verificationRefs: [], sourceRunId: runId, legacyReason: 'RESTORE_CHAIN_MISSING' };
-  const exact = !(successful.equivalenceReviews || []).length && (successful.steps || []).every(step => step.verificationStatus === 'EXACT'); const actionFile = path.join(root, 'runs', runId, 'evidence', 'actions', `${edge.evidence?.actionResultId}.json`); const action = fs.existsSync(actionFile) ? readJson(actionFile) : null;
-  return { discoveryStatus: 'OBSERVED', replayStatus: exact && action?.locatorResolution === 'SEMANTIC_VERIFIED' ? 'COLD_REPLAY_VERIFIED' : exact ? 'REPLAY_UNSTABLE' : 'REPLAY_UNSTABLE', transitionFingerprint: null, verificationRefs: [`runs/${runId}/evidence/restores/${successful.restoreId}.json`], sourceRunId: runId, legacyReason: exact ? 'COORDINATE_ONLY' : 'EXPECTED_STATE_EQUIVALENT' };
+  const actionFile = path.join(root, 'runs', runId, 'evidence', 'actions', `${edge.evidence?.actionResultId}.json`); const action = fs.existsSync(actionFile) ? readJson(actionFile) : null;
+  const inferred = legacyRestoreVerification({ restored: successful, action });
+  return { discoveryStatus: 'OBSERVED', replayStatus: inferred.replayStatus, transitionFingerprint: null, verificationRefs: [`runs/${runId}/evidence/restores/${successful.restoreId}.json`], sourceRunId: runId, legacyReason: inferred.legacyReason };
 }
 
 function arrivalDescriptor(graph, state, visualMetaById) {
@@ -208,8 +211,72 @@ function mergeContext(root, contextId, sourceRuns) {
   return { graph: target, unresolved, replacementCount, ...pruning };
 }
 
+function graphHasContent(graph) {
+  return Boolean((graph.reachableStates || []).length || (graph.edges || []).length || (graph.visualStates || []).length);
+}
+
+function frontierCounts(frontier) {
+  return (frontier.items || []).reduce((sum, item) => {
+    const status = item.status || 'UNKNOWN';
+    sum[status] = (sum[status] || 0) + 1;
+    return sum;
+  }, {});
+}
+
+function canonicalUnresolved(contextId, graph, frontier, queue, sourceRunIds) {
+  const unresolved = [];
+  unresolved.push(...(graph.visualStates || []).filter(x => x.dedupe?.status === 'PROBABLE').map(x => ({ type: 'PROBABLE_VISUAL_DUPLICATE', contextId, visualStateId: x.id, duplicateGroupId: x.dedupe.duplicateGroupId, sourceRunId: sourceRunIds.at(-1) || null })));
+  unresolved.push(...(graph.edges || []).filter(edge => ['UNVERIFIED', 'REPLAY_UNSTABLE'].includes(edge.verification?.replayStatus)).map(edge => ({ type: edge.verification?.replayStatus === 'REPLAY_UNSTABLE' ? 'REPLAY_UNSTABLE' : 'UNVERIFIED_EDGE', contextId, edgeId: edge.id, sourceRunId: edge.evidence?.sourceRunId || edge.verification?.sourceRunId || null })));
+  unresolved.push(...(frontier.items || []).filter(item => ['PENDING', 'RETRYABLE', 'FAILED', 'BLOCKED'].includes(item.status)).map(item => ({ type: 'FRONTIER_UNRESOLVED', contextId, frontierId: item.id, status: item.status, reasonCode: item.reasonCode || null, sourceRunId: item.sourceRunId || null })));
+  unresolved.push(...(queue.items || []).filter(item => ['PENDING', 'FAILED'].includes(item.status)).map(item => ({ type: 'VERIFICATION_UNRESOLVED', contextId, verificationId: item.verificationId, status: item.status, reasonCode: item.reasonCode || null, sourceRunId: item.sourceRunId || null })));
+  return unresolved;
+}
+
+function buildCanonicalSnapshotIfAvailable(root, app, args, index) {
+  const available = canonicalContexts(root).map(contextId => loadCanonicalContext(root, contextId)).filter(canonical => graphHasContent(canonical.graph));
+  if (!available.length) return null;
+  const selectedRevision = args.mapRevisionId ? safeSegment(args.mapRevisionId, 'mapRevisionId') : null;
+  if (selectedRevision && !available.some(canonical => canonical.meta.mapRevisionId === selectedRevision)) fail('No canonical map matches the requested map revision', 'SNAPSHOT_NO_SOURCE');
+  const contexts = {}; const sourcePlans = {}; const missingContexts = []; const unresolved = []; const canonicalMetrics = {}; const sourceRunIdSet = new Set(); const mapRevisionIds = [];
+  for (const contextId of ['guest', 'authenticated']) {
+    const canonical = available.find(item => item.contextId === contextId);
+    if (!canonical || selectedRevision && canonical.meta.mapRevisionId !== selectedRevision) { missingContexts.push(contextId); continue; }
+    const sourceRunIds = canonical.meta.sourceSessionIds || [];
+    for (const id of sourceRunIds) sourceRunIdSet.add(id);
+    if (canonical.meta.mapRevisionId) mapRevisionIds.push(canonical.meta.mapRevisionId);
+    sourcePlans[contextId] = sourceRunIds;
+    const normalized = normalizeGraphForConsumption(canonical.graph, { runId: 'canonical-map', contextId });
+    unresolved.push(...normalized.issues);
+    if (!normalized.graph.reachableStates.length) { missingContexts.push(contextId); continue; }
+    assertConsumableGraph(normalized.graph, fail);
+    contexts[contextId] = normalized.graph;
+    unresolved.push(...canonicalUnresolved(contextId, normalized.graph, canonical.frontier, canonical.verificationQueue, sourceRunIds));
+    canonicalMetrics[contextId] = { logicalScreenCount: normalized.graph.logicalScreens.length, visualStateCount: normalized.graph.visualStates.length, reachableStateCount: normalized.graph.reachableStates.length, edgeCount: normalized.graph.edges.length, replacementCount: 0, prunedReachableStates: normalized.issues.filter(item => item.type === 'LEGACY_REACHABILITY_PRUNED').reduce((sum, item) => sum + (item.droppedReachableStateIds?.length || 0), 0), prunedEdges: normalized.issues.filter(item => item.type === 'LEGACY_REACHABILITY_PRUNED').reduce((sum, item) => sum + (item.droppedEdgeIds?.length || 0), 0), frontierCounts: frontierCounts(canonical.frontier), mapRevisionId: canonical.meta.mapRevisionId || null };
+  }
+  const qualified = (index.runs || []).filter(run => ['COMPLETED', 'PARTIAL'].includes(run.status));
+  const sourceRuns = qualified.filter(run => sourceRunIdSet.has(run.scanId)).sort(compareRuns);
+  const selectedVersion = args.versionKey || latest(sourceRuns.filter(run => run.versionKey))?.versionKey || latest(qualified.filter(run => run.versionKey))?.versionKey || null;
+  const executionCandidates = selectedVersion ? sourceRuns.filter(run => run.versionKey === selectedVersion) : sourceRuns;
+  const executionRuns = executionCandidates.map(run => runExecution(root, run));
+  const executionTotals = executionRuns.reduce((sum, run) => {
+    for (const key of ['activeDurationMs', 'actions', 'explorationActions', 'navigationActions', 'recoveryActions', 'verificationActions', 'coldStarts', 'cursorReuseHits', 'cursorInvalidations', 'backtrackNavigations', 'graphPathNavigations', 'coldReplayNavigations', 'observations', 'observationSamples', 'observationStabilityWaitMs', 'visualVarianceObservations', 'restoreAttempts', 'interruptionActions', 'noStateChangeActions']) sum[key] += run.totals[key];
+    addCounts(sum.frontierCounts, run.totals.frontierCounts); return sum;
+  }, { runCount: executionRuns.length, activeDurationMs: 0, actions: 0, explorationActions: 0, navigationActions: 0, recoveryActions: 0, verificationActions: 0, coldStarts: 0, cursorReuseHits: 0, cursorInvalidations: 0, backtrackNavigations: 0, graphPathNavigations: 0, coldReplayNavigations: 0, observations: 0, observationSamples: 0, observationStabilityWaitMs: 0, visualVarianceObservations: 0, restoreAttempts: 0, interruptionActions: 0, noStateChangeActions: 0, frontierCounts: {} });
+  const map = { schemaVersion: 1, appKey: app.appKey, versionKey: selectedVersion, contexts }; const unresolvedDoc = { schemaVersion: 1, items: unresolved }; const diff = authDiff(map);
+  const normalizationIssues = unresolved.filter(item => ['LEGACY_NON_GRAPH_ACTION_DROPPED', 'LEGACY_REACHABILITY_PRUNED'].includes(item.type));
+  const metrics = { schemaVersion: 2, contexts: canonicalMetrics, execution: { schemaVersion: 1, totals: executionTotals, runs: executionRuns }, merge: { policy: 'CANONICAL_MAP_ONLY', replacementCount: 0 }, normalization: { issueCount: normalizationIssues.length, droppedWaitEdges: normalizationIssues.filter(item => item.type === 'LEGACY_NON_GRAPH_ACTION_DROPPED').reduce((sum, item) => sum + (item.count || 0), 0), prunedReachableStates: normalizationIssues.filter(item => item.type === 'LEGACY_REACHABILITY_PRUNED').reduce((sum, item) => sum + (item.droppedReachableStateIds?.length || 0), 0) } };
+  const generationId = `snapshot-${compactLocalTimestamp(new Date(), { milliseconds: true })}-${hashObject({ sourcePlans, mapRevisionIds, selectedRevision }).slice(-8)}`; const dir = path.join(root, 'snapshots', 'generations', generationId); if (fs.existsSync(dir)) fail('Snapshot generation already exists', 'SNAPSHOT_EXISTS'); ensureDir(dir);
+  writeJsonAtomic(path.join(dir, 'map.json'), map); writeJsonAtomic(path.join(dir, 'auth-diff.json'), diff); writeJsonAtomic(path.join(dir, 'unresolved.json'), unresolvedDoc); writeJsonAtomic(path.join(dir, 'metrics.json'), metrics);
+  const representative = latest(sourceRuns) || latest(qualified);
+  const manifest = { schemaVersion: 2, generationId, appKey: app.appKey, appVersion: representative?.appVersion || null, buildVersion: representative?.buildVersion || null, versionKey: selectedVersion, aggregationScope: 'CANONICAL_MAP', aggregationPolicy: 'CANONICAL_MAP_ONLY', mapRevisionId: selectedRevision || null, mapRevisionIds: [...new Set(mapRevisionIds)], generatedAt: now(), sourceRuns: sourceRuns.map(run => ({ scanId: run.scanId, status: run.status, scanMode: run.scanMode, scanScope: run.scanScope, mapRevisionId: run.mapRevisionId || run.scanId, mapBaseRevisionId: run.mapBaseRevisionId || null, finalizedAt: run.finalizedAt })), sourcePlans, missingContexts, status: missingContexts.length || unresolved.length ? 'PARTIAL' : 'READY', checksums: { map: checksum(map), authDiff: checksum(diff), unresolved: checksum(unresolvedDoc), metrics: checksum(metrics) } };
+  writeJsonAtomic(path.join(dir, 'manifest.json'), manifest); const pointer = { schemaVersion: 1, generationId, relativePath: `generations/${generationId}`, manifestSha256: checksum(manifest), updatedAt: now() }; writeJsonAtomic(path.join(root, 'snapshots', 'current.json'), pointer);
+  return { schemaVersion: 1, ok: true, snapshotDir: dir, currentPointer: path.join(root, 'snapshots', 'current.json'), manifest };
+}
+
 main(() => {
   const args = parseArgs(); const root = assertAbsolute(required(args, 'appMapRoot'), '--app-map-root'); const app = readJson(path.join(root, 'app.json')); const index = readJson(path.join(root, 'run-index.json'));
+  const canonicalSnapshot = buildCanonicalSnapshotIfAvailable(root, app, args, index);
+  if (canonicalSnapshot) { output(canonicalSnapshot); return; }
   const qualified = index.runs.filter(run => ['COMPLETED', 'PARTIAL'].includes(run.status)); if (!qualified.length) fail('No qualified terminal Runs', 'SNAPSHOT_NO_SOURCE');
   const explicitVersion = args.versionKey || null; const selectedVersion = explicitVersion || latest(qualified.filter(run => run.versionKey))?.versionKey || null;
   const versionCandidates = selectedVersion ? qualified.filter(run => run.versionKey === selectedVersion) : qualified.filter(run => !run.versionKey); if (!versionCandidates.length) fail('No source Run matches the requested version', 'SNAPSHOT_NO_SOURCE');
@@ -229,9 +296,9 @@ main(() => {
   const normalizationIssues = unresolved.filter(item => ['LEGACY_NON_GRAPH_ACTION_DROPPED', 'LEGACY_REACHABILITY_PRUNED'].includes(item.type));
   const executionRuns = candidates.map(run => runExecution(root, run));
   const executionTotals = executionRuns.reduce((sum, run) => {
-    for (const key of ['activeDurationMs', 'actions', 'explorationActions', 'navigationActions', 'recoveryActions', 'verificationActions', 'coldStarts', 'cursorReuseHits', 'cursorInvalidations', 'backtrackNavigations', 'graphPathNavigations', 'coldReplayNavigations', 'observations', 'observationSamples', 'observationStabilityWaitMs', 'dynamicVisualObservations', 'restoreAttempts', 'interruptionActions', 'noStateChangeActions']) sum[key] += run.totals[key];
+    for (const key of ['activeDurationMs', 'actions', 'explorationActions', 'navigationActions', 'recoveryActions', 'verificationActions', 'coldStarts', 'cursorReuseHits', 'cursorInvalidations', 'backtrackNavigations', 'graphPathNavigations', 'coldReplayNavigations', 'observations', 'observationSamples', 'observationStabilityWaitMs', 'visualVarianceObservations', 'restoreAttempts', 'interruptionActions', 'noStateChangeActions']) sum[key] += run.totals[key];
     addCounts(sum.frontierCounts, run.totals.frontierCounts); return sum;
-  }, { runCount: executionRuns.length, activeDurationMs: 0, actions: 0, explorationActions: 0, navigationActions: 0, recoveryActions: 0, verificationActions: 0, coldStarts: 0, cursorReuseHits: 0, cursorInvalidations: 0, backtrackNavigations: 0, graphPathNavigations: 0, coldReplayNavigations: 0, observations: 0, observationSamples: 0, observationStabilityWaitMs: 0, dynamicVisualObservations: 0, restoreAttempts: 0, interruptionActions: 0, noStateChangeActions: 0, frontierCounts: {} });
+  }, { runCount: executionRuns.length, activeDurationMs: 0, actions: 0, explorationActions: 0, navigationActions: 0, recoveryActions: 0, verificationActions: 0, coldStarts: 0, cursorReuseHits: 0, cursorInvalidations: 0, backtrackNavigations: 0, graphPathNavigations: 0, coldReplayNavigations: 0, observations: 0, observationSamples: 0, observationStabilityWaitMs: 0, visualVarianceObservations: 0, restoreAttempts: 0, interruptionActions: 0, noStateChangeActions: 0, frontierCounts: {} });
   const metrics = { schemaVersion: 2, contexts: Object.fromEntries(Object.entries(contexts).map(([id, graph]) => [id, { logicalScreenCount: graph.logicalScreens.length, visualStateCount: graph.visualStates.length, reachableStateCount: graph.reachableStates.length, edgeCount: graph.edges.length, ...mergeMetrics[id] }])), execution: { schemaVersion: 1, totals: executionTotals, runs: executionRuns }, merge: { policy: 'LATEST_OBSERVATION_WINS', replacementCount: Object.values(mergeMetrics).reduce((sum, item) => sum + item.replacementCount, 0) }, normalization: { issueCount: normalizationIssues.length, droppedWaitEdges: normalizationIssues.filter(item => item.type === 'LEGACY_NON_GRAPH_ACTION_DROPPED').reduce((sum, item) => sum + (item.count || 0), 0), prunedReachableStates: normalizationIssues.filter(item => item.type === 'LEGACY_REACHABILITY_PRUNED').reduce((sum, item) => sum + (item.droppedReachableStateIds?.length || 0), 0) } };
   const generationId = `snapshot-${compactLocalTimestamp(new Date(), { milliseconds: true })}-${hashObject({ sourcePlans, selectedVersion, selectedRevision }).slice(-8)}`; const dir = path.join(root, 'snapshots', 'generations', generationId); if (fs.existsSync(dir)) fail('Snapshot generation already exists', 'SNAPSHOT_EXISTS'); ensureDir(dir);
   writeJsonAtomic(path.join(dir, 'map.json'), map); writeJsonAtomic(path.join(dir, 'auth-diff.json'), diff); writeJsonAtomic(path.join(dir, 'unresolved.json'), unresolvedDoc); writeJsonAtomic(path.join(dir, 'metrics.json'), metrics);

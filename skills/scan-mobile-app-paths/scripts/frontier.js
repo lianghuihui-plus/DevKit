@@ -10,7 +10,7 @@ const exploration = require('./strategies/exploration');
 const goal = require('./strategies/goal-directed');
 const { validateGraphCandidate } = require('./lib/schema');
 const { assessAction } = require('./lib/safety');
-const { isV3, activeContextId, runBudget, maxDepth, maxCandidatesPerState, maxScrollsPerState, graphProtocolVersion } = require('./lib/run-protocol');
+const { isCurrentRun, activeContextId, runBudget, maxDepth, maxCandidatesPerState, maxScrollsPerState, graphProtocolVersion } = require('./lib/run-protocol');
 const scheduler = require('./lib/frontier-scheduler');
 const { nextWork } = require('./lib/work-scheduler');
 
@@ -35,7 +35,7 @@ main(() => {
     if (fromItems.length >= maxCandidatesPerState(budget)) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: 'MAX_CANDIDATES_PER_STATE' });
     if ((fromState.depth?.pathDepth || 0) + 1 > maxDepth(budget)) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: 'MAX_DEPTH' });
     const routeIncrement = candidate.routeTransition === true || ['navigate', 'openRoute'].includes(candidate.type) ? 1 : 0;
-    if (!isV3(scan) && (fromState.depth?.routeDepth || 0) + routeIncrement > budget.maxRouteDepth) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: 'MAX_ROUTE_DEPTH' });
+    if (!isCurrentRun(scan) && (fromState.depth?.routeDepth || 0) + routeIncrement > budget.maxRouteDepth) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: 'MAX_ROUTE_DEPTH' });
     if (candidate.type === 'swipe') {
       const scrollGroups = new Set(fromItems.filter(x => x.candidate?.type === 'swipe').map(x => x.candidateGroupKey));
       if (!scrollGroups.has(group) && scrollGroups.size >= maxScrollsPerState(budget)) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: 'MAX_SCROLLS_PER_STATE' });
@@ -54,8 +54,8 @@ main(() => {
       const currentFrontier = loadFrontier(scanDir, contextId); const strategy = currentScan.strategy === 'goal-directed' ? goal : exploration;
       const graph = loadGraph(scanDir, contextId); const runtime = readJson(path.join(contextDir(scanDir, contextId), 'metrics.json'), {});
       const usage = budgetUsage(currentScan, graph, currentFrontier, runtime); const budgetState = exhausted(runBudget(currentScan, contextId), usage, graphProtocolVersion(currentScan));
-      const work = isV3(currentScan) && !budgetState.exhausted ? nextWork({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier, metrics: runtime }) : null;
-      const decision = budgetState.exhausted ? { decision: 'STOP', reasonCode: budgetState.reasonCode } : work?.decision === 'VERIFY' ? { decision: 'VERIFY', reasonCode: work.reasonCode, verification: work.verification, estimate: work.estimate } : isV3(currentScan) ? scheduler.schedule({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier }) : strategy.decideNext({ frontier: currentFrontier.items, budgetState });
+      const work = isCurrentRun(currentScan) && !budgetState.exhausted ? nextWork({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier, metrics: runtime }) : null;
+      const decision = budgetState.exhausted ? { decision: 'STOP', reasonCode: budgetState.reasonCode, suggestedTerminalStatus: 'PARTIAL', budgetState } : work?.decision === 'VERIFY' ? { decision: 'VERIFY', reasonCode: work.reasonCode, verification: work.verification, estimate: work.estimate } : isCurrentRun(currentScan) ? scheduler.schedule({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier }) : strategy.decideNext({ frontier: currentFrontier.items, budgetState });
       if (decision.decision !== 'CONTINUE') return { decision };
       const item = currentFrontier.items.find(x => x.id === decision.frontierId); item.status = 'CLAIMED'; item.attempts += 1; item.claimedAt = now(); item.claimToken = crypto.randomUUID(); item.claimedAttemptId = null; item.cursorEpoch = decision.navigationPlan?.cursorEpoch ?? null; item.navigationPlanId = decision.navigationPlan?.navigationPlanId || null; item.navigationPlan = decision.navigationPlan || null; item.navigationExecutionId = decision.navigationPlan ? reservedNavigationExecutionId : null;
       const navigationExecution = decision.navigationPlan ? { ...decision.navigationPlan, schemaVersion: 2, navigationExecutionId: item.navigationExecutionId, requestedMode: decision.navigationPlan.mode, actualMode: null, fallbackFrom: null, fallbackReason: null, status: 'PLANNED', createdAt: now(), startedAt: null, finishedAt: null, terminalObservationId: null, restoreId: null, executedSteps: [] } : null;

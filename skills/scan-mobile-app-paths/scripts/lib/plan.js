@@ -3,32 +3,33 @@
 const path = require('path');
 const { loadScan, readJson, exists, hashObject, fail } = require('./common');
 const { PRESETS, PROFILE_META, profileCatalog, budgetOverrides } = require('./budget');
-const { isV3, runContextIds, runContextId, runBudget, activeLimitMinutes } = require('./run-protocol');
+const { isCurrentRun, runContextIds, runContextId, runBudget, activeLimitMinutes } = require('./run-protocol');
+const { goalPlanFromSpec } = require('./goal-spec');
 
 function goalPlan(scanDir, scan) {
   if (scan.scanMode !== 'goal-directed') return null;
   if (!exists(path.join(scanDir, 'goal', 'goal.json'))) fail('Goal-directed plan requires a parsed GoalSpec before presentation', 'GOAL_SPEC_REQUIRED');
   const spec = readJson(path.join(scanDir, 'goal', 'goal.json'));
-  return { goalId: spec.goalId, goalSpecHash: spec.goalSpecHash || hashObject({ description: spec.description, contextId: spec.contextId, referenceScreenshotSha256: spec.referenceScreenshotSha256, successCriteria: spec.successCriteria }), description: spec.description, contextId: spec.contextId, referenceScreenshot: spec.referenceScreenshot, referenceScreenshotSha256: spec.referenceScreenshotSha256, requiredTexts: spec.successCriteria?.requiredTexts || [], maxVerifiedPaths: spec.resultPolicy?.maxVerifiedPaths || 1 };
+  return goalPlanFromSpec(spec);
 }
 
 function commonPlan(scanDir, scan, target, goal, continuation) {
+  const appMapRoot = path.dirname(path.dirname(scanDir));
   return {
     scanId: scan.scanId,
     target: { platform: target.platform, bundleName: target.bundleName, entryAbility: target.entryAbility, environment: target.environment, deviceId: target.deviceId, appVersion: target.appVersion || null, buildVersion: target.buildVersion || null },
     profileSelection: { selectedProfile: scan.profile, selectedLabel: PROFILE_META[scan.profile].label, selectedDescription: PROFILE_META[scan.profile].description, recommendedProfile: scan.scanMode === 'goal-directed' ? 'goal' : 'standard', availableProfiles: profileCatalog(scan.scanMode, scan.profile), configurableBeforeConfirmation: true },
     safety: { environment: target.environment, hardBlocked: ['支付或转账', '账号注销或永久删除', '真实发布或外发', '密码、验证码及其他敏感凭证输入'], overrideAllowed: false },
-    artifacts: { scanDir, runRelativePath: `runs/${scan.scanId}`, reportPath: path.join(scanDir, 'report.md'), snapshotPointer: path.join(path.dirname(path.dirname(scanDir)), 'snapshots', 'current.json') },
+    artifacts: { scanDir, runRelativePath: `runs/${scan.scanId}`, reportPath: path.join(scanDir, 'report.md'), snapshotPointer: path.join(appMapRoot, 'snapshots', 'current.json') },
     goal,
     continuation: continuation ? { parentScanId: continuation.parentScanId, importedFrontierCount: continuation.importedFrontiers?.length || 0, skippedImportedFrontierCount: continuation.skippedImportedFrontiers?.length || 0, skippedImportedFrontiers: continuation.skippedImportedFrontiers || [] } : null,
     confirmationRequired: true
   };
 }
 
-function buildPlan(scanDir) {
-  const scan = loadScan(scanDir); const target = readJson(path.join(scanDir, 'target.json')); const goal = goalPlan(scanDir, scan); const continuation = exists(path.join(scanDir, 'continuation.json')) ? readJson(path.join(scanDir, 'continuation.json')) : null;
+function buildPlanFromData(scanDir, scan, target, { goal = null, continuation = null } = {}) {
   const base = commonPlan(scanDir, scan, target, goal, continuation);
-  if (isV3(scan)) {
+  if (isCurrentRun(scan)) {
     const contextId = runContextId(scan); const budget = runBudget(scan, contextId); const overrides = budgetOverrides(scan.profile, budget); const verificationRule = scan.scanMode === 'goal-directed' ? 'CONFIRMED_TARGET_PATH' : 'CANONICAL_SCREEN_PATH';
     return {
       schemaVersion: 3,
@@ -50,6 +51,11 @@ function buildPlan(scanDir) {
   return { schemaVersion: 2, ...base, execution: { scanMode: scan.scanMode, scanScope: scan.scanScope, strategy: scan.strategy, profile: scan.profile, budgetPolicy: scan.budgetPolicy, contextOrder: runContextIds(scan) }, contexts, aggregateLimits: { maxActiveDurationMinutes: sum('maxDurationMinutes'), maxActions: sum('maxActions'), maxNodes: sum('maxNodes'), maxEdges: sum('maxEdges') } };
 }
 
+function buildPlan(scanDir) {
+  const scan = loadScan(scanDir); const target = readJson(path.join(scanDir, 'target.json')); const goal = goalPlan(scanDir, scan); const continuation = exists(path.join(scanDir, 'continuation.json')) ? readJson(path.join(scanDir, 'continuation.json')) : null;
+  return buildPlanFromData(scanDir, scan, target, { goal, continuation });
+}
+
 function planHash(plan) { return hashObject(plan); }
 
-module.exports = { buildPlan, planHash };
+module.exports = { buildPlan, buildPlanFromData, planHash };

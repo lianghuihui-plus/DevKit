@@ -8,10 +8,10 @@ function eventProtocolVersion(scan = {}) { return Number(scan.eventProtocolVersi
 function projectionProtocolVersion(scan = {}) { return Number(scan.projectionProtocolVersion || 1); }
 function navigationProtocolVersion(scan = {}) { return Number(scan.navigationProtocolVersion || 1); }
 function verificationProtocolVersion(scan = {}) { return Number(scan.verificationProtocolVersion || 1); }
-function isV3(scan = {}) { return graphProtocolVersion(scan) >= 3 || Number(scan.schemaVersion || 1) >= 3; }
+function isCurrentRun(scan = {}) { return graphProtocolVersion(scan) >= 3 || Number(scan.schemaVersion || 1) >= 3; }
 
 function runContextIds(scan = {}) {
-  if (isV3(scan)) return scan.contextId ? [scan.contextId] : [];
+  if (isCurrentRun(scan)) return scan.contextId ? [scan.contextId] : [];
   return Array.isArray(scan.plannedContextIds) ? [...scan.plannedContextIds] : [];
 }
 
@@ -22,13 +22,13 @@ function runContextId(scan = {}) {
 }
 
 function activeContextId(scan = {}) {
-  return isV3(scan) ? scan.contextId || null : scan.activeContextId || null;
+  return isCurrentRun(scan) ? scan.contextId || null : scan.activeContextId || null;
 }
 
 function runBudget(scan = {}, contextId = null) {
-  if (isV3(scan)) {
+  if (isCurrentRun(scan)) {
     if (contextId && contextId !== scan.contextId) fail('Budget context differs from the fixed Run context', 'CONTEXT_INVALID');
-    if (!scan.budget) fail('V3 Run budget is missing', 'BUDGET_INVALID');
+    if (!scan.budget) fail('Run budget is missing', 'BUDGET_INVALID');
     return scan.budget;
   }
   const id = contextId || activeContextId(scan);
@@ -46,6 +46,6 @@ function maxCandidatesPerState(budget = {}) { return Number(budget.maxCandidates
 function maxScrollsPerState(budget = {}) { return Number(budget.maxScrollsPerState ?? budget.maxScrollsPerNode ?? 0); }
 
 module.exports = {
-  graphProtocolVersion, attemptProtocolVersion, eventProtocolVersion, projectionProtocolVersion, navigationProtocolVersion, verificationProtocolVersion, isV3, runContextIds, runContextId, activeContextId, runBudget,
+  graphProtocolVersion, attemptProtocolVersion, eventProtocolVersion, projectionProtocolVersion, navigationProtocolVersion, verificationProtocolVersion, isCurrentRun, runContextIds, runContextId, activeContextId, runBudget,
   activeLimitMinutes, maxDepth, maxStates, maxDeviceActions, maxColdStarts, maxCandidatesPerState, maxScrollsPerState
 };

@@ -27,10 +27,10 @@ function shortestPath(graph, fromId, toId) {
 
 function planNavigation({ scanDir, scan, contextId, graph, targetReachableStateId }) {
   const lease = cursorLease(scanDir, contextId, scan, targetReachableStateId); const cursor = lease.cursor;
-  if (cursor.status === 'EXACT' && lease.stateMatches && lease.mutationMatches) return make(contextId, 'LIVE_CURSOR', cursor.reachableStateId, targetReachableStateId, [], lease.requiresRecheck ? 1 : 0, cursor.epoch);
+  if (lease.usable && lease.stateMatches && lease.mutationMatches) return make(contextId, 'LIVE_CURSOR', cursor.reachableStateId, targetReachableStateId, [], lease.requiresRecheck ? 1 : 0, cursor.epoch);
   const back = loadBackCapabilities(scanDir, contextId).items.find(item => item.status === 'ACTIVE' && item.fromReachableStateId === cursor.reachableStateId && item.toReachableStateId === targetReachableStateId && item.verificationStatus === 'EXACT');
-  if (cursor.status === 'EXACT' && lease.mutationMatches && back) return make(contextId, 'BACKTRACK', cursor.reachableStateId, targetReachableStateId, [{ kind: 'BACK', backCapabilityId: back.backCapabilityId, expectedReachableStateId: targetReachableStateId }], 1, cursor.epoch);
-  const path = cursor.status === 'EXACT' && lease.mutationMatches ? shortestPath(graph, cursor.reachableStateId, targetReachableStateId) : null;
+  if (lease.usable && lease.mutationMatches && back) return make(contextId, 'BACKTRACK', cursor.reachableStateId, targetReachableStateId, [{ kind: 'BACK', backCapabilityId: back.backCapabilityId, expectedReachableStateId: targetReachableStateId }], 1, cursor.epoch);
+  const path = lease.usable && lease.mutationMatches ? shortestPath(graph, cursor.reachableStateId, targetReachableStateId) : null;
   if (path) return make(contextId, 'GRAPH_PATH', cursor.reachableStateId, targetReachableStateId, path.edgeIds.map(edgeId => ({ kind: 'EDGE', edgeId })), path.cost, cursor.epoch);
   const target = graph.reachableStates.find(item => item.id === targetReachableStateId); const edgeIds = target?.replayPathEdgeIds || [];
   return make(contextId, 'COLD_REPLAY', cursor.reachableStateId, targetReachableStateId, edgeIds.map(edgeId => ({ kind: 'EDGE', edgeId })), edgeIds.length + 20, cursor.epoch);

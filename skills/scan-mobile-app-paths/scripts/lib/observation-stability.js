@@ -109,7 +109,7 @@ function captureStableObservation({ scan, observationId, workingDir, trigger, po
     records.push(record);
     const noLoadingSignal = record.loadingSignals.length === 0; const coherentCapture = record.captureCoherent !== false;
     if (stableRun >= policy.requiredStableSamples && noLoadingSignal && coherentCapture) { accepted = current; acceptanceStatus = 'STABLE'; }
-    else if (layoutRun >= policy.layoutFallbackSamples && elapsedMs >= policy.visualFallbackMs && noLoadingSignal && coherentCapture) { accepted = current; acceptanceStatus = 'LAYOUT_STABLE_VISUAL_DYNAMIC'; }
+    else if (layoutRun >= policy.layoutFallbackSamples && elapsedMs >= policy.visualFallbackMs && noLoadingSignal && coherentCapture) { accepted = current; acceptanceStatus = 'LAYOUT_STABLE_VISUAL_VARIANCE'; }
     if (accepted) break;
     if (elapsedMs >= policy.timeoutMs) {
       const error = new Error(`Page did not stabilize within ${policy.timeoutMs} ms`); error.code = 'OBSERVATION_STABILITY_TIMEOUT';

@@ -12,9 +12,9 @@ function loadCursor(scanDir, contextId) {
 
 function currentMutationSeq(scanDir, contextId) { return Number(readJson(metricsFile(scanDir, contextId), {}).deviceMutationSeq || 0); }
 
-function projectedCursor(scanDir, contextId, { reachableStateId, observationId, status = 'EXACT', establishedBy, incrementEpoch = false }) {
+function projectedCursor(scanDir, contextId, { reachableStateId, observationId, status = 'EXACT', establishedBy, incrementEpoch = false, equivalence = null }) {
   const current = loadCursor(scanDir, contextId); const at = now();
-  return { schemaVersion: 1, contextId, reachableStateId, observationId, status, epoch: Number(current.epoch || 0) + (incrementEpoch ? 1 : 0), mutationSeq: currentMutationSeq(scanDir, contextId), establishedBy, lastValidatedAt: at, updatedAt: at, invalidatedReason: null };
+  return { schemaVersion: 1, contextId, reachableStateId, observationId, status, equivalence, epoch: Number(current.epoch || 0) + (incrementEpoch ? 1 : 0), mutationSeq: currentMutationSeq(scanDir, contextId), establishedBy, lastValidatedAt: at, updatedAt: at, invalidatedReason: null };
 }
 
 function establishCursor(scanDir, contextId, input, { emitEvent = true, incrementEpoch = false } = {}) {
@@ -24,17 +24,20 @@ function establishCursor(scanDir, contextId, input, { emitEvent = true, incremen
 }
 
 function invalidateCursor(scanDir, contextId, reason, { emitEvent = true } = {}) {
-  const current = loadCursor(scanDir, contextId); const cursor = { ...current, status: 'UNKNOWN', epoch: Number(current.epoch || 0) + 1, reachableStateId: null, observationId: null, updatedAt: now(), invalidatedReason: reason || 'UNKNOWN' };
+  const current = loadCursor(scanDir, contextId); const cursor = { ...current, status: 'UNKNOWN', equivalence: null, epoch: Number(current.epoch || 0) + 1, reachableStateId: null, observationId: null, updatedAt: now(), invalidatedReason: reason || 'UNKNOWN' };
   const metricPath = metricsFile(scanDir, contextId); const metrics = readJson(metricPath, {}); metrics.cursorInvalidations = Number(metrics.cursorInvalidations || 0) + 1;
   if (emitEvent) commitEvent(scanDir, 'cursorInvalidated', { contextId, reasonCode: cursor.invalidatedReason, cursor }, [{ path: `contexts/${contextId}/live-cursor.json`, op: 'REPLACE', value: cursor }, { path: `contexts/${contextId}/metrics.json`, op: 'REPLACE', value: metrics }]); else { writeJsonAtomic(cursorFile(scanDir, contextId), cursor); writeJsonAtomic(metricPath, metrics); }
   return cursor;
 }
 
+function usableCursorStatus(status) { return ['EXACT', 'SOURCE_CONFIRMED', 'REVIEW_CONFIRMED'].includes(status); }
+
 function cursorLease(scanDir, contextId, scan, expectedReachableStateId = null) {
   const cursor = loadCursor(scanDir, contextId); const ageMs = cursor.lastValidatedAt ? Math.max(0, Date.now() - Date.parse(cursor.lastValidatedAt)) : Number.MAX_SAFE_INTEGER; const freshnessMs = Number(scan.budget?.cursorFreshnessMs || 15000);
   const mutationMatches = Number(cursor.mutationSeq || 0) === currentMutationSeq(scanDir, contextId);
   const stateMatches = !expectedReachableStateId || cursor.reachableStateId === expectedReachableStateId;
-  return { cursor, valid: cursor.status === 'EXACT' && mutationMatches && stateMatches, mutationMatches, stateMatches, ageMs, freshnessMs, requiresRecheck: cursor.status !== 'EXACT' || !mutationMatches || !stateMatches || ageMs > freshnessMs };
+  const usable = usableCursorStatus(cursor.status);
+  return { cursor, usable, valid: usable && mutationMatches && stateMatches, mutationMatches, stateMatches, ageMs, freshnessMs, requiresRecheck: !usable || !mutationMatches || !stateMatches || ageMs > freshnessMs };
 }
 
 function assertCursorEpoch(scanDir, contextId, epoch) {
@@ -43,4 +46,4 @@ function assertCursorEpoch(scanDir, contextId, epoch) {
   return cursor;
 }
 
-module.exports = { cursorFile, loadCursor, currentMutationSeq, projectedCursor, establishCursor, invalidateCursor, cursorLease, assertCursorEpoch };
+module.exports = { cursorFile, loadCursor, currentMutationSeq, projectedCursor, establishCursor, invalidateCursor, cursorLease, assertCursorEpoch, usableCursorStatus };

@@ -1,7 +1,7 @@
 'use strict';
 
 const { fail } = require('./common');
-const { isV3, activeContextId, runBudget, activeLimitMinutes, maxStates, maxDeviceActions } = require('./run-protocol');
+const { isCurrentRun, activeContextId, runBudget, activeLimitMinutes, maxStates, maxDeviceActions } = require('./run-protocol');
 
 const PRESETS = Object.freeze({
   quick: { maxActiveMinutes: 10, maxDepth: 3, maxDeviceActions: 150, maxStates: 30, maxColdStarts: 20, maxScrollsPerState: 1, maxCandidatesPerState: 8, depthSlack: 0, cursorFreshnessMs: 15000 },
@@ -37,7 +37,7 @@ function normalizeOverrides(overrides = {}) {
   const aliases = { maxDurationMinutes: 'maxActiveMinutes', maxActions: 'maxDeviceActions', maxNodes: 'maxStates', maxPathDepth: 'maxDepth', maxCandidatesPerNode: 'maxCandidatesPerState', maxScrollsPerNode: 'maxScrollsPerState' };
   const normalized = {};
   for (const [key, value] of Object.entries(overrides || {})) {
-    if (['maxEdges', 'maxRouteDepth'].includes(key)) fail(`${key} was removed in Protocol v3`, 'BUDGET_FIELD_REMOVED');
+    if (['maxEdges', 'maxRouteDepth'].includes(key)) fail(`${key} is no longer supported`, 'BUDGET_FIELD_REMOVED');
     normalized[aliases[key] || key] = value;
   }
   return normalized;
@@ -68,8 +68,8 @@ function budgetUsage(scan, graph, frontier, metrics = {}) {
 
 function assertCapacity(scan, contextId, graph, frontier, metrics, resource, increment = 1) {
   const usage = budgetUsage(scan, graph, frontier, metrics); const budget = runBudget(scan, contextId);
-  if (resource === 'edges' && isV3(scan)) return;
-  const map = isV3(scan)
+  if (resource === 'edges' && isCurrentRun(scan)) return;
+  const map = isCurrentRun(scan)
     ? { nodes: ['MAX_STATES', maxStates(budget)], states: ['MAX_STATES', maxStates(budget)], actions: ['MAX_DEVICE_ACTIONS', maxDeviceActions(budget)], coldStarts: ['MAX_COLD_STARTS', Number(budget.maxColdStarts)] }
     : { nodes: ['MAX_NODES', Number(budget.maxNodes)], edges: ['MAX_EDGES', Number(budget.maxEdges)], actions: ['MAX_ACTIONS', Number(budget.maxActions)] };
   if (!map[resource]) fail(`Unknown budget resource: ${resource}`, 'BUDGET_RESOURCE_INVALID');
@@ -79,7 +79,11 @@ function assertCapacity(scan, contextId, graph, frontier, metrics, resource, inc
 
 function assertExecutionWindow(scan, contextId, graph, frontier, metrics) {
   const usage = budgetUsage(scan, graph, frontier, metrics); const limit = activeLimitMinutes(runBudget(scan, contextId));
-  if (usage.durationMinutes >= limit) fail(`MAX_ACTIVE_MINUTES: ${usage.durationMinutes} exceeds ${limit}`, 'BUDGET_EXHAUSTED');
+  if (usage.durationMinutes >= limit) fail(`MAX_ACTIVE_MINUTES: ${usage.durationMinutes} exceeds ${limit}`, 'BUDGET_EXHAUSTED', 2, {
+    reasonCode: 'MAX_ACTIVE_MINUTES',
+    budgetState: { exhausted: true, reasonCode: 'MAX_ACTIVE_MINUTES', used: usage.durationMinutes, limit },
+    suggestedNext: { command: 'finalize-scan', status: 'PARTIAL' }
+  });
 }
 
 function exhausted(budget, usage, protocol = 3) {

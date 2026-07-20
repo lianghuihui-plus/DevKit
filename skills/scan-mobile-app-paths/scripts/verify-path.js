@@ -2,22 +2,17 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
 const { spawnSync } = require('child_process');
 const { parseArgs, required, resolveScanDir, loadScan, loadGraph, readJson, now, commitEvent, output, main, fail, contextDir } = require('./lib/common');
 const { runContextId } = require('./lib/run-protocol');
 const { loadVerificationQueue, queueUpsertOp, startVerificationExecution, abandonVerificationExecution, writeVerificationEvidence } = require('./lib/verification-store');
 const { projectedCursor, loadCursor, currentMutationSeq } = require('./lib/live-cursor');
 const { updateCanonicalPaths } = require('./lib/graph-store');
+const { restoreChainVerified } = require('./lib/verification-result');
 
 function runRestore(scanDir, contextId, task, executionId) {
   return spawnSync(process.execPath, [path.join(__dirname, 'restore-node.js'), '--scan-dir', scanDir, '--context', contextId, '--reachable-state-id', task.terminalReachableStateId, '--edge-ids', JSON.stringify(task.edgeIds), '--transition-fingerprints', JSON.stringify(task.transitionFingerprints), '--verification-execution-id', executionId, '--action-category', 'verification'], { encoding: 'utf8' });
-}
-
-function exactChain(task, restored) {
-  if (!restored || restored.status !== 'SUCCEEDED' || restored.reachableStateId !== task.terminalReachableStateId) return false;
-  if (JSON.stringify(restored.fixedEdgeIds || []) !== JSON.stringify(task.edgeIds || [])) return false;
-  if (JSON.stringify(restored.fixedTransitionFingerprints || []) !== JSON.stringify(task.transitionFingerprints || [])) return false;
-  return JSON.stringify((restored.steps || []).map(step => step.edgeId)) === JSON.stringify(task.edgeIds || []) && (restored.steps || []).every(step => step.verificationStatus === 'EXACT');
 }
 
 function childError(child) {
@@ -30,19 +25,33 @@ function childError(child) {
   return null;
 }
 
+function childRestoreResult(child) {
+  try { return JSON.parse(child.stdout || '{}').restoreResult || null; } catch { return null; }
+}
+
+function findRestoreByVerificationExecution(scanDir, executionId) {
+  const dir = path.join(scanDir, 'evidence', 'restores');
+  if (!fs.existsSync(dir)) return null;
+  return fs.readdirSync(dir)
+    .filter(name => name.endsWith('.json'))
+    .map(name => readJson(path.join(dir, name)))
+    .filter(item => item.verificationExecutionId === executionId)
+    .sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')))[0] || null;
+}
+
 main(() => {
   const args = parseArgs(); const command = args._[0] || 'run'; const { scanDir } = resolveScanDir(required(args, 'scanDir')); const scan = loadScan(scanDir, { mutable: command === 'run' }); const contextId = args.context || runContextId(scan);
   if (command === 'list') return output(loadVerificationQueue(scanDir, contextId));
   if (command !== 'run') fail(`Unknown verify-path command: ${command}`, 'COMMAND_INVALID');
   if (scan.status !== 'SCANNING') fail('Path verification requires SCANNING', 'RUN_STATE_INVALID'); const verificationId = required(args, 'verificationId');
-  const started = startVerificationExecution(scanDir, contextId, verificationId); const task = started.task; const execution = started.execution; const child = runRestore(scanDir, contextId, task, execution.executionId); let restored = null; try { restored = JSON.parse(child.stdout || '{}').restoreResult; } catch {}
+  const started = startVerificationExecution(scanDir, contextId, verificationId); const task = started.task; const execution = started.execution; const child = runRestore(scanDir, contextId, task, execution.executionId); let restored = childRestoreResult(child) || findRestoreByVerificationExecution(scanDir, execution.executionId);
   const restoreError = child.status === 0 ? null : childError(child); const currentScan = loadScan(scanDir);
   if (restoreError?.code === 'OPERATION_OUTCOME_UNKNOWN' || currentScan.status === 'PAUSED') {
     abandonVerificationExecution(scanDir, contextId, verificationId, execution.executionId, restoreError?.code || currentScan.reasonCode || 'RUN_PAUSED_DURING_VERIFICATION');
     fail('Verification replay paused because a device operation outcome is unknown', restoreError?.code || 'RUN_PAUSED_DURING_VERIFICATION');
   }
   const graph = loadGraph(scanDir, contextId); const chainCurrent = task.edgeIds.every((edgeId, index) => graph.edges.find(item => item.id === edgeId)?.verification?.transitionFingerprint === task.transitionFingerprints[index]);
-  const verified = child.status === 0 && exactChain(task, restored) && chainCurrent; const reasonCode = verified ? null : !chainCurrent ? 'VERIFICATION_SUPERSEDED' : child.status === 0 ? 'VERIFICATION_CHAIN_MISMATCH' : 'COLD_REPLAY_FAILED';
+  const verified = child.status === 0 && restoreChainVerified(task, restored) && chainCurrent; const reasonCode = verified ? null : !chainCurrent ? 'VERIFICATION_SUPERSEDED' : child.status === 0 ? 'VERIFICATION_CHAIN_MISMATCH' : 'COLD_REPLAY_FAILED';
   const evidence = { schemaVersion: 2, verificationId, executionId: execution.executionId, taskKey: task.taskKey, contextId, reason: task.reason, terminalReachableStateId: task.terminalReachableStateId, edgeIds: task.edgeIds, transitionFingerprints: task.transitionFingerprints, startedAt: execution.startedAt, finishedAt: now(), restoreId: restored?.restoreId || null, terminalObservationId: restored?.terminalObservationId || null, status: verified ? 'SUCCEEDED' : 'FAILED', reasonCode };
   const evidenceRef = writeVerificationEvidence(scanDir, verificationId, execution.executionId, evidence); execution.status = evidence.status; execution.restoreId = evidence.restoreId; execution.evidenceRef = evidenceRef; execution.reasonCode = reasonCode; execution.finishedAt = evidence.finishedAt; execution.leaseOwner = null; execution.leaseExpiresAt = null; task.status = evidence.status; task.activeExecutionId = null; task.finishedAt = evidence.finishedAt; task.evidenceRef = evidenceRef; task.reasonCode = reasonCode;
   const edgeOps = [];

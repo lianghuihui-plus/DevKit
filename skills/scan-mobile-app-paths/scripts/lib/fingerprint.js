@@ -1,14 +1,7 @@
 'use strict';
 
 const { hashObject } = require('./common');
-
-const DYNAMIC_TEXT = /^(\d+|\d{1,2}:\d{2}|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\+?\d[\d\s-]{6,}|[¥￥$]\s*\d|\d+%|\d+\s*(秒|分|小时|天|条|个))$/;
-
-function normalizeText(value) {
-  const text = String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
-  if (!text || DYNAMIC_TEXT.test(text)) return null;
-  return text.replace(/\d{4,}/g, '#');
-}
+const { normalizeText, extractSemanticFingerprint } = require('./semantic-fingerprint');
 
 function walk(value, output) {
   if (!value) return;
@@ -26,6 +19,7 @@ function walk(value, output) {
 function buildFingerprint(layout, foreground = {}, visual = {}) {
   const output = { ids: new Set(), texts: new Set(), shape: [] };
   walk(layout, output);
+  const semantic = extractSemanticFingerprint(layout);
   return {
     schemaVersion: 2,
     app: foreground.bundleName || null,
@@ -33,9 +27,9 @@ function buildFingerprint(layout, foreground = {}, visual = {}) {
     stableIds: [...output.ids].sort(),
     stableTexts: [...output.texts].sort(),
     stableRoles: [...new Set(output.shape.map(item => item.role).filter(Boolean))].sort(),
+    semantic,
     layoutHash: hashObject(output.shape),
-    screenshotSha256: visual.screenshotSha256 || null,
-    visualDynamic: visual.visualDynamic === true
+    screenshotSha256: visual.screenshotSha256 || null
   };
 }
 
@@ -59,8 +53,7 @@ function compareFingerprint(a, b) {
 
 function observationVisual(observation = {}) {
   return {
-    screenshotSha256: observation.stability?.finalScreenshotSha256 || null,
-    visualDynamic: observation.stability?.status === 'LAYOUT_STABLE_VISUAL_DYNAMIC'
+    screenshotSha256: observation.stability?.finalScreenshotSha256 || null
   };
 }
 

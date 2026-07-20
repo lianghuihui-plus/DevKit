@@ -39,14 +39,14 @@ main(() => {
       display: { width: args.width ? Number(args.width) : null, height: args.height ? Number(args.height) : null, orientation: args.orientation || null },
       screenshotPath: `evidence/observations/${observationId}/screenshot.png`, layoutPath: `evidence/observations/${observationId}/layout.json`, captureStatus: 'COMPLETE', contextId, purpose, trigger, stability, contextPreparationId: preparation?.preparationId || null };
     writeJsonAtomic(path.join(tempDir, 'observation.json'), observation); fs.renameSync(tempDir, finalDir);
-    const metricsFile = path.join(contextDir(scanDir, contextId), 'metrics.json'); const metrics = readJson(metricsFile); metrics.observations = (metrics.observations || 0) + 1; metrics.observationSamples = (metrics.observationSamples || 0) + stability.sampleCount; metrics.observationStabilityWaitMs = (metrics.observationStabilityWaitMs || 0) + stability.elapsedMs; if (stability.status === 'LAYOUT_STABLE_VISUAL_DYNAMIC') metrics.dynamicVisualObservations = (metrics.dynamicVisualObservations || 0) + 1;
+    const metricsFile = path.join(contextDir(scanDir, contextId), 'metrics.json'); const metrics = readJson(metricsFile); metrics.observations = (metrics.observations || 0) + 1; metrics.observationSamples = (metrics.observationSamples || 0) + stability.sampleCount; metrics.observationStabilityWaitMs = (metrics.observationStabilityWaitMs || 0) + stability.elapsedMs; if (stability.status === 'LAYOUT_STABLE_VISUAL_VARIANCE') metrics.visualVarianceObservations = (metrics.visualVarianceObservations || 0) + 1;
     commitEvent(scanDir, 'observation', { contextId, observationId, foreground: observation.foreground, trigger, stabilityStatus: stability.status, stabilityElapsedMs: stability.elapsedMs, sampleCount: stability.sampleCount }, [{ path: `contexts/${contextId}/metrics.json`, op: 'REPLACE', value: metrics }]);
     if (!observation.foreground.bundleName) return output({ schemaVersion: 1, ok: true, observation, inTargetApp: null, reasonCode: 'TARGET_APP_UNKNOWN' });
     if (observation.foreground.bundleName !== scan.target.bundleName) {
       event(scanDir, 'contextLost', { contextId, observationId, reasonCode: 'APP_LEFT_FOREGROUND', observedBundleName: observation.foreground.bundleName });
       return output({ schemaVersion: 1, ok: true, observation, inTargetApp: false, reasonCode: 'APP_LEFT_FOREGROUND' });
     }
-    if (preparation) { preparation.status = 'EVIDENCE_CAPTURED'; preparation.observationId = observationId; preparation.evidenceCapturedAt = now(); writeJsonAtomic(preparationFile, preparation); event(scanDir, 'contextColdStartObserved', { contextId, preparationId: preparation.preparationId, observationId }); }
+    if (preparation) { preparation.status = 'EVIDENCE_CAPTURED'; preparation.observationId = observationId; preparation.evidenceCapturedAt = now(); commitEvent(scanDir, 'contextColdStartObserved', { contextId, preparationId: preparation.preparationId, observationId }, [{ path: `evidence/preparations/${preparation.preparationId}.json`, op: 'REPLACE', value: preparation }]); }
     output({ schemaVersion: 1, ok: true, observation, inTargetApp: true });
   } catch (error) {
     fs.rmSync(tempDir, { recursive: true, force: true }); fs.rmSync(workingDir, { recursive: true, force: true });

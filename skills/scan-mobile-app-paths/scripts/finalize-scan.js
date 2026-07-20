@@ -9,26 +9,33 @@ const { validateGraph } = require('./lib/graph-store');
 const { contextMetrics, authDiff } = require('./lib/metrics');
 const { validate } = require('./validate-run');
 const { runContextIds } = require('./lib/run-protocol');
-const { isV3 } = require('./lib/run-protocol');
+const { isCurrentRun } = require('./lib/run-protocol');
 const { reconcileVerificationQueue } = require('./lib/verification-store');
+const { projectFinalizationMetrics } = require('./lib/finalization');
 
 main(() => {
   const args = parseArgs(); const { scanDir } = resolveScanDir(required(args, 'scanDir')); const scan = loadScan(scanDir, { mutable: true });
   const status = String(args.status || 'COMPLETED').toUpperCase(); if (!['COMPLETED', 'PARTIAL', 'BLOCKED', 'FAILED'].includes(status)) fail('Invalid final status', 'STATUS_INVALID');
-  if (isV3(scan)) for (const contextId of runContextIds(scan)) {
+  if (isCurrentRun(scan)) for (const contextId of runContextIds(scan)) {
     const projection = reconcileVerificationQueue(scanDir, scan, contextId, loadGraph(scanDir, contextId), { persist: false });
     if (projection.scheduled.length || projection.superseded.length) commitEvent(scanDir, 'verificationQueueReconciled', { contextId, scheduled: projection.scheduled, superseded: projection.superseded }, [{ path: `contexts/${contextId}/verification-queue.json`, op: 'REPLACE', value: projection.queue }]);
   }
-  const validation = validate(scanDir, status);
   const finalizationStartedAt = new Date().toISOString();
-  if (scan.status === 'SCANNING') for (const contextId of runContextIds(scan)) {
-    const metricPath = path.join(contextDir(scanDir, contextId), 'metrics.json'); const runtime = readJson(metricPath, {}); if (!runtime.activeStartedAt) continue;
-    runtime.activeDurationMs = Number(runtime.activeDurationMs || 0) + Math.max(0, Date.parse(finalizationStartedAt) - Date.parse(runtime.activeStartedAt)); runtime.activeStartedAt = null; commitEvent(scanDir, 'activeWindowClosedForFinalization', { contextId, finalizationStartedAt, activeDurationMs: runtime.activeDurationMs }, [{ path: `contexts/${contextId}/metrics.json`, op: 'REPLACE', value: runtime }]);
-  }
+  const finalizationProjection = projectFinalizationMetrics(scanDir, scan, finalizationStartedAt);
+  const validation = validate(scanDir, status, { metricsOverridesByContext: finalizationProjection.metricsByContext });
+  for (const op of finalizationProjection.projectionOps) commitEvent(scanDir, 'activeWindowClosedForFinalization', { contextId: op.value.contextId, finalizationStartedAt, activeDurationMs: op.value.activeDurationMs }, [op]);
   const contexts = {}; const metricsByContext = {};
   for (const contextId of runContextIds(scan)) {
-    const graph = loadGraph(scanDir, contextId); const validation = validateGraph(graph);
-    for (const observationId of validation.observationIds) {
+    const graph = loadGraph(scanDir, contextId); validateGraph(graph);
+    const localObservationIds = new Set();
+    for (const visual of graph.visualStates || []) for (const observationId of visual.evidenceObservationIds || []) localObservationIds.add(observationId);
+    for (const edge of graph.edges || []) {
+      const inheritedEdge = edge.inheritedFromCanonicalMap === true || edge.evidence?.sourceRunId && edge.evidence.sourceRunId !== scan.scanId;
+      if (inheritedEdge) continue;
+      if (edge.evidence?.beforeObservationId) localObservationIds.add(edge.evidence.beforeObservationId);
+      if (edge.evidence?.afterObservationId) localObservationIds.add(edge.evidence.afterObservationId);
+    }
+    for (const observationId of localObservationIds) {
       const dir = path.join(scanDir, 'evidence', 'observations', observationId);
       if (!fs.existsSync(path.join(dir, 'observation.json')) || !fs.existsSync(path.join(dir, 'screenshot.png')) || !fs.existsSync(path.join(dir, 'layout.json'))) fail(`Missing evidence for ${observationId}`, 'EVIDENCE_INCOMPLETE');
     }

@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs, required, resolveScanDir, loadScan, assertAbsolute, ensureDir, emptyGraph, writeJsonAtomic, hashObject, output, main, fail } = require('./lib/common');
 const { updateCanonicalPaths } = require('./lib/graph-store');
-const { runContextIds, isV3 } = require('./lib/run-protocol');
+const { runContextIds, isCurrentRun } = require('./lib/run-protocol');
 
 function timeline(scanDir) {
   const ids = new Set();
@@ -35,23 +35,20 @@ function legacyRebuild(scanDir, out, scan, events) {
   for (const [contextId, rebuilt] of Object.entries(contexts)) {
     for (const state of rebuilt.graph.reachableStates) state.incomingEdgeIds = rebuilt.graph.edges.filter(x => x.toReachableStateId === state.id).map(x => x.id); updateCanonicalPaths(rebuilt.graph);
     const dir = path.join(out, 'contexts', contextId); ensureDir(dir); writeJsonAtomic(path.join(dir, 'graph.json'), rebuilt.graph); writeJsonAtomic(path.join(dir, 'frontier.json'), rebuilt.frontier); if (rebuilt.cursor) writeJsonAtomic(path.join(dir, 'live-cursor.json'), rebuilt.cursor);
-    const currentGraph = JSON.parse(fs.readFileSync(path.join(scanDir, 'contexts', contextId, 'graph.json'), 'utf8')); const currentFrontier = JSON.parse(fs.readFileSync(path.join(scanDir, 'contexts', contextId, 'frontier.json'), 'utf8')); const currentCursor = isV3(scan) ? JSON.parse(fs.readFileSync(path.join(scanDir, 'contexts', contextId, 'live-cursor.json'), 'utf8')) : null;
-    comparisons[contextId] = { graphEquivalent: hashObject(rebuilt.graph) === hashObject(currentGraph), frontierEquivalent: hashObject(rebuilt.frontier) === hashObject(currentFrontier), cursorEquivalent: !isV3(scan) || hashObject(rebuilt.cursor) === hashObject(currentCursor) };
+    const currentGraph = JSON.parse(fs.readFileSync(path.join(scanDir, 'contexts', contextId, 'graph.json'), 'utf8')); const currentFrontier = JSON.parse(fs.readFileSync(path.join(scanDir, 'contexts', contextId, 'frontier.json'), 'utf8')); const currentCursor = isCurrentRun(scan) ? JSON.parse(fs.readFileSync(path.join(scanDir, 'contexts', contextId, 'live-cursor.json'), 'utf8')) : null;
+    comparisons[contextId] = { graphEquivalent: hashObject(rebuilt.graph) === hashObject(currentGraph), frontierEquivalent: hashObject(rebuilt.frontier) === hashObject(currentFrontier), cursorEquivalent: !isCurrentRun(scan) || hashObject(rebuilt.cursor) === hashObject(currentCursor) };
   }
   return { comparisons, equivalent: Object.values(comparisons).every(item => item.graphEquivalent && item.frontierEquivalent && item.cursorEquivalent !== false), projectedPaths: [] };
 }
 
-function criticalProjection(relative) {
-  return /^(scan\.json|target\.json|plan\.json|continuation\.json|contexts\/[^/]+\/(context|graph|frontier|metrics|live-cursor|verification-queue|back-capabilities)\.json|attempts\/[^/]+\.json|operations\/[^/]+\.json|evidence\/navigations\/[^/]+\.json)$/.test(relative);
-}
-
-function protocolV2Rebuild(scanDir, out, events) {
+function eventProjectionRebuild(scanDir, out, events) {
   const store = require('./lib/event-store'); const projectedPaths = new Set();
   for (const record of events) {
     const ops = record.projectionOps || []; store.applyProjectionOps(out, ops); for (const op of ops) projectedPaths.add(op.path);
   }
   const comparisons = {};
-  for (const relative of [...projectedPaths].filter(criticalProjection).sort()) {
+  const { isProjectionPath } = require('./lib/artifact-registry');
+  for (const relative of [...projectedPaths].filter(isProjectionPath).sort()) {
     const rebuilt = path.join(out, relative); const current = path.join(scanDir, relative); const equivalent = fs.existsSync(rebuilt) && fs.existsSync(current) && hashObject(JSON.parse(fs.readFileSync(rebuilt, 'utf8'))) === hashObject(JSON.parse(fs.readFileSync(current, 'utf8')));
     comparisons[relative] = { equivalent };
   }
@@ -62,7 +59,7 @@ main(() => {
   const args = parseArgs(); const { scanDir } = resolveScanDir(required(args, 'scanDir')); const out = assertAbsolute(required(args, 'outputDir'), '--output-dir');
   const relative = path.relative(scanDir, out); if (!relative.startsWith('..') && !path.isAbsolute(relative)) fail('Rebuild output must be outside the immutable Run directory', 'PATH_INSIDE_RUN');
   if (fs.existsSync(out) && fs.readdirSync(out).length) fail('Rebuild output directory must be empty', 'REBUILD_OUTPUT_NOT_EMPTY'); ensureDir(out);
-  const scan = loadScan(scanDir); const events = timeline(scanDir); const result = Number(scan.projectionProtocolVersion || 1) >= 2 ? protocolV2Rebuild(scanDir, out, events) : legacyRebuild(scanDir, out, scan, events);
+  const scan = loadScan(scanDir); const events = timeline(scanDir); const result = Number(scan.projectionProtocolVersion || 1) >= 2 ? eventProjectionRebuild(scanDir, out, events) : legacyRebuild(scanDir, out, scan, events);
   const manifest = { schemaVersion: 2, scanId: scan.scanId, sourceTimeline: path.join(scanDir, 'timeline.jsonl'), eventCount: events.length, projectionProtocolVersion: Number(scan.projectionProtocolVersion || 1), equivalent: result.equivalent, projectedPaths: result.projectedPaths, comparisons: result.comparisons };
   writeJsonAtomic(path.join(out, 'rebuild-manifest.json'), manifest); output({ schemaVersion: 2, ok: result.equivalent, outputDir: out, ...manifest });
 });
