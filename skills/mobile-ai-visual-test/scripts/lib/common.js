@@ -642,6 +642,48 @@ function latestResultExecutionDir(caseDir) {
   return names.length ? path.join(execRoot, names[names.length - 1]) : null;
 }
 
+function latestPublishedExecutionDir(caseDir) {
+  const execRoot = path.join(caseDir, 'executions');
+  if (!fs.existsSync(execRoot)) return null;
+  const names = fs.readdirSync(execRoot)
+    .filter((name) => {
+      const execDir = path.join(execRoot, name);
+      if (!fs.statSync(execDir).isDirectory() || !fs.existsSync(path.join(execDir, 'result.json'))) return false;
+      if (fs.existsSync(path.join(execDir, 'completion.json'))) return true;
+      const execution = readJson(path.join(execDir, 'execution.json'), {});
+      return !execution.batchId;
+    })
+    .sort();
+  return names.length ? path.join(execRoot, names[names.length - 1]) : null;
+}
+
+function readPublishedExecution(execDir) {
+  if (!execDir) return { latest: null, result: null, metrics: null, events: [], completion: null };
+  const result = readJson(path.join(execDir, 'result.json'), null);
+  const metrics = readJson(path.join(execDir, 'metrics.json'), null);
+  const completion = readJson(path.join(execDir, 'completion.json'), null);
+  const displayResult = result && completion
+    ? {
+      ...result,
+      status: completion.status,
+      failureCode: completion.failureCode || null,
+      reason: completion.reason || result.reason || '',
+      businessStatus: completion.businessStatus,
+      businessFailureCode: completion.businessFailureCode || null,
+      businessReason: result.reason || '',
+      controlStatus: completion.controlStatus,
+      completionSource: completion.completionSource,
+    }
+    : result;
+  return {
+    latest: execDir,
+    result: displayResult,
+    metrics,
+    events: readJsonl(path.join(execDir, 'timeline.jsonl')),
+    completion,
+  };
+}
+
 function caseRootFromCaseDir(caseDir) {
   return path.dirname(path.dirname(caseDir));
 }
@@ -685,9 +727,10 @@ function reportMatchesCaseSource(caseJson, report = {}, options = {}) {
 function readCaseRuntimeSummary(caseDir, caseJson, platform = '') {
   const runtimeDir = caseRuntimeDir(caseDir, platform);
   const state = readJson(path.join(runtimeDir, 'state.json'), {});
-  const latest = latestResultExecutionDir(runtimeDir);
-  const result = latest ? readJson(path.join(latest, 'result.json'), null) : null;
-  const metrics = latest ? readJson(path.join(latest, 'metrics.json'), null) : null;
+  const latest = latestPublishedExecutionDir(runtimeDir);
+  const published = readPublishedExecution(latest);
+  const result = published.result;
+  const metrics = published.metrics;
   const current = reportMatchesCaseSource(caseJson, { result, metrics }, { caseDir, platform });
   const currentResult = current ? result : null;
   const currentMetrics = current ? metrics : null;
@@ -848,13 +891,13 @@ function refreshIndexForCase(caseDir) {
 
 function readLatestExecutionReport(caseDir, options = {}) {
   const runtimeDir = caseRuntimeDir(caseDir, options.platform);
-  const latest = latestResultExecutionDir(runtimeDir) || latestExecutionDir(runtimeDir);
-  return {
-    latest,
-    result: latest ? readJson(path.join(latest, 'result.json'), null) : null,
-    metrics: latest ? readJson(path.join(latest, 'metrics.json'), null) : null,
-    events: latest ? readJsonl(path.join(latest, 'timeline.jsonl')) : [],
-  };
+  const latest = latestPublishedExecutionDir(runtimeDir) || latestExecutionDir(runtimeDir);
+  if (!latest) return { latest: null, result: null, metrics: null, events: [], completion: null };
+  const execution = readJson(path.join(latest, 'execution.json'), {});
+  if (execution.batchId && !fs.existsSync(path.join(latest, 'completion.json'))) {
+    return { latest, result: null, metrics: null, events: [], completion: null, pendingCompletion: true };
+  }
+  return readPublishedExecution(latest);
 }
 
 function writeCaseReports(caseDir, caseJson, state = {}, notes = [], report = null, options = {}) {
@@ -943,6 +986,11 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
   lines.push('');
   lines.push('## 当前结论');
   lines.push(result ? `${result.reason || result.status}` : '尚未执行。');
+  if (result?.controlStatus) {
+    lines.push(`- 对外结论：${result.status}`);
+    lines.push(`- 业务执行结果：${result.businessStatus || result.status}${result.businessFailureCode ? ` / ${result.businessFailureCode}` : ''}`);
+    lines.push(`- Runtime 校验：${result.controlStatus}`);
+  }
   lines.push('');
   lines.push('## 执行环境');
   const env = state.environment || result?.environment || {};
@@ -1134,6 +1182,7 @@ function eventSummary(event) {
   if (event.type === 'rule') return `${event.ruleId || '-'} ${event.status || ''}${event.reason ? `：${event.reason}` : ''}`.trim();
   if (event.type === 'flow') return `${event.flowId || '-'} ${event.status || ''}${event.preconditionId ? ` / ${event.preconditionId}` : ''}${event.flowStepId ? ` / ${event.flowStepId}` : ''}${event.reason ? `：${event.reason}` : ''}`.trim();
   if (event.type === 'actionResult') return `${displayAction(eventAction(event))}${event.ok ? '成功' : '失败'}${event.error ? `：${event.error}` : ''}`;
+  if (event.type === 'executionRecovery') return `${displayStatus(event.status)}${event.reason ? `：${event.reason}` : ''}`;
   if (event.type === 'assertion') return `${displayStatus(event.status)}${event.reason ? `：${event.reason}` : ''}${assertionEvidenceText(event)}`;
   if (event.type === 'result') return `${displayStatus(event.status)}${event.reason ? `：${event.reason}` : ''}`;
   return event.reason || displayStatus(event.status) || '';
@@ -1431,7 +1480,11 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
   </section>`
     : '';
   const conclusionItems = [
-    ['执行结果', displayFailureCode(result?.failureCode) || displayStatus(status), result?.failureCode || ''],
+    ['对外结论', displayFailureCode(result?.failureCode) || displayStatus(status), result?.failureCode || ''],
+    ...(result?.controlStatus ? [
+      ['业务执行结果', displayFailureCode(result.businessFailureCode) || displayStatus(result.businessStatus), result.businessFailureCode || ''],
+      ['Runtime 校验', result.controlStatus],
+    ] : []),
     ['失败步骤', result?.failedStep || '-'],
     ['耗时', metrics ? formatDuration(metrics.durationMs || 0) : '-'],
     ['执行结束', formatDisplayTime(result?.endedAt)],

@@ -9,20 +9,34 @@ description: 当需要基于 Markdown 人工用例，对移动端应用进行 AI
 
 用于基于 Markdown 人工测试用例执行移动端黑盒视觉测试。Flow 仅用于达成用例前置条件，不提供录制能力，也不参与业务步骤执行。
 
-## 必读文件
+## 按角色读取
+
+所有角色先完整读取本文件，再按当前角色读取下列文件，不能把协调器上下文复制给独立 case 子 Agent。
+
+批次协调器必须读：
 
 - `references/workflow.md`：端到端执行顺序。
-- `references/interfaces.md`：稳定入口、事件 schema 和模块边界。
+- `references/interfaces.md`：稳定入口、事件契约和模块边界。
 - `references/environment-probing.md`：环境探测、确认和依赖准备。
 - `references/failure-policy.md`：状态、失败码、预算和结果归一。
 - `references/flow-format.md`：前置条件 Flow 资产、匹配和执行协议。
+- `references/agent-runtime.md`：Agent 平台抽象、单 case 会话隔离和结果校验。
+- `references/case-executor-contract.md`：协调器下发给独立 case Agent 的执行边界。
+- `references/context-format.md`：可信发布、结果、报告和 index 产物语义。
+- Codex 平台再读 `references/agent-runtimes/codex.md`。
+
+独立 case 子 Agent 只读：
+
+- `references/case-executor-contract.md`：Case Engine、视觉决定和结果返回协议。
+- `references/interfaces.md`：子 Agent 白名单入口和事实 schema。
+- `references/failure-policy.md`：视觉证据、失败码和结果归一。
+- `references/context-format.md`：execution 与结果产物语义。
 
 按需再读：
 
 - `references/installation.md`：三端安装和环境准备。
 - `references/case-format.md`：Markdown、`case.json`、`notes.jsonl`、`source.md`。
 - `references/action-schema.md`：动作参数、坐标证据和平台差异。
-- `references/context-format.md`：`timeline`、`result`、`metrics`、`CONTEXT`、`index`。
 
 ## 最小执行流程
 
@@ -32,10 +46,10 @@ description: 当需要基于 Markdown 人工用例，对移动端应用进行 AI
 4. 用 `scripts/probe-env.sh --platform <platform>` 探测环境；一次用户确认后，对每个 case 用 `scripts/update-env.js` 固化设备、App 和入口。
 5. 用 `scripts/preflight-preconditions.js <case-dir...> --cwd <workspace-cwd> --platform <platform>` 生成确定的前置条件计划。严格同名命中的 Flow 自动执行；未命中的条件继续按 `framework`、`confirm`、`external_setup` 或 `unsupported` 处理，并在无人值守开始前集中请用户确认。
 6. 对每个 case 调用 `scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>`；依赖未准备不得开始 execution。
-7. 用 `scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan-sha <sha>` 创建新 execution。若返回 `blockedOnStart=true` 或 `nextAction=stop-current-case`，停止当前 case。
-8. 按 `case.json.preconditions` 顺序处理前置条件。Flow 条件必须先做入口观察；终点已满足则记录 `PASS/already_satisfied`，起点匹配才执行 Flow，否则以专用失败码阻塞；执行完成后做终点观察并记录 `PREPARED`。
-9. 从 `case.json.steps[0]` 开始逐步 observe、判断、action 或 assertion。步骤阶段不扫描、不匹配、不执行 Flow。
-10. 每个 case 立即用 `scripts/run-case.js ... --finalize` 收尾并刷新报告，完成后再开始下一个 case。
+7. 创建 `batch-runtime.js init` 批次产物并固化 `runs/<batchId>/contract.json`；先用 `batch-runtime.js reconcile-current` 确定性归约遗留 execution，再对当前 case 用 `run-case.js ... --start --batch-id <id>` 创建 execution。若 `blockedOnStart=true`，不创建子 Agent。
+8. 调用 `agent-runtime.js init` 固化 `agent/contract.json`、`request.json` 和 `runtime.json`。协调器只把 `agent-runtime.js next` 返回的 Host operation 映射到当前 Agent 平台，再用 `apply` 回写结果。
+9. 子 Agent 校验 protocolSha 和 implementationSha 后，调用 `execute-next-work.js next`；脚本连续推进确定性工作并只在返回 `DECISION_REQUIRED` 时要求看图，子 Agent 用原 workToken 调用 `decide`。
+10. Runtime Core 校验 `response.json` 与 execution/result/metrics，写 `validation.json` 并释放会话；协调器再用 `batch-runtime.js commit-current` 生成可信 `completion.json`、刷新报告并提交当前 case，然后才开始下一个 case。
 
 agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚本负责严格匹配、计划固定、确定性操作、预算、事实记录、守卫和报告。
 
@@ -44,9 +58,12 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 - 禁止在 skill 内录制、生成或交互式编辑 Flow 资产。
 - 禁止在业务步骤中扫描、匹配或执行 Flow。
 - 禁止 agent 自行创建 shell、Node、Python 或其他外层编排脚本串联多个步骤、多个 case、断言或 finalize。
+- 只允许使用框架正式提供的 `action-observe.sh` 和 `commit-agent-turn.js` 合并当前动作后观察或当前单步 Agent 事实；不得据此扩展为多步骤批处理。
 - 禁止用 `for`、`while`、`xargs`、一行多命令或模板化 JSON 批量生成步骤断言。
 - 禁止因为 App 已停留在目标页面就复用页面状态、跳过第一个步骤或从中间步骤开始执行。
 - 禁止同时保持多个 case execution 未 finalized。
+- 禁止把 Agent 平台的并发能力用于并行执行多个移动端 case。
+- 禁止子 Agent 继承父任务对话、旧 case 截图或完整 timeline；必须通过 SkillContract 从磁盘重新加载规范。
 - 禁止在未 `--start` 创建 execution 时直接 finalize。
 - 禁止执行完多个 case 后统一判图、统一写 assertion 或统一 finalize。
 - 禁止绕过顶层入口直接调用 `adb`、`hdc`、Appium、截图、布局 dump、点击、输入、force-stop 或 start 命令。
@@ -64,6 +81,11 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 - preflight 返回的 `preconditionPlanSha` 必须原样传给 `--start`；资产或计划变化时重新 preflight。
 - Flow 观察和动作必须使用 `--scope precondition-flow`，绑定 `preconditionId`、`flowId`，步骤内事实另绑定 `flowStepId`；不得绑定 case `stepId`。
 - 每个 case 的 `--start` 都是新的 execution 边界，并自动记录 execution 级 `restartApp` 事实。
+- `executionStart`、`environmentProbe` 和 `scope=execution-bootstrap` 的启动级 `restartApp` 是 BOUND 前唯一允许存在的启动事实；前置条件、Flow 和业务步骤事实必须晚于 Agent Runtime BOUND。
+- 批次协调器负责 `--start` 和 Runtime Core，独立 case 子 Agent 只接管已处于 RUNNING 的指定 execution，不重复 start、probe 或 prepare。
+- provider 是 Runtime Core 所有的规范机器标识，写入 `runtime.json` 与带 requestSha 的 `request.json`；子 Agent 不得填写或覆盖 provider。
+- protocolSha 冻结角色规范，implementationSha 冻结运行实现；request、Runtime BOUND 和结果必须全链路一致。
+- 子 Agent 每轮以 `execute-next-work.js` 的 DecisionRequest 为准；脚本每次重新归约并校验 workToken，不得仅凭会话记忆推进步骤。
 - 步骤事实必须按 `case.json.steps` 顺序写入；进入后续步骤后不能回头补写前置步骤事实。
 - 每个业务步骤都必须以 `assertion PASS` 作为通过证据；成功 actionResult 和动作后的 observation 只是必要过程事实，不能单独完成步骤或推进到下一步。
 - `assertion PASS` 必须绑定 `stepId`，引用当前步骤最新 observation 的截图，并且前一条相关视觉理解必须是引用同一截图、包含 `reason` 的 `perception status=USABLE`；observation `label` 不能作为业务证据。
@@ -74,9 +96,11 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 
 ## 稳定顶层入口
 
-agent 只使用：
+按 SkillContract 角色使用：
 
-- 主执行：`scripts/probe-env.sh`、`scripts/resolve-execution-targets.js`、`scripts/parse-case.js`、`scripts/preflight-preconditions.js`、`scripts/update-env.js`、`scripts/prepare-env.sh`、`scripts/run-case.js`、`scripts/observe.sh`、`scripts/action.sh`
+- case-executor：`scripts/build-agent-contract.js`、`scripts/execute-next-work.js`、`scripts/build-case-agent-result.js`。
+- batch-coordinator：`scripts/resolve-execution-targets.js`、`scripts/parse-case.js`、`scripts/probe-env.sh`、`scripts/update-env.js`、`scripts/preflight-preconditions.js`、`scripts/prepare-env.sh`、`scripts/run-case.js`、`scripts/build-agent-contract.js`、`scripts/agent-runtime.js`、`scripts/batch-runtime.js`。
 - 维护和渲染：`scripts/apply-note.js`、`scripts/refresh-case.js`、`scripts/render-context.js`、`scripts/render-index.js`
 
-`scripts/flow/` 是前置条件 Flow 的内部加载和解析层；`scripts/platform/`、`scripts/case/`、`scripts/report/`、`scripts/execution/`、`scripts/lib/` 都不是 agent 直接入口。
+`scripts/get-next-work.js` 只用于框架诊断。`scripts/observe.sh`、`scripts/action.sh`、`scripts/action-observe.sh` 和 `scripts/commit-agent-turn.js` 由 Case Engine 间接调用。`scripts/flow/`、`scripts/platform/`、`scripts/case/`、`scripts/report/`、`scripts/execution/`、`scripts/lib/` 都不是 agent 直接入口。
+`scripts/build-case-agent-request.js`、`scripts/record-agent-runtime.js` 和 `scripts/validate-case-agent-result.js` 只由 Runtime Core 内部调用，不属于协调器或子 Agent 白名单。

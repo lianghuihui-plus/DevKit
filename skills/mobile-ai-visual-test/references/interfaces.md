@@ -11,6 +11,11 @@ Skill 协议层
   SKILL.md
   references/*.md
 
+Agent Runtime 层
+  Runtime Core operation protocol
+  Platform Host Adapter
+  CaseAgentRequest / CaseAgentResult
+
 稳定入口层
   scripts/probe-env.sh
   scripts/resolve-execution-targets.js
@@ -18,9 +23,19 @@ Skill 协议层
   scripts/preflight-preconditions.js
   scripts/update-env.js
   scripts/prepare-env.sh
+  scripts/build-agent-contract.js
+  scripts/build-case-agent-request.js
+  scripts/agent-runtime.js
+  scripts/batch-runtime.js
+  scripts/execute-next-work.js
+  scripts/build-case-agent-result.js
   scripts/run-case.js
   scripts/observe.sh
   scripts/action.sh
+  scripts/action-observe.sh
+  scripts/commit-agent-turn.js
+  scripts/record-agent-runtime.js
+  scripts/validate-case-agent-result.js
 
 内部实现层
   scripts/case/
@@ -47,13 +62,33 @@ agent 只调用稳定入口层。内部实现层、平台 adapter 和 atoms 不�
 | `scripts/probe-env.sh` | 探测平台和设备能力 |
 | `scripts/update-env.js` | 固化设备、App 和入口到平台 state |
 | `scripts/prepare-env.sh` | 准备平台依赖 |
-| `scripts/run-case.js` | 创建 execution、写 agent 事实、finalize、守卫和报告刷新 |
+| `scripts/build-agent-contract.js` | 生成或校验独立 case Agent 的 SkillContract |
+| `scripts/build-case-agent-request.js` | 从已启动 execution 生成经过校验的 CaseAgentRequest |
+| `scripts/agent-runtime.js` | 持久化单 case Agent 状态机并产生统一 Host operation |
+| `scripts/batch-runtime.js` | 持久化串行批次、当前 case 和校验终态，归约遗留 execution，并通过 completion 可信发布报告 |
+| `scripts/execute-next-work.js` | 重新归约 execution、连续推进确定性工作，并通过 workToken 接收单次视觉决定 |
+| `scripts/build-case-agent-result.js` | 从已 finalized execution 构造 CaseAgentResult |
+| `scripts/run-case.js` | 创建 execution、写 agent 事实、finalize 和守卫；仅无 batch 的兼容执行在 finalize 后直接刷新报告 |
 | `scripts/observe.sh` | 采集 observation 并写入 timeline |
 | `scripts/action.sh` | 执行动作并写入 actionResult |
+| `scripts/action-observe.sh` | 确定性执行当前 action 后立即采集 observation，保留两条独立事实 |
+| `scripts/commit-agent-turn.js` | 幂等提交同一步、同截图的 perception 与 decision/assertion |
+| `scripts/record-agent-runtime.js` | 写入受保护的 Agent Runtime 绑定或失败事实 |
+| `scripts/validate-case-agent-result.js` | 对照 execution/result/metrics 校验 CaseAgentResult |
 | `scripts/render-context.js` | 重渲染 case 报告 |
 | `scripts/render-index.js` | 重渲染 workspace 总览 |
 
 正式 case-bound 入口必须显式传 `--platform <harmony|android|ios>`。
+
+其中 `build-case-agent-request.js`、`record-agent-runtime.js` 和 `validate-case-agent-result.js` 是 Runtime Core 的受保护子入口，只供 `agent-runtime.js` 调用，不进入 batch-coordinator 或 case-executor SkillContract；它们保留独立 CLI 仅用于框架测试和维护诊断。
+
+## Agent Runtime Provider 边界
+
+统一接口是 `agent-runtime.js next` 产生的 `OPEN_SESSION`、`AWAIT_RESULT`、`INTERRUPT_SESSION`、`RELEASE_SESSION`，以及 Host Adapter 传回的 operation result。Runtime Core 持久化状态和硬 deadline；Codex Host Adapter 由主 Agent把这四种操作机械映射到宿主子 Agent 工具，并严格执行 `remainingMs`。其他平台只需实现相同映射。
+
+Agent Runtime 不操作设备、不写 observation/actionResult、不决定业务断言。Host Adapter 也不直接修改 runtime、timeline 或结果产物；所有状态变化必须通过 `agent-runtime.js apply`。
+
+provider 是 Runtime Core 所有的规范机器标识，初始化时统一转成小写并校验，只写入 `runtime.json`、CaseAgentRequest、RuntimeOperation 和 BOUND。CaseAgentResult 从签名 request 继承 provider；结果构造入口不接受 provider 参数。SkillContract 的 `protocolSha` 与 `implementationSha` 分别冻结角色规范和实际运行脚本，CaseAgentRequest、Runtime BOUND、runtime.json 与 CaseAgentResult 必须全部一致。
 
 ### 参数所有权
 
@@ -178,9 +213,11 @@ adapter 内部可以调用 atoms，但不得：
 
 Flow 动作执行前由 `run-case.js` 对照 `execution.json` 中冻结的 action 做硬校验，actionResult 同时保存 `requestedAction` 供执行后复核。
 
+启动阶段自动执行的 restartApp 使用 `scope: "execution-bootstrap"`，不得包含 stepId、preconditionId、flowId 或 flowStepId。它只证明 execution 冷启动隔离，是 BOUND 前唯一允许出现的 actionResult；其他 actionResult 都属于 Case Engine 事实并要求先有 Runtime BOUND。
+
 ## Agent 事实
 
-agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionStart`、`environmentProbe`、`observation`、`evidenceCheck`、`actionResult`、`budgetExceeded`、`result` 属于框架事件，公开入口一律拒绝：
+agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionStart`、`environmentProbe`、`observation`、`evidenceCheck`、`actionResult`、`budgetExceeded`、`executionRecovery`、`agentRuntime`、`result` 属于框架事件，公开入口一律拒绝：
 
 | 类型 | 用途 |
 | --- | --- |
@@ -192,6 +229,32 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionSt
 | `assertion` | 步骤断言结果 |
 
 不要为了说明想法写入不会影响执行的事实。
+
+`agentRuntime` 只能由 `record-agent-runtime.js` 写入。`BOUND` 绑定 provider、sessionScope、protocolSha 和 implementationSha；`FAILED`、`INTERRUPTED` 必须使用合法 `AGENT_*` failureCode，并由框架安全收尾当前 execution。
+
+`executionRecovery` 只能由 `run-case.js --recover-orphaned` 写入，用于已经超过 deadline、没有 Agent Runtime 且 timeline 只有合法启动事实的孤立 execution；它必须以 `BLOCKED/EXECUTION_ORPHANED` 收尾。
+
+## 批次恢复归约
+
+`batch-runtime.js reconcile-current` 只读 batch、execution、timeline 和 Runtime 产物并返回一个动作，不执行宿主操作，也不循环监控：
+
+| action | 含义 |
+| --- | --- |
+| `START_NEW` | 没有活动 execution |
+| `INIT_RUNTIME` | 当前 batch 的 execution 只有启动事实 |
+| `BIND_RUNTIME` | 当前 batch 的 Runtime 已存在，但 batch 尚未保存 execution 绑定 |
+| `RESUME_RUNTIME` | 当前 batch 的 Runtime 可继续调用 next |
+| `COMMIT_FINALIZED` | 当前绑定 execution 已 finalized，可提交可信产物 |
+| `RECOVER_FINALIZING` | 存在可重入的 finalize draft |
+| `CLOSE_EXPIRED` | 其他 execution 已过期且存在 Runtime，走超时、中断和释放 |
+| `CLOSE_ORPHANED` | 其他 execution 已过期、无 Runtime 且只有启动事实 |
+| `BLOCK_CONCURRENT` | 其他 batch 的 execution 尚未过期，禁止抢占 |
+| `BLOCK_RUNTIME_RELEASE` | Host 连续三次无法确认 Runtime session 释放，批次必须阻塞 |
+| `BATCH_BLOCKED` | 批次已阻塞，重复恢复只返回同一终态 |
+| `BATCH_COMPLETE` | 批次已完成，无需继续提交 |
+| `CORRUPTED` | 存在没有 Runtime 绑定的 Case Engine 事实 |
+
+`commit-agent-turn.js` 只接受一个 step 和一个 observation，第一条事实必须是 perception，第二条最多一条 decision 或 assertion。它为事件附加相同 `turnId`，提交前冻结 `<execution>/agent/turns/*.draft.json`，重试时校验原请求并跳过已提交事实，完整提交后删除 draft；不能批量写多个步骤。`execute-next-work decide` 只对命中该 draft 且内容完全一致的旧 workToken 开放恢复，不把普通过期决定重新放行。
 
 用于支持业务 `assertion PASS` 的 `perception` 必须绑定当前步骤最新 observation 的截图：
 
@@ -319,3 +382,4 @@ Flow 终态不可逆；终态后的下一条相关事实必须是同一前置条
 - `evidenceCheck` 只能由 `run-case.js` 根据结构化 `qualityClaim` 生成。
 - 直接手写观察或动作结果会被拒绝。
 - 公开入口不得写框架事件；填写伪造的 `source` 不能提升写入权限。
+- Agent Runtime 事实必须走 `record-agent-runtime.js`；公开 `--record-json` 不能伪造 `agentRuntime`。

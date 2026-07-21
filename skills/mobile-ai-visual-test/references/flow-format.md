@@ -88,7 +88,7 @@ scripts/preflight-preconditions.js <case-dir...> --cwd <workspace-cwd> --platfor
 预检同时返回 `preconditionPlanSha`。执行开始时必须原样传入：
 
 ```bash
-scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan-sha <sha>
+scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan-sha <sha> --batch-id <id>
 ```
 
 Flow 文件、参考图、平台覆盖或前置条件计划发生变化都会改变哈希，旧计划不得继续执行。

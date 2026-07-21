@@ -21,6 +21,8 @@ const {
 } = require('../common');
 const { buildPreconditionPlan, planFlowSummaries } = require('../lib/precondition-flow');
 const { failureStatus } = require('../lib/failure-catalog');
+const { validateActionAsset, validateActionExecution } = require('../lib/action-contract');
+const { deriveNextWork } = require('../lib/execution-reducer');
 const {
   enrichObservationScreenshot,
   inspectPng,
@@ -46,6 +48,8 @@ const VALID_EVENT_TYPES = new Set([
   'popup',
   'appForeground',
   'budgetExceeded',
+  'executionRecovery',
+  'agentRuntime',
   'result',
 ]);
 const AGENT_WRITABLE_EVENT_TYPES = new Set([
@@ -73,8 +77,17 @@ const VALID_RULE_STATUSES = new Set(['MATCHED', 'SKIPPED', 'FAILED', 'BLOCKED', 
 const VALID_RULE_TYPES = new Set(['guard']);
 const VALID_RULE_FAILURES = new Set(['BLOCKED', 'UNKNOWN', 'FAIL']);
 const VALID_FLOW_STATUSES = new Set(['STARTED', 'STEP_COMPLETED', 'COMPLETED', 'FAILED', 'BLOCKED']);
+const VALID_AGENT_RUNTIME_STATUSES = new Set(['BOUND', 'FAILED', 'INTERRUPTED']);
+const VALID_AGENT_RUNTIME_FAILURES = new Set([
+  'AGENT_PROTOCOL_MISMATCH',
+  'AGENT_RUNTIME_UNAVAILABLE',
+  'AGENT_RUNTIME_INTERRUPTED',
+  'AGENT_RESULT_INVALID',
+]);
+const VALID_AGENT_RUNTIME_EVENT_FAILURES = new Set([...VALID_AGENT_RUNTIME_FAILURES, 'CASE_TIMEOUT']);
 const TERMINAL_FLOW_STATUSES = new Set(['COMPLETED', 'FAILED', 'BLOCKED']);
 const PRECONDITION_FLOW_SCOPE = 'precondition-flow';
+const EXECUTION_BOOTSTRAP_SCOPE = 'execution-bootstrap';
 const VALID_PRECONDITION_FLOW_PHASES = new Set(['entry-check', 'before', 'after', 'end-check']);
 const VALID_PRECONDITION_FLOW_FAILURES = new Set([
   'PRECONDITION_FLOW_AMBIGUOUS',
@@ -116,9 +129,11 @@ const DEFAULT_BUDGET = {
 function usage() {
   console.error([
     'Usage:',
-    '  run-case.js <case-dir> --platform <platform> --start [--precondition-plan-sha <sha>]',
+    '  run-case.js <case-dir> --platform <platform> --start [--precondition-plan-sha <sha>] [--batch-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--action-json <json>] [--step-id <step-id>] [--scope global|precondition-flow] [--precondition-id <id>] [--flow-id <id>] [--flow-step-id <id>] [--phase <phase>] [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --recover-orphaned --execution-id <id> --batch-id <id> [--reason <text>]',
     '  run-case.js <case-dir> --platform <platform> --record-json <json> [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --record-agent-runtime-json <json> --execution-id <id>',
     '  run-case.js <case-dir> --platform <platform> --finalize --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>]',
     '  run-case.js <case-dir> --legacy-runtime ...',
@@ -171,6 +186,21 @@ function readExecutionState(execDir) {
 
 function writeExecutionState(execDir, state) {
   writeJson(executionStatePath(execDir), state);
+}
+
+function readExecutionCase(caseDir, execDir) {
+  const snapshot = readJson(path.join(execDir, 'case.snapshot.json'), null);
+  const executionState = readExecutionState(execDir);
+  if (!snapshot && executionState?.schemaVersion) {
+    throw new Error('EXECUTION_CONTRACT_CORRUPTED: case.snapshot.json is required for a started execution.');
+  }
+  const caseJson = snapshot || readJson(path.join(caseDir, 'case.json'));
+  if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
+  validateCaseExecutionContract(caseJson);
+  if (snapshot && executionState?.caseContractSha && executionState.caseContractSha !== caseContractSha(snapshot)) {
+    throw new Error('EXECUTION_CONTRACT_CORRUPTED: case.snapshot.json does not match execution.json.');
+  }
+  return caseJson;
 }
 
 function latestExecutionId(caseDir) {
@@ -422,6 +452,7 @@ function validateEvent(event) {
   if (!VALID_EVENT_TYPES.has(event.type)) throw new Error(`Unsupported event type: ${event.type}`);
   if (event.time && Number.isNaN(new Date(event.time).getTime())) throw new Error(`Invalid event time: ${event.time}`);
   if (event.stepId && typeof event.stepId !== 'string') throw new Error('stepId must be a string');
+  if (event.turnId !== undefined && (typeof event.turnId !== 'string' || !event.turnId.trim())) throw new Error('turnId must be a non-empty string');
   if (event.type === 'observation') {
     if (!event.label || typeof event.label !== 'string') throw new Error('observation missing required field: label');
     if (!event.artifacts || typeof event.artifacts !== 'object' || Array.isArray(event.artifacts)) throw new Error('observation missing required field: artifacts');
@@ -435,10 +466,22 @@ function validateEvent(event) {
     if (typeof event.ok !== 'boolean') throw new Error('actionResult missing required boolean field: ok');
     validateCoordinateMetadata(event, action);
     validatePreconditionFlowScope(event);
+    if (event.scope === EXECUTION_BOOTSTRAP_SCOPE && !isExecutionBootstrapFact(event)) {
+      throw new Error('EXECUTION_BOOTSTRAP_SCOPE_INVALID: execution-bootstrap 只允许 run-case 启动阶段写入的无步骤 restartApp。');
+    }
+    if (event.scope && ![PRECONDITION_FLOW_SCOPE, EXECUTION_BOOTSTRAP_SCOPE].includes(event.scope) && !event.stepId) {
+      throw new Error(`ACTION_SCOPE_INVALID: unsupported actionResult scope ${event.scope}`);
+    }
   }
   if (event.type === 'decision') {
     if (!event.decision || !VALID_DECISIONS.has(event.decision)) throw new Error(`Unsupported decision: ${event.decision}`);
     if (event.decision === 'retry_visual_input' && !eventStepId(event)) throw new Error('retry_visual_input decision 必须绑定 stepId');
+    if (event.decision === 'act') {
+      const action = event.action || event.requestedAction;
+      validateActionAsset(action, { context: 'act decision action' });
+      event.action = action;
+      delete event.requestedAction;
+    }
   }
   if (event.type === 'perception' && event.status !== undefined && !VALID_PERCEPTION_STATUSES.has(event.status)) {
     throw new Error('perception status must be USABLE, UNUSABLE, or UNCERTAIN');
@@ -471,6 +514,23 @@ function validateEvent(event) {
       throw new Error('failed or blocked precondition flow event requires a valid PRECONDITION_FLOW_* failureCode');
     }
   }
+  if (event.type === 'agentRuntime') {
+    if (event.source !== 'record-agent-runtime.js') throw new Error('agentRuntime source must be record-agent-runtime.js');
+    if (!event.provider || typeof event.provider !== 'string') throw new Error('agentRuntime missing provider');
+    if (!VALID_AGENT_RUNTIME_STATUSES.has(event.status)) throw new Error(`Unsupported agentRuntime status: ${event.status}`);
+    if (event.protocolSha !== undefined && !/^agent-protocol-[0-9a-f]{16}$/.test(event.protocolSha)) throw new Error('agentRuntime protocolSha is invalid');
+    if (event.implementationSha !== undefined && !/^agent-implementation-[0-9a-f]{16}$/.test(event.implementationSha)) throw new Error('agentRuntime implementationSha is invalid');
+    if (event.status === 'BOUND' && (!event.protocolSha || !event.implementationSha || !event.requestSha || !event.sessionId || event.sessionScope !== 'case')) throw new Error('agentRuntime BOUND requires protocolSha, implementationSha, requestSha, sessionId, and sessionScope=case');
+    if (['FAILED', 'INTERRUPTED'].includes(event.status) && !VALID_AGENT_RUNTIME_EVENT_FAILURES.has(event.failureCode)) {
+      throw new Error('agentRuntime FAILED/INTERRUPTED requires a valid AGENT_* failureCode');
+    }
+  }
+  if (event.type === 'executionRecovery') {
+    if (event.source !== 'run-case.js' || event.status !== 'BLOCKED' || event.failureCode !== 'EXECUTION_ORPHANED') {
+      throw new Error('executionRecovery must be a framework-owned BLOCKED/EXECUTION_ORPHANED event');
+    }
+    if (!event.recoveryBatchId || typeof event.recoveryBatchId !== 'string') throw new Error('executionRecovery requires recoveryBatchId');
+  }
   if (event.type === 'assertion' && !['PASS', 'FAIL', 'UNKNOWN'].includes(event.status)) {
     throw new Error('assertion status must be PASS, FAIL, or UNKNOWN');
   }
@@ -481,6 +541,30 @@ function validateEvent(event) {
     throw new Error('precondition event missing required field: id');
   }
   validateArtifacts(event);
+}
+
+function isExecutionBootstrapFact(event) {
+  return event?.type === 'actionResult'
+    && event.scope === EXECUTION_BOOTSTRAP_SCOPE
+    && event.source === 'action.sh'
+    && actionType(event) === 'restartApp'
+    && !event.stepId
+    && !event.preconditionId
+    && !event.flowId
+    && !event.flowStepId;
+}
+
+function isCaseExecutionFact(event) {
+  if (!event || event.type === 'agentRuntime' || isExecutionBootstrapFact(event)) return false;
+  return AGENT_WRITABLE_EVENT_TYPES.has(event.type) || ['observation', 'actionResult'].includes(event.type);
+}
+
+function assertRuntimeBindingReady(execDir, events, event) {
+  if (!isCaseExecutionFact(event)) return;
+  const runtimePath = path.join(execDir, 'agent', 'runtime.json');
+  if (!fs.existsSync(runtimePath)) return;
+  const bound = events.find((item) => item.type === 'agentRuntime' && item.status === 'BOUND');
+  if (!bound) throw new Error(`AGENT_RESULT_INVALID: ${event.type} 不能早于 Agent Runtime BOUND。`);
 }
 
 function validateObservationScope(event) {
@@ -796,9 +880,9 @@ function preconditionFlowReadiness(caseJson, executionState, events, nextEvent) 
       }
       return { ok: true };
     }
-    if (nextEvent.status === 'BLOCKED' && nextEvent.failureCode === 'PRECONDITION_FLOW_START_MISMATCH' && !active && lifecycle.state === 'NOT_STARTED') {
+    if (nextEvent.status === 'BLOCKED' && ['PRECONDITION_FLOW_START_MISMATCH', 'PRECONDITION_FLOW_OBSERVATION_FAILED'].includes(nextEvent.failureCode) && !active && lifecycle.state === 'NOT_STARTED') {
       if (!evidenceObservation(events, nextEvent, 'entry-check')) {
-        return { ok: false, failureCode: 'PRECONDITION_FLOW_START_MISMATCH', reason: 'Flow 起点不匹配必须引用 entry-check observation。' };
+        return { ok: false, failureCode: nextEvent.failureCode, reason: 'Flow 入口阻塞必须引用 entry-check observation。' };
       }
       return { ok: true };
     }
@@ -1303,6 +1387,16 @@ function eventFailedWithCode(event, failureCode) {
 
 function finalizeFailureReadiness(events, requested, execDir) {
   const failureCode = requested.failureCode || null;
+  if (failureCode === 'EXECUTION_ORPHANED') {
+    const supported = events.some((event) => event.type === 'executionRecovery' && event.failureCode === failureCode && event.status === 'BLOCKED');
+    if (!supported) return { ok: false, failureCode: 'EXECUTION_RECOVERY_CONTRACT_CHANGED', reason: 'EXECUTION_ORPHANED 缺少 executionRecovery 框架事实。' };
+  }
+  if (VALID_AGENT_RUNTIME_FAILURES.has(failureCode)) {
+    const supported = events.some((event) => event.type === 'agentRuntime' && event.failureCode === failureCode && ['FAILED', 'INTERRUPTED'].includes(event.status));
+    if (!supported) {
+      return { ok: false, failureCode: 'AGENT_RESULT_INVALID', reason: `${failureCode} 缺少对应 agentRuntime 框架事实。` };
+    }
+  }
   if (failureCode === 'TOOL_ERROR') {
     const supported = events.some((event) => ['observation', 'actionResult', 'budgetExceeded'].includes(event.type) && eventFailedWithCode(event, 'TOOL_ERROR'));
     if (!supported) {
@@ -1562,6 +1656,7 @@ function completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionS
   const result = draft.result;
   const metrics = draft.metrics;
   const resultEvent = draft.resultEvent;
+  const publishImmediately = !executionState.batchId;
   if (result.executionId !== executionState.executionId || result.caseContractSha !== caseContractSha(caseJson)) {
     throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: finalize draft 与当前 execution 或 case contract 不一致，不能自动恢复。');
   }
@@ -1580,7 +1675,7 @@ function completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionS
     environment: {},
   });
   const committed = Array.isArray(state.committedExecutionIds) ? state.committedExecutionIds : [];
-  if (!options.skipStateApply && !committed.includes(result.executionId)) {
+  if (publishImmediately && !options.skipStateApply && !committed.includes(result.executionId)) {
     state.executionCount = (state.executionCount || 0) + 1;
     state.latestStatus = result.status;
     state.latestExecutionId = result.executionId;
@@ -1595,7 +1690,7 @@ function completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionS
   }
   writeExecutionState(execDir, {
     ...executionState,
-    schemaVersion: 1,
+    schemaVersion: executionState.schemaVersion || 1,
     executionId: result.executionId,
     startedAt: result.startedAt,
     endedAt: result.endedAt,
@@ -1606,9 +1701,12 @@ function completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionS
     failureCode: result.failureCode,
   });
   if (fs.existsSync(draftPath)) fs.unlinkSync(draftPath);
-  const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
-  writeCaseReports(caseDir, caseJson, state, notes, { result, metrics, events }, { platform: options.platform });
-  refreshIndexForCase(caseDir);
+  if (publishImmediately) {
+    const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
+    const reportCaseJson = readJson(path.join(caseDir, 'case.json'), caseJson);
+    writeCaseReports(caseDir, reportCaseJson, state, notes, { result, metrics, events }, { platform: options.platform });
+    refreshIndexForCase(caseDir);
+  }
   return {
     executionId: result.executionId,
     execDir,
@@ -1621,10 +1719,7 @@ function completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionS
 
 function finalize(caseDir, options) {
   const runtimeDir = caseRuntimeDir(caseDir, options.platform);
-  const caseJson = readJson(path.join(caseDir, 'case.json'));
-  if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
-  validateCaseExecutionContract(caseJson);
-  validateGlobalRules(caseJson);
+  let caseJson = null;
   const statePath = path.join(runtimeDir, 'state.json');
   const state = readJson(statePath, { schemaVersion: 1, executionCount: 0, statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 }, environment: {} });
   let executionId = options.executionId || latestExecutionId(runtimeDir);
@@ -1639,6 +1734,8 @@ function finalize(caseDir, options) {
   }
   const { execDir } = createExecution(runtimeDir, executionId);
   const executionState = readExecutionState(execDir) || {};
+  caseJson = readExecutionCase(caseDir, execDir);
+  validateGlobalRules(caseJson);
   if (!options.legacyRuntime && !executionState.schemaVersion) {
     throw new Error(`Execution was not started: ${executionId}`);
   }
@@ -1751,7 +1848,7 @@ function finalize(caseDir, options) {
   writeJson(draftPath, draft);
   writeExecutionState(execDir, {
     ...executionState,
-    schemaVersion: 1,
+    schemaVersion: executionState.schemaVersion || 1,
     executionId,
     startedAt,
     lifecycle: 'FINALIZING',
@@ -1879,6 +1976,7 @@ function restartAppForExecution(caseDir, platform, executionId) {
     '--case-dir', caseDir,
     '--platform', platform,
     '--execution-id', executionId,
+    '--scope', EXECUTION_BOOTSTRAP_SCOPE,
     '--type', 'restartApp',
     '--settle-ms', '1000',
   ];
@@ -1951,6 +2049,7 @@ let command = null;
 for (let i = 1; i < args.length; i++) {
   switch (args[i]) {
     case '--start': command = 'start'; break;
+    case '--recover-orphaned': command = 'recoverOrphaned'; break;
     case '--platform': options.platform = normalizePlatform(args[++i]); if (!options.platform) usage(); break;
     case '--check-budget': command = 'checkBudget'; break;
     case '--event-type': options.eventType = args[++i]; break;
@@ -1963,9 +2062,11 @@ for (let i = 1; i < args.length; i++) {
     case '--flow-step-id': options.flowStepId = args[++i]; break;
     case '--phase': options.phase = args[++i]; break;
     case '--precondition-plan-sha': options.preconditionPlanSha = args[++i]; break;
+    case '--batch-id': options.batchId = args[++i]; break;
     case '--record-json': command = 'record'; options.recordJson = args[++i]; break;
     case '--record-action-json': command = 'recordAction'; options.recordJson = args[++i]; break;
     case '--record-observation-json': command = 'recordObservation'; options.recordJson = args[++i]; break;
+    case '--record-agent-runtime-json': command = 'recordAgentRuntime'; options.recordJson = args[++i]; break;
     case '--finalize': command = 'finalize'; break;
     case '--legacy-runtime': options.legacyRuntime = true; break;
     case '--execution-id': options.executionId = args[++i]; break;
@@ -1981,6 +2082,9 @@ for (let i = 1; i < args.length; i++) {
 try {
   if (!options.platform && !options.legacyRuntime) {
     throw new Error('Missing --platform. 正式执行必须写入 cases/<case>/platforms/<platform>/；旧根运行态请显式传 --legacy-runtime。');
+  }
+  if (options.batchId && (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(options.batchId) || ['.', '..'].includes(options.batchId))) {
+    throw new Error('batch-id contains unsafe characters');
   }
   if (command === 'start') {
     const runtimeDir = caseRuntimeDir(caseDir, options.platform);
@@ -2012,12 +2116,17 @@ try {
       throw new Error(`Execution already exists: ${options.executionId}`);
     }
     const { executionId, execDir } = createExecution(runtimeDir, options.executionId || allocateExecutionId(runtimeDir));
+    writeJson(path.join(execDir, 'case.snapshot.json'), caseJson);
+    const frozenContractSha = caseContractSha(caseJson);
     writeExecutionState(execDir, {
-      schemaVersion: 1,
+      schemaVersion: 2,
       executionId,
       startedAt: nowIso(),
       lifecycle: 'STARTING',
       finalized: false,
+      sourceSha1: caseJson.identity.sourceSha1,
+      caseContractSha: frozenContractSha,
+      batchId: options.batchId || null,
       preconditionPlan,
       preconditionPlanSha: preconditionPlan.preconditionPlanSha,
       budget: DEFAULT_BUDGET,
@@ -2030,7 +2139,7 @@ try {
       platform: options.platform || state.environment?.platform || null,
       caseKey: caseJson.identity.caseKey,
       sourceSha1: caseJson.identity.sourceSha1,
-      caseContractSha: caseContractSha(caseJson),
+      caseContractSha: frozenContractSha,
       preconditionPlanSha: preconditionPlan.preconditionPlanSha,
       flowAssets: planFlowSummaries(preconditionPlan),
     });
@@ -2069,7 +2178,8 @@ try {
     }
     const isolation = buildIsolationState(caseJson, appRestart);
     writeExecutionState(execDir, {
-      schemaVersion: 1,
+      ...readExecutionState(execDir),
+      schemaVersion: 2,
       executionId,
       startedAt: readExecutionState(execDir)?.startedAt || nowIso(),
       lifecycle: 'RUNNING',
@@ -2104,6 +2214,38 @@ try {
       nextAction: blockedOnStart ? 'stop-current-case' : 'continue-current-case',
       finalized,
     }, null, 2));
+  } else if (command === 'recoverOrphaned') {
+    if (!options.executionId || !options.batchId) throw new Error('recover-orphaned requires --execution-id and --batch-id');
+    const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+    const execDir = path.join(runtimeDir, 'executions', options.executionId);
+    const executionState = readExecutionState(execDir);
+    if (!executionState) throw new Error(`Execution was not started: ${options.executionId}`);
+    if (executionState.finalized) throw new Error(`Execution already finalized: ${options.executionId}`);
+    if (fs.existsSync(path.join(execDir, 'agent', 'runtime.json'))) throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: orphan recovery does not accept an initialized Agent Runtime');
+    const events = readJsonl(path.join(execDir, 'timeline.jsonl'));
+    if (events[0]?.type !== 'executionStart' || events[0]?.executionId !== options.executionId) throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: orphan execution is missing its executionStart fact');
+    const invalid = events.find((event) => !['executionStart', 'environmentProbe'].includes(event.type) && !isExecutionBootstrapFact(event));
+    if (invalid) throw new Error(`EXECUTION_RECOVERY_CONTRACT_CHANGED: orphan execution contains ${invalid.type}`);
+    const deadlineAt = new Date(new Date(executionState.startedAt).getTime() + Number(executionState.budget?.maxDurationMs || DEFAULT_BUDGET.maxDurationMs));
+    if (Number.isNaN(deadlineAt.getTime()) || deadlineAt.getTime() > Date.now()) throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: orphan execution has not exceeded its deadline');
+    const event = normalizeEvent({
+      type: 'executionRecovery',
+      source: 'run-case.js',
+      status: 'BLOCKED',
+      failureCode: 'EXECUTION_ORPHANED',
+      recoveryBatchId: options.batchId,
+      reason: options.reason || '遗留 execution 已超过 deadline 且未初始化 Agent Runtime，由批次协调器确定性收尾。',
+    });
+    appendJsonl(path.join(execDir, 'timeline.jsonl'), event);
+    const finalized = finalize(caseDir, {
+      platform: options.platform,
+      executionId: options.executionId,
+      status: 'BLOCKED',
+      failureCode: 'EXECUTION_ORPHANED',
+      reason: event.reason,
+      allowIncompletePreconditions: true,
+    });
+    console.log(JSON.stringify({ executionId: options.executionId, recovered: true, recovery: event, finalized }, null, 2));
   } else if (command === 'checkBudget') {
     const runtimeDir = caseRuntimeDir(caseDir, options.platform);
     const executionId = options.executionId || latestExecutionId(runtimeDir);
@@ -2130,12 +2272,16 @@ try {
       ok: options.eventType === 'actionResult' ? true : undefined,
       ...(options.eventType === 'actionResult' ? requestedActionFields : {}),
       requestedAction: options.eventType === 'actionResult' ? requestedAction || undefined : undefined,
+      source: options.eventType === 'actionResult' ? 'action.sh' : undefined,
     });
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
-    const caseJson = readJson(path.join(caseDir, 'case.json'));
-    if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
-    validateCaseExecutionContract(caseJson);
+    assertRuntimeBindingReady(execDir, events, event);
+    if (event.turnId) {
+      const conflictingTurn = events.find((item) => item.turnId === event.turnId && eventStepId(item) !== eventStepId(event));
+      if (conflictingTurn) throw new Error(`AGENT_RESULT_INVALID: turnId ${event.turnId} already belongs to step ${eventStepId(conflictingTurn) || '<none>'}.`);
+    }
+    const caseJson = readExecutionCase(caseDir, execDir);
     const preconditionReady = preconditionReadiness(caseJson, events, event);
     if (!preconditionReady.ok) {
       throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
@@ -2181,9 +2327,10 @@ try {
       process.exit(3);
     }
     console.log(JSON.stringify({ executionId, budgetOk: true, eventType: options.eventType, paceHint: paceHint(events, event) }, null, 2));
-  } else if (command === 'record' || command === 'recordAction' || command === 'recordObservation') {
+  } else if (command === 'record' || command === 'recordAction' || command === 'recordObservation' || command === 'recordAgentRuntime') {
     const allowActionResult = command === 'recordAction';
     const allowObservation = command === 'recordObservation';
+    const allowAgentRuntime = command === 'recordAgentRuntime';
     const runtimeDir = caseRuntimeDir(caseDir, options.platform);
     const executionId = options.executionId || latestExecutionId(runtimeDir);
     if (!executionId) throw new Error('No execution exists. Run --start first or pass --execution-id.');
@@ -2191,11 +2338,15 @@ try {
     const executionState = readExecutionState(execDir);
     if (!executionState) throw new Error(`Execution was not started: ${executionId}`);
     if (executionState?.finalized) throw new Error(`Execution already finalized: ${executionId}`);
-    const caseJson = readJson(path.join(caseDir, 'case.json'));
-    if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
-    validateCaseExecutionContract(caseJson);
+    const caseJson = readExecutionCase(caseDir, execDir);
     validateGlobalRules(caseJson);
     let event = normalizeEvent(JSON.parse(options.recordJson));
+    if (event.type === 'decision' && event.decision === 'act') {
+      validateActionExecution(event.action || event.requestedAction, {
+        platform: options.platform,
+        context: 'act decision action',
+      });
+    }
     if (event.type === 'evidenceCheck') {
       throw new Error('EVIDENCE_CHECK_SOURCE_REQUIRED: evidenceCheck 只能由 run-case.js 根据结构化 qualityClaim 生成。');
     }
@@ -2208,15 +2359,52 @@ try {
     if (command === 'record' && !AGENT_WRITABLE_EVENT_TYPES.has(event.type)) {
       throw new Error(`EVENT_SOURCE_REQUIRED: 公开 --record-json 不接受框架事件 ${event.type}。`);
     }
+    if (allowAgentRuntime && event.type !== 'agentRuntime') {
+      throw new Error('EVENT_SOURCE_REQUIRED: --record-agent-runtime-json 只接受 agentRuntime。');
+    }
+    if (event.type === 'agentRuntime' && (!allowAgentRuntime || process.env.MAVT_AGENT_RUNTIME_WRITER !== '1')) {
+      throw new Error('EVENT_SOURCE_REQUIRED: agentRuntime 只能由顶层 scripts/record-agent-runtime.js 写入。');
+    }
     validateRuleEventAgainstCase(event, caseJson);
     validatePreconditionEventAgainstCase(event, caseJson);
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
+    assertRuntimeBindingReady(execDir, events, event);
+    if (event.turnId) {
+      const conflictingTurn = events.find((item) => item.turnId === event.turnId && eventStepId(item) !== eventStepId(event));
+      if (conflictingTurn) throw new Error(`AGENT_RESULT_INVALID: turnId ${event.turnId} already belongs to step ${eventStepId(conflictingTurn) || '<none>'}.`);
+    }
     const preconditionReady = preconditionReadiness(caseJson, events, event);
     if (!preconditionReady.ok) {
       throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
     }
-    const preconditionOrderReady = preconditionOrderReadiness(caseJson, events, event);
+    if (event.type === 'agentRuntime' && event.status === 'BOUND') {
+      const existingBound = events.find((item) => item.type === 'agentRuntime' && item.status === 'BOUND');
+      if (existingBound) {
+        const sameBinding = ['provider', 'protocolSha', 'implementationSha', 'sessionScope', 'requestSha', 'sessionId']
+          .every((field) => (existingBound[field] || null) === (event[field] || null));
+        if (!sameBinding) throw new Error('AGENT_RESULT_INVALID: execution 已绑定不同的 Agent Runtime。');
+        console.log(JSON.stringify({ executionId, eventType: event.type, alreadyRecorded: true, timeline: timelinePath }, null, 2));
+        process.exit(0);
+      }
+      const businessFact = events.find((item) => isCaseExecutionFact(item));
+      if (businessFact) {
+        throw new Error(`AGENT_RESULT_INVALID: Agent Runtime BOUND 必须先于业务事实，当前已有 ${businessFact.type}。`);
+      }
+    }
+    if (event.type === 'agentRuntime' && ['FAILED', 'INTERRUPTED'].includes(event.status)) {
+      const existingFailure = events.find((item) => item.type === 'agentRuntime' && ['FAILED', 'INTERRUPTED'].includes(item.status));
+      if (existingFailure) {
+        const sameFailure = ['provider', 'status', 'failureCode', 'protocolSha', 'implementationSha', 'requestSha', 'sessionId']
+          .every((field) => (existingFailure[field] || null) === (event[field] || null));
+        if (!sameFailure) throw new Error('AGENT_RESULT_INVALID: Agent Runtime 已有不同的失败终态。');
+        console.log(JSON.stringify({ executionId, eventType: event.type, alreadyRecorded: true, timeline: timelinePath }, null, 2));
+        process.exit(0);
+      }
+    }
+    const preconditionOrderReady = event.type === 'agentRuntime'
+      ? { ok: true }
+      : preconditionOrderReadiness(caseJson, events, event);
     if (!preconditionOrderReady.ok) {
       throw new Error(`${preconditionOrderReady.failureCode}: ${preconditionOrderReady.reason}`);
     }
@@ -2285,6 +2473,9 @@ try {
     appendJsonl(timelinePath, event);
     if (preparedPerception.evidenceCheck) appendJsonl(timelinePath, preparedPerception.evidenceCheck);
     const flowTechnicalFailure = preconditionFlowTechnicalFailure(event);
+    const agentRuntimeFailure = event.type === 'agentRuntime' && ['FAILED', 'INTERRUPTED'].includes(event.status)
+      ? { failureCode: event.failureCode, reason: event.reason || `Agent runtime ${event.status.toLowerCase()}.` }
+      : null;
     const terminalPrecondition = preconditionTerminalOptions(event);
     const evidenceTechnicalFailure = event.failureCode === 'OBSERVATION_ARTIFACT_INVALID'
       ? { failureCode: 'OBSERVATION_ARTIFACT_INVALID', reason: event.reason || '截图产物无法解码。' }
@@ -2293,7 +2484,17 @@ try {
         : preparedPerception.evidenceCheck?.verdict === 'SOURCE_CHANGED'
           ? { failureCode: 'OBSERVATION_ARTIFACT_CHANGED', reason: preparedPerception.evidenceCheck.reason }
           : null;
-    if (flowTechnicalFailure) {
+    if (agentRuntimeFailure) {
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: agentRuntimeFailure.failureCode,
+        reason: agentRuntimeFailure.reason,
+        allowIncompletePreconditions: true,
+      });
+      console.log(JSON.stringify({ executionId, eventType: event.type, timeline: path.join(execDir, 'timeline.jsonl'), agentRuntimeFailure, finalized }, null, 2));
+    } else if (flowTechnicalFailure) {
       appendPreconditionFlowFailure(timelinePath, event, flowTechnicalFailure);
       const finalized = finalize(caseDir, {
         platform: options.platform,
@@ -2324,7 +2525,8 @@ try {
       const nextAction = event.type === 'perception' && event.qualityClaim
         ? (event.retryOf ? 'finalize-visual-input-unverifiable-or-continue' : 'retry-visual-input')
         : undefined;
-      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), paceHint: paceHint(events, event), nextAction }, null, 2));
+      const nextWork = deriveNextWork({ caseJson, execution: readExecutionState(execDir), events: readJsonl(timelinePath), execDir });
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), paceHint: paceHint(events, event), nextAction, nextWork }, null, 2));
     }
   } else if (command === 'finalize') {
     console.log(JSON.stringify(finalize(caseDir, options), null, 2));

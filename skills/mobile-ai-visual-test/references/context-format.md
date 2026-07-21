@@ -24,9 +24,9 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 
 ## timeline.jsonl
 
-当前 execution 的事实源。报告、结果和统计都从 timeline 和当前 `case.json` 渲染。
+当前 execution 的事实源。结果和统计使用 timeline 与 `case.snapshot.json`；报告使用当前 `case.json` 判断执行契约是否仍适用。
 
-事件类型：`executionStart`、`environmentProbe`、`precondition`、`observation`、`evidenceCheck`、`perception`、`decision`、`rule`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。`evidenceCheck` 只能由 `run-case.js` 根据 perception 的结构化 `qualityClaim` 生成；`flow` 及 `scope=precondition-flow` 的 observation/actionResult 只属于前置条件。
+事件类型：`executionStart`、`environmentProbe`、`executionRecovery`、`agentRuntime`、`precondition`、`observation`、`evidenceCheck`、`perception`、`decision`、`rule`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。`agentRuntime` 只记录独立 Agent 会话绑定或失败，不参与业务 PASS；`evidenceCheck` 只能由 `run-case.js` 根据 perception 的结构化 `qualityClaim` 生成；`flow` 及 `scope=precondition-flow` 的 observation/actionResult 只属于前置条件。
 
 事件 schema 见 `interfaces.md`。
 
@@ -36,8 +36,11 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "executionId": "20260708-101500-001-abcd",
+  "sourceSha1": "source-xxxxxxxxxxxx",
+  "caseContractSha": "contract-xxxxxxxxxxxx",
+  "preconditionPlanSha": "precondition-plan-xxxxxxxxxxxx",
   "startedAt": "2026-07-08T10:15:00+08:00",
   "endedAt": "2026-07-08T10:18:00+08:00",
   "lifecycle": "FINALIZED",
@@ -49,7 +52,15 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 }
 ```
 
-生命周期为 `STARTING -> RUNNING -> FINALIZING -> FINALIZED`，冷启动入口异常可进入 `BLOCKED_START` 后由框架收尾。`FINALIZING` 使用 `result.draft.json` 恢复半提交；`state.json.committedExecutionIds` 保证累计统计只应用一次。finalized 后不得追加 timeline。
+生命周期为 `STARTING -> RUNNING -> FINALIZING -> FINALIZED`，冷启动入口异常可进入 `BLOCKED_START` 后由框架收尾。`FINALIZING` 使用 `result.draft.json` 恢复半提交；finalized 后不得追加 timeline。批次 execution 的 finalize 只产生业务 `result.json` 与 `metrics.json`，不会提前改写对外状态和报告。
+
+同目录的 `case.snapshot.json` 是 execution 冻结业务契约。正式已启动 execution 的记录、Case Engine、finalize 和 Agent 请求都强制使用 snapshot；缺失或哈希不一致按执行契约损坏拒绝。仅显式历史兼容入口允许读取没有 snapshot 的旧产物。
+
+## Agent 与批次产物
+
+每个 execution 的 `execution.json` 固化所属 batchId，CaseAgentRequest 和 runtime.json 继续保存同一 batchId；`agent/` 保存 contract、request、runtime、response、validation 和未完成 turn draft。provider 由 Runtime Core 写入 request 并进入 `requestSha`，再与 `agentRuntime BOUND` 的 protocolSha、implementationSha 和 sessionId 共同绑定。validation 只由 Runtime Core 写入，并覆盖成功、结果无效、创建失败、中断和超时等所有 Runtime 终态。工作空间 `runs/<batchId>/` 保存 contract.json、batch.json 与 events.jsonl，并从绑定产物读取可信终态。
+
+批次提交生成 `<execution>/completion.json`，这是报告和 index 读取的可信发布标记。`result.json` 始终保留业务执行结论；若 Runtime 校验失败，completion 的 `businessStatus` 仍保留该结论，但对外 `status` 为 `BLOCKED`，报告同时展示“对外结论、业务执行结果、Runtime 校验”。`state.json.committedExecutionIds` 保证可信发布累计统计只应用一次；报告属于可重建派生产物，重复提交会幂等刷新。
 
 ## result.json
 

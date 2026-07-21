@@ -7,7 +7,7 @@
 ## 原则
 
 - 动作必须结构化，agent 不直接拼设备命令。
-- 正式执行只走 `scripts/action.sh --case-dir <case-dir> --platform <platform> --execution-id <id> ...`。
+- 正式单动作走 `scripts/action.sh --case-dir <case-dir> --platform <platform> --execution-id <id> ...`；动作后必然需要观察时可走框架稳定入口 `scripts/action-observe.sh`。
 - `actionResult` 只能由 `action.sh` 写入 timeline。
 - 前置条件 Flow 动作在 adapter 调用前，必须由 `run-case.js` 对照 execution 冻结计划校验；失败时不得触发设备动作。
 - adapter 和 atoms 不读写 case、不写 timeline、不做业务判断。
@@ -62,6 +62,7 @@
 - `launchApp` 使用已确认环境，不能在无人值守阶段猜入口。
 - Android 显式 entry 失败时可回退包级 launcher，并记录 `launchMethod=monkey-fallback`。
 - `restartApp` 是 execution 级隔离动作，默认由 `run-case.js --start` 自动调用。
+- 自动调用的 `restartApp` 写入 `scope=execution-bootstrap`，不得绑定步骤或前置条件；该 scope 不对 case-executor 开放。
 - `restartApp` 禁止绑定 `stepId`，不能作为步骤证据。
 - 只有 `ok=true` 且 `coldStartVerified=true` 才算干净冷启动。
 - 冷启动失败处理见 `failure-policy.md`。
@@ -78,6 +79,8 @@ scripts/platform/adapters/<platform>/atoms/
 atoms 只做最小能力：`tap`、`long-press`、`swipe`、`input-text`、`screenshot`、`dump-tree`、`foreground`、`logs`、`launch-app`、`restart-app`、`wait`。
 
 不要在底层封装 `tap + inputText`、`tap + wait + assert`、`scroll until visible + tap`、`longPress + tap menu item` 这类 agent 可审计流程。
+
+`action-observe.sh` 位于稳定入口层而不是 adapter/atoms。它只把已经由 Agent 决定的一个 action 与随后一次 observation 确定性串联，仍分别写入两条正式事实；不允许包含第二个动作、断言、目标搜索或自动重试。
 
 ## 预算
 

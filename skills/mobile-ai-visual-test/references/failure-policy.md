@@ -38,6 +38,11 @@
 | `ENV_UNAVAILABLE` | `BLOCKED` | 平台或设备不可用 |
 | `ENV_AMBIGUOUS` | `BLOCKED` | 设备、App 或入口歧义 |
 | `PLATFORM_UNIMPLEMENTED` | `BLOCKED` | 平台能力未实现 |
+| `AGENT_PROTOCOL_MISMATCH` | `BLOCKED` | 子 Agent 加载的 SkillContract 与请求不一致 |
+| `AGENT_RUNTIME_UNAVAILABLE` | `BLOCKED` | Agent 平台无法创建独立 case 会话 |
+| `AGENT_RUNTIME_INTERRUPTED` | `BLOCKED` | 独立 case Agent 会话异常中断 |
+| `AGENT_RUNTIME_RELEASE_FAILED` | `BLOCKED` | Host 连续三次无法确认独立 case 会话已释放，批次不得继续 |
+| `AGENT_RESULT_INVALID` | `BLOCKED` | Agent 返回结果与 execution/result 事实不一致 |
 | `TOOL_ERROR` | `BLOCKED` | 工具或底层命令异常；必须有失败 observation、actionResult 或框架技术事件支持 |
 | `ACTION_RESULT_SOURCE_REQUIRED` | `BLOCKED` | actionResult 来源非法 |
 | `OBSERVATION_SOURCE_REQUIRED` | `BLOCKED` | observation 来源非法 |
@@ -55,6 +60,7 @@
 | `EVENT_SOURCE_REQUIRED` | `BLOCKED` | 公开入口尝试写框架所有事件 |
 | `CASE_STEPS_REQUIRED` | `BLOCKED` | 用例未解析出任何可执行步骤 |
 | `EXECUTION_RECOVERY_CONTRACT_CHANGED` | `BLOCKED` | 半提交 draft 与当前 execution 或 case contract 不一致，禁止自动恢复 |
+| `EXECUTION_ORPHANED` | `BLOCKED` | execution 已超过 deadline、未初始化 Runtime 且只有启动事实，由框架确定性收尾 |
 
 ## 证据和顺序
 
@@ -79,8 +85,11 @@
 ## 冷启动、预算和停止
 
 - 每个 execution 开始必须尝试 `restartApp`；冷启动敏感用例失败时为 `BLOCKED/CASE_RESTART_FAILED`。
+- 启动级 restartApp 使用 `scope=execution-bootstrap`，允许早于 Runtime BOUND；所有前置条件和业务步骤事实必须晚于 BOUND。
 - 单 case 默认 30 分钟；超时为 `CASE_TIMEOUT`，其他普通预算超限为 `EXECUTION_BUDGET_EXCEEDED`。
 - 前置条件 Flow 每个条件默认最多 5 个动作，单 case 默认最多 12 个；超限为 `PRECONDITION_FLOW_BUDGET_EXCEEDED`。
 - Flow observation 失败仍写入 timeline 供审计，但不能作为 STARTED、STEP_COMPLETED、COMPLETED 或 already-satisfied 的证据。
 - Flow observation/action 的确定性技术失败由框架写入 Flow 和前置条件阻塞终态并立即收尾。
 - 明确断言失败、前置条件终态、环境不可用、工具错误、未知弹窗、破坏性风险或预算超限时立即停止当前 case。
+- Agent Runtime 在 execution 收尾前失败必须有 `agentRuntime FAILED/INTERRUPTED` 框架事实；result 已锁定后的释放失败记录在 runtime、validation 和 batch，不追加 finalized timeline。它不归类为设备 `TOOL_ERROR`，也不自动重试业务动作。
+- 没有 Runtime 的过期孤立 execution 只能由 `executionRecovery BLOCKED/EXECUTION_ORPHANED` 支持收尾，不得伪装成 Agent Runtime 失败。

@@ -855,6 +855,7 @@ run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--
   type: 'decision',
   stepId: 'step-001',
   decision: 'act',
+  action: { type: 'launchApp', reason: '需要打开 App' },
   reason: '需要打开 App',
 })]);
 recordActionResult(parsed.caseDir, 'harmony', started.executionId, {
@@ -1356,6 +1357,11 @@ const previewArtifactPerception = {
   reason: 'Agent 预览中疑似存在竖向黑块',
 };
 run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify(previewArtifactPerception), '--execution-id', visualEvidenceStart.executionId]);
+const firstVisualRetryWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--execution-id', visualEvidenceStart.executionId,
+]));
+assert.strictEqual(firstVisualRetryWork.nextWork.visualRetryContext.attemptCount, 1);
+assert.strictEqual(firstVisualRetryWork.nextWork.visualRetryContext.retryAllowed, true);
 const duplicatePreviewAttempt = runAllowFailure('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify(previewArtifactPerception), '--execution-id', visualEvidenceStart.executionId]);
 assert.notStrictEqual(duplicatePreviewAttempt.status, 0);
 assert.ok(duplicatePreviewAttempt.stderr.includes('VISUAL_INPUT_RETRY_INVALID'));
@@ -1365,6 +1371,10 @@ run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 
   decision: 'retry_visual_input',
   reason: '以原始尺寸重新打开同一原图',
 }), '--execution-id', visualEvidenceStart.executionId]);
+const linkedVisualRetryWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--execution-id', visualEvidenceStart.executionId,
+]));
+assert.strictEqual(linkedVisualRetryWork.nextWork.visualRetryContext.requiredRetryOf, 'preview-attempt-001');
 run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   ...previewArtifactPerception,
   attemptId: 'preview-attempt-002',
@@ -1372,6 +1382,11 @@ run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 
   presentationMode: 'original',
 }), '--execution-id', visualEvidenceStart.executionId]);
 visualEvents = fs.readFileSync(path.join(visualEvidenceStart.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+const exhaustedVisualRetryWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--execution-id', visualEvidenceStart.executionId,
+]));
+assert.strictEqual(exhaustedVisualRetryWork.nextWork.visualRetryContext.attemptCount, 2);
+assert.strictEqual(exhaustedVisualRetryWork.nextWork.visualRetryContext.retryAllowed, false);
 const visualChecks = visualEvents.filter((event) => event.type === 'evidenceCheck');
 assert.strictEqual(visualChecks.length, 2);
 assert.deepStrictEqual(visualChecks.map((event) => event.attemptId), ['preview-attempt-001', 'preview-attempt-002']);
@@ -1892,12 +1907,46 @@ assert.strictEqual(restartStart.appRestart.oldPid, '12345');
 assert.strictEqual(restartStart.appRestart.newPid, '23456');
 assert.strictEqual(restartStart.appRestart.stopMethod, 'aa-force-stop');
 const restartEvents = fs.readFileSync(restartStart.timeline, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
-assert.ok(restartEvents.some((event) => event.type === 'actionResult' && event.action === 'restartApp' && event.ok === true && event.source === 'action.sh'));
+const restartBootstrap = restartEvents.find((event) => event.type === 'actionResult' && event.action === 'restartApp');
+assert.ok(restartBootstrap && restartBootstrap.ok === true && restartBootstrap.source === 'action.sh');
+assert.strictEqual(restartBootstrap.scope, 'execution-bootstrap');
 const fakeHdcRestartLog = fs.readFileSync(fakeHdcLog, 'utf8');
 assert.ok(fakeHdcRestartLog.includes('shell aa force-stop com.example.demo'));
 assert.ok(fakeHdcRestartLog.includes('shell aa start -b com.example.demo -a EntryAbility'));
-recordPreconditions(restartParsed.caseDir, 'harmony', restartStart.executionId);
-run('node', ['scripts/run-case.js', restartParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'restart isolation smoke test', '--execution-id', restartStart.executionId]);
+const restartRuntime = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'init', restartParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', restartStart.executionId,
+  '--provider', 'Codex', '--workspace-cwd', workspace,
+]));
+assert.strictEqual(restartRuntime.provider, 'codex');
+const restartOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: restartOpen.operation.operationId, ok: true, sessionId: 'restart-runtime-session' }),
+]);
+const restartBoundEvents = fs.readFileSync(restartStart.timeline, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+const restartBootstrapIndex = restartBoundEvents.findIndex((event) => event.type === 'actionResult' && event.scope === 'execution-bootstrap');
+const restartBoundIndex = restartBoundEvents.findIndex((event) => event.type === 'agentRuntime' && event.status === 'BOUND');
+assert.ok(restartBootstrapIndex >= 0 && restartBoundIndex > restartBootstrapIndex);
+run('node', [
+  'scripts/agent-runtime.js', 'interrupt', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId, '--reason', 'restart runtime smoke complete',
+]);
+const restartInterrupt = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: restartInterrupt.operation.operationId, ok: true }),
+]);
+const restartRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: restartRelease.operation.operationId, ok: true }),
+]);
 
 const restartDegradedFile = path.join(sourceRoot, 'cases', 'restart-degraded.md');
 write(restartDegradedFile, `# 普通交互隔离降级测试
@@ -2926,5 +2975,825 @@ assert.strictEqual(recoveredExecution.lifecycle, 'FINALIZED');
 const recoveryStateAfter = json(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'state.json'));
 assert.strictEqual(recoveryStateAfter.executionCount, recoveryStateBefore.executionCount + 1);
 assert.strictEqual(recoveryStateAfter.committedExecutionIds.filter((id) => id === recoveryStart.executionId).length, 1);
+
+const agentContract = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor']));
+assert.strictEqual(agentContract.name, 'mobile-ai-visual-test');
+assert.strictEqual(agentContract.role, 'case-executor');
+assert.ok(agentContract.protocolSha.startsWith('agent-protocol-'));
+assert.ok(agentContract.implementationSha.startsWith('agent-implementation-'));
+assert.deepStrictEqual(agentContract.requiredResources, [
+  'SKILL.md',
+  'references/case-executor-contract.md',
+  'references/interfaces.md',
+  'references/failure-policy.md',
+  'references/context-format.md',
+]);
+const verifiedAgentContract = JSON.parse(run('node', [
+  'scripts/build-agent-contract.js', '--role', 'case-executor', '--verify-sha', agentContract.protocolSha,
+]));
+assert.strictEqual(verifiedAgentContract.verified, true);
+const mismatchedAgentContract = runAllowFailure('node', [
+  'scripts/build-agent-contract.js', '--role', 'case-executor', '--verify-sha', 'agent-protocol-invalid',
+]);
+assert.notStrictEqual(mismatchedAgentContract.status, 0);
+assert.ok(mismatchedAgentContract.stderr.includes('AGENT_PROTOCOL_MISMATCH'));
+
+const lateBoundStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const lateBoundEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', lateBoundStart.executionId, 'step-001', 'late-bound-evidence');
+const lateBoundRequest = JSON.parse(run('node', [
+  'scripts/build-case-agent-request.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', lateBoundStart.executionId, '--provider', 'codex',
+  '--workspace-cwd', workspace, '--skill-contract-json', JSON.stringify(agentContract),
+]));
+const lateBound = runAllowFailure('node', [
+  'scripts/record-agent-runtime.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', lateBoundStart.executionId,
+  '--event-json', JSON.stringify({ provider: 'codex', status: 'BOUND', sessionScope: 'case', protocolSha: agentContract.protocolSha, implementationSha: agentContract.implementationSha, requestSha: lateBoundRequest.requestSha, sessionId: 'late-bound-session' }),
+]);
+assert.notStrictEqual(lateBound.status, 0);
+assert.ok(lateBound.stderr.includes('BOUND 必须先于业务事实'));
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', lateBoundStart.executionId, 'step-001', 'late BOUND guard verified', lateBoundEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', lateBoundStart.executionId]);
+
+const agentTurnStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+assert.ok(fs.existsSync(path.join(agentTurnStart.execDir, 'case.snapshot.json')));
+assert.strictEqual(json(path.join(agentTurnStart.execDir, 'execution.json')).caseContractSha, caseContractSha(json(path.join(agentTurnStart.execDir, 'case.snapshot.json'))));
+const forgedAgentRuntime = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+    type: 'agentRuntime', source: 'record-agent-runtime.js', provider: 'codex', status: 'BOUND', sessionScope: 'case', protocolSha: agentContract.protocolSha, implementationSha: agentContract.implementationSha, requestSha: 'request-0000000000000000', sessionId: 'forged-session',
+  }), '--execution-id', agentTurnStart.executionId,
+]);
+assert.notStrictEqual(forgedAgentRuntime.status, 0);
+assert.ok(forgedAgentRuntime.stderr.includes('EVENT_SOURCE_REQUIRED'));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', agentTurnStart.executionId, '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const caseAgentRequest = json(path.join(agentTurnStart.execDir, 'agent', 'request.json'));
+const agentTurnOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: agentTurnOpen.operation.operationId, ok: true, sessionId: 'self-test-session' }),
+]);
+assert.strictEqual(caseAgentRequest.executionId, agentTurnStart.executionId);
+assert.strictEqual(caseAgentRequest.provider, 'codex');
+assert.strictEqual(caseAgentRequest.executionPolicy.sessionScope, 'case');
+assert.strictEqual(caseAgentRequest.executionPolicy.allowDestructiveActions, false);
+const initialNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+assert.strictEqual(initialNextWork.nextWork.type, 'OBSERVE_STEP');
+const agentTurnEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', agentTurnStart.executionId, 'step-001', 'agent-turn-evidence');
+const decideNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+assert.strictEqual(decideNextWork.nextWork.type, 'DECIDE_STEP');
+assert.strictEqual(decideNextWork.nextWork.latestObservation.screenshot, agentTurnEvidence);
+const missingActAction = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--record-json', JSON.stringify({ type: 'decision', stepId: 'step-001', decision: 'act', reason: 'missing executable action' }),
+]);
+assert.notStrictEqual(missingActAction.status, 0);
+assert.ok(missingActAction.stderr.includes('act decision action'));
+const agentTurn = {
+  schemaVersion: 1,
+  turnId: 'turn-agent-self-test-001',
+  stepId: 'step-001',
+  observation: agentTurnEvidence,
+  facts: [
+    { type: 'perception', status: 'USABLE', reason: 'self-test 当前截图可用于判断' },
+    { type: 'assertion', status: 'PASS', reason: 'self-test 当前步骤满足预期' },
+  ],
+};
+const interruptedAgentTurnCommit = runAllowFailure('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--turn-json', JSON.stringify(agentTurn),
+], { env: { ...process.env, MAVT_SELF_TEST_TURN_INTERRUPT: 'after-first-fact' } });
+assert.notStrictEqual(interruptedAgentTurnCommit.status, 0);
+assert.ok(interruptedAgentTurnCommit.stderr.includes('MAVT_SELF_TEST_TURN_INTERRUPT'));
+assert.strictEqual(fs.readdirSync(path.join(agentTurnStart.execDir, 'agent', 'turns')).filter((name) => name.endsWith('.draft.json')).length, 1);
+const committedAgentTurn = JSON.parse(run('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--turn-json', JSON.stringify(agentTurn),
+]));
+assert.deepStrictEqual(committedAgentTurn.committed, ['perception', 'assertion']);
+assert.strictEqual(committedAgentTurn.alreadyCommitted, false);
+assert.strictEqual(committedAgentTurn.recovered, true);
+assert.strictEqual(fs.readdirSync(path.join(agentTurnStart.execDir, 'agent', 'turns')).filter((name) => name.endsWith('.draft.json')).length, 0);
+const recommittedAgentTurn = JSON.parse(run('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--turn-json', JSON.stringify(agentTurn),
+]));
+assert.strictEqual(recommittedAgentTurn.alreadyCommitted, true);
+const conflictingAgentTurn = runAllowFailure('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--turn-json', JSON.stringify({
+    ...agentTurn,
+    facts: [
+      { type: 'perception', status: 'USABLE', reason: '与原 turnId 不同的事实' },
+      agentTurn.facts[1],
+    ],
+  }),
+]);
+assert.notStrictEqual(conflictingAgentTurn.status, 0);
+assert.ok(conflictingAgentTurn.stderr.includes('turnId already used by a different fact'));
+const finalNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+assert.strictEqual(finalNextWork.nextWork.type, 'FINALIZE_PASS');
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', agentTurnStart.executionId]);
+const agentTurnAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+const agentTurnResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+const validatedAgentResult = JSON.parse(run('node', [
+  'scripts/validate-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--request-json', JSON.stringify(caseAgentRequest),
+  '--result-json', JSON.stringify(agentTurnResult),
+]));
+assert.strictEqual(validatedAgentResult.valid, true);
+const invalidAgentResult = runAllowFailure('node', [
+  'scripts/validate-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--request-json', JSON.stringify(caseAgentRequest),
+  '--result-json', JSON.stringify({
+    schemaVersion: 1,
+    provider: 'codex',
+    executionId: agentTurnStart.executionId,
+    requestSha: caseAgentRequest.requestSha,
+    protocolSha: agentContract.protocolSha,
+    implementationSha: agentContract.implementationSha,
+    status: 'FAIL',
+    failureCode: 'ASSERTION_FAILED',
+    finalized: true,
+    resultPath: path.join(agentTurnStart.execDir, 'result.json'),
+    metricsPath: path.join(agentTurnStart.execDir, 'metrics.json'),
+  }),
+]);
+assert.notStrictEqual(invalidAgentResult.status, 0);
+assert.ok(invalidAgentResult.stderr.includes('AGENT_RESULT_INVALID'));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: agentTurnAwait.operation.operationId, ok: true, result: agentTurnResult }),
+]);
+const agentTurnRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: agentTurnRelease.operation.operationId, ok: true }),
+]);
+
+const staleTurnRecoveryStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const staleTurnRecoveryEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', staleTurnRecoveryStart.executionId, 'step-001', 'stale-turn-recovery-evidence');
+const staleTurnRecoveryWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', staleTurnRecoveryStart.executionId,
+]));
+const staleTurnRecoveryDecision = {
+  outcome: 'PASS',
+  turnId: `turn-${staleTurnRecoveryWork.workToken.slice('work-'.length)}`,
+  reason: '恢复后提交通过断言',
+  perception: { status: 'USABLE', reason: '恢复前已查看当前截图' },
+};
+const staleTurnRecoveryDraft = {
+  schemaVersion: 1,
+  turnId: staleTurnRecoveryDecision.turnId,
+  stepId: 'step-001',
+  observation: staleTurnRecoveryEvidence,
+  facts: [
+    { type: 'perception', status: 'USABLE', reason: staleTurnRecoveryDecision.perception.reason },
+    { type: 'assertion', status: 'PASS', reason: staleTurnRecoveryDecision.reason },
+  ],
+};
+const staleTurnInterrupted = runAllowFailure('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', staleTurnRecoveryStart.executionId,
+  '--turn-json', JSON.stringify(staleTurnRecoveryDraft),
+], { env: { ...process.env, MAVT_SELF_TEST_TURN_INTERRUPT: 'after-first-fact' } });
+assert.notStrictEqual(staleTurnInterrupted.status, 0);
+const staleTurnRecovered = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', staleTurnRecoveryStart.executionId,
+  '--work-token', staleTurnRecoveryWork.workToken,
+  '--decision-json', JSON.stringify(staleTurnRecoveryDecision),
+], { env: fakeEnv }));
+assert.strictEqual(staleTurnRecovered.status, 'COMPLETED');
+assert.strictEqual(json(path.join(staleTurnRecoveryStart.execDir, 'result.json')).status, 'PASS');
+
+const actionObserveStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+recordStepObservation(commonHeadingParsed.caseDir, 'harmony', actionObserveStart.executionId, 'step-001', 'action-observe-before');
+const actionObserveResult = JSON.parse(run('./scripts/action-observe.sh', [
+  '--case-dir', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionObserveStart.executionId,
+  '--step-id', 'step-001',
+  '--type', 'wait',
+  '--ms', '1',
+  '--settle-ms', '0',
+  '--observe-label', 'action-observe-after',
+], { env: fakeEnv }));
+assert.strictEqual(actionObserveResult.actionResult.ok, true);
+assert.strictEqual(actionObserveResult.observation.ok, true);
+const actionObserveEvidence = actionObserveResult.observation.artifacts.screenshot;
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', actionObserveStart.executionId, 'step-001', 'action-observe 后页面满足预期', actionObserveEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', actionObserveStart.executionId]);
+
+const interruptedAgentStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const interruptedAgentResult = JSON.parse(run('node', [
+  'scripts/record-agent-runtime.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', interruptedAgentStart.executionId,
+  '--event-json', JSON.stringify({
+    provider: 'codex', status: 'INTERRUPTED', failureCode: 'AGENT_RUNTIME_INTERRUPTED', reason: 'self-test agent session interrupted',
+  }),
+]));
+assert.strictEqual(interruptedAgentResult.agentRuntimeFailure.failureCode, 'AGENT_RUNTIME_INTERRUPTED');
+assert.strictEqual(json(path.join(interruptedAgentStart.execDir, 'result.json')).failureCode, 'AGENT_RUNTIME_INTERRUPTED');
+const interruptedNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', interruptedAgentStart.executionId,
+]));
+assert.strictEqual(interruptedNextWork.nextWork.type, 'STOP_FINALIZED');
+
+const interruptedBeforePreconditions = JSON.parse(run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--start']));
+const flowInitialNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--execution-id', interruptedBeforePreconditions.executionId,
+]));
+assert.strictEqual(flowInitialNextWork.nextWork.type, 'OBSERVE_FLOW_ENTRY');
+run('node', [
+  'scripts/record-agent-runtime.js', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', interruptedBeforePreconditions.executionId,
+  '--event-json', JSON.stringify({
+    provider: 'codex', status: 'FAILED', failureCode: 'AGENT_RUNTIME_UNAVAILABLE', reason: 'self-test runtime unavailable before preconditions',
+  }),
+]);
+const interruptedBeforePreconditionsResult = json(path.join(interruptedBeforePreconditions.execDir, 'result.json'));
+assert.strictEqual(interruptedBeforePreconditionsResult.status, 'BLOCKED');
+assert.strictEqual(interruptedBeforePreconditionsResult.failureCode, 'AGENT_RUNTIME_UNAVAILABLE');
+
+const runtimeStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', 'batch-self-test']));
+const runtimeSourceCasePath = path.join(commonHeadingParsed.caseDir, 'case.json');
+const runtimeSourceCase = json(runtimeSourceCasePath);
+const runtimeFrozenStepText = json(path.join(runtimeStart.execDir, 'case.snapshot.json')).steps[0].sourceText;
+const changedRuntimeSourceCase = JSON.parse(JSON.stringify(runtimeSourceCase));
+changedRuntimeSourceCase.steps[0].sourceText = 'execution 启动后的源文件变更';
+write(runtimeSourceCasePath, `${JSON.stringify(changedRuntimeSourceCase, null, 2)}\n`);
+const frozenNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(frozenNextWork.nextWork.step.sourceText, runtimeFrozenStepText);
+write(runtimeSourceCasePath, `${JSON.stringify(runtimeSourceCase, null, 2)}\n`);
+const runtimeInit = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]));
+assert.strictEqual(runtimeInit.state, 'PREPARED');
+const runtimeAgentDir = path.join(runtimeStart.execDir, 'agent');
+assert.ok(fs.existsSync(path.join(runtimeAgentDir, 'contract.json')));
+assert.ok(fs.existsSync(path.join(runtimeAgentDir, 'request.json')));
+assert.ok(json(path.join(runtimeAgentDir, 'request.json')).requestSha.startsWith('request-'));
+const openOperation = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(openOperation.operation.kind, 'OPEN_SESSION');
+assert.match(openOperation.operation.providerTaskName, /^mavt_case_[0-9a-f]{16}$/);
+assert.ok(openOperation.operation.remainingMs > 0);
+const repeatedOpenOperation = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(repeatedOpenOperation.operation.operationId, openOperation.operation.operationId);
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: openOperation.operation.operationId, ok: true, sessionId: 'codex-self-test-session' }),
+]);
+const awaitOperation = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(awaitOperation.operation.kind, 'AWAIT_RESULT');
+const runtimeEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', runtimeStart.executionId, 'step-001', 'runtime-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', runtimeStart.executionId, 'step-001', 'runtime self-test pass', runtimeEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', runtimeStart.executionId]);
+assert.ok(!fs.existsSync(path.join(runtimeStart.execDir, 'completion.json')));
+const runtimeCaseResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(runtimeCaseResult.provider, 'codex');
+const providerOverride = runAllowFailure('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId, '--provider', 'Codex',
+]);
+assert.strictEqual(providerOverride.status, 2);
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: awaitOperation.operation.operationId, ok: true, result: runtimeCaseResult }),
+]);
+const releaseOperation = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(releaseOperation.operation.kind, 'RELEASE_SESSION');
+assert.strictEqual(json(path.join(runtimeAgentDir, 'validation.json')).valid, true);
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: releaseOperation.operation.operationId, ok: true }),
+]);
+assert.strictEqual(json(path.join(runtimeAgentDir, 'runtime.json')).state, 'COMPLETED');
+assert.strictEqual(json(path.join(runtimeStart.execDir, 'execution.json')).schemaVersion, 2);
+
+const batchId = 'batch-self-test';
+const batchState = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', batchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]));
+assert.strictEqual(batchState.status, 'RUNNING');
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', batchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', runtimeStart.executionId,
+  '--runtime-path', path.join(runtimeAgentDir, 'runtime.json'),
+]);
+const batchCompleted = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', batchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(batchCompleted.status, 'COMPLETED');
+assert.ok(fs.existsSync(path.join(workspace, 'runs', batchId, 'events.jsonl')));
+assert.ok(fs.existsSync(path.join(workspace, 'runs', batchId, 'contract.json')));
+const successfulCompletion = json(path.join(runtimeStart.execDir, 'completion.json'));
+assert.strictEqual(successfulCompletion.status, 'PASS');
+assert.strictEqual(successfulCompletion.businessStatus, 'PASS');
+assert.strictEqual(successfulCompletion.controlStatus, 'VALIDATED');
+const repeatedBatchCompleted = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', batchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(repeatedBatchCompleted.status, 'COMPLETED');
+const completedReconcile = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', batchId,
+]));
+assert.strictEqual(completedReconcile.action, 'BATCH_COMPLETE');
+
+const forgedBatchCompletion = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'complete', '--workspace-cwd', workspace, '--batch-id', batchId,
+  '--case-key', commonHeadingCase.identity.caseKey,
+  '--validation-json', JSON.stringify({ valid: true, status: 'PASS' }),
+]);
+assert.notStrictEqual(forgedBatchCompletion.status, 0);
+
+const startFailureBatchId = 'batch-start-failure';
+const restartSensitiveCase = json(path.join(restartSensitiveParsed.caseDir, 'case.json'));
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', startFailureBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: restartSensitiveCase.identity.caseKey, caseDir: restartSensitiveParsed.caseDir }]),
+]);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const batchedRestartSensitiveStart = JSON.parse(run('node', [
+  'scripts/run-case.js', restartSensitiveParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', startFailureBatchId,
+], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+const startFailureBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-start-result', '--workspace-cwd', workspace, '--batch-id', startFailureBatchId,
+  '--case-key', restartSensitiveCase.identity.caseKey, '--execution-id', batchedRestartSensitiveStart.executionId,
+]));
+assert.strictEqual(startFailureBatch.status, 'COMPLETED');
+assert.strictEqual(startFailureBatch.cases[0].resultStatus, 'BLOCKED');
+assert.strictEqual(startFailureBatch.cases[0].completionSource, 'framework');
+
+const protocolRoot = path.join(tmp, 'protocol-root');
+for (const relative of [
+  'SKILL.md',
+  'references/case-executor-contract.md',
+  'references/interfaces.md',
+  'references/failure-policy.md',
+  'references/context-format.md',
+  'scripts/build-agent-contract.js',
+  'scripts/execute-next-work.js',
+  'scripts/build-case-agent-result.js',
+]) {
+  const destination = path.join(protocolRoot, relative);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(path.join(repo, relative), destination);
+}
+const protocolBeforeScriptChange = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--skill-root', protocolRoot]));
+fs.appendFileSync(path.join(protocolRoot, 'scripts', 'execute-next-work.js'), '\n// protocol digest self-test\n');
+const protocolAfterScriptChange = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--skill-root', protocolRoot]));
+assert.notStrictEqual(protocolBeforeScriptChange.protocolSha, protocolAfterScriptChange.protocolSha);
+assert.notStrictEqual(protocolBeforeScriptChange.implementationSha, protocolAfterScriptChange.implementationSha);
+
+const engineStart = JSON.parse(run('node', [
+  'scripts/run-case.js', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--start',
+  '--precondition-plan-sha', waitReasonFlowPreflight.cases[0].preconditionPlanSha,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const engineOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: engineOpen.operation.operationId, ok: true, sessionId: 'case-engine-session' }),
+]);
+const engineEntry = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+], { env: fakeEnv }));
+assert.strictEqual(engineEntry.status, 'DECISION_REQUIRED');
+assert.strictEqual(engineEntry.decisionRequest.type, 'DECIDE_FLOW_ENTRY');
+assert.ok(path.isAbsolute(engineEntry.decisionRequest.screenshotPath));
+assert.ok(engineEntry.decisionRequest.evidenceRef.startsWith('screenshots/'));
+const staleEngineDecision = runAllowFailure('node', [
+  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--work-token', 'work-stale', '--decision-json', JSON.stringify({ outcome: 'STARTABLE', reason: 'stale token test' }),
+], { env: fakeEnv });
+assert.notStrictEqual(staleEngineDecision.status, 0);
+assert.ok(staleEngineDecision.stderr.includes('STALE_NEXT_WORK'));
+const engineAction = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--work-token', engineEntry.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'STARTABLE', reason: '当前 observation 满足 Flow 起点' }),
+], { env: fakeEnv }));
+assert.strictEqual(engineAction.decisionRequest.type, 'EXECUTE_FLOW_ACTION');
+const engineEnd = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--work-token', engineAction.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'ACT', reason: '执行冻结的等待动作', action: waitReasonFlow.steps[0].action }),
+], { env: fakeEnv }));
+assert.strictEqual(engineEnd.decisionRequest.type, 'DECIDE_FLOW_END');
+const engineStep = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--work-token', engineEnd.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'TARGET_REACHED', reason: '终点页面已经稳定' }),
+], { env: fakeEnv }));
+assert.strictEqual(engineStep.decisionRequest.type, 'DECIDE_STEP');
+const engineCompleted = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--work-token', engineStep.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'PASS', reason: '截图证明页面已稳定' }),
+], { env: fakeEnv }));
+assert.strictEqual(engineCompleted.status, 'COMPLETED');
+const engineEvents = fs.readFileSync(path.join(engineStart.execDir, 'timeline.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+const engineFlowStarted = engineEvents.find((event) => event.type === 'flow' && event.status === 'STARTED');
+const engineFlowStepCompleted = engineEvents.find((event) => event.type === 'flow' && event.status === 'STEP_COMPLETED');
+assert.ok(engineFlowStarted && engineFlowStarted.scope === undefined);
+assert.ok(engineFlowStepCompleted?.evidenceObservation);
+assert.ok(engineEvents.some((event) => event.type === 'precondition' && event.status === 'PREPARED' && event.resolution === 'flow'));
+const engineAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+]));
+const engineResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: engineAwait.operation.operationId, ok: true, result: engineResult }),
+]);
+const engineRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+]));
+assert.strictEqual(engineRelease.operation.kind, 'RELEASE_SESSION');
+run('node', [
+  'scripts/agent-runtime.js', 'apply', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: engineRelease.operation.operationId, ok: true }),
+]);
+
+const timeoutBatchId = 'batch-timeout-self-test';
+const timeoutStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', timeoutBatchId]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const timeoutOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: timeoutOpen.operation.operationId, ok: true, sessionId: 'timeout-session' }),
+]);
+const timeoutRuntimePath = path.join(timeoutStart.execDir, 'agent', 'runtime.json');
+const expiredRuntime = json(timeoutRuntimePath);
+expiredRuntime.deadlineAt = new Date(Date.now() - 1000).toISOString();
+write(timeoutRuntimePath, `${JSON.stringify(expiredRuntime, null, 2)}\n`);
+const timeoutInterrupt = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+]));
+assert.strictEqual(timeoutInterrupt.operation.kind, 'INTERRUPT_SESSION');
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: timeoutInterrupt.operation.operationId, ok: true }),
+]);
+const timeoutRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+]));
+assert.strictEqual(timeoutRelease.operation.kind, 'RELEASE_SESSION');
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: timeoutRelease.operation.operationId, ok: true }),
+]);
+const timeoutRuntime = json(timeoutRuntimePath);
+assert.strictEqual(timeoutRuntime.state, 'TIMED_OUT');
+assert.ok(timeoutRuntime.releasedAt);
+assert.strictEqual(json(path.join(timeoutStart.execDir, 'result.json')).failureCode, 'CASE_TIMEOUT');
+assert.strictEqual(json(path.join(timeoutStart.execDir, 'agent', 'validation.json')).failureCode, 'CASE_TIMEOUT');
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', timeoutBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', timeoutBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', timeoutStart.executionId, '--runtime-path', timeoutRuntimePath,
+]);
+const timeoutBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', timeoutBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', timeoutStart.executionId,
+]));
+assert.strictEqual(timeoutBatch.status, 'BLOCKED');
+assert.strictEqual(timeoutBatch.cases[0].failureCode, 'CASE_TIMEOUT');
+
+const releaseFailureBatchId = 'batch-release-failure';
+const releaseFailureStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', releaseFailureBatchId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const unboundReleaseRuntimePlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId,
+]));
+assert.strictEqual(unboundReleaseRuntimePlan.action, 'BIND_RUNTIME');
+const releaseFailureRuntimePath = path.join(releaseFailureStart.execDir, 'agent', 'runtime.json');
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', releaseFailureStart.executionId, '--runtime-path', releaseFailureRuntimePath,
+]);
+const releaseFailureOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: releaseFailureOpen.operation.operationId, ok: true, sessionId: 'release-failure-session' }),
+]);
+const releaseFailureAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+]));
+const releaseFailureEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', releaseFailureStart.executionId, 'step-001', 'release-failure-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', releaseFailureStart.executionId, 'step-001', 'release failure business result', releaseFailureEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', releaseFailureStart.executionId]);
+const releaseFailureResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: releaseFailureAwait.operation.operationId, ok: true, result: releaseFailureResult }),
+]);
+for (let releaseAttempt = 1; releaseAttempt <= 3; releaseAttempt++) {
+  const releaseFailureOperation = JSON.parse(run('node', [
+    'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+    '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+  ]));
+  assert.strictEqual(releaseFailureOperation.operation.kind, 'RELEASE_SESSION');
+  run('node', [
+    'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+    '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+    '--operation-result-json', JSON.stringify({ operationId: releaseFailureOperation.operation.operationId, ok: false, reason: `release failure ${releaseAttempt}` }),
+  ]);
+}
+assert.strictEqual(json(releaseFailureRuntimePath).state, 'RELEASE_FAILED');
+assert.strictEqual(json(path.join(releaseFailureStart.execDir, 'agent', 'validation.json')).failureCode, 'AGENT_RUNTIME_RELEASE_FAILED');
+const releaseFailurePlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId,
+]));
+assert.strictEqual(releaseFailurePlan.action, 'BLOCK_RUNTIME_RELEASE');
+const releaseFailureBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'fail', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', releaseFailureStart.executionId,
+  '--failure-code', releaseFailurePlan.failureCode, '--reason', releaseFailurePlan.reason,
+]));
+assert.strictEqual(releaseFailureBatch.status, 'BLOCKED');
+assert.ok(!fs.existsSync(path.join(releaseFailureStart.execDir, 'completion.json')));
+
+const unavailableStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', unavailableStart.executionId, '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const unavailableOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', unavailableStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', unavailableStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: unavailableOpen.operation.operationId, ok: false, reason: 'self-test host unavailable' }),
+]);
+const unavailableRuntime = json(path.join(unavailableStart.execDir, 'agent', 'runtime.json'));
+assert.strictEqual(unavailableRuntime.state, 'FAILED');
+assert.ok(unavailableRuntime.releasedAt);
+assert.strictEqual(json(path.join(unavailableStart.execDir, 'agent', 'validation.json')).failureCode, 'AGENT_RUNTIME_UNAVAILABLE');
+assert.strictEqual(json(path.join(unavailableStart.execDir, 'result.json')).failureCode, 'AGENT_RUNTIME_UNAVAILABLE');
+
+const invalidResultBatchId = 'batch-invalid-result';
+const invalidResultStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', invalidResultBatchId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const invalidResultOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidResultOpen.operation.operationId, ok: true, sessionId: 'invalid-result-session' }),
+]);
+const invalidResultAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+const invalidResultEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', invalidResultStart.executionId, 'step-001', 'invalid-result-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', invalidResultStart.executionId, 'step-001', 'invalid result runtime test', invalidResultEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', invalidResultStart.executionId]);
+const mismatchedRuntimeResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+mismatchedRuntimeResult.provider = 'Codex';
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidResultAwait.operation.operationId, ok: true, result: mismatchedRuntimeResult }),
+]);
+const invalidResultInterrupt = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+assert.strictEqual(invalidResultInterrupt.operation.kind, 'INTERRUPT_SESSION');
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidResultInterrupt.operation.operationId, ok: true }),
+]);
+const invalidResultRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidResultRelease.operation.operationId, ok: true }),
+]);
+const invalidResultRuntimePath = path.join(invalidResultStart.execDir, 'agent', 'runtime.json');
+assert.strictEqual(json(invalidResultRuntimePath).state, 'FAILED');
+assert.ok(json(invalidResultRuntimePath).releasedAt);
+assert.strictEqual(json(path.join(invalidResultStart.execDir, 'agent', 'validation.json')).valid, false);
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', invalidResultStart.executionId,
+  '--runtime-path', invalidResultRuntimePath,
+]);
+const invalidResultBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', invalidResultStart.executionId,
+]));
+assert.strictEqual(invalidResultBatch.status, 'BLOCKED');
+assert.strictEqual(invalidResultBatch.cases[0].failureCode, 'AGENT_RESULT_INVALID');
+const invalidCompletion = json(path.join(invalidResultStart.execDir, 'completion.json'));
+assert.strictEqual(invalidCompletion.status, 'BLOCKED');
+assert.strictEqual(invalidCompletion.businessStatus, 'PASS');
+assert.strictEqual(invalidCompletion.controlStatus, 'BLOCKED');
+const invalidCompletionContext = fs.readFileSync(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(invalidCompletionContext.includes('对外结论：BLOCKED'));
+assert.ok(invalidCompletionContext.includes('业务执行结果：PASS'));
+assert.ok(invalidCompletionContext.includes('Runtime 校验：BLOCKED'));
+const repeatedInvalidBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', invalidResultStart.executionId,
+]));
+assert.strictEqual(repeatedInvalidBatch.status, 'BLOCKED');
+const blockedReconcile = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId,
+]));
+assert.strictEqual(blockedReconcile.action, 'BATCH_BLOCKED');
+
+const snapshotGuardStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const snapshotGuardPath = path.join(snapshotGuardStart.execDir, 'case.snapshot.json');
+const snapshotGuardValue = json(snapshotGuardPath);
+fs.unlinkSync(snapshotGuardPath);
+const missingSnapshot = runAllowFailure('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', snapshotGuardStart.executionId,
+]);
+assert.notStrictEqual(missingSnapshot.status, 0);
+assert.ok(missingSnapshot.stderr.includes('EXECUTION_CONTRACT_CORRUPTED'));
+write(snapshotGuardPath, `${JSON.stringify(snapshotGuardValue, null, 2)}\n`);
+const snapshotEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', snapshotGuardStart.executionId, 'step-001', 'snapshot-guard-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', snapshotGuardStart.executionId, 'step-001', 'snapshot restored', snapshotEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', snapshotGuardStart.executionId]);
+
+const recoveryOwnerBatchId = 'batch-orphan-owner';
+const recoveryBatchId = 'batch-recovery-self-test';
+const orphanStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', recoveryOwnerBatchId,
+]));
+const orphanExecutionPath = path.join(orphanStart.execDir, 'execution.json');
+const orphanExecution = json(orphanExecutionPath);
+orphanExecution.startedAt = '2000-01-01T00:00:00.000Z';
+orphanExecution.budget.maxDurationMs = 1;
+write(orphanExecutionPath, `${JSON.stringify(orphanExecution, null, 2)}\n`);
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const orphanPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(orphanPlan.action, 'CLOSE_ORPHANED');
+assert.strictEqual(orphanPlan.executionId, orphanStart.executionId);
+run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--recover-orphaned',
+  '--execution-id', orphanStart.executionId, '--batch-id', recoveryBatchId,
+]);
+assert.strictEqual(json(path.join(orphanStart.execDir, 'result.json')).failureCode, 'EXECUTION_ORPHANED');
+const afterOrphanPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(afterOrphanPlan.action, 'START_NEW');
+const ownedStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', recoveryBatchId,
+]));
+const ownedPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(ownedPlan.action, 'INIT_RUNTIME');
+assert.strictEqual(ownedPlan.ownerBatchId, recoveryBatchId);
+const ownedEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', ownedStart.executionId, 'step-001', 'owned-recovery-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', ownedStart.executionId, 'step-001', 'recovery ownership verified', ownedEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', ownedStart.executionId]);
+const concurrentStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', 'batch-concurrent-owner',
+]));
+const concurrentPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(concurrentPlan.action, 'BLOCK_CONCURRENT');
+const concurrentEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', concurrentStart.executionId, 'step-001', 'concurrent-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', concurrentStart.executionId, 'step-001', 'concurrent guard verified', concurrentEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', concurrentStart.executionId]);
+const corruptedStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', recoveryBatchId,
+]));
+const corruptedEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', corruptedStart.executionId, 'step-001', 'corrupted-evidence');
+const corruptedPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(corruptedPlan.action, 'CORRUPTED');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', corruptedStart.executionId, 'step-001', 'corrupted state classified', corruptedEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', corruptedStart.executionId]);
 
 console.log(`self-test passed: ${tmp}`);

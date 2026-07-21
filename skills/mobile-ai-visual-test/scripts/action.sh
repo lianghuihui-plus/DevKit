@@ -37,8 +37,16 @@ device=""
 app=""
 entry=""
 
-mavt_add_precondition_flow_scope() {
+mavt_add_action_scope() {
   local value="$1"
+  if [[ "$scope" == "execution-bootstrap" ]]; then
+    node -e '
+const event = JSON.parse(process.argv[1]);
+event.scope = "execution-bootstrap";
+console.log(JSON.stringify(event, null, 2));
+' "$value"
+    return
+  fi
   if [[ "$scope" != "precondition-flow" ]]; then
     printf '%s' "$value"
     return
@@ -101,6 +109,14 @@ if [[ -n "$case_dir" ]]; then
     echo "STEP_ORDER_VIOLATION: restartApp 是 execution 级隔离动作，不能绑定步骤 stepId 或作为步骤证据。" >&2
     exit 2
   fi
+  if [[ "$scope" == "execution-bootstrap" && ( "$action_type" != "restartApp" || -n "$step_id" || -n "$precondition_id" || -n "$flow_id" || -n "$flow_step_id" ) ]]; then
+    echo "EXECUTION_BOOTSTRAP_SCOPE_INVALID: execution-bootstrap 只允许无业务绑定的 restartApp。" >&2
+    exit 2
+  fi
+  if [[ -n "$scope" && "$scope" != "precondition-flow" && "$scope" != "execution-bootstrap" ]]; then
+    echo "ACTION_SCOPE_INVALID: action scope 只允许 precondition-flow 或 execution-bootstrap。" >&2
+    exit 2
+  fi
   if [[ -n "$step_id" && "$scope" == "precondition-flow" ]]; then
     echo "PRECONDITION_FLOW_SCOPE_INVALID: precondition-flow action 不能绑定 --step-id。" >&2
     exit 2
@@ -152,6 +168,8 @@ if [[ -n "$case_dir" ]]; then
     precheck_args+=(--step-id "$step_id")
   elif [[ "$scope" == "precondition-flow" ]]; then
     precheck_args+=(--scope precondition-flow --precondition-id "$precondition_id" --flow-id "$flow_id" --flow-step-id "$flow_step_id")
+  elif [[ "$scope" == "execution-bootstrap" ]]; then
+    precheck_args+=(--scope execution-bootstrap)
   fi
   set +e
   precheck_output="$("$script_dir/run-case.js" "${precheck_args[@]}" 2>&1)"
@@ -170,7 +188,7 @@ if [[ -n "$case_dir" ]]; then
       result="$(mavt_action_failure_json "$action_type" "$precheck_output" "$precheck_status")"
       result="$(mavt_add_action_metadata "$result" "$x" "$y" "$target" "$coordinate_source" "$target_bounds" "$coordinate_evidence" "$duration_ms" "$settle_ms" "$action_type")"
       result="$(mavt_add_requested_action "$result" "$requested_action")"
-      result="$(mavt_add_precondition_flow_scope "$result" "PRECONDITION_FLOW_ACTION_MISMATCH")"
+      result="$(mavt_add_action_scope "$result" "PRECONDITION_FLOW_ACTION_MISMATCH")"
       MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
       printf '%s\n' "$result"
       exit "$precheck_status"
@@ -195,7 +213,7 @@ event.stepId = process.argv[2];
 console.log(JSON.stringify(event, null, 2));
 ' "$result" "$step_id")"
     fi
-    result="$(mavt_add_precondition_flow_scope "$result")"
+    result="$(mavt_add_action_scope "$result")"
     MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
     finalize_args=("${run_case_args[@]}" --finalize --status BLOCKED --failure-code "$failure_code" --reason "$precheck_output" --execution-id "$execution_id")
     if [[ -n "$step_id" ]]; then
@@ -228,9 +246,9 @@ console.log(JSON.stringify(event, null, 2));
 ' "$result" "$step_id")"
   fi
   if [[ $adapter_status -ne 0 && "$scope" == "precondition-flow" ]]; then
-    result="$(mavt_add_precondition_flow_scope "$result" "PRECONDITION_FLOW_ACTION_FAILED")"
+    result="$(mavt_add_action_scope "$result" "PRECONDITION_FLOW_ACTION_FAILED")"
   else
-    result="$(mavt_add_precondition_flow_scope "$result")"
+    result="$(mavt_add_action_scope "$result")"
   fi
   MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
   if [[ $adapter_status -ne 0 ]]; then

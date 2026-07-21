@@ -185,6 +185,18 @@ process.stdin.on("end", () => {
 });
 ' "$precondition_id" "$flow_id" "$flow_step_id" "$phase")"
   fi
+	if [[ $adapter_status -eq 0 ]]; then
+	  observation="$(printf '%s' "$observation" | node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  const event = JSON.parse(input);
+  if (event.ok === undefined) event.ok = true;
+  process.stdout.write(`${JSON.stringify(event, null, 2)}\n`);
+});
+')"
+	fi
 	observation="$(printf '%s' "$observation" | node "$script_dir/lib/image-evidence.js" enrich-observation "$out")"
 	artifact_failure_code="$(printf '%s' "$observation" | node -e '
 let input = "";

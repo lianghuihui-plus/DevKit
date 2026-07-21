@@ -13,12 +13,17 @@ flowchart TD
   P --> M{"严格同名匹配"}
   M -->|命中| PF["resolution=flow<br/>自动执行"]
   M -->|未命中| PM["framework / confirm<br/>external_setup / unsupported"]
-  PF --> S["run-case --start<br/>校验 plan SHA 并固定计划"]
-  PM --> S
-  S --> C["前置条件阶段<br/>起点判断 → Flow → 终点判断"]
+  PF --> B["Batch reconcile<br/>归约遗留 execution"]
+  PM --> B
+  B --> S["run-case --start<br/>绑定 batch + 固定计划 + 冷启动"]
+  S --> AR["Runtime Core + Host Adapter<br/>硬 deadline + 每 case 独立会话"]
+  AR --> CE["Case Engine<br/>确定性推进到 DecisionRequest"]
+  CE --> C["前置条件阶段<br/>起点判断 → Flow → 终点判断"]
   C --> T["业务步骤阶段<br/>observe → action → assertion"]
-  T --> Z["finalize<br/>结果归一和报告刷新"]
-  Z --> O["result / metrics / CONTEXT / index"]
+  T --> Z["finalize<br/>业务结果归一"]
+  Z --> V["Runtime validation + release"]
+  V --> PUBLISH["Batch commit<br/>completion 可信发布"]
+  PUBLISH --> O["result / metrics / CONTEXT / index"]
 ```
 
 ## Flow 目录和选择
@@ -35,7 +40,7 @@ flowchart LR
   I --> X
   X -->|是| V["选择平台版本"]
   X -->|否| U
-  U --> V2["选择通用版本"]
+  U --> G["选择通用版本"]
 ```
 
 通用版本不增加 `universal/` 目录层。Flow `name` 是唯一匹配键，前置条件文本只清理首尾空白后与其严格全等。
@@ -43,22 +48,16 @@ flowchart LR
 ## 前置条件执行状态机
 
 ```mermaid
-stateDiagram-v2
-  [*] --> EntryCheck
-  EntryCheck --> AlreadySatisfied: 已满足 endCondition
-  EntryCheck --> StartMatched: 满足 startCondition
-  EntryCheck --> Blocked: 起点和终点都不匹配
-  StartMatched --> FlowStarted
-  FlowStarted --> StepBefore
-  StepBefore --> StepAction
-  StepAction --> StepAfter
-  StepAfter --> FlowStarted: 还有 Flow step
-  StepAfter --> EndCheck: 所有 Flow step 完成
-  EndCheck --> Prepared: 满足 endCondition
-  EndCheck --> Blocked: 未达到 endCondition
-  AlreadySatisfied --> [*]
-  Prepared --> [*]
-  Blocked --> [*]
+flowchart TD
+  EntryCheck["入口检查"] -->|已满足 endCondition| AlreadySatisfied["已满足"]
+  EntryCheck -->|满足 startCondition| StartMatched["起点匹配"]
+  EntryCheck -->|均不匹配| Blocked["阻塞"]
+  StartMatched --> FlowStarted["Flow 已开始"]
+  FlowStarted --> StepBefore["动作前观察"] --> StepAction["执行动作"] --> StepAfter["动作后观察"]
+  StepAfter -->|还有步骤| FlowStarted
+  StepAfter -->|步骤完成| EndCheck["终点检查"]
+  EndCheck -->|满足 endCondition| Prepared["已准备"]
+  EndCheck -->|未满足| Blocked
 ```
 
 关键约束：
@@ -76,18 +75,22 @@ stateDiagram-v2
 ```mermaid
 flowchart TB
   L1["Skill 协议层<br/>SKILL.md + references"]
-  L2["稳定入口层<br/>scripts/*.sh / scripts/*.js"]
+  LR["Agent Runtime 层<br/>Core operation + Host Adapter"]
+  CE["Case Engine 层<br/>workToken + DecisionRequest"]
+  L2["稳定入口层<br/>按角色收敛的 CLI"]
   L3["计划与执行状态层<br/>precondition-flow.js + run-case.js"]
   L4["平台能力层<br/>Harmony / Android / iOS adapters"]
   L5["原子能力层<br/>tap / input / screenshot / restart"]
   L6["产物层<br/>timeline / result / metrics / reports"]
-  L1 --> L2 --> L3 --> L4 --> L5
+  L1 --> LR --> CE --> L2 --> L3 --> L4 --> L5
   L3 --> L6
 ```
 
 | 层级 | 职责 |
 | --- | --- |
 | Skill 协议层 | 约束执行顺序、Flow 边界和禁止行为 |
+| Agent Runtime 层 | 为每个 case 创建无父会话历史的独立 Agent，并只返回结构化结果 |
+| Case Engine 层 | 连续推进确定性工作，只把必须看图的单次决定交给 Agent |
 | 稳定入口层 | 暴露公开 CLI，封装来源、预算和平台分发 |
 | 计划与执行状态层 | 加载资产、严格匹配、固定计划、校验状态机和归一结果 |
 | 平台能力层 | 适配设备能力，不做业务判断、不写 case 事实 |
@@ -98,17 +101,28 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-  OBS["observe.sh<br/>observation"] --> TL["timeline.jsonl"]
-  ACT["action.sh<br/>actionResult"] --> TL
-  AG["run-case --record-json<br/>precondition / flow / assertion"] --> TL
+  CE["execute-next-work<br/>重新归约 + workToken"] --> OBS["observe.sh<br/>observation"]
+  CE --> ACT["action.sh<br/>actionResult"]
+  CE --> AG["受保护事实入口<br/>precondition / flow / assertion"]
+  OBS --> TL["timeline.jsonl"]
+  ACT --> TL
+  AG --> TL
+  RT["record-agent-runtime.js<br/>Agent 会话绑定 / 失败"] --> TL
   TL --> RES["result.json"]
   TL --> MET["metrics.json"]
-  TL --> REP["CONTEXT / index"]
+  RES --> VAL["Runtime validation"]
+  VAL --> BAT["Batch commit-current"]
+  BAT --> CMP["completion.json"]
+  CMP --> REP["CONTEXT / index"]
 ```
 
 主要硬守卫：
 
 - `preconditionPlanSha` 防止 preflight 与执行之间资产漂移。
+- `protocolSha` 冻结角色规范，`implementationSha` 冻结实际运行脚本，二者贯穿 request、BOUND、Runtime 和结果。
+- 启动阶段只有 `executionStart`、`environmentProbe` 和 `scope=execution-bootstrap` 的 restartApp 可以早于 BOUND；所有 Case Engine 事实都要求先绑定 Runtime。
+- provider 由 Runtime Core 规范化并写入 requestSha，子 Agent 和 Host Adapter 不能覆盖。
+- `workToken` 绑定当前 execution、timeline 位置和 NextWork，拒绝过期或伪造决定。
 - 前置条件按 case 顺序写入，全部通过或准备完成后才能进入步骤。
 - Flow 事件必须绑定计划中的 `preconditionId`、`flowId` 和合法 `flowStepId`。
 - 同一时间只能有一个活动 Flow；起点、步骤前后和终点都要求对应 observation/action 证据。
@@ -123,3 +137,6 @@ flowchart LR
 - 业务步骤不扫描、不匹配、不执行 Flow。
 - 前置条件 Flow 完成只证明执行起点已准备好，不能作为业务步骤通过证据。
 - agent 做视觉理解和条件判断；脚本做匹配、状态机、预算、来源控制和报告。
+- Agent Runtime 负责会话隔离、硬超时、中断、释放和结果验证，不访问设备 adapter，也不决定业务结果。
+- Batch Runtime 不接收调用方提供的验证对象，只从绑定的 Runtime 和 execution 产物生成 completion 并提交当前 case。
+- Batch Runtime 在开始时只做一次恢复归约：先判断批次终态和精确所有权；多未完成 execution 判损坏，同 batch 恢复，其他 batch 禁止接管，过期 Runtime 释放，纯启动事实的孤立 execution 由框架收尾。

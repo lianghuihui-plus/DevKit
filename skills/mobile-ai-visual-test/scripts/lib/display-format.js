@@ -29,6 +29,8 @@ const STATUS_LABELS = {
 const EVENT_LABELS = {
   executionStart: '开始执行',
   environmentProbe: '环境探测',
+  agentRuntime: 'Agent 会话',
+  executionRecovery: '执行恢复',
   precondition: '前置条件',
   observation: '截图观察',
   evidenceCheck: '视觉证据复核',
@@ -87,48 +89,6 @@ const PRECONDITION_MODE_LABELS = {
   unsupported: '不支持',
 };
 
-const FAILURE_CODE_LABELS = {
-  ENV_UNCONFIRMED: '环境未确认',
-  ENVIRONMENT_BINDING_MISMATCH: '正式环境绑定不一致',
-  ENV_UNAVAILABLE: '环境不可用',
-  ENV_AMBIGUOUS: '环境信息不明确',
-  PLATFORM_UNIMPLEMENTED: '平台能力未实现',
-  PRECONDITION_FAILED: '前置条件不满足',
-  PRECONDITION_NOT_MET: '前置条件不满足',
-  PRECONDITION_REQUIRED: '需要先处理前置条件',
-  PRECONDITION_UNMET: '前置条件未满足',
-  PRECONDITION_UNKNOWN: '前置条件无法确认',
-  PRECONDITION_UNSUPPORTED: '前置条件不支持自动处理',
-  ASSERTION_FAILED: '断言不通过',
-  ASSERTION_UNKNOWN: '断言证据不足',
-  ASSERTION_EVIDENCE_REQUIRED: '断言缺少观察证据',
-  OBSERVATION_ARTIFACT_INVALID: '截图产物无效',
-  OBSERVATION_ARTIFACT_CHANGED: '截图产物已变化',
-  VISUAL_INPUT_UNVERIFIABLE: '视觉输入无法可靠验证',
-  STEP_ORDER_VIOLATION: '步骤顺序违规',
-  ACTION_RESULT_SOURCE_REQUIRED: '动作结果来源无效',
-  ACTION_TARGET_NOT_FOUND: '未找到操作目标',
-  PAGE_LOAD_BLOCKED: '页面加载受阻',
-  PRECONDITION_FLOW_AMBIGUOUS: '前置条件 Flow 名称冲突',
-  PRECONDITION_FLOW_INVALID: '前置条件 Flow 配置无效',
-  PRECONDITION_FLOW_CHANGED: '前置条件 Flow 已变更',
-  PRECONDITION_FLOW_START_MISMATCH: '当前页面不符合 Flow 起点',
-  PRECONDITION_FLOW_ACTION_FAILED: '前置条件 Flow 操作失败',
-  PRECONDITION_FLOW_TARGET_NOT_REACHED: '前置条件 Flow 未到达终点',
-  PRECONDITION_FLOW_UNSAFE: '前置条件 Flow 存在风险',
-  PRECONDITION_FLOW_BUDGET_EXCEEDED: '前置条件 Flow 超出预算',
-  APP_CONTEXT_LOST: '应用上下文丢失',
-  APP_LEFT_FOREGROUND: '应用离开前台',
-  UNKNOWN_POPUP: '未知弹窗阻塞',
-  CASE_TIMEOUT: '用例执行超时',
-  CASE_RESTART_FAILED: '用例冷启动失败',
-  EXECUTION_BUDGET_EXCEEDED: '执行预算超限',
-  TOOL_ERROR: '工具执行异常',
-  EVENT_SOURCE_REQUIRED: '框架事件来源无效',
-  CASE_CONTRACT_INVALID: '用例执行契约无效',
-  CASE_STEPS_REQUIRED: '用例缺少测试步骤',
-};
-
 function displayStatus(value) {
   return STATUS_LABELS[value] || value || '-';
 }
@@ -172,7 +132,7 @@ function displayPreconditionMode(value) {
 }
 
 function displayFailureCode(value) {
-  return failureLabel(value) || FAILURE_CODE_LABELS[value] || value || '';
+  return failureLabel(value);
 }
 
 function formatDuration(ms) {
