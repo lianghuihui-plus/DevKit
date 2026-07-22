@@ -494,12 +494,86 @@ node "$SMAP_SKILL/scripts/map-edit.js" preview-reset-context \
 
 看板接入时只能生成同样的 edit request 或命令，由 Agent/本地服务调用 `map-edit.js preview/apply`；看板静态 HTML 不得直接写 canonical JSON。
 
-## 15. 开发自测
+## 15. 前置条件 Flow 导出
+
+Flow 导出只读取当前 Snapshot，不修改 Run 或 canonical map。导出前先确保已构建 Snapshot：
+
+```bash
+node "$SMAP_SKILL/scripts/build-snapshot.js" \
+  --app-map-root "$APP_MAP_ROOT"
+
+node "$SMAP_SKILL/scripts/build-dashboard.js" \
+  --app-map-root "$APP_MAP_ROOT"
+```
+
+首选在 `dashboard/index.html` 中操作：
+
+1. 选中目标页面节点。
+2. 在右侧“规范重放路径”中点击 `导出 Flow`。
+3. 在弹框里确认或修改 Flow 名称、业务目录、平台、起点描述和终点描述。
+4. 点击 `选择导出目录`，选择要写入 Flow 的目录，通常是 `mobile-ai-visual-test` workspace 根目录。
+5. 保持默认勾选 `包含参考图`，或在浏览器无法读取本地截图时取消勾选。
+6. 点击 `生成 flow.json`。
+
+Dashboard 会通过浏览器目录授权写入：
+
+```text
+<导出目录>/<business>/<platform>/flow.json
+<导出目录>/<business>/<platform>/assets/start.png
+<导出目录>/<business>/<platform>/assets/end.png
+```
+
+参考图字节由 `build-dashboard.js` 在渲染 Dashboard 时内嵌到 HTML，导出时不依赖 canvas 读取本地图片；修改导出逻辑后必须重新运行 `build-dashboard.js`。
+
+静态 HTML 不能静默写任意本地路径。若浏览器不支持 File System Access API，或需要批处理，使用 CLI。
+
+CLI 列出某个登录态下可导出的规范路径：
+
+```bash
+node "$SMAP_SKILL/scripts/export-precondition-flow.js" list \
+  --app-map-root "$APP_MAP_ROOT" \
+  --context authenticated
+```
+
+预览目标路径生成的 `flow.json`：
+
+```bash
+node "$SMAP_SKILL/scripts/export-precondition-flow.js" preview \
+  --app-map-root "$APP_MAP_ROOT" \
+  --context authenticated \
+  --path-id <path-id> \
+  --name 进入创作页 \
+  --business enter-creation-page \
+  --workspace <mobile-ai-visual-test-workspace>
+```
+
+确认 Flow 名称与测试用例前置条件完全一致后写入：
+
+```bash
+node "$SMAP_SKILL/scripts/export-precondition-flow.js" write \
+  --app-map-root "$APP_MAP_ROOT" \
+  --context authenticated \
+  --path-id <path-id> \
+  --name 进入创作页 \
+  --business enter-creation-page \
+  --workspace <mobile-ai-visual-test-workspace> \
+  --platform harmony
+```
+
+导出器只硬拦截空路径、超过 5 步、不可映射动作、非重复动作、风险或副作用动作。未达到 `COLD_REPLAY_VERIFIED` 和坐标重放来源只作为人工审阅警告，不阻止导出。页面描述可通过 `--start-description` 与 `--end-description` 人工覆盖；需要保留坐标证据时显式加 `--include-coordinates true`。
+
+## 16. 开发自测
 
 Restore 相关快速回归：
 
 ```bash
 node scripts/self-test.js --scope restore
+```
+
+Flow 导出专项回归：
+
+```bash
+node scripts/self-test.js --scope flow-export
 ```
 
 事件、投影、执行 lease 与未知设备副作用的故障注入测试：

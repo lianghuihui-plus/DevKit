@@ -12,7 +12,7 @@
 8. [发现与验证分层](#8-发现与验证分层)
 9. [预算模型](#9-预算模型)
 10. [事件、恢复与终态](#10-事件恢复与终态)
-11. [Canonical Map 与兼容](#11-canonical-map-与兼容)
+11. [Canonical Map 与协议版本](#11-canonical-map-与协议版本)
 12. [模块职责](#12-模块职责)
 
 ## 1. 目标与模式
@@ -23,7 +23,7 @@ SMAP 以黑盒方式扫描 HarmonyOS App 的稳定可达状态和交互路径。
 - 每个动作保留完整的 before/action/after 证据。
 - 区分“本次观察到转换”与“已从冷启动验证路径”。
 - 在同样图、Cursor、Frontier、预算和目标输入下产生确定性调度结果。
-- 允许旧 Run 只读登记为执行历史，但当前 Snapshot 的地图事实来自 canonical map。
+- 当前版本只消费当前图协议；旧 Run 或旧 canonical map 不参与续跑、Snapshot 或 Dashboard。
 
 系统只有两种模式：
 
@@ -99,7 +99,7 @@ Runtime Bridge 的单次采样包含截图、控件树、前台 App/Ability 和�
 - `LogicalScreen`：跨 Run 稳定的产品语义页面。
 - `VisualState`：稳定截图、布局与前台共同确定的视觉状态。
 - `ReachableState`：`VisualState + contextId + arrivalSignature`。
-- `Edge`：一次已观察转换及其安全、重放和证据属性。
+- `Edge`：一次已观察转换，保存可移植 `intent`、安全属性、locator quality 和证据引用；实际坐标只保留在 ActionResult/locatorEvidence 中。
 - `Path`：由 Edge ID 构成的规范可达路径。
 
 布局和截图都相同才为 `EXACT`；语义锚点充分但截图或局部结构变化时可为 `SAME_PAGE`。`wait` 不是图动作。动作后状态与来源 `EXACT` 时记录 `NO_STATE_CHANGE`，不生成 Edge；`SAME_PAGE` 只用于恢复、来源确认和路径验证，不用于证明动作无效果。
@@ -143,7 +143,7 @@ Navigation Planner 采用从低成本到高成本的确定性顺序：
 
 L3 `ROUTE_ENTRY` 是可选扩展，本实现未自动生成 RouteEntry；没有已验证入口时直接进入 L4。
 
-Graph Path 只使用安全、非 `NONREPEATABLE`、未 `INVALIDATED` 的边。坐标边必须有有效 fallback bounds；语义定位边优先，坐标边增加成本。
+Graph Path 只使用安全、非 `NONREPEATABLE`、未 `INVALIDATED` 且 locator quality 为 `SEMANTIC_PORTABLE` 或 `SEMANTIC_WITH_FALLBACK` 的边。执行时根据当前 Observation 的 layout 重新解析 `intent` 得到设备动作；`DEVICE_BOUND` 与 `UNRESOLVED` 边保留为发现证据，但不进入自动续跑路径。
 
 执行非冷导航时每步检查前台并稳定观测目标状态。首次失败会使 Cursor 失效并最多降级一次到 L4；系统、风险或未知弹窗暂停，不以冷启动掩盖问题。
 
@@ -243,9 +243,9 @@ validate intent
 
 产物按写入语义分三类，由 `scripts/lib/artifact-registry.js` 统一判定：
 
-- Projection：Run 状态、Context、Graph、Frontier、Cursor、Queue、Attempt、Operation、Goal、BackCapability、StateEquivalence、只读兼容的 VisualEquivalence、Continuation `known/contexts`，以及状态型的 preparation/restore/navigation execution JSON；必须由 timeline 的 projectionOps 重建和比对。
+- Projection：Run 状态、Context、Graph、Frontier、Cursor、Queue、Attempt、Operation、Goal、BackCapability、StateEquivalence、VisualEquivalence、Continuation `known/contexts`，以及状态型的 preparation/restore/navigation execution JSON；必须由 timeline 的 projectionOps 重建和比对。
 - Evidence：Observation 截图/布局、ActionResult、VerificationExecution 证据和日志；允许写入后被引用校验，不作为状态投影反复修改。
-- Generated：merged map、report、Snapshot generation 和 Dashboard；从已校验事实重新生成，不参与 Run projection 恢复。
+- Generated：report、Snapshot generation 和 Dashboard；从已校验事实重新生成，不参与 Run projection 恢复。
 
 所有 Run 内 ID 通过 `idAllocated` 事件推进 counter。ID 允许因失败或中断产生空洞，但不得存在 timeline 外的 counter 递增，避免恢复或重建后复用 ID。
 
@@ -263,20 +263,11 @@ Restore 是 Navigation 与 Verification 共用的执行子状态机。调用方�
 
 终态事件写入后 Run 不可变。`PAUSED` 是非终态，可原地恢复且暂停时间不计活动预算。
 
-## 11. Canonical Map 与兼容
+## 11. Canonical Map 与协议版本
 
-兼容访问集中在 `lib/run-protocol.js`：
+当前图协议为 `graphProtocolVersion: 4`，`graph.json.schemaVersion: 2`。新 writer 只写当前结构，当前 reader、校验、Snapshot 和 Dashboard 均拒绝旧 graph 数据。
 
-```text
-runContextIds(scan)
-runContextId(scan)
-activeContextId(scan)
-runBudget(scan, contextId)
-```
-
-新 writer 只写当前结构。Reader、校验、报告、重建和 Run Index 通过兼容访问器读取历史结构；历史多 Context Run 不能被当前结构的单 Context 校验误拒绝。
-
-历史 Edge 的验证等级按可证明证据保守映射：只有从冷启动开始、根和每步精确匹配、动作与最终转换证据完整时才视为已验证；坐标或证据不足时为不稳定/未验证。
+Graph v2 的路径事实以 App 语义为核心：Edge identity、transition fingerprint、验证任务 key 均基于 `intent`，不包含设备坐标、分辨率或模拟器信息。设备信息写入 Observation、ActionResult 和 locatorEvidence 作为 provenance，用于解释“这次是在哪台设备上观察到的”，不能作为路径可达性的 canonical key。
 
 `maps/<context>` 是该登录态唯一可持续扩展的 canonical map，包含 graph、frontier、verification queue、back capabilities 和等价规则。`init-scan.js` 从当前 canonical map 种下 session 投影；`register-run.js` 在 Run 终结后把 `COMPLETED/PARTIAL` 的 graph/frontier/queue 同步回 canonical map，并用 `mapBaseRevisionId` 防止落后 session 覆盖较新的地图。
 

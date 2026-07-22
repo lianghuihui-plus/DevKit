@@ -256,7 +256,7 @@ function loadFrontier(scanDir, contextId) {
 function saveFrontier(scanDir, contextId, frontier) { writeJsonAtomic(path.join(contextDir(scanDir, contextId), 'frontier.json'), frontier); }
 
 function emptyGraph(contextId) {
-  return { schemaVersion: 1, contextId, logicalScreens: [], visualStates: [], reachableStates: [], edges: [], paths: [] };
+  return { schemaVersion: 2, contextId, logicalScreens: [], visualStates: [], reachableStates: [], edges: [], paths: [] };
 }
 
 function transition(scanDir, to, reasonCode = null) {

@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { contextDir, readJson, writeJsonAtomic, hashObject, now, nextIdLocked, commitEventLocked, withRunLock } = require('./common');
-const { replayable } = require('./navigation-planner');
+const { isReplayableEdge } = require('./replayability');
 
 const MAX_VERIFICATION_ATTEMPTS = 2;
 
@@ -24,12 +24,13 @@ function canonicalScreenPaths(graph) {
   for (const pathItem of graph.paths || []) {
     if (!(pathItem.edgeIds || []).length) continue;
     const state = states.get(pathItem.terminalReachableStateId); const visual = state && visuals.get(state.visualStateId); if (!visual) continue;
-    const pathEdges = (pathItem.edgeIds || []).map(id => edges.get(id)); if (pathEdges.some(edge => !edge || !replayable(edge) || edge.sideEffect && edge.sideEffect !== 'NONE')) continue;
-    const transitionFingerprints = pathEdges.map(edge => edge.verification?.transitionFingerprint || hashObject({ edgeId: edge.id, action: edge.action }));
-    candidates.push({ logicalScreenKey: visual.logicalScreenKey, terminalReachableStateId: state.id, edgeIds: pathItem.edgeIds || [], transitionFingerprints, coordinateEdges: pathEdges.filter(edge => edge.locatorResolution !== 'SEMANTIC_VERIFIED').length });
+    const pathEdges = (pathItem.edgeIds || []).map(id => edges.get(id)); if (pathEdges.some(edge => !edge || !isReplayableEdge(edge))) continue;
+    const transitionFingerprints = pathEdges.map(edge => edge.verification?.transitionFingerprint || hashObject({ edgeId: edge.id, intent: edge.intent }));
+    const fallbackEdges = pathEdges.filter(edge => edge.locatorQuality === 'SEMANTIC_WITH_FALLBACK').length;
+    candidates.push({ logicalScreenKey: visual.logicalScreenKey, terminalReachableStateId: state.id, edgeIds: pathItem.edgeIds || [], transitionFingerprints, fallbackEdges });
   }
   const selected = new Map();
-  for (const item of candidates.sort((a, b) => a.coordinateEdges - b.coordinateEdges || a.edgeIds.length - b.edgeIds.length || a.edgeIds.join(',').localeCompare(b.edgeIds.join(',')))) if (!selected.has(item.logicalScreenKey)) selected.set(item.logicalScreenKey, item);
+  for (const item of candidates.sort((a, b) => a.fallbackEdges - b.fallbackEdges || a.edgeIds.length - b.edgeIds.length || a.edgeIds.join(',').localeCompare(b.edgeIds.join(',')))) if (!selected.has(item.logicalScreenKey)) selected.set(item.logicalScreenKey, item);
   return [...selected.values()];
 }
 

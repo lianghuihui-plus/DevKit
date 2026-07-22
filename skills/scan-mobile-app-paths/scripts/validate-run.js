@@ -13,6 +13,8 @@ const { buildFingerprint, compareFingerprint, observationVisual } = require('./l
 const { loadVisualEquivalence } = require('./lib/visual-equivalence');
 const { loadStateEquivalence } = require('./lib/state-equivalence-store');
 const { assertAcceptedVisualReview } = require('./lib/visual-review-store');
+const { canonicalIntentIdentity, intentFromAction, locatorEvidenceFor } = require('./lib/action-intent');
+const { locatorReplayabilityReason } = require('./lib/replayability');
 
 function requireObservation(scanDir, observationId, contextId) {
   const dir = path.join(scanDir, 'evidence', 'observations', observationId); const observation = readJson(path.join(dir, 'observation.json'));
@@ -79,7 +81,8 @@ function validate(scanDir, requestedStatus, options = {}) {
       for (const check of preparation.stabilityChecks || []) { requireObservation(scanDir, check.beforeObservationId, contextId); requireObservation(scanDir, check.afterObservationId, contextId); }
     }
     const graph = loadGraph(scanDir, contextId); validateGraph(graph); const frontier = loadFrontier(scanDir, contextId); const graphProtocolVersion = Number(scan.graphProtocolVersion || 1);
-    if (graphProtocolVersion >= 2 && graph.edges.some(edge => edge.action?.type === 'wait')) fail(`Context ${contextId} contains a wait Edge under current graph rules`, 'NON_GRAPH_ACTION');
+    if (graphProtocolVersion >= 4 && graph.edges.some(edge => edge.action !== undefined)) fail(`Context ${contextId} contains legacy Edge action storage under current graph rules`, 'GRAPH_SCHEMA_UNSUPPORTED');
+    if (graphProtocolVersion >= 2 && graph.edges.some(edge => edge.intent?.type === 'wait')) fail(`Context ${contextId} contains a wait Edge under current graph rules`, 'NON_GRAPH_ACTION');
     if (graphProtocolVersion >= 2 && frontier.items.some(item => item.candidate?.type === 'wait')) fail(`Context ${contextId} contains a wait frontier under current graph rules`, 'NON_GRAPH_ACTION');
     if (completed && !graph.reachableStates.some(x => (x.depth?.pathDepth || 0) === 0)) fail(`Context ${contextId} has no root ReachableState`, 'RUN_INCOMPLETE');
     if (frontier.items.some(x => x.status === 'CLAIMED')) fail(`Context ${contextId} has an unfinished claimed frontier`, 'RUN_INCOMPLETE');
@@ -106,10 +109,16 @@ function validate(scanDir, requestedStatus, options = {}) {
         continue;
       }
       if (!beforeObservationId || !afterObservationId || !actionResultId || !edge.attemptId) fail(`Edge ${edge.id} lacks causal evidence`, 'GRAPH_INVALID');
-      requireObservation(scanDir, beforeObservationId, contextId); requireObservation(scanDir, afterObservationId, contextId);
+      const beforeObservation = requireObservation(scanDir, beforeObservationId, contextId); requireObservation(scanDir, afterObservationId, contextId);
       if (visualReviewRequired) assertAcceptedVisualReview(scanDir, { visualReviewId, contextId, observationId: afterObservationId, reviewType: 'PAGE_OUTCOME' });
       const action = readJson(path.join(scanDir, 'evidence', 'actions', `${actionResultId}.json`));
-      if (action.status !== 'SUCCEEDED' || action.contextId !== contextId || action.attemptId !== edge.attemptId || action.beforeObservationId !== beforeObservationId || hashObject(action.action) !== hashObject(edge.action)) fail(`Edge ${edge.id} action evidence is inconsistent`, 'GRAPH_INVALID');
+      const actionIntent = action.actionIntent || intentFromAction(action.action);
+      if (action.status !== 'SUCCEEDED' || action.contextId !== contextId || action.attemptId !== edge.attemptId || action.beforeObservationId !== beforeObservationId || hashObject(canonicalIntentIdentity(actionIntent)) !== hashObject(canonicalIntentIdentity(edge.intent))) fail(`Edge ${edge.id} action intent evidence is inconsistent`, 'GRAPH_INVALID');
+      const beforeLayout = readJson(path.join(scanDir, beforeObservation.layoutPath));
+      const recomputedLocator = locatorEvidenceFor({ action: action.action, intent: edge.intent, observation: beforeObservation, layout: beforeLayout, deviceProfile: action.deviceProfile || beforeObservation.deviceProfile });
+      if (edge.locatorQuality !== recomputedLocator.locatorQuality || edge.locatorResolution !== recomputedLocator.resolution) fail(`Edge ${edge.id} locator evidence is inconsistent with before observation`, 'GRAPH_INVALID');
+      const locatorReason = locatorReplayabilityReason({ intent: edge.intent, locatorQuality: recomputedLocator.locatorQuality, locatorResolution: recomputedLocator.resolution, locatorEvidence: recomputedLocator });
+      if (['EDGE_LOCATOR_UNRESOLVED', 'EDGE_LOCATOR_NOT_RESOLVED'].includes(locatorReason)) fail(`Edge ${edge.id} has unresolved portable locator evidence`, 'GRAPH_INVALID');
       const attempt = readJson(path.join(scanDir, 'attempts', `${edge.attemptId}.json`));
       const frontierItem = frontier.items.find(item => item.id === attempt.frontierId);
       if (attempt.status !== 'COMMITTED' || attempt.edgeId !== edge.id || attempt.actionResultId !== actionResultId || attempt.afterObservationId !== afterObservationId || visualReviewRequired && attempt.visualReviewId !== visualReviewId || !frontierItem || frontierItem.status !== 'EXPLORED' || frontierItem.attemptId !== attempt.attemptId || strictClaim && (!attempt.claimToken || frontierItem.claimToken != null || frontierItem.claimedAttemptId != null) || hashObject(frontierItem.candidate) !== attempt.candidateHash || hashObject(attempt.candidate) !== attempt.candidateHash) fail(`Edge ${edge.id} Attempt is inconsistent`, 'GRAPH_INVALID');

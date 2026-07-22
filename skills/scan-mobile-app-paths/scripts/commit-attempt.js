@@ -10,6 +10,9 @@ const { projectedCursor } = require('./lib/live-cursor');
 const { reconcileVerificationQueue } = require('./lib/verification-store');
 const { requireObservationBundle } = require('./lib/observation-store');
 const { assertAcceptedVisualReview } = require('./lib/visual-review-store');
+const { intentFromAction, locatorEvidenceFor } = require('./lib/action-intent');
+const { deviceProfileFrom } = require('./lib/device-profile');
+const { locatorReplayabilityReason } = require('./lib/replayability');
 
 function evidence(scanDir, observationId, contextId) {
   return requireObservationBundle(scanDir, observationId, contextId, { incompleteErrorCode: 'EVIDENCE_INCOMPLETE', contextErrorCode: 'EVIDENCE_INCOMPLETE' });
@@ -26,8 +29,9 @@ main(() => {
   if (!['full-screen', 'modal'].includes(attempt.outcomeKind)) fail('Attempt outcome must be reviewed before commit', 'POPUP_REVIEW_REQUIRED');
   if (args.kind && args.kind !== attempt.outcomeKind) fail('Commit kind differs from reviewed outcome', 'ATTEMPT_OUTCOME_MISMATCH');
   const fromVisual = graph.visualStates.find(x => x.id === from.visualStateId); if (!fromVisual) fail('Attempt source VisualState is missing', 'GRAPH_REFERENCE_MISSING');
-  const before = evidence(scanDir, attempt.beforeObservationId, contextId); const after = evidence(scanDir, attempt.afterObservationId, contextId); void before;
+  const before = evidence(scanDir, attempt.beforeObservationId, contextId); const after = evidence(scanDir, attempt.afterObservationId, contextId);
   const actionResult = readJson(path.join(scanDir, 'evidence', 'actions', `${attempt.actionResultId}.json`));
+  const intent = actionResult.actionIntent || intentFromAction(actionResult.action);
   if (actionResult.status !== 'SUCCEEDED' || actionResult.attemptId !== attemptId || actionResult.beforeObservationId !== attempt.beforeObservationId || (actionResult.candidateHash || hashObject(actionResult.action)) !== attempt.candidateHash) fail('Attempt action evidence is invalid', 'ATTEMPT_CAUSALITY_INVALID');
   const metrics = readJson(path.join(scanDir, 'contexts', contextId, 'metrics.json')); const budget = runBudget(scan, contextId);
   const visualReview = assertAcceptedVisualReview(scanDir, { visualReviewId: attempt.visualReviewId, contextId, observationId: attempt.afterObservationId, reviewType: 'PAGE_OUTCOME' });
@@ -43,12 +47,17 @@ main(() => {
   const previewReachable = graph.reachableStates.find(x => x.visualStateId === visualResult.visualState.id && hashObject(x.arrivalSignature || {}) === hashObject(arrivalSignature));
   if (!previewReachable) assertCapacity(scan, contextId, graph, frontier, metrics, 'nodes');
   const reachableResult = store.upsertReachableState(graph, { visualStateId: visualResult.visualState.id, arrivalSignature, depth, replayPathEdgeIds: from.replayPathEdgeIds || [] });
-  const duplicateEdge = graph.edges.some(x => x.fromReachableStateId === from.id && x.toReachableStateId === reachableResult.reachableState.id && store.actionKey(x.action) === store.actionKey(actionResult.action));
+  const deviceProfile = before.observation.deviceProfile || actionResult.deviceProfile || deviceProfileFrom({ scan, observation: before.observation });
+  const locatorEvidence = actionResult.locatorEvidence || locatorEvidenceFor({ action: actionResult.action, intent, observation: before.observation, layout: before.layout, deviceProfile });
+  const locatorReplayable = locatorReplayabilityReason({ intent, locatorQuality: locatorEvidence.locatorQuality, locatorResolution: locatorEvidence.resolution, locatorEvidence }) === null;
+  const replayability = locatorReplayable && actionResult.safety.sideEffect === 'NONE' && actionResult.safety.replayPolicy !== 'NONREPEATABLE' ? 'STABLE' : 'UNSTABLE';
+  const duplicateEdge = graph.edges.some(x => x.fromReachableStateId === from.id && x.toReachableStateId === reachableResult.reachableState.id && store.actionKey(x) === store.actionKey({ intent }));
   if (!duplicateEdge) assertCapacity(scan, contextId, graph, frontier, metrics, 'edges');
-  const edge = { id: nextId(scanDir, 'edge', 'edge'), fromReachableStateId: from.id, toReachableStateId: reachableResult.reachableState.id, contextGuard: { authState: contextId }, action: actionResult.action,
-    risk: actionResult.safety.risk, replayability: actionResult.locatorResolution === 'SEMANTIC_VERIFIED' ? 'STABLE' : 'UNSTABLE', sideEffect: actionResult.safety.sideEffect, replayPolicy: actionResult.safety.replayPolicy,
+  const edge = { id: nextId(scanDir, 'edge', 'edge'), fromReachableStateId: from.id, toReachableStateId: reachableResult.reachableState.id, contextGuard: { authState: contextId }, intent,
+    locatorQuality: locatorEvidence.locatorQuality, locatorResolution: locatorEvidence.resolution, locatorEvidence, deviceProfileId: deviceProfile.profileId || null,
+    risk: actionResult.safety.risk, replayability, sideEffect: actionResult.safety.sideEffect, replayPolicy: actionResult.safety.replayPolicy,
     attemptId, evidence: { beforeObservationId: attempt.beforeObservationId, actionResultId: attempt.actionResultId, afterObservationId: attempt.afterObservationId, visualReviewId: visualReview.visualReviewId } };
-  if (isCurrentRun(scan)) { edge.locatorResolution = actionResult.locatorResolution; edge.verification = { discoveryStatus: 'OBSERVED', replayStatus: edge.replayPolicy === 'NONREPEATABLE' ? 'NONREPEATABLE' : 'UNVERIFIED', transitionFingerprint: store.transitionFingerprint(graph, edge), verificationRefs: [] }; }
+  if (isCurrentRun(scan)) { edge.verification = { discoveryStatus: 'OBSERVED', replayStatus: edge.replayPolicy === 'NONREPEATABLE' ? 'NONREPEATABLE' : 'UNVERIFIED', transitionFingerprint: store.transitionFingerprint(graph, edge), verificationRefs: [] }; }
   const edgeResult = store.recordEdge(graph, edge);
   item.status = 'EXPLORED'; item.reasonCode = null; item.resolvedAt = now(); item.attemptId = attemptId; item.claimToken = null; item.claimedAttemptId = null;
   attempt.status = 'COMMITTED'; attempt.edgeId = edgeResult.edge.id; attempt.toReachableStateId = reachableResult.reachableState.id; attempt.updatedAt = now();

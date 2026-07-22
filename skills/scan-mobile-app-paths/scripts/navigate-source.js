@@ -11,7 +11,7 @@ const { assertCapacity, assertExecutionWindow } = require('./lib/budget');
 const { recordNavigationMode } = require('./lib/action-metrics');
 const { cursorLease, assertCursorEpoch, establishCursor, invalidateCursor } = require('./lib/live-cursor');
 const { matchSourceState, sourceAccepted, cursorStatusFor, sourceEquivalence } = require('./lib/source-matcher');
-const { assessReplayableAction, executePathStepAction, navigationStepAction } = require('./lib/path-replay-engine');
+const { assessReplayableAction, executePathStepAction, navigationStepAction, resolveReplayAction } = require('./lib/path-replay-engine');
 const { completeDeviceActionSuccess, completeDeviceActionUnknownOutcome } = require('./lib/device-action-executor');
 
 function runObserve(scanDir, contextId, trigger) {
@@ -42,7 +42,8 @@ main(() => {
       const initialLease = cursorLease(scanDir, contextId, scan); let currentObservationId = initialLease.cursor.observationId;
       if (initialLease.requiresRecheck) { const observed = runObserve(scanDir, contextId, 'RECHECK'); const startMatch = matchSourceState({ scanDir, scan, contextId, graph, reachableStateId: plan.fromReachableStateId, observationId: observed.observationId }); if (!sourceAccepted(startMatch)) fail('Navigation source recheck did not match the planned start state', 'CURSOR_RECHECK_MISMATCH'); currentObservationId = observed.observationId; establishCursor(scanDir, contextId, { reachableStateId: plan.fromReachableStateId, observationId: currentObservationId, status: cursorStatusFor(startMatch), establishedBy: 'NAVIGATION_RECHECK', equivalence: sourceEquivalence(startMatch) }); }
       for (const step of plan.steps) {
-        const { action, expectedReachableStateId: expectedStateId, locatorResolution } = navigationStepAction(graph, step);
+        const { edge, action: staticAction, intent, expectedReachableStateId: expectedStateId, locatorResolution } = navigationStepAction(graph, step);
+        const action = staticAction || resolveReplayAction(scanDir, contextId, currentObservationId, edge || intent);
         if (!action || !expectedStateId) fail('Navigation step is missing or unsafe', 'NAVIGATION_STEP_INVALID');
         const safety = assessReplayableAction(action, scan, null, 'NAVIGATION_STEP_INVALID');
         const metrics = readJson(path.join(scanDir, 'contexts', contextId, 'metrics.json')); assertExecutionWindow(scan, contextId, graph, loadFrontier(scanDir, contextId), metrics); assertCapacity(scan, contextId, graph, loadFrontier(scanDir, contextId), metrics, 'actions');

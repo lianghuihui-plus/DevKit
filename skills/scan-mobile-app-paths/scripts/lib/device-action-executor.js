@@ -7,6 +7,9 @@ const { assessAction } = require('./safety');
 const { resolveSyntheticAction } = require('./synthetic-data');
 const { recordDeviceAction } = require('./action-metrics');
 const { startDeviceOperation, finishDeviceOperation } = require('./operation-journal');
+const { intentFromAction, locatorEvidenceFor } = require('./action-intent');
+const { deviceProfileFrom } = require('./device-profile');
+const { loadObservationBundle } = require('./observation-store');
 
 function center(bounds) {
   return bounds && bounds.length === 4
@@ -48,7 +51,19 @@ function executeDeviceAction(scanDir, {
   const actionId = nextId(scanDir, 'action', 'act');
   const executedAction = safety.replayPolicy === 'REGENERATE_SYNTHETIC' ? resolveSyntheticAction(action, syntheticSeed || actionId) : action;
   const startedAt = now();
-  const base = { schemaVersion: 1, actionId, contextId, attemptId, frontierId, beforeObservationId, candidateHash, action: executedAction, locatorResolution, startedAt, ...actionResultExtra };
+  const actionIntent = intentFromAction(executedAction);
+  const deviceProfile = deviceProfileFrom({ scan });
+  let locatorEvidence = null;
+  if (beforeObservationId) {
+    try {
+      const before = loadObservationBundle(scanDir, beforeObservationId);
+      locatorEvidence = locatorEvidenceFor({ action: executedAction, intent: actionIntent, observation: before.observation, layout: before.layout, deviceProfile: before.observation.deviceProfile || deviceProfile });
+    } catch (error) {
+      locatorEvidence = null;
+    }
+  }
+  const effectiveLocatorResolution = locatorEvidence?.resolution || locatorResolution;
+  const base = { schemaVersion: 2, actionId, contextId, attemptId, frontierId, beforeObservationId, candidateHash, action: executedAction, actionIntent, locatorQuality: locatorEvidence?.locatorQuality || null, locatorResolution: effectiveLocatorResolution, locatorEvidence, deviceProfile, startedAt, ...actionResultExtra };
   if (includeSafetyInResult) base.safety = safety;
 
   if (!safety.allowed) {

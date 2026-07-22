@@ -59,8 +59,8 @@ function validateRun(scan) {
     for (const key of ['eventProtocolVersion', 'projectionProtocolVersion', 'navigationProtocolVersion', 'verificationProtocolVersion']) if (scan[key] !== undefined && ![1, 2].includes(Number(scan[key]))) fail(`${key} must be 1 or 2`, 'SCAN_INVALID');
   } else if (!Array.isArray(scan.plannedContextIds) || scan.plannedContextIds.some(c => !CONTEXTS.includes(c))) fail('Invalid plannedContextIds', 'SCAN_INVALID');
   if (scan.mapRevisionId !== undefined) safeSegment(scan.mapRevisionId, 'mapRevisionId');
-  if (scan.graphProtocolVersion !== undefined && ![1, 2, 3].includes(Number(scan.graphProtocolVersion))) fail('graphProtocolVersion must be 1, 2 or 3', 'SCAN_INVALID');
-  if (scan.attemptProtocolVersion !== undefined && ![1, 2, 3].includes(Number(scan.attemptProtocolVersion))) fail('attemptProtocolVersion must be 1, 2 or 3', 'SCAN_INVALID');
+  if (scan.graphProtocolVersion !== undefined && ![1, 2, 3, 4].includes(Number(scan.graphProtocolVersion))) fail('graphProtocolVersion must be 1, 2, 3 or 4', 'SCAN_INVALID');
+  if (scan.attemptProtocolVersion !== undefined && ![1, 2, 3, 4].includes(Number(scan.attemptProtocolVersion))) fail('attemptProtocolVersion must be 1, 2, 3 or 4', 'SCAN_INVALID');
   return scan;
 }
 

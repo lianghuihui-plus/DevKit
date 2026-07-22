@@ -16,8 +16,9 @@ const { matchVisualEquivalence } = require('./lib/visual-equivalence');
 const { compareStateEquivalence, isSamePage } = require('./lib/state-equivalence');
 const { loadStateEquivalence, recordStateEquivalenceRule, makeStateEquivalenceReview } = require('./lib/state-equivalence-store');
 const { loadObservationBundle } = require('./lib/observation-store');
-const { assessReplayableAction, executePathStepAction } = require('./lib/path-replay-engine');
+const { assessReplayableAction, executePathStepAction, resolveReplayAction } = require('./lib/path-replay-engine');
 const { completeDeviceActionSuccess, completeDeviceActionUnknownOutcome } = require('./lib/device-action-executor');
+const { edgeReplayabilityReason } = require('./lib/replayability');
 
 function observe(scanDir, contextId, trigger) {
   const child = spawnSync(process.execPath, [
@@ -147,6 +148,8 @@ main(() => {
   const edges = (fixedEdgeIds || targetState.replayPathEdgeIds || []).map((edgeId, index) => {
     const edge = graph.edges.find(item => item.id === edgeId);
     if (!edge) fail(`Replay edge missing: ${edgeId}`, 'RESTORE_PATH_INVALID');
+    const replayReason = edgeReplayabilityReason(edge);
+    if (replayReason) fail(`Replay edge is not portable: ${edgeId}`, replayReason);
     if (fixedFingerprints && edge.verification?.transitionFingerprint !== fixedFingerprints[index]) fail(`Replay edge fingerprint changed: ${edgeId}`, 'VERIFICATION_SUPERSEDED');
     return edge;
   });
@@ -219,7 +222,8 @@ main(() => {
       if (!acceptCachedEquivalence(checkpoint, currentObservationId, beforeComparison)) return requestReview('BEFORE_EDGE', edge.fromReachableStateId, currentObservationId, beforeComparison, edgeIndex, edge.id);
     }
 
-    const safety = assessReplayableAction(edge.action, scan, edge.replayPolicy, 'RESTORE_UNSAFE');
+    const replayAction = resolveReplayAction(scanDir, contextId, currentObservationId, edge);
+    const safety = assessReplayableAction(replayAction, scan, edge.replayPolicy, 'RESTORE_UNSAFE');
     const currentMetrics = metrics();
     assertExecutionWindow(scan, contextId, loadGraph(scanDir, contextId), loadFrontier(scanDir, contextId), currentMetrics);
     assertCapacity(scan, contextId, loadGraph(scanDir, contextId), loadFrontier(scanDir, contextId), currentMetrics, 'actions', 1);
@@ -227,12 +231,12 @@ main(() => {
       scan,
       contextId,
       beforeObservationId: currentObservationId,
-      action: edge.action,
+      action: replayAction,
       safety,
       owner: operationOwner,
       role: actionCategory === 'verification' ? 'VERIFICATION_REPLAY_ACTION' : 'RESTORE_REPLAY_ACTION',
       category: actionCategory,
-      locatorResolution: 'COORDINATE_ONLY',
+      locatorResolution: 'SEMANTIC_RESOLVED',
       idempotency: 'SAFE_RETRY_AFTER_OBSERVATION',
       failureReasonCode: actionCategory === 'verification' ? 'VERIFICATION_ACTION_FAILED' : 'RESTORE_ACTION_FAILED',
       syntheticSeed: `${result.restoreId}:${edge.id}`

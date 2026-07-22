@@ -2,6 +2,10 @@
 
 const { fail, hashObject, slug } = require('./common');
 const { compareFingerprint } = require('./fingerprint');
+const { canonicalIntentIdentity, intentKey } = require('./action-intent');
+const { isReplayableEdge, locatorReplayabilityReason } = require('./replayability');
+
+const LOCATOR_QUALITIES = new Set(['SEMANTIC_PORTABLE', 'SEMANTIC_WITH_FALLBACK', 'DEVICE_BOUND', 'UNRESOLVED']);
 
 function byId(items, id, label) {
   const item = items.find(x => x.id === id);
@@ -71,24 +75,17 @@ function upsertReachableState(graph, input) {
 }
 
 function canonicalActionIdentity(action = {}) {
-  return {
-    type: action.type || null, selector: action.selector || null, target: action.target || null, text: action.text || null,
-    fallbackBounds: action.fallbackBounds || null, fallbackNormalizedBounds: action.fallbackNormalizedBounds || null,
-    x: action.x ?? null, y: action.y ?? null, fromX: action.fromX ?? null, fromY: action.fromY ?? null,
-    toX: action.toX ?? null, toY: action.toY ?? null, value: action.value ?? null, key: action.key || null,
-    durationMs: action.durationMs ?? null, velocity: action.velocity ?? null, routeTransition: action.routeTransition === true,
-    nonrepeatable: action.nonrepeatable === true, syntheticSpec: action.syntheticSpec || null
-  };
+  return canonicalIntentIdentity(action.intent || action);
 }
 
 function actionKey(action) {
-  return hashObject(canonicalActionIdentity(action));
+  return intentKey(action.intent || action);
 }
 
 function recordEdge(graph, edge) {
   const from = byId(graph.reachableStates, edge.fromReachableStateId, 'from ReachableState');
   const to = byId(graph.reachableStates, edge.toReachableStateId, 'to ReachableState');
-  const duplicate = graph.edges.find(x => x.fromReachableStateId === from.id && x.toReachableStateId === to.id && actionKey(x.action) === actionKey(edge.action));
+  const duplicate = graph.edges.find(x => x.fromReachableStateId === from.id && x.toReachableStateId === to.id && actionKey(x) === actionKey(edge));
   if (duplicate) return { edge: duplicate, created: false };
   graph.edges.push(edge);
   if (!to.incomingEdgeIds.includes(edge.id)) to.incomingEdgeIds.push(edge.id);
@@ -98,15 +95,13 @@ function recordEdge(graph, edge) {
 
 function transitionFingerprint(graph, edge) {
   const from = byId(graph.reachableStates, edge.fromReachableStateId, 'from ReachableState'); const to = byId(graph.reachableStates, edge.toReachableStateId, 'to ReachableState'); const fromVisual = byId(graph.visualStates, from.visualStateId, 'from VisualState'); const toVisual = byId(graph.visualStates, to.visualStateId, 'to VisualState');
-  return hashObject({ contextId: graph.contextId, fromLogicalScreenKey: fromVisual.logicalScreenKey, fromArrivalSignature: from.arrivalSignature || {}, action: canonicalActionIdentity(edge.action), toLogicalScreenKey: toVisual.logicalScreenKey, toArrivalSignature: to.arrivalSignature || {} });
+  return hashObject({ contextId: graph.contextId, fromLogicalScreenKey: fromVisual.logicalScreenKey, fromArrivalSignature: from.arrivalSignature || {}, intent: canonicalActionIdentity(edge), toLogicalScreenKey: toVisual.logicalScreenKey, toArrivalSignature: to.arrivalSignature || {} });
 }
 
 function edgeReplayRank(edge) {
-  if (edge.replayPolicy === 'NONREPEATABLE' || edge.sideEffect === 'TEST_DATA_WRITE' && edge.replayPolicy === 'NONREPEATABLE') return 1000;
+  if (!isReplayableEdge(edge)) return 1000;
   const status = edge.verification?.replayStatus;
-  if (['NONREPEATABLE', 'INVALIDATED'].includes(status)) return 1000;
   if (status === 'COLD_REPLAY_VERIFIED') return 0;
-  if (status === 'REPLAY_UNSTABLE') return 1000;
   return edge.replayability === 'STABLE' ? 5 : edge.replayability === 'CONDITIONAL' ? 20 : 100;
 }
 
@@ -129,7 +124,7 @@ function updateCanonicalPaths(graph) {
       }
     }
   }
-  for (const state of graph.reachableStates) state.replayPathEdgeIds = best.get(state.id)?.edges || state.replayPathEdgeIds || [];
+  for (const state of graph.reachableStates) state.replayPathEdgeIds = best.get(state.id)?.edges || [];
   graph.paths = [...best.entries()].map(([terminalReachableStateId, value]) => ({
     id: `path-${slug(terminalReachableStateId)}-${hashObject(value.edges).slice(-8)}`,
     contextId: graph.contextId, edgeIds: value.edges, terminalReachableStateId, canonical: true
@@ -137,6 +132,7 @@ function updateCanonicalPaths(graph) {
 }
 
 function validateGraph(graph) {
+  if (Number(graph.schemaVersion || 1) !== 2) fail('Graph schemaVersion must be 2; legacy graph data is not supported by this skill version', 'GRAPH_SCHEMA_UNSUPPORTED');
   const logical = new Set(graph.logicalScreens.map(x => x.id));
   const visual = new Set(graph.visualStates.map(x => x.id));
   const reachable = new Set(graph.reachableStates.map(x => x.id));
@@ -146,6 +142,12 @@ function validateGraph(graph) {
   for (const state of graph.reachableStates) if (!visual.has(state.visualStateId)) fail(`ReachableState ${state.id} references missing VisualState`, 'GRAPH_INVALID');
   for (const edge of graph.edges) {
     if (!reachable.has(edge.fromReachableStateId) || !reachable.has(edge.toReachableStateId)) fail(`Edge ${edge.id} has invalid endpoint`, 'GRAPH_INVALID');
+    if (edge.action !== undefined) fail(`Edge ${edge.id} uses legacy action storage; use intent plus locatorEvidence`, 'GRAPH_SCHEMA_UNSUPPORTED');
+    if (!edge.intent || typeof edge.intent !== 'object') fail(`Edge ${edge.id} is missing action intent`, 'GRAPH_INVALID');
+    if (edge.intent.type === 'wait') fail(`Edge ${edge.id} contains non-graph wait intent`, 'NON_GRAPH_ACTION');
+    if (!LOCATOR_QUALITIES.has(edge.locatorQuality)) fail(`Edge ${edge.id} has invalid locatorQuality`, 'GRAPH_INVALID');
+    const locatorShapeReason = locatorReplayabilityReason(edge);
+    if (['EDGE_LOCATOR_UNRESOLVED', 'EDGE_LOCATOR_NOT_RESOLVED'].includes(locatorShapeReason)) fail(`Edge ${edge.id} has inconsistent portable locator evidence: ${locatorShapeReason}`, 'GRAPH_INVALID');
     if (edge.evidence?.beforeObservationId) observations.add(edge.evidence.beforeObservationId);
     if (edge.evidence?.afterObservationId) observations.add(edge.evidence.afterObservationId);
   }
@@ -165,12 +167,12 @@ function validateGraph(graph) {
     const incoming = graph.edges.filter(x => x.toReachableStateId === state.id).map(x => x.id).sort(); const actual = [...(state.incomingEdgeIds || [])].sort();
     if (hashObject(incoming) !== hashObject(actual)) fail(`ReachableState ${state.id} has inconsistent incomingEdgeIds`, 'GRAPH_INVALID');
     let cursor = graph.reachableStates.find(x => (x.depth?.pathDepth || 0) === 0)?.id || null;
-    for (const edgeId of state.replayPathEdgeIds || []) { const edge = edges.get(edgeId); if (!edge || edge.fromReachableStateId !== cursor) fail(`ReachableState ${state.id} has a broken replay path`, 'GRAPH_INVALID'); cursor = edge.toReachableStateId; }
+    for (const edgeId of state.replayPathEdgeIds || []) { const edge = edges.get(edgeId); if (!edge || edge.fromReachableStateId !== cursor) fail(`ReachableState ${state.id} has a broken replay path`, 'GRAPH_INVALID'); if (!isReplayableEdge(edge)) fail(`ReachableState ${state.id} replay path contains non-replayable edge ${edge.id}`, 'GRAPH_INVALID'); cursor = edge.toReachableStateId; }
     if ((state.replayPathEdgeIds || []).length && cursor !== state.id) fail(`ReachableState ${state.id} replay path does not terminate at the state`, 'GRAPH_INVALID');
   }
   for (const item of graph.paths || []) {
     let cursor = graph.reachableStates.find(x => (x.depth?.pathDepth || 0) === 0)?.id || null;
-    for (const edgeId of item.edgeIds || []) { const edge = edges.get(edgeId); if (!edge || edge.fromReachableStateId !== cursor) fail(`Path ${item.id} is not contiguous`, 'GRAPH_INVALID'); cursor = edge.toReachableStateId; }
+    for (const edgeId of item.edgeIds || []) { const edge = edges.get(edgeId); if (!edge || edge.fromReachableStateId !== cursor) fail(`Path ${item.id} is not contiguous`, 'GRAPH_INVALID'); if (!isReplayableEdge(edge)) fail(`Path ${item.id} contains non-replayable edge ${edge.id}`, 'GRAPH_INVALID'); cursor = edge.toReachableStateId; }
     if (cursor !== item.terminalReachableStateId) fail(`Path ${item.id} has an invalid terminal state`, 'GRAPH_INVALID');
   }
   return { ok: true, observationIds: [...observations] };

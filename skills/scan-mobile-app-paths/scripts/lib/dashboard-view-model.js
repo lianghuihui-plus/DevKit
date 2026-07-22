@@ -5,6 +5,7 @@ const path = require('path');
 const { fail, safeSegment } = require('./common');
 const { assertConsumableGraph } = require('./graph-normalization');
 const { label, actionLabel, localizeIssue } = require('./dashboard-localization');
+const { summarizePathExportability } = require('./precondition-flow-exporter');
 
 const REPLAY_RANK = { STABLE: 0, CONDITIONAL: 1, UNSTABLE: 2 };
 const VERIFICATION_RANK = { COLD_REPLAY_VERIFIED: 0, UNVERIFIED: 1, REPLAY_UNSTABLE: 2, INVALIDATED: 3 };
@@ -13,12 +14,18 @@ function unique(items, keyFn = item => JSON.stringify(item)) {
   const seen = new Set(); return items.filter(item => { const key = keyFn(item); if (seen.has(key)) return false; seen.add(key); return true; });
 }
 
-function observationEvidence(appMapRoot, runIdValue, observationIdValue) {
+function screenshotDataUrl(file) {
+  return `data:image/png;base64,${fs.readFileSync(file).toString('base64')}`;
+}
+
+function observationEvidence(appMapRoot, runIdValue, observationIdValue, { embedScreenshot = false } = {}) {
   const runId = safeSegment(runIdValue, 'evidence runId'); const observationId = safeSegment(observationIdValue, 'evidence observationId');
   const relative = path.join('runs', runId, 'evidence', 'observations', observationId); const absolute = path.join(appMapRoot, relative);
   for (const name of ['observation.json', 'screenshot.png', 'layout.json']) if (!fs.existsSync(path.join(absolute, name))) fail(`Dashboard evidence is missing: ${relative}/${name}`, 'DASHBOARD_EVIDENCE_MISSING');
   const encoded = ['..', 'runs', encodeURIComponent(runId), 'evidence', 'observations', encodeURIComponent(observationId)];
-  return { runId, observationId, screenshotUrl: `${encoded.join('/')}/screenshot.png`, observationUrl: `${encoded.join('/')}/observation.json`, layoutUrl: `${encoded.join('/')}/layout.json` };
+  const evidence = { runId, observationId, screenshotUrl: `${encoded.join('/')}/screenshot.png`, observationUrl: `${encoded.join('/')}/observation.json`, layoutUrl: `${encoded.join('/')}/layout.json` };
+  if (embedScreenshot) evidence.screenshotDataUrl = screenshotDataUrl(path.join(absolute, 'screenshot.png'));
+  return evidence;
 }
 
 function resolveAuthDiff(authDiff, screenNames) {
@@ -53,10 +60,50 @@ function buildExecution(execution = {}) {
   return { schemaVersion: 1, totals: resolveTotals(execution.totals || { runCount: runs.length }), runs };
 }
 
+function discoveryPath(graph, targetReachableStateId) {
+  const roots = (graph.reachableStates || []).filter(state => Number(state.depth?.pathDepth || 0) === 0).map(state => state.id).sort();
+  if (!roots.length) return null;
+  if (roots.includes(targetReachableStateId)) return [];
+  const queue = roots.map(stateId => ({ stateId, edgeIds: [] }));
+  const visited = new Set(roots);
+  while (queue.length) {
+    const current = queue.shift();
+    const outgoing = (graph.edges || []).filter(edge => edge.fromReachableStateId === current.stateId).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    for (const edge of outgoing) {
+      if (visited.has(edge.toReachableStateId)) continue;
+      const edgeIds = [...current.edgeIds, edge.id];
+      if (edge.toReachableStateId === targetReachableStateId) return edgeIds;
+      visited.add(edge.toReachableStateId);
+      queue.push({ stateId: edge.toReachableStateId, edgeIds });
+    }
+  }
+  return null;
+}
+
+function dashboardPaths(graph) {
+  const paths = [...(graph.paths || [])];
+  const represented = new Set(paths.map(pathItem => pathItem.terminalReachableStateId));
+  for (const state of graph.reachableStates || []) {
+    if (represented.has(state.id)) continue;
+    const edgeIds = discoveryPath(graph, state.id);
+    if (!edgeIds || !edgeIds.length) continue;
+    paths.push({
+      id: `manual-path-${String(state.id).replace(/[^a-zA-Z0-9_-]+/g, '-')}`,
+      contextId: graph.contextId,
+      edgeIds,
+      terminalReachableStateId: state.id,
+      canonical: false,
+      manualExport: true
+    });
+    represented.add(state.id);
+  }
+  return paths;
+}
+
 function buildContext(appMapRoot, contextId, graph) {
   assertConsumableGraph(graph, fail);
   const logicalById = new Map(graph.logicalScreens.map(item => [item.id, item])); const visualById = new Map(graph.visualStates.map(item => [item.id, item])); const stateById = new Map(graph.reachableStates.map(item => [item.id, item])); const edgeById = new Map(graph.edges.map(item => [item.id, item]));
-  const evidenceCache = new Map(); const evidenceFor = ref => { const key = `${ref.runId}/${ref.observationId}`; if (!evidenceCache.has(key)) evidenceCache.set(key, observationEvidence(appMapRoot, ref.runId, ref.observationId)); return evidenceCache.get(key); };
+  const evidenceCache = new Map(); const evidenceFor = (ref, options = {}) => { const key = `${ref.runId}/${ref.observationId}/${options.embedScreenshot === true ? 'embedded' : 'linked'}`; if (!evidenceCache.has(key)) evidenceCache.set(key, observationEvidence(appMapRoot, ref.runId, ref.observationId, options)); return evidenceCache.get(key); };
   const visualEvidence = visual => unique((visual.evidenceObservationRefs || []).map(evidenceFor), item => `${item.runId}/${item.observationId}`);
   const logicalNodes = graph.logicalScreens.map(logical => {
     const visuals = graph.visualStates.filter(item => item.logicalScreenKey === logical.id); const visualIds = new Set(visuals.map(item => item.id)); const states = graph.reachableStates.filter(item => visualIds.has(item.visualStateId)); const stateIds = new Set(states.map(item => item.id)); const kinds = unique(visuals.map(item => item.kind || 'full-screen')); const depths = states.map(item => item.depth?.pathDepth || 0); const incoming = graph.edges.filter(item => stateIds.has(item.toReachableStateId)); const outgoing = graph.edges.filter(item => stateIds.has(item.fromReachableStateId));
@@ -68,18 +115,20 @@ function buildContext(appMapRoot, contextId, graph) {
   for (const edge of graph.edges) {
     const from = logicalForState(edge.fromReachableStateId); const to = logicalForState(edge.toReachableStateId); if (!from || !to) continue; const key = `${from}->${to}`;
     let item = logicalEdgeGroups.get(key); if (!item) { item = { id: `logical-edge-${logicalEdgeGroups.size + 1}`, from, to, edgeIds: [], actions: [], replayability: 'STABLE', replayStatus: 'COLD_REPLAY_VERIFIED', risks: [], count: 0 }; logicalEdgeGroups.set(key, item); }
-    const replayStatus = edge.verification?.replayStatus || 'UNVERIFIED'; item.edgeIds.push(edge.id); item.actions.push(actionLabel(edge.action)); item.risks.push(edge.risk || 'UNKNOWN'); item.count += 1; if ((REPLAY_RANK[edge.replayability] ?? 2) > (REPLAY_RANK[item.replayability] ?? 0)) item.replayability = edge.replayability || 'UNSTABLE'; if ((VERIFICATION_RANK[replayStatus] ?? 1) > (VERIFICATION_RANK[item.replayStatus] ?? 0)) item.replayStatus = replayStatus;
+    const replayStatus = edge.verification?.replayStatus || 'UNVERIFIED'; item.edgeIds.push(edge.id); item.actions.push(actionLabel(edge.intent)); item.risks.push(edge.risk || 'UNKNOWN'); item.count += 1; if ((REPLAY_RANK[edge.replayability] ?? 2) > (REPLAY_RANK[item.replayability] ?? 0)) item.replayability = edge.replayability || 'UNSTABLE'; if ((VERIFICATION_RANK[replayStatus] ?? 1) > (VERIFICATION_RANK[item.replayStatus] ?? 0)) item.replayStatus = replayStatus;
   }
   const logicalEdges = [...logicalEdgeGroups.values()].map(item => ({ ...item, actions: unique(item.actions), risks: unique(item.risks), replayabilityLabel: label('replayability', item.replayability, '未知'), replayStatusLabel: label('replayStatus', item.replayStatus, '未知'), riskLabels: unique(item.risks).map(value => label('risk', value, '未知')) }));
   const reachableNodes = graph.reachableStates.map(state => { const visual = visualById.get(state.visualStateId); const logical = visual && logicalById.get(visual.logicalScreenKey); const kind = visual?.kind || 'full-screen'; return { id: state.id, label: logical?.name || visual?.name || state.id, description: logical?.description || '', kind, kindLabel: label('kind', kind), depth: state.depth?.pathDepth || 0, routeDepth: state.depth?.routeDepth || 0, modalDepth: state.depth?.modalDepth || 0, root: (state.depth?.pathDepth || 0) === 0, logicalScreenId: visual?.logicalScreenKey || null, visualStateId: state.visualStateId, incomingEdgeIds: state.incomingEdgeIds || [], outgoingEdgeIds: graph.edges.filter(item => item.fromReachableStateId === state.id).map(item => item.id), replayPathEdgeIds: state.replayPathEdgeIds || [], arrivalSignature: state.arrivalSignature || {}, evidence: visual ? visualEvidence(visual) : [] }; });
   const reachableEdges = graph.edges.map(edge => {
-    const sourceRunId = edge.evidence?.sourceRunId || edge.provenance?.[0]?.runId; const before = sourceRunId && edge.evidence?.beforeObservationId ? observationEvidence(appMapRoot, sourceRunId, edge.evidence.beforeObservationId) : null; const after = sourceRunId && edge.evidence?.afterObservationId ? observationEvidence(appMapRoot, sourceRunId, edge.evidence.afterObservationId) : null;
+    const sourceRunId = edge.evidence?.sourceRunId || edge.provenance?.[0]?.runId; const before = sourceRunId && edge.evidence?.beforeObservationId ? evidenceFor({ runId: sourceRunId, observationId: edge.evidence.beforeObservationId }, { embedScreenshot: true }) : null; const after = sourceRunId && edge.evidence?.afterObservationId ? evidenceFor({ runId: sourceRunId, observationId: edge.evidence.afterObservationId }, { embedScreenshot: true }) : null;
     const replayability = edge.replayability || 'UNSTABLE'; const replayStatus = edge.verification?.replayStatus || 'UNVERIFIED'; const risk = edge.risk || 'UNKNOWN'; const sideEffect = edge.sideEffect || 'NONE'; const replayPolicy = edge.replayPolicy || 'REPEATABLE';
-    return { id: edge.id, from: edge.fromReachableStateId, to: edge.toReachableStateId, label: actionLabel(edge.action), action: edge.action || {}, replayability, replayabilityLabel: label('replayability', replayability, '未知'), replayStatus, replayStatusLabel: label('replayStatus', replayStatus, '未知'), risk, riskLabel: label('risk', risk, '未知'), sideEffect, sideEffectLabel: label('sideEffect', sideEffect, '未知'), replayPolicy, replayPolicyLabel: label('replayPolicy', replayPolicy, '未知'), evidence: { before, after, actionResultId: edge.evidence?.actionResultId || null }, provenance: edge.provenance || [] };
+    const locatorQuality = edge.locatorQuality || 'UNRESOLVED';
+    return { id: edge.id, from: edge.fromReachableStateId, to: edge.toReachableStateId, label: actionLabel(edge.intent), intent: edge.intent || {}, locatorQuality, locatorQualityLabel: label('locatorQuality', locatorQuality, '未知'), replayability, replayabilityLabel: label('replayability', replayability, '未知'), replayStatus, replayStatusLabel: label('replayStatus', replayStatus, '未知'), risk, riskLabel: label('risk', risk, '未知'), sideEffect, sideEffectLabel: label('sideEffect', sideEffect, '未知'), replayPolicy, replayPolicyLabel: label('replayPolicy', replayPolicy, '未知'), evidence: { before, after, actionResultId: edge.evidence?.actionResultId || null }, provenance: edge.provenance || [] };
   });
-  const paths = (graph.paths || []).map(item => {
-    const terminal = stateById.get(item.terminalReachableStateId); const visual = terminal && visualById.get(terminal.visualStateId); const logical = visual && logicalById.get(visual.logicalScreenKey); const steps = (item.edgeIds || []).map(id => edgeById.get(id)).filter(Boolean).map(edge => { const replayability = edge.replayability || 'UNSTABLE'; const replayStatus = edge.verification?.replayStatus || 'UNVERIFIED'; return { edgeId: edge.id, label: actionLabel(edge.action), from: edge.fromReachableStateId, to: edge.toReachableStateId, replayability, replayabilityLabel: label('replayability', replayability, '未知'), replayStatus, replayStatusLabel: label('replayStatus', replayStatus, '未知') }; });
-    return { id: item.id, terminalReachableStateId: item.terminalReachableStateId, terminalLogicalScreenId: visual?.logicalScreenKey || null, terminalLabel: logical?.name || item.terminalReachableStateId, canonical: item.canonical === true, edgeIds: item.edgeIds || [], steps };
+  const paths = dashboardPaths(graph).map(item => {
+    const terminal = stateById.get(item.terminalReachableStateId); const visual = terminal && visualById.get(terminal.visualStateId); const logical = visual && logicalById.get(visual.logicalScreenKey); const steps = (item.edgeIds || []).map(id => edgeById.get(id)).filter(Boolean).map(edge => { const replayability = edge.replayability || 'UNSTABLE'; const replayStatus = edge.verification?.replayStatus || 'UNVERIFIED'; const locatorQuality = edge.locatorQuality || 'UNRESOLVED'; return { edgeId: edge.id, label: actionLabel(edge.intent), from: edge.fromReachableStateId, to: edge.toReachableStateId, locatorQuality, locatorQualityLabel: label('locatorQuality', locatorQuality, '未知'), replayability, replayabilityLabel: label('replayability', replayability, '未知'), replayStatus, replayStatusLabel: label('replayStatus', replayStatus, '未知') }; });
+    const flowExport = summarizePathExportability(graph, item);
+    return { id: item.id, terminalReachableStateId: item.terminalReachableStateId, terminalLogicalScreenId: visual?.logicalScreenKey || null, terminalLabel: logical?.name || item.terminalReachableStateId, canonical: item.canonical === true, manualExport: item.manualExport === true, edgeIds: item.edgeIds || [], steps, flowExport };
   });
   const maxDepth = Math.max(0, ...reachableNodes.map(item => item.depth));
   return { id: contextId, label: label('context', contextId), summary: { logicalScreens: logicalNodes.length, visualStates: graph.visualStates.length, reachableStates: reachableNodes.length, edges: reachableEdges.length, verifiedEdges: reachableEdges.filter(edge => edge.replayStatus === 'COLD_REPLAY_VERIFIED').length, unstableEdges: reachableEdges.filter(edge => edge.replayStatus === 'REPLAY_UNSTABLE').length, canonicalPaths: paths.length, maxDepth }, logicalGraph: { nodes: logicalNodes, edges: logicalEdges }, reachableGraph: { nodes: reachableNodes, edges: reachableEdges }, paths };

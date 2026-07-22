@@ -49,7 +49,7 @@ main(() => {
   const { parent, continuationPlan } = buildContinuationPlan({ root, parentScanId: args.parentScanId, scanMode, contextId, target, validateParent: true });
   const scan = validateRun({
     schemaVersion: 3, scanId, parentScanId: parent?.scanId || null, mapRevisionId: safeSegment(parent?.mapRevisionId || scanId, 'mapRevisionId'),
-    status: 'CREATED', reasonCode: null, scanMode, scanScope, graphProtocolVersion: 3, attemptProtocolVersion: 3, planProtocolVersion: 3,
+    status: 'CREATED', reasonCode: null, scanMode, scanScope, graphProtocolVersion: 4, attemptProtocolVersion: 4, planProtocolVersion: 3,
     eventProtocolVersion: 2, projectionProtocolVersion: 2, navigationProtocolVersion: 2, verificationProtocolVersion: 2,
     platform: 'harmony', target, profile, strategy: scanMode === 'goal-directed' ? 'goal-directed' : 'exploration',
     goalSpecPath: scanMode === 'goal-directed' ? 'goal/goal.json' : null,

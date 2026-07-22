@@ -6,6 +6,7 @@ const path = require('path');
 const { parseArgs, required, resolveScanDir, loadScan, nextId, readJson, writeJsonAtomic, now, event, commitEvent, contextDir, output, main, fail } = require('./lib/common');
 const { captureStableObservation } = require('./lib/observation-stability');
 const { activeContextId } = require('./lib/run-protocol');
+const { deviceProfileFrom } = require('./lib/device-profile');
 
 const PURPOSE_TRIGGERS = {
   'context-verification': 'COLD_START',
@@ -35,9 +36,11 @@ main(() => {
     const result = captured.bridgeResult; const stability = captured.stability;
     const layout = readJson(path.join(tempDir, 'layout.json')); void layout;
     const bridgeLog = path.join(tempDir, 'bridge.log'); if (fs.existsSync(bridgeLog)) fs.renameSync(bridgeLog, path.join(scanDir, 'evidence', 'logs', `${observationId}-bridge.log`));
-    const current = loadScan(scanDir); const observation = { schemaVersion: 2, observationId, sequence: current.counters.observation, capturedAt: stability.stabilizedAt, foreground: result.foreground,
-      display: { width: args.width ? Number(args.width) : null, height: args.height ? Number(args.height) : null, orientation: args.orientation || null },
+    const current = loadScan(scanDir); const display = { width: args.width ? Number(args.width) : null, height: args.height ? Number(args.height) : null, orientation: args.orientation || null };
+    const observation = { schemaVersion: 2, observationId, sequence: current.counters.observation, capturedAt: stability.stabilizedAt, foreground: result.foreground,
+      display, deviceProfile: deviceProfileFrom({ scan, observation: { foreground: result.foreground, display }, display }),
       screenshotPath: `evidence/observations/${observationId}/screenshot.png`, layoutPath: `evidence/observations/${observationId}/layout.json`, captureStatus: 'COMPLETE', contextId, purpose, trigger, stability, contextPreparationId: preparation?.preparationId || null };
+    observation.deviceProfileId = observation.deviceProfile.profileId;
     writeJsonAtomic(path.join(tempDir, 'observation.json'), observation); fs.renameSync(tempDir, finalDir);
     const metricsFile = path.join(contextDir(scanDir, contextId), 'metrics.json'); const metrics = readJson(metricsFile); metrics.observations = (metrics.observations || 0) + 1; metrics.observationSamples = (metrics.observationSamples || 0) + stability.sampleCount; metrics.observationStabilityWaitMs = (metrics.observationStabilityWaitMs || 0) + stability.elapsedMs; if (stability.status === 'LAYOUT_STABLE_VISUAL_VARIANCE') metrics.visualVarianceObservations = (metrics.visualVarianceObservations || 0) + 1;
     commitEvent(scanDir, 'observation', { contextId, observationId, foreground: observation.foreground, trigger, stabilityStatus: stability.status, stabilityElapsedMs: stability.elapsedMs, sampleCount: stability.sampleCount }, [{ path: `contexts/${contextId}/metrics.json`, op: 'REPLACE', value: metrics }]);

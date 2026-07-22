@@ -14,7 +14,7 @@
 10. [Continuation](#10-continuation)
 11. [终态校验](#11-终态校验)
 12. [Snapshot 与 Dashboard](#12-snapshot-与-dashboard)
-13. [历史兼容](#13-历史兼容)
+13. [协议版本](#13-协议版本)
 
 ## 1. App Map 根目录
 
@@ -55,7 +55,7 @@ runs/<scan-id>/
 │   ├── live-cursor.json
 │   ├── back-capabilities.json
 │   ├── verification-queue.json
-│   ├── visual-equivalence.json          # 兼容历史视觉等价规则
+│   ├── visual-equivalence.json
 │   └── state-equivalence.json
 ├── attempts/<attempt-id>.json
 ├── evidence/
@@ -72,13 +72,10 @@ runs/<scan-id>/
 │   └── logs/
 ├── goal/                           # 仅目标模式
 ├── known/contexts/                 # Continuation 恢复知识
-├── merged/
-│   ├── map.json
-│   └── unresolved.json
 └── report.md
 ```
 
-当前结构恰好只有一个 `contexts/<context-id>` 目录，且必须等于 `scan.json.contextId`。历史 Run 可保留多个 context 目录。
+当前结构恰好只有一个 `contexts/<context-id>` 目录，且必须等于 `scan.json.contextId`。
 
 ## 3. scan 与 plan
 
@@ -127,7 +124,7 @@ Run 内 JSON 产物分为三类：
 - Projection：状态型文件，必须通过 timeline projectionOps 写入，并能被 `rebuild-run.js` 重建比对。
 - Evidence：不可变或追加型证据，写入后由 Projection 引用并由 `validate-run.js` 校验身份、hash 和因果关系。
 - Canonical：`maps/<context>` 中的当前地图事实，可由已登记 session 推进，带 revision 与来源 Run provenance。
-- Generated：报告、merged 和 Snapshot/Dashboard 输出，可从已校验 Run 与 canonical map 重新生成。
+- Generated：报告和 Snapshot/Dashboard 输出，可从已校验 Run 与 canonical map 重新生成。
 
 虽然 `evidence/preparations/*.json`、`evidence/restores/*.json` 与 `evidence/navigations/*.json` 位于 evidence 目录下，但它们记录执行状态机，属于 Projection；Observation、ActionResult、VisualReview 与 VerificationExecution 证据仍按 Evidence 处理。
 
@@ -186,7 +183,7 @@ Run 内 JSON 产物分为三类：
 }
 ```
 
-规则只能用于恢复、来源确认和探索路径验证中的状态等价，不能用于目标页面最终强匹配、动作无变化判断或风险动作放行。`visual-equivalence.json` 仅保留为历史规则只读兼容；新确认只写入 `state-equivalence.json`。
+规则只能用于恢复、来源确认和探索路径验证中的状态等价，不能用于目标页面最终强匹配、动作无变化判断或风险动作放行。新确认只写入 `state-equivalence.json`。
 
 `metrics.json` 至少保留：
 
@@ -271,20 +268,22 @@ FrontierItem(CLAIMED)
   -> Edge + ReachableState + Frontier(EXPLORED) + Cursor
 ```
 
-ActionResult 必须绑定 Attempt、Frontier 和 before Observation；Edge 必须引用同一 Attempt 的 before/action/after/visualReview 证据。候选哈希必须等于 Frontier 候选。直接写 Edge 被禁止。
+ActionResult 必须绑定 Attempt、Frontier 和 before Observation，并保存实际执行动作、`actionIntent`、`deviceProfile` 与 `locatorEvidence`。Edge 必须引用同一 Attempt 的 before/action/after/visualReview 证据。候选哈希必须等于 Frontier 候选。直接写 Edge 被禁止。
 
 Edge 还保存：
 
 ```text
-locatorResolution
+intent                        # 可移植动作意图，不含坐标
+locatorQuality                # SEMANTIC_PORTABLE | SEMANTIC_WITH_FALLBACK | DEVICE_BOUND | UNRESOLVED
+locatorEvidence               # 本次设备上的匹配节点、fallback bounds、tapPoint 和 deviceProfileId
 replayPolicy
-replayability                 # 历史兼容等级
+replayability                 # STABLE | CONDITIONAL | UNSTABLE
 verification.replayStatus     # UNVERIFIED | COLD_REPLAY_VERIFIED | REPLAY_UNSTABLE | INVALIDATED
 verification.transitionFingerprint
 verification.verificationIds[]
 ```
 
-动作后的稳定状态与来源 `EXACT` 时闭环到 Attempt `NO_STATE_CHANGE` 和 Frontier `EXPLORED`，不写 VisualState、ReachableState 或 Edge。`wait` 禁止出现在新 Frontier、Attempt candidate 和 Edge action。
+动作后的稳定状态与来源 `EXACT` 时闭环到 Attempt `NO_STATE_CHANGE` 和 Frontier `EXPLORED`，不写 VisualState、ReachableState 或 Edge。`wait` 禁止出现在新 Frontier、Attempt candidate 和 Edge intent。
 
 ## 7. Navigation 与 BACK
 
@@ -370,7 +369,7 @@ skippedImportedFrontiers[]
 
 父 Run 必须是完整校验的 `PARTIAL`，并与子 Run 具有相同 App、环境、版本、`contextId` 和 `scanMode`。目标模式的 `goalSpecHash` 必须相同。
 
-Continuation 只表达执行血缘。新 Run 从当前 `maps/<context>` seed graph/frontier/queue，并记录 `mapBaseRevisionId`；父 Graph 仍可复制到 `known/contexts` 作为诊断和兼容输入，但不能替代 canonical map。子 Run 必须重新冷启动、采集 Observation 并绑定根状态后，才能执行新候选。父 Run 不可修改。
+Continuation 只表达执行血缘。新 Run 从当前 `maps/<context>` seed graph/frontier/queue，并记录 `mapBaseRevisionId`；父 Graph 可复制到 `known/contexts` 作为诊断输入，但不能替代 canonical map。子 Run 必须重新冷启动、采集 Observation 并绑定根状态后，才能执行新候选。父 Run 不可修改。
 
 ## 11. 终态校验
 
@@ -405,7 +404,7 @@ maps/<context-id>/edits/
 - `DELETE_REACHABLE_STATE`：删除指定非 root ReachableState 及无其他入口的后代。
 - `RESET_CONTEXT`：清空指定 context 的 canonical map。
 
-编辑必须同步清理 `frontier.json`、`verification-queue.json`、`back-capabilities.json` 与等价规则。被影响的 VerificationTask 标为 `SUPERSEDED`；Frontier 和 BackCapability 从 canonical map 移除。删除 Edge 时，Frontier 还必须按同一 `fromReachableStateId + actionKey(candidate)` 清理已探索入口，避免删除后同一动作仍被历史 explored 记录压住而不容易重新发现。每次 apply 都写入新的 `meta.mapRevisionId`，并向 `map-events.jsonl` 追加 `canonicalMapEdited`。
+编辑必须同步清理 `frontier.json`、`verification-queue.json`、`back-capabilities.json` 与等价规则。被影响的 VerificationTask 标为 `SUPERSEDED`；Frontier 和 BackCapability 从 canonical map 移除。删除 Edge 时，Frontier 还必须按同一 `fromReachableStateId + actionKey(candidate)` 清理已探索入口，避免删除后同一动作仍被 explored 记录压住而不容易重新发现。每次 apply 都写入新的 `meta.mapRevisionId`，并向 `map-events.jsonl` 追加 `canonicalMapEdited`。
 
 每次构建写入不可变 generation：
 
@@ -419,18 +418,16 @@ snapshots/generations/<generation-id>/
 
 完成全部文件和摘要校验后，原子更新 `snapshots/current.json`。默认读取 `maps/<context>` 的 canonical map，不跨 scan 聚合 graph；显式 `--map-revision-id` 只用于指定 canonical revision 诊断。
 
-Run Index 只提供执行历史和耗时/动作指标。历史 `wait` Edge 在归一化层剔除，依赖它的不可达状态被裁剪并写 unresolved。
+Run Index 只提供执行历史和耗时/动作指标。旧 graph 数据不再归一化，入口会以 `GRAPH_SCHEMA_UNSUPPORTED` 拒绝。
 
 Dashboard 只能读取 `current.json` 指向且摘要匹配的 generation。ViewModel 将稳定英文协议值映射为中文标签，并展示发现 Edge、已验证 Edge、不稳定 Edge、冷启动和动作分类；固定 HTML 模板不得自行修改事实。
 
-## 13. 历史产物读取
+## 13. 协议版本
 
-历史 Run 保持原目录和事实不可变。兼容访问器负责：
+当前版本使用：
 
-- 历史产物的 `plannedContextIds` 与当前结构的 `contextId`。
-- 历史产物的 `budgetsByContext` 与当前结构的 `budget`。
-- 历史 Attempt/Edge 缺失当前结构字段时的保守读取。
+- `scan.graphProtocolVersion: 4`
+- `scan.attemptProtocolVersion: 4`
+- `contexts/<context>/graph.json.schemaVersion: 2`
 
-新 writer 永远只生成当前结构。校验器只拒绝当前 Run 的多 Context 结构，不能让全局入口拒绝历史多 Context Run。
-
-历史 Edge 的验证映射必须基于证据：只有从冷启动开始、根与每个中间状态均精确、动作和目标转换一致的路径才映射为 `COLD_REPLAY_VERIFIED`；坐标不稳定或证据不完整的事实映射为 `REPLAY_UNSTABLE` / `UNVERIFIED` 并保留 provenance。
+Graph v2 禁止 `edge.action`；Edge 必须保存 `intent` 和 `locatorQuality`。旧图需要重新扫描生成当前 canonical map，不做原地迁移。

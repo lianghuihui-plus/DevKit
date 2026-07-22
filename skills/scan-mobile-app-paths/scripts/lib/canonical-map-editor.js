@@ -76,8 +76,8 @@ function compactGraph(graph, deletedStateIds, deletedEdgeIds) {
 }
 
 function edgeActionIdentity(edge) {
-  if (!edge.fromReachableStateId || !edge.action) return null;
-  return `${edge.fromReachableStateId}::${actionKey(edge.action)}`;
+  if (!edge.fromReachableStateId || !edge.intent) return null;
+  return `${edge.fromReachableStateId}::${actionKey(edge)}`;
 }
 
 function frontierActionIdentity(item) {
@@ -147,7 +147,7 @@ function entityLabels(graph, stateIds, edgeIds) {
   });
   const edgeLabels = [...edgeIds].map(id => {
     const edge = (graph.edges || []).find(item => item.id === id);
-    return { id, action: edge?.action || null, fromReachableStateId: edge?.fromReachableStateId || null, toReachableStateId: edge?.toReachableStateId || null };
+    return { id, intent: edge?.intent || null, fromReachableStateId: edge?.fromReachableStateId || null, toReachableStateId: edge?.toReachableStateId || null };
   });
   return { states: stateLabels, edges: edgeLabels };
 }

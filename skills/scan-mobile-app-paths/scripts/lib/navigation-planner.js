@@ -3,11 +3,22 @@
 const { hashObject } = require('./common');
 const { cursorLease } = require('./live-cursor');
 const { loadBackCapabilities } = require('./back-capability-store');
+const { isReplayableEdge } = require('./replayability');
 
 function replayable(edge) {
-  const replay = edge.verification?.replayStatus || edge.replayability || 'UNVERIFIED';
-  const bounds = edge.action?.fallbackBounds; const coordinateValid = edge.locatorResolution === 'SEMANTIC_VERIFIED' || Array.isArray(bounds) && bounds.length === 4 && bounds.every(Number.isFinite) && bounds[2] > bounds[0] && bounds[3] > bounds[1];
-  return edge.action?.type !== 'wait' && edge.replayPolicy !== 'NONREPEATABLE' && edge.safety?.allowed !== false && !['NONREPEATABLE', 'INVALIDATED', 'REPLAY_UNSTABLE'].includes(replay) && coordinateValid;
+  return isReplayableEdge(edge);
+}
+
+function validReplayPath(graph, edgeIds = [], fromId, toId) {
+  if (!fromId || !toId) return null;
+  let cursor = fromId;
+  const edges = new Map((graph.edges || []).map(edge => [edge.id, edge]));
+  for (const edgeId of edgeIds) {
+    const edge = edges.get(edgeId);
+    if (!edge || edge.fromReachableStateId !== cursor || !replayable(edge)) return null;
+    cursor = edge.toReachableStateId;
+  }
+  return cursor === toId ? edgeIds : null;
 }
 
 function shortestPath(graph, fromId, toId) {
@@ -16,7 +27,7 @@ function shortestPath(graph, fromId, toId) {
   while (queue.length) {
     queue.sort((a, b) => a.cost - b.cost || a.stateId.localeCompare(b.stateId)); const current = queue.shift();
     for (const edge of graph.edges.filter(item => item.fromReachableStateId === current.stateId && replayable(item)).sort((a, b) => a.id.localeCompare(b.id))) {
-      const coordinatePenalty = edge.locatorResolution === 'COORDINATE_ONLY' || !edge.locatorResolution ? 10 : 1; const nextCost = current.cost + coordinatePenalty;
+      const locatorPenalty = edge.locatorQuality === 'SEMANTIC_WITH_FALLBACK' ? 2 : 1; const nextCost = current.cost + locatorPenalty;
       if ((best.get(edge.toReachableStateId) ?? Infinity) <= nextCost) continue;
       const edges = [...current.edges, edge.id]; if (edge.toReachableStateId === toId) return { edgeIds: edges, cost: nextCost };
       best.set(edge.toReachableStateId, nextCost); queue.push({ stateId: edge.toReachableStateId, edges, cost: nextCost });
@@ -32,7 +43,11 @@ function planNavigation({ scanDir, scan, contextId, graph, targetReachableStateI
   if (lease.usable && lease.mutationMatches && back) return make(contextId, 'BACKTRACK', cursor.reachableStateId, targetReachableStateId, [{ kind: 'BACK', backCapabilityId: back.backCapabilityId, expectedReachableStateId: targetReachableStateId }], 1, cursor.epoch);
   const path = lease.usable && lease.mutationMatches ? shortestPath(graph, cursor.reachableStateId, targetReachableStateId) : null;
   if (path) return make(contextId, 'GRAPH_PATH', cursor.reachableStateId, targetReachableStateId, path.edgeIds.map(edgeId => ({ kind: 'EDGE', edgeId })), path.cost, cursor.epoch);
-  const target = graph.reachableStates.find(item => item.id === targetReachableStateId); const edgeIds = target?.replayPathEdgeIds || [];
+  const root = graph.reachableStates.find(item => (item.depth?.pathDepth || 0) === 0);
+  const target = graph.reachableStates.find(item => item.id === targetReachableStateId);
+  const cached = validReplayPath(graph, target?.replayPathEdgeIds || [], root?.id, targetReachableStateId);
+  const fallback = cached ? null : shortestPath(graph, root?.id, targetReachableStateId);
+  const edgeIds = cached || fallback?.edgeIds || [];
   return make(contextId, 'COLD_REPLAY', cursor.reachableStateId, targetReachableStateId, edgeIds.map(edgeId => ({ kind: 'EDGE', edgeId })), edgeIds.length + 20, cursor.epoch);
 }
 

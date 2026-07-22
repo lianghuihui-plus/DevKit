@@ -6,7 +6,7 @@ const {
   contextDir, ensureDir, readJson, writeJsonAtomic, appendJsonl, hashObject, now, emptyGraph,
   withFileLock, fail
 } = require('./common');
-const { updateCanonicalPaths } = require('./graph-store');
+const { updateCanonicalPaths, validateGraph } = require('./graph-store');
 
 function appRootFromScanDir(scanDir) {
   return path.dirname(path.dirname(scanDir));
@@ -163,8 +163,33 @@ function counterSeedFromCanonical(canonical) {
   };
 }
 
+function validateCanonicalSeed(canonical) {
+  validateGraph(canonical.graph);
+  const stateIds = new Set((canonical.graph.reachableStates || []).map(item => item.id));
+  const edgeIds = new Set((canonical.graph.edges || []).map(item => item.id));
+  const visualIds = new Set((canonical.graph.visualStates || []).map(item => item.id));
+  for (const item of canonical.frontier.items || []) {
+    if (item.contextId !== canonical.contextId || item.fromReachableStateId && !stateIds.has(item.fromReachableStateId)) fail(`Canonical frontier ${item.id || '<missing>'} references missing state`, 'CANONICAL_MAP_INVALID');
+  }
+  for (const item of canonical.verificationQueue.items || []) {
+    if (item.status === 'SUPERSEDED') continue;
+    if (item.contextId !== canonical.contextId || item.terminalReachableStateId && !stateIds.has(item.terminalReachableStateId)) fail(`Canonical verification ${item.verificationId || '<missing>'} references missing state`, 'CANONICAL_MAP_INVALID');
+    for (const edgeId of item.edgeIds || []) if (!edgeIds.has(edgeId)) fail(`Canonical verification ${item.verificationId || '<missing>'} references missing edge`, 'CANONICAL_MAP_INVALID');
+  }
+  for (const item of canonical.backCapabilities.items || []) {
+    if (item.fromReachableStateId && !stateIds.has(item.fromReachableStateId) || item.toReachableStateId && !stateIds.has(item.toReachableStateId)) fail(`Canonical back capability ${item.backCapabilityId || item.id || '<missing>'} references missing state`, 'CANONICAL_MAP_INVALID');
+  }
+  for (const store of [canonical.visualEquivalence, canonical.stateEquivalence]) {
+    for (const rule of store.rules || []) {
+      if (rule.reachableStateId && !stateIds.has(rule.reachableStateId)) fail(`Canonical equivalence rule ${rule.ruleId || '<missing>'} references missing state`, 'CANONICAL_MAP_INVALID');
+      if (rule.visualStateId && !visualIds.has(rule.visualStateId)) fail(`Canonical equivalence rule ${rule.ruleId || '<missing>'} references missing visual state`, 'CANONICAL_MAP_INVALID');
+    }
+  }
+}
+
 function seedFilesForContext(appRoot, contextId) {
   const canonical = loadCanonicalContext(appRoot, contextId);
+  validateCanonicalSeed(canonical);
   return {
     hasMap: hasCanonicalMap(appRoot, contextId),
     mapRevisionId: canonical.meta.mapRevisionId || null,
@@ -233,7 +258,7 @@ function recomputeDepths(graph) {
       const to = states.get(edge.toReachableStateId);
       if (!to) continue;
       const nextPath = Number(from.depth.pathDepth || 0) + 1;
-      const nextRoute = Number(from.depth.routeDepth || 0) + (edge.action?.routeTransition === true ? 1 : 0);
+      const nextRoute = Number(from.depth.routeDepth || 0) + (edge.intent?.routeTransition === true ? 1 : 0);
       const currentPath = Number.isFinite(to.depth.pathDepth) ? to.depth.pathDepth : Number.POSITIVE_INFINITY;
       const currentRoute = Number.isFinite(to.depth.routeDepth) ? to.depth.routeDepth : Number.POSITIVE_INFINITY;
       if (nextPath < currentPath || nextPath === currentPath && nextRoute < currentRoute) {

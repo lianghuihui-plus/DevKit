@@ -17,6 +17,7 @@ const LABELS = {
   risk: { SAFE: '安全', LOW: '低风险', MEDIUM: '中风险', HIGH: '高风险', LOW_RISK_FORM: '低风险表单', TEST_DATA_WRITE: '测试数据写入', PROHIBITED: '禁止', UNKNOWN: '未知' },
   sideEffect: { NONE: '无', LOCAL: '本地变更', NETWORK: '网络请求', TEST_DATA_WRITE: '测试数据写入', EXTERNAL: '外部影响', UNKNOWN: '未知' },
   replayPolicy: { REPEATABLE: '可重复', NONREPEATABLE: '不可重复', CONDITIONAL: '有条件', AS_RECORDED: '按记录重放', COORDINATE_ONLY: '仅坐标重放', SEMANTIC_VERIFIED: '语义已验证' },
+  locatorQuality: { SEMANTIC_PORTABLE: '语义可移植', SEMANTIC_WITH_FALLBACK: '语义+证据兜底', DEVICE_BOUND: '设备绑定', UNRESOLVED: '未解析' },
   authDiffStatus: { READY: '可对比', PARTIAL: '数据不完整', VERSION_UNKNOWN: '版本未知' },
   issueType: {
     BACK_TARGET_CONFLICT: '返回目标冲突',

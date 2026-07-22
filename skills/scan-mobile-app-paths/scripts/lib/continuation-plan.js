@@ -21,7 +21,7 @@ function buildContinuationPlan({ root, parentScanId, scanMode, contextId, target
   const importedFrontiers = [];
   const skippedImportedFrontiers = [];
   const normalizedParentGraphs = {};
-  const sourceGraph = readJson(path.join(parentDir, 'contexts', contextId, 'graph.json'), { schemaVersion: 1, contextId, logicalScreens: [], visualStates: [], reachableStates: [], edges: [], paths: [] });
+  const sourceGraph = readJson(path.join(parentDir, 'contexts', contextId, 'graph.json'), { schemaVersion: 2, contextId, logicalScreens: [], visualStates: [], reachableStates: [], edges: [], paths: [] });
   const normalized = normalizeGraphForConsumption(sourceGraph, { runId: safeParentScanId, contextId });
   normalizedParentGraphs[contextId] = normalized.graph;
   const retainedStateIds = new Set(normalized.graph.reachableStates.map(state => state.id));

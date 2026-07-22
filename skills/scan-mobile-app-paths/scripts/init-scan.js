@@ -10,6 +10,7 @@ const { buildPlanFromData, planHash } = require('./lib/plan');
 const { buildGoalSpecFromArgs, goalPlanFromSpec, writeGoalArtifacts } = require('./lib/goal-spec');
 const { buildContinuationPlan } = require('./lib/continuation-plan');
 const { seedFilesForContext, ensureCanonicalContext } = require('./lib/canonical-map-store');
+const { deviceProfileFrom } = require('./lib/device-profile');
 
 function makeScanId(root) {
   const stamp = compactLocalTimestamp();
@@ -68,7 +69,7 @@ main(() => {
   }
   const scan = validateRun({
     schemaVersion: 3, scanId, parentScanId: parent?.scanId || null, mapRevisionId: safeSegment(parent?.mapRevisionId || scanId, 'mapRevisionId'), mapBaseRevisionId: canonicalSeeds[contextId]?.mapRevisionId || null, status: confirmedPlanHash ? 'PLAN_CONFIRMED' : 'CREATED', reasonCode: null,
-    scanMode, scanScope, graphProtocolVersion: 3, attemptProtocolVersion: 3, planProtocolVersion: 3, visualReviewProtocolVersion: 1,
+    scanMode, scanScope, graphProtocolVersion: 4, attemptProtocolVersion: 4, planProtocolVersion: 3, visualReviewProtocolVersion: 1,
     eventProtocolVersion: 2, projectionProtocolVersion: 2, navigationProtocolVersion: 2, verificationProtocolVersion: 2,
     platform: 'harmony', target, profile, strategy: scanMode === 'goal-directed' ? 'goal-directed' : 'exploration',
     goalSpecPath: scanMode === 'goal-directed' ? 'goal/goal.json' : null,
@@ -82,7 +83,7 @@ main(() => {
   if (confirmedPlanHash && confirmedPlanHash !== expectedPlanHash) fail('Confirmed plan hash does not match the requested scan configuration; rerun preview-plan with the final inputs', 'PLAN_HASH_MISMATCH');
   ensureDir(scanDir);
   writeJsonAtomic(path.join(scanDir, 'scan.json'), scan);
-  writeJsonAtomic(path.join(scanDir, 'target.json'), { ...target, detectionSource: args.detectionSource || 'confirmed-input', confirmedAt: createdAt });
+  writeJsonAtomic(path.join(scanDir, 'target.json'), { ...target, deviceProfile: deviceProfileFrom({ scan: { target } }), detectionSource: args.detectionSource || 'confirmed-input', confirmedAt: createdAt });
   if (confirmedPlanHash) writeJsonAtomic(path.join(scanDir, 'plan.json'), { ...previewPlan, planHash: expectedPlanHash, confirmedAt: createdAt });
   appendJsonl(path.join(scanDir, 'timeline.jsonl'), { schemaVersion: 1, eventId: 'evt-000001', type: 'scanCreated', at: createdAt, scanId, scanMode, scanScope, contextId });
   appendJsonl(path.join(scanDir, 'timeline.jsonl'), { schemaVersion: 1, eventId: 'evt-000002', type: 'targetConfirmed', at: createdAt, scanId, target: { bundleName: target.bundleName, entryAbility: target.entryAbility, environment: target.environment, deviceId: target.deviceId } });
@@ -92,7 +93,7 @@ main(() => {
     const dir = path.join(scanDir, 'contexts', contextId); ensureDir(dir);
     writeJsonAtomic(path.join(dir, 'context.json'), { schemaVersion: 1, id: contextId, label: contextId === 'guest' ? '未登录' : '已登录', authState: contextId, pendingPreparationId: null, lastPreparationId: null, verification: { status: 'PENDING', source: 'PLAN_CONFIRMED', markersPresent: [], markersAbsent: [], observationId: null, preparationId: null } });
     const seed = canonicalSeeds[contextId];
-    writeJsonAtomic(path.join(dir, 'graph.json'), seed.hasMap ? seed.graph : { schemaVersion: 1, contextId, logicalScreens: [], visualStates: [], reachableStates: [], edges: [], paths: [] });
+    writeJsonAtomic(path.join(dir, 'graph.json'), seed.hasMap ? seed.graph : { schemaVersion: 2, contextId, logicalScreens: [], visualStates: [], reachableStates: [], edges: [], paths: [] });
     writeJsonAtomic(path.join(dir, 'frontier.json'), seed.hasMap ? seed.frontier : { schemaVersion: 1, contextId, items: [] });
     writeJsonAtomic(path.join(dir, 'metrics.json'), { schemaVersion: 3, contextId, actions: 0, explorationActions: 0, navigationActions: 0, recoveryActions: 0, verificationActions: 0, interruptionActions: 0, coldStarts: 0, cursorReuseHits: 0, sourceMatchNavigations: 0, cursorInvalidations: 0, backtrackNavigations: 0, graphPathNavigations: 0, coldReplayNavigations: 0, deviceMutationSeq: 0, observations: 0, observationSamples: 0, observationStabilityWaitMs: 0, visualVarianceObservations: 0, noStateChangeActions: 0, activeStartedAt: null, activeDurationMs: 0, restoreAttempts: 0 });
     writeJsonAtomic(path.join(dir, 'live-cursor.json'), { schemaVersion: 1, contextId, reachableStateId: null, observationId: null, status: 'UNKNOWN', equivalence: null, epoch: 0, mutationSeq: 0, establishedBy: null, lastValidatedAt: null, updatedAt: createdAt, invalidatedReason: 'NOT_ESTABLISHED' });
