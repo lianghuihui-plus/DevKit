@@ -43,7 +43,7 @@ main(() => {
     const plan = buildPlan(scanDir); const expectedHash = planHash(plan); const confirmedHash = required(args, 'planHash');
     if (confirmedHash !== expectedHash) fail('Plan has changed or was not presented; run show-plan.js again', 'PLAN_HASH_MISMATCH');
     const confirmedAt = now(); const scan = projectedTransition(scanDir, before, 'PLAN_CONFIRMED', null, isCurrentRun(before) ? before.contextId : undefined, 'scanPlanConfirmed', { planHash: expectedHash, contextId: isCurrentRun(before) ? before.contextId : undefined, budget: isCurrentRun(before) ? before.budget : undefined, budgetsByContext: isCurrentRun(before) ? undefined : before.budgetsByContext, profile: before.profile, verificationRule: before.verificationRule || null }, [{ path: 'plan.json', op: 'REPLACE', value: { ...plan, planHash: expectedHash, confirmedAt } }]);
-    return output({ schemaVersion: 1, ok: true, status: scan.status, planHash: expectedHash });
+    return output({ schemaVersion: 1, ok: true, deprecated: true, replacement: 'preview-plan.js + init-scan.js --confirmed-plan-hash', status: scan.status, planHash: expectedHash });
   }
   if (command === 'configure-plan') {
     const scan = loadScan(scanDir, { mutable: true }); if (scan.status !== 'CREATED') fail('Plan configuration requires CREATED status', 'RUN_STATE_INVALID');
@@ -56,7 +56,7 @@ main(() => {
     if (isCurrentRun(scan)) scan.budget = budget; else scan.budgetsByContext = Object.fromEntries(scan.plannedContextIds.map(id => [id, { ...budget }]));
     scan.budgetRevision = (scan.budgetRevision || 1) + 1; scan.updatedAt = now();
     commitEvent(scanDir, 'scanPlanConfigured', { profile, budgetRevision: scan.budgetRevision, contextId: isCurrentRun(scan) ? scan.contextId : undefined, budget: isCurrentRun(scan) ? scan.budget : undefined, budgetsByContext: isCurrentRun(scan) ? undefined : scan.budgetsByContext }, [{ path: 'scan.json', op: 'REPLACE', value: scan }]);
-    const plan = buildPlan(scanDir); const hash = planHash(plan); return output({ schemaVersion: 1, ok: true, planHash: hash, plan, confirmationRequired: true });
+    const plan = buildPlan(scanDir); const hash = planHash(plan); return output({ schemaVersion: 1, ok: true, deprecated: true, replacement: 'preview-plan.js + init-scan.js --confirmed-plan-hash', planHash: hash, plan, confirmationRequired: true });
   }
   if (command === 'pause') {
     const scan = transition(scanDir, 'PAUSED', args.reasonCode || 'USER_PAUSED'); return output({ schemaVersion: 1, ok: true, status: scan.status });

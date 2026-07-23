@@ -14,6 +14,7 @@ const LABELS = {
   key: { BACK: '返回键', HOME: '主页键', ENTER: '确认键', ESCAPE: '退出键', VOLUME_UP: '音量加键', VOLUME_DOWN: '音量减键' },
   replayability: { STABLE: '稳定', CONDITIONAL: '有条件', UNSTABLE: '不稳定' },
   replayStatus: { UNVERIFIED: '未验证', COLD_REPLAY_VERIFIED: '冷启动已验证', REPLAY_UNSTABLE: '重放不稳定', NONREPEATABLE: '不可重放', INVALIDATED: '验证已失效' },
+  pathStatus: { RUNNABLE_VERIFIED: '可执行且已验证', RUNNABLE_UNVERIFIED: '可执行未验证', RUNNABLE_UNSTABLE: '可执行但不稳定', NOT_RUNNABLE: '不可执行' },
   risk: { SAFE: '安全', LOW: '低风险', MEDIUM: '中风险', HIGH: '高风险', LOW_RISK_FORM: '低风险表单', TEST_DATA_WRITE: '测试数据写入', PROHIBITED: '禁止', UNKNOWN: '未知' },
   sideEffect: { NONE: '无', LOCAL: '本地变更', NETWORK: '网络请求', TEST_DATA_WRITE: '测试数据写入', EXTERNAL: '外部影响', UNKNOWN: '未知' },
   replayPolicy: { REPEATABLE: '可重复', NONREPEATABLE: '不可重复', CONDITIONAL: '有条件', AS_RECORDED: '按记录重放', COORDINATE_ONLY: '仅坐标重放', SEMANTIC_VERIFIED: '语义已验证' },
@@ -29,6 +30,7 @@ const LABELS = {
     UNVERIFIED_EDGE: '路径尚未验证',
     REPLAY_UNSTABLE: '路径重放不稳定',
     FRONTIER_UNRESOLVED: '探索待办未收敛',
+    CANDIDATE_BACKFILL_REQUIRED: '探索候选待补齐',
     VERIFICATION_UNRESOLVED: '验证待办未收敛'
   },
   issueReason: { DEPENDENT_ON_NON_GRAPH_ACTION: '依赖非路径动作', UNREACHABLE_FROM_ROOT: '从根状态不可达' }
@@ -66,6 +68,8 @@ function issueSummary(item = {}) {
       return `跳转 ${item.edgeId || '-'} 的冷启动重放不稳定，发现事实仍被保留。`;
     case 'FRONTIER_UNRESOLVED':
       return `探索待办 ${item.frontierId || '-'} 尚未收敛，状态为 ${item.status || '-'}。`;
+    case 'CANDIDATE_BACKFILL_REQUIRED':
+      return `可达状态 ${item.reachableStateId || '-'} 还没有生成探索候选，继续扫描前应先补齐候选。`;
     case 'VERIFICATION_UNRESOLVED':
       return `验证任务 ${item.verificationId || '-'} 尚未收敛，状态为 ${item.status || '-'}。`;
     default:

@@ -13,6 +13,7 @@ const { assessAction } = require('./lib/safety');
 const { isCurrentRun, activeContextId, runBudget, maxDepth, maxCandidatesPerState, maxScrollsPerState, graphProtocolVersion } = require('./lib/run-protocol');
 const scheduler = require('./lib/frontier-scheduler');
 const { nextWork } = require('./lib/work-scheduler');
+const { makeFrontierItem, frontierUpsertOp } = require('./lib/frontier-store');
 
 main(() => {
   const args = parseArgs(); const command = args._[0] || 'list'; const { scanDir } = resolveScanDir(required(args, 'scanDir'));
@@ -23,28 +24,11 @@ main(() => {
   if (command === 'add') {
     if (scan.status !== 'SCANNING' || activeContextId(scan) !== contextId) fail('Frontier mutation requires the active SCANNING context', 'RUN_STATE_INVALID');
     const graph = loadGraph(scanDir, contextId); const from = required(args, 'fromReachableStateId');
-    if (!graph.reachableStates.some(x => x.id === from)) fail('Frontier source must be a ReachableState', 'GRAPH_REFERENCE_MISSING');
-    const candidate = validateGraphCandidate(jsonArg(required(args, 'candidate'), null, 'candidate JSON')); const safety = assessAction(candidate, scan.target);
-    if (!safety.allowed) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: safety.reasonCode, safety });
-    const group = args.candidateGroupKey || hashObject(candidate);
-    const duplicate = frontier.items.find(x => x.fromReachableStateId === from && x.candidateGroupKey === group);
-    if (duplicate) return output({ schemaVersion: 1, ok: true, created: false, item: duplicate });
-    const fromState = graph.reachableStates.find(x => x.id === from);
-    const fromItems = frontier.items.filter(x => x.fromReachableStateId === from);
-    const budget = runBudget(scan, contextId);
-    if (fromItems.length >= maxCandidatesPerState(budget)) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: 'MAX_CANDIDATES_PER_STATE' });
-    if ((fromState.depth?.pathDepth || 0) + 1 > maxDepth(budget)) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: 'MAX_DEPTH' });
-    const routeIncrement = candidate.routeTransition === true || ['navigate', 'openRoute'].includes(candidate.type) ? 1 : 0;
-    if (!isCurrentRun(scan) && (fromState.depth?.routeDepth || 0) + routeIncrement > budget.maxRouteDepth) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: 'MAX_ROUTE_DEPTH' });
-    if (candidate.type === 'swipe') {
-      const scrollGroups = new Set(fromItems.filter(x => x.candidate?.type === 'swipe').map(x => x.candidateGroupKey));
-      if (!scrollGroups.has(group) && scrollGroups.size >= maxScrollsPerState(budget)) return output({ schemaVersion: 1, ok: false, created: false, reasonCode: 'MAX_SCROLLS_PER_STATE' });
-    }
-    const riskRank = safety.risk === 'SAFE' ? 0 : safety.risk === 'LOW_RISK_FORM' ? 1 : 2; const defaultPriority = { strategy: scan.strategy, riskRank, nextPathDepth: (fromState.depth?.pathDepth || 0) + 1, nextRouteDepth: (fromState.depth?.routeDepth || 0) + routeIncrement, entryRank: 0, selectorRank: 0, restoreCost: fromState.replayPathEdgeIds?.length || 0, goalRelevance: null }; const item = { id: nextId(scanDir, 'frontier', 'frontier'), contextId, fromReachableStateId: from, candidateGroupKey: group, candidate,
-      priority: { ...defaultPriority, ...jsonArg(args.priority, {}, 'priority JSON'), riskRank },
-      status: 'PENDING', attempts: 0, sourceFrontierId: args.sourceFrontierId || null, createdAt: now() };
-    frontier.items.push(item); commitEvent(scanDir, 'candidatesRecorded', { contextId, frontierIds: [item.id], fromReachableStateId: from, items: [item] }, [{ path: `contexts/${contextId}/frontier.json`, op: 'UPSERT', collection: 'items', keyFields: ['id'], value: item, fallback: { schemaVersion: 1, contextId, items: [] } }]);
-    return output({ schemaVersion: 1, ok: true, created: true, item });
+    const candidate = jsonArg(required(args, 'candidate'), null, 'candidate JSON');
+    const result = makeFrontierItem({ scanDir, scan, contextId, graph, frontier, fromReachableStateId: from, candidate, candidateGroupKey: args.candidateGroupKey || null, priority: jsonArg(args.priority, {}, 'priority JSON'), sourceFrontierId: args.sourceFrontierId || null });
+    if (!result.ok || !result.created) return output({ schemaVersion: 1, ok: result.ok, created: false, reasonCode: result.reasonCode || null, item: result.item || null, safety: result.safety || null });
+    frontier.items.push(result.item); commitEvent(scanDir, 'candidatesRecorded', { contextId, frontierIds: [result.item.id], fromReachableStateId: from, items: [result.item] }, [frontierUpsertOp(contextId, result.item)]);
+    return output({ schemaVersion: 1, ok: true, created: true, item: result.item });
   }
   if (command === 'claim') {
     const reservedNavigationExecutionId = nextId(scanDir, 'navigationExecution', 'navexec');
@@ -55,7 +39,7 @@ main(() => {
       const graph = loadGraph(scanDir, contextId); const runtime = readJson(path.join(contextDir(scanDir, contextId), 'metrics.json'), {});
       const usage = budgetUsage(currentScan, graph, currentFrontier, runtime); const budgetState = exhausted(runBudget(currentScan, contextId), usage, graphProtocolVersion(currentScan));
       const work = isCurrentRun(currentScan) && !budgetState.exhausted ? nextWork({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier, metrics: runtime }) : null;
-      const decision = budgetState.exhausted ? { decision: 'STOP', reasonCode: budgetState.reasonCode, suggestedTerminalStatus: 'PARTIAL', budgetState } : work?.decision === 'VERIFY' ? { decision: 'VERIFY', reasonCode: work.reasonCode, verification: work.verification, estimate: work.estimate } : isCurrentRun(currentScan) ? scheduler.schedule({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier }) : strategy.decideNext({ frontier: currentFrontier.items, budgetState });
+      const decision = budgetState.exhausted ? { decision: 'STOP', reasonCode: budgetState.reasonCode, suggestedTerminalStatus: 'PARTIAL', budgetState } : work?.decision === 'VERIFY' ? { decision: 'VERIFY', reasonCode: work.reasonCode, verification: work.verification, estimate: work.estimate } : work?.decision === 'STOP' ? work : isCurrentRun(currentScan) ? scheduler.schedule({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier }) : strategy.decideNext({ frontier: currentFrontier.items, budgetState });
       if (decision.decision !== 'CONTINUE') return { decision };
       const item = currentFrontier.items.find(x => x.id === decision.frontierId); item.status = 'CLAIMED'; item.attempts += 1; item.claimedAt = now(); item.claimToken = crypto.randomUUID(); item.claimedAttemptId = null; item.cursorEpoch = decision.navigationPlan?.cursorEpoch ?? null; item.navigationPlanId = decision.navigationPlan?.navigationPlanId || null; item.navigationPlan = decision.navigationPlan || null; item.navigationExecutionId = decision.navigationPlan ? reservedNavigationExecutionId : null;
       const navigationExecution = decision.navigationPlan ? { ...decision.navigationPlan, schemaVersion: 2, navigationExecutionId: item.navigationExecutionId, requestedMode: decision.navigationPlan.mode, actualMode: null, fallbackFrom: null, fallbackReason: null, status: 'PLANNED', createdAt: now(), startedAt: null, finishedAt: null, terminalObservationId: null, restoreId: null, executedSteps: [] } : null;

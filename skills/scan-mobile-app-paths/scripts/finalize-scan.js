@@ -45,10 +45,11 @@ main(() => {
   const map = { schemaVersion: 1, runId: scan.scanId, scanMode: scan.scanMode, scanScope: scan.scanScope, contexts };
   const unresolved = [];
   for (const contextId of runContextIds(scan)) {
-    const graph = contexts[contextId]; const frontier = loadFrontier(scanDir, contextId); const queue = require('./lib/verification-store').loadVerificationQueue(scanDir, contextId);
+    const graph = contexts[contextId]; const frontier = loadFrontier(scanDir, contextId); const queue = require('./lib/verification-store').loadVerificationQueue(scanDir, contextId); const suggestions = readJson(path.join(contextDir(scanDir, contextId), 'frontier-suggestions.json'), { items: [] });
     unresolved.push(...graph.visualStates.filter(x => x.dedupe?.status === 'PROBABLE').map(x => ({ type: 'PROBABLE_VISUAL_DUPLICATE', contextId, visualStateId: x.id, duplicateGroupId: x.dedupe.duplicateGroupId })));
     unresolved.push(...graph.edges.filter(edge => ['UNVERIFIED', 'REPLAY_UNSTABLE'].includes(edge.verification?.replayStatus)).map(edge => ({ type: edge.verification?.replayStatus === 'REPLAY_UNSTABLE' ? 'REPLAY_UNSTABLE' : 'UNVERIFIED_EDGE', contextId, edgeId: edge.id })));
     unresolved.push(...frontier.items.filter(item => ['PENDING', 'RETRYABLE', 'FAILED', 'BLOCKED'].includes(item.status)).map(item => ({ type: 'FRONTIER_UNRESOLVED', contextId, frontierId: item.id, status: item.status, reasonCode: item.reasonCode || null })));
+    unresolved.push(...suggestions.items.filter(item => item.status === 'PENDING').map(item => ({ type: 'FRONTIER_SUGGESTION_PENDING', contextId, suggestionId: item.suggestionId, reachableStateId: item.reachableStateId, candidateGroupKey: item.candidateGroupKey, status: item.status, reasonCode: item.reasonCode || null })));
     unresolved.push(...queue.items.filter(item => ['PENDING', 'FAILED'].includes(item.status)).map(item => ({ type: 'VERIFICATION_UNRESOLVED', contextId, verificationId: item.verificationId, status: item.status, reasonCode: item.reasonCode || null })));
   }
   writeJsonAtomic(path.join(scanDir, 'merged', 'map.json'), map); writeJsonAtomic(path.join(scanDir, 'merged', 'unresolved.json'), { schemaVersion: 2, items: unresolved });

@@ -3,10 +3,10 @@
 const { hashObject } = require('./common');
 const { cursorLease } = require('./live-cursor');
 const { loadBackCapabilities } = require('./back-capability-store');
-const { isReplayableEdge } = require('./replayability');
+const { isRunnableEdge } = require('./replayability');
 
 function replayable(edge) {
-  return isReplayableEdge(edge);
+  return isRunnableEdge(edge);
 }
 
 function validReplayPath(graph, edgeIds = [], fromId, toId) {
@@ -45,7 +45,7 @@ function planNavigation({ scanDir, scan, contextId, graph, targetReachableStateI
   if (path) return make(contextId, 'GRAPH_PATH', cursor.reachableStateId, targetReachableStateId, path.edgeIds.map(edgeId => ({ kind: 'EDGE', edgeId })), path.cost, cursor.epoch);
   const root = graph.reachableStates.find(item => (item.depth?.pathDepth || 0) === 0);
   const target = graph.reachableStates.find(item => item.id === targetReachableStateId);
-  const cached = validReplayPath(graph, target?.replayPathEdgeIds || [], root?.id, targetReachableStateId);
+  const cached = validReplayPath(graph, target?.runnablePathEdgeIds || target?.replayPathEdgeIds || [], root?.id, targetReachableStateId);
   const fallback = cached ? null : shortestPath(graph, root?.id, targetReachableStateId);
   const edgeIds = cached || fallback?.edgeIds || [];
   return make(contextId, 'COLD_REPLAY', cursor.reachableStateId, targetReachableStateId, edgeIds.map(edgeId => ({ kind: 'EDGE', edgeId })), edgeIds.length + 20, cursor.epoch);

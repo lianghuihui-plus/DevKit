@@ -72,6 +72,29 @@ function semanticAnchors(fingerprint = {}, observed = null) {
   const requiredTexts = unique([...strongTextIntersection, ...stableTextIntersection]).slice(0, 6);
   const requiredIds = observedSemantic ? intersect(stableIds, observedStableIds, 6) : stableIds.slice(0, 4);
 
+  const hasExpectedAnchors = Boolean(
+    strongTexts.length
+    || stableTexts.length
+    || stableIds.length
+    || (semantic.titles || []).length
+    || (semantic.tabs || []).length
+    || (semantic.navItems || []).length
+  );
+  if (!hasExpectedAnchors && observedSemantic) {
+    const observedPageTexts = unique([
+      ...(observedSemantic.titles || []),
+      ...(observedSemantic.navItems || []),
+      ...(observedSemantic.primaryActions || []),
+      ...(observedSemantic.stableTexts || [])
+    ]).slice(0, 6);
+    return {
+      requiredTexts: observedPageTexts,
+      requiredIds: [],
+      requiredTitles: unique(observedSemantic.titles || []).slice(0, 2),
+      requiredTabs: []
+    };
+  }
+
   return {
     requiredTexts,
     requiredIds,

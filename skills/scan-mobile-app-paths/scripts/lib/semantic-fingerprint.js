@@ -22,6 +22,13 @@ function normalizeBounds(bounds) {
     const values = bounds.map(Number);
     if (values.every(Number.isFinite) && values[2] > values[0] && values[3] > values[1]) return values;
   }
+  if (typeof bounds === 'string') {
+    const match = bounds.match(/^\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]$/);
+    if (match) {
+      const values = match.slice(1).map(Number);
+      if (values.every(Number.isFinite) && values[2] > values[0] && values[3] > values[1]) return values;
+    }
+  }
   if (bounds && typeof bounds === 'object') {
     const left = Number(bounds.left ?? bounds.x);
     const top = Number(bounds.top ?? bounds.y);
@@ -36,6 +43,10 @@ function roleOf(value = {}) {
   return String(value.type || value.role || value.className || 'node');
 }
 
+function nodeValue(value = {}) {
+  return { ...(value.attributes || {}), ...value };
+}
+
 function flattenLayout(value, out = [], depth = 0, indexPath = []) {
   if (!value) return out;
   if (Array.isArray(value)) {
@@ -43,11 +54,12 @@ function flattenLayout(value, out = [], depth = 0, indexPath = []) {
     return out;
   }
   if (typeof value !== 'object') return out;
-  const id = value.resourceId || value.id || value.key || null;
-  const sourceText = rawText(value.text || value.content || value.label || value.accessibilityLabel);
+  const node = nodeValue(value);
+  const id = node.resourceId || node.id || node.key || node.accessibilityId || null;
+  const sourceText = rawText(node.text || node.content || node.label || node.accessibilityLabel || node.description || node.originalText);
   const text = normalizeText(sourceText);
-  const role = roleOf(value);
-  const bounds = normalizeBounds(value.bounds || value.rect || null);
+  const role = roleOf(node);
+  const bounds = normalizeBounds(node.bounds || node.rect || node.origBounds || null);
   out.push({
     id: id ? String(id) : null,
     text,
@@ -145,7 +157,7 @@ function candidateControlMatch(nodes, candidate = {}) {
   const idMatched = Boolean(idNeedle) && nodes.some(node => node.id && node.id === idNeedle);
   const candidateBounds = normalizeBounds(candidate.fallbackBounds);
   const boundsMatched = Boolean(candidateBounds) && nodes.some(node => boundsOverlap(candidateBounds, node.bounds) >= 0.6);
-  return { matched: textMatched || idMatched || ((textMatched || idMatched) && boundsMatched), textMatched, idMatched, boundsMatched };
+  return { matched: idMatched || (textMatched && boundsMatched), textMatched, idMatched, boundsMatched };
 }
 
 module.exports = {

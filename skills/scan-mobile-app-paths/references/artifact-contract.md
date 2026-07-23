@@ -34,7 +34,7 @@
 
 `--app-map-root` 和 `--scan-dir` 必须为绝对路径。`scanId`、`goalId`、父 Run ID 等必须是单个安全路径段，拒绝斜线、`..` 和路径穿越。
 
-`maps/guest` 与 `maps/authenticated` 保存该登录态当前 canonical map，包括 `graph.json`、`frontier.json`、`verification-queue.json`、`back-capabilities.json`、`visual-equivalence.json`、`state-equivalence.json`、`meta.json`、`map-events.jsonl` 和 `edits/`。Run 初始化时从这里 seed；Run 登记时同步回这里。
+`maps/guest` 与 `maps/authenticated` 保存该登录态当前 canonical map，包括 `graph.json`、`frontier.json`、`verification-queue.json`、`back-capabilities.json`、`visual-equivalence.json`、`state-equivalence.json`、`meta.json`、`map-events.jsonl` 和 `edits/`。Run 初始化时从这里 seed；Run 登记时同步回这里。Run 内另有 `frontier-suggestions.json` 作为候选生成投影，不同步进 canonical map。
 
 ## 2. Run 目录
 
@@ -51,6 +51,7 @@ runs/<scan-id>/
 │   ├── context.json
 │   ├── graph.json
 │   ├── frontier.json
+│   ├── frontier-suggestions.json
 │   ├── metrics.json
 │   ├── live-cursor.json
 │   ├── back-capabilities.json
@@ -94,6 +95,15 @@ runs/<scan-id>/
   "navigationPolicy": "adaptive",
   "verificationRule": "CANONICAL_SCREEN_PATH",
   "budget": {},
+  "budgetBaseline": {
+    "schemaVersion": 1,
+    "contextId": "guest",
+    "source": "CANONICAL_SEED",
+    "mapBaseRevisionId": null,
+    "baselineReachableStates": 0,
+    "baselineVisualStates": 0,
+    "baselineEdges": 0
+  },
   "budgetRevision": 1
 }
 ```
@@ -110,6 +120,7 @@ runs/<scan-id>/
 - `profileSelection.availableProfiles`：四个 profile、适用性与派生限制。
 - `userConfiguration`：`profile`、`maxActiveMinutes`、`maxDepth`。
 - `derivedExecutionLimits`：完整生效预算和策略限制。
+- `budgetBaseline` 与 `stateBudgetSemantics`：canonical seed 的已有状态基线、本 Run 新增状态上限和预计总状态数。
 - `timeExpectation`：活动时间含义与排除项。
 - 安全边界、人工介入点、停止规则、产物路径和 Continuation 摘要。
 
@@ -283,9 +294,47 @@ verification.transitionFingerprint
 verification.verificationIds[]
 ```
 
+ReachableState 的路径字段由 `updateCanonicalPaths()` 统一重算，不能由调用方手写推导：
+
+```text
+runnablePathEdgeIds             # 从根状态到该状态的规范可执行 Edge 链，供恢复、导航、Dashboard 和 Flow 导出使用
+verifiedPathEdgeIds             # 从根状态到该状态且每条 Edge 都已 COLD_REPLAY_VERIFIED 的 Edge 链，仅表示验证信心
+replayPathEdgeIds               # runnablePathEdgeIds 的兼容别名
+pathStatus                      # RUNNABLE_VERIFIED | RUNNABLE_UNVERIFIED | RUNNABLE_UNSTABLE | NOT_RUNNABLE
+```
+
+`graph.paths[]` 只保存可执行路径，并同步写入 `pathStatus`、`verifiedEdgeIds` 和 `verificationStatus`。`UNVERIFIED` 或 `REPLAY_UNSTABLE` 不能阻止路径进入地图；它们只影响状态标签、验证队列和人工判断。
+
 动作后的稳定状态与来源 `EXACT` 时闭环到 Attempt `NO_STATE_CHANGE` 和 Frontier `EXPLORED`，不写 VisualState、ReachableState 或 Edge。`wait` 禁止出现在新 Frontier、Attempt candidate 和 Edge intent。
 
-## 7. Navigation 与 BACK
+## 7. Frontier Suggestions
+
+`contexts/<context>/frontier-suggestions.json` 是 Run 内 Projection，用来闭合“新状态 -> 候选建议 -> Frontier”的探索链路：
+
+```text
+suggestionId
+reachableStateId
+visualStateId
+observationId
+observationRef?: { runId, observationId }
+evidenceSource: LOCAL_RUN | CANONICAL_REF
+candidateGroupKey
+candidate?                       # 没有可抽取候选时可为空
+source: LAYOUT_CLICKABLE | SEMANTIC_PRIMARY_ACTION | SEMANTIC_TAB | SCROLL | NO_CANDIDATES
+confidence
+risk
+status: PENDING | APPLIED | SKIPPED | BLOCKED | DISMISSED
+frontierId?
+reasonCode?
+```
+
+Suggestion 不是发现事实，也不是可执行承诺；只有 `APPLIED` 后写入 `frontier.json`，才进入正常 Frontier/Attempt/Edge 因果链。`BLOCKED` 表示安全规则拒绝，`SKIPPED` 表示去重、超预算、低价值跳过或 `NO_CANDIDATES_EXTRACTED`，二者保留为审计信息但不算未解决待办。`nextWork()` 在 Frontier 为空但存在可应用 `PENDING` suggestion 时返回 `SUGGEST_FRONTIER`，要求先处理候选建议，再决定是否验证。
+
+`nextWork()` 只把安全、未重复、未超预算且来源状态未被失败验证依赖阻塞的 `PENDING` suggestion 视为可应用建议。旧状态可通过 `frontier-candidates.js backfill --all-reachable true` 生成建议；backfill 不执行动作，也不直接写 Edge。若旧状态没有本 Run `evidenceObservationIds`，backfill 可以通过 `evidenceObservationRefs` 读取源 Run 的 Observation/Layout，并在 suggestion 上写 `observationRef` 与 `evidenceSource=CANONICAL_REF`。
+
+完整 suggestion 不同步进 canonical map。Run 登记时只在 `maps/<context>/meta.json.candidateCoverage` 写轻量摘要，记录每个 ReachableState 的 suggestion/frontier 数量、最后建议时间和是否需要 backfill；该摘要不能替代 `frontier.json` 或探索事实。Snapshot 会把仍需补候选的状态暴露为 `CANDIDATE_BACKFILL_REQUIRED` unresolved，Continuation seed 后调度器可据此先返回 `BACKFILL_FRONTIER_SUGGESTIONS`。
+
+## 7a. Navigation 与 BACK
 
 NavigationPlan 是不可变意图，至少绑定 `navigationPlanId`、`planFingerprint`、来源/目标、Cursor epoch、模式和固定 steps。每次尝试建立唯一 NavigationExecution，并写入 `evidence/navigations/<navigation-execution-id>.json`：
 
@@ -316,17 +365,24 @@ terminalReachableStateId
 edgeIds[]
 transitionFingerprints[]
 status: PENDING | RUNNING | SUCCEEDED | FAILED | SUPERSEDED
+failure?: {
+  reasonCode
+  failedEdgeId
+  failedEdgeIds[]
+  blockingEdgeIds[]
+  scope: PREFIX_EDGE_BLOCKED | BRANCH_EDGE_BLOCKED | UNKNOWN
+}
 ```
 
 `taskKey` 必须绑定转换指纹链。相同 LogicalScreen 出现新规范路径时，旧的 PENDING/RUNNING 任务标记 `SUPERSEDED`，新任务使用新 key。
 
 Task 维护 `attemptCount`、`activeExecutionId`、`executionIds[]` 与 `executions[]`。Execution 状态为 `RESTORING | AWAITING_VISUAL_ASSESSMENT | SUCCEEDED | FAILED | ABANDONED`，每次尝试使用全 Run 唯一 `executionId`，不得复用或覆盖。
 
-`evidence/verifications/<verification-id>/<execution-id>.json` 保存该次执行的固定 Edge/transition fingerprint 链、冷启动、逐步动作/Observation/比较和最终结果。文件创建后不可覆盖。探索路径成功任务必须能证明每条 Edge 从当前根逐步以 `EXACT`、`SAME_PAGE` 或已人工确认的 `PROBABLE` 到达；目标任务还必须绑定人工 Decision 和最终强视觉判断。
+`evidence/verifications/<verification-id>/<execution-id>.json` 保存该次执行的固定 Edge/transition fingerprint 链、冷启动、逐步动作/Observation/比较和最终结果。文件创建后不可覆盖。探索路径成功任务必须能证明每条 Edge 从当前根逐步以 `EXACT`、`SAME_PAGE` 或已人工确认的 `PROBABLE` 到达。目标任务将路径重放和目标命中拆开记录：`pathReplayStatus` 表示 Edge 链是否稳定重放，`goalMatchStatus` 与 `goalReasonCode` 表示最终页面是否强匹配用户目标；目标不强命中不能单独把已稳定重放的 Edge 标为 `REPLAY_UNSTABLE`。
 
 队列投影遵循事件先行：先写 `verificationScheduled`，再写 queue。恢复器可从事件补放缺失任务。
 
-验证失败不删除发现 Edge，只更新 `replayStatus=REPLAY_UNSTABLE` 并保留失败证据。验证成功按 transition fingerprint 写 `COLD_REPLAY_VERIFIED`；不同指纹不可继承。
+验证失败不删除发现 Edge，只更新失败影响范围内的 Edge 为 `replayStatus=REPLAY_UNSTABLE` 并保留失败证据。验证成功按 transition fingerprint 写 `COLD_REPLAY_VERIFIED`；不同指纹不可继承。调度器使用 `failure.blockingEdgeIds` 或 Restore 证据推导的阻塞边过滤后续工作；无法推导失败边时按未知失败保守停止。
 
 ## 9. 事件与恢复
 
@@ -377,12 +433,13 @@ Continuation 只表达执行血缘。新 Run 从当前 `maps/<context>` seed gra
 
 - 唯一 Context 已验证并存在合法根状态。
 - 没有 `PENDING`、`RETRYABLE` 或无主 `CLAIMED` Frontier。
+- 没有 `PENDING` Frontier Suggestion；`BLOCKED/SKIPPED/DISMISSED` Suggestion 可保留为审计记录，但不计为 unresolved。
 - Attempt、ActionResult、Observation、Edge 因果链完整。
 - Cursor 和 metrics 引用一致。
 - Verification Queue 无 `PENDING`、`RUNNING`、`FAILED` 必要任务。
 - event head 与 projection watermark 完全追平，不存在 `STARTED` / `UNKNOWN_OUTCOME` Device Operation、运行中的 NavigationExecution、未闭合 Restore 或未闭合 VerificationExecution。
 - 探索模式的当前规范路径验证规则满足；目标模式存在 `FOUND_VERIFIED` 强路径。
-- 五类动作总和、冷启动数、状态数、深度和活动时间不违反硬预算。
+- 五类动作总和、冷启动数、本 Run 新增状态数、深度和活动时间不违反硬预算。
 
 仍有待办或预算耗尽时只能 `PARTIAL`。终态先写 `scanFinalized`，随后 `scan.json` 为不可变投影；即使文件被意外回写，加载器仍以终态事件为准拒绝修改。
 

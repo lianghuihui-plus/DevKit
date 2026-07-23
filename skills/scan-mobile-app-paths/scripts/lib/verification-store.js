@@ -3,9 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 const { contextDir, readJson, writeJsonAtomic, hashObject, now, nextIdLocked, commitEventLocked, withRunLock } = require('./common');
-const { isReplayableEdge } = require('./replayability');
+const { isRunnableEdge } = require('./replayability');
 
-const MAX_VERIFICATION_ATTEMPTS = 2;
+const MAX_VERIFICATION_ATTEMPTS = 3;
 
 function queueFile(scanDir, contextId) { return path.join(contextDir(scanDir, contextId), 'verification-queue.json'); }
 function loadVerificationQueue(scanDir, contextId) {
@@ -24,7 +24,7 @@ function canonicalScreenPaths(graph) {
   for (const pathItem of graph.paths || []) {
     if (!(pathItem.edgeIds || []).length) continue;
     const state = states.get(pathItem.terminalReachableStateId); const visual = state && visuals.get(state.visualStateId); if (!visual) continue;
-    const pathEdges = (pathItem.edgeIds || []).map(id => edges.get(id)); if (pathEdges.some(edge => !edge || !isReplayableEdge(edge))) continue;
+    const pathEdges = (pathItem.edgeIds || []).map(id => edges.get(id)); if (pathEdges.some(edge => !edge || !isRunnableEdge(edge))) continue;
     const transitionFingerprints = pathEdges.map(edge => edge.verification?.transitionFingerprint || hashObject({ edgeId: edge.id, intent: edge.intent }));
     const fallbackEdges = pathEdges.filter(edge => edge.locatorQuality === 'SEMANTIC_WITH_FALLBACK').length;
     candidates.push({ logicalScreenKey: visual.logicalScreenKey, terminalReachableStateId: state.id, edgeIds: pathItem.edgeIds || [], transitionFingerprints, fallbackEdges });

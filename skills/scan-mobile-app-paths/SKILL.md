@@ -20,10 +20,10 @@ description: 扫描鸿蒙 HarmonyOS App 的可达页面、页面状态与交互�
 - 通过 locality-aware bounded BFS 探索：同一来源或附近状态优先，深度和优先级仍是确定性约束。
 - 来源导航依次尝试 `LIVE_CURSOR`、已采证 `BACKTRACK`、`GRAPH_PATH`，不可用或失败时才 `COLD_REPLAY`。`always-replay` 只作为兼容和对照策略。
 - Cursor 必须绑定 context、ReachableState、Observation、epoch、设备 mutation sequence 和新鲜度。动作前 Cursor 不匹配时先重新观测；不确定动作失败、前台漂移或比较失败时立即使 Cursor 失效。
-- 发现事实与验证事实分离。稳定的动作前后 Observation 可以提交已发现 Edge；冷启动完整重放由独立 Verification Queue 证明。
+- 发现事实、可执行路径与验证事实分离。稳定的动作前后 Observation 可以提交已发现 Edge；满足动作语义和安全约束的 Edge 可进入 runnable path；冷启动完整重放由独立 Verification Queue 证明。
 - `verificationPolicy` 不是用户配置。只读 `verificationRule` 由模式固定：探索为 `CANONICAL_SCREEN_PATH`，目标查找为 `CONFIRMED_TARGET_PATH`。
-- 探索模式为每个新 LogicalScreen 的当前规范路径建立验证任务；目标模式仅在人工确认候选后建立目标路径任务。必要验证未完成时不得以 `COMPLETED` 终结。
-- 用户预算只暴露 `profile + maxActiveMinutes + maxDepth`。内部派生 `maxDeviceActions`、`maxStates`、`maxColdStarts`；探索、导航、恢复、验证、干扰动作只分类计量，共享设备动作总上限。
+- 探索模式为每个新 LogicalScreen 的当前规范路径建立验证任务；目标模式仅在人工确认候选后建立目标路径任务。必要验证、`PENDING` Frontier Suggestion 或继承 coverage 指出的候选补齐工作未完成时不得以 `COMPLETED` 终结。
+- 用户预算只暴露 `profile + maxActiveMinutes + maxDepth`。内部派生 `maxDeviceActions`、`maxStates`、`maxColdStarts`；`maxStates` 限制本 Run 新增 ReachableState 数，不消耗 canonical seed 的已有状态；探索、导航、恢复、验证、干扰动作只分类计量，共享设备动作总上限。
 - `maxActiveMinutes` 是单 Run 自动活动时间累计上限，包含动作、稳定等待、导航、恢复和验证；不包含计划确认、人工登录/退出、人工候选确认、PAUSED 时间及产物构建。
 - 每次 Claim 前调用统一 `nextWork()`，动态为必要验证保留时间、动作和冷启动容量；硬预算耗尽时必须 `STOP` 并建议 `PARTIAL`，不得继续领取 Frontier 或验证任务。
 - 所有正式 Observation 必须经过公共稳定观测器。布局和截图均相同才为 `EXACT`；页面恢复和来源确认可通过独立状态等价能力得到 `SAME_PAGE`，但动作后 `NO_STATE_CHANGE` 仍只接受 `EXACT`。
@@ -42,7 +42,7 @@ description: 扫描鸿蒙 HarmonyOS App 的可达页面、页面状态与交互�
 - Verification Task 是稳定意图，每次尝试创建唯一 VerificationExecution，证据写入 `evidence/verifications/<verification-id>/<execution-id>.json`；NavigationPlan 与 NavigationExecution 同样分离。
 - 新 writer 只生成当前结构。当前版本不兼容旧 graph 数据；Snapshot/Dashboard 只消费 `schemaVersion: 2` 的 canonical map。
 - Run 终态不可变。`PAUSED` Run 原地恢复；新 Run 初始化时从当前 canonical map 种下已知图、Frontier 与验证任务，继续扫描是在同一 canonical map 上增量扩展。
-- 登记 `COMPLETED/PARTIAL` Run 时同步 canonical map；若 Run 基于的 `mapBaseRevisionId` 不是当前 map revision，登记保留执行历史但拒绝覆盖 canonical map。
+- 登记 `COMPLETED/PARTIAL` Run 时同步 canonical map；若 Run 基于的 `mapBaseRevisionId` 不是当前 map revision，登记保留执行历史但拒绝覆盖 canonical map。Frontier Suggestion 不作为 canonical 事实同步，只写入 `candidateCoverage` 摘要。
 - 删除节点或边只能编辑 `maps/<context>` 的 canonical map，不能修改历史 Run。必须先 `map-edit.js preview-*` 展示影响范围和 `confirmHash`，经用户确认后再 `apply-delete`；看板只能发起同一套编辑请求，不能自行改 JSON。
 - Snapshot 写入不可变 generation 后原子更新 `snapshots/current.json`；Dashboard 只能从已校验 Snapshot 和固定模板生成。
 
@@ -54,7 +54,7 @@ description: 扫描鸿蒙 HarmonyOS App 的可达页面、页面状态与交互�
 4. 用户确认最终 `planHash`；若改 profile、预算或目标输入，重新预览并确认新哈希。
 5. 使用确认后的 `planHash` 调用 `init-scan.js --confirmed-plan-hash` 一次性创建正式 Run；若哈希不匹配必须失败且不能落盘 Run 目录。
 6. 人工完成登录/退出后，受控冷启动并稳定观测；清理明确干扰后验证身份、建立根节点和 Live Cursor。
-7. 循环调用 `next-work.js`。返回 `DISCOVER` 时 Claim Frontier，通过分级导航取得来源状态并执行候选；返回 `VERIFY` 时执行对应冷启动路径验证；返回 `STOP` 时按建议终态收敛，预算耗尽使用 `PARTIAL`。
+7. 循环调用 `next-work.js`。返回 `DISCOVER` 时 Claim Frontier，通过分级导航取得来源状态并执行候选；返回 `BACKFILL_FRONTIER_SUGGESTIONS` 时先运行 `frontier-candidates.js backfill --all-reachable true`，用本 Run 或历史 Observation 引用补生成候选；返回 `SUGGEST_FRONTIER` 时处理 `frontier-candidates.js apply`，把可应用安全候选写入 Frontier 后重新取工作；返回 `VERIFY` 时执行对应冷启动路径验证；返回 `STOP` 时按建议终态收敛，预算耗尽使用 `PARTIAL`。
 8. 对动作结果先做模型视觉审查并记录 VisualReview，再做结构化结果审查；仅有 `ACCEPTED` VisualReview 的稳定页面或业务弹窗可提交 Edge。风险、上下文漂移和未知状态必须暂停。
 9. 目标候选为 `STRONG` 或 `UNCERTAIN` 时暂停；人工确认后执行完整冷启动验证，只有强匹配可完成目标 Run。
 10. 校验并终结 Run，登记后把本 Run 的新增事实同步到 canonical map，再构建 Snapshot 和离线 Dashboard。

@@ -8,7 +8,9 @@ const { validateGraph } = require('./lib/graph-store');
 const { isCurrentRun, runContextIds, runContextId, runBudget, activeLimitMinutes, maxStates, maxDeviceActions, maxColdStarts, maxDepth } = require('./lib/run-protocol');
 const { budgetUsage } = require('./lib/budget');
 const { loadCursor } = require('./lib/live-cursor');
-const { loadVerificationQueue } = require('./lib/verification-store');
+const { loadVerificationQueue, MAX_VERIFICATION_ATTEMPTS } = require('./lib/verification-store');
+const { deriveBlockedDependencies } = require('./lib/dependency-blocking');
+const { backfillRequiredFromCoverage } = require('./lib/candidate-coverage');
 const { buildFingerprint, compareFingerprint, observationVisual } = require('./lib/fingerprint');
 const { loadVisualEquivalence } = require('./lib/visual-equivalence');
 const { loadStateEquivalence } = require('./lib/state-equivalence-store');
@@ -27,6 +29,23 @@ function requireObservation(scanDir, observationId, contextId) {
     if (!baseValid || !statusValid) fail(`Observation ${observationId} lacks valid stability evidence`, 'OBSERVATION_STABILITY_INVALID');
   }
   return observation;
+}
+
+function appRootFromScanDir(scanDir) {
+  return path.dirname(path.dirname(scanDir));
+}
+
+function requireSuggestionObservation(scanDir, suggestion, contextId) {
+  if (!suggestion.observationId) return;
+  const ref = suggestion.observationRef || null;
+  const baseScanDir = ref?.runId ? path.join(appRootFromScanDir(scanDir), 'runs', String(ref.runId)) : scanDir;
+  const observationId = String(ref?.observationId || suggestion.observationId);
+  const dir = path.join(baseScanDir, 'evidence', 'observations', observationId);
+  const observationFile = path.join(dir, 'observation.json');
+  if (!fs.existsSync(observationFile) || !fs.existsSync(path.join(dir, 'layout.json')) || !fs.existsSync(path.join(dir, 'screenshot.png'))) fail(`Frontier suggestion ${suggestion.suggestionId || '<missing>'} references missing observation`, 'FRONTIER_SUGGESTIONS_INVALID');
+  const observation = readJson(observationFile);
+  if (observation.contextId !== contextId) fail(`Frontier suggestion ${suggestion.suggestionId || '<missing>'} references observation from another context`, 'FRONTIER_SUGGESTIONS_INVALID');
+  if (suggestion.evidenceSource === 'CANONICAL_REF' && !ref?.runId) fail(`Frontier suggestion ${suggestion.suggestionId || '<missing>'} lacks historical observationRef`, 'FRONTIER_SUGGESTIONS_INVALID');
 }
 
 function requirePopupInterruption(scanDir, interruption, contextId, ownerType, ownerId) {
@@ -143,13 +162,34 @@ function validate(scanDir, requestedStatus, options = {}) {
       }
       const cursor = loadCursor(scanDir, contextId); if (cursor.contextId !== contextId || !['EXACT', 'SOURCE_CONFIRMED', 'REVIEW_CONFIRMED', 'UNKNOWN'].includes(cursor.status)) fail('Live Cursor is invalid', 'CURSOR_INVALID'); if (['EXACT', 'SOURCE_CONFIRMED', 'REVIEW_CONFIRMED'].includes(cursor.status) && (!graph.reachableStates.some(item => item.id === cursor.reachableStateId) || !cursor.observationId)) fail('Cursor references missing state or observation', 'CURSOR_INVALID'); if (cursor.status === 'SOURCE_CONFIRMED' && cursor.equivalence?.type !== 'SOURCE_MATCH') fail('SOURCE_CONFIRMED Cursor lacks source match evidence', 'CURSOR_INVALID'); if (cursor.equivalence?.ruleId && ![...(visualEquivalence.rules || []), ...(stateEquivalence.rules || [])].some(rule => rule.ruleId === cursor.equivalence.ruleId)) fail('Cursor equivalence rule is missing', 'CURSOR_INVALID');
       const queue = loadVerificationQueue(scanDir, contextId); const duplicateKeys = queue.items.map(item => item.taskKey).filter((key, index, all) => all.indexOf(key) !== index); if (duplicateKeys.length) fail('Verification queue contains duplicate task keys', 'VERIFICATION_QUEUE_INVALID');
+      const suggestions = readJson(path.join(contextDir(scanDir, contextId), 'frontier-suggestions.json'), { schemaVersion: 1, contextId, items: [] });
+      const suggestionIds = suggestions.items.map(item => item.suggestionId).filter(Boolean); if (new Set(suggestionIds).size !== suggestionIds.length) fail('Frontier suggestions contain duplicate ids', 'FRONTIER_SUGGESTIONS_INVALID');
+      for (const suggestion of suggestions.items || []) {
+        if (suggestion.contextId && suggestion.contextId !== contextId || !['PENDING', 'APPLIED', 'SKIPPED', 'BLOCKED', 'DISMISSED'].includes(suggestion.status)) fail(`Frontier suggestion ${suggestion.suggestionId || '<missing>'} is invalid`, 'FRONTIER_SUGGESTIONS_INVALID');
+        if (!graph.reachableStates.some(item => item.id === suggestion.reachableStateId) || !graph.visualStates.some(item => item.id === suggestion.visualStateId)) fail(`Frontier suggestion ${suggestion.suggestionId || '<missing>'} references missing graph state`, 'FRONTIER_SUGGESTIONS_INVALID');
+        requireSuggestionObservation(scanDir, suggestion, contextId);
+        if (suggestion.status === 'APPLIED' && !frontier.items.some(item => item.id === suggestion.frontierId)) fail(`Applied frontier suggestion ${suggestion.suggestionId || '<missing>'} references missing Frontier`, 'FRONTIER_SUGGESTIONS_INVALID');
+      }
+      if (completed && suggestions.items.some(item => item.status === 'PENDING')) fail('Run has pending frontier suggestions', 'RUN_INCOMPLETE');
+      if (completed) {
+        const dependencyBlocking = deriveBlockedDependencies({ scanDir, contextId, graph, queue, maxAttempts: MAX_VERIFICATION_ATTEMPTS });
+        const pendingBackfillStateIds = backfillRequiredFromCoverage({ scanDir, contextId, graph, frontier, dependencyBlocking });
+        if (pendingBackfillStateIds.length) fail(`Run has candidate backfill required: ${pendingBackfillStateIds.join(', ')}`, 'RUN_INCOMPLETE');
+      }
       if (completed && queue.items.some(item => ['PENDING', 'RUNNING', 'FAILED'].includes(item.status))) fail('Run has unfinished or failed required verification tasks', 'RUN_INCOMPLETE');
       const metrics = options.metricsOverridesByContext?.[contextId] || readJson(path.join(contextDir(scanDir, contextId), 'metrics.json'), {}); const categorized = ['explorationActions', 'navigationActions', 'recoveryActions', 'verificationActions', 'interruptionActions'].reduce((sum, key) => sum + Number(metrics[key] || 0), 0); if (categorized !== Number(metrics.actions || 0)) fail('Categorized action metrics do not equal total actions', 'METRICS_INVALID');
-      const budget = runBudget(scan, contextId); const usage = budgetUsage(scan, graph, frontier, metrics); const limits = [['MAX_STATES', usage.states, maxStates(budget)], ['MAX_DEVICE_ACTIONS', usage.actions, maxDeviceActions(budget)], ['MAX_COLD_STARTS', usage.coldStarts, maxColdStarts(budget)], ['MAX_ACTIVE_MINUTES', usage.durationMinutes, activeLimitMinutes(budget)], ['MAX_DEPTH', Math.max(0, ...graph.reachableStates.map(item => Number(item.depth?.pathDepth || 0))), maxDepth(budget)]]; const exceeded = limits.find(([code, used, limit]) => used > limit && (completed || code !== 'MAX_ACTIVE_MINUTES')); if (exceeded) fail(`${exceeded[0]} exceeded at terminal validation: ${exceeded[1]} > ${exceeded[2]}`, 'BUDGET_LIMIT_EXCEEDED');
+      const budget = runBudget(scan, contextId); const usage = budgetUsage(scan, graph, frontier, metrics); const limits = [['MAX_STATES', usage.states, maxStates(budget), { baselineStates: usage.baselineStates, totalStates: usage.totalStates }], ['MAX_DEVICE_ACTIONS', usage.actions, maxDeviceActions(budget)], ['MAX_COLD_STARTS', usage.coldStarts, maxColdStarts(budget)], ['MAX_ACTIVE_MINUTES', usage.durationMinutes, activeLimitMinutes(budget)], ['MAX_DEPTH', Math.max(0, ...graph.reachableStates.map(item => Number(item.depth?.pathDepth || 0))), maxDepth(budget)]]; const exceeded = limits.find(([code, used, limit]) => used > limit && (completed || code !== 'MAX_ACTIVE_MINUTES')); if (exceeded) fail(`${exceeded[0]} exceeded at terminal validation: ${exceeded[1]} > ${exceeded[2]}${exceeded[3] ? ` (baseline=${exceeded[3].baselineStates}, total=${exceeded[3].totalStates})` : ''}`, 'BUDGET_LIMIT_EXCEEDED');
     }
   }
   if (fs.existsSync(path.join(scanDir, 'attempts'))) for (const name of fs.readdirSync(path.join(scanDir, 'attempts')).filter(x => x.endsWith('.json'))) {
-    const attempt = readJson(path.join(scanDir, 'attempts', name)); if (Number(scan.graphProtocolVersion || 1) >= 2 && attempt.candidate?.type === 'wait') fail(`Attempt ${attempt.attemptId} contains wait under current graph rules`, 'NON_GRAPH_ACTION'); if (completed && !['COMMITTED', 'DISMISSED_NO_EDGE', 'NO_STATE_CHANGE', 'FAILED'].includes(attempt.status)) fail(`Attempt ${attempt.attemptId} is unfinished`, 'RUN_INCOMPLETE');
+    const attempt = readJson(path.join(scanDir, 'attempts', name)); if (Number(scan.graphProtocolVersion || 1) >= 2 && attempt.candidate?.type === 'wait') fail(`Attempt ${attempt.attemptId} contains wait under current graph rules`, 'NON_GRAPH_ACTION'); if (completed && !['COMMITTED', 'COVERED_BY_EXISTING_EDGE', 'DISMISSED_NO_EDGE', 'NO_STATE_CHANGE', 'FAILED'].includes(attempt.status)) fail(`Attempt ${attempt.attemptId} is unfinished`, 'RUN_INCOMPLETE');
+    if (attempt.status === 'COVERED_BY_EXISTING_EDGE') {
+      const graph = loadGraph(scanDir, attempt.contextId); const edge = graph.edges.find(item => item.id === attempt.coveredEdgeId); const action = readJson(path.join(scanDir, 'evidence', 'actions', `${attempt.actionResultId}.json`)); const frontier = loadFrontier(scanDir, attempt.contextId); const item = frontier.items.find(entry => entry.id === attempt.frontierId); const actionIntent = action.actionIntent || intentFromAction(action.action);
+      if (!edge || edge.fromReachableStateId !== attempt.fromReachableStateId || edge.toReachableStateId !== attempt.toReachableStateId || action.status !== 'SUCCEEDED' || action.attemptId !== attempt.attemptId || action.beforeObservationId !== attempt.beforeObservationId || hashObject(canonicalIntentIdentity(actionIntent)) !== hashObject(canonicalIntentIdentity(edge.intent)) || !item || item.status !== 'COVERED_BY_GROUP' || item.reasonCode !== 'DUPLICATE_EDGE' || item.coveredEdgeId !== edge.id || item.attemptId !== attempt.attemptId || strictClaim && (!attempt.claimToken || item.claimToken != null || item.claimedAttemptId != null) || hashObject(item.candidate) !== attempt.candidateHash) fail(`Attempt ${attempt.attemptId} duplicate Edge coverage is inconsistent`, 'ATTEMPT_CAUSALITY_INVALID');
+      requireObservation(scanDir, attempt.beforeObservationId, attempt.contextId); requireObservation(scanDir, attempt.afterObservationId, attempt.contextId);
+      if (visualReviewRequired) assertAcceptedVisualReview(scanDir, { visualReviewId: attempt.visualReviewId, contextId: attempt.contextId, observationId: attempt.afterObservationId, reviewType: 'PAGE_OUTCOME' });
+      summary.observations.add(attempt.beforeObservationId); summary.observations.add(attempt.afterObservationId); summary.actions.add(attempt.actionResultId); summary.attempts.add(attempt.attemptId);
+    }
     if (attempt.status === 'NO_STATE_CHANGE') {
       const comparison = compareObservations(scanDir, attempt.beforeObservationId, attempt.afterObservationId, attempt.contextId); const action = readJson(path.join(scanDir, 'evidence', 'actions', `${attempt.actionResultId}.json`)); const frontier = loadFrontier(scanDir, attempt.contextId); const item = frontier.items.find(entry => entry.id === attempt.frontierId);
       if (comparison !== 'EXACT' || attempt.noStateChange?.comparison !== 'EXACT' || attempt.noStateChange?.beforeObservationId !== attempt.beforeObservationId || attempt.noStateChange?.afterObservationId !== attempt.afterObservationId || action.status !== 'SUCCEEDED' || action.attemptId !== attempt.attemptId || action.beforeObservationId !== attempt.beforeObservationId || (action.candidateHash || hashObject(action.action)) !== attempt.candidateHash || !item || item.status !== 'EXPLORED' || item.reasonCode !== 'NO_STATE_CHANGE' || item.attemptId !== attempt.attemptId || strictClaim && (!attempt.claimToken || item.claimToken != null || item.claimedAttemptId != null) || hashObject(item.candidate) !== attempt.candidateHash) fail(`Attempt ${attempt.attemptId} NO_STATE_CHANGE evidence is inconsistent`, 'ATTEMPT_CAUSALITY_INVALID');

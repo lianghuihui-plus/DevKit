@@ -92,21 +92,21 @@ node "$SMAP_SKILL/scripts/preview-plan.js" \
 
 - App、设备、环境、App 版本、扫描模式和唯一 `contextId`。
 - 四个 profile 的适用模式及派生限制，并标明当前选择。
-- 用户可配置的 `profile`、`maxActiveMinutes`、`maxDepth` 和相对预设的覆盖。
+- 用户可配置的 `profile`、`maxActiveMinutes`、`maxDepth` 和相对预设的覆盖；Continuation 或已有 canonical map 场景还要展示当前地图状态基线、本 Run 可新增状态数和预计总状态数。
 - 只读 `verificationRule` 和 `navigationPolicy`。
 - 活动时间的计入/排除范围、人工介入点、停止条件和硬安全限制。
 - 将要创建的 Run、报告、Snapshot 指针位置；Continuation 还展示父 Run 和导入/跳过待办。
 
 当前预设：
 
-| Profile | 模式 | 活动时间 | 最大深度 | 设备动作 | 状态 | 冷启动 |
+| Profile | 模式 | 活动时间 | 最大深度 | 设备动作 | 本 Run 新增状态 | 冷启动 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | quick | exploration | 10 分钟 | 3 | 150 | 30 | 20 |
 | standard | exploration | 20 分钟 | 5 | 500 | 80 | 40 |
 | deep | exploration | 60 分钟 | 8 | 1500 | 200 | 100 |
 | goal | goal-directed | 15 分钟 | 7 | 300 | 50 | 30 |
 
-只有 `maxActiveMinutes` 和 `maxDepth` 是用户预算覆盖项。`maxDeviceActions`、`maxStates`、`maxColdStarts` 是随 profile 派生的内部硬上限，不接受普通用户逐项调节。
+只有 `maxActiveMinutes` 和 `maxDepth` 是用户预算覆盖项。`maxDeviceActions`、`maxStates`、`maxColdStarts` 是随 profile 派生的内部硬上限，不接受普通用户逐项调节。`maxStates` 按 `graph.reachableStates.length - budgetBaseline.baselineReachableStates` 计算，限制本 Run 新增状态数；canonical seed 的已有状态只影响地图总规模展示，不占用本 Run 新增状态预算。
 
 确认前可改配置并重新预览；不要为了改 profile、预算或目标输入创建临时 Run。
 
@@ -233,6 +233,8 @@ node "$SMAP_SKILL/scripts/next-work.js" \
 只按返回结果行动：
 
 - `DISCOVER`：添加/领取 Frontier 并执行候选。
+- `BACKFILL_FRONTIER_SUGGESTIONS`：已有 canonical 状态缺候选覆盖，先运行 `frontier-candidates.js backfill --all-reachable true` 补生成 suggestion，再重新调用 `nextWork()`。
+- `SUGGEST_FRONTIER`：当前没有可领取 Frontier，但还有可应用的候选建议；先应用或处理建议，再重新调用 `nextWork()`。
 - `VERIFY`：执行返回的验证任务，不再领取新 Frontier。
 - `STOP`：没有开放 Frontier/必要验证，或硬预算已经耗尽，可进入终结检查；返回 `suggestedTerminalStatus=PARTIAL` 时按 `PARTIAL` 收敛。
 
@@ -240,7 +242,33 @@ node "$SMAP_SKILL/scripts/next-work.js" \
 
 如果 `reasonCode` 为 `MAX_ACTIVE_MINUTES`、`MAX_DEVICE_ACTIONS`、`MAX_COLD_STARTS` 或 `MAX_STATES`，不要再尝试动作、导航或验证；直接执行 `finalize-scan.js --status PARTIAL`。
 
-Agent 从稳定截图和控件树产生有限、安全、可解释的候选。`wait`、纯观测、系统权限确认和高风险动作不得加入 Frontier：
+Agent 从稳定截图和控件树产生有限、安全、可解释的候选。新 ReachableState 提交后，脚本会根据控件树和语义指纹写入 `frontier-suggestions.json`；旧 canonical 节点如果缺候选覆盖，`nextWork()` 会先返回 `BACKFILL_FRONTIER_SUGGESTIONS`，要求用历史或本 Run Observation 补生成 suggestion。随后当 `nextWork()` 返回 `SUGGEST_FRONTIER` 时，先处理这些建议，不能直接进入路径验证。调度器只会提示来源未被失败依赖阻塞、未超预算、未重复且安全可应用的建议；不可应用建议会在 `STOP` 中建议 `PARTIAL` 或由 `apply` 标为 `SKIPPED/BLOCKED`。`wait`、纯观测、系统权限确认和高风险动作不得加入 Frontier：
+
+```bash
+node "$SMAP_SKILL/scripts/frontier-candidates.js" apply \
+  --scan-dir <scan-dir> --context guest \
+  --reachable-state-id <state-id> \
+  --accept-safe true
+```
+
+也可以手动为指定稳定状态生成建议：
+
+```bash
+node "$SMAP_SKILL/scripts/frontier-candidates.js" suggest \
+  --scan-dir <scan-dir> --context guest \
+  --reachable-state-id <state-id> \
+  --observation-id <obs-id>
+```
+
+旧 Run 或旧 canonical map 种下的状态不会自动带有本 Run 的建议。需要补齐已有节点探索面时使用 backfill；它只生成 suggestion，不直接执行动作。若状态只有 `evidenceObservationRefs`，backfill 会读取源 Run 的 Observation/Layout 并在 suggestion 中记录 `observationRef`：
+
+```bash
+node "$SMAP_SKILL/scripts/frontier-candidates.js" backfill \
+  --scan-dir <scan-dir> --context guest \
+  --all-reachable true
+```
+
+需要人工补充候选时仍可直接添加 Frontier：
 
 ```bash
 node "$SMAP_SKILL/scripts/frontier.js" add \
@@ -277,9 +305,9 @@ node "$SMAP_SKILL/scripts/execute-frontier.js" prepare \
 | `GRAPH_PATH` | 存在安全、可重放的已知边路径 | 否 |
 | `COLD_REPLAY` | Cursor 无效、无可达路径或前级失败 | 是 |
 
-`LIVE_CURSOR`、SOURCE_MATCH、BACK 和 Graph Path 每一步都检查目标 App 前台并与预期状态比较。来源确认接受 `EXACT` 或 `SOURCE_CONFIRMED`；`SOURCE_CONFIRMED` 来自归一化结构、语义锚点、角色相似度和候选控件线索，不能用于目标最终匹配或风险动作放行。非冷导航失败只允许一次降级到冷重放；Execution 同时记录 `requestedMode`、`actualMode`、`fallbackFrom` 和 `fallbackReason`。不得在不确定状态继续执行候选。
+`LIVE_CURSOR`、SOURCE_MATCH、BACK 和 Graph Path 每一步都检查目标 App 前台并与预期状态比较。来源确认接受 `EXACT` 或 `SOURCE_CONFIRMED`；`SOURCE_CONFIRMED` 来自归一化结构、语义锚点、角色相似度和候选控件线索，不能用于目标最终匹配或风险动作放行。候选控件只靠重复文本命中时不得确认来源，必须同时具备强页面身份和 id/accessibilityLabel 或文本+位置等精确定位；否则降级到 `COLD_REPLAY`。非冷导航失败只允许一次降级到冷重放；Execution 同时记录 `requestedMode`、`actualMode`、`fallbackFrom` 和 `fallbackReason`。不得在不确定状态继续执行候选。
 
-`SOURCE_CONFIRMED` 只用于安全候选的来源确认：候选控件必须通过文本、resourceId 或 accessibilityLabel 等语义线索命中；fallback bounds 只能辅助定位，不能单独证明来源页面。`LOW_RISK_FORM`、`WRITE`、`PROHIBITED` 或带副作用的动作不得仅凭 `SOURCE_CONFIRMED` 执行。
+`SOURCE_CONFIRMED` 只用于安全候选的来源确认：候选控件必须通过文本、resourceId 或 accessibilityLabel 等语义线索命中，并且文本类控件还要有位置重叠或强页面身份支撑。fallback bounds 只能辅助定位，不能单独证明来源页面。`LOW_RISK_FORM`、`WRITE`、`PROHIBITED` 或带副作用的动作不得仅凭 `SOURCE_CONFIRMED` 执行。
 
 若进程在设备操作已开始后丢失，Run 会以 `OPERATION_OUTCOME_UNKNOWN` 暂停。先通过 Context Preparation 冷启动取得新的稳定 Observation，再由人工根据证据收敛原操作；`NO_EFFECT` 可释放候选重试，`EFFECT_OBSERVED` 放弃该候选，二者都不会把未知结果提交为 Edge：
 
@@ -348,7 +376,9 @@ node "$SMAP_SKILL/scripts/commit-attempt.js" \
   --logical-screen-key profile --name 我的
 ```
 
-提交会校验 Attempt 绑定的 `PAGE_OUTCOME` VisualReview 为 `ACCEPTED`，再写事务事件并更新图、Frontier、Attempt、Cursor 和 Verification Queue 投影。动作执行失败会释放 Claim 并使 Cursor 失效。
+提交会校验 Attempt 绑定的 `PAGE_OUTCOME` VisualReview 为 `ACCEPTED`，再写事务事件并更新图、Frontier、Attempt、Cursor 和 Verification Queue 投影。若同一 `from/to/intent` Edge 已存在，Attempt 进入 `COVERED_BY_EXISTING_EDGE`，Frontier 标为 `COVERED_BY_GROUP/DUPLICATE_EDGE`，不会分配新 Edge ID。动作执行失败会释放 Claim 并使 Cursor 失效。
+
+如果提交产生新的 ReachableState 或 VisualState，脚本会同步生成 Frontier Suggestions，但不会直接执行。建议被应用后才会进入 `frontier.json`，并继续由 `frontier.js claim`、Attempt 和 Edge 因果链管理。
 
 ## 10. 路径验证
 
@@ -367,7 +397,7 @@ node "$SMAP_SKILL/scripts/verify-path.js" run \
   --verification-id <verification-id>
 ```
 
-验证从受控冷启动开始，逐 Edge 稳定观测并用状态等价能力比较。`EXACT` 或 `SAME_PAGE` 可证明路径仍可达；人工确认过的 `PROBABLE` 也可作为该次验证的等价证据。成功把路径 Edge 标记为 `COLD_REPLAY_VERIFIED`；失败保留发现事实并标为 `REPLAY_UNSTABLE`。规范路径变化时旧待办会被 `SUPERSEDED`，不会把旧验证继承给新的 transition fingerprint chain。
+验证从受控冷启动开始，逐 Edge 稳定观测并用状态等价能力比较。`EXACT` 或 `SAME_PAGE` 可证明路径仍可达；人工确认过的 `PROBABLE` 也可作为该次验证的等价证据。成功把路径 Edge 标记为 `COLD_REPLAY_VERIFIED`；失败只把失败影响范围内的 Edge 标为 `REPLAY_UNSTABLE`。目标模式还会额外判断最终页面是否强匹配用户目标；目标不强命中只影响 goal 结果，不降级已稳定重放的 Edge。规范路径变化时旧待办会被 `SUPERSEDED`，不会把旧验证继承给新的 transition fingerprint chain。
 
 截图波动、列表数据或局部配置导致的渲染差异优先由 dump 树语义指纹自动判定为 `SAME_PAGE`。只有脚本无法自动证明但人工确认同页时，恢复和探索路径验证才写入并复用 `state-equivalence.json` 规则。该规则不能用于目标页面最终强匹配、动作无变化判断或风险动作放行。
 

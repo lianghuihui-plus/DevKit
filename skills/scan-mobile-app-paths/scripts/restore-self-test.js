@@ -7,6 +7,8 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { now, compactLocalTimestamp, compareTimestamps } = require('./lib/common');
+const { normalizeBounds, flattenLayout } = require('./lib/semantic-fingerprint');
+const { locatorEvidenceFor } = require('./lib/action-intent');
 
 const startedMs = Date.now();
 const scripts = __dirname;
@@ -205,6 +207,10 @@ try {
   check(Date.parse(localNow), localDate.getTime());
   check(compactLocalTimestamp(localDate), `${String(localDate.getFullYear()).padStart(4, '0')}${String(localDate.getMonth() + 1).padStart(2, '0')}${String(localDate.getDate()).padStart(2, '0')}${String(localDate.getHours()).padStart(2, '0')}${String(localDate.getMinutes()).padStart(2, '0')}${String(localDate.getSeconds()).padStart(2, '0')}`);
   check(compareTimestamps('2026-07-15T08:00:00.000Z', '2026-07-15T16:30:00.000+08:00') < 0, true);
+  const harmonyLayout = { attributes: { type: 'root', bounds: '[0,0][1260,2720]' }, children: [{ attributes: { type: 'Text', text: '首页', bounds: '[115,2566][200,2616]', accessibilityId: '62' } }] };
+  check(normalizeBounds('[115,2566][200,2616]'), [115, 2566, 200, 2616]);
+  check(flattenLayout(harmonyLayout)[1].text, '首页');
+  check(locatorEvidenceFor({ action: { type: 'tap', target: '首页', fallbackBounds: [70, 2440, 255, 2650] }, layout: harmonyLayout }).locatorQuality, 'SEMANTIC_WITH_FALLBACK');
 
   const appMapRoot = path.join(temp, 'app-map');
   run('init-app-root.js', [
@@ -317,14 +323,15 @@ try {
   check(snapshot.manifest.generatedAt.endsWith(expectedOffset), true);
   check(snapshot.manifest.generationId.startsWith(`snapshot-${compactLocalTimestamp(localDate).slice(0, 8)}`), true);
   const snapshotMetrics = JSON.parse(fs.readFileSync(path.join(snapshot.snapshotDir, 'metrics.json'), 'utf8'));
-  check(snapshotMetrics.execution.runs.length, 2);
+  const canonicalMeta = JSON.parse(fs.readFileSync(path.join(appMapRoot, 'maps', 'guest', 'meta.json'), 'utf8'));
+  check(snapshotMetrics.execution.runs.length, canonicalMeta.sourceSessionIds.length);
   check(snapshotMetrics.execution.totals.actions > 0, true);
   const dashboard = run('build-dashboard.js', ['--app-map-root', appMapRoot]);
   const dashboardHtml = fs.readFileSync(dashboard.dashboardPath, 'utf8');
   check(dashboardHtml.includes('data-view="execution"'), true);
   const embedded = dashboardHtml.match(/<script id="dashboard-data" type="application\/json">([\s\S]*?)<\/script>/);
   const dashboardData = JSON.parse(embedded[1]);
-  check(dashboardData.execution.runs.length, 2);
+  check(dashboardData.execution.runs.length, canonicalMeta.sourceSessionIds.length);
   check(dashboardData.execution.runs.every(runItem => runItem.contexts.every(context => context.contextLabel === '未登录')), true);
   run('rebuild-run-index.js', ['--app-map-root', appMapRoot]);
   const rebuiltIndex = JSON.parse(fs.readFileSync(path.join(appMapRoot, 'run-index.json'), 'utf8'));

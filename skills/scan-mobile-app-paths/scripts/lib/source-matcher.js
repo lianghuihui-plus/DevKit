@@ -31,6 +31,23 @@ function sourceEquivalence(match) {
   };
 }
 
+function candidateHasPreciseLocator(candidate = {}) {
+  return Boolean(candidate.selector?.id || candidate.resourceId || candidate.selector?.accessibilityLabel);
+}
+
+function sourceMatchEligible(candidate, comparison) {
+  if (!candidate) return true;
+  const evidence = comparison.evidence || {};
+  const strongPageIdentity = Boolean(evidence.sameLayout || evidence.sameRoleStructure)
+    || Number(evidence.idScore || 0) >= 0.55
+    || Number(evidence.titleScore || 0) >= 0.75;
+  const preciseCandidate = candidateHasPreciseLocator(candidate) && (evidence.candidateControlIdMatched || evidence.candidateControlTextMatched);
+  const boundedSemanticCandidate = evidence.candidateControlTextMatched && evidence.candidateControlBoundsMatched;
+  if (preciseCandidate) return strongPageIdentity || Number(evidence.anchorScore || 0) >= 0.65;
+  if (boundedSemanticCandidate) return strongPageIdentity;
+  return comparison.reasonCode === 'STATE_EQUIVALENCE_RULE_MATCHED';
+}
+
 function matchSourceState({ scanDir, scan, contextId, graph, reachableStateId, observationId, candidate = null }) {
   const state = graph.reachableStates.find(item => item.id === reachableStateId);
   const visual = state && graph.visualStates.find(item => item.id === state.visualStateId);
@@ -57,7 +74,9 @@ function matchSourceState({ scanDir, scan, contextId, graph, reachableStateId, o
   };
   if (comparison.status === 'EXACT') return { status: 'EXACT', confidence: 1, expectedReachableStateId: reachableStateId, observationId, evidence };
   const safeForSource = safety.allowed !== false && (safety.risk || 'SAFE') === 'SAFE' && (safety.sideEffect || 'NONE') === 'NONE';
-  const confirmed = foregroundMatched && safeForSource && comparison.status === 'SAME_PAGE';
+  const sourceEligible = sourceMatchEligible(candidate, comparison);
+  evidence.sourceEligible = sourceEligible;
+  const confirmed = foregroundMatched && safeForSource && comparison.status === 'SAME_PAGE' && sourceEligible;
   if (confirmed) {
     const confidence = Math.max(0.7, Math.min(0.96, comparison.confidence || 0.7));
     return { status: 'SOURCE_CONFIRMED', confidence, expectedReachableStateId: reachableStateId, observationId, evidence };
@@ -68,8 +87,8 @@ function matchSourceState({ scanDir, scan, contextId, graph, reachableStateId, o
     expectedReachableStateId: reachableStateId,
     observationId,
     evidence,
-    reasonCode: foregroundMatched ? comparison.reasonCode || 'SOURCE_ANCHORS_INSUFFICIENT' : 'APP_OR_CONTEXT_MISMATCH'
+    reasonCode: foregroundMatched && comparison.status === 'SAME_PAGE' && !sourceEligible ? 'SOURCE_MATCH_NOT_PRECISE_ENOUGH' : foregroundMatched ? comparison.reasonCode || 'SOURCE_ANCHORS_INSUFFICIENT' : 'APP_OR_CONTEXT_MISMATCH'
   };
 }
 
-module.exports = { matchSourceState, sourceAccepted, cursorStatusFor, sourceEquivalence, observationFingerprint };
+module.exports = { matchSourceState, sourceAccepted, cursorStatusFor, sourceEquivalence, observationFingerprint, sourceMatchEligible };

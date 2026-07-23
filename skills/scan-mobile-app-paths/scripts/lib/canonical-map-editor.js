@@ -9,7 +9,8 @@ const {
 const {
   mapsRoot, mapContextDir, ensureCanonicalContext, loadCanonicalContext, recomputeDepths
 } = require('./canonical-map-store');
-const { actionKey } = require('./graph-store');
+const { actionKey, updateCanonicalPaths } = require('./graph-store');
+const { candidateCoverageFromStores } = require('./candidate-coverage');
 
 const CONTEXTS = new Set(['guest', 'authenticated']);
 
@@ -59,6 +60,8 @@ function compactGraph(graph, deletedStateIds, deletedEdgeIds) {
   const stateIds = new Set(next.reachableStates.map(state => state.id));
   for (const state of next.reachableStates) {
     state.incomingEdgeIds = next.edges.filter(edge => edge.toReachableStateId === state.id).map(edge => edge.id);
+    state.runnablePathEdgeIds = (state.runnablePathEdgeIds || state.replayPathEdgeIds || []).filter(edgeId => next.edges.some(edge => edge.id === edgeId));
+    state.verifiedPathEdgeIds = (state.verifiedPathEdgeIds || []).filter(edgeId => next.edges.some(edge => edge.id === edgeId));
     state.replayPathEdgeIds = (state.replayPathEdgeIds || []).filter(edgeId => next.edges.some(edge => edge.id === edgeId));
     if (state.arrivalSignature?.expectedBackReachableStateId && !stateIds.has(state.arrivalSignature.expectedBackReachableStateId)) state.arrivalSignature.expectedBackReachableStateId = null;
   }
@@ -72,6 +75,7 @@ function compactGraph(graph, deletedStateIds, deletedEdgeIds) {
     logical.visualStateIds = next.visualStates.filter(visual => visual.logicalScreenKey === logical.id).map(visual => visual.id);
   }
   recomputeDepths(next);
+  updateCanonicalPaths(next);
   return { graph: next, deletedVisualIds, deletedLogicalIds };
 }
 
@@ -296,6 +300,12 @@ function writeArtifacts(appRoot, plan, canonical) {
   const dir = mapContextDir(appRoot, plan.contextId);
   const revision = `maprev-${hashObject({ contextId: plan.contextId, previous: canonical.meta.mapRevisionId || null, editId: plan.editId, operation: plan.operation, graph: plan.artifacts.graph }).slice(-16)}`;
   const updatedAt = now();
+  const candidateCoverage = candidateCoverageFromStores({
+    contextId: plan.contextId,
+    graph: plan.artifacts.graph,
+    frontier: plan.artifacts.frontier,
+    previousCoverage: canonical.meta.candidateCoverage
+  });
   const meta = {
     ...canonical.meta,
     schemaVersion: 1,
@@ -303,6 +313,7 @@ function writeArtifacts(appRoot, plan, canonical) {
     mapRevisionId: revision,
     previousMapRevisionId: canonical.meta.mapRevisionId || null,
     updatedByEditId: plan.editId,
+    candidateCoverage,
     updatedAt
   };
   writeJsonAtomic(path.join(dir, 'graph.json'), plan.artifacts.graph);

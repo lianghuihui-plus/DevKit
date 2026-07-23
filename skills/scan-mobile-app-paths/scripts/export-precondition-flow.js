@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs, required, bool, assertAbsolute, readJson, output, main, fail, safeSegment } = require('./lib/common');
 const { checksum, listPathCandidates, selectPath, buildFlowFromPath, flowOutputLayout, writeFlowAssets } = require('./lib/precondition-flow-exporter');
+const { updateCanonicalPaths } = require('./lib/graph-store');
 
 function inside(base, candidate) {
   const relative = path.relative(base, candidate);
@@ -38,6 +39,7 @@ function loadSnapshot(appMapRoot) {
 function loadContextGraph(snapshot, contextId) {
   const graph = snapshot.map.contexts?.[contextId];
   if (!graph) fail(`Snapshot has no ${contextId} context graph`, 'FLOW_CONTEXT_MISSING');
+  updateCanonicalPaths(graph);
   return graph;
 }
 

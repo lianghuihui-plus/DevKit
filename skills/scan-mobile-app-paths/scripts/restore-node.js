@@ -18,7 +18,8 @@ const { loadStateEquivalence, recordStateEquivalenceRule, makeStateEquivalenceRe
 const { loadObservationBundle } = require('./lib/observation-store');
 const { assessReplayableAction, executePathStepAction, resolveReplayAction } = require('./lib/path-replay-engine');
 const { completeDeviceActionSuccess, completeDeviceActionUnknownOutcome } = require('./lib/device-action-executor');
-const { edgeReplayabilityReason } = require('./lib/replayability');
+const { edgeRunnableReason } = require('./lib/replayability');
+const { shortestPath } = require('./lib/navigation-planner');
 
 function observe(scanDir, contextId, trigger) {
   const child = spawnSync(process.execPath, [
@@ -56,6 +57,30 @@ function compareStateResult(scanDir, graph, contextId, stateId, observationId) {
 
 function compareState(scanDir, graph, contextId, stateId, observationId) {
   return compareStateResult(scanDir, graph, contextId, stateId, observationId).status;
+}
+
+function rootState(graph) {
+  return graph.reachableStates.find(item => (item.depth?.pathDepth || 0) === 0) || null;
+}
+
+function replayPathIsValid(graph, edgeIds, fromId, toId) {
+  if (!fromId || !toId || !Array.isArray(edgeIds)) return false;
+  const byEdge = new Map(graph.edges.map(edge => [edge.id, edge]));
+  let cursor = fromId;
+  for (const edgeId of edgeIds) {
+    const edge = byEdge.get(edgeId);
+    if (!edge || edge.fromReachableStateId !== cursor || edgeRunnableReason(edge)) return false;
+    cursor = edge.toReachableStateId;
+  }
+  return cursor === toId;
+}
+
+function restoreEdgeIds(graph, targetState, fixedEdgeIds) {
+  if (fixedEdgeIds) return fixedEdgeIds;
+  const root = rootState(graph);
+  const cached = targetState.runnablePathEdgeIds || targetState.replayPathEdgeIds || [];
+  if (replayPathIsValid(graph, cached, root?.id, targetState.id)) return cached;
+  return shortestPath(graph, root?.id, targetState.id)?.edgeIds || [];
 }
 
 function restoreOp(result) {
@@ -145,10 +170,11 @@ main(() => {
   const fixedEdgeIds = command === 'start' && args.edgeIds ? jsonArg(args.edgeIds, null, 'edgeIds JSON') : null;
   const fixedFingerprints = command === 'start' && args.transitionFingerprints ? jsonArg(args.transitionFingerprints, null, 'transitionFingerprints JSON') : null;
   if (fixedEdgeIds && (!Array.isArray(fixedEdgeIds) || fixedFingerprints && (!Array.isArray(fixedFingerprints) || fixedFingerprints.length !== fixedEdgeIds.length))) fail('Fixed verification chain is invalid', 'RESTORE_PATH_INVALID');
-  const edges = (fixedEdgeIds || targetState.replayPathEdgeIds || []).map((edgeId, index) => {
+  const edgeIds = restoreEdgeIds(graph, targetState, fixedEdgeIds);
+  const edges = edgeIds.map((edgeId, index) => {
     const edge = graph.edges.find(item => item.id === edgeId);
     if (!edge) fail(`Replay edge missing: ${edgeId}`, 'RESTORE_PATH_INVALID');
-    const replayReason = edgeReplayabilityReason(edge);
+    const replayReason = edgeRunnableReason(edge);
     if (replayReason) fail(`Replay edge is not portable: ${edgeId}`, replayReason);
     if (fixedFingerprints && edge.verification?.transitionFingerprint !== fixedFingerprints[index]) fail(`Replay edge fingerprint changed: ${edgeId}`, 'VERIFICATION_SUPERSEDED');
     return edge;

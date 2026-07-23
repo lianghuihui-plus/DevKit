@@ -52,6 +52,10 @@ function validateRun(scan) {
     if (scan.plannedContextIds !== undefined || scan.activeContextId !== undefined || scan.budgetsByContext !== undefined) fail('Run must use contextId and budget only', 'SCAN_INVALID');
     if (!scan.budget || typeof scan.budget !== 'object') fail('Run budget is required', 'SCAN_INVALID');
     for (const key of ['maxActiveMinutes', 'maxDepth', 'maxDeviceActions', 'maxStates', 'maxColdStarts']) if (!Number.isFinite(Number(scan.budget[key])) || Number(scan.budget[key]) < 0) fail(`budget.${key} is invalid`, 'SCAN_INVALID');
+    if (scan.budgetBaseline !== undefined) {
+      if (!scan.budgetBaseline || scan.budgetBaseline.contextId !== scan.contextId) fail('budgetBaseline.contextId must match Run contextId', 'SCAN_INVALID');
+      for (const key of ['baselineReachableStates', 'baselineVisualStates', 'baselineEdges']) if (!Number.isFinite(Number(scan.budgetBaseline[key])) || Number(scan.budgetBaseline[key]) < 0) fail(`budgetBaseline.${key} is invalid`, 'SCAN_INVALID');
+    }
     oneOf(scan.navigationPolicy || 'adaptive', ['adaptive', 'always-replay'], 'navigationPolicy');
     oneOf(scan.verificationRule, ['CANONICAL_SCREEN_PATH', 'CONFIRMED_TARGET_PATH'], 'verificationRule');
     if (scan.scanMode === 'exploration' && scan.verificationRule !== 'CANONICAL_SCREEN_PATH') fail('exploration requires CANONICAL_SCREEN_PATH', 'SCAN_INVALID');

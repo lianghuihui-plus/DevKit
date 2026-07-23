@@ -86,7 +86,7 @@ Harmony 平台输出位置：
 - 路径至少 1 步且不超过 5 步。
 - 路径从 root 连续到目标状态。
 - 不包含 `wait`、未知动作或不可映射动作。
-- 每条 Edge 的 locator quality 必须为 `SEMANTIC_PORTABLE` 或 `SEMANTIC_WITH_FALLBACK`。
+- 每条 Edge 必须具备可执行动作语义；`UNRESOLVED` locator 如果仍保留语义 target/selector，可作为延迟解析路径导出。
 - `replayPolicy` 不是 `NONREPEATABLE`。
 - `safety.allowed` 不是 `false`。
 - `sideEffect` 为空或 `NONE`。
@@ -96,6 +96,7 @@ Harmony 平台输出位置：
 
 - Edge 尚未达到 `COLD_REPLAY_VERIFIED`。
 - Edge 带有坐标证据兜底，即 locator quality 为 `SEMANTIC_WITH_FALLBACK`。
+- Edge 曾被标记为 `REPLAY_UNSTABLE` 或 `INVALIDATED`。
 
 写入后，如果目标 workspace 存在 `scripts/flow/load-precondition-flows.js`，脚本会自动调用目标 loader 做平台级资产校验；不存在时只记录跳过原因。
 
@@ -118,4 +119,4 @@ Harmony 平台输出位置：
 --include-coordinates true
 ```
 
-脚本会从 Edge 的 `locatorEvidence.fallbackBounds` 或 `tapPoint` 生成坐标字段，并写入 `coordinateEvidence`。这些坐标只作为人工参考或目标执行侧的兜底证据；`DEVICE_BOUND` / `UNRESOLVED` 路径不可导出。
+脚本会从 Edge 的 `locatorEvidence.fallbackBounds` 或 `tapPoint` 生成坐标字段，并写入 `coordinateEvidence`。这些坐标只作为人工参考或目标执行侧的兜底证据；地图恢复与导出优先依赖语义 intent。

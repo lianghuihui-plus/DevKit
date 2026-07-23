@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fail, ensureDir, readJson, writeJsonAtomic, sha256, hashObject, slug, safeSegment } = require('./common');
-const { edgeReplayabilityReason } = require('./replayability');
+const { edgeRunnableReason } = require('./replayability');
 
 const MAX_FLOW_STEPS = 5;
 const FLOW_USAGE = 'precondition';
@@ -81,12 +81,14 @@ function summarizePathExportability(graph, pathItem, { manual = pathItem.manualE
     cursor = edge.toReachableStateId;
     const actionReason = unsupportedActionReason(edge.intent || {});
     if (actionReason) reasons.push(`${actionReason}:${edge.id}`);
-    const replayReason = edgeReplayabilityReason(edge);
-    const manualReviewable = manual && ['EDGE_LOCATOR_NOT_PORTABLE', 'EDGE_LOCATOR_UNRESOLVED', 'EDGE_LOCATOR_NOT_RESOLVED', 'EDGE_REPLAY_REPLAY_UNSTABLE', 'EDGE_REPLAY_INVALIDATED'].includes(replayReason);
-    if (replayReason && manualReviewable) warnings.push(`${replayReason}:${edge.id}`);
-    else if (replayReason) reasons.push(`${replayReason}:${edge.id}`);
+    const runnableReason = edgeRunnableReason(edge);
+    const manualReviewable = manual && ['EDGE_LOCATOR_NOT_PORTABLE', 'EDGE_LOCATOR_UNRESOLVED', 'EDGE_LOCATOR_NOT_RESOLVED'].includes(runnableReason);
+    if (runnableReason && manualReviewable) warnings.push(`${runnableReason}:${edge.id}`);
+    else if (runnableReason) reasons.push(`${runnableReason}:${edge.id}`);
     const replayStatus = edge.verification?.replayStatus || 'UNVERIFIED';
     if (replayStatus !== 'COLD_REPLAY_VERIFIED') warnings.push(`EDGE_NOT_COLD_REPLAY_VERIFIED:${edge.id}`);
+    if (['REPLAY_UNSTABLE', 'INVALIDATED'].includes(replayStatus)) warnings.push(`EDGE_REPLAY_${replayStatus}:${edge.id}`);
+    if (edge.locatorQuality === 'SEMANTIC_WITH_FALLBACK' && !edge.locatorEvidence?.matchedNode) warnings.push(`EDGE_LOCATOR_DEFERRED_RESOLUTION:${edge.id}`);
     if (edge.locatorQuality === 'SEMANTIC_WITH_FALLBACK') warnings.push(`EDGE_HAS_COORDINATE_EVIDENCE_FALLBACK:${edge.id}`);
   }
   if (cursor !== pathItem.terminalReachableStateId) reasons.push('PATH_TERMINAL_MISMATCH');

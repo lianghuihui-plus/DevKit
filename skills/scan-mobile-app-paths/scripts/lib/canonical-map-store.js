@@ -7,6 +7,7 @@ const {
   withFileLock, fail
 } = require('./common');
 const { updateCanonicalPaths, validateGraph } = require('./graph-store');
+const { candidateCoverageFromRun } = require('./candidate-coverage');
 
 function appRootFromScanDir(scanDir) {
   return path.dirname(path.dirname(scanDir));
@@ -159,11 +160,15 @@ function counterSeedFromCanonical(canonical) {
       maxNumericSuffix((queue.items || []).map(item => item.verificationId), /^verify-(\d+)$/),
       0
     ),
-    backCapability: maxNumericSuffix((back.items || []).map(item => item.backCapabilityId || item.id), /^backcap-(\d+)$/)
+    backCapability: Math.max(
+      maxNumericSuffix((back.items || []).map(item => item.backCapabilityId || item.id), /^back-(\d+)$/),
+      maxNumericSuffix((back.items || []).map(item => item.backCapabilityId || item.id), /^backcap-(\d+)$/)
+    )
   };
 }
 
 function validateCanonicalSeed(canonical) {
+  updateCanonicalPaths(canonical.graph);
   validateGraph(canonical.graph);
   const stateIds = new Set((canonical.graph.reachableStates || []).map(item => item.id));
   const edgeIds = new Set((canonical.graph.edges || []).map(item => item.id));
@@ -179,6 +184,8 @@ function validateCanonicalSeed(canonical) {
   for (const item of canonical.backCapabilities.items || []) {
     if (item.fromReachableStateId && !stateIds.has(item.fromReachableStateId) || item.toReachableStateId && !stateIds.has(item.toReachableStateId)) fail(`Canonical back capability ${item.backCapabilityId || item.id || '<missing>'} references missing state`, 'CANONICAL_MAP_INVALID');
   }
+  const backIds = (canonical.backCapabilities.items || []).map(item => item.backCapabilityId || item.id).filter(Boolean);
+  if (new Set(backIds).size !== backIds.length) fail('Canonical back capabilities contain duplicate ids', 'CANONICAL_MAP_INVALID');
   for (const store of [canonical.visualEquivalence, canonical.stateEquivalence]) {
     for (const rule of store.rules || []) {
       if (rule.reachableStateId && !stateIds.has(rule.reachableStateId)) fail(`Canonical equivalence rule ${rule.ruleId || '<missing>'} references missing state`, 'CANONICAL_MAP_INVALID');
@@ -199,6 +206,7 @@ function seedFilesForContext(appRoot, contextId) {
     backCapabilities: clone(canonical.backCapabilities),
     visualEquivalence: clone(canonical.visualEquivalence),
     stateEquivalence: clone(canonical.stateEquivalence),
+    candidateCoverage: clone(canonical.meta.candidateCoverage || { schemaVersion: 1, contextId, states: [], backfillRequiredStateIds: [] }),
     counters: counterSeedFromCanonical(canonical)
   };
 }
@@ -247,6 +255,8 @@ function recomputeDepths(graph) {
       state.depth.pathDepth = 0;
       state.depth.routeDepth = 0;
       state.depth.modalDepth = Number(state.depth.modalDepth || 0);
+      state.runnablePathEdgeIds = [];
+      state.verifiedPathEdgeIds = [];
       state.replayPathEdgeIds = [];
     }
   }
@@ -265,7 +275,8 @@ function recomputeDepths(graph) {
         to.depth.pathDepth = nextPath;
         to.depth.routeDepth = nextRoute;
         to.depth.modalDepth = Number(to.depth.modalDepth || 0);
-        to.replayPathEdgeIds = [...(from.replayPathEdgeIds || []), edge.id];
+        to.runnablePathEdgeIds = [...(from.runnablePathEdgeIds || from.replayPathEdgeIds || []), edge.id];
+        to.replayPathEdgeIds = to.runnablePathEdgeIds;
         queue.push(to.id);
       }
     }
@@ -295,10 +306,11 @@ function syncCanonicalFromRun(scanDir, contextId, { force = false } = {}) {
     graph.contextId = contextId;
     addEvidenceRefs(graph, scan.scanId);
     recomputeDepths(graph);
+    const candidateCoverage = candidateCoverageFromRun(scanDir, contextId, graph);
     const dir = mapContextDir(appRoot, contextId);
     const revision = `maprev-${hashObject({ contextId, previous: canonical.meta.mapRevisionId || null, sessionId: scan.scanId, graph }).slice(-16)}`;
     const sourceSessionIds = [...new Set([...(canonical.meta.sourceSessionIds || []), scan.scanId])];
-    const meta = { schemaVersion: 1, contextId, mapRevisionId: revision, previousMapRevisionId: canonical.meta.mapRevisionId || null, sourceSessionIds, updatedBySessionId: scan.scanId, updatedAt: now() };
+    const meta = { schemaVersion: 1, contextId, mapRevisionId: revision, previousMapRevisionId: canonical.meta.mapRevisionId || null, sourceSessionIds, updatedBySessionId: scan.scanId, candidateCoverage, updatedAt: now() };
     writeJsonAtomic(path.join(dir, 'graph.json'), graph);
     for (const [source, target] of [
       ['frontier.json', 'frontier.json'],
@@ -332,5 +344,7 @@ module.exports = {
   seedFilesForContext,
   syncCanonicalFromRun,
   canonicalContexts,
-  recomputeDepths
+  validateCanonicalSeed,
+  recomputeDepths,
+  counterSeedFromCanonical
 };

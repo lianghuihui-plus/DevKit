@@ -63,8 +63,8 @@ function baseGraph() {
       { id: 'vs-profile', logicalScreenKey: 'profile', kind: 'full-screen', evidenceObservationRefs: [{ runId: 'scan-flow', observationId: 'obs-end' }] }
     ],
     reachableStates: [
-      { id: 'rs-home', visualStateId: 'vs-home', depth: { pathDepth: 0, routeDepth: 0, modalDepth: 0 }, incomingEdgeIds: [], replayPathEdgeIds: [] },
-      { id: 'rs-profile', visualStateId: 'vs-profile', depth: { pathDepth: 1, routeDepth: 1, modalDepth: 0 }, incomingEdgeIds: ['edge-profile'], replayPathEdgeIds: ['edge-profile'] }
+      { id: 'rs-home', visualStateId: 'vs-home', depth: { pathDepth: 0, routeDepth: 0, modalDepth: 0 }, incomingEdgeIds: [], runnablePathEdgeIds: [], verifiedPathEdgeIds: [], replayPathEdgeIds: [], pathStatus: 'RUNNABLE_VERIFIED' },
+      { id: 'rs-profile', visualStateId: 'vs-profile', depth: { pathDepth: 1, routeDepth: 1, modalDepth: 0 }, incomingEdgeIds: ['edge-profile'], runnablePathEdgeIds: ['edge-profile'], verifiedPathEdgeIds: [], replayPathEdgeIds: ['edge-profile'], pathStatus: 'RUNNABLE_UNVERIFIED' }
     ],
     edges: [
       {
@@ -85,8 +85,8 @@ function baseGraph() {
       }
     ],
     paths: [
-      { id: 'path-root', contextId: 'guest', edgeIds: [], terminalReachableStateId: 'rs-home', canonical: true },
-      { id: 'path-profile', contextId: 'guest', edgeIds: ['edge-profile'], terminalReachableStateId: 'rs-profile', canonical: true }
+      { id: 'path-root', contextId: 'guest', edgeIds: [], terminalReachableStateId: 'rs-home', canonical: true, runnable: true, pathStatus: 'RUNNABLE_VERIFIED', verifiedEdgeIds: [], verificationStatus: 'COLD_REPLAY_VERIFIED' },
+      { id: 'path-profile', contextId: 'guest', edgeIds: ['edge-profile'], terminalReachableStateId: 'rs-profile', canonical: true, runnable: true, pathStatus: 'RUNNABLE_UNVERIFIED', verifiedEdgeIds: [], verificationStatus: 'UNVERIFIED' }
     ]
   };
 }
@@ -99,16 +99,17 @@ try {
   writeSnapshot(appMapRoot, baseGraph());
 
   const listed = run('export-precondition-flow.js', ['list', '--app-map-root', appMapRoot, '--context', 'guest']).json;
-  check(listed.candidates.some(item => item.pathId === 'path-profile' && item.exportable === true), true);
-  check(listed.candidates.some(item => item.pathId === 'path-root' && item.reasons.includes('FLOW_PATH_EMPTY')), true);
+  const profileCandidate = listed.candidates.find(item => item.terminalReachableStateId === 'rs-profile');
+  check(Boolean(profileCandidate?.exportable), true);
+  check(listed.candidates.some(item => item.terminalReachableStateId === 'rs-home' && item.reasons.includes('FLOW_PATH_EMPTY')), true);
   const unresolvedGraph = baseGraph();
   delete unresolvedGraph.edges[0].locatorEvidence.matchedNode;
   const manualSummary = summarizePathExportability(unresolvedGraph, { ...unresolvedGraph.paths[1], manualExport: true });
   check(manualSummary.exportable, true);
-  check(manualSummary.warnings.includes('EDGE_LOCATOR_NOT_RESOLVED:edge-profile'), true);
+  check(manualSummary.warnings.includes('EDGE_LOCATOR_DEFERRED_RESOLUTION:edge-profile'), true);
   writeSnapshot(appMapRoot, unresolvedGraph);
-  const blocked = run('export-precondition-flow.js', ['list', '--app-map-root', appMapRoot, '--context', 'guest']).json;
-  check(blocked.candidates.some(item => item.pathId === 'path-profile' && item.exportable === false && item.reasons.includes('EDGE_LOCATOR_NOT_RESOLVED:edge-profile')), true);
+  const deferred = run('export-precondition-flow.js', ['list', '--app-map-root', appMapRoot, '--context', 'guest']).json;
+  check(deferred.candidates.some(item => item.terminalReachableStateId === 'rs-profile' && item.exportable === true && item.warnings.includes('EDGE_LOCATOR_DEFERRED_RESOLUTION:edge-profile')), true);
   writeSnapshot(appMapRoot, baseGraph());
 
   const preview = run('export-precondition-flow.js', ['preview', '--app-map-root', appMapRoot, '--context', 'guest', '--logical-name', '我的', '--name', '进入我的页', '--business', 'enter-profile-page']).json;
@@ -118,7 +119,7 @@ try {
   check(preview.warnings.includes('EDGE_HAS_COORDINATE_EVIDENCE_FALLBACK:edge-profile'), true);
 
   const workspace = path.join(temp, 'visual-test-workspace');
-  const written = run('export-precondition-flow.js', ['write', '--app-map-root', appMapRoot, '--context', 'guest', '--path-id', 'path-profile', '--name', '进入我的页', '--business', 'enter-profile-page', '--workspace', workspace, '--include-coordinates', 'true']).json;
+  const written = run('export-precondition-flow.js', ['write', '--app-map-root', appMapRoot, '--context', 'guest', '--path-id', profileCandidate.pathId, '--name', '进入我的页', '--business', 'enter-profile-page', '--workspace', workspace, '--include-coordinates', 'true']).json;
   const flowPath = path.join(workspace, 'enter-profile-page', 'harmony', 'flow.json');
   check(written.write.flowPath, flowPath);
   check(fs.existsSync(path.join(path.dirname(flowPath), 'assets', 'start.png')), true);
@@ -126,8 +127,9 @@ try {
   const flow = JSON.parse(fs.readFileSync(flowPath, 'utf8'));
   check(flow.platform, 'harmony');
   check(flow.steps[0].action.coordinateSource, 'flow');
-  check(run('export-precondition-flow.js', ['write', '--app-map-root', appMapRoot, '--context', 'guest', '--path-id', 'path-profile', '--name', '进入我的页', '--business', 'enter-profile-page', '--workspace', workspace], true).stderr.includes('FLOW_OUTPUT_EXISTS'), true);
-  check(run('export-precondition-flow.js', ['preview', '--app-map-root', appMapRoot, '--context', 'guest', '--path-id', 'path-root', '--name', '进入首页'], true).stderr.includes('FLOW_PATH_NOT_EXPORTABLE'), true);
+  check(run('export-precondition-flow.js', ['write', '--app-map-root', appMapRoot, '--context', 'guest', '--path-id', profileCandidate.pathId, '--name', '进入我的页', '--business', 'enter-profile-page', '--workspace', workspace], true).stderr.includes('FLOW_OUTPUT_EXISTS'), true);
+  const rootCandidate = listed.candidates.find(item => item.terminalReachableStateId === 'rs-home');
+  check(run('export-precondition-flow.js', ['preview', '--app-map-root', appMapRoot, '--context', 'guest', '--path-id', rootCandidate.pathId, '--name', '进入首页'], true).stderr.includes('FLOW_PATH_NOT_EXPORTABLE'), true);
 
   console.log(JSON.stringify({ schemaVersion: 1, ok: true, scope: 'flow-export', tests, tempRoot: temp }, null, 2));
 } finally {

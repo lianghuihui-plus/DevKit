@@ -96,6 +96,18 @@ function canonicalUnresolved(contextId, graph, frontier, queue, sourceRunIds) {
   return unresolved;
 }
 
+function candidateCoverageUnresolved(contextId, graph, coverage = {}, sourceRunIds = []) {
+  const stateIds = new Set((graph.reachableStates || []).map(item => item.id));
+  return [...new Set(coverage.backfillRequiredStateIds || [])]
+    .filter(id => stateIds.has(id))
+    .map(reachableStateId => ({
+      type: 'CANDIDATE_BACKFILL_REQUIRED',
+      contextId,
+      reachableStateId,
+      sourceRunId: sourceRunIds.at(-1) || null
+    }));
+}
+
 function buildCanonicalSnapshotIfAvailable(root, app, args, index) {
   const available = canonicalContexts(root).map(contextId => loadCanonicalContext(root, contextId)).filter(canonical => graphHasContent(canonical.graph));
   if (!available.length) return null;
@@ -116,7 +128,9 @@ function buildCanonicalSnapshotIfAvailable(root, app, args, index) {
     assertConsumableGraph(normalized.graph, fail);
     contexts[contextId] = normalized.graph;
     unresolved.push(...canonicalUnresolved(contextId, normalized.graph, canonical.frontier, canonical.verificationQueue, sourceRunIds));
-    canonicalMetrics[contextId] = { logicalScreenCount: normalized.graph.logicalScreens.length, visualStateCount: normalized.graph.visualStates.length, reachableStateCount: normalized.graph.reachableStates.length, edgeCount: normalized.graph.edges.length, replacementCount: 0, prunedReachableStates: 0, prunedEdges: 0, frontierCounts: frontierCounts(canonical.frontier), mapRevisionId: canonical.meta.mapRevisionId || null };
+    unresolved.push(...candidateCoverageUnresolved(contextId, normalized.graph, canonical.meta.candidateCoverage, sourceRunIds));
+    const coverage = canonical.meta.candidateCoverage || {};
+    canonicalMetrics[contextId] = { logicalScreenCount: normalized.graph.logicalScreens.length, visualStateCount: normalized.graph.visualStates.length, reachableStateCount: normalized.graph.reachableStates.length, edgeCount: normalized.graph.edges.length, replacementCount: 0, prunedReachableStates: 0, prunedEdges: 0, frontierCounts: frontierCounts(canonical.frontier), candidateCoverage: { backfillRequiredStateCount: (coverage.backfillRequiredStateIds || []).filter(id => normalized.graph.reachableStates.some(state => state.id === id)).length, states: coverage.states || [] }, mapRevisionId: canonical.meta.mapRevisionId || null };
   }
   const qualified = (index.runs || []).filter(run => ['COMPLETED', 'PARTIAL'].includes(run.status));
   const sourceRuns = qualified.filter(run => sourceRunIdSet.has(run.scanId)).sort(compareRuns);

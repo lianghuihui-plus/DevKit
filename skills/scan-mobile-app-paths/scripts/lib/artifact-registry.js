@@ -5,7 +5,7 @@ const PROJECTION_PATTERNS = [
   /^target\.json$/,
   /^plan\.json$/,
   /^continuation\.json$/,
-  /^contexts\/[^/]+\/(context|graph|frontier|metrics|live-cursor|verification-queue|back-capabilities|visual-equivalence|state-equivalence)\.json$/,
+  /^contexts\/[^/]+\/(context|graph|frontier|frontier-suggestions|metrics|live-cursor|verification-queue|back-capabilities|visual-equivalence|state-equivalence)\.json$/,
   /^known\/contexts\/[^/]+\.json$/,
   /^attempts\/[^/]+\.json$/,
   /^operations\/[^/]+\.json$/,

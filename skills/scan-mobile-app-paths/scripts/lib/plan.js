@@ -31,6 +31,7 @@ function buildPlanFromData(scanDir, scan, target, { goal = null, continuation = 
   const base = commonPlan(scanDir, scan, target, goal, continuation);
   if (isCurrentRun(scan)) {
     const contextId = runContextId(scan); const budget = runBudget(scan, contextId); const overrides = budgetOverrides(scan.profile, budget); const verificationRule = scan.scanMode === 'goal-directed' ? 'CONFIRMED_TARGET_PATH' : 'CANONICAL_SCREEN_PATH';
+    const baseline = scan.budgetBaseline || { schemaVersion: 1, contextId, source: 'CANONICAL_SEED', baselineReachableStates: 0, baselineVisualStates: 0, baselineEdges: 0 };
     return {
       schemaVersion: 3,
       ...base,
@@ -38,6 +39,8 @@ function buildPlanFromData(scanDir, scan, target, { goal = null, continuation = 
       context: { id: contextId, label: contextId === 'guest' ? '未登录' : '已登录', preparation: contextId === 'guest' ? '确保已退出登录，然后受控冷启动并自动核对未登录证据' : '人工完成登录，然后受控冷启动并自动核对登录证据' },
       userConfiguration: { profile: scan.profile, maxActiveMinutes: budget.maxActiveMinutes, maxDepth: budget.maxDepth },
       derivedExecutionLimits: { ...budget },
+      budgetBaseline: baseline,
+      stateBudgetSemantics: { scope: 'RUN_DELTA', baselineReachableStates: Number(baseline.baselineReachableStates || 0), maxNewReachableStates: Number(budget.maxStates || 0), projectedMaxTotalReachableStates: Number(baseline.baselineReachableStates || 0) + Number(budget.maxStates || 0), explanation: `本次 ${PROFILE_META[scan.profile].label} 计划最多新增 ${Number(budget.maxStates || 0)} 个可达状态；当前地图已有 ${Number(baseline.baselineReachableStates || 0)} 个可达状态，不占用本 Run 新增状态预算。` },
       profileSelection: { ...base.profileSelection, hasBudgetOverrides: overrides.length > 0, budgetOverrides: overrides },
       timeExpectation: { activeScanHardLimitMinutes: activeLimitMinutes(budget), meaning: `本 Run 自动扫描活动时间最多 ${activeLimitMinutes(budget)} 分钟。`, wallClockGuarantee: false, excludedFromActiveLimit: ['人工登录或退出时间', '计划确认等待时间', '目标候选人工确认时间', 'Run 结束后的 Snapshot 与 Dashboard 构建时间'] },
       interactionPoints: ['开始前确认本计划', `开始${contextId === 'guest' ? '未登录' : '已登录'}扫描前受控冷启动并自动核对上下文证据`, ...(scan.scanMode === 'goal-directed' ? ['发现候选时暂停并等待人工判断'] : []), '身份漂移、风险动作或环境异常时暂停'],

@@ -8,6 +8,7 @@ const { resolveBudget, assertProfileForMode } = require('./lib/budget');
 const { buildPlanFromData, planHash } = require('./lib/plan');
 const { buildGoalSpecFromArgs, goalPlanFromSpec } = require('./lib/goal-spec');
 const { buildContinuationPlan } = require('./lib/continuation-plan');
+const { loadCanonicalPlanBaseline } = require('./lib/plan-baseline');
 
 function makeScanId(root) {
   const stamp = compactLocalTimestamp();
@@ -47,13 +48,14 @@ main(() => {
   const scanDir = path.join(root, 'runs', scanId);
   if (exists(scanDir)) fail(`Run already exists: ${scanId}`, 'RUN_EXISTS');
   const { parent, continuationPlan } = buildContinuationPlan({ root, parentScanId: args.parentScanId, scanMode, contextId, target, validateParent: true });
+  const { budgetBaseline } = loadCanonicalPlanBaseline({ appRoot: root, contextId });
   const scan = validateRun({
     schemaVersion: 3, scanId, parentScanId: parent?.scanId || null, mapRevisionId: safeSegment(parent?.mapRevisionId || scanId, 'mapRevisionId'),
     status: 'CREATED', reasonCode: null, scanMode, scanScope, graphProtocolVersion: 4, attemptProtocolVersion: 4, planProtocolVersion: 3,
     eventProtocolVersion: 2, projectionProtocolVersion: 2, navigationProtocolVersion: 2, verificationProtocolVersion: 2,
     platform: 'harmony', target, profile, strategy: scanMode === 'goal-directed' ? 'goal-directed' : 'exploration',
     goalSpecPath: scanMode === 'goal-directed' ? 'goal/goal.json' : null,
-    contextId, budget: { ...budget }, budgetRevision: 1, navigationPolicy,
+    contextId, budget: { ...budget }, budgetRevision: 1, navigationPolicy, budgetBaseline,
     verificationRule: scanMode === 'goal-directed' ? 'CONFIRMED_TARGET_PATH' : 'CANONICAL_SCREEN_PATH',
     createdAt: null, startedAt: null, updatedAt: null, pausedAt: null, pausedDurationMs: 0,
     counters: { event: 0 }

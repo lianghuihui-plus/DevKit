@@ -60,10 +60,20 @@ function totalActions(metrics = {}) {
   return Math.max(Number(metrics.actions || 0), categorized);
 }
 
+function budgetBaselineForContext(scan = {}, contextId = null) {
+  const baseline = scan.budgetBaseline || {};
+  if (baseline.contextId && contextId && baseline.contextId !== contextId) return {};
+  return baseline;
+}
+
 function budgetUsage(scan, graph, frontier, metrics = {}) {
   const currentIntervalMs = scan.status === 'SCANNING' && activeContextId(scan) === graph.contextId && metrics.activeStartedAt ? Math.max(0, Date.now() - Date.parse(metrics.activeStartedAt)) : 0;
   const elapsedMs = (metrics.activeDurationMs || 0) + currentIntervalMs;
-  return { nodes: graph.reachableStates.length, states: graph.reachableStates.length, edges: graph.edges.length, actions: totalActions(metrics), coldStarts: Number(metrics.coldStarts || 0), durationMinutes: elapsedMs / 60000, pending: frontier.items.filter(i => ['PENDING', 'RETRYABLE'].includes(i.status)).length };
+  const baseline = budgetBaselineForContext(scan, graph.contextId);
+  const baselineStates = Math.max(0, Number(baseline.baselineReachableStates || 0));
+  const totalStates = graph.reachableStates.length;
+  const createdStates = Math.max(0, totalStates - baselineStates);
+  return { nodes: createdStates, states: createdStates, totalNodes: totalStates, totalStates, baselineStates, baselineReachableStates: baselineStates, edges: graph.edges.length, totalEdges: graph.edges.length, baselineEdges: Math.max(0, Number(baseline.baselineEdges || 0)), actions: totalActions(metrics), coldStarts: Number(metrics.coldStarts || 0), durationMinutes: elapsedMs / 60000, pending: frontier.items.filter(i => ['PENDING', 'RETRYABLE'].includes(i.status)).length };
 }
 
 function assertCapacity(scan, contextId, graph, frontier, metrics, resource, increment = 1) {
@@ -91,7 +101,7 @@ function exhausted(budget, usage, protocol = 3) {
     ? [['MAX_STATES', usage.states ?? usage.nodes, maxStates(budget)], ['MAX_DEVICE_ACTIONS', usage.actions, maxDeviceActions(budget)], ['MAX_COLD_STARTS', usage.coldStarts || 0, Number(budget.maxColdStarts)], ['MAX_ACTIVE_MINUTES', usage.durationMinutes, activeLimitMinutes(budget)]]
     : [['MAX_NODES', usage.nodes, budget.maxNodes], ['MAX_EDGES', usage.edges, budget.maxEdges], ['MAX_ACTIONS', usage.actions, budget.maxActions], ['MAX_DURATION', usage.durationMinutes, budget.maxDurationMinutes]];
   const hit = checks.find(([, used, max]) => used >= max);
-  return hit ? { exhausted: true, reasonCode: hit[0], used: hit[1], limit: hit[2] } : { exhausted: false };
+  return hit ? { exhausted: true, reasonCode: hit[0], used: hit[1], limit: hit[2], ...(hit[0] === 'MAX_STATES' ? { baselineStates: usage.baselineStates || 0, totalStates: usage.totalStates ?? usage.nodes ?? 0 } : {}) } : { exhausted: false };
 }
 
-module.exports = { PRESETS, PROFILE_META, assertProfileForMode, profileCatalog, budgetOverrides, resolveBudget, budgetUsage, exhausted, assertCapacity, assertExecutionWindow, totalActions };
+module.exports = { PRESETS, PROFILE_META, assertProfileForMode, profileCatalog, budgetOverrides, resolveBudget, budgetBaselineForContext, budgetUsage, exhausted, assertCapacity, assertExecutionWindow, totalActions };

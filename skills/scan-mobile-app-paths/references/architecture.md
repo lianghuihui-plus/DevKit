@@ -100,7 +100,7 @@ Runtime Bridge 的单次采样包含截图、控件树、前台 App/Ability 和�
 - `VisualState`：稳定截图、布局与前台共同确定的视觉状态。
 - `ReachableState`：`VisualState + contextId + arrivalSignature`。
 - `Edge`：一次已观察转换，保存可移植 `intent`、安全属性、locator quality 和证据引用；实际坐标只保留在 ActionResult/locatorEvidence 中。
-- `Path`：由 Edge ID 构成的规范可达路径。
+- `Path`：由 Edge ID 构成的规范可达路径，分为用于恢复/导航/导出的 runnable path 和仅表达冷启动验证信心的 verified path。
 
 布局和截图都相同才为 `EXACT`；语义锚点充分但截图或局部结构变化时可为 `SAME_PAGE`。`wait` 不是图动作。动作后状态与来源 `EXACT` 时记录 `NO_STATE_CHANGE`，不生成 Edge；`SAME_PAGE` 只用于恢复、来源确认和路径验证，不用于证明动作无效果。
 
@@ -136,7 +136,7 @@ Navigation Planner 采用从低成本到高成本的确定性顺序：
 | 等级 | 模式 | 使用条件 | 成本 |
 | --- | --- | --- | --- |
 | L0 | `LIVE_CURSOR` | 已在目标来源状态 | 0 或一次复核 |
-| L0.5 | `SOURCE_MATCH` | 原本会冷重放，但当前屏幕经多证据匹配确认就是目标来源状态 | 一次轻量观测 |
+| L0.5 | `SOURCE_MATCH` | 原本会冷重放，但当前屏幕经多证据匹配确认就是目标来源状态；重复文本候选必须有强页面身份和精确控件定位 | 一次轻量观测 |
 | L1 | `BACKTRACK` | 已采证 BACK 能力精确到达目标 | 1 |
 | L2 | `GRAPH_PATH` | 当前状态到目标存在安全可重放路径 | 路径动作成本 |
 | L4 | `COLD_REPLAY` | Cursor 无效、无图路径或前级失败 | 冷启动 + 根路径 |
@@ -164,8 +164,14 @@ navigationCost 在 Claim 时根据最新 Cursor 计算，而不是在 Frontier �
 统一 `nextWork()` 返回：
 
 - `DISCOVER`：存在可领取 Frontier 且必要验证容量充足。
+- `BACKFILL_FRONTIER_SUGGESTIONS`：Frontier 和本 Run suggestion 已空，但 canonical `candidateCoverage` 指出旧节点还没有候选覆盖；先从本 Run 或历史 Observation 引用生成 suggestion。
+- `SUGGEST_FRONTIER`：Frontier 已空但还有可应用候选建议，先把安全、未重复、未阻塞且未超预算的建议应用为 Frontier。
 - `VERIFY`：目标验证优先、Frontier 已空，或剩余容量接近必要验证估算。
 - `STOP`：没有 Frontier 与必要验证。
+
+调度器按 Verification 失败的依赖范围隔离阻塞。超过重试上限的失败任务不会默认阻塞整个 Run；系统先从 `failure` 字段或 Restore 证据推导 `blockingEdgeIds`，只暂缓依赖这些 Edge 的 Frontier 和 Verification。若失败点无法推导，则按旧的保守语义返回 `REQUIRED_VERIFICATION_FAILED`。当只剩被失败依赖阻塞的工作时，返回 `WORK_BLOCKED_BY_FAILED_DEPENDENCIES` 并建议 `PARTIAL`。
+
+Frontier Suggestion 是 Run 内候选投影，不是地图事实。调度器只提示可应用 suggestion；旧节点通过 backfill 生成候选，backfill 可读取 `VisualState.evidenceObservationRefs` 指向的历史 Run 证据但不会复制为本 Run Observation。登记到 canonical 时只同步 `candidateCoverage` 摘要，用来判断续扫是否需要补候选。
 
 Attempt 状态主链：
 
@@ -189,7 +195,7 @@ Attempt 固定 `claimToken`、候选哈希、来源状态、NavigationPlan、Cur
 
 ## 8. 发现与验证分层
 
-稳定的 A → action → B 证据可提交 Edge，其初始 `replayStatus=UNVERIFIED`。Verification Queue 独立执行冷启动完整重放：
+稳定的 A → action → B 证据可提交 Edge，其初始 `replayStatus=UNVERIFIED`。提交后的 Edge 只要动作语义、安全和副作用规则允许，就可进入 runnable path；Verification Queue 独立执行冷启动完整重放：
 
 - 探索模式：每个新 LogicalScreen 选择一条当前规范路径，规则为 `CANONICAL_SCREEN_PATH`。
 - 目标模式：人工确认目标后验证该路径，规则为 `CONFIRMED_TARGET_PATH`。
@@ -198,11 +204,17 @@ Verification task key 绑定 `contextId + LogicalScreen/Decision + transitionFin
 
 验证证据不可覆盖，按 `evidence/verifications/<verification-id>/<execution-id>.json` 保存。执行器丢失时当前 Execution 标记 `ABANDONED`，Task 在重试上限内回到 `PENDING`，否则进入 `FAILED`。
 
+验证失败会记录失败影响范围。能定位到具体步骤时，Task/Evidence 写入 `failure.failedEdgeId`、`failure.blockingEdgeIds` 与 `failure.scope`；调度器用这些字段判断哪些旁支仍可继续。无法定位失败 Edge 的旧数据或异常证据视为未知失败，继续保持全局停扫以避免误执行。
+
 验证逐 Edge 稳定观测：
 
 - 成功：相关 Edge 为 `COLD_REPLAY_VERIFIED`。
 - 失败：保留发现事实，Edge 为 `REPLAY_UNSTABLE`，写入 unresolved。
 - 未运行：保持 `UNVERIFIED`。
+
+目标模式在路径验证后还有最终目标匹配判断。路径验证成功但最终截图/语义未强命中时，Verification Task 可记录 `pathReplayStatus=COLD_REPLAY_VERIFIED` 与 `goalMatchStatus=GOAL_REPLAY_NOT_STRONG`；这只表示目标未确认成功，不表示 Edge 链不稳定，也不得把相关 Edge 降级为 `REPLAY_UNSTABLE`。
+
+验证状态不决定路径是否出现在地图里；它只决定 `verifiedPathEdgeIds`、`pathStatus` 和人工审阅提示。
 
 目标路径还需最终截图强匹配。必要任务处于 `PENDING`、`RUNNING` 或 `FAILED` 时，Run 不能 `COMPLETED`。
 
@@ -219,7 +231,7 @@ maxDepth
 内部硬上限：
 
 - `maxDeviceActions`：全部设备动作总数。
-- `maxStates`：ReachableState 数量。
+- `maxStates`：本 Run 新增 ReachableState 数量，计算为当前图总 ReachableState 减去 `budgetBaseline.baselineReachableStates`；canonical seed 的已有状态不占用本 Run 状态预算。
 - `maxColdStarts`：准备、恢复和验证冷启动总数。
 - `maxActiveMinutes`：自动活动累计时间。
 

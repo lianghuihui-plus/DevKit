@@ -13,6 +13,7 @@ const { assertAcceptedVisualReview } = require('./lib/visual-review-store');
 const { intentFromAction, locatorEvidenceFor } = require('./lib/action-intent');
 const { deviceProfileFrom } = require('./lib/device-profile');
 const { locatorReplayabilityReason } = require('./lib/replayability');
+const { buildSuggestionItems } = require('./lib/frontier-candidate-service');
 
 function evidence(scanDir, observationId, contextId) {
   return requireObservationBundle(scanDir, observationId, contextId, { incompleteErrorCode: 'EVIDENCE_INCOMPLETE', contextErrorCode: 'EVIDENCE_INCOMPLETE' });
@@ -46,13 +47,29 @@ main(() => {
   const arrivalSignature = jsonArg(args.arrivalSignature, { expectedBackReachableStateId: isCurrentRun(scan) ? null : from.id, backBehaviorKey: args.backBehaviorKey || 'unverified', stateInvariantHash: hashObject({ visualStateId: visualResult.visualState.id, from: from.id, candidateGroupKey: item.candidateGroupKey }) });
   const previewReachable = graph.reachableStates.find(x => x.visualStateId === visualResult.visualState.id && hashObject(x.arrivalSignature || {}) === hashObject(arrivalSignature));
   if (!previewReachable) assertCapacity(scan, contextId, graph, frontier, metrics, 'nodes');
-  const reachableResult = store.upsertReachableState(graph, { visualStateId: visualResult.visualState.id, arrivalSignature, depth, replayPathEdgeIds: from.replayPathEdgeIds || [] });
+  const reachableResult = store.upsertReachableState(graph, { visualStateId: visualResult.visualState.id, arrivalSignature, depth, runnablePathEdgeIds: from.runnablePathEdgeIds || from.replayPathEdgeIds || [] });
   const deviceProfile = before.observation.deviceProfile || actionResult.deviceProfile || deviceProfileFrom({ scan, observation: before.observation });
   const locatorEvidence = actionResult.locatorEvidence || locatorEvidenceFor({ action: actionResult.action, intent, observation: before.observation, layout: before.layout, deviceProfile });
   const locatorReplayable = locatorReplayabilityReason({ intent, locatorQuality: locatorEvidence.locatorQuality, locatorResolution: locatorEvidence.resolution, locatorEvidence }) === null;
   const replayability = locatorReplayable && actionResult.safety.sideEffect === 'NONE' && actionResult.safety.replayPolicy !== 'NONREPEATABLE' ? 'STABLE' : 'UNSTABLE';
-  const duplicateEdge = graph.edges.some(x => x.fromReachableStateId === from.id && x.toReachableStateId === reachableResult.reachableState.id && store.actionKey(x) === store.actionKey({ intent }));
+  const duplicateEdge = graph.edges.find(x => x.fromReachableStateId === from.id && x.toReachableStateId === reachableResult.reachableState.id && store.actionKey(x) === store.actionKey({ intent }));
   if (!duplicateEdge) assertCapacity(scan, contextId, graph, frontier, metrics, 'edges');
+  if (duplicateEdge) {
+    item.status = 'COVERED_BY_GROUP'; item.reasonCode = 'DUPLICATE_EDGE'; item.resolvedAt = now(); item.attemptId = attemptId; item.coveredEdgeId = duplicateEdge.id; item.claimToken = null; item.claimedAttemptId = null;
+    attempt.status = 'COVERED_BY_EXISTING_EDGE'; attempt.coveredEdgeId = duplicateEdge.id; attempt.toReachableStateId = reachableResult.reachableState.id; attempt.updatedAt = now();
+    const logicalScreen = graph.logicalScreens.find(x => x.id === visualResult.visualState.logicalScreenKey);
+    const cursor = isCurrentRun(scan) ? projectedCursor(scanDir, contextId, { reachableStateId: reachableResult.reachableState.id, observationId: attempt.afterObservationId, status: 'EXACT', establishedBy: 'ATTEMPT_COVERED_BY_EXISTING_EDGE' }) : null;
+    const graphPath = `contexts/${contextId}/graph.json`; const ops = [
+      { path: graphPath, op: 'UPSERT', collection: 'logicalScreens', keyFields: ['id'], value: logicalScreen, recompute: 'GRAPH' },
+      { path: graphPath, op: 'UPSERT', collection: 'visualStates', keyFields: ['id'], value: visualResult.visualState, recompute: 'GRAPH' },
+      { path: graphPath, op: 'UPSERT', collection: 'reachableStates', keyFields: ['id'], value: reachableResult.reachableState, recompute: 'GRAPH' },
+      { path: `contexts/${contextId}/frontier.json`, op: 'UPSERT', collection: 'items', keyFields: ['id'], value: item },
+      { path: `attempts/${attempt.attemptId}.json`, op: 'REPLACE', value: attempt }
+    ];
+    if (cursor) ops.push({ path: `contexts/${contextId}/live-cursor.json`, op: 'REPLACE', value: cursor });
+    commitEvent(scanDir, 'attemptCoveredByExistingEdge', { contextId, attemptId, frontierId: item.id, coveredEdgeId: duplicateEdge.id, toReachableStateId: reachableResult.reachableState.id, visualReviewId: visualReview.visualReviewId, commitProjection: { logicalScreen, visualState: visualResult.visualState, reachableState: reachableResult.reachableState, coveredEdge: duplicateEdge, frontierItem: item, attempt, cursor } }, ops);
+    return output({ schemaVersion: 1, ok: true, attemptId: attempt.attemptId, attempt, visualState: visualResult.visualState, reachableState: reachableResult.reachableState, edge: duplicateEdge, coveredEdgeId: duplicateEdge.id });
+  }
   const edge = { id: nextId(scanDir, 'edge', 'edge'), fromReachableStateId: from.id, toReachableStateId: reachableResult.reachableState.id, contextGuard: { authState: contextId }, intent,
     locatorQuality: locatorEvidence.locatorQuality, locatorResolution: locatorEvidence.resolution, locatorEvidence, deviceProfileId: deviceProfile.profileId || null,
     risk: actionResult.safety.risk, replayability, sideEffect: actionResult.safety.sideEffect, replayPolicy: actionResult.safety.replayPolicy,
@@ -61,14 +78,14 @@ main(() => {
   const edgeResult = store.recordEdge(graph, edge);
   item.status = 'EXPLORED'; item.reasonCode = null; item.resolvedAt = now(); item.attemptId = attemptId; item.claimToken = null; item.claimedAttemptId = null;
   attempt.status = 'COMMITTED'; attempt.edgeId = edgeResult.edge.id; attempt.toReachableStateId = reachableResult.reachableState.id; attempt.updatedAt = now();
-  const logicalScreen = graph.logicalScreens.find(x => x.id === visualResult.visualState.logicalScreenKey); const cursor = isCurrentRun(scan) ? projectedCursor(scanDir, contextId, { reachableStateId: reachableResult.reachableState.id, observationId: attempt.afterObservationId, status: 'EXACT', establishedBy: 'ATTEMPT_COMMIT' }) : null; const verificationProjection = isCurrentRun(scan) ? reconcileVerificationQueue(scanDir, scan, contextId, graph, { persist: false }) : null; const graphPath = `contexts/${contextId}/graph.json`; const ops = [
+  const logicalScreen = graph.logicalScreens.find(x => x.id === visualResult.visualState.logicalScreenKey); const cursor = isCurrentRun(scan) ? projectedCursor(scanDir, contextId, { reachableStateId: reachableResult.reachableState.id, observationId: attempt.afterObservationId, status: 'EXACT', establishedBy: 'ATTEMPT_COMMIT' }) : null; const verificationProjection = isCurrentRun(scan) ? reconcileVerificationQueue(scanDir, scan, contextId, graph, { persist: false }) : null; const suggestionProjection = isCurrentRun(scan) && (visualResult.created || reachableResult.created) ? buildSuggestionItems({ scanDir, scan, contextId, graph, frontier, reachableStateId: reachableResult.reachableState.id, observationId: attempt.afterObservationId }) : null; const graphPath = `contexts/${contextId}/graph.json`; const ops = [
     { path: graphPath, op: 'UPSERT', collection: 'logicalScreens', keyFields: ['id'], value: logicalScreen, recompute: 'GRAPH' },
     { path: graphPath, op: 'UPSERT', collection: 'visualStates', keyFields: ['id'], value: visualResult.visualState, recompute: 'GRAPH' },
     { path: graphPath, op: 'UPSERT', collection: 'reachableStates', keyFields: ['id'], value: reachableResult.reachableState, recompute: 'GRAPH' },
     { path: graphPath, op: 'UPSERT', collection: 'edges', keyFields: ['id'], value: edgeResult.edge, recompute: 'GRAPH' },
     { path: `contexts/${contextId}/frontier.json`, op: 'UPSERT', collection: 'items', keyFields: ['id'], value: item },
     { path: `attempts/${attempt.attemptId}.json`, op: 'REPLACE', value: attempt }
-  ]; if (cursor) ops.push({ path: `contexts/${contextId}/live-cursor.json`, op: 'REPLACE', value: cursor }); if (verificationProjection) for (const task of [...verificationProjection.scheduled, ...verificationProjection.superseded]) ops.push({ path: `contexts/${contextId}/verification-queue.json`, op: 'UPSERT', collection: 'items', keyFields: ['verificationId'], value: task, fallback: { schemaVersion: 2, contextId, items: [] } });
-  commitEvent(scanDir, 'attemptCommitted', { contextId, attemptId, frontierId: item.id, edgeId: edgeResult.edge.id, toReachableStateId: reachableResult.reachableState.id, visualReviewId: visualReview.visualReviewId, commitProjection: { logicalScreen, visualState: visualResult.visualState, reachableState: reachableResult.reachableState, edge: edgeResult.edge, frontierItem: item, attempt, cursor }, verificationProjection: verificationProjection ? { scheduled: verificationProjection.scheduled, superseded: verificationProjection.superseded } : null }, ops);
+  ]; if (cursor) ops.push({ path: `contexts/${contextId}/live-cursor.json`, op: 'REPLACE', value: cursor }); if (verificationProjection) for (const task of [...verificationProjection.scheduled, ...verificationProjection.superseded]) ops.push({ path: `contexts/${contextId}/verification-queue.json`, op: 'UPSERT', collection: 'items', keyFields: ['verificationId'], value: task, fallback: { schemaVersion: 2, contextId, items: [] } }); if (suggestionProjection?.ops?.length) ops.push(...suggestionProjection.ops);
+  commitEvent(scanDir, 'attemptCommitted', { contextId, attemptId, frontierId: item.id, edgeId: edgeResult.edge.id, toReachableStateId: reachableResult.reachableState.id, visualReviewId: visualReview.visualReviewId, commitProjection: { logicalScreen, visualState: visualResult.visualState, reachableState: reachableResult.reachableState, edge: edgeResult.edge, frontierItem: item, attempt, cursor }, verificationProjection: verificationProjection ? { scheduled: verificationProjection.scheduled, superseded: verificationProjection.superseded } : null, suggestionProjection: suggestionProjection ? { generated: suggestionProjection.created.map(suggestion => suggestion.suggestionId), skipped: suggestionProjection.skipped } : null }, ops);
   output({ schemaVersion: 1, ok: true, attemptId: attempt.attemptId, attempt, visualState: visualResult.visualState, reachableState: reachableResult.reachableState, edge: edgeResult.edge });
 });
