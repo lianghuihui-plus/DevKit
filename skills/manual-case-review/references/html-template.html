@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>人工用例质量审查报告</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; line-height: 1.6; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 24px; margin-bottom: 8px; }
+  .meta { color: #666; font-size: 14px; margin-bottom: 24px; }
+  .summary { display: flex; gap: 16px; margin-bottom: 32px; flex-wrap: wrap; }
+  .summary-card { flex: 1; min-width: 140px; padding: 20px; border-radius: 8px; text-align: center; }
+  .summary-card.total { background: #e3f2fd; }
+  .summary-card.p0 { background: #ffebee; }
+  .summary-card.p1 { background: #fff3e0; }
+  .summary-card.p2 { background: #fffde7; }
+  .summary-card .count { font-size: 36px; font-weight: 700; }
+  .summary-card .label { font-size: 14px; color: #666; margin-top: 4px; }
+  .summary-card.total .count { color: #1565c0; }
+  .summary-card.p0 .count { color: #c62828; }
+  .summary-card.p1 .count { color: #e65100; }
+  .summary-card.p2 .count { color: #f9a825; }
+  .case-card { background: #fff; border-radius: 8px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; }
+  .case-header { display: flex; align-items: center; padding: 16px 20px; cursor: pointer; user-select: none; }
+  .case-header:hover { background: #fafafa; }
+  .case-header .title { flex: 1; font-size: 16px; font-weight: 600; }
+  .case-header .arrow { transition: transform 0.2s; }
+  .case-header .arrow.open { transform: rotate(90deg); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; margin-left: 8px; }
+  .badge.p0 { background: #ffcdd2; color: #c62828; }
+  .badge.p1 { background: #ffe0b2; color: #e65100; }
+  .badge.p2 { background: #fff9c4; color: #f57f17; }
+  .case-body { display: none; padding: 0 20px 20px; }
+  .case-body.open { display: block; }
+  .section-title { font-size: 14px; font-weight: 600; color: #555; margin: 16px 0 8px; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+  .pre-text, .step-text { background: #fafafa; padding: 12px; border-radius: 4px; font-size: 14px; white-space: pre-wrap; }
+  .issue { border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; margin: 8px 0; }
+  .issue.p0 { border-left: 4px solid #c62828; }
+  .issue.p1 { border-left: 4px solid #e65100; }
+  .issue.p2 { border-left: 4px solid #f9a825; }
+  .issue .issue-header { display: flex; align-items: center; margin-bottom: 8px; }
+  .issue .issue-type { font-size: 13px; color: #888; margin-left: 8px; }
+  .issue .suggestion { background: #e8f5e9; padding: 8px 12px; border-radius: 4px; font-size: 13px; margin-top: 8px; }
+  .issue .suggestion::before { content: '💡 修复建议：'; font-weight: 600; }
+  .priority-guide { background: #fff; border-radius: 8px; padding: 20px; margin-top: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .priority-guide h2 { font-size: 18px; margin-bottom: 12px; }
+  .priority-guide ol { margin-left: 20px; }
+  .priority-guide li { margin-bottom: 8px; }
+  .highlight { background: #ffcdd2; padding: 1px 4px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>📋 人工用例质量审查报告</h1>
+  <div class="meta">审查时间：{{TIME}} | 来源：{{SOURCE}} | 总用例数：{{TOTAL_CASES}}</div>
+
+  <div class="summary">
+    <div class="summary-card total"><div class="count">{{TOTAL_CASES}}</div><div class="label">总用例数</div></div>
+    <div class="summary-card p0"><div class="count">{{P0_COUNT}}</div><div class="label">P0 阻断问题</div></div>
+    <div class="summary-card p1"><div class="count">{{P1_COUNT}}</div><div class="label">P1 可执行性问题</div></div>
+    <div class="summary-card p2"><div class="count">{{P2_COUNT}}</div><div class="label">P2 格式规范</div></div>
+  </div>
+
+  {{CASE_CARDS}}
+
+  <div class="priority-guide">
+    <h2>🔧 推荐修复顺序</h2>
+    <ol>
+      <li><strong>先修复所有 P0 阻断问题</strong> — 不修复则用例无法执行或结果无意义</li>
+      <li><strong>再逐批修复 P1 可执行性问题</strong> — 优先修复断言模糊和定位不精（影响判准率最高）</li>
+      <li><strong>最后统一修复 P2 格式问题</strong> — "检查："→"预期："可批量替换</li>
+    </ol>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('.case-header').forEach(header => {
+    header.addEventListener('click', () => {
+      const body = header.nextElementSibling;
+      const arrow = header.querySelector('.arrow');
+      body.classList.toggle('open');
+      arrow.classList.toggle('open');
+    });
+  });
+</script>
+</body>
+</html>
