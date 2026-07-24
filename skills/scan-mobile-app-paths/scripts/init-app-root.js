@@ -2,15 +2,16 @@
 'use strict';
 
 const path = require('path');
-const { parseArgs, required, assertAbsolute, ensureDir, exists, readJson, writeJsonAtomic, now, slug, output, main, fail } = require('./lib/common');
+const { parseArgs, required, resolveAppMapRoot, ensureDir, exists, readJson, writeJsonAtomic, now, slug, output, main, fail, jsonArg } = require('./lib/common');
 
 main(() => {
   const args = parseArgs();
-  const root = assertAbsolute(required(args, 'appMapRoot'), '--app-map-root');
   const identity = {
     platform: args.platform || 'harmony', bundleName: required(args, 'bundleName'),
     environment: required(args, 'environment'), defaultEntryAbility: required(args, 'entryAbility')
   };
+  const root = resolveAppMapRoot(args, { bundleName: identity.bundleName, requireExisting: false });
+  const candidateRules = args.candidateRules ? jsonArg(args.candidateRules, null, '--candidate-rules') : null;
   if (identity.platform !== 'harmony') fail('First version only supports platform=harmony', 'PLATFORM_UNSUPPORTED');
   ensureDir(root);
   const appFile = path.join(root, 'app.json');
@@ -23,8 +24,14 @@ main(() => {
       app.updatedAt = now();
       writeJsonAtomic(appFile, app);
     }
+    if (candidateRules) {
+      app.candidateRules = candidateRules;
+      app.updatedAt = now();
+      writeJsonAtomic(appFile, app);
+    }
   } else {
     app = { schemaVersion: 1, appKey: args.appKey || slug(`${identity.bundleName}-${identity.environment}`), ...identity, createdAt: now() };
+    if (candidateRules) app.candidateRules = candidateRules;
     writeJsonAtomic(appFile, app);
   }
   ensureDir(path.join(root, 'runs'));

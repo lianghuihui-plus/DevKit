@@ -20,6 +20,7 @@ const EVIDENCE_PATTERNS = [
   /^evidence\/observations\/[^/]+\/screenshot\.png$/,
   /^evidence\/actions\/[^/]+\.json$/,
   /^evidence\/visual-reviews\/[^/]+\.json$/,
+  /^evidence\/visual-candidate-reviews\/[^/]+\.json$/,
   /^evidence\/verifications\/[^/]+\/[^/]+\.json$/,
   /^evidence\/logs\/.+$/
 ];

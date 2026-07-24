@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { parseArgs, required, assertAbsolute, readJson, writeJsonAtomic, ensureDir, hashObject, sha256, now, compactLocalTimestamp, compareTimestamps, output, main, fail, safeSegment } = require('./lib/common');
+const { parseArgs, resolveAppMapRoot, readJson, writeJsonAtomic, ensureDir, hashObject, sha256, now, compactLocalTimestamp, compareTimestamps, output, main, fail, safeSegment } = require('./lib/common');
 const { authDiff } = require('./lib/metrics');
 const { validateGraph } = require('./lib/graph-store');
 const { normalizeGraphForConsumption, assertConsumableGraph } = require('./lib/graph-normalization');
@@ -98,14 +98,21 @@ function canonicalUnresolved(contextId, graph, frontier, queue, sourceRunIds) {
 
 function candidateCoverageUnresolved(contextId, graph, coverage = {}, sourceRunIds = []) {
   const stateIds = new Set((graph.reachableStates || []).map(item => item.id));
+  const coverageByState = new Map((coverage.states || []).map(item => [item.reachableStateId, item]));
   return [...new Set(coverage.backfillRequiredStateIds || [])]
     .filter(id => stateIds.has(id))
-    .map(reachableStateId => ({
+    .map(reachableStateId => {
+      const stateCoverage = coverageByState.get(reachableStateId) || {};
+      return {
       type: 'CANDIDATE_BACKFILL_REQUIRED',
       contextId,
       reachableStateId,
+      candidateCoverageStatus: stateCoverage.candidateCoverageStatus || 'UNKNOWN',
+      knownCandidateCount: stateCoverage.knownCandidateCount || 0,
+      reasonCode: stateCoverage.backfillReasonCode || null,
       sourceRunId: sourceRunIds.at(-1) || null
-    }));
+      };
+    });
 }
 
 function buildCanonicalSnapshotIfAvailable(root, app, args, index) {
@@ -152,7 +159,7 @@ function buildCanonicalSnapshotIfAvailable(root, app, args, index) {
 }
 
 main(() => {
-  const args = parseArgs(); const root = assertAbsolute(required(args, 'appMapRoot'), '--app-map-root'); const app = readJson(path.join(root, 'app.json')); const index = readJson(path.join(root, 'run-index.json'));
+  const args = parseArgs(); const root = resolveAppMapRoot(args, { requireExisting: true }); const app = readJson(path.join(root, 'app.json')); const index = readJson(path.join(root, 'run-index.json'));
   const canonicalSnapshot = buildCanonicalSnapshotIfAvailable(root, app, args, index);
   if (canonicalSnapshot) { output(canonicalSnapshot); return; }
   fail('No canonical map is available for Snapshot generation; register a COMPLETED or PARTIAL Run first', 'SNAPSHOT_NO_CANONICAL_MAP');

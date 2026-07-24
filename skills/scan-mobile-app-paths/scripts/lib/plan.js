@@ -17,7 +17,7 @@ function commonPlan(scanDir, scan, target, goal, continuation) {
   const appMapRoot = path.dirname(path.dirname(scanDir));
   return {
     scanId: scan.scanId,
-    target: { platform: target.platform, bundleName: target.bundleName, entryAbility: target.entryAbility, environment: target.environment, deviceId: target.deviceId, appVersion: target.appVersion || null, buildVersion: target.buildVersion || null },
+    target: { platform: target.platform, bundleName: target.bundleName, entryAbility: target.entryAbility, environment: target.environment, deviceId: target.deviceId, deviceType: target.deviceType || null, appVersion: target.appVersion || null, buildVersion: target.buildVersion || null },
     profileSelection: { selectedProfile: scan.profile, selectedLabel: PROFILE_META[scan.profile].label, selectedDescription: PROFILE_META[scan.profile].description, recommendedProfile: scan.scanMode === 'goal-directed' ? 'goal' : 'standard', availableProfiles: profileCatalog(scan.scanMode, scan.profile), configurableBeforeConfirmation: true },
     safety: { environment: target.environment, hardBlocked: ['支付或转账', '账号注销或永久删除', '真实发布或外发', '密码、验证码及其他敏感凭证输入'], overrideAllowed: false },
     artifacts: { scanDir, runRelativePath: `runs/${scan.scanId}`, reportPath: path.join(scanDir, 'report.md'), snapshotPointer: path.join(appMapRoot, 'snapshots', 'current.json') },

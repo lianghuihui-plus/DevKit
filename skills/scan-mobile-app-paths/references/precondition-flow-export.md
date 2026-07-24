@@ -27,7 +27,6 @@
 
 ```bash
 node scripts/export-precondition-flow.js list \
-  --app-map-root <APP_MAP_ROOT> \
   --context authenticated
 ```
 
@@ -35,7 +34,6 @@ node scripts/export-precondition-flow.js list \
 
 ```bash
 node scripts/export-precondition-flow.js preview \
-  --app-map-root <APP_MAP_ROOT> \
   --context authenticated \
   --path-id <path-id> \
   --name 进入创作页 \
@@ -47,7 +45,6 @@ node scripts/export-precondition-flow.js preview \
 
 ```bash
 node scripts/export-precondition-flow.js write \
-  --app-map-root <APP_MAP_ROOT> \
   --context authenticated \
   --path-id <path-id> \
   --name 进入创作页 \
@@ -55,6 +52,8 @@ node scripts/export-precondition-flow.js write \
   --workspace <mobile-ai-visual-test-workspace> \
   --platform harmony
 ```
+
+以上命令默认从当前 cwd 下发现唯一 App Map 根；如果当前目录下有多个 App Map，或命令不在产物目录附近执行，再显式传 `--app-map-root <APP_MAP_ROOT>`。
 
 ## 路径选择
 

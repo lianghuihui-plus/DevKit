@@ -41,7 +41,7 @@ main(() => {
     try {
       const graph = require('./lib/common').loadGraph(scanDir, contextId); const frontier = require('./lib/common').loadFrontier(scanDir, contextId); const metrics = readJson(path.join(contextDir(scanDir, contextId), 'metrics.json')); assertCapacity(scan, contextId, graph, frontier, metrics, 'coldStarts');
       const operation = startDeviceOperation(scanDir, contextId, { kind: 'CONTEXT_COLD_START', owner: { type: 'CONTEXT_PREPARATION', id: preparationId }, idempotency: 'SAFE_RETRY_AFTER_OBSERVATION' }); recordColdStart(scanDir, contextId); let restartResult;
-      try { restartResult = bridge('restart', { device: scan.target.deviceId, bundleName: scan.target.bundleName, entryAbility: scan.target.entryAbility, settleMs: args.settleMs || process.env.SMAP_RESTART_SETTLE_MS || 1200 }); }
+      try { restartResult = bridge('restart', { device: scan.target.deviceId, deviceType: scan.target.deviceType || null, bundleName: scan.target.bundleName, entryAbility: scan.target.entryAbility, settleMs: args.settleMs || process.env.SMAP_RESTART_SETTLE_MS || 1200 }); }
       catch (error) { finishDeviceOperation(scanDir, operation, 'UNKNOWN_OUTCOME', { reasonCode: error.code || 'CONTEXT_COLD_START_FAILED' }); error.code = 'OPERATION_OUTCOME_UNKNOWN'; throw error; }
       if (restartResult.coldStartVerified !== true || restartResult.foreground?.bundleName !== scan.target.bundleName) fail('Cold start could not verify the target App in foreground', 'COLD_START_UNVERIFIED');
       preparation.restartResult = restartResult; preparation.status = 'COLD_STARTED'; preparation.finishedAt = now();

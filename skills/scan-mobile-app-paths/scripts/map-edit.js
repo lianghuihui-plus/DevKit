@@ -2,12 +2,12 @@
 'use strict';
 
 const path = require('path');
-const { parseArgs, required, requiredId, assertAbsolute, readJson, output, main, fail, withFileLock, ensureDir } = require('./lib/common');
+const { parseArgs, required, requiredId, resolveAppMapRoot, readJson, output, main, fail, withFileLock, ensureDir } = require('./lib/common');
 const { mapsRoot } = require('./lib/canonical-map-store');
 const { buildDeletePlan, buildResetPlan, previewEdit, applyPreview, locatePreview } = require('./lib/canonical-map-editor');
 
 function appRoot(args) {
-  const root = assertAbsolute(required(args, 'appMapRoot'), '--app-map-root');
+  const root = resolveAppMapRoot(args, { requireExisting: true });
   readJson(path.join(root, 'app.json'));
   return root;
 }

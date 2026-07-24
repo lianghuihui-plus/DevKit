@@ -153,6 +153,43 @@ function assertAbsolute(dir, label) {
   return path.resolve(dir);
 }
 
+function appMapRootNameForBundle(bundleName) {
+  const cleaned = String(bundleName || '').normalize('NFKC').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 96);
+  return `app-map-${safeSegment(cleaned || 'app', 'bundleName')}`;
+}
+
+function looksLikeAppMapRoot(dir) {
+  return exists(path.join(dir, 'app.json'));
+}
+
+function discoverAppMapRootFromCwd(cwd = process.cwd()) {
+  const base = path.resolve(cwd);
+  if (looksLikeAppMapRoot(base)) return base;
+  const candidates = fs.readdirSync(base, { withFileTypes: true })
+    .filter(item => item.isDirectory())
+    .map(item => path.join(base, item.name))
+    .filter(looksLikeAppMapRoot)
+    .sort();
+  if (candidates.length === 1) return candidates[0];
+  if (!candidates.length) fail(`No app map root found under current directory: ${base}. Run init-app-root with --bundle-name first, or pass --app-map-root explicitly.`, 'APP_MAP_ROOT_NOT_FOUND');
+  fail(`Multiple app map roots found under current directory: ${candidates.join(', ')}. Pass --app-map-root explicitly.`, 'APP_MAP_ROOT_AMBIGUOUS');
+}
+
+function resolveAppMapRoot(args = {}, { bundleName = null, requireExisting = true } = {}) {
+  let root;
+  if (args.appMapRoot !== undefined && args.appMapRoot !== true && String(args.appMapRoot).trim() !== '') {
+    const raw = String(args.appMapRoot);
+    root = path.resolve(process.cwd(), raw);
+  } else if (bundleName) {
+    root = path.join(process.cwd(), appMapRootNameForBundle(bundleName));
+  } else {
+    root = discoverAppMapRootFromCwd(process.cwd());
+  }
+  root = path.resolve(root);
+  if (requireExisting && !looksLikeAppMapRoot(root)) fail(`Missing app.json in ${root}`, 'APP_ROOT_INVALID');
+  return root;
+}
+
 function resolveScanDir(scanDirArg) {
   const scanDir = assertAbsolute(scanDirArg, '--scan-dir');
   const runsDir = path.dirname(scanDir);
@@ -337,7 +374,7 @@ function relativeInside(base, file) {
 module.exports = {
   TERMINAL_STATUSES, MUTABLE_STATUSES, fail, parseArgs, required, requiredId, bool, number, jsonArg, now, compactLocalTimestamp, compareTimestamps,
   ensureDir, exists, readJson, writeJsonAtomic, writeTextAtomic, appendJsonl, sha256, stableStringify,
-  hashObject, slug, safeSegment, assertAbsolute, resolveScanDir, timelineEvents, withFileLock, withRunLock, loadScan, saveScan, event, commitEvent, commitEventLocked, nextId, nextIdLocked, contextDir,
+  hashObject, slug, safeSegment, assertAbsolute, resolveAppMapRoot, appMapRootNameForBundle, resolveScanDir, timelineEvents, withFileLock, withRunLock, loadScan, saveScan, event, commitEvent, commitEventLocked, nextId, nextIdLocked, contextDir,
   loadGraph, saveGraph, loadFrontier, saveFrontier, emptyGraph, transition, transitionWithOps, transitionWithOpsLocked, output, main, versionKey,
   relativeInside
 };

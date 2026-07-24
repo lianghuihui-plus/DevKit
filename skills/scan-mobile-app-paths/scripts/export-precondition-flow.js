@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { parseArgs, required, bool, assertAbsolute, readJson, output, main, fail, safeSegment } = require('./lib/common');
+const { parseArgs, required, bool, assertAbsolute, resolveAppMapRoot, readJson, output, main, fail, safeSegment } = require('./lib/common');
 const { checksum, listPathCandidates, selectPath, buildFlowFromPath, flowOutputLayout, writeFlowAssets } = require('./lib/precondition-flow-exporter');
 const { updateCanonicalPaths } = require('./lib/graph-store');
 
@@ -18,8 +18,8 @@ function loadChecked(file, expected, label) {
   return value;
 }
 
-function loadSnapshot(appMapRoot) {
-  const root = assertAbsolute(appMapRoot, '--app-map-root');
+function loadSnapshot(args) {
+  const root = resolveAppMapRoot(args, { requireExisting: true });
   const app = readJson(path.join(root, 'app.json'));
   const snapshotsRoot = path.join(root, 'snapshots');
   const pointer = readJson(path.join(snapshotsRoot, 'current.json'));
@@ -94,7 +94,7 @@ main(() => {
   const args = parseArgs();
   const command = args._[0] || 'list';
   if (!['list', 'preview', 'write'].includes(command)) fail(`Unknown precondition Flow export command: ${command}`, 'COMMAND_INVALID');
-  const snapshot = loadSnapshot(required(args, 'appMapRoot'));
+  const snapshot = loadSnapshot(args);
   if (snapshot.app.platform !== 'harmony') fail('Precondition Flow export currently supports Harmony app maps only', 'FLOW_APP_PLATFORM_UNSUPPORTED');
   const contextId = args.context || 'guest';
   if (!['guest', 'authenticated'].includes(contextId)) fail('--context must be guest or authenticated', 'CONTEXT_INVALID');

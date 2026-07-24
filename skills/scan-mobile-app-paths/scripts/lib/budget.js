@@ -34,7 +34,7 @@ function budgetOverrides(profile, budget) {
 }
 
 function normalizeOverrides(overrides = {}) {
-  const aliases = { maxDurationMinutes: 'maxActiveMinutes', maxActions: 'maxDeviceActions', maxNodes: 'maxStates', maxPathDepth: 'maxDepth', maxCandidatesPerNode: 'maxCandidatesPerState', maxScrollsPerNode: 'maxScrollsPerState' };
+  const aliases = { maxDurationMinutes: 'maxActiveMinutes', maxActions: 'maxDeviceActions', maxNodes: 'maxStates', maxPathDepth: 'maxDepth', maxCandidatesPerNode: 'maxCandidatesPerState', maxTotalCandidatesPerNode: 'maxTotalCandidatesPerState', maxScrollsPerNode: 'maxScrollsPerState' };
   const normalized = {};
   for (const [key, value] of Object.entries(overrides || {})) {
     if (['maxEdges', 'maxRouteDepth'].includes(key)) fail(`${key} is no longer supported`, 'BUDGET_FIELD_REMOVED');

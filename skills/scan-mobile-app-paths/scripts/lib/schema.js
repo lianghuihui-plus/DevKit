@@ -6,6 +6,7 @@ const CONTEXTS = ['guest', 'authenticated'];
 const SCAN_MODES = ['exploration', 'goal-directed'];
 const SCAN_SCOPES = ['full', 'targeted'];
 const FRONTIER_STATUSES = ['PENDING', 'CLAIMED', 'RETRYABLE', 'EXPLORED', 'COVERED_BY_GROUP', 'SKIPPED', 'BLOCKED', 'FAILED'];
+const DEVICE_TYPES = ['phone', 'tablet', 'foldable', 'widefold', 'triplefold', '2in1', '2in1 foldable', 'wearable', 'tv'];
 
 function oneOf(value, choices, name) {
   if (!choices.includes(value)) fail(`${name} must be one of: ${choices.join(', ')}`, 'SCHEMA_INVALID');
@@ -17,6 +18,7 @@ function validateTarget(target) {
   for (const key of ['bundleName', 'entryAbility', 'environment']) {
     if (!target[key] || typeof target[key] !== 'string') fail(`target.${key} is required`, 'TARGET_INVALID');
   }
+  if (target.deviceType !== undefined && target.deviceType !== null && target.deviceType !== '') oneOf(target.deviceType, DEVICE_TYPES, 'target.deviceType');
   return target;
 }
 
@@ -68,4 +70,4 @@ function validateRun(scan) {
   return scan;
 }
 
-module.exports = { CONTEXTS, SCAN_MODES, SCAN_SCOPES, FRONTIER_STATUSES, oneOf, validateTarget, validateAction, validateGraphCandidate, validateRun };
+module.exports = { CONTEXTS, SCAN_MODES, SCAN_SCOPES, FRONTIER_STATUSES, DEVICE_TYPES, oneOf, validateTarget, validateAction, validateGraphCandidate, validateRun };

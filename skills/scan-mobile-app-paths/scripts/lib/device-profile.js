@@ -22,6 +22,7 @@ function deviceProfileFrom({ scan = {}, observation = null, display = null } = {
     schemaVersion: 1,
     platform: target.platform || scan.platform || 'harmony',
     deviceId: target.deviceId || null,
+    deviceType: target.deviceType || null,
     model: target.deviceModel || null,
     osVersion: target.osVersion || null,
     apiLevel: target.apiLevel || null,

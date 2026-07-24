@@ -3,12 +3,12 @@
 
 const fs = require('fs');
 const path = require('path');
-const { parseArgs, required, assertAbsolute, readJson, writeJsonAtomic, versionKey, safeSegment, now, compareTimestamps, output, main, withFileLock, emptyGraph } = require('./lib/common');
+const { parseArgs, resolveAppMapRoot, readJson, writeJsonAtomic, versionKey, safeSegment, now, compareTimestamps, output, main, withFileLock, emptyGraph } = require('./lib/common');
 const { validate } = require('./validate-run');
 const { runContextIds } = require('./lib/run-protocol');
 
 main(() => {
-  const args = parseArgs(); const root = assertAbsolute(required(args, 'appMapRoot'), '--app-map-root'); readJson(path.join(root, 'app.json'));
+  const args = parseArgs(); const root = resolveAppMapRoot(args, { requireExisting: true }); readJson(path.join(root, 'app.json'));
   const runs = []; const skipped = []; const runsDir = path.join(root, 'runs');
   for (const name of fs.readdirSync(runsDir, { withFileTypes: true }).filter(x => x.isDirectory()).map(x => x.name).sort()) {
     try {

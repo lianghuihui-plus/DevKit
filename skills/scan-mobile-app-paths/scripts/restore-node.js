@@ -319,7 +319,7 @@ main(() => {
 
     assertCapacity(scan, contextId, loadGraph(scanDir, contextId), loadFrontier(scanDir, contextId), metrics(), 'coldStarts');
     const coldStartOperation = startDeviceOperation(scanDir, contextId, { kind: actionCategory === 'verification' ? 'VERIFICATION_COLD_START' : 'RESTORE_COLD_START', owner: operationOwner, idempotency: 'SAFE_RETRY_AFTER_OBSERVATION' }); recordColdStart(scanDir, contextId); let restart;
-    try { restart = bridge('restart', { device: scan.target.deviceId, bundleName: scan.target.bundleName, entryAbility: scan.target.entryAbility, settleMs: args.settleMs || process.env.SMAP_RESTART_SETTLE_MS || 1200 }); }
+    try { restart = bridge('restart', { device: scan.target.deviceId, deviceType: scan.target.deviceType || null, bundleName: scan.target.bundleName, entryAbility: scan.target.entryAbility, settleMs: args.settleMs || process.env.SMAP_RESTART_SETTLE_MS || 1200 }); }
     catch (error) { finishDeviceOperation(scanDir, coldStartOperation, 'UNKNOWN_OUTCOME', { reasonCode: error.code || 'RESTORE_COLD_START_FAILED' }); error.code = 'OPERATION_OUTCOME_UNKNOWN'; throw error; }
     if (restart.coldStartVerified !== true) fail('Restore cold start could not verify target App foreground', 'COLD_START_UNVERIFIED');
     const rootObservationId = observe(scanDir, contextId, 'RESTORE_COLD_START'); finishDeviceOperation(scanDir, coldStartOperation, 'SUCCEEDED', { evidenceRef: `evidence/observations/${rootObservationId}/observation.json` });

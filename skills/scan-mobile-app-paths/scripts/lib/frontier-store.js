@@ -2,7 +2,7 @@
 
 const { assessAction } = require('./safety');
 const { validateGraphCandidate } = require('./schema');
-const { runBudget, maxDepth, maxCandidatesPerState, maxScrollsPerState } = require('./run-protocol');
+const { runBudget, maxDepth, maxTotalCandidatesPerState, maxScrollsPerState } = require('./run-protocol');
 const { hashObject, nextId, now } = require('./common');
 
 function makeFrontierItem({ scanDir, scan, contextId, graph, frontier, fromReachableStateId, candidate, candidateGroupKey = null, priority = {}, sourceFrontierId = null }) {
@@ -17,7 +17,7 @@ function makeFrontierItem({ scanDir, scan, contextId, graph, frontier, fromReach
   const fromState = graph.reachableStates.find(x => x.id === from);
   const fromItems = frontier.items.filter(x => x.fromReachableStateId === from);
   const budget = runBudget(scan, contextId);
-  if (fromItems.length >= maxCandidatesPerState(budget)) return { ok: false, created: false, reasonCode: 'MAX_CANDIDATES_PER_STATE' };
+  if (fromItems.length >= maxTotalCandidatesPerState(budget)) return { ok: false, created: false, reasonCode: 'MAX_TOTAL_CANDIDATES_PER_STATE' };
   if ((fromState.depth?.pathDepth || 0) + 1 > maxDepth(budget)) return { ok: false, created: false, reasonCode: 'MAX_DEPTH' };
   const routeIncrement = validated.routeTransition === true || ['navigate', 'openRoute'].includes(validated.type) ? 1 : 0;
   if (validated.type === 'swipe') {

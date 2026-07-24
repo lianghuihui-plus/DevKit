@@ -2,13 +2,14 @@
 'use strict';
 
 const path = require('path');
-const { parseArgs, required, assertAbsolute, readJson, exists, compactLocalTimestamp, jsonArg, output, main, fail, safeSegment } = require('./lib/common');
+const { parseArgs, required, resolveAppMapRoot, readJson, exists, compactLocalTimestamp, jsonArg, output, main, fail, safeSegment } = require('./lib/common');
 const { CONTEXTS, validateTarget, validateRun } = require('./lib/schema');
 const { resolveBudget, assertProfileForMode } = require('./lib/budget');
 const { buildPlanFromData, planHash } = require('./lib/plan');
 const { buildGoalSpecFromArgs, goalPlanFromSpec } = require('./lib/goal-spec');
 const { buildContinuationPlan } = require('./lib/continuation-plan');
 const { loadCanonicalPlanBaseline } = require('./lib/plan-baseline');
+const { detectDeviceType, normalizeDeviceType } = require('./lib/device-detection');
 
 function makeScanId(root) {
   const stamp = compactLocalTimestamp();
@@ -19,7 +20,7 @@ function makeScanId(root) {
 
 main(() => {
   const args = parseArgs();
-  const root = assertAbsolute(required(args, 'appMapRoot'), '--app-map-root');
+  const root = resolveAppMapRoot(args, { bundleName: args.bundleName || null, requireExisting: true });
   const app = readJson(path.join(root, 'app.json'));
   const scanMode = args.scanMode || 'exploration';
   const scanScope = scanMode === 'goal-directed' ? 'targeted' : 'full';
@@ -31,12 +32,13 @@ main(() => {
   const contextId = contexts[0];
   const navigationPolicy = args.navigationPolicy || 'adaptive';
   if (!['adaptive', 'always-replay'].includes(navigationPolicy)) fail('--navigation-policy must be adaptive or always-replay', 'NAVIGATION_POLICY_INVALID');
+  const detectedDevice = args.deviceType ? { deviceType: normalizeDeviceType(args.deviceType), source: 'confirmed-input' } : detectDeviceType({ deviceId: required(args, 'device') });
   const target = validateTarget({
     schemaVersion: 1, platform: 'harmony', bundleName: args.bundleName || app.bundleName,
     entryAbility: args.entryAbility || app.defaultEntryAbility, environment: args.environment || app.environment,
     displayName: args.displayName || null, moduleName: args.moduleName || null,
     appVersion: args.appVersion || null, buildVersion: args.buildVersion || null,
-    deviceId: required(args, 'device')
+    deviceId: required(args, 'device'), deviceType: detectedDevice.deviceType || null
   });
   if (target.bundleName !== app.bundleName || target.environment !== app.environment) fail('Run target does not match app.json identity', 'APP_IDENTITY_MISMATCH');
   const profile = args.profile || (scanMode === 'goal-directed' ? 'goal' : 'standard');
@@ -87,6 +89,7 @@ main(() => {
     navigationPolicy,
     appVersion: target.appVersion,
     buildVersion: target.buildVersion,
+    deviceType: target.deviceType || null,
     parentScanId: parent?.scanId || null,
     confirmedPlanHash: hash,
     goal: goalArgs
@@ -95,6 +98,7 @@ main(() => {
   if (Object.keys(overrides).length) initCli.push('--budget', JSON.stringify(overrides));
   if (target.appVersion) initCli.push('--app-version', target.appVersion);
   if (target.buildVersion) initCli.push('--build-version', target.buildVersion);
+  if (target.deviceType) initCli.push('--device-type', target.deviceType);
   if (parent) initCli.push('--parent-scan-id', parent.scanId);
   if (goalArgs) initCli.push('--description', goalArgs.description, '--screenshot', goalArgs.screenshot, '--success-criteria', JSON.stringify(goalArgs.successCriteria), '--goal-id', goalArgs.goalId, '--max-verified-paths', String(goalArgs.maxVerifiedPaths), '--verify-known-path-first', String(goalArgs.verifyKnownPathFirst));
   output({

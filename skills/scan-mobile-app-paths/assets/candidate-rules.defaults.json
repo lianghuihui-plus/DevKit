@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "stableEntry": {
+    "maxTextLength": 14,
+    "maxGroupTextCount": 12
+  },
+  "dynamicData": {
+    "minClusterTextCount": 2,
+    "maxAuditItemsPerState": 8
+  },
+  "bundles": {}
+}

@@ -32,7 +32,7 @@
 └── dashboard/index.html
 ```
 
-`--app-map-root` 和 `--scan-dir` 必须为绝对路径。`scanId`、`goalId`、父 Run ID 等必须是单个安全路径段，拒绝斜线、`..` 和路径穿越。
+`--app-map-root` 可省略；省略时初始化命令按当前 cwd 和 `bundleName` 派生为 `cwd/app-map-<bundleName>`，消费已有产物的命令从当前 cwd 发现唯一 App Map 根。显式传入 `--app-map-root` 时可用绝对路径或相对当前 cwd 的路径，脚本会解析成绝对路径。`--scan-dir` 必须为绝对路径。`scanId`、`goalId`、父 Run ID 等必须是单个安全路径段，拒绝斜线、`..` 和路径穿越。
 
 `maps/guest` 与 `maps/authenticated` 保存该登录态当前 canonical map，包括 `graph.json`、`frontier.json`、`verification-queue.json`、`back-capabilities.json`、`visual-equivalence.json`、`state-equivalence.json`、`meta.json`、`map-events.jsonl` 和 `edits/`。Run 初始化时从这里 seed；Run 登记时同步回这里。Run 内另有 `frontier-suggestions.json` 作为候选生成投影，不同步进 canonical map。
 
@@ -66,6 +66,7 @@ runs/<scan-id>/
 │   │   └── layout.json
 │   ├── actions/<action-id>.json
 │   ├── visual-reviews/<visual-review-id>.json
+│   ├── visual-candidate-reviews/<visual-candidate-review-id>.json
 │   ├── preparations/<preparation-id>.json
 │   ├── restores/<restore-id>.json
 │   ├── navigations/<navigation-execution-id>.json
@@ -137,7 +138,7 @@ Run 内 JSON 产物分为三类：
 - Canonical：`maps/<context>` 中的当前地图事实，可由已登记 session 推进，带 revision 与来源 Run provenance。
 - Generated：报告和 Snapshot/Dashboard 输出，可从已校验 Run 与 canonical map 重新生成。
 
-虽然 `evidence/preparations/*.json`、`evidence/restores/*.json` 与 `evidence/navigations/*.json` 位于 evidence 目录下，但它们记录执行状态机，属于 Projection；Observation、ActionResult、VisualReview 与 VerificationExecution 证据仍按 Evidence 处理。
+虽然 `evidence/preparations/*.json`、`evidence/restores/*.json` 与 `evidence/navigations/*.json` 位于 evidence 目录下，但它们记录执行状态机，属于 Projection；Observation、ActionResult、VisualReview、VisualCandidateReview 与 VerificationExecution 证据仍按 Evidence 处理。
 
 `live-cursor.json`：
 
@@ -250,6 +251,34 @@ VisualState fingerprint 保存 `layoutHash`、`screenshotSha256` 和 `semantic`�
 
 `reviewType` 当前至少使用 `ROOT_STATE` 与 `PAGE_OUTCOME`。`status=ACCEPTED` 要求 `pageUsable=true`；非接受状态必须写 `reasonCode`。VisualState 必须引用对应的 `visualReviewIds`，Edge 的 `evidence.visualReviewId` 必须绑定同一 Attempt 的 after Observation。
 
+`evidence/visual-candidate-reviews/<visual-candidate-review-id>.json` 保存执行 agent 基于同一份 Observation 截图和 layout 做出的候选复核结论，不得为了候选判断额外截图。脚本只负责准备复核输入、校验视觉补充候选的 bounds、去重和安全检查，并把接受/补充后的候选写入 `frontier-suggestions.json`：
+
+```json
+{
+  "schemaVersion": 1,
+  "visualCandidateReviewId": "vcandidate-0001",
+  "contextId": "authenticated",
+  "reachableStateId": "learning-center-ui-001@authenticated#001",
+  "visualStateId": "learning-center-ui-001",
+  "observationId": "obs-0001",
+  "evidenceSource": "LOCAL_RUN",
+  "screenshotPath": "evidence/observations/obs-0001/screenshot.png",
+  "layoutPath": "evidence/observations/obs-0001/layout.json",
+  "screenBounds": [0, 0, 1260, 2720],
+  "review": {
+    "accepted": ["draft-01"],
+    "rejected": [{ "draftId": "draft-02", "reasonCode": "LOW_VALUE" }],
+    "supplemented": [
+      { "target": "课程卡片", "type": "tap", "source": "VISUAL_CARD_GROUP", "bounds": [80, 500, 1180, 680] }
+    ],
+    "notes": "复用 obs-0001 截图"
+  },
+  "createdSuggestionIds": ["suggest-0003"],
+  "skipped": [],
+  "createdAt": "..."
+}
+```
+
 ## 6. Frontier、Attempt 与 Edge
 
 FrontierItem 必须包含来源 ReachableState、候选、候选组、深度/优先级和状态。Claim 后保存唯一 `claimToken`、`claimedAttemptId`、NavigationPlan 摘要和 Claim 时 Cursor epoch。
@@ -318,9 +347,18 @@ visualStateId
 observationId
 observationRef?: { runId, observationId }
 evidenceSource: LOCAL_RUN | CANONICAL_REF
+visualCandidateReviewId?          # 来自视觉候选复核时写入
 candidateGroupKey
 candidate?                       # 没有可抽取候选时可为空
-source: LAYOUT_CLICKABLE | SEMANTIC_PRIMARY_ACTION | SEMANTIC_TAB | SCROLL | NO_CANDIDATES
+  source: LAYOUT_CLICKABLE | LAYOUT_TEXT_IN_CLICKABLE | STRUCTURAL_STABLE_ENTRY | SEMANTIC_PRIMARY_ACTION | SEMANTIC_TAB | SEMANTIC_NAV_ENTRY | SEMANTIC_SECTION_ENTRY | SEMANTIC_FILTER_ENTRY | SEMANTIC_BOTTOM_TAB | SEMANTIC_COLLAPSE_TOGGLE | SCROLL | DYNAMIC_DATA_ITEM | VISUAL_CARD_GROUP | VISUAL_BANNER | VISUAL_ICON_BUTTON | VISUAL_HORIZONTAL_SCROLL | NO_CANDIDATES
+candidateClass: STABLE_ENTRY | STRUCTURE_CONTROL | SCROLL | DYNAMIC_DATA_ITEM | UNKNOWN_REVIEW_REQUIRED
+classification?: {
+  candidateClass,
+  reasonCodes[],
+  confidence,
+  containerRole?,
+  containerBounds?
+}
 confidence
 risk
 status: PENDING | APPLIED | SKIPPED | BLOCKED | DISMISSED
@@ -328,11 +366,13 @@ frontierId?
 reasonCode?
 ```
 
-Suggestion 不是发现事实，也不是可执行承诺；只有 `APPLIED` 后写入 `frontier.json`，才进入正常 Frontier/Attempt/Edge 因果链。`BLOCKED` 表示安全规则拒绝，`SKIPPED` 表示去重、超预算、低价值跳过或 `NO_CANDIDATES_EXTRACTED`，二者保留为审计信息但不算未解决待办。`nextWork()` 在 Frontier 为空但存在可应用 `PENDING` suggestion 时返回 `SUGGEST_FRONTIER`，要求先处理候选建议，再决定是否验证。
+Suggestion 不是发现事实，也不是可执行承诺；只有 `APPLIED` 后写入 `frontier.json`，才进入正常 Frontier/Attempt/Edge 因果链。候选提取先按分类处理：稳定入口、结构控件和滚动候选可自动应用；动态业务数据列表项写入 `candidateClass=DYNAMIC_DATA_ITEM`、`status=SKIPPED`、`reasonCode=DYNAMIC_DATA_ITEM`，只作为“为什么没点这张业务卡片”的审计证据；未知候选写入 `candidateClass=UNKNOWN_REVIEW_REQUIRED`，必须绑定 `visualCandidateReviewId` 后才能应用。历史产物中的 `FIXED_ENTRY`、`BUSINESS_DATA_ITEM` 仍可读取，分别按 `STABLE_ENTRY` 与 `DYNAMIC_DATA_ITEM` 兼容处理，但新产物不再写这两个分类。`BLOCKED` 表示安全规则拒绝，`SKIPPED` 表示去重、超预算、动态数据、低价值跳过或 `NO_CANDIDATES_EXTRACTED`，二者保留为审计信息但不算未解决待办。复杂页面或未知候选未经视觉候选复核时，`apply` 必须保持 suggestion 为 `PENDING` 并写 `reasonCode=UNKNOWN_REVIEW_REQUIRED` 或 `VISUAL_REVIEW_REQUIRED`，不能生成 Frontier。`nextWork()` 在 Frontier 为空但存在未知候选时先返回 `REVIEW_FRONTIER_CANDIDATES`；只有无复核阻塞且存在可应用 `PENDING` suggestion 时才返回 `SUGGEST_FRONTIER`，要求先处理候选建议，再决定是否验证。
 
-`nextWork()` 只把安全、未重复、未超预算且来源状态未被失败验证依赖阻塞的 `PENDING` suggestion 视为可应用建议。旧状态可通过 `frontier-candidates.js backfill --all-reachable true` 生成建议；backfill 不执行动作，也不直接写 Edge。若旧状态没有本 Run `evidenceObservationIds`，backfill 可以通过 `evidenceObservationRefs` 读取源 Run 的 Observation/Layout，并在 suggestion 上写 `observationRef` 与 `evidenceSource=CANONICAL_REF`。
+`nextWork()` 只把安全、未重复、未超预算且来源状态未被失败验证依赖阻塞的 `PENDING` suggestion 视为可应用建议。旧状态通过 `nextWork()` 返回的 `BACKFILL_FRONTIER_SUGGESTIONS.suggestedCommand` 精准生成建议，命令使用 `frontier-candidates.js backfill --reachable-state-ids <ids>`；`--all-reachable true` 仅保留给人工诊断或批量维护。backfill 不执行动作，也不直接写 Edge。若旧状态没有本 Run `evidenceObservationIds`，backfill 可以通过 `evidenceObservationRefs` 读取源 Run 的 Observation/Layout，并在 suggestion 上写 `observationRef` 与 `evidenceSource=CANONICAL_REF`。
 
-完整 suggestion 不同步进 canonical map。Run 登记时只在 `maps/<context>/meta.json.candidateCoverage` 写轻量摘要，记录每个 ReachableState 的 suggestion/frontier 数量、最后建议时间和是否需要 backfill；该摘要不能替代 `frontier.json` 或探索事实。Snapshot 会把仍需补候选的状态暴露为 `CANDIDATE_BACKFILL_REQUIRED` unresolved，Continuation seed 后调度器可据此先返回 `BACKFILL_FRONTIER_SUGGESTIONS`。
+完整 suggestion 不同步进 canonical map。Run 登记时只在 `maps/<context>/meta.json.candidateCoverage` 写轻量摘要，记录每个 ReachableState 的 suggestion/frontier 数量、最后建议时间、已见候选 hash、`knownCandidateCount`、动态数据审计数量、`candidateCoverageStatus`、`candidateCoverageBasis` 和是否需要 backfill；该摘要不能替代 `frontier.json` 或探索事实。`candidateCoverageStatus=UNKNOWN` 表示还没有候选依据，`PARTIAL` 表示已有一批候选但可在后续扫描继续刷新下一批，`EXHAUSTED` 表示当前 observation/layout、规则和 profile 下已写入 `NO_CANDIDATES_EXTRACTED` 哨兵，没有更多固定入口候选。动态业务数据项只按 `dynamicData.maxAuditItemsPerState` 保留有限 `SKIPPED` 样本，超出的数量写入 `dynamicAudit.suppressedCount`；如果本次只发现动态业务数据项而没有固定入口、结构控件、滚动或未知复核候选，应在同一次 backfill 写入 `NO_CANDIDATES_EXTRACTED`。`candidateCoverageBasis` 至少绑定 `visualStateId`、`layoutHash`、`semanticHash`、`extractorRevision`、`candidateRulesHash`、`profile`、`maxCandidatesPerState` 和 `maxTotalCandidatesPerState`；basis 变化时旧 `EXHAUSTED` 必须失效并重新进入 backfill。候选覆盖未尽不阻断 Run finalize，但必须写入 `merged/unresolved.json` 的 `CANDIDATE_BACKFILL_REQUIRED` 项，并在 canonical meta 中保留 backfill 摘要，供当前或下一次扫描继续探索。Canonical map edit 删除边、状态或同来源同动作 Frontier 后，受影响来源状态的旧 suggestion 摘要和 `candidateSeedRefs` 必须失效，并写 `backfillReasonCode=MAP_EDIT_INVALIDATED_CANDIDATE_COVERAGE`；即使该状态还有其他 Frontier，Continuation 仍需重新 backfill 一次。Snapshot 会把仍需补候选的状态暴露为 `CANDIDATE_BACKFILL_REQUIRED` unresolved，Continuation seed 后调度器可据此先返回 `BACKFILL_FRONTIER_SUGGESTIONS`。
+
+若 terminal Run 以 `PARTIAL` 收尾且仍有 `PENDING` suggestion，`candidateCoverage.states[].candidateSeedRefs[]` 必须保存可恢复种子：`sourceRunId`、`sourceSuggestionId`、`candidateGroupKey`、`candidate`、`candidateHash`、`source`、`candidateClass`、`classification`、`priority`、`observationRef`、`reviewRequirement` 以及可选 `visualCandidateReviewId/visualCandidateReviewSourceRunId`。新 Run 初始化时从这些 seed 重新生成本 Run 的 `frontier-suggestions.json`，分配新的 `suggestionId`，但保留 source id 供审计；这些 seed suggestion 属于 `projectionBaselineInitialized` 基线投影，允许在 `init-scan` 中确定性分配并推进初始 counter，不要求逐条写 `idAllocated`。仅有 pending suggestion、`SKIPPED/BLOCKED/DISMISSED` suggestion、业务数据审计记录、已有 Frontier 或 `APPLIED` suggestion 都不表示候选覆盖完成；它们只会让状态进入 `PARTIAL`，后续扫描在该状态没有开放 Frontier/PENDING suggestion 时仍可继续刷新下一批。只有显式 `NO_CANDIDATES_EXTRACTED` 哨兵才能让普通状态退出 backfill required，map edit 显式失效的状态除外。
 
 ## 7a. Navigation 与 BACK
 
@@ -398,7 +438,7 @@ Task 维护 `attemptCount`、`activeExecutionId`、`executionIds[]` 与 `executi
 
 `attemptCommitted.commitProjection` 至少包含 LogicalScreen、VisualState、ReachableState、Edge、FrontierItem、Attempt 和 Cursor。`verificationScheduled` 包含完整任务事实。
 
-所有 Run 内 ID 由 `idAllocated` 事件分配并投影到 `scan.json.counters`。如果进程在 ID 分配后、业务事件前中断，该 ID 作为空洞保留；恢复和重建不得回滚 counter 或复用该 ID。
+所有 Run 内动态 ID 由 `idAllocated` 事件分配并投影到 `scan.json.counters`。Continuation 初始化时由 canonical coverage seed 恢复的 baseline suggestion ID 是唯一例外：它随 `projectionBaselineInitialized` 一次性进入基线投影，且 `scan.counters.suggestion` 必须不小于已种下 suggestion 的最大编号。若进程在 ID 分配后、业务事件前中断，该 ID 作为空洞保留；恢复和重建不得回滚 counter 或复用该 ID。
 
 可变入口加载 Run 时执行恢复：
 

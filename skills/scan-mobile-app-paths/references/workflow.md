@@ -20,10 +20,11 @@
 
 ## 1. 运行边界
 
-脚本使用自身路径定位依赖，可从任意 cwd 执行。产物只写入用户指定的绝对路径；不得写入 Skill 安装目录。
+脚本使用自身路径定位依赖，可从任意 cwd 执行。未显式传 `--app-map-root` 时，产物默认写入当前执行命令目录下的 `app-map-<bundleName>`；后续消费已有产物的命令会在当前 cwd 下发现唯一 App Map 根，若找不到或存在多个则要求显式传 `--app-map-root`。不得写入 Skill 安装目录。
 
 ```bash
 SMAP_SKILL=/absolute/path/to/scan-mobile-app-paths
+# 可选；不设置时使用当前 cwd 下的 app-map-<bundleName>
 APP_MAP_ROOT=/absolute/path/to/app-map
 ```
 
@@ -46,7 +47,6 @@ devecocli device list
 
 ```bash
 node "$SMAP_SKILL/scripts/init-app-root.js" \
-  --app-map-root "$APP_MAP_ROOT" \
   --bundle-name com.example.app \
   --entry-ability EntryAbility \
   --environment test
@@ -56,7 +56,6 @@ node "$SMAP_SKILL/scripts/init-app-root.js" \
 
 ```bash
 node "$SMAP_SKILL/scripts/preview-plan.js" \
-  --app-map-root "$APP_MAP_ROOT" \
   --device <device-id> \
   --context guest \
   --profile standard
@@ -66,7 +65,6 @@ node "$SMAP_SKILL/scripts/preview-plan.js" \
 
 ```bash
 node "$SMAP_SKILL/scripts/preview-plan.js" \
-  --app-map-root "$APP_MAP_ROOT" \
   --device <device-id> \
   --context authenticated \
   --scan-mode goal-directed \
@@ -233,7 +231,8 @@ node "$SMAP_SKILL/scripts/next-work.js" \
 只按返回结果行动：
 
 - `DISCOVER`：添加/领取 Frontier 并执行候选。
-- `BACKFILL_FRONTIER_SUGGESTIONS`：已有 canonical 状态缺候选覆盖，先运行 `frontier-candidates.js backfill --all-reachable true` 补生成 suggestion，再重新调用 `nextWork()`。
+- `BACKFILL_FRONTIER_SUGGESTIONS`：当前 Run 实时 coverage 或已有 canonical 状态候选覆盖为 `UNKNOWN` / `PARTIAL`，执行返回的 `suggestedCommand` 精准补生成下一批 suggestion，再重新调用 `nextWork()`。
+- `REVIEW_FRONTIER_CANDIDATES`：候选来自复杂页面或被脚本判为未知交互，存在无文本大容器、横向列表、文本子节点被父容器覆盖、业务数据与稳定入口混杂的风险；先运行返回参数中的 `frontier-candidates.js prepare-review`，结合截图做视觉候选复核，再用 `record-visual-review` 写入结构化结论。
 - `SUGGEST_FRONTIER`：当前没有可领取 Frontier，但还有可应用的候选建议；先应用或处理建议，再重新调用 `nextWork()`。
 - `VERIFY`：执行返回的验证任务，不再领取新 Frontier。
 - `STOP`：没有开放 Frontier/必要验证，或硬预算已经耗尽，可进入终结检查；返回 `suggestedTerminalStatus=PARTIAL` 时按 `PARTIAL` 收敛。
@@ -242,7 +241,9 @@ node "$SMAP_SKILL/scripts/next-work.js" \
 
 如果 `reasonCode` 为 `MAX_ACTIVE_MINUTES`、`MAX_DEVICE_ACTIONS`、`MAX_COLD_STARTS` 或 `MAX_STATES`，不要再尝试动作、导航或验证；直接执行 `finalize-scan.js --status PARTIAL`。
 
-Agent 从稳定截图和控件树产生有限、安全、可解释的候选。新 ReachableState 提交后，脚本会根据控件树和语义指纹写入 `frontier-suggestions.json`；旧 canonical 节点如果缺候选覆盖，`nextWork()` 会先返回 `BACKFILL_FRONTIER_SUGGESTIONS`，要求用历史或本 Run Observation 补生成 suggestion。随后当 `nextWork()` 返回 `SUGGEST_FRONTIER` 时，先处理这些建议，不能直接进入路径验证。调度器只会提示来源未被失败依赖阻塞、未超预算、未重复且安全可应用的建议；不可应用建议会在 `STOP` 中建议 `PARTIAL` 或由 `apply` 标为 `SKIPPED/BLOCKED`。`wait`、纯观测、系统权限确认和高风险动作不得加入 Frontier：
+Agent 从稳定截图和控件树产生有限、安全、可解释的候选。新 ReachableState 提交后，脚本会根据控件树和语义指纹写入 `frontier-suggestions.json`；当某状态的当前 Run 实时 coverage 或旧 canonical coverage 为 `UNKNOWN` / `PARTIAL` 时，`nextWork()` 会返回 `BACKFILL_FRONTIER_SUGGESTIONS`，要求用返回的 `suggestedCommand` 为指定状态读取历史或本 Run Observation 并补生成下一批 suggestion。候选分为三类：稳定入口、结构控件和滚动可直接应用；动态业务数据列表项保留有限 `DYNAMIC_DATA_ITEM/SKIPPED` 审计样本，不进入 Frontier，超出部分只写聚合审计；未知交互必须先完成视觉候选复核。稳定入口不是文本白名单命中，而是由控件角色、可点击父容器、导航/工具区位置、短文本形态、同容器数据密度等上下文动态判断；登录、设置、固定功能入口允许进入候选，课程/订单等业务数据列表项应被识别为动态数据项。若任一候选页面存在复杂卡片/横滑区域或未知候选，`nextWork()` 会先返回 `REVIEW_FRONTIER_CANDIDATES`，要求完成对应状态的视觉候选复核；随后当 `nextWork()` 返回 `SUGGEST_FRONTIER` 时，先处理这些建议，不能直接进入路径验证。调度器只会提示来源未被失败依赖阻塞、未超预算、未重复且安全可应用的建议；不可应用建议会在 `STOP` 中建议 `PARTIAL` 或由 `apply` 标为 `SKIPPED/BLOCKED`。若直接对未复核的未知/复杂候选执行 `apply`，脚本必须保持 suggestion 为 `PENDING` 并写入 `UNKNOWN_REVIEW_REQUIRED` 或 `VISUAL_REVIEW_REQUIRED`，不得生成 Frontier。`maxCandidatesPerState` 表示一次刷新最多生成多少个新候选；已生成/执行过的候选会按 `candidateGroupKey` 和候选 hash 去重，后续扫描可以继续取下一批，直到写入 `NO_CANDIDATES_EXTRACTED` 并将覆盖状态收敛为 `EXHAUSTED`。如果一次刷新只发现动态业务数据项，没有固定入口、结构控件、滚动或未知复核候选，也要同时写入 `NO_CANDIDATES_EXTRACTED` 并收敛为 `EXHAUSTED`。`EXHAUSTED` 只在 layout/semantic、候选规则、profile 和候选预算 basis 不变时有效；basis 变化后要重新 backfill。`wait`、纯观测、系统权限确认和高风险动作不得加入 Frontier：
+
+`app.json.candidateRules` 只用于调整通用阈值，例如 `stableEntry.maxTextLength`、`stableEntry.maxGroupTextCount`、`dynamicData.minClusterTextCount`、`dynamicData.maxAuditItemsPerState`；不得用 `fixedEntries` 白名单维护 App 业务入口。
 
 ```bash
 node "$SMAP_SKILL/scripts/frontier-candidates.js" apply \
@@ -260,13 +261,43 @@ node "$SMAP_SKILL/scripts/frontier-candidates.js" suggest \
   --observation-id <obs-id>
 ```
 
-旧 Run 或旧 canonical map 种下的状态不会自动带有本 Run 的建议。需要补齐已有节点探索面时使用 backfill；它只生成 suggestion，不直接执行动作。若状态只有 `evidenceObservationRefs`，backfill 会读取源 Run 的 Observation/Layout 并在 suggestion 中记录 `observationRef`：
+如果页面包含 banner、无文本卡片、横向工具栏/轮播、父子层级较深的卡片，或脚本返回 `UNKNOWN_REVIEW_REQUIRED`，纯 layout 候选可能漏掉、拆出多个子指针，或无法区分稳定入口和动态业务数据。此时不要重新截图；使用同一个 Observation 生成视觉复核输入，结合返回的 `screenshotAbsolutePath`、`layoutAbsolutePath`、`autoCandidates`、`reviewCandidates`、`suppressedCandidates`、`draftCandidates` 与 `clickableSummary` 判断：
+
+```bash
+node "$SMAP_SKILL/scripts/frontier-candidates.js" prepare-review \
+  --scan-dir <scan-dir> --context guest \
+  --reachable-state-id <state-id> \
+  --observation-id <obs-id>
+```
+
+复核后用结构化 JSON 记录接受、拒绝和补充候选。补充候选必须来自同一张截图的 bounds；脚本会校验范围、做安全检查、去重，并将结果写入 `frontier-suggestions.json`。视觉卡片覆盖脚本文本子节点时保留卡片级候选，避免同一卡片产生多个指针：
+
+```bash
+node "$SMAP_SKILL/scripts/frontier-candidates.js" record-visual-review \
+  --scan-dir <scan-dir> --context guest \
+  --reachable-state-id <state-id> \
+  --observation-id <obs-id> \
+	  --review '{"accepted":["draft-01"],"rejected":[{"draftId":"draft-02","reasonCode":"LOW_VALUE"}],"supplemented":[{"target":"课程卡片","type":"tap","source":"VISUAL_CARD_GROUP","bounds":[80,500,1180,680]}]}'
+```
+
+如果人工确认某些 suggestion 不属于本次扫描范围，或测试用例需要收敛额外自动建议，可以显式 dismiss；这只关闭 Run 内 suggestion 投影，不写 Frontier、Attempt 或 Edge：
+
+```bash
+node "$SMAP_SKILL/scripts/frontier-candidates.js" dismiss \
+  --scan-dir <scan-dir> --context guest \
+  --reachable-state-id <state-id> \
+  --reason-code OUT_OF_SCOPE
+```
+
+旧 Run 或旧 canonical map 种下的状态不会自动带有本 Run 的建议。需要补齐已有节点探索面时使用 `nextWork()` 返回的精准 backfill 命令；它只生成 suggestion，不直接执行动作。对 `PARTIAL` 状态，backfill 会跳过已见候选并生成下一批；对 `EXHAUSTED` 状态，除非 map edit、指纹或规则/profile 变化导致覆盖失效，否则不会再重复刷新。若状态只有 `evidenceObservationRefs`，backfill 会读取源 Run 的 Observation/Layout 并在 suggestion 中记录 `observationRef`：
 
 ```bash
 node "$SMAP_SKILL/scripts/frontier-candidates.js" backfill \
   --scan-dir <scan-dir> --context guest \
-  --all-reachable true
+  --reachable-state-ids <state-id-1>,<state-id-2>
 ```
+
+`--all-reachable true` 只用于人工诊断或批量维护，不作为标准扫描循环里的默认命令。
 
 需要人工补充候选时仍可直接添加 Frontier：
 
@@ -446,9 +477,15 @@ node "$SMAP_SKILL/scripts/finalize-scan.js" \
 node "$SMAP_SKILL/scripts/register-run.js" --scan-dir <scan-dir>
 node "$SMAP_SKILL/scripts/build-snapshot.js" --app-map-root "$APP_MAP_ROOT"
 node "$SMAP_SKILL/scripts/build-dashboard.js" --app-map-root "$APP_MAP_ROOT"
+node "$SMAP_SKILL/scripts/summarize-run.js" --scan-dir <scan-dir>
 ```
 
 `register-run.js` 会把 `COMPLETED/PARTIAL` Run 同步到 `maps/<context>`；若 Run 的 `mapBaseRevisionId` 已落后于当前 canonical map，则只登记执行历史，不覆盖地图。`build-snapshot.js` 默认读取 canonical map，不再跨 scan 聚合 run 图；`run-index.json` 只提供执行历史指标。
+
+最终回复用户必须包含两部分：
+
+1. **结构化执行结果**：以 `summarize-run.js` 的 `structuredResult` 为事实来源，至少说明 Run 状态、停止原因、登录态、页面/状态/边/路径数量、动作/冷启动/验证统计、未解决项和报告/Dashboard 路径。
+2. **Agent 补充内容**：由 agent 结合执行过程补充人类可读解释、异常原因、风险提示和下一步建议；这部分可以有判断，但不得改写结构化结果中的事实。
 
 ## 13. 暂停与 Continuation
 
@@ -594,6 +631,8 @@ node "$SMAP_SKILL/scripts/export-precondition-flow.js" write \
 
 ## 16. 开发自测
 
+自测实现统一放在 `scripts/self-tests/`；`scripts/self-test.js` 是稳定调度入口，历史 `scripts/*-self-test.js` 文件仅作为兼容包装保留。
+
 Restore 相关快速回归：
 
 ```bash
@@ -618,4 +657,4 @@ node scripts/self-test.js --scope protocol
 node scripts/self-test.js --scope full
 ```
 
-修改脚本后先运行 `node --check`，再运行两级回归。真实设备至少运行 `probe-env.sh`；没有明确 bundle/Ability 和授权时不要在真实 App 上执行扫描动作。
+修改脚本后先运行 `node --check scripts/self-test.js scripts/self-tests/*.js`，再运行对应专项和一次完整回归。真实设备至少运行 `probe-env.sh`；没有明确 bundle/Ability 和授权时不要在真实 App 上执行扫描动作。

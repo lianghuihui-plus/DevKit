@@ -10,7 +10,7 @@ const {
   mapsRoot, mapContextDir, ensureCanonicalContext, loadCanonicalContext, recomputeDepths
 } = require('./canonical-map-store');
 const { actionKey, updateCanonicalPaths } = require('./graph-store');
-const { candidateCoverageFromStores } = require('./candidate-coverage');
+const { candidateCoverageAfterCanonicalEdit } = require('./candidate-coverage');
 
 const CONTEXTS = new Set(['guest', 'authenticated']);
 
@@ -191,6 +191,11 @@ function buildDeletePlan({ appRoot, contextId, target, reason = null, editId = n
   const deletedActionIdentities = new Set(deletedEdges.map(edgeActionIdentity).filter(Boolean));
   const compacted = compactGraph(canonical.graph, deletedStateIds, deletedEdgeIds);
   const frontier = cleanFrontier(canonical.frontier, deletedStateIds, deletedEdgeIds, deletedAttemptIds, deletedActionIdentities);
+  const remainingStateIds = new Set((compacted.graph.reachableStates || []).map(item => item.id));
+  const candidateCoverageInvalidatedReachableStateIds = [...new Set([
+    ...deletedEdges.map(edge => edge.fromReachableStateId),
+    ...frontier.removed.map(item => item.fromReachableStateId)
+  ].filter(id => id && remainingStateIds.has(id)))].sort();
   const queue = cleanQueue(canonical.verificationQueue, deletedStateIds, deletedEdgeIds);
   const back = cleanBackCapabilities(canonical.backCapabilities, deletedStateIds);
   const visualEq = cleanEquivalence(canonical.visualEquivalence, deletedStateIds, compacted.deletedVisualIds, compacted.deletedLogicalIds);
@@ -204,6 +209,7 @@ function buildDeletePlan({ appRoot, contextId, target, reason = null, editId = n
     logicalScreenIds: [...compacted.deletedLogicalIds].sort(),
     edgeIds: [...deletedEdgeIds].sort(),
     frontierIds: frontier.removed.map(item => item.id).filter(Boolean).sort(),
+    candidateCoverageInvalidatedReachableStateIds,
     verificationIds: queue.superseded.map(item => item.verificationId).filter(Boolean).sort(),
     backCapabilityIds: back.removed.map(item => item.backCapabilityId || item.id).filter(Boolean).sort(),
     visualEquivalenceRuleIds: visualEq.removed.map(item => item.ruleId).filter(Boolean).sort(),
@@ -300,11 +306,12 @@ function writeArtifacts(appRoot, plan, canonical) {
   const dir = mapContextDir(appRoot, plan.contextId);
   const revision = `maprev-${hashObject({ contextId: plan.contextId, previous: canonical.meta.mapRevisionId || null, editId: plan.editId, operation: plan.operation, graph: plan.artifacts.graph }).slice(-16)}`;
   const updatedAt = now();
-  const candidateCoverage = candidateCoverageFromStores({
+  const candidateCoverage = candidateCoverageAfterCanonicalEdit({
     contextId: plan.contextId,
     graph: plan.artifacts.graph,
     frontier: plan.artifacts.frontier,
-    previousCoverage: canonical.meta.candidateCoverage
+    previousCoverage: canonical.meta.candidateCoverage,
+    invalidatedReachableStateIds: plan.impact?.candidateCoverageInvalidatedReachableStateIds || []
   });
   const meta = {
     ...canonical.meta,

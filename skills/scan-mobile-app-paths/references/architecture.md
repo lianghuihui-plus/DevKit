@@ -164,14 +164,15 @@ navigationCost 在 Claim 时根据最新 Cursor 计算，而不是在 Frontier �
 统一 `nextWork()` 返回：
 
 - `DISCOVER`：存在可领取 Frontier 且必要验证容量充足。
-- `BACKFILL_FRONTIER_SUGGESTIONS`：Frontier 和本 Run suggestion 已空，但 canonical `candidateCoverage` 指出旧节点还没有候选覆盖；先从本 Run 或历史 Observation 引用生成 suggestion。
+- `BACKFILL_FRONTIER_SUGGESTIONS`：Frontier 和本 Run suggestion 已空，但当前 Run 实时 coverage 或 inherited canonical `candidateCoverage` 指出某些状态仍为 `UNKNOWN/PARTIAL`，返回精确 `reachableStateIds` 和 `suggestedCommand`，先只为这些状态从本 Run 或历史 Observation 引用生成下一批 suggestion。
+- `REVIEW_FRONTIER_CANDIDATES`：存在未知候选或复杂候选页，需要 agent 复用同一 Observation 截图和 layout 做视觉候选复核。
 - `SUGGEST_FRONTIER`：Frontier 已空但还有可应用候选建议，先把安全、未重复、未阻塞且未超预算的建议应用为 Frontier。
 - `VERIFY`：目标验证优先、Frontier 已空，或剩余容量接近必要验证估算。
 - `STOP`：没有 Frontier 与必要验证。
 
 调度器按 Verification 失败的依赖范围隔离阻塞。超过重试上限的失败任务不会默认阻塞整个 Run；系统先从 `failure` 字段或 Restore 证据推导 `blockingEdgeIds`，只暂缓依赖这些 Edge 的 Frontier 和 Verification。若失败点无法推导，则按旧的保守语义返回 `REQUIRED_VERIFICATION_FAILED`。当只剩被失败依赖阻塞的工作时，返回 `WORK_BLOCKED_BY_FAILED_DEPENDENCIES` 并建议 `PARTIAL`。
 
-Frontier Suggestion 是 Run 内候选投影，不是地图事实。调度器只提示可应用 suggestion；旧节点通过 backfill 生成候选，backfill 可读取 `VisualState.evidenceObservationRefs` 指向的历史 Run 证据但不会复制为本 Run Observation。登记到 canonical 时只同步 `candidateCoverage` 摘要，用来判断续扫是否需要补候选。
+Frontier Suggestion 是 Run 内候选投影，不是地图事实。提取器先把候选分类为自动可应用的稳定入口/结构控件/滚动、限量审计的动态业务数据项，以及必须视觉复核的未知候选；稳定入口由控件树结构、可点击上下文、导航/工具区位置、短文本形态和同容器数据密度动态判断，classifier 不承载 App 业务词表或 fixedEntries 白名单。调度器先处理未知候选复核，再提示可应用 suggestion；当 Frontier 和 suggestion 都清空时，先用当前 Run 的 `graph/frontier/frontier-suggestions` 实时计算 candidate coverage，必要时继续 backfill 下一批，再 fallback 到 inherited canonical coverage。旧节点通过 backfill 生成候选，backfill 可读取 `VisualState.evidenceObservationRefs` 指向的历史 Run 证据但不会复制为本 Run Observation；标准循环必须执行调度器返回的精确 backfill 命令，`--all-reachable true` 只用于人工诊断或批量维护。登记到 canonical 时只同步 `candidateCoverage` 摘要，用来判断续扫是否需要补候选；候选覆盖分为 `UNKNOWN`、`PARTIAL`、`EXHAUSTED`：`PARTIAL` 表示已有一批候选但后续扫描仍可在同一证据基础上刷新下一批，只有显式 `NO_CANDIDATES_EXTRACTED` 哨兵才表示当前证据/规则/profile 下已无更多固定入口候选。仅发现动态业务数据项时同一次 backfill 也应写入该哨兵，并把超出审计上限的动态项聚合记录到 `dynamicAudit`。`EXHAUSTED` 绑定 layout/semantic、候选规则、profile 与候选预算；basis 变化时必须重新降级为待 backfill。
 
 Attempt 状态主链：
 
@@ -239,7 +240,7 @@ maxDepth
 
 `maxActiveMinutes` 计入动作、稳定观测等待、导航、恢复、验证和自动审查；排除计划确认、人工身份切换、人工候选确认、PAUSED 和产物构建。
 
-`maxScrollsPerState`、`maxCandidatesPerState`、`cursorFreshnessMs` 等属于 profile 派生的搜索策略参数，不是用户预算。`maxEdges` 和 `maxRouteDepth` 已删除；深度统一由 `maxDepth` 约束。
+`maxScrollsPerState`、`maxCandidatesPerState`、`maxTotalCandidatesPerState`、`cursorFreshnessMs` 等属于 profile 派生的搜索策略参数，不是用户预算。`maxCandidatesPerState` 是每次候选刷新批量上限，不是页面 lifetime 总上限；`maxTotalCandidatesPerState` 是防止单页无限膨胀的保护上限，默认派生为批量上限的 5 倍。`maxEdges` 和 `maxRouteDepth` 已删除；深度统一由 `maxDepth` 约束。
 
 ## 10. 事件、恢复与终态
 

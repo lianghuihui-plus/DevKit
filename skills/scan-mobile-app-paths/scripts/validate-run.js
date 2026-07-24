@@ -9,12 +9,11 @@ const { isCurrentRun, runContextIds, runContextId, runBudget, activeLimitMinutes
 const { budgetUsage } = require('./lib/budget');
 const { loadCursor } = require('./lib/live-cursor');
 const { loadVerificationQueue, MAX_VERIFICATION_ATTEMPTS } = require('./lib/verification-store');
-const { deriveBlockedDependencies } = require('./lib/dependency-blocking');
-const { backfillRequiredFromCoverage } = require('./lib/candidate-coverage');
 const { buildFingerprint, compareFingerprint, observationVisual } = require('./lib/fingerprint');
 const { loadVisualEquivalence } = require('./lib/visual-equivalence');
 const { loadStateEquivalence } = require('./lib/state-equivalence-store');
 const { assertAcceptedVisualReview } = require('./lib/visual-review-store');
+const { assertVisualCandidateReviewSuggestion } = require('./lib/visual-candidate-review-store');
 const { canonicalIntentIdentity, intentFromAction, locatorEvidenceFor } = require('./lib/action-intent');
 const { locatorReplayabilityReason } = require('./lib/replayability');
 
@@ -164,18 +163,16 @@ function validate(scanDir, requestedStatus, options = {}) {
       const queue = loadVerificationQueue(scanDir, contextId); const duplicateKeys = queue.items.map(item => item.taskKey).filter((key, index, all) => all.indexOf(key) !== index); if (duplicateKeys.length) fail('Verification queue contains duplicate task keys', 'VERIFICATION_QUEUE_INVALID');
       const suggestions = readJson(path.join(contextDir(scanDir, contextId), 'frontier-suggestions.json'), { schemaVersion: 1, contextId, items: [] });
       const suggestionIds = suggestions.items.map(item => item.suggestionId).filter(Boolean); if (new Set(suggestionIds).size !== suggestionIds.length) fail('Frontier suggestions contain duplicate ids', 'FRONTIER_SUGGESTIONS_INVALID');
+      const maxSuggestionCounter = suggestionIds.reduce((max, id) => { const match = String(id).match(/^suggest-(\d+)$/); return match ? Math.max(max, Number(match[1])) : max; }, 0);
+      if (Number(scan.counters?.suggestion || 0) < maxSuggestionCounter) fail('Frontier suggestion counter is behind seeded suggestions', 'FRONTIER_SUGGESTIONS_INVALID');
       for (const suggestion of suggestions.items || []) {
         if (suggestion.contextId && suggestion.contextId !== contextId || !['PENDING', 'APPLIED', 'SKIPPED', 'BLOCKED', 'DISMISSED'].includes(suggestion.status)) fail(`Frontier suggestion ${suggestion.suggestionId || '<missing>'} is invalid`, 'FRONTIER_SUGGESTIONS_INVALID');
         if (!graph.reachableStates.some(item => item.id === suggestion.reachableStateId) || !graph.visualStates.some(item => item.id === suggestion.visualStateId)) fail(`Frontier suggestion ${suggestion.suggestionId || '<missing>'} references missing graph state`, 'FRONTIER_SUGGESTIONS_INVALID');
         requireSuggestionObservation(scanDir, suggestion, contextId);
+        if (suggestion.visualCandidateReviewId) assertVisualCandidateReviewSuggestion(scanDir, suggestion, contextId);
         if (suggestion.status === 'APPLIED' && !frontier.items.some(item => item.id === suggestion.frontierId)) fail(`Applied frontier suggestion ${suggestion.suggestionId || '<missing>'} references missing Frontier`, 'FRONTIER_SUGGESTIONS_INVALID');
       }
       if (completed && suggestions.items.some(item => item.status === 'PENDING')) fail('Run has pending frontier suggestions', 'RUN_INCOMPLETE');
-      if (completed) {
-        const dependencyBlocking = deriveBlockedDependencies({ scanDir, contextId, graph, queue, maxAttempts: MAX_VERIFICATION_ATTEMPTS });
-        const pendingBackfillStateIds = backfillRequiredFromCoverage({ scanDir, contextId, graph, frontier, dependencyBlocking });
-        if (pendingBackfillStateIds.length) fail(`Run has candidate backfill required: ${pendingBackfillStateIds.join(', ')}`, 'RUN_INCOMPLETE');
-      }
       if (completed && queue.items.some(item => ['PENDING', 'RUNNING', 'FAILED'].includes(item.status))) fail('Run has unfinished or failed required verification tasks', 'RUN_INCOMPLETE');
       const metrics = options.metricsOverridesByContext?.[contextId] || readJson(path.join(contextDir(scanDir, contextId), 'metrics.json'), {}); const categorized = ['explorationActions', 'navigationActions', 'recoveryActions', 'verificationActions', 'interruptionActions'].reduce((sum, key) => sum + Number(metrics[key] || 0), 0); if (categorized !== Number(metrics.actions || 0)) fail('Categorized action metrics do not equal total actions', 'METRICS_INVALID');
       const budget = runBudget(scan, contextId); const usage = budgetUsage(scan, graph, frontier, metrics); const limits = [['MAX_STATES', usage.states, maxStates(budget), { baselineStates: usage.baselineStates, totalStates: usage.totalStates }], ['MAX_DEVICE_ACTIONS', usage.actions, maxDeviceActions(budget)], ['MAX_COLD_STARTS', usage.coldStarts, maxColdStarts(budget)], ['MAX_ACTIVE_MINUTES', usage.durationMinutes, activeLimitMinutes(budget)], ['MAX_DEPTH', Math.max(0, ...graph.reachableStates.map(item => Number(item.depth?.pathDepth || 0))), maxDepth(budget)]]; const exceeded = limits.find(([code, used, limit]) => used > limit && (completed || code !== 'MAX_ACTIVE_MINUTES')); if (exceeded) fail(`${exceeded[0]} exceeded at terminal validation: ${exceeded[1]} > ${exceeded[2]}${exceeded[3] ? ` (baseline=${exceeded[3].baselineStates}, total=${exceeded[3].totalStates})` : ''}`, 'BUDGET_LIMIT_EXCEEDED');

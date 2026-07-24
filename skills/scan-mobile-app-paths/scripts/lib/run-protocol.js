@@ -43,9 +43,15 @@ function maxStates(budget = {}) { return Number(budget.maxStates ?? budget.maxNo
 function maxDeviceActions(budget = {}) { return Number(budget.maxDeviceActions ?? budget.maxActions ?? 0); }
 function maxColdStarts(budget = {}) { return Number(budget.maxColdStarts ?? Number.MAX_SAFE_INTEGER); }
 function maxCandidatesPerState(budget = {}) { return Number(budget.maxCandidatesPerState ?? budget.maxCandidatesPerNode ?? 0); }
+function maxTotalCandidatesPerState(budget = {}) {
+  const configured = budget.maxTotalCandidatesPerState ?? budget.maxTotalCandidatesPerNode;
+  if (configured !== undefined) return Number(configured);
+  const batch = maxCandidatesPerState(budget);
+  return batch > 0 ? batch * 5 : Number.MAX_SAFE_INTEGER;
+}
 function maxScrollsPerState(budget = {}) { return Number(budget.maxScrollsPerState ?? budget.maxScrollsPerNode ?? 0); }
 
 module.exports = {
   graphProtocolVersion, attemptProtocolVersion, eventProtocolVersion, projectionProtocolVersion, navigationProtocolVersion, verificationProtocolVersion, isCurrentRun, runContextIds, runContextId, activeContextId, runBudget,
-  activeLimitMinutes, maxDepth, maxStates, maxDeviceActions, maxColdStarts, maxCandidatesPerState, maxScrollsPerState
+  activeLimitMinutes, maxDepth, maxStates, maxDeviceActions, maxColdStarts, maxCandidatesPerState, maxTotalCandidatesPerState, maxScrollsPerState
 };

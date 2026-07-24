@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { parseArgs, required, assertAbsolute, readJson, writeTextAtomic, sha256, output, main, fail, safeSegment } = require('./lib/common');
+const { parseArgs, resolveAppMapRoot, readJson, writeTextAtomic, sha256, output, main, fail, safeSegment } = require('./lib/common');
 const { buildDashboardViewModel } = require('./lib/dashboard-view-model');
 
 const PLACEHOLDER = '__SMAP_DASHBOARD_DATA__';
@@ -14,7 +14,7 @@ function loadChecked(file, expected, label) { const value = readJson(file); if (
 function embeddedJson(value) { return JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'); }
 
 main(() => {
-  const args = parseArgs(); const root = assertAbsolute(required(args, 'appMapRoot'), '--app-map-root'); const app = readJson(path.join(root, 'app.json')); const snapshotsRoot = path.join(root, 'snapshots'); const pointer = readJson(path.join(snapshotsRoot, 'current.json'));
+  const args = parseArgs(); const root = resolveAppMapRoot(args, { requireExisting: true }); const app = readJson(path.join(root, 'app.json')); const snapshotsRoot = path.join(root, 'snapshots'); const pointer = readJson(path.join(snapshotsRoot, 'current.json'));
   const generationId = safeSegment(pointer.generationId, 'generationId'); let generationDir = path.resolve(snapshotsRoot, String(pointer.relativePath || ''));
   if (!inside(snapshotsRoot, generationDir) || path.basename(generationDir) !== generationId || path.basename(path.dirname(generationDir)) !== 'generations') fail('Snapshot pointer escapes the generations directory', 'DASHBOARD_SOURCE_INVALID');
   const realSnapshotsRoot = fs.realpathSync(snapshotsRoot); generationDir = fs.realpathSync(generationDir); if (!inside(realSnapshotsRoot, generationDir)) fail('Snapshot generation resolves outside snapshots root', 'DASHBOARD_SOURCE_INVALID');

@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { now } = require('../lib/common');
+const { detectDeviceType, normalizeDeviceType } = require('../lib/device-detection');
 
 function parseArgs(argv = process.argv.slice(2)) {
   const out = { _: [] };
@@ -38,6 +39,16 @@ function hdcPrefix(args) {
 
 function hdc(args, words, options) {
   const target = hdcPrefix(args); return run(target.command, [...target.prefix, ...words], options);
+}
+
+function wait(ms) {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function boundedInteger(value, fallback, { min = 0, max = 10000 } = {}) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, Math.round(parsed))) : fallback;
 }
 
 function firstMatch(text, pattern) { const match = String(text || '').match(pattern); return match ? match[1] : null; }
@@ -81,6 +92,67 @@ function probe(args) {
   const capabilities = { deviceEnumeration: deviceList.ok, hdc: hasHdc, uitest: uitest.ok, screenshot: shot, layout, foreground: fg, restart: hasHdc, action: Boolean(hasHdc && uitest.ok), logs: deviceList.ok };
   return { schemaVersion: 1, type: 'probeResult', platform: 'harmony', ok: capabilities.deviceEnumeration && capabilities.screenshot && capabilities.layout && capabilities.foreground, device: args.device || null, devicesRaw: String(deviceList.stdout || '').trim(), capabilities,
     diagnostics: Object.entries(capabilities).filter(([, value]) => !value).map(([name]) => ({ severity: ['logs', 'deviceEnumeration'].includes(name) ? 'WARN' : 'ERROR', reasonCode: `CAPABILITY_${name.toUpperCase()}_UNAVAILABLE` })) };
+}
+
+function coldStartOrientationPolicy(args) {
+  const policy = String(args.coldStartOrientation || process.env.SMAP_COLD_START_ORIENTATION || 'portrait').trim().toLowerCase();
+  if (!['portrait', 'preserve'].includes(policy)) {
+    const error = new Error('SMAP_COLD_START_ORIENTATION must be portrait or preserve'); error.code = 'COLD_START_ORIENTATION_POLICY_INVALID'; throw error;
+  }
+  return policy;
+}
+
+function resolveDeviceType(args) {
+  const explicit = normalizeDeviceType(args.deviceType);
+  if (explicit) return { deviceType: explicit, source: 'explicit' };
+  return detectDeviceType({ deviceId: args.device });
+}
+
+function currentDisplayOrientation(args) {
+  const result = hdc(args, ['shell', 'hidumper', '-s', 'DisplayManagerService', '-a', '-a'], { allowFailure: true, timeout: 10000 });
+  if (!result.ok) return { orientation: null, rotation: null, width: null, height: null, source: 'DisplayManagerService', ok: false };
+  const text = String(result.stdout || '');
+  const lastNumber = (name) => {
+    const matches = [...text.matchAll(new RegExp(`^\\s*${name}:\\s*(\\d+)\\s*$`, 'gmi'))];
+    return matches.length ? Number(matches[matches.length - 1][1]) : null;
+  };
+  const rotation = lastNumber('Rotation') ?? lastNumber('ScreenRotation');
+  const width = lastNumber('Width');
+  const height = lastNumber('Height');
+  let orientation = null;
+  if (Number.isFinite(width) && Number.isFinite(height) && width !== height) orientation = width > height ? 'landscape' : 'portrait';
+  else if (rotation === 0 || rotation === 180) orientation = 'portrait';
+  else if (rotation === 90 || rotation === 270) orientation = 'landscape';
+  return { orientation, rotation, width, height, source: 'DisplayManagerService', ok: true };
+}
+
+function resetPortraitBeforeStart(args) {
+  const policy = coldStartOrientationPolicy(args);
+  const device = resolveDeviceType(args);
+  const state = { policy, requestedOrientation: policy === 'portrait' ? 'portrait' : null, deviceType: device.deviceType || null, deviceTypeSource: device.source || null, currentOrientation: null, currentRotation: null, currentDisplay: null, applied: false, skippedReason: null, command: null };
+  if (policy === 'preserve') { state.skippedReason = 'PRESERVE'; return state; }
+  if (device.deviceType !== 'phone') {
+    state.skippedReason = device.deviceType ? 'NON_PHONE_DEVICE' : 'UNKNOWN_DEVICE_TYPE';
+    return state;
+  }
+  const current = currentDisplayOrientation(args);
+  state.currentOrientation = current.orientation;
+  state.currentRotation = current.rotation;
+  state.currentDisplay = { width: current.width, height: current.height, source: current.source, ok: current.ok };
+  if (current.orientation === 'portrait') {
+    state.skippedReason = 'ALREADY_PORTRAIT';
+    return state;
+  }
+  const result = hdc(args, ['shell', 'hidumper', '-s', 'DisplayManagerService', '-a', '-motion,0'], { allowFailure: true, timeout: 10000 });
+  state.command = "hidumper -s DisplayManagerService -a '-motion,0'";
+  if (!result.ok) {
+    const error = new Error(`Cold start portrait reset failed: ${String(result.stderr || result.stdout || '').trim() || 'DisplayManagerService command failed'}`);
+    error.code = 'COLD_START_ORIENTATION_RESET_FAILED';
+    throw error;
+  }
+  state.applied = true;
+  wait(boundedInteger(args.orientationSettleMs ?? process.env.SMAP_ORIENTATION_SETTLE_MS, 500, { min: 0, max: 3000 }));
+  return state;
 }
 
 function dumpLayout(args, remote, local, log) {
@@ -127,11 +199,12 @@ function action(args) {
 function restart(args) {
   if (!args.bundleName || !args.entryAbility) throw Object.assign(new Error('--bundle-name and --entry-ability are required'), { code: 'ARG_REQUIRED' });
   hdc(args, ['shell', 'aa', 'force-stop', args.bundleName], { timeout: 15000 });
+  const orientation = resetPortraitBeforeStart(args);
   hdc(args, ['shell', 'aa', 'start', '-b', args.bundleName, '-a', args.entryAbility], { timeout: 20000 });
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(10000, Number(args.settleMs || 1200)));
+  wait(Math.min(10000, Number(args.settleMs || 1200)));
   const fg = foreground(args);
   if (fg.foreground.bundleName && fg.foreground.bundleName !== args.bundleName) throw Object.assign(new Error(`Cold start foreground mismatch: ${fg.foreground.bundleName}`), { code: 'APP_NOT_FOREGROUND' });
-  return { schemaVersion: 1, type: 'bridgeRestartResult', ok: true, coldStartVerified: fg.foreground.bundleName === args.bundleName, foreground: fg.foreground, stopMethod: 'aa-force-stop', launchMethod: 'aa-start' };
+  return { schemaVersion: 1, type: 'bridgeRestartResult', ok: true, coldStartVerified: fg.foreground.bundleName === args.bundleName, foreground: fg.foreground, stopMethod: 'aa-force-stop', launchMethod: 'aa-start', orientation };
 }
 
 function logs(args) {
