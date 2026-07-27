@@ -140,10 +140,10 @@ if [[ -n "$case_dir" ]]; then
     execution_id="$(mavt_latest_execution_id "$runtime_dir")"
   fi
   env_args=()
-  mavt_validate_case_env_binding "$case_dir" "$platform" "$device" "$app" "$entry"
+  mavt_validate_execution_env_binding "$script_dir" "$case_dir" "$platform" "$execution_id" "$device" "$app" "$entry"
   while IFS= read -r item; do
     [[ -n "$item" ]] && env_args+=("$item")
-  done < <(mavt_case_env_args "$case_dir" "$has_platform" "$has_device" "$has_app" "$has_entry" "$platform")
+  done < <(mavt_execution_env_args "$script_dir" "$case_dir" "$platform" "$execution_id" "action")
   merged_args=()
   if [[ ${#env_args[@]} -gt 0 ]]; then
     merged_args+=("${env_args[@]}")
@@ -228,11 +228,21 @@ console.log(JSON.stringify(event, null, 2));
   adapter_output="$("$script_dir/platform/action.sh" "${args[@]}" 2>&1)"
   adapter_status=$?
   set -e
-  if [[ $adapter_status -eq 0 ]]; then
+  if node -e '
+const value = JSON.parse(process.argv[1]);
+process.exit(value.ok === false ? 0 : 1);
+' "$adapter_output" 2>/dev/null; then
+    result="$adapter_output"
+    if [[ $adapter_status -eq 0 ]]; then
+      adapter_status=1
+    fi
+  elif [[ $adapter_status -eq 0 ]]; then
     if [[ "$action_type" != "wait" ]]; then
       mavt_sleep_ms "$settle_ms"
+      result="$adapter_output"
+    else
+      result="$adapter_output"
     fi
-    result="$adapter_output"
   else
     result="$(mavt_action_failure_json "$action_type" "$adapter_output" "$adapter_status")"
   fi

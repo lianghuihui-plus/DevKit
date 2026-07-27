@@ -10,6 +10,7 @@ const NEXT_WORK_TYPES = Object.freeze([
   'DECIDE_FLOW_ENTRY',
   'OBSERVE_FLOW_BEFORE',
   'EXECUTE_FLOW_ACTION',
+  'DECIDE_FLOW_ACTION',
   'OBSERVE_FLOW_AFTER',
   'RECORD_FLOW_STEP_COMPLETED',
   'OBSERVE_FLOW_END',
@@ -26,7 +27,7 @@ const NEXT_WORK_TYPES = Object.freeze([
 
 const VISUAL_DECISION_TYPES = new Set([
   'DECIDE_FLOW_ENTRY',
-  'EXECUTE_FLOW_ACTION',
+  'DECIDE_FLOW_ACTION',
   'DECIDE_FLOW_END',
   'DECIDE_STEP',
 ]);
@@ -36,13 +37,13 @@ function validateNextWork(value) {
   if (!NEXT_WORK_TYPES.includes(value.type)) throw new Error(`Unsupported nextWork type: ${value.type || 'unknown'}`);
   const flowType = value.type.includes('FLOW');
   if (flowType && (!value.preconditionId || !value.flowId)) throw new Error(`${value.type} requires preconditionId and flowId`);
-  if (['OBSERVE_FLOW_BEFORE', 'EXECUTE_FLOW_ACTION', 'OBSERVE_FLOW_AFTER', 'RECORD_FLOW_STEP_COMPLETED'].includes(value.type) && !value.flowStepId) {
+  if (['OBSERVE_FLOW_BEFORE', 'EXECUTE_FLOW_ACTION', 'DECIDE_FLOW_ACTION', 'OBSERVE_FLOW_AFTER', 'RECORD_FLOW_STEP_COMPLETED'].includes(value.type) && !value.flowStepId) {
     throw new Error(`${value.type} requires flowStepId`);
   }
   if (['OBSERVE_STEP', 'OBSERVE_AFTER_ACTION', 'EXECUTE_STEP_ACTION', 'DECIDE_STEP'].includes(value.type) && !value.step?.id) {
     throw new Error(`${value.type} requires step.id`);
   }
-  if (['DECIDE_FLOW_ENTRY', 'DECIDE_FLOW_END', 'DECIDE_STEP', 'EXECUTE_FLOW_ACTION'].includes(value.type) && !value.latestObservation?.label) {
+  if (['DECIDE_FLOW_ENTRY', 'DECIDE_FLOW_ACTION', 'DECIDE_FLOW_END', 'DECIDE_STEP'].includes(value.type) && !value.latestObservation?.label) {
     throw new Error(`${value.type} requires latestObservation.label`);
   }
   if (value.type === 'EXECUTE_STEP_ACTION' && !value.requestedAction?.type) throw new Error('EXECUTE_STEP_ACTION requires requestedAction');
@@ -73,6 +74,8 @@ function nextWorkToken({ execution, events, nextWork }) {
     finalized: execution.finalized === true,
     caseContractSha: execution.caseContractSha,
     preconditionPlanSha: execution.preconditionPlanSha,
+    preconditionInputsSha: execution.preconditionInputsSha,
+    environmentSha: execution.environmentSha,
     eventCount: events.length,
     latestEvent: latest,
     nextWork,

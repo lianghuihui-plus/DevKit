@@ -54,6 +54,7 @@ scripts/probe-env.sh --platform android
 需要安装：
 
 - DevEco Studio 或 HarmonyOS Command Line Tools。
+- `devecocli`，用于确定性枚举设备形态。
 - `hdc` 命令。
 
 设备准备：
@@ -67,6 +68,7 @@ scripts/probe-env.sh --platform android
 ```bash
 hdc list targets
 hdc shell uitest --version
+devecocli device list
 scripts/probe-env.sh --platform harmony
 ```
 

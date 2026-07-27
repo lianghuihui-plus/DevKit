@@ -21,6 +21,10 @@ to_y=""
 ms=""
 velocity=""
 duration_ms=""
+device_form_factor=""
+startup_orientation=""
+startup_orientation_enforcement=""
+startup_orientation_applies_to=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,6 +44,10 @@ while [[ $# -gt 0 ]]; do
     --ms) ms="${2:-}"; shift 2 ;;
     --velocity) velocity="${2:-}"; shift 2 ;;
     --duration-ms) duration_ms="${2:-}"; shift 2 ;;
+    --device-form-factor) device_form_factor="${2:-}"; shift 2 ;;
+    --startup-orientation) startup_orientation="${2:-}"; shift 2 ;;
+    --startup-orientation-enforcement) startup_orientation_enforcement="${2:-}"; shift 2 ;;
+    --startup-orientation-applies-to) startup_orientation_applies_to="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
@@ -81,6 +89,9 @@ run_atom() {
   status=$?
   set -e
   if [[ $status -ne 0 ]]; then
+    if node -e 'JSON.parse(process.argv[1])' "$output" 2>/dev/null; then
+      normalize_action "$output" "$action"
+    fi
     return "$status"
   fi
   normalize_action "$output" "$action"
@@ -91,7 +102,12 @@ case "$type" in
     run_atom "$type" "$atoms_dir/launch-app.sh" "${device_args[@]}" --bundle "$bundle" --ability "$ability"
     ;;
   restartApp)
-    run_atom "$type" "$atoms_dir/restart-app.sh" "${device_args[@]}" --bundle "$bundle" --ability "$ability"
+    restart_args=("${device_args[@]}" --bundle "$bundle" --ability "$ability")
+    [[ -n "$device_form_factor" ]] && restart_args+=(--device-form-factor "$device_form_factor")
+    [[ -n "$startup_orientation" ]] && restart_args+=(--startup-orientation "$startup_orientation")
+    [[ -n "$startup_orientation_enforcement" ]] && restart_args+=(--startup-orientation-enforcement "$startup_orientation_enforcement")
+    [[ -n "$startup_orientation_applies_to" ]] && restart_args+=(--startup-orientation-applies-to "$startup_orientation_applies_to")
+    run_atom "$type" "$atoms_dir/restart-app.sh" "${restart_args[@]}"
     ;;
   tap)
     run_atom "$type" "$atoms_dir/tap.sh" "${device_args[@]}" --x "$x" --y "$y"

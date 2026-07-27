@@ -65,6 +65,9 @@
 - 自动调用的 `restartApp` 写入 `scope=execution-bootstrap`，不得绑定步骤或前置条件；该 scope 不对 case-executor 开放。
 - `restartApp` 禁止绑定 `stepId`，不能作为步骤证据。
 - 只有 `ok=true` 且 `coldStartVerified=true` 才算干净冷启动。
+- `restartApp` 使用统一 `startupDisplayPolicy` 和 `startupDisplay` 结果契约；Core 只校验策略是否被验证，不包含平台命令分支。
+- HarmonyOS 手机默认要求竖屏启动：停止旧进程后归一方向，启动 App 后再次验证；全部过程仍只写一条 `scope=execution-bootstrap` 的 `restartApp actionResult`。
+- Android 与 iOS 当前默认 `preserve`；后续只需由各自 adapter 实现同一结果契约，不改变 Case Engine。
 - 冷启动失败处理见 `failure-policy.md`。
 
 ## adapter / atoms

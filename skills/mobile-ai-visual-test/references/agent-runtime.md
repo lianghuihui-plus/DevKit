@@ -72,10 +72,12 @@ Host Adapter 输入是 `next.operation`，输出统一为：
 - `execution.json.sourceSha1`。
 - `execution.json.caseContractSha`。
 - `execution.json.preconditionPlanSha`。
+- `execution.json.environmentSnapshot` 与 `environmentSha`。
+- `execution.json.preconditionInputs` 与 `preconditionInputsSha`。
 
 后续 reducer、事实写入、Agent request、finalize 和结果校验都读取 snapshot。源 `case.json` 在执行中变化，只会让报告变为过期，不会改变当前 execution。
 
-CaseAgentRequest 带 Runtime Core 固化的规范 provider 和 `requestSha`。SkillContract 用 `protocolSha` 冻结角色规范文件，用 `implementationSha` 冻结实际运行脚本；Agent Runtime 的 `BOUND` 事实同时绑定 `provider + protocolSha + implementationSha + requestSha + sessionId`。provider 只允许在 Runtime 初始化入口输入一次，子 Agent 结果构造器从 request 读取，不能覆盖。`BOUND` 必须先于子 Agent 业务事实；相同绑定可幂等重放，不同绑定被拒绝。
+CaseAgentRequest 带 Runtime Core 固化的规范 provider 和 `requestSha`，并绑定 `environmentSha` 与 `preconditionInputsSha`。SkillContract 用 `protocolSha` 冻结角色规范文件，用 `implementationSha` 冻结实际运行脚本；Agent Runtime 的 `BOUND` 事实同时绑定这些哈希、provider、requestSha 和 sessionId。provider 只允许在 Runtime 初始化入口输入一次，子 Agent 结果构造器从 request 读取，不能覆盖。`BOUND` 必须先于子 Agent 业务事实；相同绑定可幂等重放，不同绑定被拒绝。
 
 `run-case --start` 在 Runtime 初始化前写入的 `executionStart`、`environmentProbe` 和 `scope=execution-bootstrap` 的 `restartApp actionResult` 属于启动事实。Runtime init 会拒绝除此以外的既有事实，BOUND 写入后才允许 Case Engine 产生前置条件和业务步骤事实。
 
@@ -87,8 +89,8 @@ CaseAgentRequest 带 Runtime Core 固化的规范 provider 和 `requestSha`。Sk
 
 ## 批次闭环
 
-`scripts/batch-runtime.js` 在 `<workspace>/runs/<batchId>/` 写 `contract.json`、`batch.json` 和 `events.jsonl`。`commit-current` 自己读取绑定 runtime、validation、execution、result 和 metrics，确认 session 已释放后生成 `completion.json`：校验有效时发布业务结论，校验无效时发布控制面 `BLOCKED`，随后刷新 state、CONTEXT 和 index。它不接收调用方传入的 validation JSON。start 阶段由框架直接收尾的 execution 使用 `commit-start-result`。
+`scripts/batch-runtime.js init --provider <id>` 在 `<workspace>/runs/<batchId>/` 冻结 provider，并写 `contract.json`、`batch.json` 和 `events.jsonl`。contract 缺失视为损坏，不会静默重建。`commit-current` 自己读取绑定 runtime、validation、execution、result 和 metrics，逐一校验 batch、caseKey、platform 和 executionId，确认 session 已释放后生成 `completion.json`。start 阶段由框架直接收尾的 execution 使用 `commit-start-result`。
 
-`reconcile-current` 是批次开始时的一次性恢复归约，不是轮询监控。它先处理批次终态和精确所有权；多个未完成 execution 直接判为损坏，其他 batch 的 FINALIZING 也不得接管。`BATCH_BLOCKED`、`BATCH_COMPLETE` 和已提交 case 可安全重复查询。
+`reconcile-current` 是批次开始时的一次性恢复归约，不是轮询监控。STARTING 返回 `RESUME_START`；无 Runtime 的已收尾启动失败返回 `COMMIT_START_RESULT`；RUNNING 且只有 bootstrap facts 才返回 `INIT_RUNTIME`。候选包含未完成 execution 和当前批次尚未发布 completion 的已收尾 execution；候选不唯一直接判为损坏。
 
 批次必须串行。设备前台状态和单 active execution 约束高于宿主平台的并发能力。

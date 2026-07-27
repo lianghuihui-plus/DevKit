@@ -11,6 +11,7 @@ const {
   workspaceRoot,
 } = require('./common');
 const { validateActionAsset } = require('./action-contract');
+const { checkerForPrecondition } = require('./framework-preconditions');
 
 const FLOW_SCHEMA_VERSION = 2;
 const FLOW_USAGE = 'precondition';
@@ -244,7 +245,8 @@ function planEntry(precondition, flowIndex) {
     };
   }
   const classification = classifyPrecondition(precondition);
-  const resolution = classification.status === 'READY'
+  const checkerId = classification.status === 'READY' ? checkerForPrecondition(precondition) : null;
+  const resolution = classification.status === 'READY' && checkerId
     ? 'framework'
     : classification.status === 'CONFIRM'
       ? 'confirm'
@@ -256,6 +258,7 @@ function planEntry(precondition, flowIndex) {
     text,
     checkMode: precondition.checkMode || '',
     resolution,
+    checkerId,
     ...classification,
   };
 }
@@ -271,6 +274,7 @@ function planHashInput(plan) {
       resolution: item.resolution,
       status: item.status,
       category: item.category,
+      checkerId: item.checkerId || null,
       flowId: item.flowId,
       flowName: item.flowName,
       flowPath: item.flowPath,

@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const childProcess = require('child_process');
+const crypto = require('crypto');
 const { appendJsonl, caseRuntimeDir, ensureDir, nowIso, readJson, readJsonl, writeJson } = require('./common');
 const { publishExecution } = require('./lib/execution-completion');
 
@@ -22,6 +23,7 @@ function parseArgs(args) {
       case '--workspace-cwd': options.workspaceCwd = path.resolve(args[++i]); break;
       case '--batch-id': options.batchId = args[++i]; break;
       case '--platform': options.platform = args[++i]; break;
+      case '--provider': options.provider = args[++i]; break;
       case '--targets-json': options.targets = JSON.parse(args[++i]); break;
       case '--case-key': options.caseKey = args[++i]; break;
       case '--execution-id': options.executionId = args[++i]; break;
@@ -40,23 +42,20 @@ function batchPaths(options) {
   const runsDir = path.join(options.workspaceCwd, 'runs');
   const dir = path.resolve(runsDir, options.batchId);
   if (path.dirname(dir) !== path.resolve(runsDir)) throw new Error('batch-id escapes workspace runs directory');
-  return { dir, state: path.join(dir, 'batch.json'), events: path.join(dir, 'events.jsonl'), contract: path.join(dir, 'contract.json') };
+  return { dir, state: path.join(dir, 'batch.json'), events: path.join(dir, 'events.jsonl'), contract: path.join(dir, 'contract.json'), operationDraft: path.join(dir, 'operation.draft.json') };
 }
 
-function currentCoordinatorContract() {
-  return JSON.parse(childProcess.execFileSync(process.execPath, [path.join(__dirname, 'build-agent-contract.js'), '--role', 'batch-coordinator'], {
+function currentCoordinatorContract(provider = 'codex') {
+  return JSON.parse(childProcess.execFileSync(process.execPath, [path.join(__dirname, 'build-agent-contract.js'), '--role', 'batch-coordinator', '--provider', provider], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }));
 }
 
-function assertBatchContract(paths) {
-  const current = currentCoordinatorContract();
+function assertBatchContract(paths, state = null) {
   const persisted = readJson(paths.contract);
-  if (!persisted) {
-    writeJson(paths.contract, current);
-    return current;
-  }
+  if (!persisted) throw new Error('AGENT_PROTOCOL_MISMATCH: batch contract.json is missing');
+  const current = currentCoordinatorContract(state?.provider || persisted.provider || 'codex');
   if (persisted.protocolSha !== current.protocolSha || persisted.implementationSha !== current.implementationSha) {
     throw new Error('AGENT_PROTOCOL_MISMATCH: batch coordinator contract changed after initialization');
   }
@@ -69,17 +68,54 @@ function load(paths) {
   return value;
 }
 
-function save(paths, state) {
+function batchEventId(operationId, event, index) {
+  const binding = JSON.stringify([operationId, event.type, event.caseKey || null, event.executionId || null, index]);
+  return `batch-event-${crypto.createHash('sha256').update(binding).digest('hex').slice(0, 16)}`;
+}
+
+function recoverBatchOperation(paths) {
+  const draft = readJson(paths.operationDraft, null);
+  if (!draft) return;
+  const existingIds = new Set(readJsonl(paths.events).map((event) => event.eventId).filter(Boolean));
+  for (const event of draft.events || []) {
+    if (!existingIds.has(event.eventId)) appendJsonl(paths.events, event);
+  }
+  if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_BATCH_INTERRUPT === 'after-events') {
+    throw new Error('MAVT_SELF_TEST_BATCH_INTERRUPT: after-events');
+  }
+  writeJson(paths.state, draft.state);
+  fs.unlinkSync(paths.operationDraft);
+}
+
+function commitBatchOperation(paths, state, events) {
   state.updatedAt = nowIso();
-  writeJson(paths.state, state);
+  const operationId = `batch-operation-${crypto.randomBytes(8).toString('hex')}`;
+  const committedEvents = events.map((event, index) => ({ ...event, eventId: event.eventId || batchEventId(operationId, event, index) }));
+  writeJson(paths.operationDraft, { schemaVersion: 1, operationId, state, events: committedEvents });
+  recoverBatchOperation(paths);
   return state;
 }
 
 function safeCaseDir(workspaceCwd, value, label) {
   const absolute = path.resolve(value);
-  const relative = path.relative(workspaceCwd, absolute);
+  const casesDir = path.join(workspaceCwd, 'cases');
+  const relative = path.relative(casesDir, absolute);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error(`${label} must be inside workspace-cwd`);
   return absolute;
+}
+
+function assertBatchCaseBinding(state, item, execDir, artifacts = {}) {
+  const execution = artifacts.execution || readJson(path.join(execDir, 'execution.json'));
+  const snapshot = artifacts.snapshot || readJson(path.join(execDir, 'case.snapshot.json'));
+  if (!execution || !snapshot) throw new Error('Batch execution binding artifacts are missing');
+  if (execution.batchId !== state.batchId || execution.executionId !== path.basename(execDir)) throw new Error('Batch execution identity mismatch');
+  if (snapshot.identity?.caseKey !== item.caseKey) throw new Error('Batch case snapshot identity mismatch');
+  if (execution.environmentSnapshot?.binding?.platform !== state.platform) throw new Error('Batch execution platform mismatch');
+  for (const value of [artifacts.result, artifacts.metrics, artifacts.validation].filter(Boolean)) {
+    if (value.executionId !== execution.executionId) throw new Error('Batch execution artifact identity mismatch');
+  }
+  if (artifacts.result?.caseKey !== undefined && artifacts.result.caseKey !== item.caseKey) throw new Error('Batch result caseKey mismatch');
+  return execution;
 }
 
 function currentCase(state) {
@@ -106,7 +142,7 @@ function runtimeDirs(caseDir) {
   return values;
 }
 
-function activeExecutions(workspaceCwd) {
+function candidateExecutions(workspaceCwd, state, item) {
   const casesDir = path.join(workspaceCwd, 'cases');
   if (!fs.existsSync(casesDir)) return [];
   const values = [];
@@ -120,7 +156,9 @@ function activeExecutions(workspaceCwd) {
         const execDir = path.join(executionsDir, executionId);
         if (!fs.statSync(execDir).isDirectory()) continue;
         const execution = readJson(path.join(execDir, 'execution.json'));
-        if (execution?.finalized === false) values.push({ caseDir, platform: runtime.platform, executionId, execDir, execution });
+        const sameCurrent = execution?.batchId === state.batchId && caseDir === item.caseDir && runtime.platform === state.platform;
+        const incompletePublication = execution?.finalized === true && sameCurrent && !fs.existsSync(path.join(execDir, 'completion.json'));
+        if (execution?.finalized === false || incompletePublication) values.push({ caseDir, platform: runtime.platform, executionId, execDir, execution });
       }
     }
   }
@@ -158,6 +196,9 @@ function reconcileCurrent(options, state) {
     const execDir = path.join(caseRuntimeDir(item.caseDir, state.platform), 'executions', item.executionId);
     const execution = readJson(path.join(execDir, 'execution.json'));
     const runtimePath = path.join(execDir, 'agent', 'runtime.json');
+    if (execution) assertBatchCaseBinding(state, item, execDir, { execution });
+    if (execution?.finalized && !fs.existsSync(runtimePath)) return { schemaVersion: 1, batchId: state.batchId, action: 'COMMIT_START_RESULT', executionId: item.executionId, caseDir: item.caseDir, platform: state.platform };
+    if (execution?.lifecycle === 'STARTING' || execution?.lifecycle === 'BLOCKED_START') return { schemaVersion: 1, batchId: state.batchId, action: 'RESUME_START', executionId: item.executionId, caseDir: item.caseDir, platform: state.platform };
     if (execution?.finalized && fs.existsSync(runtimePath)) {
       const runtime = readJson(runtimePath);
       const validation = readJson(path.join(path.dirname(runtimePath), 'validation.json'));
@@ -179,7 +220,7 @@ function reconcileCurrent(options, state) {
       return { schemaVersion: 1, batchId: state.batchId, action, executionId: item.executionId, caseDir: item.caseDir, platform: state.platform, runtimePath };
     }
   }
-  const activeList = activeExecutions(options.workspaceCwd);
+  const activeList = candidateExecutions(options.workspaceCwd, state, item);
   if (activeList.length > 1) {
     return {
       schemaVersion: 1,
@@ -196,6 +237,23 @@ function reconcileCurrent(options, state) {
   }
   const active = activeList[0] || null;
   if (!active) return { schemaVersion: 1, batchId: state.batchId, action: 'START_NEW', caseDir: item.caseDir, platform: state.platform };
+  const environmentBound = active.execution.environmentSnapshot
+    && /^environment-[0-9a-f]{16}$/.test(active.execution.environmentSha || '');
+  const preconditionInputsBound = Array.isArray(active.execution.preconditionInputs)
+    && /^precondition-inputs-[0-9a-f]{16}$/.test(active.execution.preconditionInputsSha || '');
+  if (!environmentBound || !preconditionInputsBound) {
+    return {
+      schemaVersion: 1,
+      batchId: state.batchId,
+      action: 'CORRUPTED',
+      executionId: active.executionId,
+      caseDir: active.caseDir,
+      platform: active.platform,
+      ownerBatchId: active.execution.batchId || null,
+      failureCode: 'EXECUTION_ENVIRONMENT_UNBOUND',
+      reason: 'Unfinished legacy execution has no immutable environment/precondition binding; it cannot be inferred from current state.',
+    };
+  }
   const events = readJsonl(path.join(active.execDir, 'timeline.jsonl'));
   const bootstrapOnly = events[0]?.type === 'executionStart' && events[0]?.executionId === active.executionId && events.every(isBootstrapEvent);
   const runtimePath = path.join(active.execDir, 'agent', 'runtime.json');
@@ -206,6 +264,8 @@ function reconcileCurrent(options, state) {
   const sameBatch = active.execution.batchId === state.batchId;
   const base = { schemaVersion: 1, batchId: state.batchId, executionId: active.executionId, caseDir: active.caseDir, platform: active.platform, runtimePath: runtimeExists ? runtimePath : null, ownerBatchId: active.execution.batchId || null, deadlineAt: Number.isNaN(deadlineAt.getTime()) ? null : deadlineAt.toISOString() };
   if (sameTarget && sameBatch) {
+    if (active.execution.finalized && !runtimeExists) return { ...base, action: 'COMMIT_START_RESULT' };
+    if (['STARTING', 'BLOCKED_START'].includes(active.execution.lifecycle)) return { ...base, action: 'RESUME_START' };
     if (active.execution.lifecycle === 'FINALIZING' || fs.existsSync(path.join(active.execDir, 'result.draft.json'))) return { ...base, action: 'RECOVER_FINALIZING' };
     if (runtimeExists) return { ...base, action: item.executionId === active.executionId ? 'RESUME_RUNTIME' : 'BIND_RUNTIME' };
     if (bootstrapOnly) return { ...base, action: 'INIT_RUNTIME' };
@@ -223,7 +283,7 @@ function reconcileCurrent(options, state) {
 function initialize(options, paths) {
   const existing = readJson(paths.state);
   if (existing) {
-    assertBatchContract(paths);
+    assertBatchContract(paths, existing);
     if (options.platform && existing.platform !== options.platform) throw new Error('Batch already initialized with a different platform');
     if (options.targets) {
       const requested = options.targets.map((item) => ({ caseKey: item.caseKey, caseDir: safeCaseDir(options.workspaceCwd, item.caseDir, 'target caseDir') }));
@@ -234,13 +294,23 @@ function initialize(options, paths) {
   }
   if (!Array.isArray(options.targets) || !options.targets.length) throw new Error('--targets-json must be a non-empty array');
   if (!['harmony', 'android', 'ios'].includes(options.platform)) throw new Error('init requires a supported --platform');
+  options.provider = (options.provider || 'codex').trim().toLowerCase();
   ensureDir(paths.dir);
-  writeJson(paths.contract, currentCoordinatorContract());
+  writeJson(paths.contract, currentCoordinatorContract(options.provider));
+  const seenCaseKeys = new Set();
+  const seenCaseDirs = new Set();
   const cases = options.targets.map((target, index) => {
     if (!target.caseKey || !target.caseDir) throw new Error(`Target ${index} requires caseKey and caseDir`);
-    return { caseKey: target.caseKey, caseDir: safeCaseDir(options.workspaceCwd, target.caseDir, `target ${index} caseDir`), status: 'PENDING', executionId: null, runtimePath: null, validation: null };
+    const caseDir = safeCaseDir(options.workspaceCwd, target.caseDir, `target ${index} caseDir`);
+    const caseJson = readJson(path.join(caseDir, 'case.json'));
+    if (!caseJson) throw new Error(`Target ${index} is missing case.json`);
+    if (caseJson.identity?.caseKey !== target.caseKey) throw new Error(`Target ${index} caseKey does not match case.json`);
+    if (seenCaseKeys.has(target.caseKey) || seenCaseDirs.has(caseDir)) throw new Error(`Duplicate batch target: ${target.caseKey}`);
+    seenCaseKeys.add(target.caseKey);
+    seenCaseDirs.add(caseDir);
+    return { caseKey: target.caseKey, caseDir, status: 'PENDING', executionId: null, runtimePath: null, validation: null };
   });
-  const state = { schemaVersion: 1, batchId: options.batchId, platform: options.platform, status: 'RUNNING', currentIndex: 0, cases, createdAt: nowIso() };
+  const state = { schemaVersion: 1, batchId: options.batchId, provider: options.provider, platform: options.platform, status: 'RUNNING', currentIndex: 0, cases, createdAt: nowIso() };
   return { state, events: [{ time: nowIso(), type: 'BATCH_STARTED', batchId: options.batchId, caseCount: cases.length }] };
 }
 
@@ -271,6 +341,8 @@ function bind(options, state, events) {
   if (!runtime || runtime.batchId !== state.batchId || runtime.executionId !== options.executionId) {
     throw new Error('Agent Runtime does not belong to the current batch execution');
   }
+  if (runtime.provider !== state.provider) throw new Error('Agent Runtime provider does not match batch provider');
+  assertBatchCaseBinding(state, item, path.dirname(path.dirname(expectedRuntime)), { execution });
   if (item.status !== 'PENDING' && !(item.executionId === options.executionId && item.runtimePath === options.runtimePath)) throw new Error('Batch case is already bound differently');
   if (item.status === 'RUNNING') return;
   Object.assign(item, { status: 'RUNNING', executionId: options.executionId, runtimePath: options.runtimePath, startedAt: execution.startedAt || nowIso(), completionSource: 'agent' });
@@ -295,6 +367,7 @@ function commitCurrent(options, state, events) {
   if (!execution?.finalized || !result || !metrics) throw new Error('Execution result artifacts are incomplete');
   if (execution.batchId !== state.batchId) throw new Error('Execution does not belong to the current batch');
   if ([result.executionId, metrics.executionId, validation.executionId].some((value) => value !== item.executionId)) throw new Error('Execution artifact binding mismatch');
+  assertBatchCaseBinding(state, item, execDir, { execution, result, metrics, validation });
   const completion = publishExecution({
     caseDir: item.caseDir,
     platform: state.platform,
@@ -332,7 +405,7 @@ function commitStartResult(options, state, events) {
   if (fs.existsSync(path.join(execDir, 'agent', 'runtime.json')) || result.failureCode !== 'CASE_RESTART_FAILED') {
     throw new Error('commit-start-result only accepts a framework-owned start failure without Agent Runtime');
   }
-  if (result.executionId !== options.executionId || metrics.executionId !== options.executionId || result.caseKey !== item.caseKey) throw new Error('Framework result binding mismatch');
+  assertBatchCaseBinding(state, item, execDir, { execution, result, metrics });
   const completion = publishExecution({
     caseDir: item.caseDir,
     platform: state.platform,
@@ -360,9 +433,10 @@ function fail(options, state, events) {
 function main() {
   const options = parseArgs(process.argv.slice(2));
   const paths = batchPaths(options);
+  recoverBatchOperation(paths);
   if (options.command === 'next') {
     const state = load(paths);
-    assertBatchContract(paths);
+    assertBatchContract(paths, state);
     console.log(JSON.stringify({ schemaVersion: 1, batchId: state.batchId, status: state.status, nextCase: currentCase(state), remaining: state.cases.filter((entry) => entry.status === 'PENDING').length }, null, 2));
     return;
   }
@@ -373,7 +447,7 @@ function main() {
   }
   if (options.command === 'reconcile-current') {
     const state = load(paths);
-    assertBatchContract(paths);
+    assertBatchContract(paths, state);
     console.log(JSON.stringify(reconcileCurrent(options, state), null, 2));
     return;
   }
@@ -382,14 +456,13 @@ function main() {
   if (options.command === 'init') ({ state, events } = initialize(options, paths));
   else {
     state = load(paths);
-    if (options.command !== 'fail') assertBatchContract(paths);
+    if (options.command !== 'fail') assertBatchContract(paths, state);
     if (options.command === 'bind') bind(options, state, events);
     else if (options.command === 'commit-current') commitCurrent(options, state, events);
     else if (options.command === 'commit-start-result') commitStartResult(options, state, events);
     else if (options.command === 'fail') fail(options, state, events);
   }
-  save(paths, state);
-  for (const event of events) appendJsonl(paths.events, event);
+  commitBatchOperation(paths, state, events);
   console.log(JSON.stringify(state, null, 2));
 }
 

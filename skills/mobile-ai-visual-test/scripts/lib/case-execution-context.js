@@ -6,6 +6,8 @@ const path = require('path');
 const { caseContractSha, caseRuntimeDir, readJson, readJsonl, validateCaseExecutionContract } = require('../common');
 const { deriveNextWork } = require('./execution-reducer');
 const { nextWorkToken } = require('./next-work-contract');
+const { validateFrozenPreconditionInputs } = require('./precondition-inputs');
+const { validateExecutionEnvironment } = require('./execution-environment');
 
 function latestExecutionId(runtimeDir) {
   const root = path.join(runtimeDir, 'executions');
@@ -27,6 +29,8 @@ function loadCaseExecutionContext(options) {
   if (!execution.caseContractSha || execution.caseContractSha !== caseContractSha(caseJson)) {
     throw new Error('EXECUTION_CONTRACT_CORRUPTED: case.snapshot.json does not match execution.json');
   }
+  validateExecutionEnvironment(execution, options.platform);
+  const preconditionInputs = validateFrozenPreconditionInputs(execution);
   const events = readJsonl(path.join(execDir, 'timeline.jsonl'));
   const request = readJson(path.join(execDir, 'agent', 'request.json'), null);
   const nextWork = deriveNextWork({
@@ -34,7 +38,7 @@ function loadCaseExecutionContext(options) {
     execution,
     events,
     execDir,
-    confirmedPreconditions: request?.confirmedPreconditions || [],
+    preconditionInputs,
   });
   return {
     runtimeDir,

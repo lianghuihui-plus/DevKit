@@ -6,12 +6,14 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 platform=""
 device=""
 device_type=""
+device_form_factor=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --platform) platform="${2:-}"; shift 2 ;;
     --device) device="${2:-}"; shift 2 ;;
     --device-type) device_type="${2:-}"; shift 2 ;;
+    --device-form-factor) device_form_factor="${2:-}"; shift 2 ;;
     --app|--bundle|--entry|--ability)
       cat >&2 <<'EOF'
 probe-env 只探测平台/设备能力，不接收 --app/--entry/--bundle/--ability。
@@ -32,10 +34,15 @@ if [[ -n "$device_type" && "$platform" != "ios" ]]; then
   echo "probe-env 的 --device-type 仅适用于 iOS。" >&2
   exit 2
 fi
+if [[ -n "$device_form_factor" && "$platform" != "harmony" ]]; then
+  echo "probe-env 的 --device-form-factor 当前仅适用于 HarmonyOS。" >&2
+  exit 2
+fi
 
 args=(--platform "$platform")
 [[ -n "$device" ]] && args+=(--device "$device")
 [[ -n "$device_type" ]] && args+=(--device-type "$device_type")
+[[ -n "$device_form_factor" ]] && args+=(--device-form-factor "$device_form_factor")
 probe_output="$("$script_dir/platform/probe-env.sh" "${args[@]}")"
 node -e '
 const fs = require("fs");

@@ -92,11 +92,7 @@ Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、�
 
 ## isolation
 
-| 值 | 含义 |
-| --- | --- |
-| `true` / `required` | 必须真实冷启动，失败直接 `BLOCKED/CASE_RESTART_FAILED` |
-| `false` / `optional` | 冷启动失败可降级继续 |
-| `auto` | 框架根据用例语义识别是否冷启动敏感 |
+所有正式 execution 都必须真实冷启动，失败直接 `BLOCKED/CASE_RESTART_FAILED`。历史 `requireCleanRestart` 字段只为兼容既有 case 保留，不再允许 `false`、`optional` 或 `auto` 降级绕过批量用例隔离。
 
 ## source.md
 

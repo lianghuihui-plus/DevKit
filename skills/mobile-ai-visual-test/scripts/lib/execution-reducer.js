@@ -2,6 +2,8 @@
 'use strict';
 
 const path = require('path');
+const { validateActionExecution } = require('./action-contract');
+const { evaluateFrameworkPrecondition } = require('./framework-preconditions');
 const { operationClass, validateNextWork } = require('./next-work-contract');
 
 function lastIndex(events, predicate) {
@@ -65,7 +67,7 @@ function decorate(nextWork) {
   return { ...nextWork, operationClass: operationClass(nextWork) };
 }
 
-function reduceFlow(casePrecondition, planEntry, events, execDir) {
+function reduceFlow(casePrecondition, planEntry, events, execDir, platform) {
   const preconditionId = casePrecondition.id;
   const flowId = planEntry.flowId;
   const related = events.filter((event) => event.preconditionId === preconditionId && event.flowId === flowId);
@@ -89,7 +91,15 @@ function reduceFlow(casePrecondition, planEntry, events, execDir) {
     const before = stepEvents.filter((event) => event.type === 'observation' && event.phase === 'before').at(-1);
     if (!before) return decorate({ type: 'OBSERVE_FLOW_BEFORE', preconditionId, flowId, flowStepId: step.id, phase: 'before' });
     const action = stepEvents.filter((event) => event.type === 'actionResult').at(-1);
-    if (!action) return decorate({ type: 'EXECUTE_FLOW_ACTION', preconditionId, flowId, flowStepId: step.id, instruction: step.instruction || '', requestedAction: step.action, latestObservation: observationSummary(before, execDir) });
+    if (!action) {
+      const next = { preconditionId, flowId, flowStepId: step.id, instruction: step.instruction || '', requestedAction: step.action, latestObservation: observationSummary(before, execDir) };
+      try {
+        validateActionExecution(step.action, { platform, context: 'frozen Flow action' });
+        return decorate({ type: 'EXECUTE_FLOW_ACTION', ...next });
+      } catch (_) {
+        return decorate({ type: 'DECIDE_FLOW_ACTION', ...next });
+      }
+    }
     const after = stepEvents.filter((event) => event.type === 'observation' && event.phase === 'after').at(-1);
     if (!after) return decorate({ type: 'OBSERVE_FLOW_AFTER', preconditionId, flowId, flowStepId: step.id, phase: 'after' });
     return decorate({ type: 'RECORD_FLOW_STEP_COMPLETED', preconditionId, flowId, flowStepId: step.id, latestObservation: observationSummary(after, execDir) });
@@ -99,7 +109,7 @@ function reduceFlow(casePrecondition, planEntry, events, execDir) {
   return decorate({ type: 'DECIDE_FLOW_END', preconditionId, flowId, endCondition: planEntry.flow?.endCondition || null, latestObservation: observationSummary(endObservation, execDir) });
 }
 
-function deriveNextWork({ caseJson, execution, events, execDir, confirmedPreconditions = [] }) {
+function deriveNextWork({ caseJson, execution, events, execDir, preconditionInputs = [] }) {
   if (execution.finalized) return decorate({ type: 'STOP_FINALIZED', status: execution.status || null, resultPath: path.join(execDir, 'result.json'), metricsPath: path.join(execDir, 'metrics.json') });
   const planEntries = new Map((execution.preconditionPlan?.preconditions || []).map((item) => [item.id, item]));
   for (const item of caseJson.preconditions || []) {
@@ -109,11 +119,16 @@ function deriveNextWork({ caseJson, execution, events, execDir, confirmedPrecond
       continue;
     }
     const planEntry = planEntries.get(item.id) || { id: item.id, resolution: item.checkMode || 'unknown' };
-    if (planEntry.resolution === 'flow') return reduceFlow(item, planEntry, events, execDir);
-    const confirmed = confirmedPreconditions.find((entry) => entry.id === item.id) || null;
-    if (confirmed) return decorate({ type: 'RECORD_PRECONDITION', preconditionId: item.id, text: item.text, resolution: planEntry.resolution, status: confirmed.status, reason: confirmed.reason });
+    if (planEntry.resolution === 'flow') return reduceFlow(item, planEntry, events, execDir, execution.environmentSnapshot?.binding?.platform);
+    if (planEntry.resolution === 'framework') {
+      const checked = evaluateFrameworkPrecondition(planEntry.checkerId, execution, events);
+      return decorate({ type: 'RECORD_PRECONDITION', preconditionId: item.id, text: item.text, resolution: 'framework', checkerId: planEntry.checkerId, ...checked });
+    }
+    const input = preconditionInputs.find((entry) => entry.id === item.id) || null;
+    if (input) return decorate({ type: 'RECORD_PRECONDITION', preconditionId: item.id, text: item.text, resolution: planEntry.resolution, status: input.status, reason: input.reason });
     if (planEntry.resolution === 'unsupported') return decorate({ type: 'RECORD_PRECONDITION', preconditionId: item.id, text: item.text, resolution: planEntry.resolution, status: 'BLOCKED', failureCode: 'PRECONDITION_UNSUPPORTED', reason: '当前前置条件不支持无人值守处理。' });
-    return decorate({ type: 'RECORD_PRECONDITION', preconditionId: item.id, text: item.text, resolution: planEntry.resolution, status: 'BLOCKED', failureCode: 'PRECONDITION_REQUIRED', reason: '前置条件未在无人值守开始前确认。' });
+    const reason = planEntry.resolution === 'external_setup' ? '外部业务状态未在 execution 开始前准备完成。' : '前置条件未在无人值守开始前确认。';
+    return decorate({ type: 'RECORD_PRECONDITION', preconditionId: item.id, text: item.text, resolution: planEntry.resolution, status: 'BLOCKED', failureCode: 'PRECONDITION_REQUIRED', reason });
   }
   for (const step of caseJson.steps) {
     const assertionIndex = lastIndex(events, (event) => event.type === 'assertion' && eventStepId(event) === step.id);

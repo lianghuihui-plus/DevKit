@@ -11,10 +11,8 @@ const {
   parseMarkdownCase,
   readJson,
   readJsonl,
-  refreshIndexForCase,
+  rebuildCaseDerivedArtifacts,
   reapplyNotes,
-  writeCaseReports,
-  writePlatformCaseReports,
   writeJson,
 } = require('../common');
 const { parseCliArgsOrExit } = require('../lib/cli-args');
@@ -34,7 +32,6 @@ if (!caseDir) usage();
 const casePath = path.join(caseDir, 'case.json');
 const sourcePath = path.join(caseDir, 'source.md');
 const notesPath = path.join(caseDir, 'notes.jsonl');
-const statePath = path.join(caseDir, 'state.json');
 
 if (!fs.existsSync(casePath)) {
   throw new Error(`缺少 case.json: ${casePath}`);
@@ -77,17 +74,8 @@ const notes = readJsonl(notesPath);
 caseJson = reapplyNotes(caseJson, notes, { strictStepText: sourceChanged });
 writeJson(casePath, caseJson);
 
-const state = readJson(statePath, {
-  schemaVersion: 1,
-  latestStatus: 'NOT_RUN',
-  executionCount: 0,
-  environment: {},
-  statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 },
-});
-writeJson(statePath, state);
-const currentNotes = readJsonl(notesPath);
-const reports = writeCaseReports(caseDir, caseJson, state, currentNotes);
-writePlatformCaseReports(caseDir, caseJson, currentNotes);
-const indexHtml = refreshIndexForCase(caseDir);
+const rebuilt = rebuildCaseDerivedArtifacts(caseDir);
+const reports = rebuilt.rootReport;
+const indexHtml = rebuilt.indexHtml;
 
 console.log(JSON.stringify({ caseDir, caseJson: casePath, ...reports, indexHtml, sourceChanged }, null, 2));

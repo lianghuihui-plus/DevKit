@@ -9,6 +9,8 @@ const {
   readJsonl,
 } = require('./common');
 const { validateCaseAgentRequest, validateCaseAgentResult } = require('./lib/agent-runtime-contract');
+const { validateExecutionEnvironment } = require('./lib/execution-environment');
+const { validateFrozenPreconditionInputs } = require('./lib/precondition-inputs');
 
 function usage() {
   console.error('Usage: validate-case-agent-result.js <case-dir> --platform <platform> --request-json <json> --result-json <json>');
@@ -36,6 +38,8 @@ function main() {
   if (agentResult.requestSha !== request.requestSha) throw new Error('AGENT_RESULT_INVALID: requestSha mismatch');
   if (agentResult.protocolSha !== request.skillContract.protocolSha) throw new Error('AGENT_RESULT_INVALID: protocolSha mismatch');
   if (agentResult.implementationSha !== request.skillContract.implementationSha) throw new Error('AGENT_RESULT_INVALID: implementationSha mismatch');
+  if (agentResult.environmentSha !== request.environmentSha) throw new Error('AGENT_RESULT_INVALID: environmentSha mismatch');
+  if (agentResult.preconditionInputsSha !== request.preconditionInputsSha) throw new Error('AGENT_RESULT_INVALID: preconditionInputsSha mismatch');
   if (agentResult.provider !== request.provider) throw new Error(`AGENT_RESULT_INVALID: provider mismatch: expected ${request.provider}, received ${agentResult.provider}`);
   const execDir = path.join(caseRuntimeDir(caseDir, options.platform), 'executions', request.executionId);
   const agentDir = path.join(execDir, 'agent');
@@ -43,7 +47,7 @@ function main() {
   if (persistedContract && (persistedContract.protocolSha !== request.skillContract.protocolSha || persistedContract.implementationSha !== request.skillContract.implementationSha)) throw new Error('AGENT_RESULT_INVALID: persisted contract mismatch');
   const persistedRuntime = readJson(path.join(agentDir, 'runtime.json'));
   if (!persistedRuntime) throw new Error('AGENT_RESULT_INVALID: missing runtime.json');
-  if (persistedRuntime.provider !== request.provider || persistedRuntime.requestSha !== request.requestSha || persistedRuntime.protocolSha !== request.skillContract.protocolSha || persistedRuntime.implementationSha !== request.skillContract.implementationSha) {
+  if (persistedRuntime.provider !== request.provider || persistedRuntime.requestSha !== request.requestSha || persistedRuntime.protocolSha !== request.skillContract.protocolSha || persistedRuntime.implementationSha !== request.skillContract.implementationSha || persistedRuntime.environmentSha !== request.environmentSha || persistedRuntime.preconditionInputsSha !== request.preconditionInputsSha) {
     throw new Error('AGENT_RESULT_INVALID: persisted runtime request binding mismatch');
   }
   if ((persistedRuntime.batchId || null) !== (request.batchId || null)) throw new Error('AGENT_RESULT_INVALID: persisted runtime batch binding mismatch');
@@ -53,6 +57,7 @@ function main() {
   if (bound.protocolSha !== agentResult.protocolSha) throw new Error('AGENT_RESULT_INVALID: runtime protocolSha mismatch');
   if (bound.implementationSha !== agentResult.implementationSha) throw new Error('AGENT_RESULT_INVALID: runtime implementationSha mismatch');
   if (bound.requestSha !== request.requestSha || !bound.sessionId) throw new Error('AGENT_RESULT_INVALID: runtime request/session binding mismatch');
+  if (bound.environmentSha !== request.environmentSha || bound.preconditionInputsSha !== request.preconditionInputsSha) throw new Error('AGENT_RESULT_INVALID: runtime execution binding mismatch');
   const expectedResultPath = path.join(execDir, 'result.json');
   const expectedMetricsPath = path.join(execDir, 'metrics.json');
   if (path.resolve(agentResult.resultPath) !== expectedResultPath || path.resolve(agentResult.metricsPath) !== expectedMetricsPath) {
@@ -63,11 +68,16 @@ function main() {
   const result = readJson(expectedResultPath);
   const metrics = readJson(expectedMetricsPath);
   if (!execution?.finalized || !agentResult.finalized) throw new Error('AGENT_RESULT_INVALID: execution is not finalized');
+  validateExecutionEnvironment(execution, options.platform);
+  validateFrozenPreconditionInputs(execution);
+  if (execution.environmentSha !== request.environmentSha || execution.preconditionInputsSha !== request.preconditionInputsSha) throw new Error('AGENT_RESULT_INVALID: execution frozen binding mismatch');
   if ((execution.batchId || null) !== (request.batchId || null)) throw new Error('AGENT_RESULT_INVALID: execution batch binding mismatch');
   if (result.executionId !== request.executionId || metrics.executionId !== request.executionId) throw new Error('AGENT_RESULT_INVALID: artifact executionId mismatch');
   for (const artifact of [result, metrics]) {
     if (artifact.caseContractSha !== request.caseContractSha) throw new Error('AGENT_RESULT_INVALID: caseContractSha mismatch');
     if (artifact.preconditionPlanSha !== request.preconditionPlanSha) throw new Error('AGENT_RESULT_INVALID: preconditionPlanSha mismatch');
+    if (artifact.environmentSha !== request.environmentSha) throw new Error('AGENT_RESULT_INVALID: environmentSha artifact mismatch');
+    if (artifact.preconditionInputsSha !== request.preconditionInputsSha) throw new Error('AGENT_RESULT_INVALID: preconditionInputsSha artifact mismatch');
   }
   if (result.status !== agentResult.status || (result.failureCode || null) !== (agentResult.failureCode || null)) {
     throw new Error('AGENT_RESULT_INVALID: agent status does not match result.json');
@@ -81,6 +91,8 @@ function main() {
     executionId: request.executionId,
     status: result.status,
     failureCode: result.failureCode || null,
+    environmentSha: request.environmentSha,
+    preconditionInputsSha: request.preconditionInputsSha,
     resultPath: expectedResultPath,
     metricsPath: expectedMetricsPath,
   };
@@ -90,6 +102,7 @@ function main() {
 try {
   main();
 } catch (error) {
-  console.error(error.message || String(error));
+  const message = error.message || String(error);
+  console.error(message.startsWith('AGENT_RESULT_INVALID:') ? message : `AGENT_RESULT_INVALID: ${message}`);
   process.exit(1);
 }

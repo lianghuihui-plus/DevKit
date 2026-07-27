@@ -34,7 +34,14 @@
 | `PRECONDITION_FLOW_UNSAFE` | `BLOCKED` | Flow 包含不安全动作 |
 | `PRECONDITION_FLOW_BUDGET_EXCEEDED` | `BLOCKED` | 前置条件 Flow 动作超预算 |
 | `ENV_UNCONFIRMED` | `BLOCKED` | 环境未确认 |
-| `ENVIRONMENT_BINDING_MISMATCH` | `BLOCKED` | 正式调用显式环境与已确认 state 不一致 |
+| `ENVIRONMENT_BINDING_MISMATCH` | `BLOCKED` | 正式调用显式环境与 execution 冻结环境不一致 |
+| `ACTIVE_EXECUTION_ENVIRONMENT_LOCKED` | `BLOCKED` | 当前 case 存在未结束 execution，不能修改其环境配置 |
+| `EXECUTION_ENVIRONMENT_UNBOUND` | `BLOCKED` | execution 缺少不可变环境快照或环境哈希 |
+| `EXECUTION_ENVIRONMENT_CHANGED` | `BLOCKED` | execution 环境快照与环境哈希不一致 |
+| `PROBE_DEVICE_NOT_FOUND` | `BLOCKED` | 已确认设备不在当前 probe 设备列表中 |
+| `ENVIRONMENT_OPTION_OWNERSHIP` | `BLOCKED` | 平台专属环境参数被写入错误平台 |
+| `PRECONDITION_INPUT_INVALID` | `BLOCKED` | 执行前输入与前置条件 resolution 不匹配 |
+| `PRECONDITION_INPUT_CHANGED` | `BLOCKED` | execution 冻结的前置输入与哈希不一致 |
 | `ENV_UNAVAILABLE` | `BLOCKED` | 平台或设备不可用 |
 | `ENV_AMBIGUOUS` | `BLOCKED` | 设备、App 或入口歧义 |
 | `PLATFORM_UNIMPLEMENTED` | `BLOCKED` | 平台能力未实现 |
@@ -60,6 +67,7 @@
 | `EVENT_SOURCE_REQUIRED` | `BLOCKED` | 公开入口尝试写框架所有事件 |
 | `CASE_STEPS_REQUIRED` | `BLOCKED` | 用例未解析出任何可执行步骤 |
 | `EXECUTION_RECOVERY_CONTRACT_CHANGED` | `BLOCKED` | 半提交 draft 与当前 execution 或 case contract 不一致，禁止自动恢复 |
+| `EXECUTION_COMPLETION_INVALID` | `BLOCKED` | completion 绑定或已发布产物哈希在读取时不一致 |
 | `EXECUTION_ORPHANED` | `BLOCKED` | execution 已超过 deadline、未初始化 Runtime 且只有启动事实，由框架确定性收尾 |
 
 ## 证据和顺序
@@ -84,7 +92,9 @@
 
 ## 冷启动、预算和停止
 
-- 每个 execution 开始必须尝试 `restartApp`；冷启动敏感用例失败时为 `BLOCKED/CASE_RESTART_FAILED`。
+- 每个正式 execution 都必须完成并验证 `restartApp`；任一平台冷启动失败都为 `BLOCKED/CASE_RESTART_FAILED`。
+- `completion.json` 的绑定或 result/metrics/validation 哈希在读取时不一致，报告只展示 `BLOCKED/EXECUTION_COMPLETION_INVALID`，不发布原业务结论。
+- 启动显示策略为 `required` 时，方向不可读、无法归一或 App 启动后方向不符合要求，都属于 `BLOCKED/CASE_RESTART_FAILED`；失败阶段保存在启动级 `restartApp actionResult`，不新增业务步骤。
 - 启动级 restartApp 使用 `scope=execution-bootstrap`，允许早于 Runtime BOUND；所有前置条件和业务步骤事实必须晚于 BOUND。
 - 单 case 默认 30 分钟；超时为 `CASE_TIMEOUT`，其他普通预算超限为 `EXECUTION_BUDGET_EXCEEDED`。
 - 前置条件 Flow 每个条件默认最多 5 个动作，单 case 默认最多 12 个；超限为 `PRECONDITION_FLOW_BUDGET_EXCEEDED`。

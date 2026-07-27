@@ -9,14 +9,11 @@ const ROLE_RESOURCES = Object.freeze({
   'case-executor': [
     'SKILL.md',
     'references/case-executor-contract.md',
-    'references/interfaces.md',
-    'references/failure-policy.md',
-    'references/context-format.md',
+    'references/case-agent-policy.md',
   ],
   'batch-coordinator': [
     'SKILL.md',
     'references/agent-runtime.md',
-    'references/agent-runtimes/codex.md',
     'references/workflow.md',
     'references/interfaces.md',
     'references/environment-probing.md',
@@ -48,21 +45,23 @@ const ROLE_ENTRYPOINTS = Object.freeze({
 });
 
 function usage() {
-  console.error('Usage: build-agent-contract.js --role <case-executor|batch-coordinator> [--skill-root <path>] [--verify-sha <sha>]');
+  console.error('Usage: build-agent-contract.js --role <case-executor|batch-coordinator> [--provider <id>] [--skill-root <path>] [--verify-sha <sha>]');
   process.exit(2);
 }
 
 function parseArgs(args) {
-  const options = { skillRoot: path.resolve(__dirname, '..') };
+  const options = { skillRoot: path.resolve(__dirname, '..'), provider: 'codex' };
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case '--role': options.role = args[++i]; break;
+      case '--provider': options.provider = String(args[++i] || '').trim().toLowerCase(); break;
       case '--skill-root': options.skillRoot = path.resolve(args[++i]); break;
       case '--verify-sha': options.verifySha = args[++i]; break;
       default: usage();
     }
   }
   if (!ROLE_RESOURCES[options.role]) usage();
+  if (!/^[a-z][a-z0-9._-]{0,63}$/.test(options.provider)) usage();
   return options;
 }
 
@@ -95,8 +94,19 @@ function listImplementationFiles(root, relative = 'scripts') {
   return values;
 }
 
-function implementationDigest(skillRoot) {
-  const files = listImplementationFiles(skillRoot);
+function implementationDigest(skillRoot, role) {
+  const allFiles = listImplementationFiles(skillRoot);
+  const files = role === 'case-executor'
+    ? allFiles.filter((relative) => relative === 'scripts/execute-next-work.js'
+      || relative === 'scripts/build-case-agent-result.js'
+      || relative === 'scripts/run-case.js'
+      || relative === 'scripts/execution/run-case.js'
+      || relative === 'scripts/action-observe.sh'
+      || relative === 'scripts/action.sh'
+      || relative === 'scripts/observe.sh'
+      || relative.startsWith('scripts/lib/')
+      || relative.startsWith('scripts/platform/adapters/'))
+    : allFiles;
   const hash = crypto.createHash('sha256');
   for (const relative of files) {
     hash.update(`${relative}\0`, 'utf8');
@@ -111,10 +121,11 @@ function implementationDigest(skillRoot) {
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
-  const resources = ROLE_RESOURCES[options.role];
+  const resources = [...ROLE_RESOURCES[options.role]];
+  if (options.role === 'batch-coordinator') resources.splice(2, 0, `references/agent-runtimes/${options.provider}.md`);
   const entrypoints = ROLE_ENTRYPOINTS[options.role];
   const protocolSha = contractDigest(options.skillRoot, resources, entrypoints);
-  const implementation = implementationDigest(options.skillRoot);
+  const implementation = implementationDigest(options.skillRoot, options.role);
   if (options.verifySha && options.verifySha !== protocolSha) {
     throw new Error(`AGENT_PROTOCOL_MISMATCH: requested ${options.verifySha}, current ${protocolSha}`);
   }
@@ -123,6 +134,7 @@ function main() {
     name: 'mobile-ai-visual-test',
     root: options.skillRoot,
     role: options.role,
+    provider: options.provider,
     requiredResources: resources,
     allowedEntrypoints: entrypoints,
     protocolSha,

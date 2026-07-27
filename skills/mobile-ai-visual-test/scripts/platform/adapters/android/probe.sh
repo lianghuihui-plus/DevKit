@@ -112,6 +112,7 @@ console.log(JSON.stringify({
   type: "environmentProbe",
   platform: "android",
   device,
+  devices: targets.map((id) => ({ id, serial: id })),
   targets,
   ready: !diagnostics.some((item) => item.level === "ERROR"),
   diagnostics,

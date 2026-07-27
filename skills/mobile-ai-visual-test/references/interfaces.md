@@ -88,7 +88,7 @@ agent 只调用稳定入口层。内部实现层、平台 adapter 和 atoms 不�
 
 Agent Runtime 不操作设备、不写 observation/actionResult、不决定业务断言。Host Adapter 也不直接修改 runtime、timeline 或结果产物；所有状态变化必须通过 `agent-runtime.js apply`。
 
-provider 是 Runtime Core 所有的规范机器标识，初始化时统一转成小写并校验，只写入 `runtime.json`、CaseAgentRequest、RuntimeOperation 和 BOUND。CaseAgentResult 从签名 request 继承 provider；结果构造入口不接受 provider 参数。SkillContract 的 `protocolSha` 与 `implementationSha` 分别冻结角色规范和实际运行脚本，CaseAgentRequest、Runtime BOUND、runtime.json 与 CaseAgentResult 必须全部一致。
+provider 是 Runtime Core 所有的规范机器标识，初始化时统一转成小写并校验，只写入 `runtime.json`、CaseAgentRequest、RuntimeOperation 和 BOUND。CaseAgentResult 从签名 request 继承 provider；结果构造入口不接受 provider 参数。SkillContract 的 `protocolSha` 与 `implementationSha` 分别冻结角色规范和实际运行脚本；`environmentSha` 与 `preconditionInputsSha` 冻结本 execution 的设备环境和执行前输入。CaseAgentRequest、Runtime BOUND、runtime.json、CaseAgentResult、result、metrics 与 validation 必须全部一致。
 
 ### 参数所有权
 
@@ -99,8 +99,8 @@ provider 是 Runtime Core 所有的规范机器标识，初始化时统一转成
 | `case-dir`、`execution-id`、`step-id`、`scope`、Flow 绑定参数 | 稳定入口 | 否 |
 | `reason`、`target`、`coordinate-*`、`settle-ms` | 稳定入口的审计或编排信息 | 否 |
 | `type`、坐标、`text`、`ms`、`velocity`、`duration-ms` | 统一动作参数 | 是，仅传动作所需字段 |
-| `device`、`app/bundle`、`entry/ability` | 平台环境参数；case-bound 时必须等于已确认 state | 是 |
-| iOS Appium/WDA 参数 | `update-env.js` 固化的 state | 仅在 case-bound 入口解析完成后注入 iOS adapter |
+| `device`、`app/bundle`、`entry/ability` | 平台环境参数；case-bound 时必须等于 execution environmentSnapshot | 是 |
+| iOS Appium/WDA 参数 | `update-env.js` 配置并由 `--start` 冻结到 environmentSnapshot | 仅在 case-bound 入口解析完成后注入 iOS adapter |
 
 新增参数时必须先在本节和对应领域契约中确定所有权，再修改稳定入口与 adapter；不能依靠底层忽略多余参数维持兼容。
 
@@ -134,7 +134,7 @@ adapter 内部可以调用 atoms，但不得：
   "devices": [{"id": "device-id", "name": "Pixel"}],
   "capabilities": {
     "screenshot": true,
-    "uiTree": true,
+    "layout": true,
     "foreground": true,
     "logs": true,
     "actions": ["launchApp", "restartApp", "tap", "inputText", "swipe", "back", "wait"],
@@ -142,6 +142,44 @@ adapter 内部可以调用 atoms，但不得：
   }
 }
 ```
+
+平台可在 `devices[]` 写 `deviceFormFactor`，并在 `capabilities.startupDisplay` 统一声明 `canReadOrientation`、`canSetOrientation`、`canVerifyAfterLaunch` 与 `supportedOrientations`。`deviceFormFactor` 描述产品形态；iOS 既有 `deviceType=simulator|realDevice` 描述执行目标类型，两者不能互相替代。
+
+`update-env.js` 固化统一策略：
+
+```json
+{
+  "startupDisplayPolicy": {
+    "orientation": "portrait",
+    "enforcement": "required",
+    "appliesTo": ["phone"]
+  }
+}
+```
+
+启动级 `restartApp actionResult.startupDisplay` 使用统一结果契约：
+
+```json
+{
+  "requestedOrientation": "portrait",
+  "enforcement": "required",
+  "appliesTo": ["phone"],
+  "deviceFormFactor": "phone",
+  "deviceFormFactorSource": "environment",
+  "required": true,
+  "before": {"orientation": "landscape", "rotation": 270, "width": 2720, "height": 1260},
+  "afterNormalization": {"orientation": "portrait", "rotation": 0, "width": 1260, "height": 2720},
+  "afterLaunch": {"orientation": "portrait", "rotation": 0, "width": 1260, "height": 2720},
+  "normalizationApplied": true,
+  "retryApplied": false,
+  "verified": true,
+  "status": "VERIFIED",
+  "skippedReason": null,
+  "failureStage": null
+}
+```
+
+`required=true` 时，只有 `status=VERIFIED`、`verified=true` 且 `afterLaunch.orientation` 等于请求值才满足契约；策略不适用时 adapter 返回 `status=SKIPPED` 和稳定 `skippedReason`。已知失败仍应返回结构化 `actionResult`，由 Case Engine 统一映射为冷启动隔离失败。Runtime Core 不解释平台命令，只根据已确认策略和该结果决定隔离是否可信。
 
 目标 App、入口和当前前台状态不由 `probe-env` 固化；目标信息由 `update-env.js` 写入，当前状态由 `observe.sh` 采集。
 
@@ -230,7 +268,9 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionSt
 
 不要为了说明想法写入不会影响执行的事实。
 
-`agentRuntime` 只能由 `record-agent-runtime.js` 写入。`BOUND` 绑定 provider、sessionScope、protocolSha 和 implementationSha；`FAILED`、`INTERRUPTED` 必须使用合法 `AGENT_*` failureCode，并由框架安全收尾当前 execution。
+`agentRuntime` 只能由 `record-agent-runtime.js` 写入。`BOUND` 绑定 provider、sessionScope、protocolSha、implementationSha、requestSha、environmentSha 和 preconditionInputsSha；`FAILED`、`INTERRUPTED` 必须使用合法 `AGENT_*` failureCode，并由框架安全收尾当前 execution。
+
+前置条件外部输入只有两类：`confirm` 必须冻结为 `PASS`，`external_setup` 必须冻结为 `PREPARED`。`flow`、`framework` 和 `unsupported` 不接受外部输入；其中 framework 事实必须带计划中的 `checkerId` 和可审计 `evidenceRefs`。
 
 `executionRecovery` 只能由 `run-case.js --recover-orphaned` 写入，用于已经超过 deadline、没有 Agent Runtime 且 timeline 只有合法启动事实的孤立 execution；它必须以 `BLOCKED/EXECUTION_ORPHANED` 收尾。
 
@@ -241,9 +281,11 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionSt
 | action | 含义 |
 | --- | --- |
 | `START_NEW` | 没有活动 execution |
-| `INIT_RUNTIME` | 当前 batch 的 execution 只有启动事实 |
+| `RESUME_START` | 当前 batch 的 execution 停在 STARTING，调用 `run-case --resume-start` 幂等恢复 |
+| `INIT_RUNTIME` | 当前 batch 的 execution 已 RUNNING 且只有启动事实 |
 | `BIND_RUNTIME` | 当前 batch 的 Runtime 已存在，但 batch 尚未保存 execution 绑定 |
 | `RESUME_RUNTIME` | 当前 batch 的 Runtime 可继续调用 next |
+| `COMMIT_START_RESULT` | 无 Runtime 的框架启动失败已 finalized，调用 `commit-start-result` |
 | `COMMIT_FINALIZED` | 当前绑定 execution 已 finalized，可提交可信产物 |
 | `RECOVER_FINALIZING` | 存在可重入的 finalize draft |
 | `CLOSE_EXPIRED` | 其他 execution 已过期且存在 Runtime，走超时、中断和释放 |
@@ -252,7 +294,7 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionSt
 | `BLOCK_RUNTIME_RELEASE` | Host 连续三次无法确认 Runtime session 释放，批次必须阻塞 |
 | `BATCH_BLOCKED` | 批次已阻塞，重复恢复只返回同一终态 |
 | `BATCH_COMPLETE` | 批次已完成，无需继续提交 |
-| `CORRUPTED` | 存在没有 Runtime 绑定的 Case Engine 事实 |
+| `CORRUPTED` | 候选 execution 不唯一、存在未绑定业务事实、身份不一致或缺少不可变环境/输入绑定 |
 
 `commit-agent-turn.js` 只接受一个 step 和一个 observation，第一条事实必须是 perception，第二条最多一条 decision 或 assertion。它为事件附加相同 `turnId`，提交前冻结 `<execution>/agent/turns/*.draft.json`，重试时校验原请求并跳过已提交事实，完整提交后删除 draft；不能批量写多个步骤。`execute-next-work decide` 只对命中该 draft 且内容完全一致的旧 workToken 开放恢复，不把普通过期决定重新放行。
 

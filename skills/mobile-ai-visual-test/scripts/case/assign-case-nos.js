@@ -7,12 +7,9 @@ const {
   nextCaseNo,
   normalizeCaseNo,
   readCaseEntries,
-  readJson,
-  readJsonl,
-  refreshIndexForCase,
+  rebuildCaseDerivedArtifacts,
   renderIndexForRoot,
   syncCaseDirectory,
-  writeCaseReports,
   writeJson,
 } = require('../common');
 
@@ -39,16 +36,7 @@ for (const entry of readCaseEntries(root).sort(compareEntries)) {
   else caseJson.identity.caseNo = beforeNo;
   caseDir = syncCaseDirectory(root, caseDir, caseJson);
   writeJson(path.join(caseDir, 'case.json'), caseJson);
-  const state = readJson(path.join(caseDir, 'state.json'), {
-    schemaVersion: 1,
-    latestStatus: 'NOT_RUN',
-    executionCount: 0,
-    environment: {},
-    statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 },
-  });
-  const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
-  writeCaseReports(caseDir, caseJson, state, notes);
-  refreshIndexForCase(caseDir);
+  rebuildCaseDerivedArtifacts(caseDir, { refreshIndex: false });
   if (!beforeNo || beforeDir !== caseDir) {
     updated.push({
       caseNo: caseJson.identity.caseNo,

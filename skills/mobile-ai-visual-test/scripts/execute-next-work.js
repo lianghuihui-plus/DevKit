@@ -85,8 +85,22 @@ function executeDeterministic(options, work) {
     run('action-observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--step-id', work.step.id, ...actionArgs(work.requestedAction)]);
     return;
   }
+  if (work.type === 'EXECUTE_FLOW_ACTION') {
+    validateActionExecution(work.requestedAction, { platform: options.platform, context: work.type });
+    run('action-observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--scope', 'precondition-flow', '--precondition-id', work.preconditionId, '--flow-id', work.flowId, '--flow-step-id', work.flowStepId, ...actionArgs(work.requestedAction)]);
+    return;
+  }
   if (work.type === 'RECORD_PRECONDITION') {
-    record(options, { type: 'precondition', id: work.preconditionId, status: work.status, reason: work.reason, failureCode: work.failureCode || null });
+    record(options, {
+      type: 'precondition',
+      id: work.preconditionId,
+      resolution: work.resolution,
+      checkerId: work.checkerId || undefined,
+      evidenceRefs: work.evidenceRefs || undefined,
+      status: work.status,
+      reason: work.reason,
+      failureCode: work.failureCode || null,
+    });
     return;
   }
   if (work.type === 'RECORD_FLOW_PRECONDITION_TERMINAL') {
@@ -146,7 +160,7 @@ function decisionRequest(context) {
     layoutPath: observation?.layoutPath || null,
   };
   if (work.type === 'DECIDE_FLOW_ENTRY') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, startCondition: work.startCondition, endCondition: work.endCondition, allowedOutcomes: ['ALREADY_SATISFIED', 'STARTABLE', 'START_MISMATCH', 'OBSERVATION_UNUSABLE'] };
-  if (work.type === 'EXECUTE_FLOW_ACTION') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, flowStepId: work.flowStepId, instruction: work.instruction, requestedAction: work.requestedAction, allowedOutcomes: ['ACT', 'BLOCKED'] };
+  if (work.type === 'DECIDE_FLOW_ACTION') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, flowStepId: work.flowStepId, instruction: work.instruction, requestedAction: work.requestedAction, allowedOutcomes: ['ACT', 'BLOCKED'] };
   if (work.type === 'DECIDE_FLOW_END') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, endCondition: work.endCondition, allowedOutcomes: ['TARGET_REACHED', 'TARGET_NOT_REACHED', 'OBSERVATION_UNUSABLE'] };
   if (work.type === 'DECIDE_STEP') {
     const allowedOutcomes = ['PASS', 'FAIL', 'ACT', 'BLOCKED'];
@@ -276,7 +290,7 @@ function applyDecision(options, context) {
     throw new Error(`STALE_NEXT_WORK: expected ${context.workToken}`);
   }
   if (work.type === 'DECIDE_FLOW_ENTRY') applyFlowEntryDecision(options, work, options.decision);
-  else if (work.type === 'EXECUTE_FLOW_ACTION') applyFlowActionDecision(options, work, options.decision);
+  else if (work.type === 'DECIDE_FLOW_ACTION') applyFlowActionDecision(options, work, options.decision);
   else if (work.type === 'DECIDE_FLOW_END') applyFlowEndDecision(options, work, options.decision);
   else if (work.type === 'DECIDE_STEP') applyStepDecision(options, work, options.decision, context.workToken);
   else throw new Error(`No decision executor for ${work.type}`);

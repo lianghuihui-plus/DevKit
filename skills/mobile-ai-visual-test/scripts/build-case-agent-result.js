@@ -35,6 +35,8 @@ function main() {
     requestSha: request.requestSha,
     protocolSha: request.skillContract.protocolSha,
     implementationSha: request.skillContract.implementationSha,
+    environmentSha: request.environmentSha,
+    preconditionInputsSha: request.preconditionInputsSha,
     status: result.status,
     failureCode: result.failureCode || null,
     reason: result.reason || '',

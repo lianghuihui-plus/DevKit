@@ -18,7 +18,7 @@
 - Flow 终点只返回 `TARGET_REACHED`、`TARGET_NOT_REACHED` 或 `OBSERVATION_UNUSABLE`。
 - 业务步骤只返回 `PASS`、`FAIL`、`ACT`、`BLOCKED` 或 `RETRY_VISUAL_INPUT`。
 - 只有 DecisionRequest 的 `visualRetryContext.retryAllowed=true` 时才能返回 `RETRY_VISUAL_INPUT`；第二次结构化异常检查必须使用新的 `attemptId` 并按 `requiredRetryOf` 填写 `retryOf`。
-- Flow 动作必须保持冻结动作的类型和业务目标，仅补齐当前截图能够证明的执行坐标。
+- 完整可执行的冻结 Flow 动作由引擎确定性执行；只有 `DECIDE_FLOW_ACTION` 才补齐当前截图能够证明的执行参数，并保持冻结动作的类型和业务目标。
 
 ## 视觉证据
 
@@ -28,4 +28,4 @@
 
 ## 返回
 
-执行最终完成后调用 `scripts/build-case-agent-result.js`，只传 caseDir、platform 和 executionId，不传 provider。返回值必须包含从 request 继承的 provider、requestSha、protocolSha、implementationSha、executionId、最终状态及 result/metrics 的绝对路径；不得只用自然语言宣告完成。
+执行最终完成后调用 `scripts/build-case-agent-result.js`，只传 caseDir、platform 和 executionId，不传 provider。返回值必须包含从 request 继承的 provider、requestSha、protocolSha、implementationSha、environmentSha、preconditionInputsSha、executionId、最终状态及 result/metrics 的绝对路径；不得只用自然语言宣告完成。

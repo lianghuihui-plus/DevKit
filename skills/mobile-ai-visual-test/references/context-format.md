@@ -41,6 +41,15 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
   "sourceSha1": "source-xxxxxxxxxxxx",
   "caseContractSha": "contract-xxxxxxxxxxxx",
   "preconditionPlanSha": "precondition-plan-xxxxxxxxxxxx",
+  "preconditionInputsSha": "precondition-inputs-xxxxxxxxxxxxxxxx",
+  "environmentSha": "environment-xxxxxxxxxxxxxxxx",
+  "environmentSnapshot": {
+    "binding": {"platform":"harmony","device":"device-id","appId":"bundle-name","entry":"EntryAbility"},
+    "probe": {"sha1":"probe-xxxxxxxxxxxx","ready":true},
+    "dependencies": {},
+    "confirmedAt": "2026-07-08T10:14:00+08:00"
+  },
+  "preconditionInputs": [],
   "startedAt": "2026-07-08T10:15:00+08:00",
   "endedAt": "2026-07-08T10:18:00+08:00",
   "lifecycle": "FINALIZED",
@@ -48,19 +57,26 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
   "status": "PASS",
   "requestedStatus": "PASS",
   "failureCode": null,
-  "isolation": {"clean": true, "required": false}
+  "isolation": {
+    "clean": true,
+    "required": true,
+    "startupDisplayPolicy": {"orientation":"portrait","enforcement":"required","appliesTo":["phone"]},
+    "startupDisplay": {"requestedOrientation":"portrait","afterLaunch":{"orientation":"portrait"},"verified":true}
+  }
 }
 ```
 
 生命周期为 `STARTING -> RUNNING -> FINALIZING -> FINALIZED`，冷启动入口异常可进入 `BLOCKED_START` 后由框架收尾。`FINALIZING` 使用 `result.draft.json` 恢复半提交；finalized 后不得追加 timeline。批次 execution 的 finalize 只产生业务 `result.json` 与 `metrics.json`，不会提前改写对外状态和报告。
 
-同目录的 `case.snapshot.json` 是 execution 冻结业务契约。正式已启动 execution 的记录、Case Engine、finalize 和 Agent 请求都强制使用 snapshot；缺失或哈希不一致按执行契约损坏拒绝。仅显式历史兼容入口允许读取没有 snapshot 的旧产物。
+同目录的 `case.snapshot.json` 是 execution 冻结业务契约。`environmentSnapshot` 和 `preconditionInputs` 分别冻结本次设备环境与执行前业务输入。正式已启动 execution 的 restart、action、observe、Case Engine、finalize 和 Agent 请求都强制使用这些 snapshot；缺失或哈希不一致按执行契约损坏拒绝。仅显式历史兼容入口允许读取没有 snapshot 的旧产物。
 
 ## Agent 与批次产物
 
-每个 execution 的 `execution.json` 固化所属 batchId，CaseAgentRequest 和 runtime.json 继续保存同一 batchId；`agent/` 保存 contract、request、runtime、response、validation 和未完成 turn draft。provider 由 Runtime Core 写入 request 并进入 `requestSha`，再与 `agentRuntime BOUND` 的 protocolSha、implementationSha 和 sessionId 共同绑定。validation 只由 Runtime Core 写入，并覆盖成功、结果无效、创建失败、中断和超时等所有 Runtime 终态。工作空间 `runs/<batchId>/` 保存 contract.json、batch.json 与 events.jsonl，并从绑定产物读取可信终态。
+每个 execution 的 `execution.json` 固化所属 batchId，CaseAgentRequest 和 runtime.json 继续保存同一 batchId；`agent/` 保存 contract、request、runtime、response、validation 和未完成 turn draft。provider 由 Runtime Core 写入 request 并进入 `requestSha`，再与 `agentRuntime BOUND` 的 protocolSha、implementationSha、environmentSha、preconditionInputsSha 和 sessionId 共同绑定。validation 只由 Runtime Core 写入，并覆盖成功、结果无效、创建失败、中断和超时等所有 Runtime 终态。工作空间 `runs/<batchId>/` 保存 contract.json、batch.json 与 events.jsonl；批次状态变更先写 `operation.draft.json`，再按稳定 eventId 补齐审计事件并原子更新 batch.json，恢复完成后删除 draft。
 
-批次提交生成 `<execution>/completion.json`，这是报告和 index 读取的可信发布标记。`result.json` 始终保留业务执行结论；若 Runtime 校验失败，completion 的 `businessStatus` 仍保留该结论，但对外 `status` 为 `BLOCKED`，报告同时展示“对外结论、业务执行结果、Runtime 校验”。`state.json.committedExecutionIds` 保证可信发布累计统计只应用一次；报告属于可重建派生产物，重复提交会幂等刷新。
+批次提交先原子生成 `<execution>/completion.json`，这是报告和 index 读取的可信发布标记；随后才幂等更新 state 并重建报告和 index。`result.json` 始终保留业务执行结论；若 Runtime 校验失败，completion 的 `businessStatus` 仍保留该结论，但对外 `status` 为 `BLOCKED`，报告同时展示“对外结论、业务执行结果、Runtime 校验”。`state.json.committedExecutionIds` 保证可信发布累计统计只应用一次；报告属于可重建派生产物，重复提交会幂等刷新。
+
+`case.json` 或 `notes.jsonl` 变化后通过 `rebuildCaseDerivedArtifacts(scope=all)` 重建全部报告；平台 `state.json` 或可信 completion 变化后使用 `scope=platform`，只重建当前平台、根概览和 workspace index；这些派生产物不作为后续状态归约的事实来源。读取 completion 时必须重新校验绑定与 result/metrics/validation 哈希，失败只展示 `EXECUTION_COMPLETION_INVALID`。
 
 ## result.json
 
@@ -83,13 +99,13 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 }
 ```
 
-`status` 是归一结果，`requestedStatus` 是 agent 原始请求。`sourceSha1`、`caseContractSha` 和 `preconditionPlanSha` 用于判断旧结果是否仍适用；Flow 资产变化后旧结果不再展示。
+`status` 是归一结果，`requestedStatus` 是 agent 原始请求。`sourceSha1`、`caseContractSha`、`preconditionPlanSha`、`preconditionInputsSha` 和 `environmentSha` 共同绑定执行事实；Flow 资产变化后旧结果不再展示。
 
 ## metrics.json
 
 每次执行都写，即使环境或前置条件阶段失败。
 
-稳定维度：status、requestedStatus、failureCode、sourceSha1、caseContractSha、preconditionPlanSha、durationMs、environment、executionPhase、precondition passed/prepared/blocked/failed/unknown counts、step counts、action counts、precondition Flow planned/started/completed/failed/blocked/alreadySatisfied/actions、visual evidence checks/claimPresent/claimAbsent/unverifiable/sourceInvalid/sourceChanged、rule counts、foreground loss、restart/isolation、popup counts、artifact counts。环境或前置条件阻塞不得虚构 blocked step。
+稳定维度：status、requestedStatus、failureCode、sourceSha1、caseContractSha、preconditionPlanSha、preconditionInputsSha、environmentSha、durationMs、environment、executionPhase、precondition passed/prepared/blocked/failed/unknown counts、step counts、action counts、precondition Flow planned/started/completed/failed/blocked/alreadySatisfied/actions、visual evidence checks/claimPresent/claimAbsent/unverifiable/sourceInvalid/sourceChanged、rule counts、foreground loss、restart/isolation/startupDisplay、popup counts、artifact counts。环境或前置条件阻塞不得虚构 blocked step。
 
 `durationMs = endedAt - startedAt`，只覆盖当前 case。
 

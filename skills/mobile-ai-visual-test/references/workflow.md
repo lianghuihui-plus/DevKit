@@ -32,7 +32,7 @@ scripts/parse-case.js <markdown-file> --cwd <workspace-cwd> [--refresh-from-inpu
 
 ```bash
 scripts/probe-env.sh --platform <harmony|android|ios>
-scripts/update-env.js <case-dir> --platform <platform> --device <device> --app <appId> --entry <entry>
+scripts/update-env.js <case-dir> --platform <platform> --device <device> --app <appId> --entry <entry> [--device-form-factor <form>] [--startup-orientation <portrait|preserve>] [--startup-orientation-enforcement <required|none>] [--startup-orientation-applies-to <forms>]
 ```
 
 - 一个执行请求只做一次环境确认。
@@ -64,15 +64,17 @@ scripts/preflight-preconditions.js <case-dir...> --cwd <workspace-cwd> --platfor
 ```bash
 scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>
 scripts/batch-runtime.js reconcile-current --workspace-cwd <workspace> --batch-id <id>
-scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan-sha <sha> --batch-id <id>
+scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan-sha <sha> --precondition-inputs-json '<json>' --batch-id <id>
 ```
 
-批次先调用 `reconcile-current`，由脚本返回 `START_NEW`、`INIT_RUNTIME`、`BIND_RUNTIME`、`RESUME_RUNTIME`、`COMMIT_FINALIZED`、`RECOVER_FINALIZING`、`CLOSE_EXPIRED`、`CLOSE_ORPHANED`、`BLOCK_CONCURRENT`、`BLOCK_RUNTIME_RELEASE`、`BATCH_BLOCKED`、`BATCH_COMPLETE` 或 `CORRUPTED`，协调器不得自行推断恢复路径。
+批次先调用 `reconcile-current`，由脚本返回 `START_NEW`、`RESUME_START`、`INIT_RUNTIME`、`BIND_RUNTIME`、`RESUME_RUNTIME`、`COMMIT_START_RESULT`、`COMMIT_FINALIZED`、`RECOVER_FINALIZING`、`CLOSE_EXPIRED`、`CLOSE_ORPHANED`、`BLOCK_CONCURRENT`、`BLOCK_RUNTIME_RELEASE`、`BATCH_BLOCKED`、`BATCH_COMPLETE` 或 `CORRUPTED`，协调器不得自行推断恢复路径。
 
+- `RESUME_START`：调用 `run-case --resume-start` 幂等补齐冷启动；成功后初始化 Runtime，失败后提交框架启动结果。
 - `INIT_RUNTIME`：对返回的 executionId 调用 Runtime init，然后 bind。
 - `BIND_RUNTIME`：Runtime 已创建但 batch 尚未绑定，先调用 batch `bind`，再继续 Runtime。
 - `RESUME_RUNTIME`：继续该 Runtime 的 `next -> Host Adapter -> apply`。
 - `COMMIT_FINALIZED`：调用 batch `commit-current`。
+- `COMMIT_START_RESULT`：调用 batch `commit-start-result` 发布无 Runtime 的框架启动失败。
 - `RECOVER_FINALIZING`：对返回的 executionId 重入 `run-case --finalize`，再继续 Runtime 或提交。
 - `CLOSE_EXPIRED`：由 Runtime interrupt/timeout 状态机完成中断、释放和收尾。
 - `CLOSE_ORPHANED`：调用 `run-case --recover-orphaned --execution-id <id> --batch-id <current>`。
@@ -80,7 +82,7 @@ scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan
 - `BATCH_BLOCKED` 或 `BATCH_COMPLETE`：批次已经是终态，重复恢复不得再次提交。
 - `BLOCK_RUNTIME_RELEASE`：Host 连续三次未确认 session 释放，使用 batch `fail` 固化阻塞，禁止开始下一 case。
 
-`--start` 会校验非空用例契约，创建 execution、固化 `batchId`、写 `case.snapshot.json`、在 execution.json 固化三类哈希、记录 `executionStart` 和环境摘要、固定前置条件计划并尝试 `restartApp`。后续执行只读 snapshot；源 case 变化只使报告过期。若计划哈希与 preflight 不一致，必须重新 preflight；若输出 `blockedOnStart=true`，停止当前 case。
+`--start` 必须带 `--batch-id`，会校验非空用例契约，创建 execution、固化 batch、写 `case.snapshot.json`，并冻结环境、前置输入、用例与计划哈希。所有平台都必须验证冷启动成功；HarmonyOS 手机额外在启动前归一竖屏并在启动后验证，其他设备形态或平台保留显示方向。启动中断由 `--resume-start` 根据冻结环境和已有 bootstrap fact 幂等恢复。失败输出 `blockedOnStart=true`，且不创建子 Agent。
 
 ### 1.1 创建独立 Agent 会话
 
@@ -95,9 +97,9 @@ Codex 主 Agent 只机械映射 Runtime operation，不直接写运行态。完�
 严格按 `case.json.preconditions` 顺序处理：
 
 - `flow`：执行 `entry-check -> already satisfied / start check -> step loop -> end-check`，成功写 `PASS` 或 `PREPARED`。
-- `framework`：采集所需事实后写 `PASS`、`FAIL`、`UNKNOWN` 或 `BLOCKED`。
-- `confirm`：写入用户在无人值守开始前确认的结果。
-- `external_setup`：已准备写 `PREPARED`，未准备写 `BLOCKED`。
+- `framework`：使用计划中的确定性 checker，根据环境探测或启动事实写实际结果和 evidenceRefs。
+- `confirm`：只写入 execution 开始时冻结的 `PASS` 输入。
+- `external_setup`：只写入 execution 开始时冻结的 `PREPARED` 输入；缺失时写 `BLOCKED`。
 - `unsupported`：写 `BLOCKED/PRECONDITION_UNSUPPORTED`。
 
 只有全部前置条件为 `PASS` 或 `PREPARED` 才能进入业务步骤。Flow 的具体事件顺序见 `flow-format.md`。

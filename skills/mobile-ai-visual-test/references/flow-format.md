@@ -85,6 +85,8 @@ scripts/preflight-preconditions.js <case-dir...> --cwd <workspace-cwd> --platfor
 | `external_setup` | 用户在执行前准备外部业务状态 |
 | `unsupported` | 当前不可执行，剔除、跳过或阻塞 |
 
+`framework` 必须在计划中写入框架支持的 `checkerId`；没有 checker 的条件不能进入 framework。`confirm` 与 `external_setup` 的结果通过 `--precondition-inputs-json` 在 execution 开始时冻结，其他 resolution 不接受外部输入。
+
 预检同时返回 `preconditionPlanSha`。执行开始时必须原样传入：
 
 ```bash

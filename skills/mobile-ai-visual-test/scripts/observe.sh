@@ -67,10 +67,10 @@ if [[ -n "$case_dir" ]]; then
     exit 2
   fi
   env_args=()
-  mavt_validate_case_env_binding "$case_dir" "$platform" "$device" "$app" ""
+  mavt_validate_execution_env_binding "$script_dir" "$case_dir" "$platform" "$execution_id" "$device" "$app" ""
   while IFS= read -r item; do
     [[ -n "$item" ]] && env_args+=("$item")
-  done < <(mavt_case_env_args "$case_dir" "$has_platform" "$has_device" "$has_app" "1" "$platform")
+  done < <(mavt_execution_env_args "$script_dir" "$case_dir" "$platform" "$execution_id" "observe")
   merged_args=()
   if [[ ${#env_args[@]} -gt 0 ]]; then
     merged_args+=("${env_args[@]}")

@@ -14,13 +14,11 @@ const {
   parseMarkdownCase,
   readJson,
   readJsonl,
-  refreshIndexForCase,
+  rebuildCaseDerivedArtifacts,
   reapplyNotes,
   desiredCaseDir,
   syncCaseDirectory,
   validateCaseExecutionContract,
-  writeCaseReports,
-  writePlatformCaseReports,
   writeJson,
   writeText,
 } = require('../common');
@@ -107,22 +105,12 @@ if (!existingCaseDir) {
 }
 const finalCasePath = path.join(caseDir, 'case.json');
 const finalSourceSnapshotPath = path.join(caseDir, 'source.md');
-const finalNotesPath = path.join(caseDir, 'notes.jsonl');
 writeText(finalSourceSnapshotPath, selected.sourceMarkdown);
 writeJson(finalCasePath, caseJson);
 
-const state = {
-  schemaVersion: 1,
-  latestStatus: 'NOT_RUN',
-  executionCount: 0,
-  environment: {},
-  statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 },
-};
-const currentNotes = readJsonl(notesPath);
-const finalNotes = finalNotesPath === notesPath ? currentNotes : readJsonl(finalNotesPath);
-const reports = writeCaseReports(caseDir, caseJson, state, finalNotes);
-writePlatformCaseReports(caseDir, caseJson, finalNotes);
-const indexHtml = refreshIndexForCase(caseDir);
+const rebuilt = rebuildCaseDerivedArtifacts(caseDir);
+const reports = rebuilt.rootReport;
+const indexHtml = rebuilt.indexHtml;
 
 console.log(JSON.stringify({
   caseDir,

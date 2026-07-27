@@ -8,13 +8,51 @@ const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
 const zlib = require('zlib');
-const { caseContractSha, formatDuration, displayFailureCode } = require('./common');
+const { caseContractSha, formatDuration, displayFailureCode, readPublishedExecution, writeCaseReports } = require('./common');
 const { swipeDurationMs, validateAction, validateActionAsset, validateActionExecution } = require('./lib/action-contract');
 const { inspectPng, verifyQualityClaim } = require('./lib/image-evidence');
+const { evaluateFrameworkPrecondition } = require('./lib/framework-preconditions');
+const { normalizePreconditionInputs } = require('./lib/precondition-inputs');
+const {
+  normalizeDeviceFormFactor,
+  normalizeStartupDisplayPolicy,
+  startupDisplayRequirement,
+  startupDisplayVerified,
+} = require('./lib/startup-display');
+const {
+  parseDeviceList,
+  parseDisplayState,
+  selectDeviceProfile,
+} = require('./platform/adapters/harmony/lib/display-state');
 
 const repo = path.resolve(__dirname, '..');
 process.env.MAVT_SELF_TEST = '1';
 process.env.MAVT_SELF_TEST_SKIP_CASE_RESTART = '1';
+process.env.MAVT_SELF_TEST_ALLOW_UNBATCHED_START = '1';
+process.env.MAVT_SELF_TEST_ALLOW_UNBOUND_FACTS = '1';
+process.env.MAVT_SELF_TEST_ALLOW_MISSING_BATCH = '1';
+
+const harmonyStartupPolicy = normalizeStartupDisplayPolicy(undefined, { platform: 'harmony' });
+assert.deepStrictEqual(harmonyStartupPolicy, { orientation: 'portrait', enforcement: 'required', appliesTo: ['phone'] });
+assert.deepStrictEqual(normalizeStartupDisplayPolicy(undefined, { platform: 'android' }), { orientation: 'preserve', enforcement: 'none', appliesTo: [] });
+assert.strictEqual(normalizeDeviceFormFactor('SmartPhone'), 'phone');
+assert.strictEqual(normalizeDeviceFormFactor('PAD'), 'tablet');
+assert.strictEqual(startupDisplayRequirement(harmonyStartupPolicy, 'phone', { platform: 'harmony' }).required, true);
+assert.strictEqual(startupDisplayRequirement(harmonyStartupPolicy, 'tablet', { platform: 'harmony' }).required, false);
+assert.strictEqual(startupDisplayRequirement(harmonyStartupPolicy, null, { platform: 'harmony' }).reason, 'DEVICE_FORM_FACTOR_UNKNOWN');
+assert.strictEqual(startupDisplayRequirement({ orientation: 'portrait', enforcement: 'none', appliesTo: ['phone'] }, 'phone', { platform: 'harmony' }).reason, 'POLICY_NOT_ENFORCED');
+const verifiedStartupDisplay = {
+  requestedOrientation: 'portrait', enforcement: 'required', appliesTo: ['phone'], deviceFormFactor: 'phone', required: true,
+  verified: true, status: 'VERIFIED', afterLaunch: { orientation: 'portrait' },
+};
+assert.strictEqual(startupDisplayVerified(harmonyStartupPolicy, verifiedStartupDisplay, 'phone', { platform: 'harmony' }).verified, true);
+assert.strictEqual(startupDisplayVerified(harmonyStartupPolicy, { ...verifiedStartupDisplay, status: 'FAILED' }, 'phone', { platform: 'harmony' }).verified, false);
+assert.strictEqual(parseDisplayState('Rotation: 270\nWidth: 2720\nHeight: 1260\n').orientation, 'landscape');
+const parsedDeviceProfiles = parseDeviceList('Name              Serial             Type    Form Factor\nDemo Phone        127.0.0.1:5555     device  phone\n');
+assert.strictEqual(selectDeviceProfile(parsedDeviceProfiles, '127.0.0.1:5555').deviceFormFactor, 'phone');
+assert.throws(() => normalizePreconditionInputs({ preconditions: [{ id: 'pre-001', resolution: 'unsupported' }] }, [{ id: 'pre-001', status: 'PASS', reason: '不得绕过' }]), /cannot accept external input/);
+assert.deepStrictEqual(normalizePreconditionInputs({ preconditions: [{ id: 'pre-001', resolution: 'external_setup' }] }, [{ id: 'pre-001', resolution: 'external_setup', status: 'PREPARED', reason: '已准备' }]), [{ id: 'pre-001', resolution: 'external_setup', status: 'PREPARED', reason: '已准备' }]);
+assert.strictEqual(evaluateFrameworkPrecondition('capability.uiTree', { environmentSnapshot: { probe: { ready: true, capabilities: { layout: true } } } }, []).status, 'PASS');
 
 function run(cmd, args, options = {}) {
   return childProcess.execFileSync(cmd, args, {
@@ -113,15 +151,24 @@ function json(file) {
 
 function recordPreconditions(caseDir, platform, executionId, status = 'PASS', reason = 'self-test precondition satisfied') {
   const caseJson = json(path.join(caseDir, 'case.json'));
+  const execDir = path.join(caseDir, 'platforms', platform, 'executions', executionId);
+  const execution = json(path.join(execDir, 'execution.json'));
+  const events = fs.readFileSync(path.join(execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
   for (const item of caseJson.preconditions || []) {
-    const event = {
-      type: 'precondition',
-      id: item.id,
-      status,
-      reason,
-      resolution: status === 'PREPARED' ? 'self_test_prepare' : 'self_test',
-    };
+    const planned = execution.preconditionPlan.preconditions.find((entry) => entry.id === item.id);
+    let event;
+    if (planned.resolution === 'framework') {
+      event = { type: 'precondition', id: item.id, resolution: 'framework', checkerId: planned.checkerId, ...evaluateFrameworkPrecondition(planned.checkerId, execution, events) };
+    } else if (planned.resolution === 'unsupported') {
+      event = { type: 'precondition', id: item.id, resolution: 'unsupported', status: 'BLOCKED', failureCode: 'PRECONDITION_UNSUPPORTED', reason };
+    } else {
+      const input = execution.preconditionInputs.find((entry) => entry.id === item.id);
+      event = input
+        ? { type: 'precondition', id: item.id, resolution: planned.resolution, status: input.status, reason: input.reason }
+        : { type: 'precondition', id: item.id, resolution: planned.resolution, status: status === 'PASS' ? 'BLOCKED' : status, failureCode: 'PRECONDITION_REQUIRED', reason };
+    }
     run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-json', JSON.stringify(event), '--execution-id', executionId]);
+    events.push(event);
   }
 }
 
@@ -339,6 +386,17 @@ assert.deepStrictEqual(resolved.markdownFiles, [caseFile]);
 assert.deepStrictEqual(resolved.existingCases, []);
 const parsedForIsolationContract = JSON.parse(run('node', ['scripts/parse-case.js', caseFile, '--cwd', workspace]));
 assert.strictEqual(json(path.join(parsedForIsolationContract.caseDir, 'case.json')).isolation.requireCleanRestart, 'auto');
+write(path.join(workspace, 'platforms', 'harmony-probe.json'), `${JSON.stringify({
+  schemaVersion: 1,
+  type: 'environmentProbe',
+  platform: 'harmony',
+  device: '127.0.0.1:5555',
+  devices: [{ id: '127.0.0.1:5555', serial: '127.0.0.1:5555', name: 'Demo Phone', deviceFormFactor: 'phone' }],
+  targets: ['127.0.0.1:5555'],
+  ready: true,
+  diagnostics: [],
+  capabilities: { screenshot: true, layout: true, foregroundApp: true, launchApp: true },
+}, null, 2)}\n`);
 const deprecatedResolveCases = runAllowFailure('node', ['scripts/resolve-cases.js', path.join(sourceRoot, 'cases')]);
 assert.notStrictEqual(deprecatedResolveCases.status, 0);
 assert.ok(deprecatedResolveCases.stderr.includes('已废弃'));
@@ -547,7 +605,10 @@ assert.ok(preflight.groups.some((item) => item.status === 'UNSUPPORTED' && item.
 assert.strictEqual(preflight.cases.find((item) => item.caseNo === preflightRiskCaseNo).status, 'UNSUPPORTED');
 
 run('node', ['scripts/update-env.js', noLoginParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
-const noLoginStart = JSON.parse(run('node', ['scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--start']));
+const noLoginStart = JSON.parse(run('node', [
+  'scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--start',
+  '--precondition-inputs-json', JSON.stringify([{ id: 'pre-001', resolution: 'confirm', status: 'PASS', reason: '已确认当前处于未登录状态' }]),
+]));
 recordPreconditions(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId);
 recordGlobalFlowScan(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId);
 recordPassAssertion(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId, 'step-001', '看到登录按钮', recordStepObservation(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId, 'step-001', 'step-001-login'));
@@ -728,7 +789,7 @@ assert.notStrictEqual(finalizeWithoutStart.status, 0);
 assert.ok(finalizeWithoutStart.stderr.includes('No started execution exists'));
 const incompleteEnv = runAllowFailure('node', ['scripts/update-env.js', noEnvParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', '']);
 assert.notStrictEqual(incompleteEnv.status, 0);
-assert.ok(incompleteEnv.stderr.includes('环境信息不完整'));
+assert.ok(incompleteEnv.stderr.includes('ENV_UNCONFIRMED'));
 assert.ok(!fs.existsSync(path.join(noEnvParsed.caseDir, 'state.json')));
 
 const probeWithoutPlatform = runAllowFailure('./scripts/probe-env.sh', []);
@@ -816,7 +877,26 @@ const started = JSON.parse(run('node', ['scripts/run-case.js', parsed.caseDir, '
 assert.ok(fs.existsSync(started.timeline));
 const startEvent = JSON.parse(fs.readFileSync(started.timeline, 'utf8').trim().split(/\r?\n/)[0]);
 assertLocalTime(startEvent.time);
-assertLocalTime(json(path.join(started.execDir, 'execution.json')).startedAt);
+const startedExecution = json(path.join(started.execDir, 'execution.json'));
+assertLocalTime(startedExecution.startedAt);
+assert.ok(/^environment-[0-9a-f]{16}$/.test(startedExecution.environmentSha));
+assert.ok(/^precondition-inputs-[0-9a-f]{16}$/.test(startedExecution.preconditionInputsSha));
+assert.strictEqual(startEvent.environmentSha, startedExecution.environmentSha);
+const lockedEnvironmentUpdate = runAllowFailure('node', ['scripts/update-env.js', parsed.caseDir, '--platform', 'harmony', '--device', 'other-device', '--app', 'com.other.app', '--entry', 'OtherAbility']);
+assert.notStrictEqual(lockedEnvironmentUpdate.status, 0);
+assert.ok(lockedEnvironmentUpdate.stderr.includes('ACTIVE_EXECUTION_ENVIRONMENT_LOCKED'));
+const startedStatePath = path.join(parsed.caseDir, 'platforms', 'harmony', 'state.json');
+const startedState = json(startedStatePath);
+const tamperedState = JSON.parse(JSON.stringify(startedState));
+tamperedState.environment.device = 'other-device';
+tamperedState.environment.appId = 'com.other.app';
+write(startedStatePath, `${JSON.stringify(tamperedState, null, 2)}\n`);
+const frozenArgs = run('node', ['scripts/execution/resolve-execution-environment.js', 'args', '--case-dir', parsed.caseDir, '--platform', 'harmony', '--execution-id', started.executionId, '--purpose', 'action']);
+assert.ok(frozenArgs.includes('127.0.0.1:5555'));
+assert.ok(!frozenArgs.includes('other-device'));
+const frozenObserveArgs = run('node', ['scripts/execution/resolve-execution-environment.js', 'args', '--case-dir', parsed.caseDir, '--platform', 'harmony', '--execution-id', started.executionId, '--purpose', 'observe']);
+assert.ok(!frozenObserveArgs.includes('EntryAbility'));
+write(startedStatePath, `${JSON.stringify(startedState, null, 2)}\n`);
 const activeExecutionGuard = runAllowFailure('node', ['scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--start']);
 assert.notStrictEqual(activeExecutionGuard.status, 0);
 assert.ok(activeExecutionGuard.stderr.includes('Unfinalized execution exists'));
@@ -824,13 +904,19 @@ run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--
   type: 'precondition',
   id: 'pre-001',
   status: 'PASS',
-  reason: 'App 已安装',
+  resolution: 'framework',
+  checkerId: 'app.launchable',
+  evidenceRefs: ['execution-isolation'],
+  reason: '目标 App 的 execution 启动隔离已通过。',
 })]);
 const duplicatePrecondition = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'precondition',
   id: 'pre-001',
   status: 'PASS',
-  reason: '重复确认 App 已安装',
+  resolution: 'framework',
+  checkerId: 'app.launchable',
+  evidenceRefs: ['execution-isolation'],
+  reason: '目标 App 的 execution 启动隔离已通过。',
 })]);
 assert.notStrictEqual(duplicatePrecondition.status, 0);
 assert.ok(duplicatePrecondition.stderr.includes('STEP_ORDER_VIOLATION'));
@@ -1528,6 +1614,7 @@ const fakeAndroidEnv = {
 const androidProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'android'], { env: fakeAndroidEnv }));
 assert.strictEqual(androidProbe.platform, 'android');
 assert.deepStrictEqual(androidProbe.targets, ['emulator-5554']);
+assert.deepStrictEqual(androidProbe.devices, [{ id: 'emulator-5554', serial: 'emulator-5554' }]);
 assert.strictEqual(androidProbe.ready, true);
 assert.ok(Array.isArray(androidProbe.diagnostics));
 assert.ok(!androidProbe.diagnostics.some((item) => item.level === 'ERROR'));
@@ -1663,6 +1750,7 @@ const fakeIosDevice = '00000000-0000-0000-0000-000000000000';
 const iosProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'ios', '--device', fakeIosDevice], { env: fakeIosEnv }));
 assert.strictEqual(iosProbe.platform, 'ios');
 assert.deepStrictEqual(iosProbe.targets, [fakeIosDevice]);
+assert.strictEqual(iosProbe.devices[0].id, fakeIosDevice);
 assert.strictEqual(iosProbe.capabilities.connector, 'appium-xcuitest');
 assert.strictEqual(iosProbe.capabilities.deviceType, 'simulator');
 assert.strictEqual(iosProbe.capabilities.implemented, true);
@@ -1807,7 +1895,9 @@ const fakeBin = path.join(tmp, 'fake-bin');
 const fakeHdcLog = path.join(tmp, 'fake-hdc.log');
 const fakeHdcRemote = path.join(tmp, 'fake-hdc-remote');
 const fakeHdcState = path.join(tmp, 'fake-hdc-state');
+const fakeHdcOrientation = path.join(tmp, 'fake-hdc-orientation');
 const fakeHdc = path.join(fakeBin, 'hdc');
+const fakeDevecoCli = path.join(fakeBin, 'devecocli');
 write(fakeHdc, `#!/usr/bin/env bash
 set -euo pipefail
 args=("$@")
@@ -1816,6 +1906,7 @@ if [[ "\${args[0]:-}" == "-t" ]]; then
 fi
 printf '%s\\n' "\${args[*]}" >> "$HDC_LOG"
 state_file="\${HDC_STATE:-$HDC_REMOTE_DIR/state}"
+orientation_file="\${HDC_ORIENTATION_STATE:-$HDC_REMOTE_DIR/orientation}"
 remote_key() {
   printf '%s' "$1" | sed 's#[^A-Za-z0-9._-]#_#g'
 }
@@ -1854,6 +1945,23 @@ elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uitest" && "\${args[2]
   printf 'uitest version 1.0\\n'
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uitest" && "\${args[2]:-}" == "uiInput" && "\${args[3]:-}" == "click" && "\${args[4]:-}" == -* ]]; then
   printf 'Please confirm that the coordinate values are correct.\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "hidumper" && "\${args[2]:-}" == "-s" && "\${args[3]:-}" == "DisplayManagerService" && "\${args[5]:-}" == "-a" ]]; then
+  if [[ "$(cat "$orientation_file" 2>/dev/null || true)" == "landscape" ]]; then
+    printf 'Rotation: 270\\nWidth: 2720\\nHeight: 1260\\n'
+  else
+    printf 'Rotation: 0\\nWidth: 1260\\nHeight: 2720\\n'
+  fi
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "hidumper" && "\${args[2]:-}" == "-s" && "\${args[3]:-}" == "DisplayManagerService" && "\${args[5]:-}" == "-motion,0" ]]; then
+  if [[ "\${HDC_ORIENTATION_RESET_FAIL:-}" == "1" ]]; then
+    printf 'failed to reset orientation\\n' >&2
+    exit 1
+  fi
+  if [[ "\${HDC_ORIENTATION_RESET_NO_EFFECT:-}" != "1" ]]; then
+    if [[ "\${HDC_ORIENTATION_RESET_AFTER_START_NO_EFFECT:-}" != "1" || ! -s "$state_file" ]]; then
+      printf 'portrait\\n' > "$orientation_file"
+    fi
+  fi
+  printf 'reset orientation successfully\\n'
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}" == "dump" ]]; then
   printf 'AbilityRecord ID #1\\nstate #FOREGROUND\\nability type [PAGE]\\nbundle name [com.example.demo]\\nmain name [EntryAbility]\\n'
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}" == "force-stop" ]]; then
@@ -1871,6 +1979,9 @@ elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}"
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}" == "start" ]]; then
   mkdir -p "$(dirname "$state_file")"
   printf '23456\\n' > "$state_file"
+  if [[ -n "\${HDC_ORIENTATION_AFTER_START:-}" ]]; then
+    printf '%s\\n' "$HDC_ORIENTATION_AFTER_START" > "$orientation_file"
+  fi
   printf 'start ability successfully.\\n'
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "pidof" ]]; then
   if [[ -s "$state_file" ]]; then
@@ -1881,7 +1992,76 @@ elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "pidof" ]]; then
 fi
 `);
 fs.chmodSync(fakeHdc, 0o755);
-const fakeEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, HDC_LOG: fakeHdcLog, HDC_REMOTE_DIR: fakeHdcRemote, HDC_STATE: fakeHdcState, MAVT_TEST_PNG: sharedTestPng, MAVT_ACTION_SETTLE_MS: '0' };
+write(fakeDevecoCli, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "device" && "\${2:-}" == "list" ]]; then
+  printf 'Name              Serial             Type    Form Factor\\n'
+  printf 'Demo Phone        127.0.0.1:5555     device  phone\\n'
+  exit 0
+fi
+exit 2
+`);
+fs.chmodSync(fakeDevecoCli, 0o755);
+fs.writeFileSync(fakeHdcOrientation, 'portrait\n');
+const fakeEnv = {
+  ...process.env,
+  PATH: `${fakeBin}:${process.env.PATH}`,
+  HDC_LOG: fakeHdcLog,
+  HDC_REMOTE_DIR: fakeHdcRemote,
+  HDC_STATE: fakeHdcState,
+  HDC_ORIENTATION_STATE: fakeHdcOrientation,
+  MAVT_DEVECOCLI: fakeDevecoCli,
+  MAVT_TEST_PNG: sharedTestPng,
+  MAVT_ACTION_SETTLE_MS: '0',
+  MAVT_ORIENTATION_SETTLE_MS: '0',
+  MAVT_ORIENTATION_AFTER_LAUNCH_SETTLE_MS: '0',
+};
+
+const invalidAndroidDeviceFormFactor = runAllowFailure('./scripts/probe-env.sh', ['--platform', 'android', '--device-form-factor', 'phone']);
+assert.strictEqual(invalidAndroidDeviceFormFactor.status, 2);
+assert.ok(invalidAndroidDeviceFormFactor.stderr.includes('--device-form-factor 当前仅适用于 HarmonyOS'));
+const bootstrapHarmonyProbe = JSON.parse(run(path.join(repo, 'scripts/probe-env.sh'), ['--platform', 'harmony', '--device', '127.0.0.1:5555'], { cwd: workspace, env: fakeEnv }));
+assert.strictEqual(bootstrapHarmonyProbe.ready, true);
+assert.strictEqual(bootstrapHarmonyProbe.deviceFormFactor, 'phone');
+assert.strictEqual(bootstrapHarmonyProbe.capabilities.startupDisplay.canReadOrientation, true);
+assert.strictEqual(bootstrapHarmonyProbe.capabilities.startupDisplay.canSetOrientation, true);
+assert.strictEqual(bootstrapHarmonyProbe.capabilities.startupDisplay.current.orientation, 'portrait');
+const unmatchedProbeDevice = runAllowFailure('node', ['scripts/update-env.js', noEnvParsed.caseDir, '--platform', 'harmony', '--device', 'different-device', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+assert.notStrictEqual(unmatchedProbeDevice.status, 0);
+assert.ok(unmatchedProbeDevice.stderr.includes('PROBE_DEVICE_NOT_FOUND'));
+const crossPlatformFormFactor = runAllowFailure('node', ['scripts/update-env.js', multiPlatformParsed.caseDir, '--platform', 'android', '--device', 'emulator-5554', '--app', 'com.example.demo', '--entry', 'MainActivity', '--device-form-factor', 'phone']);
+assert.strictEqual(crossPlatformFormFactor.status, 2);
+assert.ok(crossPlatformFormFactor.stderr.includes('ENVIRONMENT_OPTION_OWNERSHIP'));
+
+function runHarmonyRestartAtom(extraArgs = [], env = fakeEnv) {
+  fs.writeFileSync(fakeHdcState, '12345\n');
+  return JSON.parse(run('./scripts/platform/adapters/harmony/atoms/restart-app.sh', [
+    '--device', '127.0.0.1:5555', '--bundle', 'com.example.demo', '--ability', 'EntryAbility', ...extraArgs,
+  ], { env }));
+}
+
+fs.writeFileSync(fakeHdcOrientation, 'portrait\n');
+fs.writeFileSync(fakeHdcLog, '');
+const alreadyPortraitRestart = runHarmonyRestartAtom(['--device-form-factor', 'phone']);
+assert.strictEqual(alreadyPortraitRestart.startupDisplay.status, 'VERIFIED');
+assert.strictEqual(alreadyPortraitRestart.startupDisplay.normalizationApplied, false);
+assert.strictEqual(alreadyPortraitRestart.startupDisplay.verified, true);
+assert.ok(!fs.readFileSync(fakeHdcLog, 'utf8').includes('-motion,0'));
+
+fs.writeFileSync(fakeHdcOrientation, 'landscape\n');
+fs.writeFileSync(fakeHdcLog, '');
+const tabletRestart = runHarmonyRestartAtom(['--device-form-factor', 'tablet']);
+assert.strictEqual(tabletRestart.startupDisplay.status, 'SKIPPED');
+assert.strictEqual(tabletRestart.startupDisplay.skippedReason, 'DEVICE_FORM_FACTOR_NOT_APPLICABLE');
+assert.strictEqual(tabletRestart.startupDisplay.deviceFormFactor, 'tablet');
+assert.ok(!fs.readFileSync(fakeHdcLog, 'utf8').includes('-motion,0'));
+
+fs.writeFileSync(fakeHdcOrientation, 'landscape\n');
+fs.writeFileSync(fakeHdcLog, '');
+const preserveRestart = runHarmonyRestartAtom(['--device-form-factor', 'phone', '--startup-orientation', 'preserve']);
+assert.strictEqual(preserveRestart.startupDisplay.status, 'SKIPPED');
+assert.strictEqual(preserveRestart.startupDisplay.skippedReason, 'POLICY_PRESERVE');
+assert.ok(!fs.readFileSync(fakeHdcLog, 'utf8').includes('-motion,0'));
 
 const restartFile = path.join(sourceRoot, 'cases', 'restart-isolation.md');
 write(restartFile, `# 每用例冷启动测试
@@ -1894,10 +2074,14 @@ write(restartFile, `# 每用例冷启动测试
 `);
 const restartParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartFile, '--cwd', workspace]));
 run('node', ['scripts/update-env.js', restartParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const invalidStartupOrientation = runAllowFailure('node', ['scripts/update-env.js', restartParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--startup-orientation', 'landscape']);
+assert.strictEqual(invalidStartupOrientation.status, 2);
+assert.ok(invalidStartupOrientation.stderr.includes('startupDisplayPolicy.orientation'));
 const restartEnv = { ...fakeEnv };
 delete restartEnv.MAVT_SELF_TEST_SKIP_CASE_RESTART;
 fs.writeFileSync(fakeHdcLog, '');
 fs.writeFileSync(fakeHdcState, '12345\n');
+fs.writeFileSync(fakeHdcOrientation, 'landscape\n');
 const restartStart = JSON.parse(run('node', ['scripts/run-case.js', restartParsed.caseDir, '--platform', 'harmony', '--start'], { env: restartEnv }));
 assert.strictEqual(restartStart.appRestart.action, 'restartApp');
 assert.strictEqual(restartStart.appRestart.ok, true);
@@ -1906,6 +2090,20 @@ assert.strictEqual(restartStart.appRestart.coldStartVerified, true);
 assert.strictEqual(restartStart.appRestart.oldPid, '12345');
 assert.strictEqual(restartStart.appRestart.newPid, '23456');
 assert.strictEqual(restartStart.appRestart.stopMethod, 'aa-force-stop');
+assert.strictEqual(restartStart.appRestart.startupDisplay.requestedOrientation, 'portrait');
+assert.strictEqual(restartStart.appRestart.startupDisplay.deviceFormFactor, 'phone');
+assert.strictEqual(restartStart.appRestart.startupDisplay.before.orientation, 'landscape');
+assert.strictEqual(restartStart.appRestart.startupDisplay.afterNormalization.orientation, 'portrait');
+assert.strictEqual(restartStart.appRestart.startupDisplay.afterLaunch.orientation, 'portrait');
+assert.strictEqual(restartStart.appRestart.startupDisplay.normalizationApplied, true);
+assert.strictEqual(restartStart.appRestart.startupDisplay.verified, true);
+assert.strictEqual(restartStart.appRestart.startupDisplay.status, 'VERIFIED');
+assert.strictEqual(restartStart.isolation.clean, true);
+assert.strictEqual(restartStart.isolation.required, true);
+assert.strictEqual(restartStart.isolation.requirementSource, 'cold-restart-and-startup-display-policy');
+const restartState = json(path.join(restartParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.strictEqual(restartState.environment.deviceFormFactor, 'phone');
+assert.deepStrictEqual(restartState.environment.startupDisplayPolicy, { orientation: 'portrait', enforcement: 'required', appliesTo: ['phone'] });
 const restartEvents = fs.readFileSync(restartStart.timeline, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
 const restartBootstrap = restartEvents.find((event) => event.type === 'actionResult' && event.action === 'restartApp');
 assert.ok(restartBootstrap && restartBootstrap.ok === true && restartBootstrap.source === 'action.sh');
@@ -1913,6 +2111,9 @@ assert.strictEqual(restartBootstrap.scope, 'execution-bootstrap');
 const fakeHdcRestartLog = fs.readFileSync(fakeHdcLog, 'utf8');
 assert.ok(fakeHdcRestartLog.includes('shell aa force-stop com.example.demo'));
 assert.ok(fakeHdcRestartLog.includes('shell aa start -b com.example.demo -a EntryAbility'));
+const restartOrientationIndex = fakeHdcRestartLog.indexOf('shell hidumper -s DisplayManagerService -a -motion,0');
+const restartLaunchIndex = fakeHdcRestartLog.indexOf('shell aa start -b com.example.demo -a EntryAbility');
+assert.ok(restartOrientationIndex >= 0 && restartOrientationIndex < restartLaunchIndex);
 const restartRuntime = JSON.parse(run('node', [
   'scripts/agent-runtime.js', 'init', restartParsed.caseDir,
   '--platform', 'harmony', '--execution-id', restartStart.executionId,
@@ -1958,16 +2159,14 @@ write(restartDegradedFile, `# 普通交互隔离降级测试
 1. 查看页面入口。
 `);
 const restartDegradedParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartDegradedFile, '--cwd', workspace]));
-run('node', ['scripts/update-env.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+run('node', ['scripts/update-env.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--startup-orientation', 'preserve']);
 fs.writeFileSync(fakeHdcState, '12345\n');
 const restartDegradedStart = JSON.parse(run('node', ['scripts/run-case.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
 assert.strictEqual(restartDegradedStart.appRestart.ok, false);
 assert.strictEqual(restartDegradedStart.isolation.compromised, true);
-assert.strictEqual(restartDegradedStart.isolation.required, false);
-assert.strictEqual(restartDegradedStart.finalized, null);
-assert.ok(!fs.existsSync(path.join(restartDegradedStart.execDir, 'result.json')));
-recordPreconditions(restartDegradedParsed.caseDir, 'harmony', restartDegradedStart.executionId);
-run('node', ['scripts/run-case.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'restart degraded smoke test', '--execution-id', restartDegradedStart.executionId]);
+assert.strictEqual(restartDegradedStart.isolation.required, true);
+assert.ok(restartDegradedStart.finalized);
+assert.strictEqual(json(path.join(restartDegradedStart.execDir, 'result.json')).failureCode, 'CASE_RESTART_FAILED');
 const restartDegradedMetrics = json(path.join(restartDegradedStart.execDir, 'metrics.json'));
 assert.strictEqual(restartDegradedMetrics.stability.isolationCompromised, true);
 assert.strictEqual(restartDegradedMetrics.stability.restartFailureCount, 1);
@@ -2011,15 +2210,14 @@ const restartExplicitOptionalParsed = JSON.parse(run('node', ['scripts/parse-cas
 const restartExplicitOptionalCase = json(path.join(restartExplicitOptionalParsed.caseDir, 'case.json'));
 restartExplicitOptionalCase.isolation.requireCleanRestart = false;
 write(path.join(restartExplicitOptionalParsed.caseDir, 'case.json'), `${JSON.stringify(restartExplicitOptionalCase, null, 2)}\n`);
-run('node', ['scripts/update-env.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+run('node', ['scripts/update-env.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--startup-orientation', 'preserve']);
 fs.writeFileSync(fakeHdcState, '12345\n');
 const restartExplicitOptionalStart = JSON.parse(run('node', ['scripts/run-case.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
-assert.strictEqual(restartExplicitOptionalStart.isolation.required, false);
-assert.strictEqual(restartExplicitOptionalStart.isolation.requirementSource, 'case-contract');
-assert.strictEqual(restartExplicitOptionalStart.blockedOnStart, false);
-assert.strictEqual(restartExplicitOptionalStart.finalized, null);
-recordPreconditions(restartExplicitOptionalParsed.caseDir, 'harmony', restartExplicitOptionalStart.executionId);
-run('node', ['scripts/run-case.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'explicit optional restart smoke test', '--execution-id', restartExplicitOptionalStart.executionId]);
+assert.strictEqual(restartExplicitOptionalStart.isolation.required, true);
+assert.strictEqual(restartExplicitOptionalStart.isolation.requirementSource, 'cold-restart-policy');
+assert.strictEqual(restartExplicitOptionalStart.blockedOnStart, true);
+assert.ok(restartExplicitOptionalStart.finalized);
+assert.strictEqual(json(path.join(restartExplicitOptionalStart.execDir, 'result.json')).failureCode, 'CASE_RESTART_FAILED');
 
 const restartExplicitRequiredFile = path.join(sourceRoot, 'cases', 'restart-explicit-required.md');
 write(restartExplicitRequiredFile, `# 普通页面但显式要求冷启动
@@ -2038,12 +2236,51 @@ run('node', ['scripts/update-env.js', restartExplicitRequiredParsed.caseDir, '--
 fs.writeFileSync(fakeHdcState, '12345\n');
 const restartExplicitRequiredStart = JSON.parse(run('node', ['scripts/run-case.js', restartExplicitRequiredParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
 assert.strictEqual(restartExplicitRequiredStart.isolation.required, true);
-assert.strictEqual(restartExplicitRequiredStart.isolation.requirementSource, 'case-contract');
+assert.strictEqual(restartExplicitRequiredStart.isolation.requirementSource, 'cold-restart-and-startup-display-policy');
 assert.strictEqual(restartExplicitRequiredStart.blockedOnStart, true);
 assert.ok(restartExplicitRequiredStart.finalized);
 const restartExplicitRequiredResult = json(path.join(restartExplicitRequiredStart.execDir, 'result.json'));
 assert.strictEqual(restartExplicitRequiredResult.status, 'BLOCKED');
 assert.strictEqual(restartExplicitRequiredResult.failureCode, 'CASE_RESTART_FAILED');
+
+const restartOrientationFailureFile = path.join(sourceRoot, 'cases', 'restart-orientation-failure.md');
+write(restartOrientationFailureFile, `# 手机启动方向校验失败测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 查看页面入口。
+`);
+const restartOrientationFailureParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartOrientationFailureFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', restartOrientationFailureParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+fs.writeFileSync(fakeHdcOrientation, 'landscape\n');
+const restartOrientationFailureStart = JSON.parse(run('node', ['scripts/run-case.js', restartOrientationFailureParsed.caseDir, '--platform', 'harmony', '--start'], {
+  env: {
+    ...restartEnv,
+    HDC_ORIENTATION_AFTER_START: 'landscape',
+    HDC_ORIENTATION_RESET_AFTER_START_NO_EFFECT: '1',
+  },
+}));
+assert.strictEqual(restartOrientationFailureStart.appRestart.ok, false);
+assert.strictEqual(restartOrientationFailureStart.appRestart.coldStartVerified, false);
+assert.strictEqual(restartOrientationFailureStart.appRestart.failureStage, 'ORIENTATION_VERIFY_AFTER_START');
+assert.strictEqual(restartOrientationFailureStart.appRestart.startupDisplay.retryApplied, true);
+assert.strictEqual(restartOrientationFailureStart.appRestart.startupDisplay.verified, false);
+assert.strictEqual(restartOrientationFailureStart.isolation.required, true);
+assert.strictEqual(restartOrientationFailureStart.isolation.compromised, true);
+assert.strictEqual(restartOrientationFailureStart.isolation.requirementSource, 'cold-restart-and-startup-display-policy');
+assert.strictEqual(restartOrientationFailureStart.blockedOnStart, true);
+const restartOrientationFailureResult = json(path.join(restartOrientationFailureStart.execDir, 'result.json'));
+assert.strictEqual(restartOrientationFailureResult.status, 'BLOCKED');
+assert.strictEqual(restartOrientationFailureResult.failureCode, 'CASE_RESTART_FAILED');
+const restartOrientationFailureMetrics = json(path.join(restartOrientationFailureStart.execDir, 'metrics.json'));
+assert.strictEqual(restartOrientationFailureMetrics.stability.startupDisplay.failureStage, 'ORIENTATION_VERIFY_AFTER_START');
+assert.strictEqual(restartOrientationFailureMetrics.stability.startupDisplay.verified, false);
+const restartOrientationFailureHtml = fs.readFileSync(path.join(restartOrientationFailureParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+assert.ok(restartOrientationFailureHtml.includes('启动显示：策略 portrait'));
+assert.ok(restartOrientationFailureHtml.includes('FAILED'));
 
 const injectedFile = path.join(sourceRoot, 'cases', 'injected-env.md');
 write(injectedFile, `# 环境注入测试
@@ -2070,7 +2307,11 @@ const harmonyProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'ha
 assert.strictEqual(harmonyProbe.ready, true);
 assert.ok(Array.isArray(harmonyProbe.diagnostics));
 assert.ok(!harmonyProbe.diagnostics.some((item) => item.level === 'ERROR'));
+assert.strictEqual(harmonyProbe.deviceFormFactor, 'phone');
+assert.strictEqual(harmonyProbe.devices[0].deviceFormFactor, 'phone');
 assert.strictEqual(harmonyProbe.capabilities.layout, true);
+assert.strictEqual(harmonyProbe.capabilities.startupDisplay.canReadOrientation, true);
+assert.strictEqual(harmonyProbe.capabilities.startupDisplay.canVerifyAfterLaunch, true);
 assert.ok(harmonyProbe.capabilities.actions.includes('restartApp'));
 assert.ok(harmonyProbe.capabilities.actions.includes('longPress'));
 let fakeHdcProbeLog = fs.readFileSync(fakeHdcLog, 'utf8');
@@ -2351,6 +2592,7 @@ assert.strictEqual(preconditionFlowPreflight.cases[0].preconditions[0].resolutio
 assert.strictEqual(preconditionFlowPreflight.cases[0].preconditions[1].resolution, 'flow');
 assert.strictEqual(preconditionFlowPreflight.cases[0].preconditions[1].flowId, universalPreconditionFlow.id);
 assert.ok(preconditionFlowPreflight.cases[0].preconditionPlanSha.startsWith('precondition-plan-'));
+const loginPreconditionInputs = JSON.stringify([{ id: 'pre-001', resolution: 'confirm', status: 'PASS', reason: '用户已确认登录态' }]);
 const wrongFlowPlan = runAllowFailure('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--start', '--precondition-plan-sha', 'precondition-plan-wrong']);
 assert.notStrictEqual(wrongFlowPlan.status, 0);
 assert.ok(wrongFlowPlan.stderr.includes('PRECONDITION_FLOW_CHANGED'));
@@ -2375,8 +2617,8 @@ assert.ok(exactFlowGroup);
 assert.ok(punctuatedFlowGroup);
 assert.strictEqual(exactFlowGroup.resolution, 'flow');
 assert.strictEqual(punctuatedFlowGroup.resolution, 'confirm');
-assert.deepStrictEqual(exactFlowGroup.caseRefs, ['C027']);
-assert.deepStrictEqual(punctuatedFlowGroup.caseRefs, ['C028']);
+assert.deepStrictEqual(exactFlowGroup.caseRefs, ['C028']);
+assert.deepStrictEqual(punctuatedFlowGroup.caseRefs, ['C029']);
 
 const preconditionFlowStart = JSON.parse(run('node', [
   'scripts/run-case.js',
@@ -2384,6 +2626,7 @@ const preconditionFlowStart = JSON.parse(run('node', [
   '--platform', 'harmony',
   '--start',
   '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
 ]));
 const preconditionFlowExecution = json(path.join(preconditionFlowStart.execDir, 'execution.json'));
 assert.strictEqual(preconditionFlowExecution.preconditionPlanSha, preconditionFlowPreflight.cases[0].preconditionPlanSha);
@@ -2392,7 +2635,7 @@ run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform'
   type: 'precondition',
   id: 'pre-001',
   status: 'PASS',
-  resolution: 'user_confirmed',
+  resolution: 'confirm',
   reason: '用户已确认登录态',
 }), '--execution-id', preconditionFlowStart.executionId]);
 
@@ -2528,12 +2771,13 @@ const actionMismatch = JSON.parse(run('node', [
   '--platform', 'harmony',
   '--start',
   '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
 ]));
 run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'precondition',
   id: 'pre-001',
   status: 'PASS',
-  resolution: 'user_confirmed',
+  resolution: 'confirm',
   reason: '用户已确认登录态',
 }), '--execution-id', actionMismatch.executionId]);
 run('./scripts/observe.sh', [
@@ -2596,12 +2840,13 @@ const observationFailure = JSON.parse(run('node', [
   '--platform', 'harmony',
   '--start',
   '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
 ]));
 run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'precondition',
   id: 'pre-001',
   status: 'PASS',
-  resolution: 'user_confirmed',
+  resolution: 'confirm',
   reason: '用户已确认登录态',
 }), '--execution-id', observationFailure.executionId]);
 const failingHdcBin = path.join(tmp, 'failing-hdc-bin');
@@ -2635,12 +2880,13 @@ const startMismatch = JSON.parse(run('node', [
   '--platform', 'harmony',
   '--start',
   '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
 ]));
 run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'precondition',
   id: 'pre-001',
   status: 'PASS',
-  resolution: 'user_confirmed',
+  resolution: 'confirm',
   reason: '用户已确认登录态',
 }), '--execution-id', startMismatch.executionId]);
 const mismatchObservation = JSON.parse(run('./scripts/observe.sh', [
@@ -2682,12 +2928,13 @@ const alreadySatisfied = JSON.parse(run('node', [
   '--platform', 'harmony',
   '--start',
   '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
 ]));
 run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
   type: 'precondition',
   id: 'pre-001',
   status: 'PASS',
-  resolution: 'user_confirmed',
+  resolution: 'confirm',
   reason: '用户已确认登录态',
 }), '--execution-id', alreadySatisfied.executionId]);
 const alreadySatisfiedObservation = JSON.parse(run('./scripts/observe.sh', [
@@ -2984,9 +3231,7 @@ assert.ok(agentContract.implementationSha.startsWith('agent-implementation-'));
 assert.deepStrictEqual(agentContract.requiredResources, [
   'SKILL.md',
   'references/case-executor-contract.md',
-  'references/interfaces.md',
-  'references/failure-policy.md',
-  'references/context-format.md',
+  'references/case-agent-policy.md',
 ]);
 const verifiedAgentContract = JSON.parse(run('node', [
   'scripts/build-agent-contract.js', '--role', 'case-executor', '--verify-sha', agentContract.protocolSha,
@@ -3008,7 +3253,7 @@ const lateBoundRequest = JSON.parse(run('node', [
 const lateBound = runAllowFailure('node', [
   'scripts/record-agent-runtime.js', commonHeadingParsed.caseDir,
   '--platform', 'harmony', '--execution-id', lateBoundStart.executionId,
-  '--event-json', JSON.stringify({ provider: 'codex', status: 'BOUND', sessionScope: 'case', protocolSha: agentContract.protocolSha, implementationSha: agentContract.implementationSha, requestSha: lateBoundRequest.requestSha, sessionId: 'late-bound-session' }),
+  '--event-json', JSON.stringify({ provider: 'codex', status: 'BOUND', sessionScope: 'case', protocolSha: agentContract.protocolSha, implementationSha: agentContract.implementationSha, requestSha: lateBoundRequest.requestSha, environmentSha: lateBoundRequest.environmentSha, preconditionInputsSha: lateBoundRequest.preconditionInputsSha, sessionId: 'late-bound-session' }),
 ]);
 assert.notStrictEqual(lateBound.status, 0);
 assert.ok(lateBound.stderr.includes('BOUND 必须先于业务事实'));
@@ -3017,10 +3262,11 @@ run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', '
 
 const agentTurnStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
 assert.ok(fs.existsSync(path.join(agentTurnStart.execDir, 'case.snapshot.json')));
-assert.strictEqual(json(path.join(agentTurnStart.execDir, 'execution.json')).caseContractSha, caseContractSha(json(path.join(agentTurnStart.execDir, 'case.snapshot.json'))));
+const agentTurnExecution = json(path.join(agentTurnStart.execDir, 'execution.json'));
+assert.strictEqual(agentTurnExecution.caseContractSha, caseContractSha(json(path.join(agentTurnStart.execDir, 'case.snapshot.json'))));
 const forgedAgentRuntime = runAllowFailure('node', [
   'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
-    type: 'agentRuntime', source: 'record-agent-runtime.js', provider: 'codex', status: 'BOUND', sessionScope: 'case', protocolSha: agentContract.protocolSha, implementationSha: agentContract.implementationSha, requestSha: 'request-0000000000000000', sessionId: 'forged-session',
+    type: 'agentRuntime', source: 'record-agent-runtime.js', provider: 'codex', status: 'BOUND', sessionScope: 'case', protocolSha: agentContract.protocolSha, implementationSha: agentContract.implementationSha, requestSha: 'request-0000000000000000', environmentSha: agentTurnExecution.environmentSha, preconditionInputsSha: agentTurnExecution.preconditionInputsSha, sessionId: 'forged-session',
   }), '--execution-id', agentTurnStart.executionId,
 ]);
 assert.notStrictEqual(forgedAgentRuntime.status, 0);
@@ -3039,6 +3285,8 @@ run('node', [
 ]);
 assert.strictEqual(caseAgentRequest.executionId, agentTurnStart.executionId);
 assert.strictEqual(caseAgentRequest.provider, 'codex');
+assert.strictEqual(caseAgentRequest.environmentSha, json(path.join(agentTurnStart.execDir, 'execution.json')).environmentSha);
+assert.strictEqual(caseAgentRequest.preconditionInputsSha, json(path.join(agentTurnStart.execDir, 'execution.json')).preconditionInputsSha);
 assert.strictEqual(caseAgentRequest.executionPolicy.sessionScope, 'case');
 assert.strictEqual(caseAgentRequest.executionPolicy.allowDestructiveActions, false);
 const initialNextWork = JSON.parse(run('node', [
@@ -3342,6 +3590,19 @@ const completedReconcile = JSON.parse(run('node', [
 ]));
 assert.strictEqual(completedReconcile.action, 'BATCH_COMPLETE');
 
+const interruptedBatchId = 'batch-operation-recovery';
+const interruptedBatchInit = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', interruptedBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+], { env: { ...process.env, MAVT_SELF_TEST_BATCH_INTERRUPT: 'after-events' } });
+assert.notStrictEqual(interruptedBatchInit.status, 0);
+assert.ok(fs.existsSync(path.join(workspace, 'runs', interruptedBatchId, 'operation.draft.json')));
+const recoveredBatchState = JSON.parse(run('node', ['scripts/batch-runtime.js', 'status', '--workspace-cwd', workspace, '--batch-id', interruptedBatchId]));
+assert.strictEqual(recoveredBatchState.status, 'RUNNING');
+assert.ok(!fs.existsSync(path.join(workspace, 'runs', interruptedBatchId, 'operation.draft.json')));
+const recoveredBatchEvents = fs.readFileSync(path.join(workspace, 'runs', interruptedBatchId, 'events.jsonl'), 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+assert.strictEqual(new Set(recoveredBatchEvents.map((event) => event.eventId)).size, recoveredBatchEvents.length);
+
 const forgedBatchCompletion = runAllowFailure('node', [
   'scripts/batch-runtime.js', 'complete', '--workspace-cwd', workspace, '--batch-id', batchId,
   '--case-key', commonHeadingCase.identity.caseKey,
@@ -3359,6 +3620,14 @@ fs.writeFileSync(fakeHdcState, '12345\n');
 const batchedRestartSensitiveStart = JSON.parse(run('node', [
   'scripts/run-case.js', restartSensitiveParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', startFailureBatchId,
 ], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+const interruptedStartFailureCommit = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'commit-start-result', '--workspace-cwd', workspace, '--batch-id', startFailureBatchId,
+  '--case-key', restartSensitiveCase.identity.caseKey, '--execution-id', batchedRestartSensitiveStart.executionId,
+], { env: { ...process.env, MAVT_SELF_TEST_COMPLETION_INTERRUPT: 'after-publish' } });
+assert.notStrictEqual(interruptedStartFailureCommit.status, 0);
+assert.ok(fs.existsSync(path.join(batchedRestartSensitiveStart.execDir, 'completion.json')));
+const stateBeforeCompletionRecovery = json(path.join(restartSensitiveParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.ok(!(stateBeforeCompletionRecovery.committedExecutionIds || []).includes(batchedRestartSensitiveStart.executionId));
 const startFailureBatch = JSON.parse(run('node', [
   'scripts/batch-runtime.js', 'commit-start-result', '--workspace-cwd', workspace, '--batch-id', startFailureBatchId,
   '--case-key', restartSensitiveCase.identity.caseKey, '--execution-id', batchedRestartSensitiveStart.executionId,
@@ -3371,9 +3640,7 @@ const protocolRoot = path.join(tmp, 'protocol-root');
 for (const relative of [
   'SKILL.md',
   'references/case-executor-contract.md',
-  'references/interfaces.md',
-  'references/failure-policy.md',
-  'references/context-format.md',
+  'references/case-agent-policy.md',
   'scripts/build-agent-contract.js',
   'scripts/execute-next-work.js',
   'scripts/build-case-agent-result.js',
@@ -3428,14 +3695,8 @@ const engineAction = JSON.parse(run('node', [
   '--work-token', engineEntry.decisionRequest.workToken,
   '--decision-json', JSON.stringify({ outcome: 'STARTABLE', reason: '当前 observation 满足 Flow 起点' }),
 ], { env: fakeEnv }));
-assert.strictEqual(engineAction.decisionRequest.type, 'EXECUTE_FLOW_ACTION');
-const engineEnd = JSON.parse(run('node', [
-  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
-  '--platform', 'harmony', '--execution-id', engineStart.executionId,
-  '--work-token', engineAction.decisionRequest.workToken,
-  '--decision-json', JSON.stringify({ outcome: 'ACT', reason: '执行冻结的等待动作', action: waitReasonFlow.steps[0].action }),
-], { env: fakeEnv }));
-assert.strictEqual(engineEnd.decisionRequest.type, 'DECIDE_FLOW_END');
+assert.strictEqual(engineAction.decisionRequest.type, 'DECIDE_FLOW_END');
+const engineEnd = engineAction;
 const engineStep = JSON.parse(run('node', [
   'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
   '--platform', 'harmony', '--execution-id', engineStart.executionId,
@@ -3781,7 +4042,7 @@ const concurrentStart = JSON.parse(run('node', [
 const concurrentPlan = JSON.parse(run('node', [
   'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
 ]));
-assert.strictEqual(concurrentPlan.action, 'BLOCK_CONCURRENT');
+assert.strictEqual(concurrentPlan.action, 'CORRUPTED');
 const concurrentEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', concurrentStart.executionId, 'step-001', 'concurrent-evidence');
 recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', concurrentStart.executionId, 'step-001', 'concurrent guard verified', concurrentEvidence);
 run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', concurrentStart.executionId]);
@@ -3795,5 +4056,105 @@ const corruptedPlan = JSON.parse(run('node', [
 assert.strictEqual(corruptedPlan.action, 'CORRUPTED');
 recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', corruptedStart.executionId, 'step-001', 'corrupted state classified', corruptedEvidence);
 run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', corruptedStart.executionId]);
+
+const productionGateEnv = { ...process.env };
+delete productionGateEnv.MAVT_SELF_TEST_ALLOW_UNBATCHED_START;
+delete productionGateEnv.MAVT_SELF_TEST_ALLOW_UNBOUND_FACTS;
+const missingBatchStart = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start',
+], { env: productionGateEnv });
+assert.notStrictEqual(missingBatchStart.status, 0);
+assert.ok(missingBatchStart.stderr.includes('必须通过 --batch-id'));
+
+const runtimeGuardBatchId = 'batch-runtime-write-guard';
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', runtimeGuardBatchId, '--platform', 'harmony', '--provider', 'codex',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const runtimeGuardStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', runtimeGuardBatchId,
+]));
+const unboundFact = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', runtimeGuardStart.executionId,
+  '--record-json', JSON.stringify({ type: 'assertion', stepId: 'step-001', status: 'PASS', reason: 'must be rejected before Runtime BOUND', evidence: ['screenshots/none.png'] }),
+], { env: productionGateEnv });
+assert.notStrictEqual(unboundFact.status, 0);
+assert.ok(unboundFact.stderr.includes('不能早于 Agent Runtime 初始化'));
+const guardEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', runtimeGuardStart.executionId, 'step-001', 'runtime-guard-cleanup');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', runtimeGuardStart.executionId, 'step-001', 'cleanup', guardEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', runtimeGuardStart.executionId, '--finalize', '--status', 'PASS']);
+
+const resumeBatchId = 'batch-resume-start';
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', resumeBatchId, '--platform', 'harmony', '--provider', 'codex',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const interruptedStarting = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', resumeBatchId,
+], { env: { ...process.env, MAVT_SELF_TEST_START_INTERRUPT: 'after-execution-start' } });
+assert.notStrictEqual(interruptedStarting.status, 0);
+const resumePlan = JSON.parse(run('node', ['scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', resumeBatchId]));
+assert.strictEqual(resumePlan.action, 'RESUME_START');
+const resumedStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--resume-start', '--execution-id', resumePlan.executionId, '--batch-id', resumeBatchId,
+]));
+assert.strictEqual(resumedStart.resumed, true);
+assert.strictEqual(json(path.join(resumedStart.execDir, 'execution.json')).lifecycle, 'RUNNING');
+const resumedEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', resumedStart.executionId, 'step-001', 'resumed-start-cleanup');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', resumedStart.executionId, 'step-001', 'cleanup', resumedEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', resumedStart.executionId, '--finalize', '--status', 'PASS']);
+
+const duplicateBatch = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', 'batch-duplicate-target', '--platform', 'harmony',
+  '--targets-json', JSON.stringify([
+    { caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir },
+    { caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir },
+  ]),
+]);
+assert.notStrictEqual(duplicateBatch.status, 0);
+assert.ok(duplicateBatch.stderr.includes('Duplicate batch target'));
+const wrongCaseKeyBatch = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', 'batch-wrong-case-key', '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: 'wrong-case-key', caseDir: commonHeadingParsed.caseDir }]),
+]);
+assert.notStrictEqual(wrongCaseKeyBatch.status, 0);
+assert.ok(wrongCaseKeyBatch.stderr.includes('does not match case.json'));
+
+const missingContractBatchId = 'batch-missing-contract';
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', missingContractBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+fs.unlinkSync(path.join(workspace, 'runs', missingContractBatchId, 'contract.json'));
+const missingBatchContract = runAllowFailure('node', ['scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', missingContractBatchId]);
+assert.notStrictEqual(missingBatchContract.status, 0);
+assert.ok(missingBatchContract.stderr.includes('contract.json is missing'));
+
+const otherProviderContract = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--provider', 'other']));
+assert.strictEqual(otherProviderContract.provider, 'other');
+assert.ok(!otherProviderContract.requiredResources.includes('references/agent-runtimes/codex.md'));
+
+const invalidMetricsPath = path.join(invalidResultStart.execDir, 'metrics.json');
+const originalInvalidMetrics = fs.readFileSync(invalidMetricsPath, 'utf8');
+const tamperedMetrics = JSON.parse(originalInvalidMetrics);
+tamperedMetrics.durationMs = Number(tamperedMetrics.durationMs || 0) + 1;
+write(invalidMetricsPath, `${JSON.stringify(tamperedMetrics, null, 2)}\n`);
+const invalidPublishedReport = readPublishedExecution(invalidResultStart.execDir);
+assert.strictEqual(invalidPublishedReport.result.status, 'BLOCKED');
+assert.strictEqual(invalidPublishedReport.result.failureCode, 'EXECUTION_COMPLETION_INVALID');
+assert.ok(invalidPublishedReport.completionError);
+writeCaseReports(
+  commonHeadingParsed.caseDir,
+  commonHeadingCase,
+  json(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'state.json')),
+  [],
+  invalidPublishedReport,
+  { platform: 'harmony' },
+);
+const invalidPublishedContext = fs.readFileSync(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(invalidPublishedContext.includes('状态：BLOCKED'));
+assert.ok(invalidPublishedContext.includes('完成态校验失败'));
+write(invalidMetricsPath, originalInvalidMetrics);
+run('node', ['scripts/render-context.js', commonHeadingParsed.caseDir, '--platform', 'harmony']);
 
 console.log(`self-test passed: ${tmp}`);

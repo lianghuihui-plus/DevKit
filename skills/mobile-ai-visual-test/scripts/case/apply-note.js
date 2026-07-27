@@ -7,10 +7,8 @@ const {
   nowIso,
   readJson,
   readJsonl,
-  refreshIndexForCase,
+  rebuildCaseDerivedArtifacts,
   reapplyNotes,
-  writeCaseReports,
-  writePlatformCaseReports,
   writeJson,
 } = require('../common');
 
@@ -57,10 +55,8 @@ let caseJson = caseJsonBefore;
 caseJson = reapplyNotes(caseJson, readJsonl(notesPath));
 writeJson(path.join(caseDir, 'case.json'), caseJson);
 
-const state = readJson(path.join(caseDir, 'state.json'), {});
-const currentNotes = readJsonl(notesPath);
-const reports = writeCaseReports(caseDir, caseJson, state, currentNotes);
-writePlatformCaseReports(caseDir, caseJson, currentNotes);
-const indexHtml = refreshIndexForCase(caseDir);
+const rebuilt = rebuildCaseDerivedArtifacts(caseDir);
+const reports = rebuilt.rootReport;
+const indexHtml = rebuilt.indexHtml;
 
 console.log(JSON.stringify({ note, ...reports, indexHtml }, null, 2));

@@ -2,9 +2,11 @@
 set -euo pipefail
 
 device=""
+device_form_factor=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device) device="${2:-}"; shift 2 ;;
+    --device-form-factor) device_form_factor="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
@@ -33,6 +35,10 @@ targets=""
 if command -v hdc >/dev/null 2>&1; then
   targets="$(hdc list targets 2>/dev/null || true)"
 fi
+device_list=""
+if command -v devecocli >/dev/null 2>&1; then
+  device_list="$(devecocli device list 2>/dev/null || true)"
+fi
 
 uitest_version=""
 screen_cap="false"
@@ -40,6 +46,8 @@ dump_layout="false"
 aa_dump="false"
 window_dump="false"
 hilog="false"
+display_dump=""
+display_dump_ok="false"
 if [[ -n "$device" || "$(printf '%s\n' "$targets" | sed '/^\s*$/d' | wc -l | tr -d ' ')" = "1" ]]; then
   if [[ -z "$device" ]]; then
     device="$(printf '%s\n' "$targets" | sed '/^\s*$/d' | head -1)"
@@ -53,9 +61,16 @@ if [[ -n "$device" || "$(printf '%s\n' "$targets" | sed '/^\s*$/d' | wc -l | tr 
     [[ -s "$tmp_dir/window-dump.txt" ]] && window_dump="true"
   fi
   run_probe_optional 5 "$atoms_dir/logs.sh" --device "$device" --out-dir "$tmp_dir/logs" --label probe && hilog="true" || true
+  set +e
+  display_dump="$("${hdc_prefix[@]}" shell hidumper -s DisplayManagerService -a -a 2>/dev/null)"
+  display_status=$?
+  set -e
+  [[ $display_status -eq 0 ]] && display_dump_ok="true"
 fi
 
 node -e '
+const { normalizeDeviceFormFactor } = require(process.argv[10]);
+const { parseDeviceList, parseDisplayState, selectDeviceProfile } = require(process.argv[11]);
 const hdc = !!process.argv[3];
 const device = process.argv[1] || null;
 const uitestVersion = process.argv[4] || null;
@@ -64,6 +79,25 @@ const dumpLayout = process.argv[6] === "true";
 const aaDump = process.argv[7] === "true";
 const windowDump = process.argv[8] === "true";
 const hilog = process.argv[9] === "true";
+const explicitFormFactorRaw = process.argv[12] || "";
+const explicitFormFactor = normalizeDeviceFormFactor(explicitFormFactorRaw);
+if (explicitFormFactorRaw && !explicitFormFactor) {
+  console.error(`无效 --device-form-factor: ${explicitFormFactorRaw}`);
+  process.exit(2);
+}
+const devices = parseDeviceList(process.argv[13] || "");
+let selectedProfile = selectDeviceProfile(devices, device);
+if (explicitFormFactor && selectedProfile) {
+  selectedProfile.deviceFormFactor = explicitFormFactor;
+  selectedProfile.deviceFormFactorSource = "explicit";
+} else if (explicitFormFactor && device) {
+  selectedProfile = { name: device, id: device, serial: device, kind: "explicit", deviceFormFactor: explicitFormFactor, deviceFormFactorSource: "explicit" };
+  devices.push(selectedProfile);
+}
+const deviceFormFactor = explicitFormFactor || selectedProfile?.deviceFormFactor || null;
+const display = parseDisplayState(process.argv[14] || "");
+const displayCommandOk = process.argv[15] === "true";
+const displayReadable = displayCommandOk && display.readable;
 const hasTarget = hdc && !!device;
 const canUseUitest = hasTarget && !!uitestVersion;
 const canLaunchApp = hasTarget && aaDump;
@@ -95,11 +129,19 @@ if (hasTarget && !aaDump) {
 if (hasTarget && !hilog) {
   diag("harmonyLogsUnavailable", "WARN", "HarmonyOS hilog 不可用", "确认 hdc shell hilog 可执行；日志缺失不阻塞核心视觉测试", "hdc shell hilog");
 }
+if (hasTarget && !deviceFormFactor) {
+  diag("harmonyDeviceFormFactorUnknown", "ERROR", "无法确认鸿蒙设备形态", "确保 devecocli device list 能识别设备类型，或通过 --device-form-factor 显式指定", "devecocli device list");
+}
+if (hasTarget && deviceFormFactor === "phone" && !displayReadable) {
+  diag("harmonyStartupDisplayUnavailable", "ERROR", "无法读取手机屏幕方向", "确认 DisplayManagerService hidumper 能返回 Rotation、Width 和 Height", "hdc shell hidumper -s DisplayManagerService -a -a");
+}
 const data = {
   schemaVersion: 1,
   type: "environmentProbe",
   platform: "harmony",
   device,
+  deviceFormFactor,
+  devices,
   targets: (process.argv[2] || "").split(/\r?\n/).filter(Boolean),
   ready: !diagnostics.some((item) => item.level === "ERROR"),
   diagnostics,
@@ -111,6 +153,14 @@ const data = {
     foregroundApp: aaDump || windowDump,
     logs: hilog,
     launchApp: canLaunchApp,
+    deviceFormFactor,
+    startupDisplay: {
+      canReadOrientation: displayReadable,
+      canSetOrientation: hasTarget && deviceFormFactor === "phone" && displayReadable,
+      canVerifyAfterLaunch: displayReadable,
+      supportedOrientations: deviceFormFactor === "phone" && displayReadable ? ["portrait", "preserve"] : ["preserve"],
+      current: displayReadable ? display : null
+    },
     actions,
     uitestVersion,
     screenCap,
@@ -121,4 +171,5 @@ const data = {
   }
 };
 console.log(JSON.stringify(data, null, 2));
-' "$device" "$targets" "$(command -v hdc || true)" "$uitest_version" "$screen_cap" "$dump_layout" "$aa_dump" "$window_dump" "$hilog"
+' "$device" "$targets" "$(command -v hdc || true)" "$uitest_version" "$screen_cap" "$dump_layout" "$aa_dump" "$window_dump" "$hilog" \
+  "$script_dir/../../../lib/startup-display.js" "$script_dir/lib/display-state.js" "$device_form_factor" "$device_list" "$display_dump" "$display_dump_ok"

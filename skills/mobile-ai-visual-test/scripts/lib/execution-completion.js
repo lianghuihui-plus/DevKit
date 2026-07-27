@@ -1,53 +1,18 @@
 #!/usr/bin/env node
 'use strict';
 
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const {
   caseRuntimeDir,
   nowIso,
   readJson,
-  readJsonl,
-  refreshIndexForCase,
-  writeCaseReports,
+  rebuildCaseDerivedArtifacts,
   writeJson,
 } = require('../common');
-
-function sha256File(file) {
-  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-}
-
-function completionPaths(execDir) {
-  return {
-    completion: path.join(execDir, 'completion.json'),
-    draft: path.join(execDir, 'completion.draft.json'),
-    execution: path.join(execDir, 'execution.json'),
-    result: path.join(execDir, 'result.json'),
-    metrics: path.join(execDir, 'metrics.json'),
-    timeline: path.join(execDir, 'timeline.jsonl'),
-    validation: path.join(execDir, 'agent', 'validation.json'),
-    runtime: path.join(execDir, 'agent', 'runtime.json'),
-  };
-}
-
-function validateCompletionBinding(value, expected) {
-  if (!value || value.schemaVersion !== 1) throw new Error('Execution completion is invalid');
-  for (const field of ['executionId', 'batchId', 'caseKey', 'platform', 'completionSource']) {
-    if ((value[field] || null) !== (expected[field] || null)) throw new Error(`Execution completion ${field} mismatch`);
-  }
-  if (!['PASS', 'FAIL', 'BLOCKED', 'UNKNOWN'].includes(value.status) || !['PASS', 'FAIL', 'BLOCKED', 'UNKNOWN'].includes(value.businessStatus)) {
-    throw new Error('Execution completion status is invalid');
-  }
-  if (value.completionSource === 'framework' && (value.controlStatus !== 'NOT_REQUIRED' || value.status !== value.businessStatus || value.validationSha256)) {
-    throw new Error('Framework execution completion control state is invalid');
-  }
-  if (value.completionSource === 'agent' && (!['VALIDATED', 'BLOCKED'].includes(value.controlStatus) || !value.validationSha256)) {
-    throw new Error('Agent execution completion control state is invalid');
-  }
-  if (value.controlStatus === 'BLOCKED' && value.status !== 'BLOCKED') throw new Error('Blocked execution completion must publish BLOCKED');
-  return value;
-}
+const { validateExecutionEnvironment } = require('./execution-environment');
+const { validateFrozenPreconditionInputs } = require('./precondition-inputs');
+const { completionDisplayResult, completionPaths, sha256File, validateCompletionBinding, validatePublishedCompletion } = require('./completion-contract');
 
 function buildCompletion({ caseDir, platform, executionId, batchId, completionSource }) {
   const runtimeDir = caseRuntimeDir(caseDir, platform);
@@ -57,10 +22,14 @@ function buildCompletion({ caseDir, platform, executionId, batchId, completionSo
   const result = readJson(paths.result);
   const metrics = readJson(paths.metrics);
   if (!execution?.finalized || !result || !metrics) throw new Error('Execution result artifacts are incomplete');
+  validateExecutionEnvironment(execution, platform);
+  validateFrozenPreconditionInputs(execution);
   if (!execution.batchId || execution.batchId !== batchId) throw new Error('Execution completion batch binding mismatch');
   if (result.executionId !== executionId || metrics.executionId !== executionId) throw new Error('Execution completion artifact binding mismatch');
   if (result.caseKey !== readJson(path.join(execDir, 'case.snapshot.json'))?.identity?.caseKey) throw new Error('Execution completion case binding mismatch');
   if (result.status !== metrics.status || (result.failureCode || null) !== (metrics.failureCode || null)) throw new Error('Execution completion business result mismatch');
+  if (result.environmentSha !== execution.environmentSha || metrics.environmentSha !== execution.environmentSha) throw new Error('Execution completion environment binding mismatch');
+  if (result.preconditionInputsSha !== execution.preconditionInputsSha || metrics.preconditionInputsSha !== execution.preconditionInputsSha) throw new Error('Execution completion precondition input binding mismatch');
 
   let validation = null;
   let runtime = null;
@@ -79,6 +48,7 @@ function buildCompletion({ caseDir, platform, executionId, batchId, completionSo
     if (validation.valid === true) {
       if (runtime.state !== 'COMPLETED') throw new Error('Valid Agent completion requires Runtime COMPLETED');
       if (validation.status !== result.status || (validation.failureCode || null) !== (result.failureCode || null)) throw new Error('Agent validation does not match business result');
+      if (validation.environmentSha !== execution.environmentSha || validation.preconditionInputsSha !== execution.preconditionInputsSha) throw new Error('Agent validation execution binding mismatch');
       controlStatus = 'VALIDATED';
     } else {
       if (!['FAILED', 'INTERRUPTED', 'TIMED_OUT'].includes(runtime.state)) throw new Error('Invalid Agent completion requires a failed Runtime terminal state');
@@ -97,6 +67,8 @@ function buildCompletion({ caseDir, platform, executionId, batchId, completionSo
     batchId,
     caseKey: result.caseKey,
     platform,
+    environmentSha: execution.environmentSha,
+    preconditionInputsSha: execution.preconditionInputsSha,
     completionSource,
     businessStatus: result.status,
     businessFailureCode: result.failureCode || null,
@@ -110,21 +82,6 @@ function buildCompletion({ caseDir, platform, executionId, batchId, completionSo
     metricsSha256: sha256File(paths.metrics),
     validationSha256: validation ? sha256File(paths.validation) : null,
     completedAt: nowIso(),
-  };
-}
-
-function completionDisplayResult(result, completion) {
-  if (!completion) return result;
-  return {
-    ...result,
-    status: completion.status,
-    failureCode: completion.failureCode,
-    reason: completion.reason || result.reason || '',
-    businessStatus: completion.businessStatus,
-    businessFailureCode: completion.businessFailureCode,
-    businessReason: result.reason || '',
-    controlStatus: completion.controlStatus,
-    completionSource: completion.completionSource,
   };
 }
 
@@ -157,6 +114,8 @@ function publishExecution({ caseDir, platform, executionId, batchId, completionS
     caseKey: readJson(path.join(execDir, 'result.json'))?.caseKey || null,
     platform,
     completionSource,
+    environmentSha: readJson(paths.execution)?.environmentSha || null,
+    preconditionInputsSha: readJson(paths.execution)?.preconditionInputsSha || null,
   };
   let completion = readJson(paths.completion);
   if (completion) {
@@ -169,11 +128,14 @@ function publishExecution({ caseDir, platform, executionId, batchId, completionS
 
   const result = readJson(paths.result);
   const metrics = readJson(paths.metrics);
-  if (sha256File(paths.result) !== completion.resultSha256 || sha256File(paths.metrics) !== completion.metricsSha256) {
-    throw new Error('Execution completion artifact hash mismatch');
-  }
-  if (completion.validationSha256 && sha256File(paths.validation) !== completion.validationSha256) {
-    throw new Error('Execution completion validation hash mismatch');
+  validatePublishedCompletion(execDir, completion, { execution: readJson(paths.execution), result, metrics, snapshot: readJson(paths.snapshot) });
+
+  // completion.json 是 Runtime 校验后的可信发布标记。先原子发布，再刷新可重建的报告；
+  // 即使报告写入中断，重复 batch commit 也会基于同一 completion 幂等重建。
+  if (!fs.existsSync(paths.completion)) fs.renameSync(paths.draft, paths.completion);
+  else if (fs.existsSync(paths.draft)) fs.unlinkSync(paths.draft);
+  if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_COMPLETION_INTERRUPT === 'after-publish') {
+    throw new Error('MAVT_SELF_TEST_COMPLETION_INTERRUPT: after-publish');
   }
 
   const statePath = path.join(runtimeDir, 'state.json');
@@ -184,18 +146,7 @@ function publishExecution({ caseDir, platform, executionId, batchId, completionS
     environment: {},
   }), completion, result);
   writeJson(statePath, state);
-
-  // completion.json 是 Runtime 校验后的可信发布标记。先原子发布，再刷新可重建的报告；
-  // 即使报告写入中断，重复 batch commit 也会基于同一 completion 幂等重建。
-  if (!fs.existsSync(paths.completion)) fs.renameSync(paths.draft, paths.completion);
-  else if (fs.existsSync(paths.draft)) fs.unlinkSync(paths.draft);
-
-  const caseJson = readJson(path.join(caseDir, 'case.json')) || readJson(path.join(execDir, 'case.snapshot.json'));
-  const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
-  const displayResult = completionDisplayResult(result, completion);
-  const events = readJsonl(paths.timeline);
-  writeCaseReports(caseDir, caseJson, state, notes, { latest: execDir, result: displayResult, metrics, events, completion }, { platform });
-  refreshIndexForCase(caseDir);
+  rebuildCaseDerivedArtifacts(caseDir, { scope: 'platform', platform });
   return completion;
 }
 

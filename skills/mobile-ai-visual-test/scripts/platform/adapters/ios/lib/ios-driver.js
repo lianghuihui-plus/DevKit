@@ -155,6 +155,7 @@ async function runProbe(argv) {
     type: 'environmentProbe',
     platform: 'ios',
     device: target.device || null,
+    devices: booted.map((item) => ({ id: item.udid, serial: item.udid, name: item.name || item.udid })),
     targets: booted.map((item) => item.udid),
     ready: !diagnostics.some((item) => item.level === 'ERROR'),
     diagnostics,

@@ -46,7 +46,7 @@ description: 当需要基于 Markdown 人工用例，对移动端应用进行 AI
 4. 用 `scripts/probe-env.sh --platform <platform>` 探测环境；一次用户确认后，对每个 case 用 `scripts/update-env.js` 固化设备、App 和入口。
 5. 用 `scripts/preflight-preconditions.js <case-dir...> --cwd <workspace-cwd> --platform <platform>` 生成确定的前置条件计划。严格同名命中的 Flow 自动执行；未命中的条件继续按 `framework`、`confirm`、`external_setup` 或 `unsupported` 处理，并在无人值守开始前集中请用户确认。
 6. 对每个 case 调用 `scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>`；依赖未准备不得开始 execution。
-7. 创建 `batch-runtime.js init` 批次产物并固化 `runs/<batchId>/contract.json`；先用 `batch-runtime.js reconcile-current` 确定性归约遗留 execution，再对当前 case 用 `run-case.js ... --start --batch-id <id>` 创建 execution。若 `blockedOnStart=true`，不创建子 Agent。
+7. 创建 `batch-runtime.js init --provider codex` 批次产物并固化 provider 与 `runs/<batchId>/contract.json`；先用 `batch-runtime.js reconcile-current` 确定性归约遗留 execution。`START_NEW` 才创建 execution；`RESUME_START` 必须用 `run-case.js --resume-start` 恢复。若 `blockedOnStart=true`，不创建子 Agent。
 8. 调用 `agent-runtime.js init` 固化 `agent/contract.json`、`request.json` 和 `runtime.json`。协调器只把 `agent-runtime.js next` 返回的 Host operation 映射到当前 Agent 平台，再用 `apply` 回写结果。
 9. 子 Agent 校验 protocolSha 和 implementationSha 后，调用 `execute-next-work.js next`；脚本连续推进确定性工作并只在返回 `DECISION_REQUIRED` 时要求看图，子 Agent 用原 workToken 调用 `decide`。
 10. Runtime Core 校验 `response.json` 与 execution/result/metrics，写 `validation.json` 并释放会话；协调器再用 `batch-runtime.js commit-current` 生成可信 `completion.json`、刷新报告并提交当前 case，然后才开始下一个 case。
@@ -75,12 +75,14 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 ## 关键执行规则
 
 - 正式执行必须显式传 `--platform <harmony|android|ios>`；无平台根运行态只用于 `--legacy-runtime` 兼容旧产物。
-- case-bound 的设备、App 和入口以已确认平台 `state.json` 为准；显式参数只能与已确认值相同，不一致时以 `ENVIRONMENT_BINDING_MISMATCH` 拒绝且不得调用 adapter。
+- `state.json` 只提供下一次 execution 的已确认环境；execution 开始后，case-bound 的设备、App、入口、依赖和启动策略只读 `execution.json.environmentSnapshot`，显式参数不一致时以 `ENVIRONMENT_BINDING_MISMATCH` 拒绝且不得调用 adapter。
 - Flow 资产位于 `flows/preconditions/<business>/flow.json`，平台覆盖位于 `flows/preconditions/<business>/<platform>/flow.json`；不增加 `universal/` 目录层级。
 - 前置条件文本与 Flow `name` 只做首尾空白清理后严格全等匹配；不做别名、模糊或语义匹配。
 - preflight 返回的 `preconditionPlanSha` 必须原样传给 `--start`；资产或计划变化时重新 preflight。
+- `confirm` 和 `external_setup` 输入必须在 `--start` 时通过 `--precondition-inputs-json` 冻结；`framework`、`flow` 和 `unsupported` 不接受外部确认。
 - Flow 观察和动作必须使用 `--scope precondition-flow`，绑定 `preconditionId`、`flowId`，步骤内事实另绑定 `flowStepId`；不得绑定 case `stepId`。
 - 每个 case 的 `--start` 都是新的 execution 边界，并自动记录 execution 级 `restartApp` 事实。
+- HarmonyOS 手机的 `restartApp` 默认执行必需的竖屏启动显示策略；方向归一和启动后复核都属于同一条启动级 `restartApp` 事实，失败时在创建子 Agent 前阻塞。
 - `executionStart`、`environmentProbe` 和 `scope=execution-bootstrap` 的启动级 `restartApp` 是 BOUND 前唯一允许存在的启动事实；前置条件、Flow 和业务步骤事实必须晚于 Agent Runtime BOUND。
 - 批次协调器负责 `--start` 和 Runtime Core，独立 case 子 Agent 只接管已处于 RUNNING 的指定 execution，不重复 start、probe 或 prepare。
 - provider 是 Runtime Core 所有的规范机器标识，写入 `runtime.json` 与带 requestSha 的 `request.json`；子 Agent 不得填写或覆盖 provider。

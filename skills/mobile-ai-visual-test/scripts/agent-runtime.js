@@ -25,7 +25,6 @@ function parseArgs(args) {
       case '--execution-id': options.executionId = args[++i]; break;
       case '--provider': options.provider = args[++i]; break;
       case '--workspace-cwd': options.workspaceCwd = path.resolve(args[++i]); break;
-      case '--confirmed-preconditions-json': options.confirmedPreconditionsJson = args[++i]; break;
       case '--operation-result-json': options.operationResult = JSON.parse(args[++i]); break;
       case '--reason': options.reason = args[++i]; break;
       default: usage();
@@ -75,9 +74,17 @@ function saveRuntime(paths, runtime) {
 function assertRuntimeContract(paths) {
   const persisted = readJson(paths.contract);
   if (!persisted) throw new Error('AGENT_PROTOCOL_MISMATCH: Agent Runtime contract.json is missing');
-  const current = runJson('build-agent-contract.js', ['--role', 'case-executor']);
+  const current = runJson('build-agent-contract.js', ['--role', 'case-executor', '--provider', persisted.provider || 'codex']);
   if (persisted.protocolSha !== current.protocolSha || persisted.implementationSha !== current.implementationSha) {
     throw new Error('AGENT_PROTOCOL_MISMATCH: case-executor contract changed after Runtime initialization');
+  }
+}
+
+function assertRuntimeExecutionBinding(paths) {
+  const runtime = loadRuntime(paths);
+  const execution = readJson(path.join(paths.execDir, 'execution.json'));
+  if (!execution || runtime.environmentSha !== execution.environmentSha || runtime.preconditionInputsSha !== execution.preconditionInputsSha) {
+    throw new Error('AGENT_PROTOCOL_MISMATCH: Agent Runtime no longer matches the frozen execution');
   }
 }
 
@@ -119,6 +126,8 @@ function recordFailure(options, paths, runtime, status) {
     protocolSha: runtime.protocolSha,
     implementationSha: runtime.implementationSha,
     requestSha: runtime.requestSha,
+    environmentSha: runtime.environmentSha,
+    preconditionInputsSha: runtime.preconditionInputsSha,
     sessionScope: 'case',
     sessionId: runtime.sessionId || undefined,
   });
@@ -134,6 +143,8 @@ function failRuntime(options, paths, runtime, { targetState, failureCode, reason
       schemaVersion: 1,
       valid: false,
       executionId: options.executionId,
+      environmentSha: runtime.environmentSha,
+      preconditionInputsSha: runtime.preconditionInputsSha,
       failureCode,
       reason,
       time: nowIso(),
@@ -174,16 +185,22 @@ function initialize(options, paths) {
     assertRuntimeContract(paths);
     const existing = loadRuntime(paths);
     if (existing.provider !== options.provider) throw new Error('Agent Runtime already initialized with a different provider');
+    const execution = readJson(path.join(paths.execDir, 'execution.json'));
+    if (existing.environmentSha !== execution?.environmentSha || existing.preconditionInputsSha !== execution?.preconditionInputsSha) throw new Error('AGENT_PROTOCOL_MISMATCH: Agent Runtime execution binding changed');
     return existing;
   }
   const execution = readJson(path.join(paths.execDir, 'execution.json'));
   if (!execution || execution.finalized || execution.lifecycle !== 'RUNNING') throw new Error('Execution must be RUNNING before Agent Runtime init');
+  const allowMissingBatch = process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_ALLOW_MISSING_BATCH === '1';
+  if (!execution.batchId && !allowMissingBatch) throw new Error('Agent Runtime init requires a batch-bound execution');
+  const batch = execution.batchId ? readJson(path.join(options.workspaceCwd, 'runs', execution.batchId, 'batch.json')) : null;
+  if ((!batch || batch.batchId !== execution.batchId) && !allowMissingBatch) throw new Error('Agent Runtime init requires the owning batch state');
+  if (batch && (batch.provider || 'codex') !== options.provider) throw new Error('Agent Runtime provider does not match owning batch');
   assertBootstrapOnlyBeforeRuntime(options, paths);
   ensureDir(paths.agentDir);
-  const contract = runJson('build-agent-contract.js', ['--role', 'case-executor']);
+  const contract = runJson('build-agent-contract.js', ['--role', 'case-executor', '--provider', options.provider]);
   writeJson(paths.contract, contract);
   const requestArgs = [options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--provider', options.provider, '--skill-contract-json', JSON.stringify(contract), '--workspace-cwd', options.workspaceCwd, '--output', paths.request];
-  if (options.confirmedPreconditionsJson) requestArgs.push('--confirmed-preconditions-json', options.confirmedPreconditionsJson);
   const request = runJson('build-case-agent-request.js', requestArgs);
   const startedAt = new Date(execution.startedAt || nowIso()).getTime();
   const deadlineAt = new Date(startedAt + Number(request.executionPolicy.maxDurationMs)).toISOString();
@@ -194,6 +211,8 @@ function initialize(options, paths) {
     platform: options.platform,
     executionId: options.executionId,
     requestSha: request.requestSha,
+    environmentSha: request.environmentSha,
+    preconditionInputsSha: request.preconditionInputsSha,
     protocolSha: contract.protocolSha,
     implementationSha: contract.implementationSha,
     deadlineAt,
@@ -216,7 +235,7 @@ function validateReceivedResult(options, paths, runtime) {
     runtime.validation = { valid: true, status: validation.status, failureCode: validation.failureCode || null };
   } catch (error) {
     const reason = error.stderr ? String(error.stderr).trim() : error.message || String(error);
-    const validation = { schemaVersion: 1, valid: false, executionId: options.executionId, failureCode: 'AGENT_RESULT_INVALID', reason, time: nowIso() };
+    const validation = { schemaVersion: 1, valid: false, executionId: options.executionId, environmentSha: runtime.environmentSha, preconditionInputsSha: runtime.preconditionInputsSha, failureCode: 'AGENT_RESULT_INVALID', reason, time: nowIso() };
     writeJson(paths.validation, validation);
     runtime.validation = validation;
     failRuntime(options, paths, runtime, { targetState: 'FAILED', failureCode: 'AGENT_RESULT_INVALID', reason, record: false });
@@ -262,6 +281,10 @@ function next(options, paths) {
   } else if (runtime.state === 'SESSION_RUNNING') {
     if (remainingMs(runtime) === 0) {
       failRuntime(options, paths, runtime, { targetState: 'TIMED_OUT', failureCode: 'CASE_TIMEOUT', reason: 'Case Agent exceeded its execution deadline.' });
+      if (runtime.state === 'INTERRUPT_REQUIRED') {
+        runtime.state = 'INTERRUPTING';
+        op = operation(runtime, 'INTERRUPT_SESSION', { sessionId: runtime.sessionId, reason: runtime.reason });
+      }
     } else {
       runtime.state = 'AWAITING_RESULT';
       op = operation(runtime, 'AWAIT_RESULT', { sessionId: runtime.sessionId, deadlineAt: runtime.deadlineAt, remainingMs: remainingMs(runtime) });
@@ -277,14 +300,6 @@ function next(options, paths) {
     op = operation(runtime, 'RELEASE_SESSION', { sessionId: runtime.sessionId });
   } else {
     throw new Error(`Agent Runtime cannot derive operation from state ${runtime.state}`);
-  }
-  if (!op && runtime.state === 'INTERRUPT_REQUIRED') {
-    runtime.state = 'INTERRUPTING';
-    op = operation(runtime, 'INTERRUPT_SESSION', { sessionId: runtime.sessionId, reason: runtime.reason });
-  }
-  if (!op && runtime.state === 'RELEASE_REQUIRED') {
-    runtime.state = 'RELEASING';
-    op = operation(runtime, 'RELEASE_SESSION', { sessionId: runtime.sessionId });
   }
   saveRuntime(paths, runtime);
   if (TERMINAL_STATES.has(runtime.state)) return terminalResponse(runtime);
@@ -309,7 +324,7 @@ function applyOperation(options, paths) {
       failRuntime(options, paths, runtime, { targetState: 'FAILED', failureCode: 'AGENT_RUNTIME_UNAVAILABLE', reason: result.reason || 'Host failed to open case session.', eventStatus: 'FAILED' });
     } else {
       runtime.sessionId = result.sessionId;
-      recordRuntime(options, { provider: runtime.provider, status: 'BOUND', protocolSha: runtime.protocolSha, implementationSha: runtime.implementationSha, requestSha: runtime.requestSha, sessionScope: 'case', sessionId: runtime.sessionId });
+      recordRuntime(options, { provider: runtime.provider, status: 'BOUND', protocolSha: runtime.protocolSha, implementationSha: runtime.implementationSha, requestSha: runtime.requestSha, environmentSha: runtime.environmentSha, preconditionInputsSha: runtime.preconditionInputsSha, sessionScope: 'case', sessionId: runtime.sessionId });
       if (runtime.cancelAfterOpen) {
         const cancellation = runtime.cancelAfterOpen;
         delete runtime.cancelAfterOpen;
@@ -344,6 +359,8 @@ function applyOperation(options, paths) {
           schemaVersion: 1,
           valid: false,
           executionId: options.executionId,
+          environmentSha: runtime.environmentSha,
+          preconditionInputsSha: runtime.preconditionInputsSha,
           failureCode: runtime.failureCode,
           reason: runtime.reason,
           time: runtime.completedAt,
@@ -377,7 +394,10 @@ function interrupt(options, paths) {
 function main() {
   const options = parseArgs(process.argv.slice(2));
   const paths = agentPaths(options);
-  if (['next', 'apply', 'interrupt'].includes(options.command)) assertRuntimeContract(paths);
+  if (['next', 'apply', 'interrupt'].includes(options.command)) {
+    assertRuntimeContract(paths);
+    assertRuntimeExecutionBinding(paths);
+  }
   let value;
   if (options.command === 'init') value = initialize(options, paths);
   else if (options.command === 'next') value = next(options, paths);

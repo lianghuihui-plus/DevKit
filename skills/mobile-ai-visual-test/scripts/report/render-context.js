@@ -4,10 +4,7 @@
 const path = require('path');
 const {
   normalizePlatform,
-  readJson,
-  readJsonl,
-  refreshIndexForCase,
-  writeCaseReports,
+  rebuildCaseDerivedArtifacts,
 } = require('../common');
 
 function usage() {
@@ -26,11 +23,10 @@ for (let i = 1; i < args.length; i++) {
   }
 }
 
-const caseJson = readJson(path.join(caseDir, 'case.json'));
-const statePath = platform ? path.join(caseDir, 'platforms', platform, 'state.json') : path.join(caseDir, 'state.json');
-const state = readJson(statePath, {});
-const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
-
-const reports = writeCaseReports(caseDir, caseJson, state, notes, null, { platform });
-refreshIndexForCase(caseDir);
+const rebuilt = rebuildCaseDerivedArtifacts(caseDir, platform ? { scope: 'platform', platform } : { scope: 'all' });
+const platformSegment = `${path.sep}platforms${path.sep}${platform}${path.sep}`;
+const reports = platform
+  ? rebuilt.platformReports.find((report) => report.context.includes(platformSegment))
+  : rebuilt.rootReport;
+if (!reports) throw new Error(`No derived report exists for platform ${platform}`);
 console.log(reports.context);

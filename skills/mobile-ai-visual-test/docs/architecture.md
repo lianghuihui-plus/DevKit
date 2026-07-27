@@ -15,7 +15,7 @@ flowchart TD
   M -->|未命中| PM["framework / confirm<br/>external_setup / unsupported"]
   PF --> B["Batch reconcile<br/>归约遗留 execution"]
   PM --> B
-  B --> S["run-case --start<br/>绑定 batch + 固定计划 + 冷启动"]
+  B --> S["run-case --start<br/>绑定 batch + 冻结环境/输入/计划 + 冷启动"]
   S --> AR["Runtime Core + Host Adapter<br/>硬 deadline + 每 case 独立会话"]
   AR --> CE["Case Engine<br/>确定性推进到 DecisionRequest"]
   CE --> C["前置条件阶段<br/>起点判断 → Flow → 终点判断"]
@@ -64,7 +64,7 @@ flowchart TD
 
 - `entry-check` 在任何 Flow 动作前执行；终点已满足则不重复操作。
 - 起点不匹配时不尝试探索或纠偏，直接 `PRECONDITION_FLOW_START_MISMATCH`。
-- 每个 Flow step 强制 `before observation -> action -> after observation`。
+- 每个 Flow step 强制 `before observation -> action -> after observation`；冻结动作参数完整时引擎直接确定性执行，只有缺少当前画面参数时才产生 `DECIDE_FLOW_ACTION`。
 - Flow observation 必须获得截图、布局或有效前台事实；失败 observation 只保留审计记录，不能作为证据。
 - Flow action 在平台执行前严格对照 execution 冻结计划，类型或已定义参数不一致时不触发设备动作。
 - Flow 完成后必须重新观察终点；动作成功不等于前置条件达成。
@@ -119,9 +119,11 @@ flowchart LR
 主要硬守卫：
 
 - `preconditionPlanSha` 防止 preflight 与执行之间资产漂移。
+- `environmentSha` 和 `preconditionInputsSha` 把设备、App、入口、启动策略、依赖与执行前业务输入冻结在 execution；正式动作和结果不再读取可变 state。
 - `protocolSha` 冻结角色规范，`implementationSha` 冻结实际运行脚本，二者贯穿 request、BOUND、Runtime 和结果。
 - 启动阶段只有 `executionStart`、`environmentProbe` 和 `scope=execution-bootstrap` 的 restartApp 可以早于 BOUND；所有 Case Engine 事实都要求先绑定 Runtime。
 - provider 由 Runtime Core 规范化并写入 requestSha，子 Agent 和 Host Adapter 不能覆盖。
+- completion 在写入和报告读取时都校验 batch/case/platform/execution 绑定及 result、metrics、validation 哈希；校验失败只派生 `EXECUTION_COMPLETION_INVALID`，不发布原业务结论。
 - `workToken` 绑定当前 execution、timeline 位置和 NextWork，拒绝过期或伪造决定。
 - 前置条件按 case 顺序写入，全部通过或准备完成后才能进入步骤。
 - Flow 事件必须绑定计划中的 `preconditionId`、`flowId` 和合法 `flowStepId`。
@@ -138,5 +140,5 @@ flowchart LR
 - 前置条件 Flow 完成只证明执行起点已准备好，不能作为业务步骤通过证据。
 - agent 做视觉理解和条件判断；脚本做匹配、状态机、预算、来源控制和报告。
 - Agent Runtime 负责会话隔离、硬超时、中断、释放和结果验证，不访问设备 adapter，也不决定业务结果。
-- Batch Runtime 不接收调用方提供的验证对象，只从绑定的 Runtime 和 execution 产物生成 completion 并提交当前 case。
+- Batch Runtime 不接收调用方提供的验证对象，只从绑定的 Runtime 和 execution 产物生成 completion 并提交当前 case；先原子发布 completion，再幂等重建 state、报告和 index。
 - Batch Runtime 在开始时只做一次恢复归约：先判断批次终态和精确所有权；多未完成 execution 判损坏，同 batch 恢复，其他 batch 禁止接管，过期 Runtime 释放，纯启动事实的孤立 execution 由框架收尾。

@@ -19,6 +19,7 @@ const {
   formatDisplayTime,
   formatDuration,
 } = require('./display-format');
+const { completionDisplayResult, validatePublishedCompletion } = require('./completion-contract');
 
 const WORKSPACE_TYPE = 'mobile-ai-visual-test-workspace';
 const PRECONDITION_STATUS_PRIORITY = {
@@ -521,14 +522,14 @@ function classifyPrecondition(item) {
     return {
       category: 'external_dependency',
       status: 'UNKNOWN',
-      defaultResolution: 'user_confirm_or_skip',
+      defaultResolution: 'external_setup',
     };
   }
   if (/已登录|未登录|登录|账号|手机号|验证码|密码|会员|权限|角色|灰度/.test(text) || checkMode === 'auto_prepare') {
     return {
       category: 'account',
       status: 'CONFIRM',
-      defaultResolution: 'user_confirmed',
+      defaultResolution: 'confirm',
     };
   }
   if (/订单|草稿|余额|数据|商品|活动|资源|记录|内容|作品|列表.*有|已有/.test(text)) {
@@ -538,7 +539,7 @@ function classifyPrecondition(item) {
       defaultResolution: 'setup_required',
     };
   }
-  if (/App\s*已安装|已安装|设备已连接|网络正常|网络可用|截图|控件树/.test(text) || checkMode === 'auto_check') {
+  if (/App\s*已安装|已安装|设备已连接|截图|控件树/.test(text) || checkMode === 'auto_check') {
     return {
       category: 'platform',
       status: 'READY',
@@ -548,7 +549,7 @@ function classifyPrecondition(item) {
   return {
     category: 'manual',
     status: 'CONFIRM',
-    defaultResolution: 'user_confirmed',
+    defaultResolution: 'confirm',
   };
 }
 
@@ -630,18 +631,6 @@ function latestExecutionDir(caseDir) {
   return names.length ? path.join(execRoot, names[names.length - 1]) : null;
 }
 
-function latestResultExecutionDir(caseDir) {
-  const execRoot = path.join(caseDir, 'executions');
-  if (!fs.existsSync(execRoot)) return null;
-  const names = fs.readdirSync(execRoot)
-    .filter((name) => {
-      const execDir = path.join(execRoot, name);
-      return fs.statSync(execDir).isDirectory() && fs.existsSync(path.join(execDir, 'result.json'));
-    })
-    .sort();
-  return names.length ? path.join(execRoot, names[names.length - 1]) : null;
-}
-
 function latestPublishedExecutionDir(caseDir) {
   const execRoot = path.join(caseDir, 'executions');
   if (!fs.existsSync(execRoot)) return null;
@@ -662,25 +651,38 @@ function readPublishedExecution(execDir) {
   const result = readJson(path.join(execDir, 'result.json'), null);
   const metrics = readJson(path.join(execDir, 'metrics.json'), null);
   const completion = readJson(path.join(execDir, 'completion.json'), null);
-  const displayResult = result && completion
-    ? {
-      ...result,
-      status: completion.status,
-      failureCode: completion.failureCode || null,
-      reason: completion.reason || result.reason || '',
-      businessStatus: completion.businessStatus,
-      businessFailureCode: completion.businessFailureCode || null,
-      businessReason: result.reason || '',
-      controlStatus: completion.controlStatus,
-      completionSource: completion.completionSource,
+  let displayResult = result;
+  let completionError = null;
+  if (result && completion) {
+    try {
+      validatePublishedCompletion(execDir, completion, {
+        execution: readJson(path.join(execDir, 'execution.json'), null),
+        snapshot: readJson(path.join(execDir, 'case.snapshot.json'), null),
+        result,
+        metrics,
+      });
+      displayResult = completionDisplayResult(result, completion);
+    } catch (error) {
+      completionError = error.message || String(error);
+      displayResult = {
+        ...result,
+        schemaVersion: 1,
+        executionId: result.executionId,
+        caseKey: result.caseKey,
+        status: 'BLOCKED',
+        failureCode: 'EXECUTION_COMPLETION_INVALID',
+        reason: `完成态校验失败，业务结果未发布：${completionError}`,
+        controlStatus: 'BLOCKED',
+      };
     }
-    : result;
+  }
   return {
     latest: execDir,
     result: displayResult,
     metrics,
     events: readJsonl(path.join(execDir, 'timeline.jsonl')),
-    completion,
+    completion: completionError ? null : completion,
+    completionError,
   };
 }
 
@@ -906,7 +908,13 @@ function writeCaseReports(caseDir, caseJson, state = {}, notes = [], report = nu
   const rawReport = report || readLatestExecutionReport(caseDir, options);
   const sourceMatches = reportMatchesCaseSource(caseJson, rawReport, { caseDir, platform: options.platform });
   const latestReport = sourceMatches ? rawReport : { latest: rawReport.latest, result: null, metrics: null, events: [] };
-  const reportState = sourceMatches ? state : {
+  const reportState = sourceMatches && rawReport.completionError ? {
+    ...state,
+    latestStatus: 'BLOCKED',
+    latestExecutionId: rawReport.result?.executionId || state.latestExecutionId || '',
+    latestFailureCode: 'EXECUTION_COMPLETION_INVALID',
+    latestReason: rawReport.result?.reason || rawReport.completionError,
+  } : sourceMatches ? state : {
     ...state,
     latestStatus: 'NOT_RUN',
     latestExecutionId: '',
@@ -916,13 +924,13 @@ function writeCaseReports(caseDir, caseJson, state = {}, notes = [], report = nu
   };
   if (options.platform) {
     writeText(path.join(runtimeDir, 'CONTEXT.md'), renderContext(caseJson, reportState, latestReport.result, latestReport.metrics, resolvedNotes, latestReport.events));
-    writeText(path.join(caseDir, 'CONTEXT.md'), renderCaseOverviewMarkdown(caseDir, caseJson, resolvedNotes));
+    if (!options.skipRootOverview) writeText(path.join(caseDir, 'CONTEXT.md'), renderCaseOverviewMarkdown(caseDir, caseJson, resolvedNotes));
   } else {
     writeText(path.join(runtimeDir, 'CONTEXT.md'), renderCaseOverviewMarkdown(caseDir, caseJson, resolvedNotes));
   }
   if (options.platform) {
     writeText(path.join(runtimeDir, 'CONTEXT.html'), renderContextHtml(caseJson, reportState, latestReport.result, latestReport.metrics, resolvedNotes, latestReport.events, { runtimeDir, executionDir: latestReport.latest }));
-    writeText(path.join(caseDir, 'CONTEXT.html'), renderCaseOverviewHtml(caseDir, caseJson, resolvedNotes));
+    if (!options.skipRootOverview) writeText(path.join(caseDir, 'CONTEXT.html'), renderCaseOverviewHtml(caseDir, caseJson, resolvedNotes));
   } else {
     writeText(path.join(runtimeDir, 'CONTEXT.html'), renderCaseOverviewHtml(caseDir, caseJson, resolvedNotes));
   }
@@ -942,9 +950,24 @@ function writePlatformCaseReports(caseDir, caseJson, notes = []) {
     const runtimeDir = path.join(platformsDir, name);
     if (!fs.statSync(runtimeDir).isDirectory()) continue;
     const state = readJson(path.join(runtimeDir, 'state.json'), {});
-    reports.push(writeCaseReports(caseDir, caseJson, state, notes, null, { platform }));
+    reports.push(writeCaseReports(caseDir, caseJson, state, notes, null, { platform, skipRootOverview: true }));
   }
   return reports;
+}
+
+function rebuildCaseDerivedArtifacts(caseDir, { refreshIndex = true, scope = 'all', platform = null } = {}) {
+  const caseJson = readJson(path.join(caseDir, 'case.json'));
+  if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
+  const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
+  if (!['all', 'platform', 'index'].includes(scope)) throw new Error(`Unsupported derived artifact scope: ${scope}`);
+  const platformReports = scope === 'all'
+    ? writePlatformCaseReports(caseDir, caseJson, notes)
+    : scope === 'platform' && platform
+      ? [writeCaseReports(caseDir, caseJson, readJson(path.join(caseRuntimeDir(caseDir, platform), 'state.json'), {}), notes, null, { platform, skipRootOverview: true })]
+      : [];
+  const rootReport = scope === 'index' ? null : writeCaseReports(caseDir, caseJson, {}, notes);
+  const indexHtml = refreshIndex ? refreshIndexForCase(caseDir) : null;
+  return { rootReport, platformReports, indexHtml };
 }
 
 function summarizeTimeline(events = []) {
@@ -1092,6 +1115,12 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
       const relaunchAttemptCount = metrics.stability.appRelaunchAttemptCount ?? metrics.stability.appRelaunchCount ?? 0;
       const relaunchSuccessCount = metrics.stability.appRelaunchSuccessCount ?? metrics.stability.appRelaunchCount ?? 0;
       lines.push(`- 稳定性：离开目标 App ${metrics.stability.appForegroundLossCount || 0} 次，拉起尝试 ${relaunchAttemptCount} 次，成功拉起 ${relaunchSuccessCount} 次，冷启动失败 ${metrics.stability.restartFailureCount || 0} 次，已处理弹窗 ${metrics.stability.knownPopupHandledCount || 0} 次${isolationText}`);
+      if (metrics.stability.startupDisplay) {
+        const display = metrics.stability.startupDisplay;
+        const before = display.before?.orientation || '-';
+        const after = display.afterLaunch?.orientation || '-';
+        lines.push(`- 启动显示：策略 ${display.requestedOrientation || '-'}，启动前 ${before}，启动后 ${after}，${display.verified ? '已验证' : display.status || '未验证'}`);
+      }
     }
     if (metrics.artifacts) lines.push(`- 证据：截图 ${metrics.artifacts.screenshots || 0} 张，控件树 ${metrics.artifacts.layouts || 0} 份，日志 ${metrics.artifacts.logs || 0} 份`);
     if (metrics.visualEvidence) lines.push(`- 视觉复核：${metrics.visualEvidence.checks || 0} 次，原图命中 ${metrics.visualEvidence.claimPresent || 0} 次，原图未命中 ${metrics.visualEvidence.claimAbsent || 0} 次，无法验证 ${metrics.visualEvidence.unverifiable || 0} 次`);
@@ -1313,6 +1342,10 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     ['证据', evidenceCount],
     ['隔离', metrics?.stability ? (metrics.stability.isolationCompromised ? '降级' : '正常') : '-'],
   ].map(([label, value]) => `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('\n');
+  const startupDisplay = metrics?.stability?.startupDisplay || null;
+  const startupDisplayBanner = startupDisplay
+    ? `<div class="startup-display-summary">启动显示：策略 ${escapeHtml(startupDisplay.requestedOrientation || '-')}，启动前 ${escapeHtml(startupDisplay.before?.orientation || '-')}，启动后 ${escapeHtml(startupDisplay.afterLaunch?.orientation || '-')}，${startupDisplay.verified ? '已验证' : escapeHtml(startupDisplay.status || '未验证')}</div>`
+    : '';
   const failedAssertion = [...events].reverse().find((event) => (
     event.type === 'assertion' &&
     (!result?.failedStep || eventStepId(event) === result.failedStep) &&
@@ -1555,6 +1588,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     .fact small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; word-break: break-word; }
     .source-warning { margin: -4px 0 14px; padding: 10px 12px; border: 1px solid var(--blocked-line); border-radius: 8px; background: var(--blocked-soft); color: #7c4a03; font-weight: 700; }
     .isolation-warning { margin: -4px 0 14px; padding: 10px 12px; border: 1px solid var(--blocked-line); border-radius: 8px; background: var(--blocked-soft); color: #7c4a03; font-weight: 800; }
+    .startup-display-summary { margin: -4px 0 14px; padding: 10px 12px; border: 1px solid #bae6fd; border-radius: 8px; background: #f0f9ff; color: #075985; font-weight: 800; }
     .evidence-card { display: block; min-width: 0; color: var(--text); font-weight: 500; }
     .evidence-card:hover { text-decoration: none; }
     .evidence-card img { width: 100%; aspect-ratio: 9 / 14; object-fit: cover; border: 1px solid var(--line); border-radius: 8px; background: #10151f; box-shadow: 0 8px 18px rgba(15, 23, 42, .12); }
@@ -1679,6 +1713,7 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
   </header>
   ${sourceChangeBanner}
   ${isolationBanner}
+  ${startupDisplayBanner}
 
   <section class="hero-section">
     <div class="conclusion">
@@ -2373,6 +2408,8 @@ module.exports = {
   renderIndexHtml,
   displayFailureCode,
   readLatestExecutionReport,
+  readPublishedExecution,
+  rebuildCaseDerivedArtifacts,
   summarizeTimeline,
   sha1,
   slugify,

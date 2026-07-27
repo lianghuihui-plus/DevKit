@@ -68,21 +68,13 @@ for (const dependency of prepare.dependencies || []) {
 state.dependencies = dependencyMap;
 state.environmentPreparedAt = prepare.time || new Date().toISOString();
 state.environmentPreparation = prepare;
-fs.mkdirSync(runtimeDir, { recursive: true });
-fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
 const scriptDir = process.argv[4];
 const {
-  readJson,
-  readJsonl,
-  refreshIndexForCase,
-  writeCaseReports,
+  rebuildCaseDerivedArtifacts,
+  writeJson,
 } = require(path.join(scriptDir, "common.js"));
-const caseJson = readJson(path.join(caseDir, "case.json"), null);
-if (caseJson) {
-  const notes = readJsonl(path.join(caseDir, "notes.jsonl"));
-  writeCaseReports(caseDir, caseJson, state, notes, null, { platform });
-  refreshIndexForCase(caseDir);
-}
+writeJson(statePath, state);
+if (fs.existsSync(path.join(caseDir, "case.json"))) rebuildCaseDerivedArtifacts(caseDir, { scope: "platform", platform });
 ' "$case_dir" "$platform" "$prepare_output" "$script_dir"
 fi
 

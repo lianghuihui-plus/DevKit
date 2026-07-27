@@ -14,15 +14,29 @@ const {
   normalizePlatform,
   readJson,
   readJsonl,
-  refreshIndexForCase,
+  rebuildCaseDerivedArtifacts,
   validateCaseExecutionContract,
-  writeCaseReports,
   writeJson,
 } = require('../common');
 const { buildPreconditionPlan, planFlowSummaries } = require('../lib/precondition-flow');
 const { failureStatus } = require('../lib/failure-catalog');
 const { validateActionAsset, validateActionExecution } = require('../lib/action-contract');
 const { deriveNextWork } = require('../lib/execution-reducer');
+const { evaluateFrameworkPrecondition } = require('../lib/framework-preconditions');
+const {
+  buildExecutionEnvironment,
+  safeEnvironmentSummary,
+  validateExecutionEnvironment,
+} = require('../lib/execution-environment');
+const {
+  normalizePreconditionInputs,
+  preconditionInputsSha,
+  validateFrozenPreconditionInputs,
+} = require('../lib/precondition-inputs');
+const {
+  normalizeStartupDisplayPolicy,
+  startupDisplayVerified,
+} = require('../lib/startup-display');
 const {
   enrichObservationScreenshot,
   inspectPng,
@@ -102,7 +116,6 @@ const VALID_PRECONDITION_FLOW_FAILURES = new Set([
   'PRECONDITION_FLOW_BUDGET_EXCEEDED',
 ]);
 const VALID_COORDINATE_SOURCES = new Set(['layout', 'visual', 'pixel', 'manual', 'flow']);
-const RESTART_SENSITIVE_PATTERN = /(首次|初次|第一次|新用户|无年级|重启|重新进入|再次进入|冷启动|启动后|同一次\s*App\s*启动|同一次app启动|默认开启|默认关闭|默认初始化|初始化|缓存|会话态|启动态|first\s*(launch|open|entry|start)|restart|cold\s*start|relaunch|initial|default)/i;
 const STEP_ORDER_GUARDED_EVENT_TYPES = new Set([
   'observation',
   'perception',
@@ -129,7 +142,8 @@ const DEFAULT_BUDGET = {
 function usage() {
   console.error([
     'Usage:',
-    '  run-case.js <case-dir> --platform <platform> --start [--precondition-plan-sha <sha>] [--batch-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --start [--precondition-plan-sha <sha>] [--precondition-inputs-json <json>] [--batch-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --resume-start --execution-id <id> --batch-id <id>',
     '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--action-json <json>] [--step-id <step-id>] [--scope global|precondition-flow] [--precondition-id <id>] [--flow-id <id>] [--flow-step-id <id>] [--phase <phase>] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --recover-orphaned --execution-id <id> --batch-id <id> [--reason <text>]',
     '  run-case.js <case-dir> --platform <platform> --record-json <json> [--execution-id <id>]',
@@ -520,7 +534,9 @@ function validateEvent(event) {
     if (!VALID_AGENT_RUNTIME_STATUSES.has(event.status)) throw new Error(`Unsupported agentRuntime status: ${event.status}`);
     if (event.protocolSha !== undefined && !/^agent-protocol-[0-9a-f]{16}$/.test(event.protocolSha)) throw new Error('agentRuntime protocolSha is invalid');
     if (event.implementationSha !== undefined && !/^agent-implementation-[0-9a-f]{16}$/.test(event.implementationSha)) throw new Error('agentRuntime implementationSha is invalid');
-    if (event.status === 'BOUND' && (!event.protocolSha || !event.implementationSha || !event.requestSha || !event.sessionId || event.sessionScope !== 'case')) throw new Error('agentRuntime BOUND requires protocolSha, implementationSha, requestSha, sessionId, and sessionScope=case');
+    if (event.environmentSha !== undefined && !/^environment-[0-9a-f]{16}$/.test(event.environmentSha)) throw new Error('agentRuntime environmentSha is invalid');
+    if (event.preconditionInputsSha !== undefined && !/^precondition-inputs-[0-9a-f]{16}$/.test(event.preconditionInputsSha)) throw new Error('agentRuntime preconditionInputsSha is invalid');
+    if (event.status === 'BOUND' && (!event.protocolSha || !event.implementationSha || !event.requestSha || !event.environmentSha || !event.preconditionInputsSha || !event.sessionId || event.sessionScope !== 'case')) throw new Error('agentRuntime BOUND requires protocolSha, implementationSha, requestSha, environmentSha, preconditionInputsSha, sessionId, and sessionScope=case');
     if (['FAILED', 'INTERRUPTED'].includes(event.status) && !VALID_AGENT_RUNTIME_EVENT_FAILURES.has(event.failureCode)) {
       throw new Error('agentRuntime FAILED/INTERRUPTED requires a valid AGENT_* failureCode');
     }
@@ -559,12 +575,42 @@ function isCaseExecutionFact(event) {
   return AGENT_WRITABLE_EVENT_TYPES.has(event.type) || ['observation', 'actionResult'].includes(event.type);
 }
 
-function assertRuntimeBindingReady(execDir, events, event) {
+function allowUnboundSelfTestFacts() {
+  return process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_ALLOW_UNBOUND_FACTS === '1';
+}
+
+function allowUnbatchedSelfTestStart() {
+  return process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_ALLOW_UNBATCHED_START === '1';
+}
+
+function assertCaseFactWritable(execDir, execution, events, event) {
   if (!isCaseExecutionFact(event)) return;
+  if (allowUnboundSelfTestFacts()) return;
+  if (execution?.lifecycle !== 'RUNNING' || execution?.finalized) {
+    throw new Error(`AGENT_RESULT_INVALID: ${event.type} 只能写入 RUNNING execution。`);
+  }
   const runtimePath = path.join(execDir, 'agent', 'runtime.json');
-  if (!fs.existsSync(runtimePath)) return;
-  const bound = events.find((item) => item.type === 'agentRuntime' && item.status === 'BOUND');
-  if (!bound) throw new Error(`AGENT_RESULT_INVALID: ${event.type} 不能早于 Agent Runtime BOUND。`);
+  const runtime = readJson(runtimePath, null);
+  if (!runtime) throw new Error(`AGENT_RESULT_INVALID: ${event.type} 不能早于 Agent Runtime 初始化。`);
+  if (runtime.executionId !== execution.executionId || (runtime.batchId || null) !== (execution.batchId || null)) throw new Error('AGENT_RESULT_INVALID: Agent Runtime execution/batch binding mismatch。');
+  if (!['SESSION_RUNNING', 'AWAITING_RESULT'].includes(runtime.state)) {
+    throw new Error(`AGENT_RESULT_INVALID: ${event.type} 不能写入 Runtime 状态 ${runtime.state || '<missing>'}。`);
+  }
+  const bindings = events.filter((item) => item.type === 'agentRuntime' && item.status === 'BOUND');
+  if (bindings.length !== 1) throw new Error(`AGENT_RESULT_INVALID: ${event.type} 要求唯一的 Agent Runtime BOUND。`);
+  const bound = bindings[0];
+  const expected = {
+    provider: runtime.provider,
+    protocolSha: runtime.protocolSha,
+    implementationSha: runtime.implementationSha,
+    requestSha: runtime.requestSha,
+    environmentSha: execution.environmentSha,
+    preconditionInputsSha: execution.preconditionInputsSha,
+    sessionId: runtime.sessionId,
+  };
+  for (const [field, value] of Object.entries(expected)) {
+    if ((bound[field] || null) !== (value || null)) throw new Error(`AGENT_RESULT_INVALID: Runtime BOUND ${field} mismatch。`);
+  }
 }
 
 function validateObservationScope(event) {
@@ -670,6 +716,37 @@ function validatePreconditionEventAgainstCase(event, caseJson) {
   const known = preconditions.some((item) => item.id === event.id);
   if (!known) {
     throw new Error(`PRECONDITION_REQUIRED: precondition event references unknown case precondition id: ${event.id}`);
+  }
+}
+
+function validatePreconditionEventAgainstPlan(event, executionState, events) {
+  if (event.type !== 'precondition') return;
+  const planned = planEntryFor(executionState, event.id);
+  if (!planned) throw new Error(`PRECONDITION_REQUIRED: precondition ${event.id} is missing from frozen plan`);
+  if (planned.resolution === 'flow') return;
+  if (event.resolution !== planned.resolution) throw new Error(`PRECONDITION_INPUT_INVALID: resolution mismatch for ${event.id}`);
+  if (planned.resolution === 'framework') {
+    if (!planned.checkerId || event.checkerId !== planned.checkerId) throw new Error(`PRECONDITION_INPUT_INVALID: framework checker mismatch for ${event.id}`);
+    if (!Array.isArray(event.evidenceRefs) || !event.evidenceRefs.length) throw new Error(`PRECONDITION_INPUT_INVALID: framework precondition ${event.id} requires evidenceRefs`);
+    const expected = evaluateFrameworkPrecondition(planned.checkerId, executionState, events);
+    for (const field of ['status', 'failureCode', 'reason']) {
+      if ((event[field] || null) !== (expected[field] || null)) throw new Error(`PRECONDITION_INPUT_INVALID: framework result ${field} mismatch for ${event.id}`);
+    }
+    if (JSON.stringify(event.evidenceRefs) !== JSON.stringify(expected.evidenceRefs)) throw new Error(`PRECONDITION_INPUT_INVALID: framework evidence mismatch for ${event.id}`);
+  }
+  if (planned.resolution === 'confirm' && !['PASS', 'BLOCKED'].includes(event.status)) throw new Error(`PRECONDITION_INPUT_INVALID: confirm ${event.id} requires PASS or BLOCKED`);
+  if (['confirm', 'external_setup'].includes(planned.resolution) && event.status === 'BLOCKED' && event.failureCode !== 'PRECONDITION_REQUIRED') {
+    throw new Error(`PRECONDITION_INPUT_INVALID: missing input ${event.id} must use PRECONDITION_REQUIRED`);
+  }
+  if ((planned.resolution === 'confirm' && event.status === 'PASS') || (planned.resolution === 'external_setup' && event.status === 'PREPARED')) {
+    const input = executionState.preconditionInputs?.find((item) => item.id === event.id);
+    if (!input || input.resolution !== planned.resolution || input.status !== event.status || input.reason !== event.reason) {
+      throw new Error(`PRECONDITION_INPUT_INVALID: precondition fact does not match frozen input for ${event.id}`);
+    }
+  }
+  if (planned.resolution === 'external_setup' && event.status !== 'PREPARED' && event.status !== 'BLOCKED') throw new Error(`PRECONDITION_INPUT_INVALID: external_setup ${event.id} requires PREPARED or BLOCKED`);
+  if (planned.resolution === 'unsupported' && (event.status !== 'BLOCKED' || event.failureCode !== 'PRECONDITION_UNSUPPORTED')) {
+    throw new Error(`PRECONDITION_INPUT_INVALID: unsupported ${event.id} must be BLOCKED/PRECONDITION_UNSUPPORTED`);
   }
 }
 
@@ -1082,9 +1159,16 @@ function preconditionTerminalOptions(event) {
     };
   }
   if (event.status === 'BLOCKED') {
+    const preserved = new Set([
+      'PRECONDITION_REQUIRED',
+      'PRECONDITION_UNSUPPORTED',
+      'PRECONDITION_FAILED',
+      'ENV_UNAVAILABLE',
+      ...VALID_PRECONDITION_FLOW_FAILURES,
+    ]);
     return {
       status: 'BLOCKED',
-      failureCode: VALID_PRECONDITION_FLOW_FAILURES.has(event.failureCode) ? event.failureCode : 'PRECONDITION_UNSUPPORTED',
+      failureCode: preserved.has(event.failureCode) ? event.failureCode : 'PRECONDITION_UNSUPPORTED',
       reason: event.reason || `前置条件不支持自动处理: ${event.id}`,
     };
   }
@@ -1572,6 +1656,7 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
 
   const relaunchEvents = events.filter((event) => event.type === 'actionResult' && ['launchApp', 'restartApp'].includes(actionType(event)));
   const relaunchSuccessCount = relaunchEvents.filter((event) => event.ok === true).length;
+  const latestRestart = [...relaunchEvents].reverse().find((event) => actionType(event) === 'restartApp') || null;
   const stability = {
     appForegroundLossCount: events.filter((event) => event.type === 'appForeground' && event.status === 'LEFT_TARGET').length,
     appRelaunchCount: relaunchSuccessCount,
@@ -1582,6 +1667,7 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     isolationCompromised: executionState.isolation?.clean === false,
     isolationRequired: executionState.isolation?.required === true,
     isolationReason: executionState.isolation?.reason || '',
+    startupDisplay: executionState.isolation?.startupDisplay || latestRestart?.startupDisplay || null,
     noChangeObservationCount: events.filter((event) => event.type === 'observation' && event.noChange === true).length,
     knownPopupHandledCount: events.filter((event) => event.type === 'popup' && event.status === 'HANDLED').length,
     unknownPopupCount: events.filter((event) => event.type === 'popup' && event.status !== 'HANDLED').length,
@@ -1632,7 +1718,9 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     startedAt: result.startedAt,
     endedAt: result.endedAt,
     durationMs: Math.max(new Date(result.endedAt).getTime() - new Date(result.startedAt).getTime(), 0),
-    environment: state.environment || {},
+    environment: executionState.environmentSnapshot?.binding || state.environment || {},
+    environmentSha: executionState.environmentSha || null,
+    preconditionInputsSha: executionState.preconditionInputsSha || null,
     preconditions,
     steps,
     executionPhase: result.failedStep ? 'step' : preconditions.blocked || preconditions.failed || preconditions.unknown ? 'precondition' : result.status === 'BLOCKED' ? 'environment-or-framework' : 'completed',
@@ -1656,7 +1744,7 @@ function completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionS
   const result = draft.result;
   const metrics = draft.metrics;
   const resultEvent = draft.resultEvent;
-  const publishImmediately = !executionState.batchId;
+  const publishImmediately = !executionState.batchId && (options.legacyRuntime === true || allowUnbatchedSelfTestStart());
   if (result.executionId !== executionState.executionId || result.caseContractSha !== caseContractSha(caseJson)) {
     throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: finalize draft 与当前 execution 或 case contract 不一致，不能自动恢复。');
   }
@@ -1702,10 +1790,7 @@ function completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionS
   });
   if (fs.existsSync(draftPath)) fs.unlinkSync(draftPath);
   if (publishImmediately) {
-    const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
-    const reportCaseJson = readJson(path.join(caseDir, 'case.json'), caseJson);
-    writeCaseReports(caseDir, reportCaseJson, state, notes, { result, metrics, events }, { platform: options.platform });
-    refreshIndexForCase(caseDir);
+    rebuildCaseDerivedArtifacts(caseDir);
   }
   return {
     executionId: result.executionId,
@@ -1739,8 +1824,18 @@ function finalize(caseDir, options) {
   if (!options.legacyRuntime && !executionState.schemaVersion) {
     throw new Error(`Execution was not started: ${executionId}`);
   }
+  if (!options.legacyRuntime) {
+    validateExecutionEnvironment(executionState, options.platform);
+    validateFrozenPreconditionInputs(executionState);
+  }
   const timelinePath = path.join(execDir, 'timeline.jsonl');
   const existingEvents = readJsonl(timelinePath);
+  if (!options.legacyRuntime && !allowUnboundSelfTestFacts()) {
+    const frameworkTerminal = ['CASE_RESTART_FAILED', 'EXECUTION_ORPHANED'].includes(options.failureCode);
+    const runtimeOwned = fs.existsSync(path.join(execDir, 'agent', 'runtime.json'))
+      && existingEvents.some((event) => event.type === 'agentRuntime' && ['BOUND', 'FAILED', 'INTERRUPTED'].includes(event.status));
+    if (!frameworkTerminal && !runtimeOwned) throw new Error('AGENT_RESULT_INVALID: 正式业务收尾要求已绑定或已失败的 Agent Runtime。');
+  }
   const resultPath = path.join(execDir, 'result.json');
   const metricsPath = path.join(execDir, 'metrics.json');
   const draftPath = path.join(execDir, 'result.draft.json');
@@ -1771,13 +1866,14 @@ function finalize(caseDir, options) {
       result: existingResult,
       metrics: existingMetrics,
       resultEvent: recoveryEvent,
-    }, { platform: options.platform, recovered: true });
+    }, { platform: options.platform, recovered: true, legacyRuntime: options.legacyRuntime });
   }
   if (existingDraft?.result && existingDraft?.metrics && existingDraft?.resultEvent) {
     return completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionState, existingDraft, {
       platform: options.platform,
       recovered: true,
       skipStateApply: executionState.finalized === true,
+      legacyRuntime: options.legacyRuntime,
     });
   }
   if (existingResult && !existingMetrics) {
@@ -1798,7 +1894,7 @@ function finalize(caseDir, options) {
       result: existingResult,
       metrics: recoveryMetrics,
       resultEvent: recoveryEvent,
-    }, { platform: options.platform, recovered: true, skipStateApply: executionState.finalized === true });
+    }, { platform: options.platform, recovered: true, skipStateApply: executionState.finalized === true, legacyRuntime: options.legacyRuntime });
   }
   const eventsBeforeResult = existingEvents.filter((event) => event.type !== 'result');
   const requestedStatus = status;
@@ -1838,7 +1934,9 @@ function finalize(caseDir, options) {
     endedAt,
     failedStep: options.failedStep || null,
     reason: options.reason || (status === 'PASS' ? '执行通过。' : 'Execution finalized by agent.'),
-    environment: state.environment || {},
+    environment: executionState.environmentSnapshot?.binding || state.environment || {},
+    environmentSha: executionState.environmentSha || null,
+    preconditionInputsSha: executionState.preconditionInputsSha || null,
     evidence: options.evidence || [],
   };
   const resultEvent = { time: endedAt, type: 'result', source: 'run-case.js', status, requestedStatus, reason: result.reason, failedStep: result.failedStep, failureCode: result.failureCode };
@@ -1857,7 +1955,7 @@ function finalize(caseDir, options) {
   if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_FINALIZE_INTERRUPT === 'after-draft') {
     throw new Error('MAVT_SELF_TEST_FINALIZE_INTERRUPT: after-draft');
   }
-  return completeFinalization(caseDir, runtimeDir, caseJson, execDir, readExecutionState(execDir), draft, { platform: options.platform });
+  return completeFinalization(caseDir, runtimeDir, caseJson, execDir, readExecutionState(execDir), draft, { platform: options.platform, legacyRuntime: options.legacyRuntime });
 }
 
 function actionRequiresStepId(action) {
@@ -1996,26 +2094,14 @@ function restartAppForExecution(caseDir, platform, executionId) {
   }
 }
 
-function caseRequiresCleanRestart(caseJson = {}) {
-  const explicit = caseJson.isolation?.requireCleanRestart;
-  if (explicit === true || explicit === 'true' || explicit === 'required') return true;
-  if (explicit === false || explicit === 'false' || explicit === 'optional') return false;
-  const parts = [
-    caseJson.identity?.title,
-    ...(Array.isArray(caseJson.preconditions) ? caseJson.preconditions.map((item) => item.text) : []),
-    ...(Array.isArray(caseJson.steps) ? caseJson.steps.map((step) => step.sourceText) : []),
-  ].filter(Boolean);
-  return parts.some((text) => RESTART_SENSITIVE_PATTERN.test(String(text)));
-}
-
 function restartFailureReason(appRestart = {}) {
   if (appRestart?.coldStartVerified === false) {
-    return appRestart.reason || 'restartApp 命令成功返回，但平台未能确认真实冷启动。';
+    return appRestart.reason || appRestart.error || appRestart.failureStage || 'restartApp 命令成功返回，但平台未能确认真实冷启动。';
   }
   return appRestart.error || appRestart.reason || appRestart.failureCode || '用例开始前未能完成 App 冷启动隔离。';
 }
 
-function buildIsolationState(caseJson, appRestart) {
+function buildIsolationState(caseJson, appRestart, environment = {}) {
   if (appRestart?.skipped) {
     return {
       clean: true,
@@ -2024,20 +2110,78 @@ function buildIsolationState(caseJson, appRestart) {
       reason: appRestart.reason || 'restart skipped',
     };
   }
-  const required = caseRequiresCleanRestart(caseJson);
-  const ok = appRestart?.ok === true && appRestart?.coldStartVerified === true;
-  const explicit = caseJson.isolation?.requireCleanRestart;
-  const requirementSource = explicit === true || explicit === false || explicit === 'true' || explicit === 'false' || explicit === 'required' || explicit === 'optional'
-    ? 'case-contract'
-    : 'auto';
+  const policy = normalizeStartupDisplayPolicy(environment.startupDisplayPolicy, { platform: environment.platform });
+  const displayCheck = startupDisplayVerified(
+    policy,
+    appRestart?.startupDisplay,
+    appRestart?.startupDisplay?.deviceFormFactor || environment.deviceFormFactor,
+    { platform: environment.platform },
+  );
+  const required = true;
+  const restartVerified = appRestart?.ok === true && appRestart?.coldStartVerified === true;
+  const ok = restartVerified && displayCheck.verified;
+  const requirementSource = displayCheck.required ? 'cold-restart-and-startup-display-policy' : 'cold-restart-policy';
+  let reason = 'App cold restart verified by adapter.';
+  if (!restartVerified) reason = restartFailureReason(appRestart);
+  else if (!displayCheck.verified) reason = `冷启动显示策略未满足：${displayCheck.validation?.errors?.join('；') || `要求 ${displayCheck.policy.orientation}，启动后方向为 ${appRestart?.startupDisplay?.afterLaunch?.orientation || 'unknown'}`}。`;
   return {
     clean: ok,
     required,
     requirementSource,
     compromised: !ok,
     failureCode: ok ? null : 'CASE_RESTART_FAILED',
-    reason: ok ? 'App cold restart verified by adapter.' : restartFailureReason(appRestart),
+    reason,
+    startupDisplayPolicy: policy,
+    startupDisplay: appRestart?.startupDisplay || null,
   };
+}
+
+function bootstrapAction(events) {
+  return events.filter(isExecutionBootstrapFact).at(-1) || null;
+}
+
+function finishExecutionBootstrap(caseDir, platform, executionId, appRestart) {
+  const runtimeDir = caseRuntimeDir(caseDir, platform);
+  const execDir = path.join(runtimeDir, 'executions', executionId);
+  const execution = readExecutionState(execDir);
+  if (!execution) throw new Error(`Execution was not started: ${executionId}`);
+  if (execution.finalized) return { executionId, alreadyFinalized: true, result: path.join(execDir, 'result.json') };
+  const caseJson = readExecutionCase(caseDir, execDir);
+  const isolation = buildIsolationState(caseJson, appRestart, execution.environmentSnapshot?.binding || {});
+  const bootstrap = {
+    ...(execution.bootstrap || {}),
+    status: isolation.compromised ? 'FAILED' : 'VERIFIED',
+    completedAt: nowIso(),
+    reason: isolation.reason,
+  };
+  writeExecutionState(execDir, { ...execution, lifecycle: isolation.compromised ? 'BLOCKED_START' : 'RUNNING', finalized: false, isolation, bootstrap });
+  if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_START_INTERRUPT === 'after-bootstrap-state') throw new Error('MAVT_SELF_TEST_START_INTERRUPT: after-bootstrap-state');
+  let finalized = null;
+  if (isolation.compromised) {
+    finalized = finalize(caseDir, { platform, executionId, status: 'BLOCKED', failureCode: 'CASE_RESTART_FAILED', reason: `App 冷启动隔离失败，不能继续执行：${isolation.reason}`, allowAlreadyFinalized: true, allowIncompletePreconditions: true });
+  }
+  return { executionId, execDir, timeline: path.join(execDir, 'timeline.jsonl'), appRestart, isolation, blockedOnStart: Boolean(finalized), nextAction: finalized ? 'stop-current-case' : 'continue-current-case', finalized };
+}
+
+function resumeStart(caseDir, options) {
+  if (!options.executionId || !options.batchId) throw new Error('--resume-start requires --execution-id and --batch-id');
+  const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+  const execDir = path.join(runtimeDir, 'executions', options.executionId);
+  const execution = readExecutionState(execDir);
+  if (!execution) throw new Error(`Execution was not started: ${options.executionId}`);
+  if (execution.batchId !== options.batchId) throw new Error('STARTING execution does not belong to the requested batch');
+  if (execution.finalized) return { executionId: options.executionId, alreadyFinalized: true, result: path.join(execDir, 'result.json') };
+  if (execution.lifecycle === 'RUNNING') return { executionId: options.executionId, resumed: true, alreadyRunning: true, isolation: execution.isolation };
+  if (!['STARTING', 'BLOCKED_START'].includes(execution.lifecycle)) throw new Error(`Execution lifecycle ${execution.lifecycle} cannot resume start`);
+  const events = readJsonl(path.join(execDir, 'timeline.jsonl'));
+  let appRestart = bootstrapAction(events);
+  if (!appRestart) {
+    const attempt = Number(execution.bootstrap?.attempts || 0) + 1;
+    writeExecutionState(execDir, { ...execution, lifecycle: 'STARTING', bootstrap: { status: 'RESTARTING', attemptId: `bootstrap-${String(attempt).padStart(3, '0')}`, attempts: attempt, startedAt: nowIso() } });
+    appRestart = caseRestartDisabled(options) ? { skipped: true, reason: 'MAVT_SELF_TEST_SKIP_CASE_RESTART=1' } : restartAppForExecution(caseDir, options.platform, options.executionId);
+    if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_START_INTERRUPT === 'after-restart-fact') throw new Error('MAVT_SELF_TEST_START_INTERRUPT: after-restart-fact');
+  }
+  return { ...finishExecutionBootstrap(caseDir, options.platform, options.executionId, appRestart), resumed: true };
 }
 
 const args = process.argv.slice(2);
@@ -2049,6 +2193,7 @@ let command = null;
 for (let i = 1; i < args.length; i++) {
   switch (args[i]) {
     case '--start': command = 'start'; break;
+    case '--resume-start': command = 'resumeStart'; break;
     case '--recover-orphaned': command = 'recoverOrphaned'; break;
     case '--platform': options.platform = normalizePlatform(args[++i]); if (!options.platform) usage(); break;
     case '--check-budget': command = 'checkBudget'; break;
@@ -2062,6 +2207,7 @@ for (let i = 1; i < args.length; i++) {
     case '--flow-step-id': options.flowStepId = args[++i]; break;
     case '--phase': options.phase = args[++i]; break;
     case '--precondition-plan-sha': options.preconditionPlanSha = args[++i]; break;
+    case '--precondition-inputs-json': options.preconditionInputs = JSON.parse(args[++i]); break;
     case '--batch-id': options.batchId = args[++i]; break;
     case '--record-json': command = 'record'; options.recordJson = args[++i]; break;
     case '--record-action-json': command = 'recordAction'; options.recordJson = args[++i]; break;
@@ -2087,6 +2233,8 @@ try {
     throw new Error('batch-id contains unsafe characters');
   }
   if (command === 'start') {
+    if (options.legacyRuntime) throw new Error('--legacy-runtime 只允许读取或收尾历史 execution，不能创建新 execution。');
+    if (!options.batchId && !allowUnbatchedSelfTestStart()) throw new Error('正式 --start 必须通过 --batch-id 绑定批次。');
     const runtimeDir = caseRuntimeDir(caseDir, options.platform);
     const caseJson = readJson(path.join(caseDir, 'case.json'));
     if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
@@ -2108,6 +2256,9 @@ try {
     if (!options.preconditionPlanSha && process.env.MAVT_SELF_TEST !== '1') {
       throw new Error('PRECONDITION_FLOW_CHANGED: --start must pass --precondition-plan-sha from preflight-preconditions.js.');
     }
+    const frozenPreconditionInputs = normalizePreconditionInputs(preconditionPlan, options.preconditionInputs || []);
+    const frozenPreconditionInputsSha = preconditionInputsSha(frozenPreconditionInputs);
+    const frozenEnvironment = buildExecutionEnvironment(state, options.platform);
     const active = findUnfinalizedExecution(caseDir);
     if (active) {
       throw new Error(`Unfinalized execution exists: ${active.executionId} in ${active.caseDir}. Finalize it before starting another execution.`);
@@ -2129,7 +2280,12 @@ try {
       batchId: options.batchId || null,
       preconditionPlan,
       preconditionPlanSha: preconditionPlan.preconditionPlanSha,
+      preconditionInputs: frozenPreconditionInputs,
+      preconditionInputsSha: frozenPreconditionInputsSha,
+      environmentSnapshot: frozenEnvironment.snapshot,
+      environmentSha: frozenEnvironment.environmentSha,
       budget: DEFAULT_BUDGET,
+      bootstrap: { status: 'PENDING', attemptId: null, attempts: 0 },
     });
     appendJsonl(path.join(execDir, 'timeline.jsonl'), {
       time: nowIso(),
@@ -2141,17 +2297,22 @@ try {
       sourceSha1: caseJson.identity.sourceSha1,
       caseContractSha: frozenContractSha,
       preconditionPlanSha: preconditionPlan.preconditionPlanSha,
+      preconditionInputsSha: frozenPreconditionInputsSha,
+      environmentSha: frozenEnvironment.environmentSha,
+      environment: safeEnvironmentSummary(frozenEnvironment.snapshot),
       flowAssets: planFlowSummaries(preconditionPlan),
     });
-    if (state.environmentProbe) {
+    if (frozenEnvironment.snapshot.probe) {
       appendJsonl(path.join(execDir, 'timeline.jsonl'), {
         time: nowIso(),
         type: 'environmentProbe',
         source: 'run-case.js',
         platform: options.platform,
-        ...state.environmentProbe,
+        ...frozenEnvironment.snapshot.probe,
       });
     }
+    writeExecutionState(execDir, { ...readExecutionState(execDir), bootstrap: { status: 'RESTARTING', attemptId: 'bootstrap-001', attempts: 1, startedAt: nowIso() } });
+    if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_START_INTERRUPT === 'after-execution-start') throw new Error('MAVT_SELF_TEST_START_INTERRUPT: after-execution-start');
     let appRestart;
     try {
       appRestart = caseRestartDisabled(options)
@@ -2159,12 +2320,7 @@ try {
         : restartAppForExecution(caseDir, options.platform, executionId);
     } catch (error) {
       const reason = error.message || String(error);
-      writeExecutionState(execDir, {
-        ...readExecutionState(execDir),
-        lifecycle: 'BLOCKED_START',
-        finalized: false,
-        isolation: { clean: false, required: true, reason },
-      });
+      writeExecutionState(execDir, { ...readExecutionState(execDir), lifecycle: 'BLOCKED_START', finalized: false, isolation: { clean: false, required: true, reason }, bootstrap: { ...readExecutionState(execDir).bootstrap, status: 'FAILED', completedAt: nowIso(), reason } });
       const finalized = finalize(caseDir, {
         platform: options.platform,
         executionId,
@@ -2176,44 +2332,16 @@ try {
       console.error(JSON.stringify({ executionId, blockedOnStart: true, nextAction: 'stop-current-case', failureCode: 'CASE_RESTART_FAILED', reason, finalized }, null, 2));
       process.exit(3);
     }
-    const isolation = buildIsolationState(caseJson, appRestart);
-    writeExecutionState(execDir, {
-      ...readExecutionState(execDir),
-      schemaVersion: 2,
-      executionId,
-      startedAt: readExecutionState(execDir)?.startedAt || nowIso(),
-      lifecycle: 'RUNNING',
-      finalized: false,
-      isolation,
-      preconditionPlan,
-      preconditionPlanSha: preconditionPlan.preconditionPlanSha,
-      budget: DEFAULT_BUDGET,
-    });
-    let finalized = null;
-    if (isolation.compromised && isolation.required) {
-      finalized = finalize(caseDir, {
-        platform: options.platform,
-        executionId,
-        status: 'BLOCKED',
-        failureCode: 'CASE_RESTART_FAILED',
-        reason: `用例依赖冷启动隔离，但 App 重启失败，不能继续执行：${isolation.reason}`,
-        allowAlreadyFinalized: true,
-        allowIncompletePreconditions: true,
-      });
-    }
-    const blockedOnStart = !!finalized;
+    if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_START_INTERRUPT === 'after-restart-fact') throw new Error('MAVT_SELF_TEST_START_INTERRUPT: after-restart-fact');
     console.log(JSON.stringify({
-      executionId,
-      execDir,
-      timeline: path.join(execDir, 'timeline.jsonl'),
-      appRestart,
-      isolation,
+      ...finishExecutionBootstrap(caseDir, options.platform, executionId, appRestart),
       preconditionPlanSha: preconditionPlan.preconditionPlanSha,
+      preconditionInputsSha: frozenPreconditionInputsSha,
+      environmentSha: frozenEnvironment.environmentSha,
       flowAssets: planFlowSummaries(preconditionPlan),
-      blockedOnStart,
-      nextAction: blockedOnStart ? 'stop-current-case' : 'continue-current-case',
-      finalized,
     }, null, 2));
+  } else if (command === 'resumeStart') {
+    console.log(JSON.stringify(resumeStart(caseDir, options), null, 2));
   } else if (command === 'recoverOrphaned') {
     if (!options.executionId || !options.batchId) throw new Error('recover-orphaned requires --execution-id and --batch-id');
     const runtimeDir = caseRuntimeDir(caseDir, options.platform);
@@ -2276,7 +2404,7 @@ try {
     });
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
-    assertRuntimeBindingReady(execDir, events, event);
+    assertCaseFactWritable(execDir, executionState, events, event);
     if (event.turnId) {
       const conflictingTurn = events.find((item) => item.turnId === event.turnId && eventStepId(item) !== eventStepId(event));
       if (conflictingTurn) throw new Error(`AGENT_RESULT_INVALID: turnId ${event.turnId} already belongs to step ${eventStepId(conflictingTurn) || '<none>'}.`);
@@ -2369,7 +2497,8 @@ try {
     validatePreconditionEventAgainstCase(event, caseJson);
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
-    assertRuntimeBindingReady(execDir, events, event);
+    validatePreconditionEventAgainstPlan(event, executionState, events);
+    assertCaseFactWritable(execDir, executionState, events, event);
     if (event.turnId) {
       const conflictingTurn = events.find((item) => item.turnId === event.turnId && eventStepId(item) !== eventStepId(event));
       if (conflictingTurn) throw new Error(`AGENT_RESULT_INVALID: turnId ${event.turnId} already belongs to step ${eventStepId(conflictingTurn) || '<none>'}.`);
@@ -2379,9 +2508,12 @@ try {
       throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
     }
     if (event.type === 'agentRuntime' && event.status === 'BOUND') {
+      if (event.environmentSha !== executionState.environmentSha || event.preconditionInputsSha !== executionState.preconditionInputsSha) {
+        throw new Error('AGENT_RESULT_INVALID: Agent Runtime BOUND 与 execution 冻结契约不一致。');
+      }
       const existingBound = events.find((item) => item.type === 'agentRuntime' && item.status === 'BOUND');
       if (existingBound) {
-        const sameBinding = ['provider', 'protocolSha', 'implementationSha', 'sessionScope', 'requestSha', 'sessionId']
+        const sameBinding = ['provider', 'protocolSha', 'implementationSha', 'sessionScope', 'requestSha', 'environmentSha', 'preconditionInputsSha', 'sessionId']
           .every((field) => (existingBound[field] || null) === (event[field] || null));
         if (!sameBinding) throw new Error('AGENT_RESULT_INVALID: execution 已绑定不同的 Agent Runtime。');
         console.log(JSON.stringify({ executionId, eventType: event.type, alreadyRecorded: true, timeline: timelinePath }, null, 2));
@@ -2395,7 +2527,7 @@ try {
     if (event.type === 'agentRuntime' && ['FAILED', 'INTERRUPTED'].includes(event.status)) {
       const existingFailure = events.find((item) => item.type === 'agentRuntime' && ['FAILED', 'INTERRUPTED'].includes(item.status));
       if (existingFailure) {
-        const sameFailure = ['provider', 'status', 'failureCode', 'protocolSha', 'implementationSha', 'requestSha', 'sessionId']
+        const sameFailure = ['provider', 'status', 'failureCode', 'protocolSha', 'implementationSha', 'requestSha', 'environmentSha', 'preconditionInputsSha', 'sessionId']
           .every((field) => (existingFailure[field] || null) === (event[field] || null));
         if (!sameFailure) throw new Error('AGENT_RESULT_INVALID: Agent Runtime 已有不同的失败终态。');
         console.log(JSON.stringify({ executionId, eventType: event.type, alreadyRecorded: true, timeline: timelinePath }, null, 2));

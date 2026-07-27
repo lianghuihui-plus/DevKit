@@ -45,6 +45,7 @@ function validateSkillContract(contract) {
   if (contract.schemaVersion !== 1) throw new Error('skillContract.schemaVersion must be 1');
   if (contract.name !== 'mobile-ai-visual-test') throw new Error('skillContract.name must be mobile-ai-visual-test');
   if (!SKILL_ROLES.has(contract.role)) throw new Error('skillContract.role is invalid');
+  if (normalizeProviderId(contract.provider || 'codex') !== (contract.provider || 'codex')) throw new Error('skillContract.provider must be canonical');
   ensureAbsolute(contract.root, 'skillContract.root');
   if (!contract.protocolSha || !/^agent-protocol-[0-9a-f]{16}$/.test(contract.protocolSha)) throw new Error('skillContract.protocolSha is invalid');
   if (!/^agent-implementation-[0-9a-f]{16}$/.test(contract.implementationSha || '')) throw new Error('skillContract.implementationSha is invalid');
@@ -71,15 +72,19 @@ function validateCaseAgentRequest(request) {
   if (!/^request-[0-9a-f]{16}$/.test(request.requestSha || '')) throw new Error('CaseAgentRequest.requestSha is required');
   if (caseAgentRequestSha(request) !== request.requestSha) throw new Error('CaseAgentRequest.requestSha does not match request content');
   if (!/^precondition-plan-/.test(request.preconditionPlanSha || '')) throw new Error('CaseAgentRequest.preconditionPlanSha is invalid');
+  if (!/^precondition-inputs-[0-9a-f]{16}$/.test(request.preconditionInputsSha || '')) throw new Error('CaseAgentRequest.preconditionInputsSha is invalid');
+  if (!/^environment-[0-9a-f]{16}$/.test(request.environmentSha || '')) throw new Error('CaseAgentRequest.environmentSha is invalid');
   if (!/^contract-/.test(request.caseContractSha || '')) throw new Error('CaseAgentRequest.caseContractSha is invalid');
   validateSkillContract(request.skillContract);
   if (request.skillContract.role !== 'case-executor') throw new Error('CaseAgentRequest requires case-executor skillContract');
-  if (!Array.isArray(request.confirmedPreconditions)) throw new Error('CaseAgentRequest.confirmedPreconditions must be an array');
-  for (const item of request.confirmedPreconditions) {
-    ensureObject(item, 'confirmedPrecondition');
-    if (!item.id || typeof item.id !== 'string') throw new Error('confirmedPrecondition.id is required');
-    if (!['PASS', 'PREPARED'].includes(item.status)) throw new Error('confirmedPrecondition.status must be PASS or PREPARED');
-    if (!String(item.reason || '').trim()) throw new Error('confirmedPrecondition.reason is required');
+  if ((request.skillContract.provider || 'codex') !== request.provider) throw new Error('CaseAgentRequest provider does not match skillContract');
+  if (!Array.isArray(request.preconditionInputs)) throw new Error('CaseAgentRequest.preconditionInputs must be an array');
+  for (const item of request.preconditionInputs) {
+    ensureObject(item, 'preconditionInput');
+    if (!item.id || typeof item.id !== 'string') throw new Error('preconditionInput.id is required');
+    if (!['confirm', 'external_setup'].includes(item.resolution)) throw new Error('preconditionInput.resolution is invalid');
+    if ((item.resolution === 'confirm' && item.status !== 'PASS') || (item.resolution === 'external_setup' && item.status !== 'PREPARED')) throw new Error('preconditionInput.status does not match resolution');
+    if (!String(item.reason || '').trim()) throw new Error('preconditionInput.reason is required');
   }
   const policy = ensureObject(request.executionPolicy, 'CaseAgentRequest.executionPolicy');
   if (policy.sessionScope !== 'case') throw new Error('CaseAgentRequest.executionPolicy.sessionScope must be case');
@@ -99,6 +104,8 @@ function validateCaseAgentResult(result) {
   if (!/^request-[0-9a-f]{16}$/.test(result.requestSha || '')) throw new Error('CaseAgentResult.requestSha is required');
   if (!/^agent-protocol-[0-9a-f]{16}$/.test(result.protocolSha || '')) throw new Error('CaseAgentResult.protocolSha is invalid');
   if (!/^agent-implementation-[0-9a-f]{16}$/.test(result.implementationSha || '')) throw new Error('CaseAgentResult.implementationSha is invalid');
+  if (!/^environment-[0-9a-f]{16}$/.test(result.environmentSha || '')) throw new Error('CaseAgentResult.environmentSha is invalid');
+  if (!/^precondition-inputs-[0-9a-f]{16}$/.test(result.preconditionInputsSha || '')) throw new Error('CaseAgentResult.preconditionInputsSha is invalid');
   if (!RESULT_STATUSES.has(result.status)) throw new Error('CaseAgentResult.status is invalid');
   if (result.failureCode !== null && result.failureCode !== undefined && typeof result.failureCode !== 'string') throw new Error('CaseAgentResult.failureCode must be a string or null');
   if (result.reason !== undefined && typeof result.reason !== 'string') throw new Error('CaseAgentResult.reason must be a string');

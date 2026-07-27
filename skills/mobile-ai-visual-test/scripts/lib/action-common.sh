@@ -121,11 +121,7 @@ const fs = require("fs");
 const path = require("path");
 const caseDir = path.resolve(process.argv[1]);
 const platform = String(process.argv[2] || "").trim().toLowerCase();
-const explicit = {
-  device: process.argv[3] || "",
-  app: process.argv[4] || "",
-  entry: process.argv[5] || "",
-};
+const explicit = { device: process.argv[3] || "", app: process.argv[4] || "", entry: process.argv[5] || "" };
 const statePath = path.join(caseDir, "platforms", platform, "state.json");
 if (!fs.existsSync(statePath)) {
   console.error(`ENV_UNCONFIRMED: 缺少平台环境状态: ${statePath}`);
@@ -138,11 +134,7 @@ if (savedPlatform && savedPlatform !== platform) {
   console.error(`ENVIRONMENT_BINDING_MISMATCH: 已确认平台 ${savedPlatform} 与正式执行平台 ${platform} 不一致。`);
   process.exit(2);
 }
-const saved = {
-  device: String(env.device || ""),
-  app: String(env.appId || env.bundleName || ""),
-  entry: String(env.entry || env.abilityName || ""),
-};
+const saved = { device: String(env.device || ""), app: String(env.appId || env.bundleName || ""), entry: String(env.entry || env.abilityName || "") };
 for (const key of Object.keys(explicit)) {
   if (explicit[key] && explicit[key] !== saved[key]) {
     console.error(`ENVIRONMENT_BINDING_MISMATCH: 显式 ${key}=${explicit[key]} 与已确认环境 ${saved[key] || "<empty>"} 不一致。`);
@@ -150,6 +142,31 @@ for (const key of Object.keys(explicit)) {
   }
 }
 ' "$1" "$2" "${3:-}" "${4:-}" "${5:-}"
+}
+
+mavt_execution_env_args() {
+  local script_dir="$1"
+  local case_dir="$2"
+  local platform="$3"
+  local execution_id="$4"
+  local purpose="${5:-runtime}"
+  node "$script_dir/execution/resolve-execution-environment.js" args \
+    --case-dir "$case_dir" --platform "$platform" --execution-id "$execution_id" --purpose "$purpose"
+}
+
+mavt_validate_execution_env_binding() {
+  local script_dir="$1"
+  local case_dir="$2"
+  local platform="$3"
+  local execution_id="$4"
+  local device="${5:-}"
+  local app="${6:-}"
+  local entry="${7:-}"
+  local args=(validate --case-dir "$case_dir" --platform "$platform" --execution-id "$execution_id")
+  [[ -n "$device" ]] && args+=(--device "$device")
+  [[ -n "$app" ]] && args+=(--app "$app")
+  [[ -n "$entry" ]] && args+=(--entry "$entry")
+  node "$script_dir/execution/resolve-execution-environment.js" "${args[@]}" >/dev/null
 }
 
 mavt_sleep_ms() {
