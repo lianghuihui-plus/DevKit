@@ -4,8 +4,8 @@ const { loadGraph, fail } = require('./common');
 const { validatePopupDisposition } = require('./popup-policy');
 const { loadObservationBundle } = require('./observation-store');
 
-const OUTCOME_DISPOSITIONS = Object.freeze(['PAGE', 'BUSINESS_MODAL', 'NO_STATE_CHANGE', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN']);
-const RESTORE_BASE_DISPOSITIONS = Object.freeze(['DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN']);
+const OUTCOME_DISPOSITIONS = Object.freeze(['PAGE', 'BUSINESS_MODAL', 'NO_STATE_CHANGE', 'GUIDE_POPUP', 'PROMOTION_POPUP', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN']);
+const RESTORE_BASE_DISPOSITIONS = Object.freeze(['GUIDE_POPUP', 'PROMOTION_POPUP', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN']);
 const RESTORE_EQUIVALENCE = 'EXPECTED_STATE_EQUIVALENT';
 
 function canReviewRestoreEquivalence(scanDir, attempt) {
@@ -46,6 +46,12 @@ function buildReviewRequest(scanDir, attempt, phase) {
     restoreComparison: phase === 'RESTORE' ? attempt.restoreMismatch?.comparison || null : null,
     expectedReachableStateId: phase === 'RESTORE' ? attempt.restoreMismatch?.expectedReachableStateId || null : null,
     recommendedDisposition: phase === 'OUTCOME' && attempt.sourceComparison === 'EXACT' ? 'NO_STATE_CHANGE' : equivalenceAvailable ? RESTORE_EQUIVALENCE : null,
+    popupRubric: {
+      graphInvariant: '地图节点只代表清理非业务浮层后的稳定业务页面；非业务浮层只记录 interruption 证据。',
+      businessModal: '选择 BUSINESS_MODAL 时，VisualReview 必须包含 popupAssessment.graphRole=STATE、popupKind=BUSINESS_MODAL、openedByUserAction=true、containsBusinessControls=true、stableBusinessSurface=true。',
+      nonGraphPopup: '新手引导、提示、公告、活动/福利/广告等不稳定页面因素选择 GUIDE_POPUP、PROMOTION_POPUP 或 DISMISSIBLE_POPUP；VisualReview 必须包含 graphRole=INTERRUPTION 和 dismissal 安全清理计划。',
+      stableEvidence: '清理后重新观察到的新稳定页面才允许继续作为 PAGE outcome；脚本不通过文本关键词判断弹窗业务属性。'
+    },
     goalHint: '如果弹窗与目标截图匹配，选择 BUSINESS_MODAL，不要关闭。'
   };
 }

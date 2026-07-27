@@ -48,13 +48,14 @@ main(() => {
     attempt = readJson(path.join(scanDir, 'attempts', `${attemptId}.json`));
     if (attempt.contextId !== contextId) fail('Attempt belongs to another context', 'ATTEMPT_CAUSALITY_INVALID');
     if (reviewType === 'PAGE_OUTCOME' && attempt.afterObservationId !== observationId) fail('PAGE_OUTCOME VisualReview must bind to Attempt afterObservationId', 'VISUAL_REVIEW_INVALID');
-    if (!['AWAITING_VISUAL_REVIEW', 'AWAITING_OUTCOME_REVIEW'].includes(attempt.status)) fail('Attempt is not awaiting visual review', 'ATTEMPT_STATE_INVALID');
+    if (reviewType === 'RESTORE_STATE' && attempt.reviewObservationId !== observationId) fail('RESTORE_STATE VisualReview must bind to Attempt reviewObservationId', 'VISUAL_REVIEW_INVALID');
+    if (!['AWAITING_VISUAL_REVIEW', 'AWAITING_OUTCOME_REVIEW', 'AWAITING_RESTORE_REVIEW'].includes(attempt.status)) fail('Attempt is not awaiting visual review', 'ATTEMPT_STATE_INVALID');
     attempt.visualReviewId = visualReview.visualReviewId;
     attempt.visualReviewStatus = visualReview.status;
     attempt.visualReviews ||= [];
     attempt.visualReviews.push({ visualReviewId: visualReview.visualReviewId, observationId, reviewType, status: visualReview.status, recordedAt: visualReview.createdAt });
     if (visualReview.status === 'ACCEPTED') {
-      attempt.status = 'AWAITING_OUTCOME_REVIEW';
+      if (reviewType === 'PAGE_OUTCOME') attempt.status = 'AWAITING_OUTCOME_REVIEW';
       attempt.reviewObservationId = observationId;
       attempt.updatedAt = now();
       commitEvent(scanDir, 'attemptVisualReviewAccepted', { contextId, attemptId, visualReviewId: visualReview.visualReviewId, observationId, reviewType }, [

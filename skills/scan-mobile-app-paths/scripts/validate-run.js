@@ -13,6 +13,7 @@ const { buildFingerprint, compareFingerprint, observationVisual } = require('./l
 const { loadVisualEquivalence } = require('./lib/visual-equivalence');
 const { loadStateEquivalence } = require('./lib/state-equivalence-store');
 const { assertAcceptedVisualReview } = require('./lib/visual-review-store');
+const { assertInterruptionCleanupReview, assertDismissalMatchesAssessment } = require('./lib/popup-assessment-guard');
 const { assertVisualCandidateReviewSuggestion } = require('./lib/visual-candidate-review-store');
 const { canonicalIntentIdentity, intentFromAction, locatorEvidenceFor } = require('./lib/action-intent');
 const { locatorReplayabilityReason } = require('./lib/replayability');
@@ -50,8 +51,16 @@ function requireSuggestionObservation(scanDir, suggestion, contextId) {
 function requirePopupInterruption(scanDir, interruption, contextId, ownerType, ownerId) {
   requireObservation(scanDir, interruption.beforeObservationId, contextId); const action = readJson(path.join(scanDir, 'evidence', 'actions', `${interruption.dismissalActionResultId}.json`));
   if (action.status !== 'SUCCEEDED' || action.role !== 'POPUP_DISMISSAL' || action.contextId !== contextId || action.owner?.type !== ownerType || action.owner?.id !== ownerId || action.beforeObservationId !== interruption.beforeObservationId) fail('Popup interruption evidence is inconsistent', 'POPUP_EVIDENCE_INVALID');
-  if (Number(interruption.schemaVersion || 1) >= 2 && !interruption.afterObservationId) fail('Popup interruption lacks its cleanup observation', 'POPUP_EVIDENCE_INVALID');
-  if (Number(interruption.schemaVersion || 1) >= 2 && interruption.phase === 'RESTORE' && !interruption.restoreId) fail('Restore popup interruption lacks its restore checkpoint reference', 'POPUP_EVIDENCE_INVALID');
+  if (Number(interruption.schemaVersion || 1) >= 2) {
+    if (!interruption.afterObservationId) fail('Popup interruption lacks its cleanup observation', 'POPUP_EVIDENCE_INVALID');
+    if (interruption.phase === 'RESTORE' && !interruption.restoreId) fail('Restore popup interruption lacks its restore checkpoint reference', 'POPUP_EVIDENCE_INVALID');
+    if (!interruption.visualReviewId || !interruption.popupAssessment) fail('Popup interruption lacks structured visual review evidence', 'POPUP_EVIDENCE_INVALID');
+    const expectedReviewType = ownerType === 'CONTEXT_PREPARATION' ? 'PREPARATION_STATE' : interruption.phase === 'RESTORE' ? 'RESTORE_STATE' : 'PAGE_OUTCOME';
+    const review = assertAcceptedVisualReview(scanDir, { visualReviewId: interruption.visualReviewId, contextId, observationId: interruption.beforeObservationId, reviewType: expectedReviewType });
+    const popupAssessment = assertInterruptionCleanupReview(review, interruption.popupKind || interruption.popupClass);
+    if (hashObject(popupAssessment) !== hashObject(interruption.popupAssessment)) fail('Popup interruption popupAssessment differs from VisualReview evidence', 'POPUP_EVIDENCE_INVALID');
+    assertDismissalMatchesAssessment(popupAssessment, action.action);
+  }
   if (interruption.afterObservationId) requireObservation(scanDir, interruption.afterObservationId, contextId);
 }
 
@@ -195,7 +204,7 @@ function validate(scanDir, requestedStatus, options = {}) {
     }
     if (attempt.status === 'DISMISSED_NO_EDGE') {
       const action = readJson(path.join(scanDir, 'evidence', 'actions', `${attempt.actionResultId}.json`)); const frontier = loadFrontier(scanDir, attempt.contextId); const item = frontier.items.find(entry => entry.id === attempt.frontierId); const cleanup = (attempt.interruptions || []).at(-1);
-      if (!attempt.beforeObservationId || !attempt.afterObservationId || action.status !== 'SUCCEEDED' || action.attemptId !== attempt.attemptId || action.beforeObservationId !== attempt.beforeObservationId || (action.candidateHash || hashObject(action.action)) !== attempt.candidateHash || !cleanup?.afterObservationId || compareObservations(scanDir, attempt.beforeObservationId, cleanup.afterObservationId, attempt.contextId) !== 'EXACT' || !item || item.status !== 'EXPLORED' || item.reasonCode !== 'DISMISSIBLE_POPUP' || item.attemptId !== attempt.attemptId || strictClaim && (!attempt.claimToken || item.claimToken != null || item.claimedAttemptId != null) || hashObject(item.candidate) !== attempt.candidateHash) fail(`Attempt ${attempt.attemptId} DISMISSED_NO_EDGE evidence is inconsistent`, 'ATTEMPT_CAUSALITY_INVALID');
+      if (!attempt.beforeObservationId || !attempt.afterObservationId || action.status !== 'SUCCEEDED' || action.attemptId !== attempt.attemptId || action.beforeObservationId !== attempt.beforeObservationId || (action.candidateHash || hashObject(action.action)) !== attempt.candidateHash || !cleanup?.afterObservationId || compareObservations(scanDir, attempt.beforeObservationId, cleanup.afterObservationId, attempt.contextId) !== 'EXACT' || !item || item.status !== 'EXPLORED' || !['GUIDE_POPUP', 'PROMOTION_POPUP', 'DISMISSIBLE_POPUP'].includes(item.reasonCode) || item.attemptId !== attempt.attemptId || strictClaim && (!attempt.claimToken || item.claimToken != null || item.claimedAttemptId != null) || hashObject(item.candidate) !== attempt.candidateHash) fail(`Attempt ${attempt.attemptId} DISMISSED_NO_EDGE evidence is inconsistent`, 'ATTEMPT_CAUSALITY_INVALID');
       if (visualReviewRequired) assertAcceptedVisualReview(scanDir, { visualReviewId: attempt.visualReviewId, contextId: attempt.contextId, observationId: cleanup.beforeObservationId, reviewType: 'PAGE_OUTCOME' });
       summary.observations.add(attempt.beforeObservationId); summary.observations.add(attempt.afterObservationId); summary.observations.add(cleanup.afterObservationId); summary.actions.add(attempt.actionResultId); summary.attempts.add(attempt.attemptId);
     }

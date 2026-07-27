@@ -95,8 +95,12 @@ const env = {
   SMAP_OBSERVATION_VISUAL_FALLBACK_MS: '0'
 };
 
-function visualAssessment(pageName = '自测页面') {
-  return JSON.stringify({ status: 'ACCEPTED', pageUsable: true, pageKind: 'page', pageName, confidence: 'HIGH', rationale: 'self-test accepted visual evidence' });
+function popupAssessmentForStartupPopup() {
+  return { popupPresent: true, graphRole: 'INTERRUPTION', popupKind: 'DISMISSIBLE_POPUP', businessRelevance: 'NON_BUSINESS', stablePageBlocking: true, dismissal: { available: true, method: 'TAP', safety: 'WEAK_DISMISS', targetDescription: '关闭' }, stablePageAfterDismissalExpected: true, visualEvidence: ['startup-overlay', 'close-control'], rationale: 'self-test startup popup' };
+}
+
+function visualAssessment(pageName = '自测页面', popupAssessment = null) {
+  return JSON.stringify({ status: 'ACCEPTED', pageUsable: true, pageKind: popupAssessment ? 'popup' : 'page', pageName, confidence: 'HIGH', rationale: 'self-test accepted visual evidence', ...(popupAssessment ? { popupAssessment } : {}) });
 }
 
 function argValue(args, name) {
@@ -239,19 +243,30 @@ try {
   check(popupAttempt.status, 'AWAITING_RESTORE_REVIEW');
   const restartsAfterPrepare = Number(fs.readFileSync(restartCountFile, 'utf8'));
   check(restartsAfterPrepare, restartsBefore + 1);
-  popupAttempt = run('execute-frontier.js', [
+  check(runRaw('execute-frontier.js', [
     'review-restore', '--scan-dir', stable.scanDir, '--context', 'guest',
     '--attempt-id', popupAttempt.attemptId,
     '--observation-id', popupAttempt.reviewObservationId,
     '--disposition', 'DISMISSIBLE_POPUP',
     '--dismiss-action', JSON.stringify({ type: 'tap', target: '关闭', fallbackBounds: [300, 0, 400, 100] })
+  ]).status !== 0, true);
+  const popupRestoreReview = run('visual-review.js', ['record', '--scan-dir', stable.scanDir, '--context', 'guest', '--attempt-id', popupAttempt.attemptId, '--observation-id', popupAttempt.reviewObservationId, '--review-type', 'RESTORE_STATE', '--assessment', visualAssessment('启动公告', popupAssessmentForStartupPopup())]).visualReview;
+  popupAttempt = run('execute-frontier.js', [
+    'review-restore', '--scan-dir', stable.scanDir, '--context', 'guest',
+    '--attempt-id', popupAttempt.attemptId,
+    '--observation-id', popupAttempt.reviewObservationId,
+    '--visual-review-id', popupRestoreReview.visualReviewId,
+    '--disposition', 'DISMISSIBLE_POPUP',
+    '--dismiss-action', JSON.stringify({ type: 'tap', target: '关闭', fallbackBounds: [300, 0, 400, 100] })
   ]).attempt;
   check(popupAttempt.status, 'READY_FOR_ACTION');
   check(Number(fs.readFileSync(restartCountFile, 'utf8')), restartsAfterPrepare);
-  check(Boolean(popupAttempt.interruptions[0].afterObservationId), true);
+	  check(Boolean(popupAttempt.interruptions[0].afterObservationId), true);
+	  check(popupAttempt.interruptions[0].visualReviewId, popupRestoreReview.visualReviewId);
   check(popupAttempt.restoreResults[0].status, 'SUCCEEDED');
-  check(resolveNoStateChange(stable.scanDir, popupAttempt).status, 'NO_STATE_CHANGE');
-  check(run('finalize-scan.js', ['--scan-dir', stable.scanDir, '--status', 'COMPLETED']).scan.status, 'COMPLETED');
+	  check(resolveNoStateChange(stable.scanDir, popupAttempt).status, 'NO_STATE_CHANGE');
+	  check(runRaw('finalize-scan.js', ['--scan-dir', stable.scanDir, '--status', 'COMPLETED']).stderr.includes('FINALIZATION_REQUIRES_WORK_EMPTY'), true);
+	  check(run('finalize-scan.js', ['--scan-dir', stable.scanDir, '--status', 'PARTIAL', '--reason-code', 'USER_STOPPED', '--confirm-user-stop', 'true', '--user-stop-note', 'restore self-test stops before candidate backfill']).scan.status, 'PARTIAL');
 
   fs.writeFileSync(stateFile, 'animated-1');
   fs.writeFileSync(restartModeFile, 'preserve');
@@ -269,8 +284,9 @@ try {
   check(dynamicAttempt.status, 'READY_FOR_ACTION');
   check(dynamicPrepared.reviewRequest, undefined);
   check(dynamicAttempt.restoreResults[0].equivalenceReviews.length, 0);
-  check(resolveNoStateChange(dynamic.scanDir, dynamicAttempt).status, 'NO_STATE_CHANGE');
-  check(run('finalize-scan.js', ['--scan-dir', dynamic.scanDir, '--status', 'COMPLETED']).scan.status, 'COMPLETED');
+	  check(resolveNoStateChange(dynamic.scanDir, dynamicAttempt).status, 'NO_STATE_CHANGE');
+	  check(runRaw('finalize-scan.js', ['--scan-dir', dynamic.scanDir, '--status', 'COMPLETED']).stderr.includes('FINALIZATION_REQUIRES_WORK_EMPTY'), true);
+	  check(run('finalize-scan.js', ['--scan-dir', dynamic.scanDir, '--status', 'PARTIAL', '--reason-code', 'USER_STOPPED', '--confirm-user-stop', 'true', '--user-stop-note', 'restore self-test stops before candidate backfill']).scan.status, 'PARTIAL');
   check(dynamicRootObservation.capturedAt.endsWith(expectedOffset), true);
 
   fs.writeFileSync(stateFile, 'home');
@@ -308,7 +324,7 @@ try {
   check(failedRestore.status, 'FAILED');
   check(failedRestore.reasonCode, 'RESTORE_STATE_MISMATCH');
   check(Boolean(failedRestore.finishedAt), true);
-  check(run('finalize-scan.js', ['--scan-dir', failedRestoreRun.scanDir, '--status', 'PARTIAL']).scan.status, 'PARTIAL');
+	  check(run('finalize-scan.js', ['--scan-dir', failedRestoreRun.scanDir, '--status', 'PARTIAL', '--reason-code', 'USER_STOPPED', '--confirm-user-stop', 'true', '--user-stop-note', 'restore failure closure self-test stops intentionally']).scan.status, 'PARTIAL');
   const danglingRestore = { ...failedRestore, status: 'IN_PROGRESS', finishedAt: null, reasonCode: null };
   fs.writeFileSync(failedRestoreFile, `${JSON.stringify(danglingRestore, null, 2)}\n`);
   const invalidClosure = runRaw('validate-run.js', ['--scan-dir', failedRestoreRun.scanDir, '--status', 'PARTIAL']);

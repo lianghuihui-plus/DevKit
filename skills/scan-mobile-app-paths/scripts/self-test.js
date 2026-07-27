@@ -11,6 +11,7 @@ const SUITES = {
   scheduler: 'scheduler.js',
   'goal-verification': 'goal-verification.js',
   'source-matcher': 'source-matcher.js',
+  'popup-policy': 'popup-policy.js',
   'frontier-candidates': 'frontier-candidates.js',
   'flow-export': 'flow-export.js'
 };
@@ -18,6 +19,7 @@ const FULL_PREFLIGHT_SCOPES = [
   'scheduler',
   'goal-verification',
   'source-matcher',
+  'popup-policy',
   'frontier-candidates',
   'flow-export'
 ];
@@ -41,6 +43,7 @@ function printHelp(ok) {
       scheduler: 'node scripts/self-test.js --scope scheduler',
       goalVerification: 'node scripts/self-test.js --scope goal-verification',
       sourceMatcher: 'node scripts/self-test.js --scope source-matcher',
+      popupPolicy: 'node scripts/self-test.js --scope popup-policy',
       frontierCandidates: 'node scripts/self-test.js --scope frontier-candidates',
       flowExport: 'node scripts/self-test.js --scope flow-export',
       full: 'node scripts/self-test.js --scope full'

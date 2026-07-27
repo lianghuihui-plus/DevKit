@@ -168,10 +168,18 @@ node "$SMAP_SKILL/scripts/prepare-context.js" observe-again \
 若是明确安全的提示弹窗，留证后清理：
 
 ```bash
+node "$SMAP_SKILL/scripts/visual-review.js" record \
+  --scan-dir <scan-dir> --context guest \
+  --observation-id <obs-id> \
+  --review-type PREPARATION_STATE \
+  --assessment '{"status":"ACCEPTED","pageUsable":true,"pageKind":"popup","pageName":"启动提示","confidence":"HIGH","rationale":"截图中为遮挡根页面的非业务提示","popupAssessment":{"popupPresent":true,"graphRole":"INTERRUPTION","popupKind":"DISMISSIBLE_POPUP","businessRelevance":"NON_BUSINESS","stablePageBlocking":true,"dismissal":{"available":true,"method":"TAP","safety":"WEAK_DISMISS","targetDescription":"关闭按钮"},"stablePageAfterDismissalExpected":true,"visualEvidence":["overlay","close-affordance"],"rationale":"关闭后应露出稳定业务页面"}}'
+
 node "$SMAP_SKILL/scripts/prepare-context.js" dismiss-popup \
   --scan-dir <scan-dir> --context guest \
   --preparation-id <preparation-id> \
   --observation-id <obs-id> \
+  --visual-review-id <visual-review-id> \
+  --disposition DISMISSIBLE_POPUP \
   --dismiss-action '{"type":"tap","target":"关闭","fallbackBounds":[900,80,1040,220]}'
 ```
 
@@ -384,12 +392,58 @@ node "$SMAP_SKILL/scripts/visual-review.js" record \
 
 只有 `ACCEPTED` 会把 Attempt 推进到 `AWAITING_OUTCOME_REVIEW`。`REJECTED`、`NEEDS_REOBSERVE` 或 `NEEDS_HUMAN_REVIEW` 会释放/终止本次 Attempt，不能继续写页面或边。视觉审查通过后，再提交以下结构化结果之一：
 
-- `PAGE`：稳定全屏页面。
-- `BUSINESS_MODAL`：稳定业务弹窗。
+- `PAGE`：稳定全屏业务页面，若点击后先出现非业务浮层，必须清理并用清理后的 Observation 重新审查。
+- `BUSINESS_MODAL`：稳定业务弹窗，仅限筛选、选择、编辑、配置等功能性业务面板；新手引导、提示、公告、活动/福利/广告不能按业务弹窗入图。
 - `NO_STATE_CHANGE`：与来源 `EXACT`，不入图。
-- `DISMISSIBLE_POPUP`：明确安全提示，清理后复核。
+- `GUIDE_POPUP`：新手引导、操作指引或教学浮层，安全关闭后复核，不入图。
+- `PROMOTION_POPUP`：活动、福利、广告或运营弹窗，默认安全关闭后复核，不入图。
+- `DISMISSIBLE_POPUP`：明确安全提示或公告，清理后复核。
 - `TRANSIENT`：Toast、加载或过渡态，原地重观察。
 - `SYSTEM_OR_UNKNOWN`：系统、风险或不确定状态，暂停。
+
+弹窗相关审查必须拆成两个独立协议。业务弹窗入图由 `popupAssessment.graphRole=STATE` 证明；引导、提示、公告、活动等不稳定页面因素由 `popupAssessment.graphRole=INTERRUPTION` 证明并提供安全清理计划。脚本不得用业务词表或页面文本猜测弹窗类别，只校验视觉审查产物的结构化字段。
+
+业务弹窗入图的 `PAGE_OUTCOME` VisualReview 必须包含：
+
+```json
+{
+  "popupAssessment": {
+    "popupPresent": true,
+    "graphRole": "STATE",
+    "popupKind": "BUSINESS_MODAL",
+    "businessRelevance": "BUSINESS_FUNCTION",
+    "openedByUserAction": true,
+    "containsBusinessControls": true,
+    "stableBusinessSurface": true,
+    "dismissalSemantics": "CLOSES_BUSINESS_CONTEXT",
+    "visualEvidence": ["modal-panel", "selection-controls"],
+    "rationale": "用户主动打开的功能性业务面板"
+  }
+}
+```
+
+非业务浮层清理的 `PAGE_OUTCOME` VisualReview 必须包含：
+
+```json
+{
+  "popupAssessment": {
+    "popupPresent": true,
+    "graphRole": "INTERRUPTION",
+    "popupKind": "GUIDE_POPUP",
+    "businessRelevance": "NON_BUSINESS",
+    "stablePageBlocking": true,
+    "dismissal": {
+      "available": true,
+      "method": "TAP",
+      "safety": "WEAK_DISMISS",
+      "targetDescription": "右上角关闭按钮"
+    },
+    "stablePageAfterDismissalExpected": true,
+    "visualEvidence": ["image-overlay", "close-affordance"],
+    "rationale": "引导浮层遮挡稳定页面，关闭后应露出业务页面"
+  }
+}
+```
 
 ```bash
 node "$SMAP_SKILL/scripts/execute-frontier.js" review-outcome \
@@ -397,6 +451,25 @@ node "$SMAP_SKILL/scripts/execute-frontier.js" review-outcome \
   --attempt-id <visualReviewResult.attemptId> \
   --observation-id <obs-id> \
   --disposition PAGE
+```
+
+恢复链遇到非业务浮层时也必须先记录 `RESTORE_STATE` VisualReview，再继续恢复，不得只凭 disposition 关闭：
+
+```bash
+node "$SMAP_SKILL/scripts/visual-review.js" record \
+  --scan-dir <scan-dir> --context guest \
+  --attempt-id <attempt-id> \
+  --observation-id <obs-id> \
+  --review-type RESTORE_STATE \
+  --assessment '{"status":"ACCEPTED","pageUsable":true,"pageKind":"popup","pageName":"启动提示","confidence":"HIGH","rationale":"恢复链中出现非业务浮层","popupAssessment":{"popupPresent":true,"graphRole":"INTERRUPTION","popupKind":"DISMISSIBLE_POPUP","businessRelevance":"NON_BUSINESS","stablePageBlocking":true,"dismissal":{"available":true,"method":"TAP","safety":"WEAK_DISMISS","targetDescription":"关闭按钮"},"stablePageAfterDismissalExpected":true,"visualEvidence":["overlay","close-affordance"],"rationale":"关闭后继续从同一恢复 checkpoint 校验"}}'
+
+node "$SMAP_SKILL/scripts/execute-frontier.js" review-restore \
+  --scan-dir <scan-dir> --context guest \
+  --attempt-id <attempt-id> \
+  --observation-id <obs-id> \
+  --visual-review-id <visual-review-id> \
+  --disposition DISMISSIBLE_POPUP \
+  --dismiss-action '{"type":"tap","target":"关闭","fallbackBounds":[900,80,1040,220]}'
 ```
 
 `PAGE` / `BUSINESS_MODAL` 进入 `READY_TO_COMMIT` 后提交：
@@ -462,7 +535,7 @@ node "$SMAP_SKILL/scripts/verify-goal-path.js" confirm \
 
 ## 12. 终结、登记与发布
 
-先让 `nextWork()` 收敛，再终结：
+先让 `nextWork()` 收敛，再终结。`finalize-scan.js` 会重新计算当前 `nextWork()` 和开放工作摘要；若仍有可继续的 `DISCOVER`、`VERIFY`、`SUGGEST_FRONTIER`、`BACKFILL_FRONTIER_SUGGESTIONS` 或 `REVIEW_FRONTIER_CANDIDATES`，默认拒绝终结，避免 agent 把安全检查点误当成扫描结束。
 
 ```bash
 node "$SMAP_SKILL/scripts/finalize-scan.js" \
@@ -470,6 +543,19 @@ node "$SMAP_SKILL/scripts/finalize-scan.js" \
 ```
 
 有开放 Frontier、失败/待办验证或预算耗尽时使用 `PARTIAL`；不可恢复错误使用 `BLOCKED` / `FAILED`。终态 Run 不可修改。
+
+用户明确要求提前停止时，必须显式确认：
+
+```bash
+node "$SMAP_SKILL/scripts/finalize-scan.js" \
+  --scan-dir <scan-dir> \
+  --status PARTIAL \
+  --reason-code USER_STOPPED \
+  --confirm-user-stop true \
+  --user-stop-note "用户明确要求停止扫描"
+```
+
+没有 `--confirm-user-stop true` 时，`USER_STOPPED` 会被拒绝。预算耗尽、工作阻塞或工作为空时，`PARTIAL` 可直接终结；若仍有可继续工作且没有用户停止确认，必须回到 `next-work.js` 继续执行。
 
 登记并发布：
 

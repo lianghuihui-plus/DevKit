@@ -187,12 +187,16 @@ CLAIMED
   -> AWAITING_OUTCOME_REVIEW
      -> PAGE | BUSINESS_MODAL -> READY_TO_COMMIT -> COMMITTED
      -> NO_STATE_CHANGE -> terminal without Edge
-     -> DISMISSIBLE_POPUP -> cleanup and re-observe
+     -> GUIDE_POPUP | PROMOTION_POPUP | DISMISSIBLE_POPUP -> cleanup and re-observe
      -> TRANSIENT -> re-observe
      -> SYSTEM_OR_UNKNOWN -> PAUSED
 ```
 
-Attempt 固定 `claimToken`、候选哈希、来源状态、NavigationPlan、Cursor epoch 和 before Observation。动作后 Observation 必须先绑定 `PAGE_OUTCOME` VisualReview，才允许进入结构化 outcome review；入图提交还会再次校验该 VisualReview 为 `ACCEPTED`。重复 prepare 复用同一 Attempt；动作失败释放 Claim 为 `RETRYABLE` 或 `FAILED` 并使 Cursor 失效。
+Attempt 固定 `claimToken`、候选哈希、来源状态、NavigationPlan、Cursor epoch 和 before Observation。动作后 Observation 必须先绑定 `PAGE_OUTCOME` VisualReview，才允许进入结构化 outcome review；非业务浮层处理时保留 `rawOutcomeObservationId` 与 `interruptions[]`，关闭后把 `stableOutcomeObservationId` 作为后续审查和提交依据；入图提交还会再次校验该 VisualReview 为 `ACCEPTED`。重复 prepare 复用同一 Attempt；动作失败释放 Claim 为 `RETRYABLE` 或 `FAILED` 并使 Cursor 失效。
+
+业务地图的节点不记录非业务浮层。`GUIDE_POPUP`、`PROMOTION_POPUP` 和普通 `DISMISSIBLE_POPUP` 都作为 interruption 留证，执行安全关闭后用清理后的 stable Observation 继续审查；只有通过业务弹窗结构化守卫的功能性弹窗才能以 `kind=modal` 入图。该协议横跨 `PREPARATION`、`RESTORE` 和 `OUTCOME` 三个阶段，分别绑定 `PREPARATION_STATE`、`RESTORE_STATE` 和 `PAGE_OUTCOME` VisualReview。
+
+弹窗判断不由脚本维护文本词表。视觉审查产出 `popupAssessment`，脚本只校验协议字段：`graphRole=STATE` 且具备 `openedByUserAction`、`containsBusinessControls`、`stableBusinessSurface` 等正向证据时才允许 `BUSINESS_MODAL`；`graphRole=INTERRUPTION` 且具备 `dismissal.available=true`、`dismissal.safety=WEAK_DISMISS` 和稳定页面预期时才允许自动清理。
 
 ## 8. 发现与验证分层
 
@@ -272,7 +276,9 @@ Restore 是 Navigation 与 Verification 共用的执行子状态机。调用方�
 - `PARTIAL`：仍有待办、预算耗尽或用户主动截断，可创建 Continuation。
 - `BLOCKED` / `FAILED`：环境或不可恢复错误。
 
-硬预算耗尽是正常收敛原因。`nextWork()` 必须返回 `STOP` 和建议 `PARTIAL`，`finalize-scan.js` 先关闭活动计时窗口再做终结校验，避免超时 Run 卡在 `SCANNING`。
+硬预算耗尽是正常收敛原因。`nextWork()` 必须返回 `STOP` 和建议 `PARTIAL`，`finalize-scan.js` 先用关闭活动计时窗口后的 metrics 重新评估终结守卫，再关闭活动计时窗口并做终结校验，避免超时 Run 卡在 `SCANNING`。
+
+终结守卫复用 `nextWork()`，不新增平行调度语义。`COMPLETED` 只接受所有 context 均为 `STOP/WORK_EMPTY`；`PARTIAL` 接受预算耗尽、工作阻塞、工作为空，或带 `--confirm-user-stop true` 的 `USER_STOPPED`。当 `nextWork()` 仍返回 `DISCOVER`、`VERIFY`、`SUGGEST_FRONTIER`、`BACKFILL_FRONTIER_SUGGESTIONS` 或 `REVIEW_FRONTIER_CANDIDATES` 时，除非用户显式停止，否则 `finalize-scan.js` 必须拒绝终结。允许终结时写入 `finalizationAssessed` 事件，并把 assessment 摘要带入 `scanFinalized`。
 
 终态事件写入后 Run 不可变。`PAUSED` 是非终态，可原地恢复且暂停时间不计活动预算。
 

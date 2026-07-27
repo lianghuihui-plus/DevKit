@@ -30,18 +30,19 @@ main(() => {
   if (!['full-screen', 'modal'].includes(attempt.outcomeKind)) fail('Attempt outcome must be reviewed before commit', 'POPUP_REVIEW_REQUIRED');
   if (args.kind && args.kind !== attempt.outcomeKind) fail('Commit kind differs from reviewed outcome', 'ATTEMPT_OUTCOME_MISMATCH');
   const fromVisual = graph.visualStates.find(x => x.id === from.visualStateId); if (!fromVisual) fail('Attempt source VisualState is missing', 'GRAPH_REFERENCE_MISSING');
-  const before = evidence(scanDir, attempt.beforeObservationId, contextId); const after = evidence(scanDir, attempt.afterObservationId, contextId);
+  const outcomeObservationId = attempt.stableOutcomeObservationId || attempt.afterObservationId;
+  const before = evidence(scanDir, attempt.beforeObservationId, contextId); const after = evidence(scanDir, outcomeObservationId, contextId);
   const actionResult = readJson(path.join(scanDir, 'evidence', 'actions', `${attempt.actionResultId}.json`));
   const intent = actionResult.actionIntent || intentFromAction(actionResult.action);
   if (actionResult.status !== 'SUCCEEDED' || actionResult.attemptId !== attemptId || actionResult.beforeObservationId !== attempt.beforeObservationId || (actionResult.candidateHash || hashObject(actionResult.action)) !== attempt.candidateHash) fail('Attempt action evidence is invalid', 'ATTEMPT_CAUSALITY_INVALID');
   const metrics = readJson(path.join(scanDir, 'contexts', contextId, 'metrics.json')); const budget = runBudget(scan, contextId);
-  const visualReview = assertAcceptedVisualReview(scanDir, { visualReviewId: attempt.visualReviewId, contextId, observationId: attempt.afterObservationId, reviewType: 'PAGE_OUTCOME' });
+  const visualReview = assertAcceptedVisualReview(scanDir, { visualReviewId: attempt.visualReviewId, contextId, observationId: outcomeObservationId, reviewType: 'PAGE_OUTCOME' });
   const fingerprint = after.fingerprint;
   const logicalScreenKey = args.logicalScreenKey || `screen-${hashObject(fingerprint).slice(-12)}`;
   const visualMatch = store.findVisualMatch(graph, fingerprint); if (visualMatch.status === 'EXACT' && visualMatch.visualState.logicalScreenKey !== logicalScreenKey) fail(`Observation matches ${visualMatch.visualState.id} on LogicalScreen ${visualMatch.visualState.logicalScreenKey}; retry commit with that key`, 'LOGICAL_SCREEN_CONFLICT');
   const displayName = args.name || visualReview.pageName || logicalScreenKey;
   store.upsertLogicalScreen(graph, logicalScreenKey, displayName, args.description || '', scan.scanId);
-  const visualResult = store.upsertVisualState(graph, { logicalScreenKey, name: displayName, kind: attempt.outcomeKind, observationId: attempt.afterObservationId, fingerprint, visualReviewId: visualReview.visualReviewId });
+  const visualResult = store.upsertVisualState(graph, { logicalScreenKey, name: displayName, kind: attempt.outcomeKind, observationId: outcomeObservationId, fingerprint, visualReviewId: visualReview.visualReviewId });
   const routeIncrement = item.candidate.routeTransition === true ? 1 : 0; const modalDepth = attempt.outcomeKind === 'modal' ? 1 : fromVisual.kind === 'modal' ? 0 : (from.depth?.modalDepth || 0); const depth = { pathDepth: (from.depth?.pathDepth || 0) + 1, routeDepth: (from.depth?.routeDepth || 0) + routeIncrement, modalDepth };
   if (depth.pathDepth > maxDepth(budget) || !isCurrentRun(scan) && depth.routeDepth > budget.maxRouteDepth) fail('Committed state exceeds depth budget', 'BUDGET_EXHAUSTED');
   const arrivalSignature = jsonArg(args.arrivalSignature, { expectedBackReachableStateId: isCurrentRun(scan) ? null : from.id, backBehaviorKey: args.backBehaviorKey || 'unverified', stateInvariantHash: hashObject({ visualStateId: visualResult.visualState.id, from: from.id, candidateGroupKey: item.candidateGroupKey }) });
@@ -56,9 +57,9 @@ main(() => {
   if (!duplicateEdge) assertCapacity(scan, contextId, graph, frontier, metrics, 'edges');
   if (duplicateEdge) {
     item.status = 'COVERED_BY_GROUP'; item.reasonCode = 'DUPLICATE_EDGE'; item.resolvedAt = now(); item.attemptId = attemptId; item.coveredEdgeId = duplicateEdge.id; item.claimToken = null; item.claimedAttemptId = null;
-    attempt.status = 'COVERED_BY_EXISTING_EDGE'; attempt.coveredEdgeId = duplicateEdge.id; attempt.toReachableStateId = reachableResult.reachableState.id; attempt.updatedAt = now();
+    attempt.status = 'COVERED_BY_EXISTING_EDGE'; attempt.coveredEdgeId = duplicateEdge.id; attempt.toReachableStateId = reachableResult.reachableState.id; attempt.afterObservationId = outcomeObservationId; attempt.stableOutcomeObservationId = outcomeObservationId; attempt.updatedAt = now();
     const logicalScreen = graph.logicalScreens.find(x => x.id === visualResult.visualState.logicalScreenKey);
-    const cursor = isCurrentRun(scan) ? projectedCursor(scanDir, contextId, { reachableStateId: reachableResult.reachableState.id, observationId: attempt.afterObservationId, status: 'EXACT', establishedBy: 'ATTEMPT_COVERED_BY_EXISTING_EDGE' }) : null;
+    const cursor = isCurrentRun(scan) ? projectedCursor(scanDir, contextId, { reachableStateId: reachableResult.reachableState.id, observationId: outcomeObservationId, status: 'EXACT', establishedBy: 'ATTEMPT_COVERED_BY_EXISTING_EDGE' }) : null;
     const graphPath = `contexts/${contextId}/graph.json`; const ops = [
       { path: graphPath, op: 'UPSERT', collection: 'logicalScreens', keyFields: ['id'], value: logicalScreen, recompute: 'GRAPH' },
       { path: graphPath, op: 'UPSERT', collection: 'visualStates', keyFields: ['id'], value: visualResult.visualState, recompute: 'GRAPH' },
@@ -73,12 +74,12 @@ main(() => {
   const edge = { id: nextId(scanDir, 'edge', 'edge'), fromReachableStateId: from.id, toReachableStateId: reachableResult.reachableState.id, contextGuard: { authState: contextId }, intent,
     locatorQuality: locatorEvidence.locatorQuality, locatorResolution: locatorEvidence.resolution, locatorEvidence, deviceProfileId: deviceProfile.profileId || null,
     risk: actionResult.safety.risk, replayability, sideEffect: actionResult.safety.sideEffect, replayPolicy: actionResult.safety.replayPolicy,
-    attemptId, evidence: { beforeObservationId: attempt.beforeObservationId, actionResultId: attempt.actionResultId, afterObservationId: attempt.afterObservationId, visualReviewId: visualReview.visualReviewId } };
+    attemptId, evidence: { beforeObservationId: attempt.beforeObservationId, actionResultId: attempt.actionResultId, rawOutcomeObservationId: attempt.rawOutcomeObservationId || null, afterObservationId: outcomeObservationId, stableOutcomeObservationId: outcomeObservationId, visualReviewId: visualReview.visualReviewId } };
   if (isCurrentRun(scan)) { edge.verification = { discoveryStatus: 'OBSERVED', replayStatus: edge.replayPolicy === 'NONREPEATABLE' ? 'NONREPEATABLE' : 'UNVERIFIED', transitionFingerprint: store.transitionFingerprint(graph, edge), verificationRefs: [] }; }
   const edgeResult = store.recordEdge(graph, edge);
   item.status = 'EXPLORED'; item.reasonCode = null; item.resolvedAt = now(); item.attemptId = attemptId; item.claimToken = null; item.claimedAttemptId = null;
-  attempt.status = 'COMMITTED'; attempt.edgeId = edgeResult.edge.id; attempt.toReachableStateId = reachableResult.reachableState.id; attempt.updatedAt = now();
-  const logicalScreen = graph.logicalScreens.find(x => x.id === visualResult.visualState.logicalScreenKey); const cursor = isCurrentRun(scan) ? projectedCursor(scanDir, contextId, { reachableStateId: reachableResult.reachableState.id, observationId: attempt.afterObservationId, status: 'EXACT', establishedBy: 'ATTEMPT_COMMIT' }) : null; const verificationProjection = isCurrentRun(scan) ? reconcileVerificationQueue(scanDir, scan, contextId, graph, { persist: false }) : null; const suggestionProjection = isCurrentRun(scan) && (visualResult.created || reachableResult.created) ? buildSuggestionItems({ scanDir, scan, contextId, graph, frontier, reachableStateId: reachableResult.reachableState.id, observationId: attempt.afterObservationId }) : null; const graphPath = `contexts/${contextId}/graph.json`; const ops = [
+  attempt.status = 'COMMITTED'; attempt.edgeId = edgeResult.edge.id; attempt.toReachableStateId = reachableResult.reachableState.id; attempt.afterObservationId = outcomeObservationId; attempt.stableOutcomeObservationId = outcomeObservationId; attempt.updatedAt = now();
+  const logicalScreen = graph.logicalScreens.find(x => x.id === visualResult.visualState.logicalScreenKey); const cursor = isCurrentRun(scan) ? projectedCursor(scanDir, contextId, { reachableStateId: reachableResult.reachableState.id, observationId: outcomeObservationId, status: 'EXACT', establishedBy: 'ATTEMPT_COMMIT' }) : null; const verificationProjection = isCurrentRun(scan) ? reconcileVerificationQueue(scanDir, scan, contextId, graph, { persist: false }) : null; const suggestionProjection = isCurrentRun(scan) && (visualResult.created || reachableResult.created) ? buildSuggestionItems({ scanDir, scan, contextId, graph, frontier, reachableStateId: reachableResult.reachableState.id, observationId: outcomeObservationId }) : null; const graphPath = `contexts/${contextId}/graph.json`; const ops = [
     { path: graphPath, op: 'UPSERT', collection: 'logicalScreens', keyFields: ['id'], value: logicalScreen, recompute: 'GRAPH' },
     { path: graphPath, op: 'UPSERT', collection: 'visualStates', keyFields: ['id'], value: visualResult.visualState, recompute: 'GRAPH' },
     { path: graphPath, op: 'UPSERT', collection: 'reachableStates', keyFields: ['id'], value: reachableResult.reachableState, recompute: 'GRAPH' },

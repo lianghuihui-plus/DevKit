@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { parseArgs, required, resolveScanDir, loadScan, loadGraph, loadFrontier, readJson, writeJsonAtomic, contextDir, transition, commitEvent, output, main, fail } = require('./lib/common');
+const { parseArgs, required, resolveScanDir, loadScan, loadGraph, loadFrontier, readJson, writeJsonAtomic, contextDir, transitionWithOps, commitEvent, output, main, fail, bool } = require('./lib/common');
 const { validateGraph } = require('./lib/graph-store');
 const { contextMetrics, authDiff } = require('./lib/metrics');
 const { validate } = require('./validate-run');
@@ -12,6 +12,7 @@ const { runContextIds } = require('./lib/run-protocol');
 const { isCurrentRun } = require('./lib/run-protocol');
 const { reconcileVerificationQueue } = require('./lib/verification-store');
 const { projectFinalizationMetrics } = require('./lib/finalization');
+const { assessFinalization } = require('./lib/finalization-guard');
 
 main(() => {
   const args = parseArgs(); const { scanDir } = resolveScanDir(required(args, 'scanDir')); const scan = loadScan(scanDir, { mutable: true });
@@ -22,7 +23,19 @@ main(() => {
   }
   const finalizationStartedAt = new Date().toISOString();
   const finalizationProjection = projectFinalizationMetrics(scanDir, scan, finalizationStartedAt);
+  const reasonCode = args.reasonCode || null;
+  const finalizationAssessment = assessFinalization({
+    scanDir,
+    scan,
+    requestedStatus: status,
+    reasonCode,
+    confirmUserStop: bool(args.confirmUserStop, false),
+    userStopNote: args.userStopNote || null,
+    metricsOverridesByContext: finalizationProjection.metricsByContext
+  });
+  if (!finalizationAssessment.canFinalize) fail(finalizationAssessment.message, finalizationAssessment.reasonCode, 2, { finalizationAssessment });
   const validation = validate(scanDir, status, { metricsOverridesByContext: finalizationProjection.metricsByContext });
+  commitEvent(scanDir, 'finalizationAssessed', { allowed: true, finalizationStartedAt, finalizationAssessment }, []);
   for (const op of finalizationProjection.projectionOps) commitEvent(scanDir, 'activeWindowClosedForFinalization', { contextId: op.value.contextId, finalizationStartedAt, activeDurationMs: op.value.activeDurationMs }, [op]);
   const contexts = {}; const metricsByContext = {};
   for (const contextId of runContextIds(scan)) {
@@ -57,5 +70,6 @@ main(() => {
   writeJsonAtomic(path.join(scanDir, 'merged', 'map.json'), map); writeJsonAtomic(path.join(scanDir, 'merged', 'unresolved.json'), { schemaVersion: 2, items: unresolved });
   if (contexts.guest && contexts.authenticated) writeJsonAtomic(path.join(scanDir, 'merged', 'auth-diff.json'), authDiff(map));
   const report = spawnSync(process.execPath, [path.join(__dirname, 'render-report.js'), '--scan-dir', scanDir, '--status', status], { encoding: 'utf8' }); if (report.status !== 0) fail(report.stderr || 'Report rendering failed', 'REPORT_FAILED');
-  const finalized = transition(scanDir, status, args.reasonCode || null); output({ schemaVersion: 1, ok: true, scan: finalized, metricsByContext, validation });
+  const finalized = transitionWithOps(scanDir, status, reasonCode, null, { finalizationAssessment, ...(args.userStopNote ? { userStopNote: String(args.userStopNote) } : {}) });
+  output({ schemaVersion: 1, ok: true, scan: finalized, metricsByContext, validation, finalizationAssessment });
 });

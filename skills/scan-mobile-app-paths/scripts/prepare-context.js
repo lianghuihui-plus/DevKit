@@ -9,6 +9,9 @@ const { runContextIds } = require('./lib/run-protocol');
 const { assertCapacity } = require('./lib/budget');
 const { recordColdStart } = require('./lib/action-metrics');
 const { startDeviceOperation, finishDeviceOperation } = require('./lib/operation-journal');
+const { validatePopupDisposition, NON_GRAPH_POPUP_DISPOSITIONS } = require('./lib/popup-policy');
+const { assertAcceptedVisualReview } = require('./lib/visual-review-store');
+const { assertInterruptionCleanupReview, assertDismissalMatchesAssessment } = require('./lib/popup-assessment-guard');
 
 function runJson(script, args) {
   const child = spawnSync(process.execPath, [path.join(__dirname, script), ...args], { encoding: 'utf8' });
@@ -49,7 +52,7 @@ main(() => {
       commitEvent(scanDir, 'contextColdStarted', { contextId, preparationId, foreground: restartResult.foreground, stopMethod: restartResult.stopMethod, launchMethod: restartResult.launchMethod }, [preparationOp(preparation), { path: `contexts/${contextId}/context.json`, op: 'REPLACE', value: context }]);
       finishDeviceOperation(scanDir, operation, 'SUCCEEDED', { evidenceRef: `evidence/preparations/${preparationId}.json` });
       const observation = capture(scanDir, contextId, preparationId, 'COLD_START'); preparation = readJson(preparationFile);
-      return output({ schemaVersion: 1, ok: true, preparation, observation, popupReview: { dispositions: ['PAGE', 'BUSINESS_MODAL', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN'], maxDismissals: 3, maxStabilityChecks: 3 }, nextStep: 'VERIFY_CONTEXT_EVIDENCE' });
+      return output({ schemaVersion: 1, ok: true, preparation, observation, popupReview: { dispositions: ['PAGE', 'BUSINESS_MODAL', 'GUIDE_POPUP', 'PROMOTION_POPUP', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN'], maxDismissals: 3, maxStabilityChecks: 3 }, nextStep: 'VERIFY_CONTEXT_EVIDENCE' });
     } catch (error) {
       preparation = readJson(preparationFile, preparation); if (preparation.status !== 'EVIDENCE_CAPTURED') { preparation.status = 'FAILED'; preparation.reasonCode = error.code || 'CONTEXT_PREPARATION_FAILED'; preparation.finishedAt = now(); commitEvent(scanDir, 'contextPreparationFailed', { contextId, preparationId, reasonCode: preparation.reasonCode }, [preparationOp(preparation)]); }
       throw error;
@@ -60,11 +63,18 @@ main(() => {
     if (preparation.contextId !== contextId || context.pendingPreparationId !== preparationId || preparation.status !== 'EVIDENCE_CAPTURED') fail('Context preparation is not awaiting popup review', 'CONTEXT_PREPARATION_INVALID');
     if ((preparation.interruptions || []).length >= 3) fail('Context popup dismissal limit reached', 'POPUP_DISMISS_LIMIT');
     const observationId = safeSegment(required(args, 'observationId'), 'observationId'); if (preparation.observationId !== observationId) fail('Popup review observation is stale', 'POPUP_REVIEW_STALE');
-    const dismissal = runJson('popup-dismiss-runner.js', ['--scan-dir', scanDir, '--context', contextId, '--observation-id', observationId, '--owner-type', 'CONTEXT_PREPARATION', '--owner-id', preparationId, '--action', JSON.stringify(jsonArg(required(args, 'dismissAction'), null, 'dismissAction JSON'))]);
-    preparation.interruptions ||= []; preparation.interruptions.push({ beforeObservationId: observationId, dismissalActionResultId: dismissal.actionResult.actionId, handledAt: now() }); preparation.status = 'CLEANUP_ACTION_EXECUTED'; preparation.observationId = null; commitEvent(scanDir, 'contextPopupCleanupStarted', { contextId, preparationId, dismissalActionResultId: dismissal.actionResult.actionId }, [preparationOp(preparation)]);
+    const disposition = validatePopupDisposition(required(args, 'disposition')); if (!NON_GRAPH_POPUP_DISPOSITIONS.includes(disposition)) fail('Context preparation popup cleanup only accepts non-graph popup dispositions', 'POPUP_DISPOSITION_INVALID');
+    const visualReviewId = safeSegment(required(args, 'visualReviewId'), 'visualReviewId');
+    const visualReview = assertAcceptedVisualReview(scanDir, { visualReviewId, contextId, observationId, reviewType: 'PREPARATION_STATE' });
+    const popupAssessment = assertInterruptionCleanupReview(visualReview, disposition);
+    const dismissAction = jsonArg(required(args, 'dismissAction'), null, 'dismissAction JSON');
+    assertDismissalMatchesAssessment(popupAssessment, dismissAction);
+    const dismissal = runJson('popup-dismiss-runner.js', ['--scan-dir', scanDir, '--context', contextId, '--observation-id', observationId, '--owner-type', 'CONTEXT_PREPARATION', '--owner-id', preparationId, '--visual-review-id', visualReviewId, '--action', JSON.stringify(dismissAction)]);
+    const interruption = { schemaVersion: 2, phase: 'PREPARATION', popupKind: popupAssessment.popupKind, popupClass: disposition, graphRole: popupAssessment.graphRole, businessRelevance: popupAssessment.businessRelevance || 'NON_BUSINESS', popupAssessment, visualReviewId, beforeObservationId: observationId, dismissalActionResultId: dismissal.actionResult.actionId, handledAt: now() };
+    preparation.interruptions ||= []; preparation.interruptions.push(interruption); preparation.status = 'CLEANUP_ACTION_EXECUTED'; preparation.observationId = null; commitEvent(scanDir, 'contextPopupCleanupStarted', { contextId, preparationId, disposition, visualReviewId, dismissalActionResultId: dismissal.actionResult.actionId }, [preparationOp(preparation)]);
     try {
       const observation = capture(scanDir, contextId, preparationId, 'POPUP_DISMISSAL'); const updated = readJson(preparationFile); updated.interruptions[updated.interruptions.length - 1].afterObservationId = observation.observationId; commitEvent(scanDir, 'contextPopupDismissed', { contextId, preparationId, dismissalActionResultId: dismissal.actionResult.actionId, afterObservationId: observation.observationId, dismissalCount: updated.interruptions.length }, [preparationOp(updated)]);
-      return output({ schemaVersion: 1, ok: true, preparation: updated, observation, popupReview: { dispositions: ['PAGE', 'BUSINESS_MODAL', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN'], remainingDismissals: 3 - updated.interruptions.length, remainingStabilityChecks: 3 - (updated.stabilityChecks || []).length }, nextStep: 'VERIFY_CONTEXT_EVIDENCE' });
+      return output({ schemaVersion: 1, ok: true, preparation: updated, observation, popupReview: { dispositions: ['PAGE', 'BUSINESS_MODAL', 'GUIDE_POPUP', 'PROMOTION_POPUP', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN'], remainingDismissals: 3 - updated.interruptions.length, remainingStabilityChecks: 3 - (updated.stabilityChecks || []).length }, nextStep: 'VERIFY_CONTEXT_EVIDENCE' });
     } catch (error) { markHandlingFailed(scanDir, preparationFile, contextId, preparationId, error); throw error; }
   }
   if (command === 'observe-again') {
@@ -75,7 +85,7 @@ main(() => {
     preparation.status = 'STABILITY_RECHECK_REQUESTED'; preparation.observationId = null; commitEvent(scanDir, 'contextStabilityRecheckStarted', { contextId, preparationId, beforeObservationId: observationId }, [preparationOp(preparation)]);
     try {
       const observation = capture(scanDir, contextId, preparationId, 'RECHECK'); const updated = readJson(preparationFile); updated.stabilityChecks.push({ beforeObservationId: observationId, afterObservationId: observation.observationId, checkedAt: now() }); commitEvent(scanDir, 'contextStabilityRechecked', { contextId, preparationId, beforeObservationId: observationId, afterObservationId: observation.observationId, checkCount: updated.stabilityChecks.length }, [preparationOp(updated)]);
-      return output({ schemaVersion: 1, ok: true, preparation: updated, observation, popupReview: { dispositions: ['PAGE', 'BUSINESS_MODAL', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN'], remainingDismissals: 3 - (updated.interruptions || []).length, remainingStabilityChecks: 3 - updated.stabilityChecks.length }, nextStep: 'VERIFY_CONTEXT_EVIDENCE' });
+      return output({ schemaVersion: 1, ok: true, preparation: updated, observation, popupReview: { dispositions: ['PAGE', 'BUSINESS_MODAL', 'GUIDE_POPUP', 'PROMOTION_POPUP', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN'], remainingDismissals: 3 - (updated.interruptions || []).length, remainingStabilityChecks: 3 - updated.stabilityChecks.length }, nextStep: 'VERIFY_CONTEXT_EVIDENCE' });
     } catch (error) { markHandlingFailed(scanDir, preparationFile, contextId, preparationId, error); throw error; }
   }
   fail(`Unknown prepare-context command: ${command}`, 'COMMAND_INVALID');

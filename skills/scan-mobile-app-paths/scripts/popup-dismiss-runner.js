@@ -7,6 +7,7 @@ const { assertCapacity } = require('./lib/budget');
 const { validateDismissAction } = require('./lib/popup-policy');
 const { runContextIds } = require('./lib/run-protocol');
 const { executeDeviceAction, completeDeviceActionSuccess } = require('./lib/device-action-executor');
+const { assertAcceptedVisualReview } = require('./lib/visual-review-store');
 
 main(() => {
   const args = parseArgs(); const { scanDir } = resolveScanDir(required(args, 'scanDir')); const scan = loadScan(scanDir, { mutable: true });
@@ -20,7 +21,10 @@ main(() => {
   } else {
     const owner = readJson(path.join(scanDir, 'attempts', `${ownerId}.json`)); if (owner.contextId !== contextId || !['AWAITING_RESTORE_REVIEW', 'AWAITING_OUTCOME_REVIEW'].includes(owner.status) || owner.reviewObservationId !== observationId) fail('Popup dismissal is not bound to the active Attempt review observation', 'POPUP_OWNER_INVALID');
   }
-  const { action, safety } = validateDismissAction(jsonArg(required(args, 'action'), null, 'dismiss action JSON'), scan.target);
+  const visualReview = args.visualReviewId
+    ? assertAcceptedVisualReview(scanDir, { visualReviewId: safeSegment(args.visualReviewId, 'visualReviewId'), contextId, observationId })
+    : null;
+  const { action, safety } = validateDismissAction(jsonArg(required(args, 'action'), null, 'dismiss action JSON'), scan.target, { popupAssessment: visualReview?.popupAssessment || null });
   const metricsFile = path.join(contextDir(scanDir, contextId), 'metrics.json'); const metrics = readJson(metricsFile); assertCapacity(scan, contextId, loadGraph(scanDir, contextId), loadFrontier(scanDir, contextId), metrics, 'actions');
   const owner = { type: ownerType, id: ownerId };
   const { actionResult, operation } = executeDeviceAction(scanDir, {

@@ -226,7 +226,7 @@ VisualState fingerprint 保存 `layoutHash`、`screenshotSha256` 和 `semantic`�
 - 语义证据不足但存在部分重合：`PROBABLE` 或 `UNCERTAIN`，需要降级或人工复核。
 - 缺少历史截图哈希：不得升级为 `EXACT`。
 
-`evidence/visual-reviews/<visual-review-id>.json` 保存执行 agent 使用大模型视觉能力后的结构化结论。脚本不得在这里实现像素级黑屏/白屏兜底算法，只校验字段和引用关系：
+`evidence/visual-reviews/<visual-review-id>.json` 保存执行 agent 使用大模型视觉能力后的结构化结论。脚本不得在这里实现像素级黑屏/白屏兜底算法，只校验字段和引用关系。`reviewType` 至少包括 `ROOT_STATE`、`PREPARATION_STATE`、`PAGE_OUTCOME`、`RESTORE_STATE`、`SOURCE_STATE` 和 `TARGET_MATCH`：
 
 ```json
 {
@@ -249,7 +249,7 @@ VisualState fingerprint 保存 `layoutHash`、`screenshotSha256` 和 `semantic`�
 }
 ```
 
-`reviewType` 当前至少使用 `ROOT_STATE` 与 `PAGE_OUTCOME`。`status=ACCEPTED` 要求 `pageUsable=true`；非接受状态必须写 `reasonCode`。VisualState 必须引用对应的 `visualReviewIds`，Edge 的 `evidence.visualReviewId` 必须绑定同一 Attempt 的 after Observation。
+`status=ACCEPTED` 要求 `pageUsable=true`；非接受状态必须写 `reasonCode`。VisualState 必须引用对应的 `visualReviewIds`，Edge 的 `evidence.visualReviewId` 必须绑定同一 Attempt 的 after Observation；preparation、restore 和 outcome 的非业务浮层清理分别绑定 `PREPARATION_STATE`、`RESTORE_STATE` 和 `PAGE_OUTCOME`。
 
 `evidence/visual-candidate-reviews/<visual-candidate-review-id>.json` 保存执行 agent 基于同一份 Observation 截图和 layout 做出的候选复核结论，不得为了候选判断额外截图。脚本只负责准备复核输入、校验视觉补充候选的 bounds、去重和安全检查，并把接受/补充后的候选写入 `frontier-suggestions.json`：
 
@@ -290,7 +290,9 @@ Attempt 必须绑定：
 - `fromReachableStateId`。
 - `navigationPlanId`、`sourceAcquisitionMode`、`cursorEpoch`。
 - 来源 Observation、候选 ActionResult、结果 Observation。
+- 原始动作结果 `rawOutcomeObservationId` 与清理后的 `stableOutcomeObservationId`；没有清理时二者可与 `afterObservationId` 相同。
 - 动作后 `PAGE_OUTCOME` VisualReview 及其状态。
+- 弹窗相关 VisualReview 的 `popupAssessment`：`graphRole=STATE` 用于业务弹窗入图，`graphRole=INTERRUPTION` 用于稳定页面清理，脚本只校验结构化字段，不按页面文本分类。所有 schemaVersion 2 的 interruption 必须保存 `visualReviewId` 和同一份 `popupAssessment`。
 - 审查结论、干扰处理、稳定重观察和终态。
 
 返回 Attempt 的脚本必须同时输出顶层 `attemptId` 和嵌套 `attempt.attemptId`，便于执行 agent 直接透传；传入 `undefined`、`null` 等非具体 ID 必须以 `ATTEMPT_ID_INVALID` 拒绝。
@@ -308,7 +310,7 @@ FrontierItem(CLAIMED)
   -> Edge + ReachableState + Frontier(EXPLORED) + Cursor
 ```
 
-ActionResult 必须绑定 Attempt、Frontier 和 before Observation，并保存实际执行动作、`actionIntent`、`deviceProfile` 与 `locatorEvidence`。Edge 必须引用同一 Attempt 的 before/action/after/visualReview 证据。候选哈希必须等于 Frontier 候选。直接写 Edge 被禁止。
+ActionResult 必须绑定 Attempt、Frontier 和 before Observation，并保存实际执行动作、`actionIntent`、`deviceProfile` 与 `locatorEvidence`。Edge 必须引用同一 Attempt 的 before/action/stable after/visualReview 证据；如果动作后先出现非业务浮层，Edge 还应保留 `rawOutcomeObservationId` 供审计，节点截图和 `afterObservationId` 必须指向清理后的稳定 Observation。候选哈希必须等于 Frontier 候选。直接写 Edge 被禁止。
 
 Edge 还保存：
 
@@ -481,7 +483,7 @@ Continuation 只表达执行血缘。新 Run 从当前 `maps/<context>` seed gra
 - 探索模式的当前规范路径验证规则满足；目标模式存在 `FOUND_VERIFIED` 强路径。
 - 五类动作总和、冷启动数、本 Run 新增状态数、深度和活动时间不违反硬预算。
 
-仍有待办或预算耗尽时只能 `PARTIAL`。终态先写 `scanFinalized`，随后 `scan.json` 为不可变投影；即使文件被意外回写，加载器仍以终态事件为准拒绝修改。
+仍有待办或预算耗尽时只能 `PARTIAL`。终态前必须先通过 `finalizationAssessed`：`COMPLETED` 要求 `nextWork=STOP/WORK_EMPTY`；`PARTIAL` 要求预算耗尽、工作阻塞、工作为空，或带显式确认的 `USER_STOPPED`。若 `nextWork` 仍有可继续工作，且没有 `--confirm-user-stop true`，`finalize-scan.js` 必须拒绝写终态。终态先写 `scanFinalized`，事件中携带 `finalizationAssessment` 摘要，随后 `scan.json` 为不可变投影；即使文件被意外回写，加载器仍以终态事件为准拒绝修改。
 
 ## 12. Snapshot 与 Dashboard
 

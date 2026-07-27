@@ -31,7 +31,7 @@ description: 扫描鸿蒙 HarmonyOS App 的可达页面、页面状态与交互�
 - 状态等价以 dump 树语义指纹为主：稳定文本、id、角色、标题、导航和主操作锚点共同证明同页；截图或列表配置变化不得单独触发 `COLD_REPLAY` 或人工复核。
 - 只有脚本无法自动证明但仍可复核的状态才进入人工 `EXPECTED_STATE_EQUIVALENT`，确认后写入 `state-equivalence.json`；该规则不能替代目标页面强匹配或风险动作判断。
 - `wait` 只属于观测控制，禁止成为 Frontier、Attempt 候选、Edge 或路径步骤。动作后与来源 `EXACT` 时记录 `NO_STATE_CHANGE`，不入图。
-- 业务弹窗可作为 `modal` 入图；明确可关闭提示只留清理证据；Toast/加载态原地重观察；系统、风险或不确定弹窗暂停。
+- 只有稳定业务页面或严格业务弹窗可入图；新手引导、提示、公告、活动/福利/广告等非业务浮层必须通过 `popupAssessment.graphRole=INTERRUPTION` 的 VisualReview 证明并作为 interruption 清理证据记录，清理后的稳定 Observation 才能成为根状态、节点截图和 Edge after 证据；Toast/加载态原地重观察；系统、风险或不确定弹窗暂停。
 - 通用清理只允许关闭、取消、稍后或已证明安全的 BACK；禁止自动点击确定、同意、允许、继续、提交、删除或支付。
 - 支付、账号注销、真实发布/外发、敏感凭证输入等动作始终硬阻止，不能通过预算或配置解除。
 - 每个 Frontier Claim 由唯一 `claimToken` 绑定 Attempt；候选动作、前后 Observation、Edge 与事务事件必须保持完整因果链。

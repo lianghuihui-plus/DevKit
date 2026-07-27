@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { nextWork } = require('../lib/work-scheduler');
+const { assessFinalization } = require('../lib/finalization-guard');
 const scheduler = require('../lib/frontier-scheduler');
 const { candidateCoverageBasis } = require('../lib/candidate-coverage');
 const { candidateRulesForScan } = require('../lib/candidate-rules');
@@ -291,13 +292,25 @@ try {
   const branch = fixture(['e-bc']);
   const branchWork = nextWork(branch);
   check(branchWork.decision, 'DISCOVER');
+  check(branchWork.recommendedAction, 'CONTINUE_SCAN');
+  check(branchWork.openWorkSummary.pendingFrontiers, 1);
   check(scheduler.schedule(branch).frontierId, 'frontier-d');
+  const branchPartial = assessFinalization({ scanDir: branch.scanDir, scan: branch.scan, requestedStatus: 'PARTIAL' });
+  check(branchPartial.canFinalize, false);
+  check(branchPartial.reasonCode, 'FINALIZATION_REQUIRES_CONTINUATION_OR_USER_STOP');
+  const branchUserStopMissingConfirmation = assessFinalization({ scanDir: branch.scanDir, scan: branch.scan, requestedStatus: 'PARTIAL', reasonCode: 'USER_STOPPED' });
+  check(branchUserStopMissingConfirmation.canFinalize, false);
+  check(branchUserStopMissingConfirmation.reasonCode, 'FINALIZATION_REQUIRES_USER_STOP_CONFIRMATION');
+  const branchUserStopped = assessFinalization({ scanDir: branch.scanDir, scan: branch.scan, requestedStatus: 'PARTIAL', reasonCode: 'USER_STOPPED', confirmUserStop: true, userStopNote: 'explicit self-test stop' });
+  check(branchUserStopped.canFinalize, true);
 
   const prefix = fixture(['e-ab']);
   const prefixWork = nextWork(prefix);
   check(prefixWork.decision, 'STOP');
   check(prefixWork.reasonCode, 'WORK_BLOCKED_BY_FAILED_DEPENDENCIES');
   check(scheduler.schedule(prefix).reasonCode, 'FRONTIER_BLOCKED_BY_FAILED_DEPENDENCIES');
+  const prefixPartial = assessFinalization({ scanDir: prefix.scanDir, scan: prefix.scan, requestedStatus: 'PARTIAL' });
+  check(prefixPartial.canFinalize, true);
 
   const unknown = fixture([], { unknown: true });
   const unknownWork = nextWork(unknown);
@@ -333,6 +346,8 @@ try {
   const exhaustedStableWork = nextWork(exhaustedStable);
   check(exhaustedStableWork.decision, 'STOP');
   check(exhaustedStableWork.reasonCode, 'WORK_EMPTY');
+  const completedEmpty = assessFinalization({ scanDir: exhaustedStable.scanDir, scan: exhaustedStable.scan, requestedStatus: 'COMPLETED' });
+  check(completedEmpty.canFinalize, true);
 
   const exhaustedChanged = exhaustedBasisFixture({ changed: true });
   const exhaustedChangedWork = nextWork(exhaustedChanged);

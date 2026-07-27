@@ -5,9 +5,15 @@ const path = require('path');
 const { fail, readJson, nextId, now, commitEvent, safeSegment } = require('./common');
 const { requireObservationBundle } = require('./observation-store');
 
-const REVIEW_TYPES = Object.freeze(['ROOT_STATE', 'PAGE_OUTCOME', 'RESTORE_STATE', 'SOURCE_STATE', 'TARGET_MATCH']);
+const REVIEW_TYPES = Object.freeze(['ROOT_STATE', 'PREPARATION_STATE', 'PAGE_OUTCOME', 'RESTORE_STATE', 'SOURCE_STATE', 'TARGET_MATCH']);
 const STATUSES = Object.freeze(['ACCEPTED', 'REJECTED', 'NEEDS_REOBSERVE', 'NEEDS_HUMAN_REVIEW']);
 const CONFIDENCE = Object.freeze(['HIGH', 'MEDIUM', 'LOW']);
+const POPUP_GRAPH_ROLES = Object.freeze(['STATE', 'INTERRUPTION', 'NONE', 'UNKNOWN']);
+const POPUP_KINDS = Object.freeze(['BUSINESS_MODAL', 'GUIDE_POPUP', 'PROMOTION_POPUP', 'DISMISSIBLE_POPUP', 'TRANSIENT', 'SYSTEM_OR_UNKNOWN', 'UNKNOWN']);
+const BUSINESS_RELEVANCE = Object.freeze(['BUSINESS_FUNCTION', 'NON_BUSINESS', 'SYSTEM', 'UNKNOWN']);
+const DISMISSAL_SEMANTICS = Object.freeze(['CLOSES_BUSINESS_CONTEXT', 'WEAK_DISMISS', 'NONE', 'UNKNOWN']);
+const DISMISSAL_METHODS = Object.freeze(['TAP', 'BACK', 'NONE', 'UNKNOWN']);
+const DISMISSAL_SAFETY = Object.freeze(['WEAK_DISMISS', 'RISKY', 'UNKNOWN']);
 
 function visualReviewRef(visualReviewId) {
   return `evidence/visual-reviews/${safeSegment(visualReviewId, 'visualReviewId')}.json`;
@@ -29,6 +35,41 @@ function normalizeStatus(value) {
   return status;
 }
 
+function normalizedEnum(value, allowed, field, fallback = null) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const normalized = String(value).toUpperCase();
+  if (!allowed.includes(normalized)) fail(`Invalid popupAssessment.${field}: ${value}`, 'VISUAL_REVIEW_INVALID');
+  return normalized;
+}
+
+function normalizePopupAssessment(input) {
+  if (input === undefined || input === null) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) fail('popupAssessment must be an object', 'VISUAL_REVIEW_INVALID');
+  const dismissalInput = input.dismissal && typeof input.dismissal === 'object' && !Array.isArray(input.dismissal) ? input.dismissal : null;
+  const popupKind = normalizedEnum(input.popupKind || input.popupClass, POPUP_KINDS, 'popupKind', null);
+  return {
+    popupPresent: input.popupPresent === true,
+    graphRole: normalizedEnum(input.graphRole, POPUP_GRAPH_ROLES, 'graphRole', null),
+    popupKind,
+    popupClass: popupKind,
+    businessRelevance: normalizedEnum(input.businessRelevance, BUSINESS_RELEVANCE, 'businessRelevance', null),
+    openedByUserAction: input.openedByUserAction === true,
+    containsBusinessControls: input.containsBusinessControls === true,
+    stableBusinessSurface: input.stableBusinessSurface === true,
+    stablePageBlocking: input.stablePageBlocking === true,
+    dismissalSemantics: normalizedEnum(input.dismissalSemantics, DISMISSAL_SEMANTICS, 'dismissalSemantics', null),
+    dismissal: dismissalInput ? {
+      available: dismissalInput.available === true,
+      method: normalizedEnum(dismissalInput.method, DISMISSAL_METHODS, 'dismissal.method', null),
+      safety: normalizedEnum(dismissalInput.safety, DISMISSAL_SAFETY, 'dismissal.safety', null),
+      targetDescription: dismissalInput.targetDescription ? String(dismissalInput.targetDescription) : null
+    } : null,
+    stablePageAfterDismissalExpected: input.stablePageAfterDismissalExpected === true,
+    visualEvidence: Array.isArray(input.visualEvidence) ? input.visualEvidence.map(item => String(item).trim()).filter(Boolean).slice(0, 20) : [],
+    rationale: input.rationale ? String(input.rationale) : null
+  };
+}
+
 function normalizeAssessment(assessment) {
   if (!assessment || typeof assessment !== 'object' || Array.isArray(assessment)) fail('Visual review assessment must be an object', 'VISUAL_REVIEW_INVALID');
   const status = normalizeStatus(assessment.status);
@@ -44,6 +85,7 @@ function normalizeAssessment(assessment) {
     pageUsable,
     pageKind: assessment.pageKind ? String(assessment.pageKind) : null,
     pageName: assessment.pageName ? String(assessment.pageName) : null,
+    popupAssessment: normalizePopupAssessment(assessment.popupAssessment),
     reasonCode: assessment.reasonCode ? String(assessment.reasonCode) : null,
     confidence,
     rationale
@@ -82,6 +124,7 @@ function recordVisualReview(scanDir, input) {
     pageUsable: assessment.pageUsable,
     pageKind: assessment.pageKind,
     pageName: assessment.pageName,
+    popupAssessment: assessment.popupAssessment,
     reasonCode: assessment.reasonCode,
     confidence: assessment.confidence,
     rationale: assessment.rationale,
@@ -111,6 +154,8 @@ function assertAcceptedVisualReview(scanDir, options) {
 module.exports = {
   REVIEW_TYPES,
   STATUSES,
+  POPUP_GRAPH_ROLES,
+  POPUP_KINDS,
   visualReviewRef,
   visualReviewFile,
   normalizeAssessment,
