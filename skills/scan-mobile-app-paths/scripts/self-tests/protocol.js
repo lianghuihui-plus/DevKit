@@ -28,6 +28,7 @@ function bridgeRestartLog(deviceType, displayDump = '') {
 try {
   const root = path.join(temp, 'app-map'); run('init-app-root.js', ['--app-map-root', root, '--bundle-name', 'com.example.protocol', '--entry-ability', 'EntryAbility', '--environment', 'test']);
   const scanDir = run('init-scan.js', ['--app-map-root', root, '--scan-id', 'scan-protocol', '--device', 'fake-device', '--context', 'guest']).scanDir;
+  check(readJson(path.join(scanDir, 'projection-state.json')).projectionHashes['contexts/guest/exploration-start.json'] !== undefined, true);
   const target = readJson(path.join(scanDir, 'target.json')); check(target.deviceType, null);
   const phoneRun = run('init-scan.js', ['--app-map-root', root, '--scan-id', 'scan-protocol-phone', '--device', 'fake-device', '--device-type', 'phone', '--context', 'guest']); check(phoneRun.scan.target.deviceType, 'phone');
   const summary = run('summarize-run.js', ['--scan-dir', scanDir]); check(summary.structuredResult.scan.scanId, 'scan-protocol'); check(summary.agentSupplementContract.title, 'Agent 补充内容');
@@ -69,6 +70,6 @@ try {
   withRunLock(scanDir, () => require('../lib/recovery').recoverCommittedEvents(scanDir));
   check(readJson(path.join(scanDir, 'operations', `${operationId}.json`)).status, 'UNKNOWN_OUTCOME'); check(readJson(path.join(scanDir, 'scan.json')).status, 'PAUSED');
 
-  const rebuilt = run('rebuild-run.js', ['--scan-dir', scanDir, '--output-dir', path.join(temp, 'rebuilt')]); check(rebuilt.ok, true); check(rebuilt.comparisons['scan.json'].equivalent, true); check(rebuilt.comparisons['contexts/guest/context.json'].equivalent, true); check(rebuilt.comparisons['contexts/guest/metrics.json'].equivalent, true);
+  const rebuilt = run('rebuild-run.js', ['--scan-dir', scanDir, '--output-dir', path.join(temp, 'rebuilt')]); check(rebuilt.ok, true); check(rebuilt.comparisons['scan.json'].equivalent, true); check(rebuilt.comparisons['contexts/guest/context.json'].equivalent, true); check(rebuilt.comparisons['contexts/guest/metrics.json'].equivalent, true); check(rebuilt.comparisons['contexts/guest/exploration-start.json'].equivalent, true);
   console.log(JSON.stringify({ schemaVersion: 1, ok: true, scope: 'protocol-fault-injection', tests }, null, 2));
 } finally { if (!process.env.SMAP_KEEP_SELF_TEST) fs.rmSync(temp, { recursive: true, force: true }); }

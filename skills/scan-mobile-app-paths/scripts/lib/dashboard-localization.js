@@ -6,7 +6,7 @@ const LABELS = {
   environment: { test: '测试环境', testing: '测试环境', development: '开发环境', dev: '开发环境', staging: '预发环境', pre: '预发环境', production: '生产环境', prod: '生产环境' },
   snapshotStatus: { READY: '可用', PARTIAL: '部分可用', VERSION_UNKNOWN: '版本未知', BLOCKED: '已阻塞', FAILED: '生成失败' },
   runStatus: { COMPLETED: '已完成', PARTIAL: '部分完成', BLOCKED: '已阻塞', FAILED: '执行失败' },
-  scanMode: { exploration: '全局探索', 'goal-directed': '目标扫描' },
+  scanMode: { exploration: '全局探索', 'goal-directed': '目标引导探索' },
   scanScope: { full: '完整范围', targeted: '目标范围' },
   profile: { quick: '快速', standard: '标准', deep: '深度', goal: '目标' },
   kind: { 'full-screen': '普通页面', modal: '业务弹窗', mixed: '混合状态' },

@@ -2,6 +2,7 @@
 
 const { fail } = require('./common');
 const { isCurrentRun, activeContextId, runBudget, activeLimitMinutes, maxStates, maxDeviceActions } = require('./run-protocol');
+const { modeFor, recommendedProfileForMode } = require('./modes');
 
 const PRESETS = Object.freeze({
   quick: { maxActiveMinutes: 10, maxDepth: 3, maxDeviceActions: 150, maxStates: 30, maxColdStarts: 20, maxScrollsPerState: 1, maxCandidatesPerState: 8, depthSlack: 0, cursorFreshnessMs: 15000 },
@@ -14,17 +15,17 @@ const PROFILE_META = Object.freeze({
   quick: { label: 'Quick', description: '快速摸底', scanModes: ['exploration'] },
   standard: { label: 'Standard', description: '常规扫描', scanModes: ['exploration'] },
   deep: { label: 'Deep', description: '深度扫描', scanModes: ['exploration'] },
-  goal: { label: 'Goal', description: '目标页面查找', scanModes: ['goal-directed'] }
+  goal: { label: 'Goal', description: '目标引导探索', scanModes: ['goal-directed'] }
 });
 
 function assertProfileForMode(profile, scanMode) {
   if (!PRESETS[profile]) fail(`Unknown profile: ${profile}`, 'PROFILE_INVALID');
-  if (!PROFILE_META[profile].scanModes.includes(scanMode)) fail(`Profile ${profile} is not available for ${scanMode}`, 'PROFILE_MODE_MISMATCH');
+  if (!modeFor(scanMode).allowedProfiles.includes(profile)) fail(`Profile ${profile} is not available for ${scanMode}`, 'PROFILE_MODE_MISMATCH');
   return profile;
 }
 
 function profileCatalog(scanMode, selectedProfile = null) {
-  const recommendedProfile = scanMode === 'goal-directed' ? 'goal' : 'standard';
+  const recommendedProfile = recommendedProfileForMode(scanMode);
   return Object.entries(PRESETS).map(([id, budget]) => ({ id, label: PROFILE_META[id].label, description: PROFILE_META[id].description, scanModes: [...PROFILE_META[id].scanModes], applicable: PROFILE_META[id].scanModes.includes(scanMode), recommended: id === recommendedProfile, selected: id === selectedProfile, budget: { ...budget } }));
 }
 

@@ -10,6 +10,8 @@ const { buildGoalSpecFromArgs, goalPlanFromSpec } = require('./lib/goal-spec');
 const { buildContinuationPlan } = require('./lib/continuation-plan');
 const { loadCanonicalPlanBaseline } = require('./lib/plan-baseline');
 const { detectDeviceType, normalizeDeviceType } = require('./lib/device-detection');
+const { modeFor, scanScopeForMode, strategyForMode, verificationRuleForMode, recommendedProfileForMode } = require('./lib/modes');
+const { normalizeStartSpec } = require('./lib/exploration-start');
 
 function makeScanId(root) {
   const stamp = compactLocalTimestamp();
@@ -23,7 +25,10 @@ main(() => {
   const root = resolveAppMapRoot(args, { bundleName: args.bundleName || null, requireExisting: true });
   const app = readJson(path.join(root, 'app.json'));
   const scanMode = args.scanMode || 'exploration';
-  const scanScope = scanMode === 'goal-directed' ? 'targeted' : 'full';
+  const mode = modeFor(scanMode);
+  if (args.explorationStart && scanMode !== 'exploration') fail('--exploration-start is only supported for exploration mode', 'EXPLORATION_START_UNSUPPORTED');
+  const explorationStart = scanMode === 'exploration' ? normalizeStartSpec(args.explorationStart ? jsonArg(args.explorationStart, null, 'explorationStart JSON') : null) : null;
+  const scanScope = scanScopeForMode(scanMode);
   if (args.scanScope && args.scanScope !== scanScope) fail(`${scanMode} mode only supports scanScope=${scanScope}`, 'SCAN_SCOPE_UNSUPPORTED');
   if (args.scopeSpec) fail('--scope-spec is not supported by this workflow', 'SCAN_SCOPE_UNSUPPORTED');
   const requestedContext = args.context ?? args.contexts ?? 'guest';
@@ -41,7 +46,7 @@ main(() => {
     deviceId: required(args, 'device'), deviceType: detectedDevice.deviceType || null
   });
   if (target.bundleName !== app.bundleName || target.environment !== app.environment) fail('Run target does not match app.json identity', 'APP_IDENTITY_MISMATCH');
-  const profile = args.profile || (scanMode === 'goal-directed' ? 'goal' : 'standard');
+  const profile = args.profile || recommendedProfileForMode(scanMode);
   assertProfileForMode(profile, scanMode);
   const overrides = args.budget ? jsonArg(args.budget, null, 'budget JSON') : {};
   if (Object.keys(overrides).some(key => !['maxActiveMinutes', 'maxDepth'].includes(key))) fail('User budget may override only maxActiveMinutes and maxDepth', 'BUDGET_FIELD_INTERNAL');
@@ -55,10 +60,10 @@ main(() => {
     schemaVersion: 3, scanId, parentScanId: parent?.scanId || null, mapRevisionId: safeSegment(parent?.mapRevisionId || scanId, 'mapRevisionId'),
     status: 'CREATED', reasonCode: null, scanMode, scanScope, graphProtocolVersion: 4, attemptProtocolVersion: 4, planProtocolVersion: 3,
     eventProtocolVersion: 2, projectionProtocolVersion: 2, navigationProtocolVersion: 2, verificationProtocolVersion: 2,
-    platform: 'harmony', target, profile, strategy: scanMode === 'goal-directed' ? 'goal-directed' : 'exploration',
-    goalSpecPath: scanMode === 'goal-directed' ? 'goal/goal.json' : null,
+    platform: 'harmony', target, profile, strategy: strategyForMode(scanMode),
+    goalSpecPath: mode.goalSpecPath,
     contextId, budget: { ...budget }, budgetRevision: 1, navigationPolicy, budgetBaseline,
-    verificationRule: scanMode === 'goal-directed' ? 'CONFIRMED_TARGET_PATH' : 'CANONICAL_SCREEN_PATH',
+    verificationRule: verificationRuleForMode(scanMode),
     createdAt: null, startedAt: null, updatedAt: null, pausedAt: null, pausedDurationMs: 0,
     counters: { event: 0 }
   });
@@ -68,12 +73,11 @@ main(() => {
     if (!goalInput?.goal?.goalSpecHash || goalInput.goal.goalSpecHash !== parentGoal.goalSpecHash) fail('Goal Continuation requires the same goalSpecHash as its parent', 'PARENT_GOAL_MISMATCH');
   }
   const goalPlan = goalInput ? goalPlanFromSpec(goalInput.goal) : null;
-  const plan = buildPlanFromData(scanDir, scan, target, { goal: goalPlan, continuation: continuationPlan });
+  const plan = buildPlanFromData(scanDir, scan, target, { goal: goalPlan, continuation: continuationPlan, explorationStart });
   const hash = planHash(plan);
   const goalArgs = goalInput ? {
-    description: goalInput.goal.description,
+    goalSpec: goalInput.goal,
     screenshot: goalInput.screenshotPath,
-    successCriteria: goalInput.goal.successCriteria,
     goalId: goalInput.goal.goalId,
     maxVerifiedPaths: goalInput.goal.resultPolicy.maxVerifiedPaths,
     verifyKnownPathFirst: goalInput.goal.resultPolicy.verifyKnownPathFirst
@@ -94,13 +98,18 @@ main(() => {
     confirmedPlanHash: hash,
     goal: goalArgs
   };
+  if (explorationStart) initArgs.explorationStart = explorationStart;
   const initCli = [process.execPath, path.join(__dirname, 'init-scan.js'), '--app-map-root', root, '--scan-id', scanId, '--device', target.deviceId, '--context', contextId, '--scan-mode', scanMode, '--profile', profile, '--navigation-policy', navigationPolicy, '--confirmed-plan-hash', hash];
   if (Object.keys(overrides).length) initCli.push('--budget', JSON.stringify(overrides));
   if (target.appVersion) initCli.push('--app-version', target.appVersion);
   if (target.buildVersion) initCli.push('--build-version', target.buildVersion);
   if (target.deviceType) initCli.push('--device-type', target.deviceType);
   if (parent) initCli.push('--parent-scan-id', parent.scanId);
-  if (goalArgs) initCli.push('--description', goalArgs.description, '--screenshot', goalArgs.screenshot, '--success-criteria', JSON.stringify(goalArgs.successCriteria), '--goal-id', goalArgs.goalId, '--max-verified-paths', String(goalArgs.maxVerifiedPaths), '--verify-known-path-first', String(goalArgs.verifyKnownPathFirst));
+  if (explorationStart) initCli.push('--exploration-start', JSON.stringify(explorationStart));
+  if (goalArgs) {
+    initCli.push('--goal-spec', JSON.stringify(goalArgs.goalSpec), '--goal-id', goalArgs.goalId, '--max-verified-paths', String(goalArgs.maxVerifiedPaths), '--verify-known-path-first', String(goalArgs.verifyKnownPathFirst));
+    if (goalArgs.screenshot) initCli.push('--screenshot', goalArgs.screenshot);
+  }
   output({
     schemaVersion: 1,
     ok: true,

@@ -13,6 +13,14 @@ const { isCurrentRun } = require('./lib/run-protocol');
 const { reconcileVerificationQueue } = require('./lib/verification-store');
 const { projectFinalizationMetrics } = require('./lib/finalization');
 const { assessFinalization } = require('./lib/finalization-guard');
+const { verificationUnresolvedItems } = require('./lib/finalization-unresolved');
+const { modeForScan } = require('./lib/modes');
+
+function goalFoundVerified(scanDir, scan) {
+  if (scan.scanMode !== 'goal-directed') return false;
+  const result = readJson(path.join(scanDir, 'goal', 'match-result.json'), null);
+  return result?.status === 'FOUND_VERIFIED';
+}
 
 main(() => {
   const args = parseArgs(); const { scanDir } = resolveScanDir(required(args, 'scanDir')); const scan = loadScan(scanDir, { mutable: true });
@@ -57,15 +65,25 @@ main(() => {
   }
   const map = { schemaVersion: 1, runId: scan.scanId, scanMode: scan.scanMode, scanScope: scan.scanScope, contexts };
   const unresolved = [];
+  const targetCompleted = goalFoundVerified(scanDir, scan);
   for (const contextId of runContextIds(scan)) {
     const graph = contexts[contextId]; const frontier = loadFrontier(scanDir, contextId); const queue = require('./lib/verification-store').loadVerificationQueue(scanDir, contextId); const suggestions = readJson(path.join(contextDir(scanDir, contextId), 'frontier-suggestions.json'), { items: [] });
+    const mode = modeForScan(scan);
+    const guidance = mode.loadGuidance({ scanDir, scan, contextId, graph, frontier });
+    const scopeUnresolved = scan.scanMode === 'exploration';
+    const rawPendingFrontiers = frontier.items.filter(item => ['PENDING', 'RETRYABLE', 'FAILED', 'BLOCKED'].includes(item.status));
+    const rawPendingSuggestions = suggestions.items.filter(item => item.status === 'PENDING');
+    const scopedPendingFrontiers = scopeUnresolved ? mode.filterFrontiers({ items: rawPendingFrontiers, scanDir, scan, contextId, graph, frontier, guidance }) : rawPendingFrontiers;
+    const scopedPendingSuggestions = scopeUnresolved ? mode.filterSuggestions({ items: rawPendingSuggestions, scanDir, scan, contextId, graph, frontier, guidance }) : rawPendingSuggestions;
+    const scopedVerificationItems = scopeUnresolved && typeof mode.filterVerifications === 'function' ? mode.filterVerifications({ items: queue.items, scanDir, scan, contextId, graph, frontier, guidance }) : queue.items;
+    const inScopeStateIds = new Set(scopeUnresolved ? mode.filterBackfillStateIds({ stateIds: (graph.reachableStates || []).map(item => item.id), scanDir, scan, contextId, graph, frontier, guidance }) : (graph.reachableStates || []).map(item => item.id));
     unresolved.push(...graph.visualStates.filter(x => x.dedupe?.status === 'PROBABLE').map(x => ({ type: 'PROBABLE_VISUAL_DUPLICATE', contextId, visualStateId: x.id, duplicateGroupId: x.dedupe.duplicateGroupId })));
-    unresolved.push(...graph.edges.filter(edge => ['UNVERIFIED', 'REPLAY_UNSTABLE'].includes(edge.verification?.replayStatus)).map(edge => ({ type: edge.verification?.replayStatus === 'REPLAY_UNSTABLE' ? 'REPLAY_UNSTABLE' : 'UNVERIFIED_EDGE', contextId, edgeId: edge.id })));
-    unresolved.push(...frontier.items.filter(item => ['PENDING', 'RETRYABLE', 'FAILED', 'BLOCKED'].includes(item.status)).map(item => ({ type: 'FRONTIER_UNRESOLVED', contextId, frontierId: item.id, status: item.status, reasonCode: item.reasonCode || null })));
-    unresolved.push(...suggestions.items.filter(item => item.status === 'PENDING').map(item => ({ type: 'FRONTIER_SUGGESTION_PENDING', contextId, suggestionId: item.suggestionId, reachableStateId: item.reachableStateId, candidateGroupKey: item.candidateGroupKey, status: item.status, reasonCode: item.reasonCode || null })));
+    unresolved.push(...graph.edges.filter(edge => ['UNVERIFIED', 'REPLAY_UNSTABLE'].includes(edge.verification?.replayStatus) && inScopeStateIds.has(edge.fromReachableStateId) && inScopeStateIds.has(edge.toReachableStateId)).map(edge => ({ type: edge.verification?.replayStatus === 'REPLAY_UNSTABLE' ? 'REPLAY_UNSTABLE' : 'UNVERIFIED_EDGE', contextId, edgeId: edge.id })));
+    unresolved.push(...scopedPendingFrontiers.map(item => ({ type: 'FRONTIER_UNRESOLVED', contextId, frontierId: item.id, status: item.status, reasonCode: item.reasonCode || null })));
+    if (!targetCompleted) unresolved.push(...scopedPendingSuggestions.map(item => ({ type: 'FRONTIER_SUGGESTION_PENDING', contextId, suggestionId: item.suggestionId, reachableStateId: item.reachableStateId, candidateGroupKey: item.candidateGroupKey, status: item.status, reasonCode: item.reasonCode || null })));
     const candidateCoverage = require('./lib/candidate-coverage').candidateCoverageFromRun(scanDir, contextId, graph);
-    unresolved.push(...(candidateCoverage.states || []).filter(item => item.backfillRequired).map(item => ({ type: 'CANDIDATE_BACKFILL_REQUIRED', contextId, reachableStateId: item.reachableStateId, candidateCoverageStatus: item.candidateCoverageStatus || 'UNKNOWN', knownCandidateCount: item.knownCandidateCount || 0, reasonCode: item.backfillReasonCode || null })));
-    unresolved.push(...queue.items.filter(item => ['PENDING', 'FAILED'].includes(item.status)).map(item => ({ type: 'VERIFICATION_UNRESOLVED', contextId, verificationId: item.verificationId, status: item.status, reasonCode: item.reasonCode || null })));
+    if (!targetCompleted) unresolved.push(...(candidateCoverage.states || []).filter(item => item.backfillRequired && inScopeStateIds.has(item.reachableStateId)).map(item => ({ type: 'CANDIDATE_BACKFILL_REQUIRED', contextId, reachableStateId: item.reachableStateId, candidateCoverageStatus: item.candidateCoverageStatus || 'UNKNOWN', knownCandidateCount: item.knownCandidateCount || 0, reasonCode: item.backfillReasonCode || null })));
+    unresolved.push(...verificationUnresolvedItems({ ...queue, items: scopedVerificationItems }, contextId, targetCompleted));
   }
   writeJsonAtomic(path.join(scanDir, 'merged', 'map.json'), map); writeJsonAtomic(path.join(scanDir, 'merged', 'unresolved.json'), { schemaVersion: 2, items: unresolved });
   if (contexts.guest && contexts.authenticated) writeJsonAtomic(path.join(scanDir, 'merged', 'auth-diff.json'), authDiff(map));

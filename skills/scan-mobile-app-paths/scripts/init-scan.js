@@ -14,6 +14,8 @@ const { deviceProfileFrom } = require('./lib/device-profile');
 const { budgetBaselineFromSeed } = require('./lib/plan-baseline');
 const { detectDeviceType, normalizeDeviceType } = require('./lib/device-detection');
 const { suggestionsFromCoverageSeeds } = require('./lib/candidate-coverage');
+const { modeFor, scanScopeForMode, strategyForMode, verificationRuleForMode, recommendedProfileForMode } = require('./lib/modes');
+const { normalizeStartSpec, initialStartProjection } = require('./lib/exploration-start');
 
 function makeScanId(root) {
   const stamp = compactLocalTimestamp();
@@ -27,7 +29,12 @@ main(() => {
   const root = resolveAppMapRoot(args, { bundleName: args.bundleName || null, requireExisting: true });
   const app = readJson(path.join(root, 'app.json'));
   const scanMode = args.scanMode || 'exploration';
-  const scanScope = scanMode === 'goal-directed' ? 'targeted' : 'full';
+  const mode = modeFor(scanMode);
+  if (args.explorationStart && scanMode !== 'exploration') fail('--exploration-start is only supported for exploration mode', 'EXPLORATION_START_UNSUPPORTED');
+  let explorationStartInput = null;
+  if (args.explorationStart) try { explorationStartInput = JSON.parse(String(args.explorationStart)); } catch (error) { fail(`Invalid --exploration-start JSON: ${error.message}`, 'EXPLORATION_START_INVALID'); }
+  const explorationStart = scanMode === 'exploration' ? normalizeStartSpec(explorationStartInput) : null;
+  const scanScope = scanScopeForMode(scanMode);
   if (args.scanScope && args.scanScope !== scanScope) fail(`${scanMode} mode only supports scanScope=${scanScope}`, 'SCAN_SCOPE_UNSUPPORTED');
   if (args.scopeSpec) fail('--scope-spec is not supported by this workflow', 'SCAN_SCOPE_UNSUPPORTED');
   const requestedContext = args.context ?? args.contexts ?? 'guest';
@@ -45,7 +52,7 @@ main(() => {
     deviceId: required(args, 'device'), deviceType: detectedDevice.deviceType || null
   });
   if (target.bundleName !== app.bundleName || target.environment !== app.environment) fail('Run target does not match app.json identity', 'APP_IDENTITY_MISMATCH');
-  const profile = args.profile || (scanMode === 'goal-directed' ? 'goal' : 'standard');
+  const profile = args.profile || recommendedProfileForMode(scanMode);
   assertProfileForMode(profile, scanMode);
   let overrides = {};
   if (args.budget) try { overrides = JSON.parse(String(args.budget)); } catch (error) { fail(`Invalid --budget JSON: ${error.message}`, 'BUDGET_INVALID'); }
@@ -77,15 +84,15 @@ main(() => {
     schemaVersion: 3, scanId, parentScanId: parent?.scanId || null, mapRevisionId: safeSegment(parent?.mapRevisionId || scanId, 'mapRevisionId'), mapBaseRevisionId: canonicalSeeds[contextId]?.mapRevisionId || null, status: confirmedPlanHash ? 'PLAN_CONFIRMED' : 'CREATED', reasonCode: null,
     scanMode, scanScope, graphProtocolVersion: 4, attemptProtocolVersion: 4, planProtocolVersion: 3, visualReviewProtocolVersion: 1,
     eventProtocolVersion: 2, projectionProtocolVersion: 2, navigationProtocolVersion: 2, verificationProtocolVersion: 2,
-    platform: 'harmony', target, profile, strategy: scanMode === 'goal-directed' ? 'goal-directed' : 'exploration',
-    goalSpecPath: scanMode === 'goal-directed' ? 'goal/goal.json' : null,
+    platform: 'harmony', target, profile, strategy: strategyForMode(scanMode),
+    goalSpecPath: mode.goalSpecPath,
     contextId, budget: { ...budget }, budgetRevision: 1, navigationPolicy,
     budgetBaseline: budgetBaselineFromSeed(contextId, canonicalSeeds[contextId]),
-    verificationRule: scanMode === 'goal-directed' ? 'CONFIRMED_TARGET_PATH' : 'CANONICAL_SCREEN_PATH',
+    verificationRule: verificationRuleForMode(scanMode),
     createdAt, startedAt: null, updatedAt: createdAt, pausedAt: null, pausedDurationMs: 0,
     counters: { event: confirmedPlanHash ? 4 : 3, observation: 0, action: 0, frontier: counterSeed.frontier || 0, suggestion: counterSeed.suggestion || 0, edge: counterSeed.edge || 0, goalDecision: 0, attempt: 0, restore: 0, contextPreparation: 0, navigation: 0, navigationExecution: 0, verification: counterSeed.verification || 0, verificationExecution: 0, operation: 0, backCapability: counterSeed.backCapability || 0, visualReview: 0, visualCandidateReview: 0 }
   });
-  const previewPlan = buildPlanFromData(scanDir, { ...scan, status: 'CREATED', counters: { event: 0 } }, target, { goal: goalInput ? goalPlanFromSpec(goalInput.goal) : null, continuation: continuationPlan });
+  const previewPlan = buildPlanFromData(scanDir, { ...scan, status: 'CREATED', counters: { event: 0 } }, target, { goal: goalInput ? goalPlanFromSpec(goalInput.goal) : null, continuation: continuationPlan, explorationStart });
   const expectedPlanHash = planHash(previewPlan);
   if (confirmedPlanHash && confirmedPlanHash !== expectedPlanHash) fail('Confirmed plan hash does not match the requested scan configuration; rerun preview-plan with the final inputs', 'PLAN_HASH_MISMATCH');
   ensureDir(scanDir);
@@ -109,6 +116,7 @@ main(() => {
     writeJsonAtomic(path.join(dir, 'verification-queue.json'), seed.hasMap ? seed.verificationQueue : { schemaVersion: 2, contextId, items: [] });
     writeJsonAtomic(path.join(dir, 'visual-equivalence.json'), seed.hasMap ? seed.visualEquivalence : { schemaVersion: 1, contextId, rules: [] });
     writeJsonAtomic(path.join(dir, 'state-equivalence.json'), seed.hasMap ? seed.stateEquivalence : { schemaVersion: 1, contextId, rules: [] });
+    if (explorationStart) writeJsonAtomic(path.join(dir, 'exploration-start.json'), initialStartProjection(contextId, explorationStart));
   }
   ensureDir(path.join(scanDir, 'evidence', 'observations'));
   ensureDir(path.join(scanDir, 'evidence', 'actions'));
@@ -135,7 +143,11 @@ main(() => {
   const baselineFiles = ['scan.json', 'target.json'];
   if (confirmedPlanHash) baselineFiles.push('plan.json');
   if (goalInput) baselineFiles.push('goal/goal.json', 'goal/match-result.json', 'goal/verified-paths.json');
-  for (const id of contexts) baselineFiles.push(...['context.json', 'graph.json', 'frontier.json', 'frontier-suggestions.json', 'metrics.json', 'live-cursor.json', 'back-capabilities.json', 'verification-queue.json', 'visual-equivalence.json', 'state-equivalence.json'].map(name => `contexts/${id}/${name}`));
+  for (const id of contexts) {
+    const files = ['context.json', 'graph.json', 'frontier.json', 'frontier-suggestions.json', 'metrics.json', 'live-cursor.json', 'back-capabilities.json', 'verification-queue.json', 'visual-equivalence.json', 'state-equivalence.json'];
+    if (explorationStart) files.push('exploration-start.json');
+    baselineFiles.push(...files.map(name => `contexts/${id}/${name}`));
+  }
   if (parent) {
     baselineFiles.push('continuation.json');
     for (const id of contexts) if (exists(path.join(scanDir, 'known', 'contexts', `${id}.json`))) baselineFiles.push(`known/contexts/${id}.json`);

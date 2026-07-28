@@ -1,6 +1,6 @@
 ---
 name: scan-mobile-app-paths
-description: 扫描鸿蒙 HarmonyOS App 的可达页面、页面状态与交互路径，支持全局探索、根据文字和一张截图寻找目标页面，以及从当前 Snapshot 确定性生成离线静态 HTML 路径看板或导出 mobile-ai-visual-test 前置条件 Flow。按登录态构建节点、跳转边、可重放路径、覆盖指标和未探索项。用户要求扫描 App 路径、生成页面地图或静态看板、比较登录与未登录路径、寻找目标页面、验证页面可达性、导出到某页面的前置条件步骤 Flow、继续或加深已有扫描时使用；不用于根据既有测试用例执行 PASS/FAIL 断言，也不用于执行支付、删除、发布等有副作用的业务目标。
+description: 扫描鸿蒙 HarmonyOS App 的可达页面、页面状态与交互路径，支持从 App 根页或用户指定页面作为 Start Page 的探索、目标引导探索（按用户提供的目标页面名称、参考路径、匹配证据和可选截图朝目标方向找路径），以及从当前 Snapshot 确定性生成离线静态 HTML 路径看板或导出 mobile-ai-visual-test 前置条件 Flow。按登录态构建节点、跳转边、可重放路径、覆盖指标和未探索项。用户要求扫描 App 路径、生成页面地图或静态看板、比较登录与未登录路径、寻找目标页面、验证页面可达性、导出到某页面的前置条件步骤 Flow、继续或加深已有扫描时使用；不用于根据既有测试用例执行 PASS/FAIL 断言，也不用于执行支付、删除、发布等有副作用的业务目标。
 ---
 
 # 鸿蒙 App 路径地图扫描
@@ -14,15 +14,15 @@ description: 扫描鸿蒙 HarmonyOS App 的可达页面、页面状态与交互�
 ## 不可变执行原则
 
 - 仅支持 HarmonyOS；一个 `APP_MAP_ROOT` 固定属于一个 App 和一个环境。
-- 仅有 `exploration` 与 `goal-directed` 两种扫描模式。Continuation 是新 Run 续扫一个已终结 `PARTIAL` Run 的血缘，不是第三种模式。
+- 仅有 `exploration` 与 `goal-directed` 两种扫描模式。`exploration` 统一表示从一个 Start Page 开始扩展地图；默认 Start Page 为 App 冷启动根页面，也可由用户指定页面名称、参考路径和页面证据后确认。`goal-directed` 表示目标引导探索：用户提供方向和页面匹配证据，Agent 整理为 `GuideSpec + TargetSpec`，截图是可选增强证据。Continuation 是新 Run 续扫一个已终结 `PARTIAL` Run 的血缘，不是第三种模式。
 - 一个 Run 只绑定一个 `contextId`：`guest` 或 `authenticated`。每个 context 有一份 canonical map；比较两种身份时分别扩展各自 canonical map，Snapshot 读取 canonical map，不跨 scan 合并。
 - 登录或退出由人工在 Run 开始前完成。计划确认后执行一次受控冷启动来建立根状态；后续扫描优先在当前前台页面连续执行，不为每个候选固定冷启动。
-- 通过 locality-aware bounded BFS 探索：同一来源或附近状态优先，深度和优先级仍是确定性约束。
+- 通过 locality-aware bounded BFS 探索：同一来源或附近状态优先，深度和优先级仍是确定性约束。探索模式的 `maxDepth` 始终按本次 Start Page 的局部 `depthFromStart` 计算；canonical map 的 `pathDepth` 仍按 App 根页面显示。
 - 来源导航依次尝试 `LIVE_CURSOR`、已采证 `BACKTRACK`、`GRAPH_PATH`，不可用或失败时才 `COLD_REPLAY`。`always-replay` 只作为兼容和对照策略。
 - Cursor 必须绑定 context、ReachableState、Observation、epoch、设备 mutation sequence 和新鲜度。动作前 Cursor 不匹配时先重新观测；不确定动作失败、前台漂移或比较失败时立即使 Cursor 失效。
 - 发现事实、可执行路径与验证事实分离。稳定的动作前后 Observation 可以提交已发现 Edge；满足动作语义和安全约束的 Edge 可进入 runnable path；冷启动完整重放由独立 Verification Queue 证明。
 - `verificationPolicy` 不是用户配置。只读 `verificationRule` 由模式固定：探索为 `CANONICAL_SCREEN_PATH`，目标查找为 `CONFIRMED_TARGET_PATH`。
-- 探索模式为每个新 LogicalScreen 的当前规范路径建立验证任务；目标模式仅在人工确认候选后建立目标路径任务。必要验证或 `PENDING` Frontier Suggestion 未完成时不得以 `COMPLETED` 终结；候选覆盖仍为 `UNKNOWN/PARTIAL` 时可终结 Run，但必须作为 `CANDIDATE_BACKFILL_REQUIRED` unresolved 暴露给 Snapshot/Dashboard 和下一次扫描。
+- 模式差异通过 `scripts/lib/modes/*` 隔离；公共引擎只执行预算、安全、观测、图、Frontier、导航、验证和事件投影。探索模式先解析 `exploration-start.json`，再只消费 Start 范围内的 Frontier、Suggestion、Backfill 与必要验证；目标模式先执行一次已知地图目标预检，再通过目标走廊优先消费命中 `GuideSpec` / `TargetSpec` 的候选，仅在人工确认候选后建立目标路径任务。探索模式只有 Start 范围内的必要验证、Frontier 与 `PENDING` Frontier Suggestion 收敛为空才可 `COMPLETED`；目标模式只有目标路径 `FOUND_VERIFIED` 才可 `COMPLETED`，目标已验证后不再把候选覆盖未尽作为 unresolved 暴露。
 - 用户预算只暴露 `profile + maxActiveMinutes + maxDepth`。内部派生 `maxDeviceActions`、`maxStates`、`maxColdStarts`；`maxStates` 限制本 Run 新增 ReachableState 数，不消耗 canonical seed 的已有状态；探索、导航、恢复、验证、干扰动作只分类计量，共享设备动作总上限。
 - `maxActiveMinutes` 是单 Run 自动活动时间累计上限，包含动作、稳定等待、导航、恢复和验证；不包含计划确认、人工登录/退出、人工候选确认、PAUSED 时间及产物构建。
 - 每次 Claim 前调用统一 `nextWork()`，动态为必要验证保留时间、动作和冷启动容量；硬预算耗尽时必须 `STOP` 并建议 `PARTIAL`，不得继续领取 Frontier 或验证任务。
@@ -49,14 +49,14 @@ description: 扫描鸿蒙 HarmonyOS App 的可达页面、页面状态与交互�
 ## 标准流程
 
 1. 探测设备能力，创建或校验单 App 产物根。
-2. 选择模式和唯一登录态；目标模式先准备文字、单张截图和成功条件，随计划预览一起确认。
+2. 选择模式和唯一登录态；探索模式默认 `explorationStart.kind=app-root`，若用户要求从某个页面继续探索，则一次性收集起点页面名称、参考路径和页面匹配证据，整理为 `ExplorationStartSpec` 后让用户确认并随计划预览绑定；目标模式先一次性向用户收集目标页面名称、参考路径或大致方向、页面匹配证据和可选截图，由 Agent 整理为结构化 `GuideSpec + TargetSpec` 后让用户确认，再随计划预览绑定。
 3. 先运行 `preview-plan.js` 生成计划预览，展示全部 profile、当前覆盖、单 Run 活动时间、最大深度、只读验证规则、安全边界和将要创建的产物位置；此时不得创建正式 Run 目录。
 4. 用户确认最终 `planHash`；若改 profile、预算或目标输入，重新预览并确认新哈希。
 5. 使用确认后的 `planHash` 调用 `init-scan.js --confirmed-plan-hash` 一次性创建正式 Run；若哈希不匹配必须失败且不能落盘 Run 目录。
 6. 人工完成登录/退出后，受控冷启动并稳定观测；清理明确干扰后验证身份、建立根节点和 Live Cursor。
-7. 循环调用 `next-work.js`。返回 `DISCOVER` 时 Claim Frontier，通过分级导航取得来源状态并执行候选；返回 `BACKFILL_FRONTIER_SUGGESTIONS` 时执行返回的 `suggestedCommand`，只为调度器列出的 ReachableState 用本 Run 或历史 Observation 引用补生成候选；返回 `SUGGEST_FRONTIER` 时处理 `frontier-candidates.js apply`，把可应用安全候选写入 Frontier 后重新取工作；返回 `VERIFY` 时执行对应冷启动路径验证；返回 `STOP` 时按建议终态收敛，预算耗尽使用 `PARTIAL`。
+7. 循环调用 `next-work.js`。探索模式若返回 `RESOLVE_EXPLORATION_START`，先执行返回的 `exploration-start.js` 命令；指定起点命中候选时需人工确认后再继续探索。目标模式首次返回 `GOAL_KNOWN_TARGET_PRECHECK` 时执行 `goal-precheck.js evaluate`，若已有地图命中则暂停人工确认，否则写入未命中并继续探索；返回 `DISCOVER` 时 Claim Frontier，通过分级导航取得来源状态并执行候选；返回 `BACKFILL_FRONTIER_SUGGESTIONS` 时执行返回的 `suggestedCommand`，只为调度器列出的 ReachableState 用本 Run 或历史 Observation 引用补生成候选；返回 `SUGGEST_FRONTIER` 时处理 `frontier-candidates.js apply`，把可应用安全候选写入 Frontier 后重新取工作；返回 `VERIFY` 时执行对应冷启动路径验证；返回 `STOP` 时按建议终态收敛，预算耗尽使用 `PARTIAL`。
 8. 对动作结果先做模型视觉审查并记录 VisualReview，再做结构化结果审查；仅有 `ACCEPTED` VisualReview 的稳定页面或业务弹窗可提交 Edge。风险、上下文漂移和未知状态必须暂停。
-9. 目标候选为 `STRONG` 或 `UNCERTAIN` 时暂停；人工确认后执行完整冷启动验证，只有强匹配可完成目标 Run。
+9. 目标候选为 `STRONG` 或 `UNCERTAIN` 时暂停；人工确认后执行完整冷启动验证。有截图时强匹配需绑定参考截图，无截图时强匹配需满足语义结构证据；二者都不能跳过人工确认和冷启动重放。
 10. 校验并终结 Run，登记后把本 Run 的新增事实同步到 canonical map，再构建 Snapshot 和离线 Dashboard。
 
 ## 资源

@@ -3,7 +3,7 @@
 
 const path = require('path');
 const crypto = require('crypto');
-const { parseArgs, required, resolveScanDir, loadScan, loadGraph, loadFrontier, jsonArg, nextId, hashObject, now, commitEvent, commitEventLocked, readJson, contextDir, output, main, fail, withRunLock } = require('./lib/common');
+const { parseArgs, required, resolveScanDir, loadScan, loadGraph, loadFrontier, jsonArg, nextId, nextIdLocked, hashObject, now, commitEvent, commitEventLocked, readJson, contextDir, output, main, fail, withRunLock } = require('./lib/common');
 const { FRONTIER_STATUSES } = require('./lib/schema');
 const { budgetUsage, exhausted } = require('./lib/budget');
 const exploration = require('./strategies/exploration');
@@ -31,7 +31,6 @@ main(() => {
     return output({ schemaVersion: 1, ok: true, created: true, item: result.item });
   }
   if (command === 'claim') {
-    const reservedNavigationExecutionId = nextId(scanDir, 'navigationExecution', 'navexec');
     const result = withRunLock(scanDir, () => {
       const currentScan = loadScan(scanDir, { mutable: true });
       if (currentScan.status !== 'SCANNING' || activeContextId(currentScan) !== contextId) fail('Frontier claim requires the active SCANNING context', 'RUN_STATE_INVALID');
@@ -39,8 +38,9 @@ main(() => {
       const graph = loadGraph(scanDir, contextId); const runtime = readJson(path.join(contextDir(scanDir, contextId), 'metrics.json'), {});
       const usage = budgetUsage(currentScan, graph, currentFrontier, runtime); const budgetState = exhausted(runBudget(currentScan, contextId), usage, graphProtocolVersion(currentScan));
       const work = isCurrentRun(currentScan) && !budgetState.exhausted ? nextWork({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier, metrics: runtime }) : null;
-      const decision = budgetState.exhausted ? { decision: 'STOP', reasonCode: budgetState.reasonCode, suggestedTerminalStatus: 'PARTIAL', budgetState } : work?.decision === 'VERIFY' ? { decision: 'VERIFY', reasonCode: work.reasonCode, verification: work.verification, estimate: work.estimate } : work?.decision === 'STOP' ? work : isCurrentRun(currentScan) ? scheduler.schedule({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier }) : strategy.decideNext({ frontier: currentFrontier.items, budgetState });
+      const decision = budgetState.exhausted ? { decision: 'STOP', reasonCode: budgetState.reasonCode, suggestedTerminalStatus: 'PARTIAL', budgetState } : work && work.decision !== 'DISCOVER' ? work : isCurrentRun(currentScan) ? scheduler.schedule({ scanDir, scan: currentScan, contextId, graph, frontier: currentFrontier }) : strategy.decideNext({ frontier: currentFrontier.items, budgetState });
       if (decision.decision !== 'CONTINUE') return { decision };
+      const reservedNavigationExecutionId = decision.navigationPlan ? nextIdLocked(scanDir, 'navigationExecution', 'navexec') : null;
       const item = currentFrontier.items.find(x => x.id === decision.frontierId); item.status = 'CLAIMED'; item.attempts += 1; item.claimedAt = now(); item.claimToken = crypto.randomUUID(); item.claimedAttemptId = null; item.cursorEpoch = decision.navigationPlan?.cursorEpoch ?? null; item.navigationPlanId = decision.navigationPlan?.navigationPlanId || null; item.navigationPlan = decision.navigationPlan || null; item.navigationExecutionId = decision.navigationPlan ? reservedNavigationExecutionId : null;
       const navigationExecution = decision.navigationPlan ? { ...decision.navigationPlan, schemaVersion: 2, navigationExecutionId: item.navigationExecutionId, requestedMode: decision.navigationPlan.mode, actualMode: null, fallbackFrom: null, fallbackReason: null, status: 'PLANNED', createdAt: now(), startedAt: null, finishedAt: null, terminalObservationId: null, restoreId: null, executedSteps: [] } : null;
       const ops = [{ path: `contexts/${contextId}/frontier.json`, op: 'UPSERT', collection: 'items', keyFields: ['id'], value: item, fallback: { schemaVersion: 1, contextId, items: [] } }]; if (navigationExecution) ops.push({ path: `evidence/navigations/${navigationExecution.navigationExecutionId}.json`, op: 'REPLACE', value: navigationExecution });

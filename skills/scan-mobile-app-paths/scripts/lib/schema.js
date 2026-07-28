@@ -1,10 +1,11 @@
 'use strict';
 
 const { fail, safeSegment } = require('./common');
+const { MODE_CONTRACTS, modeContract } = require('./modes/contracts');
 
 const CONTEXTS = ['guest', 'authenticated'];
-const SCAN_MODES = ['exploration', 'goal-directed'];
-const SCAN_SCOPES = ['full', 'targeted'];
+const SCAN_MODES = Object.keys(MODE_CONTRACTS);
+const SCAN_SCOPES = [...new Set(SCAN_MODES.map(mode => modeContract(mode).scanScope))];
 const FRONTIER_STATUSES = ['PENDING', 'CLAIMED', 'RETRYABLE', 'EXPLORED', 'COVERED_BY_GROUP', 'SKIPPED', 'BLOCKED', 'FAILED'];
 const DEVICE_TYPES = ['phone', 'tablet', 'foldable', 'widefold', 'triplefold', '2in1', '2in1 foldable', 'wearable', 'tv'];
 
@@ -46,8 +47,8 @@ function validateRun(scan) {
   if (!scan || ![1, 2, 3].includes(Number(scan.schemaVersion)) || !scan.scanId) fail('Invalid scan.json', 'SCAN_INVALID');
   oneOf(scan.scanMode, SCAN_MODES, 'scanMode');
   oneOf(scan.scanScope, SCAN_SCOPES, 'scanScope');
-  if (scan.scanMode === 'goal-directed' && scan.scanScope !== 'targeted') fail('goal-directed mode requires targeted scope', 'SCAN_INVALID');
-  if (scan.scanMode === 'exploration' && scan.scanScope !== 'full') fail('exploration mode requires full scope', 'SCAN_INVALID');
+  const mode = modeContract(scan.scanMode);
+  if (scan.scanScope !== mode.scanScope) fail(`${scan.scanMode} mode requires ${mode.scanScope} scope`, 'SCAN_INVALID');
   const protocol = Number(scan.graphProtocolVersion || 1); const currentRun = Number(scan.schemaVersion) >= 3 || protocol >= 3;
   if (currentRun) {
     oneOf(scan.contextId, CONTEXTS, 'contextId');
@@ -59,9 +60,8 @@ function validateRun(scan) {
       for (const key of ['baselineReachableStates', 'baselineVisualStates', 'baselineEdges']) if (!Number.isFinite(Number(scan.budgetBaseline[key])) || Number(scan.budgetBaseline[key]) < 0) fail(`budgetBaseline.${key} is invalid`, 'SCAN_INVALID');
     }
     oneOf(scan.navigationPolicy || 'adaptive', ['adaptive', 'always-replay'], 'navigationPolicy');
-    oneOf(scan.verificationRule, ['CANONICAL_SCREEN_PATH', 'CONFIRMED_TARGET_PATH'], 'verificationRule');
-    if (scan.scanMode === 'exploration' && scan.verificationRule !== 'CANONICAL_SCREEN_PATH') fail('exploration requires CANONICAL_SCREEN_PATH', 'SCAN_INVALID');
-    if (scan.scanMode === 'goal-directed' && scan.verificationRule !== 'CONFIRMED_TARGET_PATH') fail('goal-directed requires CONFIRMED_TARGET_PATH', 'SCAN_INVALID');
+    oneOf(scan.verificationRule, [...new Set(SCAN_MODES.map(id => modeContract(id).verificationRule))], 'verificationRule');
+    if (scan.verificationRule !== mode.verificationRule) fail(`${scan.scanMode} requires ${mode.verificationRule}`, 'SCAN_INVALID');
     for (const key of ['eventProtocolVersion', 'projectionProtocolVersion', 'navigationProtocolVersion', 'verificationProtocolVersion']) if (scan[key] !== undefined && ![1, 2].includes(Number(scan[key]))) fail(`${key} must be 1 or 2`, 'SCAN_INVALID');
   } else if (!Array.isArray(scan.plannedContextIds) || scan.plannedContextIds.some(c => !CONTEXTS.includes(c))) fail('Invalid plannedContextIds', 'SCAN_INVALID');
   if (scan.mapRevisionId !== undefined) safeSegment(scan.mapRevisionId, 'mapRevisionId');

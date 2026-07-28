@@ -4,10 +4,13 @@ const path = require('path');
 const { contextDir, loadGraph, loadFrontier, readJson } = require('./common');
 const { runContextIds } = require('./run-protocol');
 const { nextWork } = require('./work-scheduler');
+const { modeForScan } = require('./modes');
 
 const CONTINUABLE_DECISIONS = new Set([
   'DISCOVER',
   'VERIFY',
+  'GOAL_KNOWN_TARGET_PRECHECK',
+  'RESOLVE_EXPLORATION_START',
   'SUGGEST_FRONTIER',
   'BACKFILL_FRONTIER_SUGGESTIONS',
   'REVIEW_FRONTIER_CANDIDATES'
@@ -21,8 +24,13 @@ const PARTIAL_STOP_REASONS = new Set([
   'MAX_STATES',
   'REQUIRED_VERIFICATION_FAILED',
   'FRONTIER_SUGGESTIONS_NOT_APPLICABLE',
-  'WORK_BLOCKED_BY_FAILED_DEPENDENCIES'
+  'WORK_BLOCKED_BY_FAILED_DEPENDENCIES',
+  'EXPLORATION_START_NOT_FOUND'
 ]);
+
+function completedStopReasons(scan = {}) {
+  return modeForScan(scan).completedStopReasons();
+}
 
 function reasonFrom(decision = {}) {
   return decision.reasonCode || decision.decision || 'UNKNOWN';
@@ -68,9 +76,11 @@ function assessFinalization({ scanDir, scan, requestedStatus, reasonCode = null,
   }
 
   if (status === 'COMPLETED') {
-    const notEmpty = contexts.find(item => item.nextWork.decision !== 'STOP' || item.nextWork.reasonCode !== 'WORK_EMPTY');
-    if (notEmpty) return reject(base, 'FINALIZATION_REQUIRES_WORK_EMPTY', `COMPLETED requires nextWork STOP/WORK_EMPTY; ${notEmpty.contextId} is ${notEmpty.nextWork.decision}/${reasonFrom(notEmpty.nextWork)}.`);
-    return { ...base, canFinalize: true, reasonCode: 'FINALIZATION_ALLOWED_WORK_EMPTY', message: 'Run can complete because all contexts are work-empty.' };
+    const allowedReasons = completedStopReasons(scan);
+    const notComplete = contexts.find(item => item.nextWork.decision !== 'STOP' || !allowedReasons.has(reasonFrom(item.nextWork)));
+    const expected = scan.scanMode === 'goal-directed' ? 'STOP/GOAL_FOUND_VERIFIED' : 'STOP/WORK_EMPTY';
+    if (notComplete) return reject(base, scan.scanMode === 'goal-directed' ? 'FINALIZATION_REQUIRES_GOAL_FOUND_VERIFIED' : 'FINALIZATION_REQUIRES_WORK_EMPTY', `COMPLETED requires nextWork ${expected}; ${notComplete.contextId} is ${notComplete.nextWork.decision}/${reasonFrom(notComplete.nextWork)}.`);
+    return { ...base, canFinalize: true, reasonCode: 'FINALIZATION_ALLOWED_COMPLETED_STOP', message: 'Run can complete because all contexts are complete.' };
   }
 
   if (status === 'PARTIAL') {
@@ -92,4 +102,4 @@ function assessFinalization({ scanDir, scan, requestedStatus, reasonCode = null,
   return reject(base, 'STATUS_INVALID', `Unsupported finalization status: ${status}`);
 }
 
-module.exports = { assessFinalization, CONTINUABLE_DECISIONS, PARTIAL_STOP_REASONS };
+module.exports = { assessFinalization, CONTINUABLE_DECISIONS, PARTIAL_STOP_REASONS, completedStopReasons };

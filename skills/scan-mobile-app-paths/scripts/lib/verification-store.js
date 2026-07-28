@@ -37,7 +37,8 @@ function canonicalScreenPaths(graph) {
 function reconcileVerificationQueue(scanDir, scan, contextId, graph, { persist = false } = {}) {
   const queue = loadVerificationQueue(scanDir, contextId); if (scan.scanMode !== 'exploration') return { queue, scheduled: [], superseded: [] };
   const scheduled = []; const superseded = [];
-  for (const canonical of canonicalScreenPaths(graph)) {
+  const inStartScope = require('./exploration-start').verificationInStartScope;
+  for (const canonical of canonicalScreenPaths(graph).filter(item => inStartScope({ verification: item, scanDir, scan, contextId, graph }))) {
     const taskKey = hashObject({ contextId, logicalScreenKey: canonical.logicalScreenKey, transitionFingerprintChain: canonical.transitionFingerprints });
     for (const old of queue.items.filter(item => item.logicalScreenKey === canonical.logicalScreenKey && item.taskKey !== taskKey && ['PENDING', 'RUNNING', 'FAILED'].includes(item.status))) { old.status = 'SUPERSEDED'; old.supersededAt = now(); old.supersededByTaskKey = taskKey; superseded.push(old); }
     if (queue.items.some(item => item.taskKey === taskKey)) continue;

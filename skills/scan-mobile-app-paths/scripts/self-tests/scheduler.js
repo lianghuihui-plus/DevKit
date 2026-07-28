@@ -7,9 +7,11 @@ const os = require('os');
 const path = require('path');
 const { nextWork } = require('../lib/work-scheduler');
 const { assessFinalization } = require('../lib/finalization-guard');
+const { modeForScan } = require('../lib/modes');
 const scheduler = require('../lib/frontier-scheduler');
 const { candidateCoverageBasis } = require('../lib/candidate-coverage');
 const { candidateRulesForScan } = require('../lib/candidate-rules');
+const { initialStartProjection, evaluateKnownStartCandidates } = require('../lib/exploration-start');
 
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -282,6 +284,145 @@ function reviewNeededFixture() {
   return { temp, scanDir, scan, contextId: 'guest', graph, frontier, metrics };
 }
 
+function goalCorridorFixture({ mode = 'frontier' } = {}) {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'smap-scheduler-goal-corridor-'));
+  const scanDir = path.join(temp, 'app-map', 'runs', `scan-goal-corridor-${mode}`);
+  const contextDir = path.join(scanDir, 'contexts', 'guest');
+  fs.mkdirSync(path.join(scanDir, 'goal'), { recursive: true });
+  fs.mkdirSync(contextDir, { recursive: true });
+  const scan = {
+    schemaVersion: 3,
+    scanId: `scan-goal-corridor-${mode}`,
+    status: 'SCANNING',
+    contextId: 'guest',
+    scanMode: 'goal-directed',
+    scanScope: 'targeted',
+    graphProtocolVersion: 4,
+    target: { bundleName: 'com.example.demo', environment: 'test' },
+    profile: 'goal',
+    strategy: 'goal-directed',
+    budget: { maxActiveMinutes: 30, maxDepth: 7, maxStates: 30, maxDeviceActions: 100, maxColdStarts: 20, maxCandidatesPerState: 5, maxScrollsPerState: 1, depthSlack: 0, cursorFreshnessMs: 60000 },
+    verificationRule: 'CONFIRMED_TARGET_PATH'
+  };
+  const goal = { schemaVersion: 2, goalId: 'goal-corridor', contextId: 'guest', resultPolicy: { verifyKnownPathFirst: false }, guideSpec: { routeHints: ['学习', '我的', '设置', '设备管理'], preferredTexts: ['我的', '设置', '设备管理'] }, targetSpec: { requiredTexts: ['设备管理'] } };
+  const graph = {
+    schemaVersion: 2,
+    contextId: 'guest',
+    logicalScreens: [
+      { id: 'settings', name: '设置' },
+      { id: 'creative', name: '创作' }
+    ],
+    visualStates: [
+      { id: 'visual-root', logicalScreenKey: 'home', name: '学习', fingerprint: {} },
+      { id: 'visual-settings', logicalScreenKey: 'settings', name: '设置', evidenceObservationRefs: [{ runId: 'seed', observationId: 'obs-settings' }], fingerprint: { semantic: { stableTexts: ['设置'], primaryActions: ['设备管理'] } } },
+      { id: 'visual-creative', logicalScreenKey: 'creative', name: '创作', evidenceObservationRefs: [{ runId: 'seed', observationId: 'obs-creative' }], fingerprint: { semantic: { stableTexts: ['创作'], primaryActions: ['赛考专区'] } } }
+    ],
+    reachableStates: [
+      { id: 'state-root', visualStateId: 'visual-root', contextId: 'guest', depth: { pathDepth: 0 }, runnablePathEdgeIds: [], replayPathEdgeIds: [], pathStatus: 'RUNNABLE_VERIFIED' },
+      { id: 'state-settings', visualStateId: 'visual-settings', contextId: 'guest', depth: { pathDepth: 1 }, runnablePathEdgeIds: [], replayPathEdgeIds: [], pathStatus: 'RUNNABLE_UNVERIFIED' },
+      { id: 'state-creative', visualStateId: 'visual-creative', contextId: 'guest', depth: { pathDepth: 1 }, runnablePathEdgeIds: [], replayPathEdgeIds: [], pathStatus: 'RUNNABLE_UNVERIFIED' }
+    ],
+    edges: [],
+    paths: []
+  };
+  const frontier = { schemaVersion: 1, contextId: 'guest', items: mode === 'backfill' ? [] : mode === 'suggestion' ? [
+    { id: 'frontier-creative', contextId: 'guest', fromReachableStateId: 'state-creative', candidateGroupKey: 'creative/zone', candidate: { type: 'tap', target: '赛考专区' }, priority: { riskRank: 0, nextPathDepth: 2 }, status: 'PENDING', attempts: 0 }
+  ] : [
+    { id: 'frontier-creative', contextId: 'guest', fromReachableStateId: 'state-creative', candidateGroupKey: 'creative/zone', candidate: { type: 'tap', target: '赛考专区' }, priority: { riskRank: 0, nextPathDepth: 2 }, status: 'PENDING', attempts: 0 },
+    { id: 'frontier-device', contextId: 'guest', fromReachableStateId: 'state-settings', candidateGroupKey: 'settings/device', candidate: { type: 'tap', target: '设备管理' }, priority: { riskRank: 0, nextPathDepth: 2, goalRelevance: 7, routeHintStep: 3 }, status: 'PENDING', attempts: 0 }
+  ] };
+  const suggestions = { schemaVersion: 1, contextId: 'guest', items: mode === 'suggestion' ? [
+    { schemaVersion: 1, suggestionId: 'suggest-creative', contextId: 'guest', reachableStateId: 'state-creative', visualStateId: 'visual-creative', observationId: 'obs-creative', candidateGroupKey: 'creative/zone', candidate: { type: 'tap', target: '赛考专区' }, source: 'LAYOUT_CLICKABLE', confidence: 0.8, candidateClass: 'STABLE_ENTRY', priority: { riskRank: 0, entryRank: 0, nextPathDepth: 2 }, risk: null, safety: { allowed: true }, status: 'PENDING' },
+    { schemaVersion: 1, suggestionId: 'suggest-device', contextId: 'guest', reachableStateId: 'state-settings', visualStateId: 'visual-settings', observationId: 'obs-settings', candidateGroupKey: 'settings/device', candidate: { type: 'tap', target: '设备管理' }, source: 'LAYOUT_CLICKABLE', confidence: 0.9, candidateClass: 'STABLE_ENTRY', priority: { riskRank: 0, entryRank: 0, nextPathDepth: 2, goalRelevance: 7, routeHintStep: 3 }, risk: null, safety: { allowed: true }, status: 'PENDING', guideMatchedTexts: ['设备管理'], routeHintStep: 3 }
+  ] : [] };
+  const context = mode === 'backfill' ? { schemaVersion: 1, id: 'guest', inheritedCandidateCoverage: { schemaVersion: 1, contextId: 'guest', backfillRequiredStateIds: ['state-creative', 'state-settings'] } } : { schemaVersion: 1, id: 'guest', inheritedCandidateCoverage: null };
+  const metrics = { actions: 0, coldStarts: 0, activeDurationMs: 0, deviceMutationSeq: 0 };
+  writeJson(path.join(scanDir, 'scan.json'), scan);
+  writeJson(path.join(scanDir, 'goal', 'goal.json'), goal);
+  writeJson(path.join(scanDir, 'goal', 'match-result.json'), { schemaVersion: 1, goalId: goal.goalId, status: 'SEARCHING', decisions: [], candidateDecisionIds: [] });
+  writeJson(path.join(contextDir, 'context.json'), context);
+  writeJson(path.join(contextDir, 'graph.json'), graph);
+  writeJson(path.join(contextDir, 'frontier.json'), frontier);
+  writeJson(path.join(contextDir, 'frontier-suggestions.json'), suggestions);
+  writeJson(path.join(contextDir, 'verification-queue.json'), { schemaVersion: 2, contextId: 'guest', items: [] });
+  writeJson(path.join(contextDir, 'metrics.json'), metrics);
+  return { temp, scanDir, scan, contextId: 'guest', graph, frontier, metrics };
+}
+
+function specifiedStartFixture({ resolved = true } = {}) {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'smap-scheduler-start-scope-'));
+  const scanDir = path.join(temp, 'app-map', 'runs', `scan-start-scope-${resolved ? 'resolved' : 'pending'}`);
+  const contextDir = path.join(scanDir, 'contexts', 'guest');
+  fs.mkdirSync(contextDir, { recursive: true });
+  const scan = {
+    schemaVersion: 3,
+    scanId: `scan-start-scope-${resolved ? 'resolved' : 'pending'}`,
+    status: 'SCANNING',
+    contextId: 'guest',
+    scanMode: 'exploration',
+    scanScope: 'full',
+    graphProtocolVersion: 4,
+    target: { bundleName: 'com.example.demo', environment: 'test' },
+    profile: 'standard',
+    strategy: 'exploration',
+    budget: { maxActiveMinutes: 30, maxDepth: 1, maxStates: 30, maxDeviceActions: 100, maxColdStarts: 20, maxCandidatesPerState: 5, maxScrollsPerState: 1, depthSlack: 1, cursorFreshnessMs: 60000 },
+    verificationRule: 'CANONICAL_SCREEN_PATH'
+  };
+  const graph = {
+    schemaVersion: 2,
+    contextId: 'guest',
+    logicalScreens: [
+      { id: 'home', name: '首页' },
+      { id: 'settings', name: '设置' },
+      { id: 'device', name: '设备管理' },
+      { id: 'creative', name: '创作' }
+    ],
+    visualStates: [
+      { id: 'visual-root', logicalScreenKey: 'home', name: '首页', fingerprint: { semantic: { stableTexts: ['首页'], primaryActions: ['我的'] } } },
+      { id: 'visual-settings', logicalScreenKey: 'settings', name: '设置', fingerprint: { semantic: { stableTexts: ['设置'], primaryActions: ['设备管理'] } } },
+      { id: 'visual-device', logicalScreenKey: 'device', name: '设备管理', fingerprint: { semantic: { stableTexts: ['设备管理'], primaryActions: ['详情'] } } },
+      { id: 'visual-detail', logicalScreenKey: 'detail', name: '设备详情', fingerprint: { semantic: { stableTexts: ['设备详情'], primaryActions: [] } } },
+      { id: 'visual-creative', logicalScreenKey: 'creative', name: '创作', fingerprint: { semantic: { stableTexts: ['创作'], primaryActions: ['赛考专区'] } } }
+    ],
+    reachableStates: [
+      { id: 'state-root', visualStateId: 'visual-root', contextId: 'guest', depth: { pathDepth: 0 }, runnablePathEdgeIds: [], replayPathEdgeIds: [], verifiedPathEdgeIds: [], pathStatus: 'RUNNABLE_VERIFIED' },
+      { id: 'state-settings', visualStateId: 'visual-settings', contextId: 'guest', depth: { pathDepth: 3 }, runnablePathEdgeIds: ['edge-root-settings'], replayPathEdgeIds: ['edge-root-settings'], verifiedPathEdgeIds: [], pathStatus: 'RUNNABLE_UNVERIFIED' },
+      { id: 'state-device', visualStateId: 'visual-device', contextId: 'guest', depth: { pathDepth: 4 }, runnablePathEdgeIds: ['edge-root-settings', 'edge-settings-device'], replayPathEdgeIds: ['edge-root-settings', 'edge-settings-device'], verifiedPathEdgeIds: [], pathStatus: 'RUNNABLE_UNVERIFIED' },
+      { id: 'state-detail', visualStateId: 'visual-detail', contextId: 'guest', depth: { pathDepth: 5 }, runnablePathEdgeIds: ['edge-root-settings', 'edge-settings-device', 'edge-device-detail'], replayPathEdgeIds: ['edge-root-settings', 'edge-settings-device', 'edge-device-detail'], verifiedPathEdgeIds: [], pathStatus: 'RUNNABLE_UNVERIFIED' },
+      { id: 'state-creative', visualStateId: 'visual-creative', contextId: 'guest', depth: { pathDepth: 1 }, runnablePathEdgeIds: ['edge-root-creative'], replayPathEdgeIds: ['edge-root-creative'], verifiedPathEdgeIds: [], pathStatus: 'RUNNABLE_UNVERIFIED' }
+    ],
+    edges: [
+      edge('edge-root-settings', 'state-root', 'state-settings'),
+      edge('edge-settings-device', 'state-settings', 'state-device'),
+      edge('edge-device-detail', 'state-device', 'state-detail'),
+      edge('edge-root-creative', 'state-root', 'state-creative')
+    ],
+    paths: []
+  };
+  const frontier = { schemaVersion: 1, contextId: 'guest', items: [
+    { id: 'frontier-device', contextId: 'guest', fromReachableStateId: 'state-settings', candidateGroupKey: 'settings/device', candidate: { type: 'tap', target: '设备管理' }, priority: { riskRank: 0, nextPathDepth: 4 }, status: 'PENDING', attempts: 0 },
+    { id: 'frontier-device-detail', contextId: 'guest', fromReachableStateId: 'state-device', candidateGroupKey: 'device/detail', candidate: { type: 'tap', target: '详情' }, priority: { riskRank: 0, nextPathDepth: 5 }, status: 'PENDING', attempts: 0 },
+    { id: 'frontier-creative', contextId: 'guest', fromReachableStateId: 'state-creative', candidateGroupKey: 'creative/zone', candidate: { type: 'tap', target: '赛考专区' }, priority: { riskRank: 0, nextPathDepth: 2 }, status: 'PENDING', attempts: 0 }
+  ] };
+  const spec = { kind: 'specified-page', pageName: '设置', routeHints: ['首页', '我的', '设置'], matchEvidence: { requiredTexts: ['设置'], optionalTexts: ['设备管理'] } };
+  const start = initialStartProjection('guest', spec);
+  if (resolved) Object.assign(start, { status: 'RESOLVED', startReachableStateId: 'state-settings', startVisualStateId: 'visual-settings', pathEdgeIdsFromAppRoot: ['edge-root-settings'], resolvedBy: 'KNOWN_MAP_CONFIRMED' });
+  const metrics = { actions: 0, coldStarts: 0, activeDurationMs: 0, deviceMutationSeq: 0 };
+  writeJson(path.join(scanDir, 'scan.json'), scan);
+  writeJson(path.join(contextDir, 'context.json'), { schemaVersion: 1, id: 'guest', inheritedCandidateCoverage: { schemaVersion: 1, contextId: 'guest', backfillRequiredStateIds: ['state-settings', 'state-device', 'state-creative'] } });
+  writeJson(path.join(contextDir, 'graph.json'), graph);
+  writeJson(path.join(contextDir, 'frontier.json'), frontier);
+  writeJson(path.join(contextDir, 'frontier-suggestions.json'), { schemaVersion: 1, contextId: 'guest', items: [] });
+  writeJson(path.join(contextDir, 'verification-queue.json'), { schemaVersion: 2, contextId: 'guest', items: [
+    { verificationId: 'verify-device', contextId: 'guest', reason: 'CANONICAL_SCREEN_PATH', logicalScreenKey: 'device', terminalReachableStateId: 'state-device', edgeIds: ['edge-root-settings', 'edge-settings-device'], transitionFingerprints: ['fp-edge-root-settings', 'fp-edge-settings-device'], status: 'PENDING', attemptCount: 0, executions: [], executionIds: [] },
+    { verificationId: 'verify-creative', contextId: 'guest', reason: 'CANONICAL_SCREEN_PATH', logicalScreenKey: 'creative', terminalReachableStateId: 'state-creative', edgeIds: ['edge-root-creative'], transitionFingerprints: ['fp-edge-root-creative'], status: 'PENDING', attemptCount: 0, executions: [], executionIds: [] }
+  ] });
+  writeJson(path.join(contextDir, 'metrics.json'), metrics);
+  writeJson(path.join(contextDir, 'exploration-start.json'), start);
+  fs.mkdirSync(path.join(scanDir, 'attempts'), { recursive: true });
+  return { temp, scanDir, scan, contextId: 'guest', graph, frontier, metrics };
+}
+
 let tests = 0;
 function check(actual, expected) {
   assert.deepEqual(actual, expected);
@@ -359,7 +500,38 @@ try {
   check(reviewWork.decision, 'REVIEW_FRONTIER_CANDIDATES');
   check(reviewWork.reachableStateId, 'state-complex');
 
+  const pendingStart = specifiedStartFixture({ resolved: false });
+  const pendingStartWork = nextWork(pendingStart);
+  check(pendingStartWork.decision, 'RESOLVE_EXPLORATION_START');
+  check(pendingStartWork.reasonCode, 'SPECIFIED_START_PENDING');
+  check(evaluateKnownStartCandidates(pendingStart.graph, pendingStartWork.explorationStart.spec)[0].reachableStateId, 'state-settings');
+
+  const resolvedStart = specifiedStartFixture({ resolved: true });
+  const resolvedStartWork = nextWork(resolvedStart);
+  check(resolvedStartWork.decision, 'DISCOVER');
+  check(scheduler.schedule(resolvedStart).frontierId, 'frontier-device');
+  check(resolvedStartWork.openWorkSummary.runnableFrontiers, 1);
+  check(resolvedStartWork.openWorkSummary.pendingVerifications, 1);
+  check(modeForScan(resolvedStart.scan).observedDepthForBudget(resolvedStart), 0);
+  writeJson(path.join(resolvedStart.scanDir, 'attempts', 'attempt-device.json'), { attemptId: 'attempt-device', contextId: 'guest', status: 'COMMITTED', toReachableStateId: 'state-device' });
+  check(modeForScan(resolvedStart.scan).observedDepthForBudget(resolvedStart), 1);
+
+  const goalFrontier = goalCorridorFixture({ mode: 'frontier' });
+  check(scheduler.schedule(goalFrontier).frontierId, 'frontier-device');
+
+  const goalSuggestion = goalCorridorFixture({ mode: 'suggestion' });
+  const goalSuggestionWork = nextWork(goalSuggestion);
+  check(goalSuggestionWork.decision, 'SUGGEST_FRONTIER');
+  check(goalSuggestionWork.pendingSuggestionId, 'suggest-device');
+  check(goalSuggestionWork.suggestedCommand.args.includes('--suggestion-id'), true);
+  check(goalSuggestionWork.suggestedCommand.args.includes('suggest-device'), true);
+
+  const goalBackfill = goalCorridorFixture({ mode: 'backfill' });
+  const goalBackfillWork = nextWork(goalBackfill);
+  check(goalBackfillWork.decision, 'BACKFILL_FRONTIER_SUGGESTIONS');
+  check(goalBackfillWork.reachableStateIds, ['state-settings']);
+
   console.log(JSON.stringify({ schemaVersion: 1, ok: true, scope: 'scheduler', tests }, null, 2));
 } finally {
-  for (const dir of fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('smap-scheduler-deps-') || name.startsWith('smap-scheduler-state-budget-') || name.startsWith('smap-scheduler-coverage-') || name.startsWith('smap-scheduler-current-coverage-') || name.startsWith('smap-scheduler-exhausted-basis-') || name.startsWith('smap-scheduler-review-'))) fs.rmSync(path.join(os.tmpdir(), dir), { recursive: true, force: true });
+  for (const dir of fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('smap-scheduler-deps-') || name.startsWith('smap-scheduler-state-budget-') || name.startsWith('smap-scheduler-coverage-') || name.startsWith('smap-scheduler-current-coverage-') || name.startsWith('smap-scheduler-exhausted-basis-') || name.startsWith('smap-scheduler-review-') || name.startsWith('smap-scheduler-goal-corridor-') || name.startsWith('smap-scheduler-start-scope-'))) fs.rmSync(path.join(os.tmpdir(), dir), { recursive: true, force: true });
 }

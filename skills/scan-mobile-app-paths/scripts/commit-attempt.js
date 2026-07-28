@@ -5,7 +5,7 @@ const path = require('path');
 const { parseArgs, required, requiredId, resolveScanDir, loadScan, loadGraph, loadFrontier, readJson, nextId, jsonArg, now, commitEvent, output, main, fail, safeSegment, hashObject } = require('./lib/common');
 const { assertCapacity } = require('./lib/budget');
 const store = require('./lib/graph-store');
-const { isCurrentRun, activeContextId, runBudget, maxDepth } = require('./lib/run-protocol');
+const { isCurrentRun, activeContextId, runBudget } = require('./lib/run-protocol');
 const { projectedCursor } = require('./lib/live-cursor');
 const { reconcileVerificationQueue } = require('./lib/verification-store');
 const { requireObservationBundle } = require('./lib/observation-store');
@@ -14,6 +14,7 @@ const { intentFromAction, locatorEvidenceFor } = require('./lib/action-intent');
 const { deviceProfileFrom } = require('./lib/device-profile');
 const { locatorReplayabilityReason } = require('./lib/replayability');
 const { buildSuggestionItems } = require('./lib/frontier-candidate-service');
+const { frontierNextDepthFromStart } = require('./lib/exploration-start');
 
 function evidence(scanDir, observationId, contextId) {
   return requireObservationBundle(scanDir, observationId, contextId, { incompleteErrorCode: 'EVIDENCE_INCOMPLETE', contextErrorCode: 'EVIDENCE_INCOMPLETE' });
@@ -44,7 +45,8 @@ main(() => {
   store.upsertLogicalScreen(graph, logicalScreenKey, displayName, args.description || '', scan.scanId);
   const visualResult = store.upsertVisualState(graph, { logicalScreenKey, name: displayName, kind: attempt.outcomeKind, observationId: outcomeObservationId, fingerprint, visualReviewId: visualReview.visualReviewId });
   const routeIncrement = item.candidate.routeTransition === true ? 1 : 0; const modalDepth = attempt.outcomeKind === 'modal' ? 1 : fromVisual.kind === 'modal' ? 0 : (from.depth?.modalDepth || 0); const depth = { pathDepth: (from.depth?.pathDepth || 0) + 1, routeDepth: (from.depth?.routeDepth || 0) + routeIncrement, modalDepth };
-  if (depth.pathDepth > maxDepth(budget) || !isCurrentRun(scan) && depth.routeDepth > budget.maxRouteDepth) fail('Committed state exceeds depth budget', 'BUDGET_EXHAUSTED');
+  const nextDepthFromStart = frontierNextDepthFromStart({ scanDir, scan, contextId, graph, frontier: item });
+  if (nextDepthFromStart === null || nextDepthFromStart > Number(budget.maxDepth || 0) || !isCurrentRun(scan) && depth.routeDepth > budget.maxRouteDepth) fail('Committed state exceeds depth budget', 'BUDGET_EXHAUSTED');
   const arrivalSignature = jsonArg(args.arrivalSignature, { expectedBackReachableStateId: isCurrentRun(scan) ? null : from.id, backBehaviorKey: args.backBehaviorKey || 'unverified', stateInvariantHash: hashObject({ visualStateId: visualResult.visualState.id, from: from.id, candidateGroupKey: item.candidateGroupKey }) });
   const previewReachable = graph.reachableStates.find(x => x.visualStateId === visualResult.visualState.id && hashObject(x.arrivalSignature || {}) === hashObject(arrivalSignature));
   if (!previewReachable) assertCapacity(scan, contextId, graph, frontier, metrics, 'nodes');

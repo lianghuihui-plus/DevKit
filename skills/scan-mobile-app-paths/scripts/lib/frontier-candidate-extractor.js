@@ -89,6 +89,45 @@ function buildSuggestion({ reachableState, visualState, observationId, text, bou
   };
 }
 
+function goalTerms(goalSpec = null) {
+  if (!goalSpec) return [];
+  const guide = goalSpec.guideSpec || {};
+  const target = goalSpec.targetSpec || goalSpec.successCriteria || {};
+  const weighted = [
+    ...(guide.routeHints || []).map((text, index) => ({ text, weight: 4, routeIndex: index })),
+    ...(guide.preferredTexts || []).map(text => ({ text, weight: 3 })),
+    ...(guide.semanticHints || []).map(text => ({ text, weight: 2 })),
+    ...(target.requiredTexts || []).map(text => ({ text, weight: 3 })),
+    ...(target.optionalTexts || []).map(text => ({ text, weight: 1 })),
+    ...(target.layoutAnchors || []).map(text => ({ text, weight: 1 }))
+  ];
+  return weighted.map(item => ({ ...item, normalized: normalizeText(item.text) })).filter(item => item.normalized);
+}
+
+function applyGoalGuidance(suggestion, goalSpec = null) {
+  const terms = goalTerms(goalSpec);
+  if (!terms.length || !suggestion?.candidate) return suggestion;
+  const target = normalizeText(suggestion.candidate.target || '');
+  const group = normalizeText(suggestion.candidateGroupKey || '');
+  const haystack = [target, group, normalizeText(suggestion.source || '')].filter(Boolean);
+  let score = 0;
+  let routeHintStep = null;
+  const matched = [];
+  for (const term of terms) {
+    const hit = haystack.some(value => value === term.normalized || value.includes(term.normalized) || (value.length >= 2 && term.normalized.includes(value)));
+    if (!hit) continue;
+    score += term.weight;
+    matched.push(term.text);
+    if (routeHintStep === null && term.routeIndex !== undefined) routeHintStep = term.routeIndex;
+  }
+  if (!score) return suggestion;
+  const priority = { ...(suggestion.priority || {}) };
+  priority.goalRelevance = Math.max(Number(priority.goalRelevance ?? 0), score);
+  priority.entryRank = Math.min(Number(priority.entryRank ?? 9), score >= 4 ? 0 : 1);
+  if (routeHintStep !== null) priority.routeHintStep = routeHintStep;
+  return { ...suggestion, priority, guideMatchedTexts: [...new Set(matched)], routeHintStep };
+}
+
 function suggestionStatusFor(classification) {
   if (DATA_SKIP_CLASSES.has(classification?.candidateClass)) return { status: 'SKIPPED', reasonCode: 'DYNAMIC_DATA_ITEM' };
   return { status: null, reasonCode: null };
@@ -107,7 +146,7 @@ function dynamicAuditLimit(candidateRules = null) {
   return Number.isFinite(value) && value >= 0 ? value : 8;
 }
 
-function extractCandidates({ reachableState, visualState, observationId, layout, existingKeys = new Set(), existingCandidateHashes = new Set(), limit = 12, candidateRules = null } = {}) {
+function extractCandidates({ reachableState, visualState, observationId, layout, existingKeys = new Set(), existingCandidateHashes = new Set(), limit = 12, candidateRules = null, goalSpec = null, prioritizeCandidate = null } = {}) {
   const suggestions = [];
   const seen = new Set(existingKeys);
   const seenCandidates = new Set(existingCandidateHashes);
@@ -123,7 +162,7 @@ function extractCandidates({ reachableState, visualState, observationId, layout,
     if (seen.has(suggestion.candidateGroupKey)) return;
     seen.add(suggestion.candidateGroupKey);
     seenCandidates.add(dedupe);
-    suggestions.push(suggestion);
+    suggestions.push(prioritizeCandidate ? prioritizeCandidate(suggestion) : applyGoalGuidance(suggestion, goalSpec));
   };
 
   for (const { node } of nodes) {
@@ -175,7 +214,7 @@ function extractCandidates({ reachableState, visualState, observationId, layout,
     const group = `${slug(reachableState.visualStateId || reachableState.id, 'state')}/scroll-${hashObject(bounds).slice(-8)}`;
     if (!seen.has(group)) {
       seen.add(group);
-      suggestions.push({
+      const scrollSuggestion = {
         reachableStateId: reachableState.id,
         visualStateId: visualState.id,
         observationId,
@@ -186,7 +225,8 @@ function extractCandidates({ reachableState, visualState, observationId, layout,
         priority: priorityFor('SCROLL'),
         candidateClass: 'SCROLL',
         classification: { candidateClass: 'SCROLL', reasonCodes: ['SCROLL_EXPLORATION'], confidence: 0.7 }
-      });
+      };
+      suggestions.push(prioritizeCandidate ? prioritizeCandidate(scrollSuggestion) : applyGoalGuidance(scrollSuggestion, goalSpec));
     }
   }
 
@@ -209,4 +249,4 @@ function extractCandidates({ reachableState, visualState, observationId, layout,
   return result;
 }
 
-module.exports = { extractCandidates, priorityFor };
+module.exports = { extractCandidates, priorityFor, applyGoalGuidance };

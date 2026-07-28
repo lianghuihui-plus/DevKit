@@ -1,10 +1,19 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const { parseArgs, required, resolveScanDir, loadScan, readJson, nextId, now, event, commitEvent, transitionWithOps, loadFrontier, output, main, fail, jsonArg, sha256, hashObject } = require('./lib/common');
 const { evaluate } = require('./lib/goal-matcher');
 const { targetVerificationProjection, queueUpsertOp } = require('./lib/verification-store');
+const { advanceKnownMapPrecheckAfterReject } = require('./lib/goal-known-target-precheck');
+
+function validateGoalAssessment({ goal, scanDir, observation, assessment }) {
+  const screenshotSha = sha256(fs.readFileSync(path.join(scanDir, observation.screenshotPath)));
+  if (!['STRONG', 'UNCERTAIN', 'NO_MATCH'].includes(assessment.status) || assessment.observedSha256 !== screenshotSha) fail('Visual assessment must bind the observed screenshot by SHA-256', 'GOAL_VISUAL_ASSESSMENT_INVALID');
+  if (goal.referenceScreenshotSha256 && assessment.referenceSha256 !== goal.referenceScreenshotSha256) fail('Visual assessment must bind the reference screenshot by SHA-256', 'GOAL_VISUAL_ASSESSMENT_INVALID');
+  if (!goal.referenceScreenshotSha256 && assessment.referenceSha256) fail('Semantic-only goal assessment must not bind an unrelated reference screenshot', 'GOAL_VISUAL_ASSESSMENT_INVALID');
+}
 
 main(() => {
   const args = parseArgs(); const command = args._[0] || 'evaluate'; const { scanDir } = resolveScanDir(required(args, 'scanDir')); const scan = loadScan(scanDir, { mutable: true });
@@ -17,7 +26,7 @@ main(() => {
     const visual = graph.visualStates.find(x => x.id === state.visualStateId); if (!visual?.evidenceObservationIds?.includes(observationId)) fail('Goal candidate observation is not evidence of the ReachableState', 'GOAL_EVIDENCE_INVALID');
     if (observation.foreground.bundleName && observation.foreground.bundleName !== scan.target.bundleName) return output({ schemaVersion: 1, ok: true, status: 'NOT_MATCHED', reasonCode: 'APP_LEFT_FOREGROUND' });
     const assessment = jsonArg(required(args, 'visualAssessment'), null, 'visualAssessment JSON');
-    if (!['STRONG', 'UNCERTAIN', 'NO_MATCH'].includes(assessment.status) || assessment.referenceSha256 !== goal.referenceScreenshotSha256 || assessment.observedSha256 !== sha256(require('fs').readFileSync(path.join(scanDir, observation.screenshotPath)))) fail('Visual assessment must bind the reference and observed screenshots by SHA-256', 'GOAL_VISUAL_ASSESSMENT_INVALID');
+    validateGoalAssessment({ goal, scanDir, observation, assessment });
     const match = evaluate(goal, layout, assessment);
     if (!['CANDIDATE_STRONG', 'CANDIDATE_UNCERTAIN'].includes(match.status)) return output({ schemaVersion: 1, ok: true, ...match });
     const decisionId = nextId(scanDir, 'goalDecision', 'goal-decision'); const decision = { decisionId, status: match.status, candidateStrength: match.status === 'CANDIDATE_STRONG' ? 'STRONG' : 'UNCERTAIN', observationId, visualStateId: state.visualStateId, reachableStateId, pathId: args.pathId || null, evidence: { ...match.evidence, visualAssessment: assessment }, humanDecision: 'PENDING', createdAt: now() };
@@ -30,8 +39,13 @@ main(() => {
     if (scan.status !== 'PAUSED') fail('Human decision requires PAUSED status', 'RUN_STATE_INVALID'); const decisionId = required(args, 'decisionId'); const decision = result.decisions.find(x => x.decisionId === decisionId); if (!decision) fail('Goal decision not found', 'GOAL_DECISION_NOT_FOUND');
     if (decision.humanDecision !== 'PENDING') fail('Goal decision is immutable after it is decided', 'GOAL_DECISION_FINAL');
     const humanDecision = required(args, 'humanDecision').toUpperCase(); if (!['CONFIRMED_TARGET', 'REJECTED', 'DEFERRED'].includes(humanDecision)) fail('Invalid humanDecision', 'GOAL_DECISION_INVALID');
-    if (humanDecision === 'REJECTED') { decision.humanDecision = humanDecision; decision.decidedAt = now(); result.status = 'SEARCHING'; transitionWithOps(scanDir, 'SCANNING', null, 'goalCandidateRejected', { goalId: goal.goalId, decisionId }, [{ path: 'goal/match-result.json', op: 'REPLACE', value: result }]); }
-    else if (humanDecision === 'CONFIRMED_TARGET') { decision.humanDecision = humanDecision; decision.decidedAt = now(); result.status = 'CONFIRMED_PENDING_REPLAY'; const graph = require('./lib/common').loadGraph(scanDir, goal.contextId); const state = graph.reachableStates.find(item => item.id === decision.reachableStateId); const visual = state && graph.visualStates.find(item => item.id === state.visualStateId); const edgeIds = state?.runnablePathEdgeIds || state?.replayPathEdgeIds || []; const transitionFingerprints = edgeIds.map(id => graph.edges.find(edge => edge.id === id)?.verification?.transitionFingerprint || hashObject({ edgeId: id })); const projection = targetVerificationProjection(scanDir, goal.contextId, { decisionId, logicalScreenKey: visual?.logicalScreenKey || null, terminalReachableStateId: decision.reachableStateId, edgeIds, transitionFingerprints }); const verification = projection.item; decision.verificationId = verification.verificationId; commitEvent(scanDir, 'verificationScheduled', { contextId: goal.contextId, goalId: goal.goalId, decisionId, verification }, [queueUpsertOp(goal.contextId, verification), { path: 'goal/match-result.json', op: 'REPLACE', value: result }]); event(scanDir, 'goalCandidateConfirmed', { goalId: goal.goalId, decisionId, verificationId: verification.verificationId }); }
+    if (humanDecision === 'REJECTED') {
+      decision.humanDecision = humanDecision; decision.decidedAt = now();
+      const precheckAdvance = advanceKnownMapPrecheckAfterReject({ result, rejectedDecision: decision, decidedAt: decision.decidedAt });
+      if (precheckAdvance.advanced && !precheckAdvance.exhausted) commitEvent(scanDir, 'goalKnownMapCandidateAdvanced', { goalId: goal.goalId, rejectedDecisionId: decisionId, nextDecisionId: precheckAdvance.nextDecision.decisionId }, [{ path: 'goal/match-result.json', op: 'REPLACE', value: result }]);
+      else { result.status = 'SEARCHING'; transitionWithOps(scanDir, 'SCANNING', null, precheckAdvance.exhausted ? 'goalKnownMapPrecheckExhausted' : 'goalCandidateRejected', { goalId: goal.goalId, decisionId, knownMapPrecheckExhausted: precheckAdvance.exhausted }, [{ path: 'goal/match-result.json', op: 'REPLACE', value: result }]); }
+    }
+    else if (humanDecision === 'CONFIRMED_TARGET') { decision.humanDecision = humanDecision; decision.decidedAt = now(); result.status = 'CONFIRMED_PENDING_REPLAY'; const graph = require('./lib/common').loadGraph(scanDir, goal.contextId); const state = graph.reachableStates.find(item => item.id === decision.reachableStateId); if (!state) fail('Confirmed goal ReachableState is missing', 'GRAPH_REFERENCE_MISSING'); const visual = graph.visualStates.find(item => item.id === state.visualStateId); const edgeIds = state.runnablePathEdgeIds || state.replayPathEdgeIds || []; const transitionFingerprints = edgeIds.map(id => graph.edges.find(edge => edge.id === id)?.verification?.transitionFingerprint || hashObject({ edgeId: id })); const projection = targetVerificationProjection(scanDir, goal.contextId, { decisionId, logicalScreenKey: visual?.logicalScreenKey || null, terminalReachableStateId: decision.reachableStateId, edgeIds, transitionFingerprints }); const verification = projection.item; decision.verificationId = verification.verificationId; commitEvent(scanDir, 'verificationScheduled', { contextId: goal.contextId, goalId: goal.goalId, decisionId, verification }, [queueUpsertOp(goal.contextId, verification), { path: 'goal/match-result.json', op: 'REPLACE', value: result }]); event(scanDir, 'goalCandidateConfirmed', { goalId: goal.goalId, decisionId, verificationId: verification.verificationId }); }
     else { decision.deferredAt = now(); commitEvent(scanDir, 'goalCandidateDeferred', { goalId: goal.goalId, decisionId }, [{ path: 'goal/match-result.json', op: 'REPLACE', value: result }]); }
     return output({ schemaVersion: 1, ok: true, decision, resultStatus: result.status, runStatus: loadScan(scanDir).status });
   }

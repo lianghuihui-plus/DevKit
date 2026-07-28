@@ -2,9 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { readJson, fail } = require('./common');
+const { readJson, fail, loadGraph, loadFrontier } = require('./common');
 const { runContextIds } = require('./run-protocol');
 const { loadVerificationQueue } = require('./verification-store');
+const { modeForScan } = require('./modes');
 
 function jsonFiles(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -26,9 +27,16 @@ function validateProjectionWatermark(scanDir) {
   return { lastEventSeq: head.lastEventSeq, timelineOffset: head.timelineOffset };
 }
 
+function goalFoundVerified(scanDir, scan) {
+  if (scan.scanMode !== 'goal-directed') return false;
+  const result = readJson(path.join(scanDir, 'goal', 'match-result.json'), null);
+  return result?.status === 'FOUND_VERIFIED';
+}
+
 function validateExecutionClosure(scanDir, scan, requestedStatus) {
   const summary = { projection: null, operations: 0, navigationExecutions: 0, restores: 0, verificationTasks: 0, verificationExecutions: 0 };
   if (Number(scan.eventProtocolVersion || 1) >= 2 && Number(scan.projectionProtocolVersion || 1) >= 2) summary.projection = validateProjectionWatermark(scanDir);
+  const goalCompleted = requestedStatus === 'COMPLETED' && goalFoundVerified(scanDir, scan);
 
   if (Number(scan.eventProtocolVersion || 1) >= 2) for (const file of jsonFiles(path.join(scanDir, 'operations'))) {
     const operation = readJson(file); summary.operations += 1;
@@ -58,18 +66,28 @@ function validateExecutionClosure(scanDir, scan, requestedStatus) {
 
   if (Number(scan.verificationProtocolVersion || 1) >= 2) {
     const executionIds = new Set();
-    for (const contextId of runContextIds(scan)) for (const task of loadVerificationQueue(scanDir, contextId).items) {
-      summary.verificationTasks += 1;
-      const taskExecutionIds = (task.executions || []).map(item => item.executionId); if (JSON.stringify(task.executionIds || []) !== JSON.stringify(taskExecutionIds) || task.status === 'RUNNING' && !task.activeExecutionId || task.status !== 'RUNNING' && task.activeExecutionId) fail(`Verification task ${task.verificationId} execution index is inconsistent`, 'VERIFICATION_EXECUTION_INVALID');
-      if (task.status === 'RUNNING' || requestedStatus === 'COMPLETED' && ['PENDING', 'FAILED'].includes(task.status)) fail(`Verification ${task.verificationId} is not closed for ${requestedStatus}`, 'VERIFICATION_UNFINISHED');
-      for (const execution of task.executions || []) {
-        summary.verificationExecutions += 1;
-        if (!execution.executionId || executionIds.has(execution.executionId)) fail('Verification executionId must be globally unique in a Run', 'VERIFICATION_EXECUTION_INVALID');
-        executionIds.add(execution.executionId);
-        if (['RESTORING', 'AWAITING_VISUAL_ASSESSMENT'].includes(execution.status)) fail(`Verification execution ${execution.executionId} is unfinished`, 'VERIFICATION_EXECUTION_UNFINISHED');
-        if (['SUCCEEDED', 'FAILED'].includes(execution.status)) {
-          const file = evidenceFile(scanDir, execution.evidenceRef); const evidence = readJson(file);
-          if (evidence.executionId !== execution.executionId || evidence.verificationId !== task.verificationId || evidence.status !== execution.status) fail(`Verification evidence is inconsistent for ${execution.executionId}`, 'VERIFICATION_EVIDENCE_INVALID');
+    for (const contextId of runContextIds(scan)) {
+      const graph = loadGraph(scanDir, contextId);
+      const frontier = loadFrontier(scanDir, contextId);
+      const mode = modeForScan(scan);
+      const guidance = mode.loadGuidance({ scanDir, scan, contextId, graph, frontier });
+      const tasks = typeof mode.filterVerifications === 'function'
+        ? mode.filterVerifications({ items: loadVerificationQueue(scanDir, contextId).items, scanDir, scan, contextId, graph, frontier, guidance })
+        : loadVerificationQueue(scanDir, contextId).items;
+      for (const task of tasks) {
+        summary.verificationTasks += 1;
+        const taskExecutionIds = (task.executions || []).map(item => item.executionId); if (JSON.stringify(task.executionIds || []) !== JSON.stringify(taskExecutionIds) || task.status === 'RUNNING' && !task.activeExecutionId || task.status !== 'RUNNING' && task.activeExecutionId) fail(`Verification task ${task.verificationId} execution index is inconsistent`, 'VERIFICATION_EXECUTION_INVALID');
+        const nonTargetGoalTask = goalCompleted && task.reason !== 'CONFIRMED_TARGET_PATH';
+        if (task.status === 'RUNNING' || requestedStatus === 'COMPLETED' && ['PENDING', 'FAILED'].includes(task.status) && !nonTargetGoalTask) fail(`Verification ${task.verificationId} is not closed for ${requestedStatus}`, 'VERIFICATION_UNFINISHED');
+        for (const execution of task.executions || []) {
+          summary.verificationExecutions += 1;
+          if (!execution.executionId || executionIds.has(execution.executionId)) fail('Verification executionId must be globally unique in a Run', 'VERIFICATION_EXECUTION_INVALID');
+          executionIds.add(execution.executionId);
+          if (['RESTORING', 'AWAITING_VISUAL_ASSESSMENT'].includes(execution.status)) fail(`Verification execution ${execution.executionId} is unfinished`, 'VERIFICATION_EXECUTION_UNFINISHED');
+          if (['SUCCEEDED', 'FAILED'].includes(execution.status)) {
+            const file = evidenceFile(scanDir, execution.evidenceRef); const evidence = readJson(file);
+            if (evidence.executionId !== execution.executionId || evidence.verificationId !== task.verificationId || evidence.status !== execution.status) fail(`Verification evidence is inconsistent for ${execution.executionId}`, 'VERIFICATION_EVIDENCE_INVALID');
+          }
         }
       }
     }

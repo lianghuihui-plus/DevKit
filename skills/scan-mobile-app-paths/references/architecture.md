@@ -27,8 +27,10 @@ SMAP 以黑盒方式扫描 HarmonyOS App 的稳定可达状态和交互路径。
 
 系统只有两种模式：
 
-- `exploration`：locality-aware bounded BFS，覆盖浅层主干和安全分支。
-- `goal-directed`：由文字和单张截图驱动的启发式搜索，候选需人工确认。
+- `exploration`：locality-aware bounded BFS，从一个 Start Page 扩展地图；默认 Start Page 是 App root，也可由用户指定页面并确认。
+- `goal-directed`：目标引导探索。Agent 将用户一次性提供的目标页面名称、参考路径或大致方向、页面匹配证据和可选截图整理为 `GuideSpec + TargetSpec`，调度器按目标相关度优先探索，候选需人工确认。
+
+模式差异通过 `scripts/lib/modes/*` 的 Mode Runtime 隔离。`lib/modes/contracts.js` 提供无副作用的模式协议声明，schema、计划展示和预算/profile 读取同一份 scope/profile/verificationRule/调度能力；公共引擎只调用 mode hook 获取候选优先级、候选门控、预工作项和完成原因。探索模式通过 `exploration-start.json` 提供 Start Scope 候选门控、局部深度和 `RESOLVE_EXPLORATION_START` 预工作项，但不读取 `goal/`；目标模式的地图预检、目标走廊候选门控、目标候选加权和 `GOAL_FOUND_VERIFIED` 完成条件只在 `goal-directed` runtime 中启用。
 
 Continuation 是 `PARTIAL` 父 Run 与新 Run 的血缘关系，不是执行模式。
 
@@ -153,7 +155,7 @@ BACK 不从 `arrivalSignature` 推断。只有 `back-capability.js` 在新鲜来
 
 ## 7. 调度与 Attempt
 
-Frontier Scheduler 使用 bounded BFS 的深度和优先级，同时加入位置成本：
+Frontier Scheduler 使用 bounded BFS 的深度和优先级，同时加入位置成本；探索模式的深度成本来自本次 Start Page 的局部 `depthFromStart`，目标模式仍使用目标相关度和全局路径深度作为排序输入：
 
 ```text
 score = semanticPriority + depthCost + navigationCost + deterministicTieBreak
@@ -161,9 +163,12 @@ score = semanticPriority + depthCost + navigationCost + deterministicTieBreak
 
 navigationCost 在 Claim 时根据最新 Cursor 计算，而不是在 Frontier 创建时固定。这样能连续消费同一来源和附近页面的候选，同时保持确定性边界。
 
+探索模式的 Start Page 解析是 Run 内 Projection，不改变 canonical map 根节点。`app-root` 起点在根 ReachableState 建立时自动解析；`specified-page` 先用页面名称、参考路径和匹配证据在 seed graph 中产生候选，用户确认后写入 `startReachableStateId`。调度器只消费 Start 范围内的 Frontier、Suggestion、Backfill 状态和必要验证；范围外历史待办不会阻塞本次 `COMPLETED`。
+
 统一 `nextWork()` 返回：
 
 - `DISCOVER`：存在可领取 Frontier 且必要验证容量充足。
+- `RESOLVE_EXPLORATION_START`：探索模式 Start Page 尚未解析，先执行返回的 `exploration-start.js` 命令；指定页面候选需要人工确认。
 - `BACKFILL_FRONTIER_SUGGESTIONS`：Frontier 和本 Run suggestion 已空，但当前 Run 实时 coverage 或 inherited canonical `candidateCoverage` 指出某些状态仍为 `UNKNOWN/PARTIAL`，返回精确 `reachableStateIds` 和 `suggestedCommand`，先只为这些状态从本 Run 或历史 Observation 引用生成下一批 suggestion。
 - `REVIEW_FRONTIER_CANDIDATES`：存在未知候选或复杂候选页，需要 agent 复用同一 Observation 截图和 layout 做视觉候选复核。
 - `SUGGEST_FRONTIER`：Frontier 已空但还有可应用候选建议，先把安全、未重复、未阻塞且未超预算的建议应用为 Frontier。
@@ -203,7 +208,7 @@ Attempt 固定 `claimToken`、候选哈希、来源状态、NavigationPlan、Cur
 稳定的 A → action → B 证据可提交 Edge，其初始 `replayStatus=UNVERIFIED`。提交后的 Edge 只要动作语义、安全和副作用规则允许，就可进入 runnable path；Verification Queue 独立执行冷启动完整重放：
 
 - 探索模式：每个新 LogicalScreen 选择一条当前规范路径，规则为 `CANONICAL_SCREEN_PATH`。
-- 目标模式：人工确认目标后验证该路径，规则为 `CONFIRMED_TARGET_PATH`。
+- 目标模式：先执行一次已知地图目标预检；若 seed graph 中已有满足 `TargetSpec` 的 ReachableState，则写入 `KNOWN_MAP_PRECHECK` 候选并暂停人工确认，确认后验证该已知路径。明确参考路径下缺少 `requiredTexts` 的弱候选只作为 suppressed 审计。未命中时按 `GuideSpec` 进入目标走廊探索：有目标相关 Frontier/Suggestion/Backfill 时先消费目标相关项，相关项耗尽后才扩大探索。人工确认目标后验证该路径，规则为 `CONFIRMED_TARGET_PATH`。有截图时最终目标匹配绑定参考截图；无截图时最终目标匹配依赖 `TargetSpec` 的语义结构强证据。
 
 Verification task key 绑定 `contextId + LogicalScreen/Decision + transitionFingerprintChain`。Task 表达稳定验证意图；每次运行创建唯一 `VerificationExecution`，记录 attemptNo、lease、固定 Edge/指纹链和结果。同页面规范路径变化时旧待办标为 `SUPERSEDED`，不同转换指纹不能继承验证。
 
@@ -221,7 +226,7 @@ Verification task key 绑定 `contextId + LogicalScreen/Decision + transitionFin
 
 验证状态不决定路径是否出现在地图里；它只决定 `verifiedPathEdgeIds`、`pathStatus` 和人工审阅提示。
 
-目标路径还需最终截图强匹配。必要任务处于 `PENDING`、`RUNNING` 或 `FAILED` 时，Run 不能 `COMPLETED`。
+目标路径还需最终目标强匹配。有截图目标要求最终截图与参考截图绑定并满足语义结构证据；无截图目标要求最终页面满足语义结构强证据并保留人工确认链。必要任务处于 `PENDING`、`RUNNING` 或 `FAILED` 时，Run 不能 `COMPLETED`。
 
 ## 9. 预算模型
 
@@ -244,7 +249,7 @@ maxDepth
 
 `maxActiveMinutes` 计入动作、稳定观测等待、导航、恢复、验证和自动审查；排除计划确认、人工身份切换、人工候选确认、PAUSED 和产物构建。
 
-`maxScrollsPerState`、`maxCandidatesPerState`、`maxTotalCandidatesPerState`、`cursorFreshnessMs` 等属于 profile 派生的搜索策略参数，不是用户预算。`maxCandidatesPerState` 是每次候选刷新批量上限，不是页面 lifetime 总上限；`maxTotalCandidatesPerState` 是防止单页无限膨胀的保护上限，默认派生为批量上限的 5 倍。`maxEdges` 和 `maxRouteDepth` 已删除；深度统一由 `maxDepth` 约束。
+`maxScrollsPerState`、`maxCandidatesPerState`、`maxTotalCandidatesPerState`、`cursorFreshnessMs` 等属于 profile 派生的搜索策略参数，不是用户预算。`maxCandidatesPerState` 是每次候选刷新批量上限，不是页面 lifetime 总上限；`maxTotalCandidatesPerState` 是防止单页无限膨胀的保护上限，默认派生为批量上限的 5 倍。`maxEdges` 和 `maxRouteDepth` 已删除；深度统一由 `maxDepth` 约束。探索模式中 `maxDepth` 约束局部 `depthFromStart`，调度 scope 可读取 Start Page 下的已知局部图，终态预算校验只统计本 Run 已提交 Attempt 实际到达的最大局部深度；`ReachableState.depth.pathDepth` 继续表示 canonical map 从 App root 计算的全局深度。
 
 ## 10. 事件、恢复与终态
 
@@ -278,7 +283,7 @@ Restore 是 Navigation 与 Verification 共用的执行子状态机。调用方�
 
 硬预算耗尽是正常收敛原因。`nextWork()` 必须返回 `STOP` 和建议 `PARTIAL`，`finalize-scan.js` 先用关闭活动计时窗口后的 metrics 重新评估终结守卫，再关闭活动计时窗口并做终结校验，避免超时 Run 卡在 `SCANNING`。
 
-终结守卫复用 `nextWork()`，不新增平行调度语义。`COMPLETED` 只接受所有 context 均为 `STOP/WORK_EMPTY`；`PARTIAL` 接受预算耗尽、工作阻塞、工作为空，或带 `--confirm-user-stop true` 的 `USER_STOPPED`。当 `nextWork()` 仍返回 `DISCOVER`、`VERIFY`、`SUGGEST_FRONTIER`、`BACKFILL_FRONTIER_SUGGESTIONS` 或 `REVIEW_FRONTIER_CANDIDATES` 时，除非用户显式停止，否则 `finalize-scan.js` 必须拒绝终结。允许终结时写入 `finalizationAssessed` 事件，并把 assessment 摘要带入 `scanFinalized`。
+终结守卫复用 `nextWork()`，不新增平行调度语义。探索模式 `COMPLETED` 只接受所有 context 均为 `STOP/WORK_EMPTY`，其中工作为空按 Start Scope 判断；目标模式 `COMPLETED` 只接受 `STOP/GOAL_FOUND_VERIFIED`。`PARTIAL` 接受预算耗尽、工作阻塞、工作为空、指定起点未命中，或带 `--confirm-user-stop true` 的 `USER_STOPPED`。当 `nextWork()` 仍返回 `RESOLVE_EXPLORATION_START`、`DISCOVER`、`VERIFY`、`SUGGEST_FRONTIER`、`BACKFILL_FRONTIER_SUGGESTIONS` 或 `REVIEW_FRONTIER_CANDIDATES` 时，除非用户显式停止，否则 `finalize-scan.js` 必须拒绝终结。允许终结时写入 `finalizationAssessed` 事件，并把 assessment 摘要带入 `scanFinalized`。
 
 终态事件写入后 Run 不可变。`PAUSED` 是非终态，可原地恢复且暂停时间不计活动预算。
 
@@ -297,6 +302,8 @@ Snapshot 不再跨 scan 聚合 graph。`build-snapshot.js` 读取 canonical map 
 ## 12. 模块职责
 
 - `lib/run-protocol.js`：协议访问。
+- `lib/modes/*`：模式 runtime 与 contract，集中提供 scope/profile/verificationRule、建议候选能力、目标预检、候选优先级和完成原因。
+- `exploration-start.js` / `lib/exploration-start.js`：探索模式 Start Page 解析、指定起点候选确认、局部 `depthFromStart`、Start Scope 过滤和终态深度预算观测。
 - `lib/observation-store.js`：Observation、layout、screenshot 路径、fingerprint 与语义节点的统一读取入口。
 - `lib/budget.js` / `lib/action-metrics.js`：简化预算、活动时间和分类动作指标。
 - `lib/live-cursor.js`：Cursor lease、epoch、复核、建立和失效。
@@ -305,6 +312,7 @@ Snapshot 不再跨 scan 聚合 graph。`build-snapshot.js` 读取 canonical map 
 - `back-capability.js` / `lib/back-capability-store.js`：BACK 实际采证。
 - `lib/frontier-scheduler.js`：位置感知 Frontier 排序。
 - `next-work.js` / `lib/work-scheduler.js`：发现、验证、停止统一调度。
+- `goal-precheck.js` / `lib/goal-known-target-precheck.js`：目标模式已知地图预检，只读 graph 与 Observation 引用并写入待人工确认的目标候选。
 - `lib/verification-store.js` / `lib/verification-result.js` / `verify-path.js`：规范路径任务、恢复链验证判定和冷启动验证。
 - `lib/review-policy.js`：Restore/Outcome 人工复核请求、可选 disposition 和等价复核可用性。
 - `lib/device-action-executor.js` / `action-runner.js` / `popup-dismiss-runner.js` / `back-capability.js` / `navigate-source.js` / `restore-node.js`：候选动作、弹窗清理、BACK 能力采证、导航执行和恢复回放的 ActionResult/Restore 证据、Operation Journal 与 bridge 下发。

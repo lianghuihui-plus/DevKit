@@ -17,6 +17,14 @@ const { assertInterruptionCleanupReview, assertDismissalMatchesAssessment } = re
 const { assertVisualCandidateReviewSuggestion } = require('./lib/visual-candidate-review-store');
 const { canonicalIntentIdentity, intentFromAction, locatorEvidenceFor } = require('./lib/action-intent');
 const { locatorReplayabilityReason } = require('./lib/replayability');
+const { modeForScan } = require('./lib/modes');
+const { loadExplorationStart } = require('./lib/exploration-start');
+
+function goalFoundVerified(scanDir, scan) {
+  if (scan.scanMode !== 'goal-directed') return false;
+  const result = readJson(path.join(scanDir, 'goal', 'match-result.json'), null);
+  return result?.status === 'FOUND_VERIFIED';
+}
 
 function requireObservation(scanDir, observationId, contextId) {
   const dir = path.join(scanDir, 'evidence', 'observations', observationId); const observation = readJson(path.join(dir, 'observation.json'));
@@ -87,7 +95,7 @@ function compareObservations(scanDir, beforeId, afterId, contextId) {
 }
 
 function validate(scanDir, requestedStatus, options = {}) {
-  const scan = loadScan(scanDir); const completed = requestedStatus === 'COMPLETED'; const strictClaim = Number(scan.attemptProtocolVersion || 1) >= 2; const summary = { contexts: {}, observations: new Set(), actions: new Set(), attempts: new Set() }; const executionClosure = isCurrentRun(scan) ? require('./lib/execution-closure').validateExecutionClosure(scanDir, scan, requestedStatus) : null;
+  const scan = loadScan(scanDir); const completed = requestedStatus === 'COMPLETED'; const goalCompleted = completed && goalFoundVerified(scanDir, scan); const strictClaim = Number(scan.attemptProtocolVersion || 1) >= 2; const summary = { contexts: {}, observations: new Set(), actions: new Set(), attempts: new Set() }; const executionClosure = isCurrentRun(scan) ? require('./lib/execution-closure').validateExecutionClosure(scanDir, scan, requestedStatus) : null;
   const visualReviewRequired = Number(scan.visualReviewProtocolVersion || 0) >= 1;
   if (['COMPLETED', 'PARTIAL'].includes(requestedStatus)) {
     const confirmed = readJson(path.join(scanDir, 'plan.json')); const { planHash, confirmedAt, ...plan } = confirmed; void confirmedAt;
@@ -108,12 +116,15 @@ function validate(scanDir, requestedStatus, options = {}) {
       for (const check of preparation.stabilityChecks || []) { requireObservation(scanDir, check.beforeObservationId, contextId); requireObservation(scanDir, check.afterObservationId, contextId); }
     }
     const graph = loadGraph(scanDir, contextId); validateGraph(graph); const frontier = loadFrontier(scanDir, contextId); const graphProtocolVersion = Number(scan.graphProtocolVersion || 1);
+    const mode = isCurrentRun(scan) ? modeForScan(scan) : null;
+    const guidance = mode?.loadGuidance ? mode.loadGuidance({ scanDir, scan, contextId, graph, frontier }) : null;
+    const scopedPendingFrontiers = mode?.filterFrontiers ? mode.filterFrontiers({ items: (frontier.items || []).filter(x => ['PENDING', 'RETRYABLE'].includes(x.status)), scanDir, scan, contextId, graph, frontier, guidance }) : (frontier.items || []).filter(x => ['PENDING', 'RETRYABLE'].includes(x.status));
     if (graphProtocolVersion >= 4 && graph.edges.some(edge => edge.action !== undefined)) fail(`Context ${contextId} contains legacy Edge action storage under current graph rules`, 'GRAPH_SCHEMA_UNSUPPORTED');
     if (graphProtocolVersion >= 2 && graph.edges.some(edge => edge.intent?.type === 'wait')) fail(`Context ${contextId} contains a wait Edge under current graph rules`, 'NON_GRAPH_ACTION');
     if (graphProtocolVersion >= 2 && frontier.items.some(item => item.candidate?.type === 'wait')) fail(`Context ${contextId} contains a wait frontier under current graph rules`, 'NON_GRAPH_ACTION');
     if (completed && !graph.reachableStates.some(x => (x.depth?.pathDepth || 0) === 0)) fail(`Context ${contextId} has no root ReachableState`, 'RUN_INCOMPLETE');
     if (frontier.items.some(x => x.status === 'CLAIMED')) fail(`Context ${contextId} has an unfinished claimed frontier`, 'RUN_INCOMPLETE');
-    if (completed && scan.scanMode === 'exploration' && frontier.items.some(x => ['PENDING', 'RETRYABLE'].includes(x.status))) fail(`Context ${contextId} still has explorable frontier items`, 'RUN_INCOMPLETE');
+    if (completed && scan.scanMode === 'exploration' && scopedPendingFrontiers.length) fail(`Context ${contextId} still has explorable frontier items`, 'RUN_INCOMPLETE');
     for (const visual of graph.visualStates) {
       const localEvidenceIds = visual.evidenceObservationIds || [];
       const inheritedRefs = visual.evidenceObservationRefs || [];
@@ -169,8 +180,9 @@ function validate(scanDir, requestedStatus, options = {}) {
         if (!(anchors.requiredTexts || []).length && !(anchors.requiredIds || []).length && !(anchors.requiredTitles || []).length && !(anchors.requiredTabs || []).length) fail(`State equivalence rule ${rule.ruleId} has no semantic anchors`, 'STATE_EQUIVALENCE_INVALID');
       }
       const cursor = loadCursor(scanDir, contextId); if (cursor.contextId !== contextId || !['EXACT', 'SOURCE_CONFIRMED', 'REVIEW_CONFIRMED', 'UNKNOWN'].includes(cursor.status)) fail('Live Cursor is invalid', 'CURSOR_INVALID'); if (['EXACT', 'SOURCE_CONFIRMED', 'REVIEW_CONFIRMED'].includes(cursor.status) && (!graph.reachableStates.some(item => item.id === cursor.reachableStateId) || !cursor.observationId)) fail('Cursor references missing state or observation', 'CURSOR_INVALID'); if (cursor.status === 'SOURCE_CONFIRMED' && cursor.equivalence?.type !== 'SOURCE_MATCH') fail('SOURCE_CONFIRMED Cursor lacks source match evidence', 'CURSOR_INVALID'); if (cursor.equivalence?.ruleId && ![...(visualEquivalence.rules || []), ...(stateEquivalence.rules || [])].some(rule => rule.ruleId === cursor.equivalence.ruleId)) fail('Cursor equivalence rule is missing', 'CURSOR_INVALID');
-      const queue = loadVerificationQueue(scanDir, contextId); const duplicateKeys = queue.items.map(item => item.taskKey).filter((key, index, all) => all.indexOf(key) !== index); if (duplicateKeys.length) fail('Verification queue contains duplicate task keys', 'VERIFICATION_QUEUE_INVALID');
+      const queue = loadVerificationQueue(scanDir, contextId); const scopedQueueItems = mode?.filterVerifications ? mode.filterVerifications({ items: queue.items, scanDir, scan, contextId, graph, frontier, guidance }) : queue.items; const duplicateKeys = queue.items.map(item => item.taskKey).filter((key, index, all) => all.indexOf(key) !== index); if (duplicateKeys.length) fail('Verification queue contains duplicate task keys', 'VERIFICATION_QUEUE_INVALID');
       const suggestions = readJson(path.join(contextDir(scanDir, contextId), 'frontier-suggestions.json'), { schemaVersion: 1, contextId, items: [] });
+      const scopedPendingSuggestions = mode?.filterSuggestions ? mode.filterSuggestions({ items: suggestions.items.filter(item => item.status === 'PENDING'), scanDir, scan, contextId, graph, frontier, guidance }) : suggestions.items.filter(item => item.status === 'PENDING');
       const suggestionIds = suggestions.items.map(item => item.suggestionId).filter(Boolean); if (new Set(suggestionIds).size !== suggestionIds.length) fail('Frontier suggestions contain duplicate ids', 'FRONTIER_SUGGESTIONS_INVALID');
       const maxSuggestionCounter = suggestionIds.reduce((max, id) => { const match = String(id).match(/^suggest-(\d+)$/); return match ? Math.max(max, Number(match[1])) : max; }, 0);
       if (Number(scan.counters?.suggestion || 0) < maxSuggestionCounter) fail('Frontier suggestion counter is behind seeded suggestions', 'FRONTIER_SUGGESTIONS_INVALID');
@@ -181,10 +193,14 @@ function validate(scanDir, requestedStatus, options = {}) {
         if (suggestion.visualCandidateReviewId) assertVisualCandidateReviewSuggestion(scanDir, suggestion, contextId);
         if (suggestion.status === 'APPLIED' && !frontier.items.some(item => item.id === suggestion.frontierId)) fail(`Applied frontier suggestion ${suggestion.suggestionId || '<missing>'} references missing Frontier`, 'FRONTIER_SUGGESTIONS_INVALID');
       }
-      if (completed && suggestions.items.some(item => item.status === 'PENDING')) fail('Run has pending frontier suggestions', 'RUN_INCOMPLETE');
-      if (completed && queue.items.some(item => ['PENDING', 'RUNNING', 'FAILED'].includes(item.status))) fail('Run has unfinished or failed required verification tasks', 'RUN_INCOMPLETE');
+      if (scan.scanMode === 'exploration') {
+        const explorationStart = loadExplorationStart(scanDir, contextId);
+        if (!explorationStart.startReachableStateId && explorationStart.kind === 'specified-page' && completed) fail('Exploration start is not resolved', 'EXPLORATION_START_UNRESOLVED');
+      }
+      if (completed && !goalCompleted && scopedPendingSuggestions.length) fail('Run has pending frontier suggestions', 'RUN_INCOMPLETE');
+      if (completed && scopedQueueItems.some(item => ['PENDING', 'RUNNING', 'FAILED'].includes(item.status) && !(goalCompleted && item.reason !== 'CONFIRMED_TARGET_PATH'))) fail('Run has unfinished or failed required verification tasks', 'RUN_INCOMPLETE');
       const metrics = options.metricsOverridesByContext?.[contextId] || readJson(path.join(contextDir(scanDir, contextId), 'metrics.json'), {}); const categorized = ['explorationActions', 'navigationActions', 'recoveryActions', 'verificationActions', 'interruptionActions'].reduce((sum, key) => sum + Number(metrics[key] || 0), 0); if (categorized !== Number(metrics.actions || 0)) fail('Categorized action metrics do not equal total actions', 'METRICS_INVALID');
-      const budget = runBudget(scan, contextId); const usage = budgetUsage(scan, graph, frontier, metrics); const limits = [['MAX_STATES', usage.states, maxStates(budget), { baselineStates: usage.baselineStates, totalStates: usage.totalStates }], ['MAX_DEVICE_ACTIONS', usage.actions, maxDeviceActions(budget)], ['MAX_COLD_STARTS', usage.coldStarts, maxColdStarts(budget)], ['MAX_ACTIVE_MINUTES', usage.durationMinutes, activeLimitMinutes(budget)], ['MAX_DEPTH', Math.max(0, ...graph.reachableStates.map(item => Number(item.depth?.pathDepth || 0))), maxDepth(budget)]]; const exceeded = limits.find(([code, used, limit]) => used > limit && (completed || code !== 'MAX_ACTIVE_MINUTES')); if (exceeded) fail(`${exceeded[0]} exceeded at terminal validation: ${exceeded[1]} > ${exceeded[2]}${exceeded[3] ? ` (baseline=${exceeded[3].baselineStates}, total=${exceeded[3].totalStates})` : ''}`, 'BUDGET_LIMIT_EXCEEDED');
+      const budget = runBudget(scan, contextId); const usage = budgetUsage(scan, graph, frontier, metrics); const observedDepth = mode?.observedDepthForBudget ? mode.observedDepthForBudget({ scanDir, scan, contextId, graph, frontier, guidance }) : Math.max(0, ...graph.reachableStates.map(item => Number(item.depth?.pathDepth || 0))); const limits = [['MAX_STATES', usage.states, maxStates(budget), { baselineStates: usage.baselineStates, totalStates: usage.totalStates }], ['MAX_DEVICE_ACTIONS', usage.actions, maxDeviceActions(budget)], ['MAX_COLD_STARTS', usage.coldStarts, maxColdStarts(budget)], ['MAX_ACTIVE_MINUTES', usage.durationMinutes, activeLimitMinutes(budget)], ['MAX_DEPTH', observedDepth, maxDepth(budget)]]; const exceeded = limits.find(([code, used, limit]) => used > limit && (completed || code !== 'MAX_ACTIVE_MINUTES')); if (exceeded) fail(`${exceeded[0]} exceeded at terminal validation: ${exceeded[1]} > ${exceeded[2]}${exceeded[3] ? ` (baseline=${exceeded[3].baselineStates}, total=${exceeded[3].totalStates})` : ''}`, 'BUDGET_LIMIT_EXCEEDED');
     }
   }
   if (fs.existsSync(path.join(scanDir, 'attempts'))) for (const name of fs.readdirSync(path.join(scanDir, 'attempts')).filter(x => x.endsWith('.json'))) {

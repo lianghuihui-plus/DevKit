@@ -10,7 +10,9 @@ const { normalizeBounds, normalizeText, boundsOverlap } = require('./semantic-fi
 const { loadFrontierSuggestions, suggestionUpsertOp, pendingSuggestionsForState } = require('./frontier-suggestions-store');
 const { assessAction } = require('./safety');
 const { runBudget, maxCandidatesPerState, maxTotalCandidatesPerState, maxDepth, maxScrollsPerState } = require('./run-protocol');
+const { frontierNextDepthFromStart } = require('./exploration-start');
 const { candidateCoverageBasis } = require('./candidate-coverage');
+const { modeForScan } = require('./modes');
 
 const DATA_SKIP_CLASSES = new Set(['DYNAMIC_DATA_ITEM', 'BUSINESS_DATA_ITEM']);
 
@@ -218,7 +220,9 @@ function draftSuggestionItems({ scanDir, scan, contextId, graph, frontier, reach
   const knownCandidateHashes = includeExistingSuggestions ? existingCandidateHashes(frontier, { items: [] }, reachableStateId) : existingCandidateHashes(frontier, suggestions, reachableStateId);
   const candidateRules = candidateRulesForScan(scanDir, scan);
   const coverageBasis = candidateCoverageBasis({ state: reachableState, visualState, scan, budget, candidateRules });
-  const extracted = extractCandidates({ reachableState, visualState, observationId: resolved.observationId, layout, existingKeys: knownKeys, existingCandidateHashes: knownCandidateHashes, limit: Math.max(0, limit), candidateRules });
+  const mode = modeForScan(scan);
+  const guidance = mode.loadGuidance({ scanDir, scan, contextId, graph, frontier });
+  const extracted = extractCandidates({ reachableState, visualState, observationId: resolved.observationId, layout, existingKeys: knownKeys, existingCandidateHashes: knownCandidateHashes, limit: Math.max(0, limit), candidateRules, prioritizeCandidate: suggestion => mode.prioritizeSuggestion(suggestion, guidance) });
   const dynamicAudit = extracted.dynamicAudit || { reasonCode: 'DYNAMIC_DATA_ITEMS_SUPPRESSED', totalCount: 0, emittedCount: 0, suppressedCount: 0, sampleCandidateGroupKeys: [] };
   const drafts = extracted.map((item, index) => ({ draftId: `draft-${String(index + 1).padStart(2, '0')}`, ...item }));
   const skipped = [];
@@ -295,7 +299,7 @@ function buildSuggestionItems({ scanDir, scan, contextId, graph, frontier, reach
   return { created, skipped, dynamicAudit, ops, reachableState, visualState, observationId: drafted.observationId, observationRef, evidenceSource };
 }
 
-function suggestionApplicability({ scan, contextId, graph, frontier, suggestion, dependencyBlocking = null, acceptSafe = true }) {
+function suggestionApplicability({ scanDir, scan, contextId, graph, frontier, suggestion, dependencyBlocking = null, acceptSafe = true }) {
   if (!suggestion || suggestion.status !== 'PENDING') return { applicable: false, reasonCode: 'SUGGESTION_NOT_PENDING' };
   if (isDynamicDataCandidate(suggestion)) return { applicable: false, reasonCode: 'DYNAMIC_DATA_ITEM' };
   if (suggestion.candidateClass === 'UNKNOWN_REVIEW_REQUIRED' && !suggestion.visualCandidateReviewId) return { applicable: false, reasonCode: 'UNKNOWN_REVIEW_REQUIRED' };
@@ -309,7 +313,9 @@ function suggestionApplicability({ scan, contextId, graph, frontier, suggestion,
   const fromItems = (frontier.items || []).filter(item => item.fromReachableStateId === suggestion.reachableStateId);
   if (fromItems.some(item => item.candidateGroupKey === suggestion.candidateGroupKey)) return { applicable: false, reasonCode: 'DUPLICATE_FRONTIER' };
   if (fromItems.filter(countedCandidateItem).length >= maxTotalCandidatesPerState(budget)) return { applicable: false, reasonCode: 'MAX_TOTAL_CANDIDATES_PER_STATE' };
-  if ((fromState.depth?.pathDepth || 0) + 1 > maxDepth(budget)) return { applicable: false, reasonCode: 'MAX_DEPTH' };
+  const nextDepthFromStart = frontierNextDepthFromStart({ scanDir, scan, contextId, graph, frontier: { fromReachableStateId: suggestion.reachableStateId } });
+  if (nextDepthFromStart === null) return { applicable: false, reasonCode: 'EXPLORATION_START_UNRESOLVED_OR_OUT_OF_SCOPE' };
+  if (nextDepthFromStart > maxDepth(budget)) return { applicable: false, reasonCode: 'MAX_DEPTH' };
   if (suggestion.candidate?.type === 'swipe') {
     const scrollGroups = new Set(fromItems.filter(item => item.candidate?.type === 'swipe').map(item => item.candidateGroupKey));
     if (!scrollGroups.has(suggestion.candidateGroupKey) && scrollGroups.size >= maxScrollsPerState(budget)) return { applicable: false, reasonCode: 'MAX_SCROLLS_PER_STATE' };
@@ -323,7 +329,7 @@ function applicableSuggestions({ scanDir, scan, contextId, graph, frontier, reac
   const applicable = [];
   const skipped = [];
   for (const suggestion of items) {
-    const result = suggestionApplicability({ scan, contextId, graph, frontier, suggestion, dependencyBlocking, acceptSafe });
+    const result = suggestionApplicability({ scanDir, scan, contextId, graph, frontier, suggestion, dependencyBlocking, acceptSafe });
     if (result.applicable) applicable.push(suggestion);
     else skipped.push({ suggestionId: suggestion.suggestionId, reachableStateId: suggestion.reachableStateId, reasonCode: result.reasonCode });
   }

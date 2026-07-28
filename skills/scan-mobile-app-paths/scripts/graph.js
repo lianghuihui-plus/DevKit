@@ -10,6 +10,7 @@ const { activeContextId, runBudget, maxDepth } = require('./lib/run-protocol');
 const { establishCursor } = require('./lib/live-cursor');
 const { loadObservationBundle } = require('./lib/observation-store');
 const { assertAcceptedVisualReview } = require('./lib/visual-review-store');
+const { resolveAppRootStartValue } = require('./lib/exploration-start');
 
 function requireObservation(scanDir, id) {
   return loadObservationBundle(scanDir, id, { requireComplete: true, requireFiles: true });
@@ -88,6 +89,8 @@ main(() => {
       const visual = graph.visualStates.find(item => item.id === root.visualStateId);
       const observationId = visual?.evidenceObservationIds?.at(-1) || null;
       const cursor = observationId ? establishCursor(scanDir, contextId, { reachableStateId: root.id, observationId, status: 'SOURCE_CONFIRMED', establishedBy: 'ROOT_STATE', equivalence: { type: 'SOURCE_MATCH', status: 'SOURCE_CONFIRMED', confidence: 0.9, observationId, evidence: { comparison: visual?.dedupe?.status || 'PROBABLE', source: 'ROOT_STATE_BIND' } } }, { incrementEpoch: true }) : null;
+      const startValue = resolveAppRootStartValue(scanDir, contextId, graph, { resolvedBy: 'ROOT_STATE_BIND' });
+      if (startValue) commitEvent(scanDir, 'explorationStartResolved', { contextId, kind: startValue.kind, startReachableStateId: startValue.startReachableStateId, resolvedBy: startValue.resolvedBy }, [{ path: `contexts/${contextId}/exploration-start.json`, op: 'REPLACE', value: startValue }]);
       return output({ schemaVersion: 1, ok: true, reachableState: root, created: false, rootBound: true, cursor });
     }
     const exists = graph.reachableStates.some(x => x.visualStateId === visualStateId && hashObject(x.arrivalSignature || {}) === hashObject(arrivalSignature));
@@ -96,7 +99,11 @@ main(() => {
     const depth = jsonArg(args.depth, { pathDepth: 0, routeDepth: 0, modalDepth: 0 }); if (depth.pathDepth !== 0 || depth.routeDepth !== 0 || depth.modalDepth !== 0) fail('Direct ReachableState must be a depth-zero non-modal root', 'SCAN_ENGINE_REQUIRED'); const budget = runBudget(scan, contextId); if (depth.pathDepth > maxDepth(budget)) fail('ReachableState exceeds depth budget', 'BUDGET_EXHAUSTED');
     const pathEdgeIds = jsonArg(args.runnablePathEdgeIds, jsonArg(args.replayPathEdgeIds, []), 'runnablePathEdgeIds JSON');
     const result = store.upsertReachableState(graph, { id: args.reachableStateId, visualStateId, arrivalSignature, depth, runnablePathEdgeIds: pathEdgeIds });
-    commitEvent(scanDir, 'reachableStateUpserted', { contextId, reachableStateId: result.reachableState.id, visualStateId: result.reachableState.visualStateId, created: result.created, reachableState: result.reachableState }, [{ path: `contexts/${contextId}/graph.json`, op: 'UPSERT', collection: 'reachableStates', keyFields: ['id'], value: result.reachableState, recompute: 'GRAPH' }]);
+    const graphOp = { path: `contexts/${contextId}/graph.json`, op: 'UPSERT', collection: 'reachableStates', keyFields: ['id'], value: result.reachableState, recompute: 'GRAPH' };
+    const startValue = resolveAppRootStartValue(scanDir, contextId, graph, { resolvedBy: 'ROOT_STATE' });
+    const ops = [graphOp];
+    if (startValue) ops.push({ path: `contexts/${contextId}/exploration-start.json`, op: 'REPLACE', value: startValue });
+    commitEvent(scanDir, startValue ? 'rootReachableStateUpsertedAndExplorationStartResolved' : 'reachableStateUpserted', { contextId, reachableStateId: result.reachableState.id, visualStateId: result.reachableState.visualStateId, created: result.created, reachableState: result.reachableState, explorationStart: startValue || null }, ops);
     const visual = graph.visualStates.find(item => item.id === result.reachableState.visualStateId); if ((result.reachableState.depth?.pathDepth || 0) === 0 && visual?.evidenceObservationIds?.[0]) establishCursor(scanDir, contextId, { reachableStateId: result.reachableState.id, observationId: visual.evidenceObservationIds[0], status: 'EXACT', establishedBy: 'ROOT_STATE' }, { incrementEpoch: true });
     return output({ schemaVersion: 1, ok: true, ...result });
   }

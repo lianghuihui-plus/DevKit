@@ -4,6 +4,7 @@ const { assessAction } = require('./safety');
 const { validateGraphCandidate } = require('./schema');
 const { runBudget, maxDepth, maxTotalCandidatesPerState, maxScrollsPerState } = require('./run-protocol');
 const { hashObject, nextId, now } = require('./common');
+const { frontierNextDepthFromStart, stateDepthFromStart } = require('./exploration-start');
 
 function makeFrontierItem({ scanDir, scan, contextId, graph, frontier, fromReachableStateId, candidate, candidateGroupKey = null, priority = {}, sourceFrontierId = null }) {
   const from = fromReachableStateId;
@@ -18,7 +19,10 @@ function makeFrontierItem({ scanDir, scan, contextId, graph, frontier, fromReach
   const fromItems = frontier.items.filter(x => x.fromReachableStateId === from);
   const budget = runBudget(scan, contextId);
   if (fromItems.length >= maxTotalCandidatesPerState(budget)) return { ok: false, created: false, reasonCode: 'MAX_TOTAL_CANDIDATES_PER_STATE' };
-  if ((fromState.depth?.pathDepth || 0) + 1 > maxDepth(budget)) return { ok: false, created: false, reasonCode: 'MAX_DEPTH' };
+  const nextDepthFromStart = frontierNextDepthFromStart({ scanDir, scan, contextId, graph, frontier: { fromReachableStateId: from } });
+  if (nextDepthFromStart === null) return { ok: false, created: false, reasonCode: 'EXPLORATION_START_UNRESOLVED_OR_OUT_OF_SCOPE' };
+  if (nextDepthFromStart > maxDepth(budget)) return { ok: false, created: false, reasonCode: 'MAX_DEPTH' };
+  const depthFromStart = stateDepthFromStart({ scanDir, scan, contextId, graph, reachableStateId: from });
   const routeIncrement = validated.routeTransition === true || ['navigate', 'openRoute'].includes(validated.type) ? 1 : 0;
   if (validated.type === 'swipe') {
     const scrollGroups = new Set(fromItems.filter(x => x.candidate?.type === 'swipe').map(x => x.candidateGroupKey));
@@ -30,6 +34,8 @@ function makeFrontierItem({ scanDir, scan, contextId, graph, frontier, fromReach
     riskRank,
     nextPathDepth: (fromState.depth?.pathDepth || 0) + 1,
     nextRouteDepth: (fromState.depth?.routeDepth || 0) + routeIncrement,
+    depthFromStart,
+    nextDepthFromStart,
     entryRank: 0,
     selectorRank: 0,
     restoreCost: (fromState.runnablePathEdgeIds || fromState.replayPathEdgeIds || []).length,

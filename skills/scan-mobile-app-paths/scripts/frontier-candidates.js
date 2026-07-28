@@ -13,6 +13,7 @@ const { assessAction } = require('./lib/safety');
 const { flattenLayout, normalizeBounds, normalizeText, boundsOverlap } = require('./lib/semantic-fingerprint');
 const { priorityFor } = require('./lib/frontier-candidate-extractor');
 const { isAutoApplyCandidate } = require('./lib/candidate-classifier');
+const { modeForScan } = require('./lib/modes');
 
 const DATA_SKIP_CLASSES = new Set(['DYNAMIC_DATA_ITEM', 'BUSINESS_DATA_ITEM']);
 
@@ -193,11 +194,13 @@ function visualCandidateReviewRef(reviewId) {
 }
 
 function materializeReviewSuggestions({ scanDir, scan, contextId, reachableState, visualState, observationId, observationRef, evidenceSource, suggestionsStore, reviewId, acceptedDrafts, supplemented }) {
+  const mode = modeForScan(scan);
+  const guidance = mode.loadGuidance({ scanDir, scan, contextId });
   const candidates = [
     ...acceptedDrafts.map(item => ({ ...item, reviewOrigin: 'ACCEPTED_DRAFT' })),
     ...supplemented.map(item => {
       const candidateGroupKey = visualCandidateGroupKey(reachableState, item.candidate, item.source);
-      return {
+      return mode.prioritizeSuggestion({
         reachableStateId: reachableState.id,
         visualStateId: visualState.id,
         observationId,
@@ -210,7 +213,7 @@ function materializeReviewSuggestions({ scanDir, scan, contextId, reachableState
         classification: item.classification || { candidateClass: item.candidateClass || 'UNKNOWN_REVIEW_REQUIRED', reasonCodes: ['SUPPLEMENTED_VISUAL'], confidence: item.confidence },
         rationale: item.rationale || null,
         reviewOrigin: 'SUPPLEMENTED_VISUAL'
-      };
+      }, guidance);
     })
   ];
   const skipped = [];
@@ -459,7 +462,7 @@ main(() => {
         ops.push(suggestionUpsertOp(contextId, suggestion));
         continue;
       }
-      const applicable = suggestionApplicability({ scan, contextId, graph, frontier, suggestion, dependencyBlocking, acceptSafe });
+      const applicable = suggestionApplicability({ scanDir, scan, contextId, graph, frontier, suggestion, dependencyBlocking, acceptSafe });
       if (!applicable.applicable) {
         suggestion.status = statusForApplicability(applicable.reasonCode); suggestion.updatedAt = now(); suggestion.reasonCode = applicable.reasonCode || 'SUGGESTION_NOT_APPLICABLE'; if (suggestion.status === 'BLOCKED') blocked.push(suggestion); else skipped.push(suggestion); ops.push(suggestionUpsertOp(contextId, suggestion)); continue;
       }

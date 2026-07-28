@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { parseArgs, required, resolveScanDir, loadScan, event, output, main, fail } = require('./lib/common');
+const { parseArgs, required, resolveScanDir, loadScan, readJson, commitEvent, output, main, fail } = require('./lib/common');
 const { runContextIds, runContextId } = require('./lib/run-protocol');
 const { buildGoalSpecFromArgs, writeGoalArtifacts } = require('./lib/goal-spec');
 
@@ -18,5 +18,10 @@ main(() => {
     if (!parentGoal || parentGoal.goalSpecHash !== goal.goalSpecHash) fail('Goal Continuation requires the same goalSpecHash as its parent', 'PARENT_GOAL_MISMATCH');
   }
   writeGoalArtifacts(scanDir, goal, screenshotPath);
-  event(scanDir, 'goalParsed', { goalId: goal.goalId, contextId, resultPolicy: goal.resultPolicy }); output({ schemaVersion: 1, ok: true, goal, requiresUserConfirmation: true });
+  commitEvent(scanDir, 'goalParsed', { goalId: goal.goalId, contextId, resultPolicy: goal.resultPolicy, compatibilityEntry: true }, [
+    { path: 'goal/goal.json', op: 'REPLACE', value: readJson(path.join(scanDir, 'goal', 'goal.json')) },
+    { path: 'goal/match-result.json', op: 'REPLACE', value: readJson(path.join(scanDir, 'goal', 'match-result.json')) },
+    { path: 'goal/verified-paths.json', op: 'REPLACE', value: readJson(path.join(scanDir, 'goal', 'verified-paths.json')) }
+  ]);
+  output({ schemaVersion: 1, ok: true, goal, requiresUserConfirmation: true });
 });

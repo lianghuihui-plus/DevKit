@@ -54,6 +54,7 @@ runs/<scan-id>/
 │   ├── frontier-suggestions.json
 │   ├── metrics.json
 │   ├── live-cursor.json
+│   ├── exploration-start.json      # 仅 exploration；Start Page 投影
 │   ├── back-capabilities.json
 │   ├── verification-queue.json
 │   ├── visual-equivalence.json
@@ -72,7 +73,7 @@ runs/<scan-id>/
 │   ├── navigations/<navigation-execution-id>.json
 │   ├── verifications/<verification-id>/<execution-id>.json
 │   └── logs/
-├── goal/                           # 仅目标模式
+├── goal/                           # 仅目标模式；保存 GuideSpec、TargetSpec、可选截图与目标匹配结果
 ├── known/contexts/                 # Continuation 恢复知识
 └── report.md
 ```
@@ -120,12 +121,110 @@ runs/<scan-id>/
 - `context`：身份及准备说明。
 - `profileSelection.availableProfiles`：四个 profile、适用性与派生限制。
 - `userConfiguration`：`profile`、`maxActiveMinutes`、`maxDepth`。
+- 探索模式还必须包含 `explorationStart`：`kind=app-root|specified-page`、`depthBasis=START_PAGE`，以及指定页面起点的页面名称、参考路径和匹配证据。
 - `derivedExecutionLimits`：完整生效预算和策略限制。
 - `budgetBaseline` 与 `stateBudgetSemantics`：canonical seed 的已有状态基线、本 Run 新增状态上限和预计总状态数。
 - `timeExpectation`：活动时间含义与排除项。
 - 安全边界、人工介入点、停止规则、产物路径和 Continuation 摘要。
+- 目标模式还必须包含用户确认后的 `goal`：`guideSpec`、`targetSpec`、`inputKind`、截图 SHA-256（如提供）和 `goalSpecHash`。
 
 计划内容哈希为 `planHash`。确认前配置变化只重新运行 `preview-plan.js` 并得到新哈希，不写正式 Run；确认后 `init-scan.js --confirmed-plan-hash` 写入 `plan.json` 和 `scanPlanConfirmed`。确认后不得原地改计划。
+
+探索模式的 `contexts/<context>/exploration-start.json` 当前结构：
+
+```json
+{
+  "schemaVersion": 1,
+  "contextId": "guest",
+  "kind": "specified-page",
+  "depthBasis": "START_PAGE",
+  "status": "RESOLVED",
+  "spec": {
+    "schemaVersion": 1,
+    "kind": "specified-page",
+    "pageName": "设置",
+    "routeHints": ["学习", "我的", "设置"],
+    "matchEvidence": {
+      "requiredTexts": ["设置"],
+      "optionalTexts": ["设备管理"],
+      "forbiddenTexts": []
+    },
+    "depthBasis": "START_PAGE"
+  },
+  "startReachableStateId": "state-settings",
+  "startVisualStateId": "visual-settings",
+  "pathEdgeIdsFromAppRoot": ["edge-home-profile", "edge-profile-settings"],
+  "candidates": [],
+  "resolvedBy": "KNOWN_MAP_CONFIRMED",
+  "resolvedAt": "2026-07-28T12:00:00.000+08:00",
+  "reasonCode": null
+}
+```
+
+允许状态为 `PENDING_ROOT`、`PENDING`、`CANDIDATE_REVIEW`、`RESOLVED`、`NOT_FOUND`。该文件是 Projection，必须通过 `exploration-start.js` 或根状态建立事件写入，并登记在 artifact registry 的 Projection 白名单中；不得手改。`depthFromStart` 是运行时派生值，不写入 canonical map。
+
+目标模式的 `goal/goal.json` 当前结构：
+
+```json
+{
+  "schemaVersion": 2,
+  "type": "guided-target",
+  "inputKind": "guided-semantic",
+  "description": "账号与安全页面",
+  "guideSpec": {
+    "routeHints": ["首页", "我的", "设置", "账号与安全"],
+    "preferredTexts": ["我的", "设置", "账号", "安全"],
+    "semanticHints": ["账号", "安全", "设置"],
+    "strictness": "medium"
+  },
+  "targetSpec": {
+    "requiredTexts": ["账号与安全"],
+    "optionalTexts": ["手机号", "修改密码"],
+    "layoutAnchors": [],
+    "forbiddenTexts": [],
+    "matchPolicy": "semantic-structural"
+  },
+  "referenceScreenshot": null,
+  "referenceScreenshotSha256": null,
+  "semanticGoalHash": "sha256:...",
+  "goalSpecHash": "sha256:..."
+}
+```
+
+`requiredTexts` 至少包含一个强证据。截图可选；提供截图时 `inputKind=guided-screenshot`，`referenceScreenshot=goal/target.png`，且 `referenceScreenshotSha256` 参与 `goalSpecHash`。
+
+`goal/match-result.json` 可包含目标模式已知地图预检状态：
+
+```json
+{
+  "knownMapPrecheck": {
+    "status": "NO_MATCH | CANDIDATE_FOUND | EXHAUSTED",
+    "checkedAt": "...",
+    "candidateCount": 3,
+    "reviewCandidateCount": 2,
+    "suppressedCandidateCount": 1,
+    "suppressedCandidates": [
+      {
+        "status": "CANDIDATE_UNCERTAIN",
+        "suppressedReasonCode": "UNCERTAIN_MISSING_REQUIRED_TEXT_WITH_ROUTE_HINT",
+        "reachableStateId": "rs-...",
+        "visualStateId": "vs-...",
+        "evidence": {
+          "requiredMatches": [],
+          "missingRequiredTexts": ["设备管理"],
+          "optionalMatches": ["设置"],
+          "anchorMatches": []
+        }
+      }
+    ],
+    "candidateDecisionIds": ["goal-decision-0001", "goal-decision-0002"],
+    "selectedDecisionId": "goal-decision-0001",
+    "exhausted": false
+  }
+}
+```
+
+预检候选复用 `decisions[]`，并写 `source=KNOWN_MAP_PRECHECK`、`observationRef`、`evidenceSource`、`reachableStateId`、`visualStateId` 和路径 Edge 指纹。命中多个已知候选时一次性登记为队列，当前候选被拒绝后推进到下一个 `PENDING` 候选；全部拒绝后写 `EXHAUSTED` 并继续目标引导探索。用户提供明确 `routeHints` 时，缺少 `requiredTexts` 的 `CANDIDATE_UNCERTAIN` 只进入 `suppressedCandidates` 审计，不暂停人工确认。它只是待人工确认候选，不能替代 `CONFIRMED_TARGET_PATH` 冷启动重放和最终目标强匹配。
 
 ## 4. Context、Cursor 与指标
 
@@ -483,7 +582,7 @@ Continuation 只表达执行血缘。新 Run 从当前 `maps/<context>` seed gra
 - 探索模式的当前规范路径验证规则满足；目标模式存在 `FOUND_VERIFIED` 强路径。
 - 五类动作总和、冷启动数、本 Run 新增状态数、深度和活动时间不违反硬预算。
 
-仍有待办或预算耗尽时只能 `PARTIAL`。终态前必须先通过 `finalizationAssessed`：`COMPLETED` 要求 `nextWork=STOP/WORK_EMPTY`；`PARTIAL` 要求预算耗尽、工作阻塞、工作为空，或带显式确认的 `USER_STOPPED`。若 `nextWork` 仍有可继续工作，且没有 `--confirm-user-stop true`，`finalize-scan.js` 必须拒绝写终态。终态先写 `scanFinalized`，事件中携带 `finalizationAssessment` 摘要，随后 `scan.json` 为不可变投影；即使文件被意外回写，加载器仍以终态事件为准拒绝修改。
+仍有待办或预算耗尽时只能 `PARTIAL`。终态前必须先通过 `finalizationAssessed`：探索模式 `COMPLETED` 要求 `nextWork=STOP/WORK_EMPTY`；目标模式 `COMPLETED` 要求 `nextWork=STOP/GOAL_FOUND_VERIFIED` 且存在 `FOUND_VERIFIED` 强路径。目标已验证成功时，不再把目标外候选覆盖未尽写为 `CANDIDATE_BACKFILL_REQUIRED` unresolved。`PARTIAL` 要求预算耗尽、工作阻塞、工作为空，或带显式确认的 `USER_STOPPED`。若 `nextWork` 仍有可继续工作，且没有 `--confirm-user-stop true`，`finalize-scan.js` 必须拒绝写终态。终态先写 `scanFinalized`，事件中携带 `finalizationAssessment` 摘要，随后 `scan.json` 为不可变投影；即使文件被意外回写，加载器仍以终态事件为准拒绝修改。
 
 ## 12. Snapshot 与 Dashboard
 

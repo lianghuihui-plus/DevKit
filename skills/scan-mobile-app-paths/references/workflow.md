@@ -4,7 +4,7 @@
 
 1. [运行边界](#1-运行边界)
 2. [探测与初始化](#2-探测与初始化)
-3. [目标模式输入](#3-目标模式输入)
+3. [探索起点与目标输入](#3-探索起点与目标输入)
 4. [计划展示与确认](#4-计划展示与确认)
 5. [单登录态准备](#5-单登录态准备)
 6. [建立根状态](#6-建立根状态)
@@ -16,7 +16,8 @@
 12. [终结、登记与发布](#12-终结登记与发布)
 13. [暂停与 Continuation](#13-暂停与-continuation)
 14. [Canonical Map 编辑](#14-canonical-map-编辑)
-15. [开发自测](#15-开发自测)
+15. [前置条件 Flow 导出](#15-前置条件-flow-导出)
+16. [开发自测](#16-开发自测)
 
 ## 1. 运行边界
 
@@ -61,7 +62,7 @@ node "$SMAP_SKILL/scripts/preview-plan.js" \
   --profile standard
 ```
 
-生成目标计划预览：
+生成目标引导计划预览。用户输入后，Agent 先整理 `goalSpec` 并展示给用户确认；用户确认该结构化目标后，再把同一 JSON 传给预览和正式 Run：
 
 ```bash
 node "$SMAP_SKILL/scripts/preview-plan.js" \
@@ -69,28 +70,78 @@ node "$SMAP_SKILL/scripts/preview-plan.js" \
   --context authenticated \
   --scan-mode goal-directed \
   --profile goal \
-  --description '进入账号与安全页面' \
-  --screenshot /absolute/path/target.png \
-  --success-criteria '{"requiredTexts":["账号与安全"]}'
+  --goal-spec '{"description":"账号与安全页面","guide":{"routeHints":["首页","我的","设置","账号与安全"],"preferredTexts":["我的","设置","账号","安全"]},"target":{"requiredTexts":["账号与安全"],"optionalTexts":["手机号","修改密码"]}}'
 ```
 
 当前 Run 只接受一个 `--context guest|authenticated`。`--contexts` 仅作为单值兼容别名；传入逗号分隔多值会被拒绝。比较两个登录态时创建两个 Run。
 
 默认 `--navigation-policy adaptive`。只有兼容回归或基线对照才使用 `--navigation-policy always-replay`。
 
-## 3. 目标模式输入
+## 3. 探索起点与目标输入
 
-目标模式在预览计划时直接提供一段文字和一张截图。预览阶段只读取截图、计算哈希并纳入 `planHash`，不创建正式 Run 目录；确认后由 `init-scan.js --confirmed-plan-hash` 把同一目标输入写入 `goal/`。
+探索模式统一从一个 Start Page 开始。默认不需要额外输入，`explorationStart.kind=app-root`，Start Page 是受控冷启动后的 App 根页面。用户要求“从某个页面继续探索”时，Agent 一次性收集：
 
-首期只接受一张目标截图。`GoalSpec` 必须绑定截图 SHA-256、context 和成功条件；不能仅凭整图像素相似度判定成功。
+- 起点页面名称。
+- 参考路径或大致位置。
+- 页面匹配证据，建议至少包含一个 `requiredTexts`。
+
+Agent 把输入整理为 `ExplorationStartSpec`，展示给用户确认。确认块至少包含起点页面、参考路径、强匹配文本、辅助文本和深度含义：“`maxDepth` 从该起点开始算，地图仍显示 App 根页面全局深度。”确认后预览阶段把结构化起点纳入 `planHash`。修改任一起点字段都必须重新预览。
+
+推荐使用 `--exploration-start`：
+
+```json
+{
+  "kind": "specified-page",
+  "pageName": "设置",
+  "routeHints": ["学习", "我的", "设置"],
+  "matchEvidence": {
+    "requiredTexts": ["设置"],
+    "optionalTexts": ["设备管理", "账号与安全"]
+  }
+}
+```
+
+指定起点只改变探索范围与局部深度，不改变模式；`scanMode` 仍为 `exploration`。
+
+目标模式是目标引导探索，不再是普通探索后的被动目标判断。用户选择该模式后，Agent 一次性交互收集：
+
+- 目标页面名称。
+- 参考路径或大致方向；可以很具体，也可以是“在我的/设置附近”这类方向。
+- 页面匹配证据；至少需要一个强证据写入 `target.requiredTexts`。
+- 可选目标截图路径；截图不是必填。
+
+Agent 把用户输入整理为 `GuideSpec + TargetSpec`，展示给用户确认。确认块至少包含目标页面、参考路径、优先探索线索、目标强证据、目标辅助证据和截图状态。用户确认后，预览阶段把结构化目标纳入 `planHash`，不创建正式 Run 目录；确认后由 `init-scan.js --confirmed-plan-hash` 把同一目标输入写入 `goal/`。确认后不得静默修改目标；修改任一目标字段都必须重新预览。
+
+推荐使用 `--goal-spec`，避免把目标拆成过多命令行参数：
+
+```json
+{
+  "description": "账号与安全页面",
+  "guide": {
+    "routeHints": ["首页", "我的", "设置", "账号与安全"],
+    "preferredTexts": ["我的", "设置", "账号", "安全"],
+    "semanticHints": ["账号", "安全", "设置"],
+    "strictness": "medium"
+  },
+  "target": {
+    "requiredTexts": ["账号与安全"],
+    "optionalTexts": ["手机号", "修改密码"],
+    "layoutAnchors": [],
+    "forbiddenTexts": []
+  }
+}
+```
+
+如有目标截图，额外传 `--screenshot /absolute/path/target.png`；脚本会复制到 `goal/target.png` 并把 SHA-256 纳入 `goalSpecHash`。无截图时 `GoalSpec.inputKind=guided-semantic`，使用 `semanticGoalHash` 绑定文本与结构证据。
 
 ## 4. 计划展示与确认
 
 预览命令输出 `createsRunDirectory=false`、建议 `scanId`、`planHash`、结构化 `initArgs` 和可直接执行的 `initCli`。Agent 在一个确认点展示计划：
 
 - App、设备、环境、App 版本、扫描模式和唯一 `contextId`。
+- 探索模式的 Start Page：默认 `app-root`；指定页面起点时展示页面名称、参考路径、匹配证据和 `maxDepth` 的局部深度语义。
 - 四个 profile 的适用模式及派生限制，并标明当前选择。
-- 用户可配置的 `profile`、`maxActiveMinutes`、`maxDepth` 和相对预设的覆盖；Continuation 或已有 canonical map 场景还要展示当前地图状态基线、本 Run 可新增状态数和预计总状态数。
+- 用户可配置的 `profile`、`maxActiveMinutes`、`maxDepth` 和相对预设的覆盖；探索模式的 `maxDepth` 始终从本次 Start Page 计算，App 根探索时与全局深度等价，指定页面探索时为局部 `depthFromStart`；Continuation 或已有 canonical map 场景还要展示当前地图状态基线、本 Run 可新增状态数和预计总状态数。
 - 只读 `verificationRule` 和 `navigationPolicy`。
 - 活动时间的计入/排除范围、人工介入点、停止条件和硬安全限制。
 - 将要创建的 Run、报告、Snapshot 指针位置；Continuation 还展示父 Run 和导入/跳过待办。
@@ -104,7 +155,7 @@ node "$SMAP_SKILL/scripts/preview-plan.js" \
 | deep | exploration | 60 分钟 | 8 | 1500 | 200 | 100 |
 | goal | goal-directed | 15 分钟 | 7 | 300 | 50 | 30 |
 
-只有 `maxActiveMinutes` 和 `maxDepth` 是用户预算覆盖项。`maxDeviceActions`、`maxStates`、`maxColdStarts` 是随 profile 派生的内部硬上限，不接受普通用户逐项调节。`maxStates` 按 `graph.reachableStates.length - budgetBaseline.baselineReachableStates` 计算，限制本 Run 新增状态数；canonical seed 的已有状态只影响地图总规模展示，不占用本 Run 新增状态预算。
+只有 `maxActiveMinutes` 和 `maxDepth` 是用户预算覆盖项。`maxDepth` 对探索模式表示从本次 Start Page 到新页面的最大局部深度，不改写 canonical map 中从 App 根页面计算的 `pathDepth`。`maxDeviceActions`、`maxStates`、`maxColdStarts` 是随 profile 派生的内部硬上限，不接受普通用户逐项调节。`maxStates` 按 `graph.reachableStates.length - budgetBaseline.baselineReachableStates` 计算，限制本 Run 新增状态数；canonical seed 的已有状态只影响地图总规模展示，不占用本 Run 新增状态预算。
 
 确认前可改配置并重新预览；不要为了改 profile、预算或目标输入创建临时 Run。
 
@@ -120,7 +171,18 @@ node "$SMAP_SKILL/scripts/init-scan.js" \
   --confirmed-plan-hash <planHash>
 ```
 
-目标模式创建正式 Run 时还要传入与预览完全相同的目标输入：
+探索模式若要从指定页面继续扩展地图，预览和正式 Run 必须传入完全相同的 `--exploration-start` JSON；该参数不是新模式，只改变 Start Page 和 `maxDepth` 的计算基准：
+
+```bash
+node "$SMAP_SKILL/scripts/preview-plan.js" \
+  --app-map-root "$APP_MAP_ROOT" \
+  --device <device-id> \
+  --context authenticated \
+  --profile standard \
+  --exploration-start '{"kind":"specified-page","pageName":"设置","routeHints":["学习","我的","设置"],"matchEvidence":{"requiredTexts":["设置"],"optionalTexts":["设备管理","账号与安全"]}}'
+```
+
+目标模式创建正式 Run 时还要传入与预览完全相同的结构化目标输入：
 
 ```bash
 node "$SMAP_SKILL/scripts/init-scan.js" \
@@ -130,9 +192,7 @@ node "$SMAP_SKILL/scripts/init-scan.js" \
   --context authenticated \
   --scan-mode goal-directed \
   --profile goal \
-  --description '进入账号与安全页面' \
-  --screenshot /absolute/path/target.png \
-  --success-criteria '{"requiredTexts":["账号与安全"]}' \
+  --goal-spec '{"description":"账号与安全页面","guide":{"routeHints":["首页","我的","设置","账号与安全"],"preferredTexts":["我的","设置","账号","安全"]},"target":{"requiredTexts":["账号与安全"],"optionalTexts":["手机号","修改密码"]}}' \
   --confirmed-plan-hash <planHash>
 ```
 
@@ -238,18 +298,20 @@ node "$SMAP_SKILL/scripts/next-work.js" \
 
 只按返回结果行动：
 
+- `GOAL_KNOWN_TARGET_PRECHECK`：目标模式且 `verifyKnownPathFirst=true` 时，先执行返回的 `goal-precheck.js evaluate`。这是已知地图预检，不是最终目标验证；命中可确认候选会登记候选队列并暂停等待人工确认。若用户给了明确参考路径，缺少 `requiredTexts` 的 `UNCERTAIN` 候选只写 suppressed 审计，不打断流程；未命中只写 `knownMapPrecheck.status=NO_MATCH`，随后继续目标引导探索。
+- `RESOLVE_EXPLORATION_START`：探索模式的 Start Page 尚未解析。`app-root` 起点通常在根 ReachableState 建立时自动完成；指定页面起点先执行返回的 `exploration-start.js evaluate-known`，把已知地图候选写入 `exploration-start.json`，再由用户用 `exploration-start.js confirm --candidate-id <id>` 或 `--reachable-state-id <id>` 确认起点。确认前不得领取 Frontier。
 - `DISCOVER`：添加/领取 Frontier 并执行候选。
 - `BACKFILL_FRONTIER_SUGGESTIONS`：当前 Run 实时 coverage 或已有 canonical 状态候选覆盖为 `UNKNOWN` / `PARTIAL`，执行返回的 `suggestedCommand` 精准补生成下一批 suggestion，再重新调用 `nextWork()`。
 - `REVIEW_FRONTIER_CANDIDATES`：候选来自复杂页面或被脚本判为未知交互，存在无文本大容器、横向列表、文本子节点被父容器覆盖、业务数据与稳定入口混杂的风险；先运行返回参数中的 `frontier-candidates.js prepare-review`，结合截图做视觉候选复核，再用 `record-visual-review` 写入结构化结论。
-- `SUGGEST_FRONTIER`：当前没有可领取 Frontier，但还有可应用的候选建议；先应用或处理建议，再重新调用 `nextWork()`。
+- `SUGGEST_FRONTIER`：当前没有可领取 Frontier，或目标模式下存在目标相关 suggestion 且当前只有无关 Frontier；先按返回的 `suggestedCommand` 应用或处理建议，再重新调用 `nextWork()`。
 - `VERIFY`：执行返回的验证任务，不再领取新 Frontier。
-- `STOP`：没有开放 Frontier/必要验证，或硬预算已经耗尽，可进入终结检查；返回 `suggestedTerminalStatus=PARTIAL` 时按 `PARTIAL` 收敛。
+- `STOP`：没有开放 Frontier/必要验证，或硬预算已经耗尽，可进入终结检查；指定起点在已知地图里未命中时返回 `EXPLORATION_START_NOT_FOUND` 并建议 `PARTIAL`，需要用户补充起点信息或先通过其他 Run 扩展到该页面；返回 `suggestedTerminalStatus=PARTIAL` 时按 `PARTIAL` 收敛。
 
 `nextWork()` 会根据待验证路径长度、稳定观测耗时和一次冷启动估算必要容量；剩余容量接近该估算时先验证。这是调度保留量，不是独立预算。
 
 如果 `reasonCode` 为 `MAX_ACTIVE_MINUTES`、`MAX_DEVICE_ACTIONS`、`MAX_COLD_STARTS` 或 `MAX_STATES`，不要再尝试动作、导航或验证；直接执行 `finalize-scan.js --status PARTIAL`。
 
-Agent 从稳定截图和控件树产生有限、安全、可解释的候选。新 ReachableState 提交后，脚本会根据控件树和语义指纹写入 `frontier-suggestions.json`；当某状态的当前 Run 实时 coverage 或旧 canonical coverage 为 `UNKNOWN` / `PARTIAL` 时，`nextWork()` 会返回 `BACKFILL_FRONTIER_SUGGESTIONS`，要求用返回的 `suggestedCommand` 为指定状态读取历史或本 Run Observation 并补生成下一批 suggestion。候选分为三类：稳定入口、结构控件和滚动可直接应用；动态业务数据列表项保留有限 `DYNAMIC_DATA_ITEM/SKIPPED` 审计样本，不进入 Frontier，超出部分只写聚合审计；未知交互必须先完成视觉候选复核。稳定入口不是文本白名单命中，而是由控件角色、可点击父容器、导航/工具区位置、短文本形态、同容器数据密度等上下文动态判断；登录、设置、固定功能入口允许进入候选，课程/订单等业务数据列表项应被识别为动态数据项。若任一候选页面存在复杂卡片/横滑区域或未知候选，`nextWork()` 会先返回 `REVIEW_FRONTIER_CANDIDATES`，要求完成对应状态的视觉候选复核；随后当 `nextWork()` 返回 `SUGGEST_FRONTIER` 时，先处理这些建议，不能直接进入路径验证。调度器只会提示来源未被失败依赖阻塞、未超预算、未重复且安全可应用的建议；不可应用建议会在 `STOP` 中建议 `PARTIAL` 或由 `apply` 标为 `SKIPPED/BLOCKED`。若直接对未复核的未知/复杂候选执行 `apply`，脚本必须保持 suggestion 为 `PENDING` 并写入 `UNKNOWN_REVIEW_REQUIRED` 或 `VISUAL_REVIEW_REQUIRED`，不得生成 Frontier。`maxCandidatesPerState` 表示一次刷新最多生成多少个新候选；已生成/执行过的候选会按 `candidateGroupKey` 和候选 hash 去重，后续扫描可以继续取下一批，直到写入 `NO_CANDIDATES_EXTRACTED` 并将覆盖状态收敛为 `EXHAUSTED`。如果一次刷新只发现动态业务数据项，没有固定入口、结构控件、滚动或未知复核候选，也要同时写入 `NO_CANDIDATES_EXTRACTED` 并收敛为 `EXHAUSTED`。`EXHAUSTED` 只在 layout/semantic、候选规则、profile 和候选预算 basis 不变时有效；basis 变化后要重新 backfill。`wait`、纯观测、系统权限确认和高风险动作不得加入 Frontier：
+Agent 从稳定截图和控件树产生有限、安全、可解释的候选。模式差异通过 `scripts/lib/modes/*` 注入，探索模式不加载目标逻辑；目标模式下，候选会按 `GuideSpec` 写入 `priority.goalRelevance`、`guideMatchedTexts` 和 `routeHintStep`。调度器采用目标走廊：只要存在目标相关 Frontier、Suggestion、Review 或 Backfill 状态，就先消费这些相关项；相关项耗尽时才在预算内扩大探索。因此参考路径是强优先方向，不是硬编码路径，也不是普通 BFS 的弱加权。新 ReachableState 提交后，脚本会根据控件树和语义指纹写入 `frontier-suggestions.json`；当某状态的当前 Run 实时 coverage 或旧 canonical coverage 为 `UNKNOWN` / `PARTIAL` 时，`nextWork()` 会返回 `BACKFILL_FRONTIER_SUGGESTIONS`，目标模式下返回的状态列表会先按目标相关过滤，要求用返回的 `suggestedCommand` 为指定状态读取历史或本 Run Observation 并补生成下一批 suggestion。候选分为三类：稳定入口、结构控件和滚动可直接应用；动态业务数据列表项保留有限 `DYNAMIC_DATA_ITEM/SKIPPED` 审计样本，不进入 Frontier，超出部分只写聚合审计；未知交互必须先完成视觉候选复核。稳定入口不是文本白名单命中，而是由控件角色、可点击父容器、导航/工具区位置、短文本形态、同容器数据密度等上下文动态判断；登录、设置、固定功能入口允许进入候选，课程/订单等业务数据列表项应被识别为动态数据项。若目标相关候选页面存在复杂卡片/横滑区域或未知候选，`nextWork()` 会优先返回 `REVIEW_FRONTIER_CANDIDATES`，要求完成对应状态的视觉候选复核；随后当 `nextWork()` 返回 `SUGGEST_FRONTIER` 时，先处理这些建议，不能直接进入路径验证。调度器只会提示来源未被失败依赖阻塞、未超预算、未重复且安全可应用的建议；不可应用建议会在 `STOP` 中建议 `PARTIAL` 或由 `apply` 标为 `SKIPPED/BLOCKED`。若直接对未复核的未知/复杂候选执行 `apply`，脚本必须保持 suggestion 为 `PENDING` 并写入 `UNKNOWN_REVIEW_REQUIRED` 或 `VISUAL_REVIEW_REQUIRED`，不得生成 Frontier。`maxCandidatesPerState` 表示一次刷新最多生成多少个新候选；已生成/执行过的候选会按 `candidateGroupKey` 和候选 hash 去重，后续扫描可以继续取下一批，直到写入 `NO_CANDIDATES_EXTRACTED` 并将覆盖状态收敛为 `EXHAUSTED`。如果一次刷新只发现动态业务数据项，没有固定入口、结构控件、滚动或未知复核候选，也要同时写入 `NO_CANDIDATES_EXTRACTED` 并收敛为 `EXHAUSTED`。`EXHAUSTED` 只在 layout/semantic、候选规则、profile 和候选预算 basis 不变时有效；basis 变化后要重新 backfill。`wait`、纯观测、系统权限确认和高风险动作不得加入 Frontier：
 
 `app.json.candidateRules` 只用于调整通用阈值，例如 `stableEntry.maxTextLength`、`stableEntry.maxGroupTextCount`、`dynamicData.minClusterTextCount`、`dynamicData.maxAuditItemsPerState`；不得用 `fixedEntries` 白名单维护 App 业务入口。
 
@@ -507,7 +569,16 @@ node "$SMAP_SKILL/scripts/verify-path.js" run \
 
 ## 11. 目标候选确认
 
-目标模式对当前状态提交绑定目标截图与 Observation 截图 SHA-256 的结构化视觉判断：
+目标模式会先做一次已知地图预检。预检只读当前 Run seed 进来的 graph 及本 Run/历史 Observation 引用，用 `TargetSpec` 找疑似目标 ReachableState；它不会操作设备，也不会直接判定成功。命中时写入 `goal/match-result.json.decisions[]`，`source=KNOWN_MAP_PRECHECK`，并暂停等待人工确认：
+
+```bash
+node "$SMAP_SKILL/scripts/goal-precheck.js" evaluate \
+  --scan-dir <scan-dir>
+```
+
+人工确认后复用同一 `evaluate-goal.js decide` 与 `verify-goal-path.js` 冷启动重放流程。拒绝当前已知地图候选时，若队列仍有 `PENDING` 候选则保持 `PAUSED` 并推进到下一个候选；全部拒绝后写 `knownMapPrecheck.status=EXHAUSTED`，恢复 `SCANNING` 并继续目标引导探索。未命中或只有 suppressed 弱候选时 `knownMapPrecheck.status=NO_MATCH`，继续目标引导探索。
+
+目标模式对当前状态提交结构化目标判断。必须绑定当前 Observation 截图 SHA-256；若目标提供了参考截图，还必须同时绑定目标截图 SHA-256。无截图目标不可传入无关 referenceSha256：
 
 ```bash
 node "$SMAP_SKILL/scripts/evaluate-goal.js" evaluate \
@@ -531,11 +602,11 @@ node "$SMAP_SKILL/scripts/verify-goal-path.js" confirm \
   --scan-dir <scan-dir> --visual-assessment '<replay-assessment-json>'
 ```
 
-目标完成要求冷启动完整重放后的强匹配；`PROBABLE`、人工初次确认或仅已发现 Edge 都不能替代。
+目标完成要求冷启动完整重放后的强匹配。有截图目标要求参考截图绑定与语义结构证据同时成立；无截图目标要求 `requiredTexts` 等语义结构证据强命中，并经过人工确认。`PROBABLE`、人工初次确认或仅已发现 Edge 都不能替代。
 
 ## 12. 终结、登记与发布
 
-先让 `nextWork()` 收敛，再终结。`finalize-scan.js` 会重新计算当前 `nextWork()` 和开放工作摘要；若仍有可继续的 `DISCOVER`、`VERIFY`、`SUGGEST_FRONTIER`、`BACKFILL_FRONTIER_SUGGESTIONS` 或 `REVIEW_FRONTIER_CANDIDATES`，默认拒绝终结，避免 agent 把安全检查点误当成扫描结束。
+先让 `nextWork()` 收敛，再终结。`finalize-scan.js` 会重新计算当前 `nextWork()` 和开放工作摘要；若仍有可继续的 `RESOLVE_EXPLORATION_START`、`DISCOVER`、`VERIFY`、`SUGGEST_FRONTIER`、`BACKFILL_FRONTIER_SUGGESTIONS` 或 `REVIEW_FRONTIER_CANDIDATES`，默认拒绝终结，避免 agent 把安全检查点误当成扫描结束。
 
 ```bash
 node "$SMAP_SKILL/scripts/finalize-scan.js" \
