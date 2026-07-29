@@ -10,6 +10,9 @@ scope=""
 precondition_id=""
 flow_id=""
 flow_step_id=""
+authorization_source=""
+authorization_step_id=""
+authorization_intent_sha=""
 action_type=""
 settle_ms="${MAVT_ACTION_SETTLE_MS:-1000}"
 target=""
@@ -62,6 +65,23 @@ console.log(JSON.stringify(event, null, 2));
 ' "$value" "$precondition_id" "$flow_id" "$flow_step_id" "${2:-}"
 }
 
+mavt_add_action_authorization() {
+  local value="$1"
+  if [[ -z "$step_id" ]]; then
+    printf '%s' "$value"
+    return
+  fi
+  node -e '
+const event = JSON.parse(process.argv[1]);
+event.authorization = {
+  source: process.argv[2],
+  stepId: process.argv[3],
+  intentSha: process.argv[4],
+};
+console.log(JSON.stringify(event, null, 2));
+' "$value" "$authorization_source" "$authorization_step_id" "$authorization_intent_sha"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --case-dir) case_dir="${2:-}"; shift 2 ;;
@@ -71,6 +91,9 @@ while [[ $# -gt 0 ]]; do
     --precondition-id) precondition_id="${2:-}"; shift 2 ;;
     --flow-id) flow_id="${2:-}"; shift 2 ;;
     --flow-step-id) flow_step_id="${2:-}"; shift 2 ;;
+    --authorization-source) authorization_source="${2:-}"; shift 2 ;;
+    --authorization-step-id) authorization_step_id="${2:-}"; shift 2 ;;
+    --authorization-intent-sha) authorization_intent_sha="${2:-}"; shift 2 ;;
     --platform) platform="${2:-}"; has_platform=1; args+=("$1" "$2"); shift 2 ;;
     --device) has_device=1; device="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --app|--bundle) has_app=1; app="${2:-}"; args+=("$1" "$2"); shift 2 ;;
@@ -106,7 +129,7 @@ if [[ -n "$case_dir" ]]; then
     exit 2
   fi
   if [[ "$action_type" == "restartApp" && -n "$step_id" ]]; then
-    echo "STEP_ORDER_VIOLATION: restartApp 是 execution 级隔离动作，不能绑定步骤 stepId 或作为步骤证据。" >&2
+    echo "ACTION_CONTRACT_INVALID: action.sh: restartApp is not allowed for case-step" >&2
     exit 2
   fi
   if [[ "$scope" == "execution-bootstrap" && ( "$action_type" != "restartApp" || -n "$step_id" || -n "$precondition_id" || -n "$flow_id" || -n "$flow_step_id" ) ]]; then
@@ -125,9 +148,18 @@ if [[ -n "$case_dir" ]]; then
     echo "PRECONDITION_FLOW_SCOPE_REQUIRED: precondition-flow action 必须传 --precondition-id、--flow-id 和 --flow-step-id。" >&2
     exit 2
   fi
-  mavt_validate_coordinate_action case "$action_type" "$x" "$y" "$coordinate_source" "$coordinate_evidence" "$target_bounds"
+  if [[ -n "$step_id" ]]; then
+    if [[ "$authorization_source" != "case-step" || "$authorization_step_id" != "$step_id" || -z "$authorization_intent_sha" ]]; then
+      echo "ACTION_OUTSIDE_CASE_INTENT: business step action requires matching case-step authorization." >&2
+      exit 2
+    fi
+  elif [[ -n "$authorization_source" || -n "$authorization_step_id" || -n "$authorization_intent_sha" ]]; then
+    echo "ACTION_OUTSIDE_CASE_INTENT: authorization is only valid for a business step action." >&2
+    exit 2
+  fi
   requested_action="$(mavt_action_request_json "$action_type" "$target" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$wait_ms" "$reason" "$velocity" "$coordinate_source" "$target_bounds" "$coordinate_evidence")"
-  mavt_validate_action_request "$script_dir/lib/action-contract.js" "$requested_action" "action.sh" "$platform"
+  action_scope="${scope:-case-step}"
+  mavt_validate_action_request "$script_dir/lib/action-contract.js" "$requested_action" "action.sh" "$platform" "$action_scope"
   if [[ "$action_type" == "swipe" && -z "$velocity" ]]; then
     velocity="$(mavt_resolve_swipe_velocity "$script_dir/lib/action-contract.js" "$requested_action")"
     args+=(--velocity "$velocity")
@@ -138,6 +170,12 @@ if [[ -n "$case_dir" ]]; then
   fi
   if [[ -z "$execution_id" ]]; then
     execution_id="$(mavt_latest_execution_id "$runtime_dir")"
+  fi
+  if [[ -n "$step_id" ]]; then
+    "$script_dir/lib/step-intent.js" verify \
+      "$runtime_dir/executions/$execution_id/case.snapshot.json" \
+      "$step_id" \
+      "$authorization_intent_sha" >/dev/null
   fi
   env_args=()
   mavt_validate_execution_env_binding "$script_dir" "$case_dir" "$platform" "$execution_id" "$device" "$app" "$entry"
@@ -166,6 +204,7 @@ if [[ -n "$case_dir" ]]; then
   precheck_args+=(--check-budget --event-type actionResult --action "$action_type" --action-json "$requested_action" --execution-id "$execution_id")
   if [[ -n "$step_id" ]]; then
     precheck_args+=(--step-id "$step_id")
+    precheck_args+=(--authorization-source "$authorization_source" --authorization-step-id "$authorization_step_id" --authorization-intent-sha "$authorization_intent_sha")
   elif [[ "$scope" == "precondition-flow" ]]; then
     precheck_args+=(--scope precondition-flow --precondition-id "$precondition_id" --flow-id "$flow_id" --flow-step-id "$flow_step_id")
   elif [[ "$scope" == "execution-bootstrap" ]]; then
@@ -189,6 +228,7 @@ if [[ -n "$case_dir" ]]; then
       result="$(mavt_add_action_metadata "$result" "$x" "$y" "$target" "$coordinate_source" "$target_bounds" "$coordinate_evidence" "$duration_ms" "$settle_ms" "$action_type")"
       result="$(mavt_add_requested_action "$result" "$requested_action")"
       result="$(mavt_add_action_scope "$result" "PRECONDITION_FLOW_ACTION_MISMATCH")"
+      result="$(mavt_add_action_authorization "$result")"
       MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
       printf '%s\n' "$result"
       exit "$precheck_status"
@@ -214,6 +254,7 @@ console.log(JSON.stringify(event, null, 2));
 ' "$result" "$step_id")"
     fi
     result="$(mavt_add_action_scope "$result")"
+    result="$(mavt_add_action_authorization "$result")"
     MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
     finalize_args=("${run_case_args[@]}" --finalize --status BLOCKED --failure-code "$failure_code" --reason "$precheck_output" --execution-id "$execution_id")
     if [[ -n "$step_id" ]]; then
@@ -260,6 +301,7 @@ console.log(JSON.stringify(event, null, 2));
   else
     result="$(mavt_add_action_scope "$result")"
   fi
+  result="$(mavt_add_action_authorization "$result")"
   MAVT_ACTION_WRITER=1 "$script_dir/run-case.js" "${run_case_args[@]}" --record-action-json "$result" --execution-id "$execution_id" >/dev/null
   if [[ $adapter_status -ne 0 ]]; then
     if [[ "$scope" == "precondition-flow" ]]; then

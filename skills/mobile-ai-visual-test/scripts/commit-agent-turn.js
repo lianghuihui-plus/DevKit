@@ -58,7 +58,7 @@ function normalizeTurn(input, platform) {
   }
   if (input.facts[1]?.type === 'decision' && input.facts[1].decision === 'act') {
     const action = input.facts[1].action || input.facts[1].requestedAction;
-    validateActionExecution(action, { platform, context: 'act decision action' });
+    validateActionExecution(action, { platform, scope: 'case-step', context: 'act decision action' });
     input.facts[1].action = action;
     delete input.facts[1].requestedAction;
   }
@@ -94,7 +94,10 @@ function existingFactCompatible(existing, fact, turn) {
   }
   const existingAction = existing.action || existing.requestedAction || null;
   const factAction = fact.action || fact.requestedAction || null;
-  return existing.decision === fact.decision && canonicalJson(existingAction) === canonicalJson(factAction);
+  return existing.decision === fact.decision
+    && canonicalJson(existingAction) === canonicalJson(factAction)
+    && canonicalJson(existing.authorization || null) === canonicalJson(fact.authorization || null)
+    && canonicalJson(existing.actionNormalizations || []) === canonicalJson(fact.actionNormalizations || []);
 }
 
 function main() {

@@ -5,9 +5,10 @@ const childProcess = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { validateActionExecution } = require('./lib/action-contract');
+const { describeActionConstraints, normalizeActionProposal, validateActionExecution } = require('./lib/action-contract');
 const { loadCaseExecutionContext } = require('./lib/case-execution-context');
 const { operationClass } = require('./lib/next-work-contract');
+const { actionAuthorization, validateStepIntent } = require('./lib/step-intent');
 
 const MAX_DETERMINISTIC_TRANSITIONS = 100;
 
@@ -31,13 +32,13 @@ function parseArgs(args) {
   return options;
 }
 
-function run(script, args) {
+function run(script, args, env = process.env) {
   const command = script.endsWith('.sh') ? path.join(__dirname, script) : process.execPath;
   const commandArgs = script.endsWith('.sh') ? args : [path.join(__dirname, script), ...args];
   return childProcess.execFileSync(command, commandArgs, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: process.env,
+    env,
   });
 }
 
@@ -59,6 +60,51 @@ function record(options, event) {
   return run('run-case.js', [...base(options), '--record-json', JSON.stringify(event)]);
 }
 
+function actionContractFailure(error) {
+  const message = error?.stderr ? String(error.stderr).trim() : error?.message || String(error);
+  if (error?.code !== 'ACTION_CONTRACT_INVALID' && !message.includes('ACTION_CONTRACT_INVALID')) return null;
+  return {
+    code: 'ACTION_CONTRACT_INVALID',
+    message,
+    field: error?.field,
+    received: error?.received,
+    allowed: error?.allowed,
+    suggestion: error?.suggestion,
+  };
+}
+
+function recordActionRejection(options, work, attemptedAction, failure, phase, workToken, decisionTurnId) {
+  const event = {
+    type: 'actionRejected',
+    source: 'execute-next-work.js',
+    workToken,
+    observation: work.latestObservation?.evidenceRef || work.latestObservation?.screenshot || null,
+    phase,
+    failureCode: failure.code || 'ACTION_CONTRACT_INVALID',
+    reason: failure.message,
+    field: failure.field,
+    received: failure.received,
+    allowed: failure.allowed,
+    suggestion: failure.suggestion,
+    attemptedAction: attemptedAction && typeof attemptedAction === 'object' ? attemptedAction : { type: 'unknown' },
+    recoverable: true,
+    decisionTurnId: decisionTurnId || undefined,
+  };
+  if (work.step?.id) {
+    event.stepId = work.step.id;
+    event.intentSha = work.stepIntent.intentSha;
+  } else {
+    event.scope = 'precondition-flow';
+    event.preconditionId = work.preconditionId;
+    event.flowId = work.flowId;
+    event.flowStepId = work.flowStepId;
+  }
+  return run('run-case.js', [...base(options), '--record-action-rejection-json', JSON.stringify(event)], {
+    ...process.env,
+    MAVT_ACTION_REJECTION_WRITER: '1',
+  });
+}
+
 function finalize(options, status, reason, extra = []) {
   return run('run-case.js', [...base(options), '--finalize', '--status', status, '--reason', reason, ...extra]);
 }
@@ -70,7 +116,7 @@ function flowObservationArgs(options, work) {
   return args;
 }
 
-function executeDeterministic(options, work) {
+function executeDeterministic(options, work, workToken) {
   if (work.type === 'STOP_FINALIZED') return;
   if (work.type === 'OBSERVE_STEP' || work.type === 'OBSERVE_AFTER_ACTION') {
     run('observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--step-id', work.step.id]);
@@ -81,12 +127,28 @@ function executeDeterministic(options, work) {
     return;
   }
   if (work.type === 'EXECUTE_STEP_ACTION') {
-    validateActionExecution(work.requestedAction, { platform: options.platform, context: work.type });
-    run('action-observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--step-id', work.step.id, ...actionArgs(work.requestedAction)]);
+    try {
+      validateActionExecution(work.requestedAction, { platform: options.platform, scope: 'case-step', context: work.type });
+      validateStepIntent(work.step, work.stepIntent);
+      run('action-observe.sh', [
+        '--case-dir', options.caseDir,
+        '--platform', options.platform,
+        '--execution-id', options.executionId,
+        '--step-id', work.step.id,
+        '--authorization-source', work.authorization.source,
+        '--authorization-step-id', work.authorization.stepId,
+        '--authorization-intent-sha', work.authorization.intentSha,
+        ...actionArgs(work.requestedAction),
+      ]);
+    } catch (error) {
+      const failure = actionContractFailure(error);
+      if (!failure) throw error;
+      recordActionRejection(options, work, work.requestedAction, failure, 'execution-entry', workToken, work.decisionTurnId);
+    }
     return;
   }
   if (work.type === 'EXECUTE_FLOW_ACTION') {
-    validateActionExecution(work.requestedAction, { platform: options.platform, context: work.type });
+    validateActionExecution(work.requestedAction, { platform: options.platform, scope: 'precondition-flow', context: work.type });
     run('action-observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--scope', 'precondition-flow', '--precondition-id', work.preconditionId, '--flow-id', work.flowId, '--flow-step-id', work.flowStepId, ...actionArgs(work.requestedAction)]);
     return;
   }
@@ -130,12 +192,28 @@ function executeDeterministic(options, work) {
     });
     return;
   }
+  if (work.type === 'RECORD_FLOW_ACTION_REJECTION_TERMINAL') {
+    record(options, {
+      type: 'flow',
+      usage: 'precondition',
+      preconditionId: work.preconditionId,
+      flowId: work.flowId,
+      flowStepId: work.flowStepId,
+      status: 'BLOCKED',
+      failureCode: work.failureCode || 'ACTION_CONTRACT_INVALID',
+      evidenceObservation: work.latestObservation?.label || undefined,
+      reason: work.reason || 'Flow 动作参数连续不符合执行契约。',
+    });
+    return;
+  }
   if (work.type === 'FINALIZE_PASS') {
     finalize(options, 'PASS', work.reason || 'All steps passed.');
     return;
   }
   if (work.type === 'FINALIZE_STEP_FAILURE') {
-    finalize(options, work.status, work.reason || 'Step assertion failed.', ['--failed-step', work.stepId]);
+    const extra = ['--failed-step', work.stepId];
+    if (work.failureCode) extra.push('--failure-code', work.failureCode);
+    finalize(options, work.status, work.reason || 'Step assertion failed.', extra);
     return;
   }
   if (work.type === 'FINALIZE_PRECONDITION_BLOCKED') {
@@ -160,12 +238,12 @@ function decisionRequest(context) {
     layoutPath: observation?.layoutPath || null,
   };
   if (work.type === 'DECIDE_FLOW_ENTRY') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, startCondition: work.startCondition, endCondition: work.endCondition, allowedOutcomes: ['ALREADY_SATISFIED', 'STARTABLE', 'START_MISMATCH', 'OBSERVATION_UNUSABLE'] };
-  if (work.type === 'DECIDE_FLOW_ACTION') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, flowStepId: work.flowStepId, instruction: work.instruction, requestedAction: work.requestedAction, allowedOutcomes: ['ACT', 'BLOCKED'] };
+  if (work.type === 'DECIDE_FLOW_ACTION') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, flowStepId: work.flowStepId, instruction: work.instruction, requestedAction: work.requestedAction, actionConstraints: describeActionConstraints(context.platform, 'precondition-flow'), lastActionRejection: work.lastActionRejection || null, allowedOutcomes: ['ACT', 'BLOCKED'] };
   if (work.type === 'DECIDE_FLOW_END') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, endCondition: work.endCondition, allowedOutcomes: ['TARGET_REACHED', 'TARGET_NOT_REACHED', 'OBSERVATION_UNUSABLE'] };
   if (work.type === 'DECIDE_STEP') {
     const allowedOutcomes = ['PASS', 'FAIL', 'ACT', 'BLOCKED'];
     if (work.visualRetryContext?.retryAllowed) allowedOutcomes.push('RETRY_VISUAL_INPUT');
-    return { ...common, step: work.step, visualRetryContext: work.visualRetryContext, allowedOutcomes };
+    return { ...common, step: work.step, stepIntent: work.stepIntent, visualRetryContext: work.visualRetryContext, actionConstraints: describeActionConstraints(context.platform, 'case-step'), lastActionRejection: work.lastActionRejection || null, allowedOutcomes };
   }
   throw new Error(`No DecisionRequest for ${work.type}`);
 }
@@ -189,15 +267,34 @@ function applyFlowEntryDecision(options, work, decision) {
   record(options, { type: 'flow', usage: 'precondition', preconditionId: work.preconditionId, flowId: work.flowId, status: 'BLOCKED', failureCode, evidenceObservation: work.latestObservation.label, reason: decision.reason });
 }
 
-function applyFlowActionDecision(options, work, decision) {
+function applyFlowActionDecision(options, work, decision, workToken) {
   requireDecision(decision, ['ACT', 'BLOCKED']);
   if (decision.outcome === 'BLOCKED') {
     record(options, { type: 'flow', usage: 'precondition', preconditionId: work.preconditionId, flowId: work.flowId, status: 'BLOCKED', failureCode: 'PRECONDITION_FLOW_ACTION_MISMATCH', evidenceObservation: work.latestObservation.label, reason: decision.reason });
     return;
   }
-  validateActionExecution(decision.action, { platform: options.platform, context: work.type });
-  if (decision.action.type !== work.requestedAction.type) throw new Error('PRECONDITION_FLOW_ACTION_MISMATCH: action type differs from frozen Flow action');
-  run('action-observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--scope', 'precondition-flow', '--precondition-id', work.preconditionId, '--flow-id', work.flowId, '--flow-step-id', work.flowStepId, ...actionArgs(decision.action)]);
+  let normalized;
+  try {
+    normalized = normalizeActionProposal(decision.action, { context: work.type });
+    validateActionExecution(normalized.action, { platform: options.platform, scope: 'precondition-flow', context: work.type });
+  } catch (error) {
+    const failure = actionContractFailure(error);
+    if (!failure) throw error;
+    recordActionRejection(options, work, decision.action, failure, 'decision-validation', workToken);
+    return;
+  }
+  if (normalized.action.type !== work.requestedAction.type) {
+    recordActionRejection(options, work, normalized.action, {
+      code: 'PRECONDITION_FLOW_ACTION_MISMATCH',
+      message: `PRECONDITION_FLOW_ACTION_MISMATCH: action type must remain ${work.requestedAction.type}`,
+      field: 'type',
+      received: normalized.action.type,
+      allowed: [work.requestedAction.type],
+      suggestion: `use ${work.requestedAction.type}`,
+    }, 'decision-validation', workToken);
+    return;
+  }
+  run('action-observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--scope', 'precondition-flow', '--precondition-id', work.preconditionId, '--flow-id', work.flowId, '--flow-step-id', work.flowStepId, ...actionArgs(normalized.action)]);
 }
 
 function applyFlowEndDecision(options, work, decision) {
@@ -246,8 +343,20 @@ function stepTurn(work, decision, workToken, platform) {
   if (decision.outcome === 'PASS') facts.push({ type: 'assertion', status: 'PASS', reason: decision.reason });
   else if (decision.outcome === 'FAIL') facts.push({ type: 'assertion', status: 'FAIL', reason: decision.reason });
   else if (decision.outcome === 'ACT') {
-    validateActionExecution(decision.action, { platform, context: 'step decision action' });
-    facts.push({ type: 'decision', decision: 'act', action: decision.action, reason: decision.reason });
+    const stepIntent = validateStepIntent(work.step, work.stepIntent);
+    if (decision.intentSha !== stepIntent.intentSha) {
+      throw new Error(`ACTION_OUTSIDE_CASE_INTENT: ACT must echo intentSha ${stepIntent.intentSha}`);
+    }
+    const normalized = normalizeActionProposal(decision.action, { context: 'step decision action' });
+    validateActionExecution(normalized.action, { platform, scope: 'case-step', context: 'step decision action' });
+    facts.push({
+      type: 'decision',
+      decision: 'act',
+      action: normalized.action,
+      actionNormalizations: normalized.normalizations,
+      authorization: actionAuthorization(work.step),
+      reason: decision.reason,
+    });
   } else if (decision.outcome === 'RETRY_VISUAL_INPUT') {
     facts.push({ type: 'decision', decision: 'retry_visual_input', reason: decision.reason });
   }
@@ -271,12 +380,23 @@ function hasRecoveryTurnDraft(context, decision, workToken) {
 }
 
 function applyStepDecision(options, work, decision, workToken) {
-  const turn = stepTurn(work, decision, workToken, options.platform);
+  let turn;
+  try {
+    turn = stepTurn(work, decision, workToken, options.platform);
+  } catch (error) {
+    const failure = actionContractFailure(error);
+    if (!failure || decision?.outcome !== 'ACT') throw error;
+    let attemptedAction = decision.action;
+    try { attemptedAction = normalizeActionProposal(decision.action, { context: 'rejected step action' }).action; } catch (_) { /* preserve raw proposal below */ }
+    recordActionRejection(options, work, attemptedAction, failure, 'decision-validation', workToken);
+    return false;
+  }
   run('commit-agent-turn.js', [...base(options), '--turn-json', JSON.stringify(turn)]);
   if (decision.outcome === 'BLOCKED') {
     const failureCode = decision.failureCode || 'PAGE_LOAD_BLOCKED';
     finalize(options, 'BLOCKED', decision.reason, ['--failure-code', failureCode, '--failed-step', work.step.id]);
   }
+  return true;
 }
 
 function applyDecision(options, context) {
@@ -290,7 +410,7 @@ function applyDecision(options, context) {
     throw new Error(`STALE_NEXT_WORK: expected ${context.workToken}`);
   }
   if (work.type === 'DECIDE_FLOW_ENTRY') applyFlowEntryDecision(options, work, options.decision);
-  else if (work.type === 'DECIDE_FLOW_ACTION') applyFlowActionDecision(options, work, options.decision);
+  else if (work.type === 'DECIDE_FLOW_ACTION') applyFlowActionDecision(options, work, options.decision, context.workToken);
   else if (work.type === 'DECIDE_FLOW_END') applyFlowEndDecision(options, work, options.decision);
   else if (work.type === 'DECIDE_STEP') applyStepDecision(options, work, options.decision, context.workToken);
   else throw new Error(`No decision executor for ${work.type}`);
@@ -307,7 +427,7 @@ function advance(options) {
     if (category === 'VISUAL_DECISION') {
       return { schemaVersion: 1, status: 'DECISION_REQUIRED', executionId: context.executionId, decisionRequest: decisionRequest(context) };
     }
-    executeDeterministic(options, context.nextWork);
+    executeDeterministic(options, context.nextWork, context.workToken);
   }
   throw new Error(`CASE_ENGINE_STALLED: exceeded ${MAX_DETERMINISTIC_TRANSITIONS} deterministic transitions`);
 }

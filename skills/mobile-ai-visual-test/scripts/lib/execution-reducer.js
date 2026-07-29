@@ -5,6 +5,7 @@ const path = require('path');
 const { validateActionExecution } = require('./action-contract');
 const { evaluateFrameworkPrecondition } = require('./framework-preconditions');
 const { operationClass, validateNextWork } = require('./next-work-contract');
+const { actionAuthorization, buildStepIntent, validateActionAuthorization } = require('./step-intent');
 
 function lastIndex(events, predicate) {
   for (let i = events.length - 1; i >= 0; i--) if (predicate(events[i])) return i;
@@ -93,8 +94,32 @@ function reduceFlow(casePrecondition, planEntry, events, execDir, platform) {
     const action = stepEvents.filter((event) => event.type === 'actionResult').at(-1);
     if (!action) {
       const next = { preconditionId, flowId, flowStepId: step.id, instruction: step.instruction || '', requestedAction: step.action, latestObservation: observationSummary(before, execDir) };
+      const actionRejections = stepEvents.filter((event) => event.type === 'actionRejected');
+      const latestRejection = actionRejections.at(-1) || null;
+      if (actionRejections.length >= 2) {
+        return decorate({
+          type: 'RECORD_FLOW_ACTION_REJECTION_TERMINAL',
+          ...next,
+          failureCode: latestRejection.failureCode || 'ACTION_CONTRACT_INVALID',
+          reason: `Flow 动作参数连续 ${actionRejections.length} 次不符合执行契约，已停止当前前置条件。`,
+        });
+      }
+      if (latestRejection) {
+        next.lastActionRejection = {
+          count: actionRejections.length,
+          phase: latestRejection.phase,
+          failureCode: latestRejection.failureCode,
+          reason: latestRejection.reason,
+          field: latestRejection.field || null,
+          received: latestRejection.received,
+          allowed: latestRejection.allowed || [],
+          suggestion: latestRejection.suggestion || null,
+          attemptedAction: latestRejection.attemptedAction,
+        };
+        return decorate({ type: 'DECIDE_FLOW_ACTION', ...next });
+      }
       try {
-        validateActionExecution(step.action, { platform, context: 'frozen Flow action' });
+        validateActionExecution(step.action, { platform, scope: 'precondition-flow', context: 'frozen Flow action' });
         return decorate({ type: 'EXECUTE_FLOW_ACTION', ...next });
       } catch (_) {
         return decorate({ type: 'DECIDE_FLOW_ACTION', ...next });
@@ -142,14 +167,63 @@ function deriveNextWork({ caseJson, execution, events, execDir, preconditionInpu
     const decision = decisionIndex >= 0 ? events[decisionIndex] : null;
     if (!observation) return decorate({ type: 'OBSERVE_STEP', step, phase: 'before' });
     if (actionIndex > observationIndex) return decorate({ type: 'OBSERVE_AFTER_ACTION', step, latestAction: events[actionIndex] });
+    const observationEvidence = observation.artifacts?.screenshot || observation.observation?.artifacts?.screenshot || null;
+    const actionRejections = events
+      .map((event, index) => ({ event, index }))
+      .filter(({ event, index }) => event.type === 'actionRejected'
+        && eventStepId(event) === step.id
+        && index > observationIndex
+        && (!event.observation || !observationEvidence || event.observation === observationEvidence));
+    const latestRejectionEntry = actionRejections.at(-1) || null;
+    const lastActionRejection = latestRejectionEntry ? {
+      count: actionRejections.length,
+      phase: latestRejectionEntry.event.phase,
+      failureCode: latestRejectionEntry.event.failureCode,
+      reason: latestRejectionEntry.event.reason,
+      field: latestRejectionEntry.event.field || null,
+      received: latestRejectionEntry.event.received,
+      allowed: latestRejectionEntry.event.allowed || [],
+      suggestion: latestRejectionEntry.event.suggestion || null,
+      attemptedAction: latestRejectionEntry.event.attemptedAction,
+    } : null;
+    if (actionRejections.length >= 2 && latestRejectionEntry.index > decisionIndex) {
+      return decorate({
+        type: 'FINALIZE_STEP_FAILURE',
+        stepId: step.id,
+        status: 'BLOCKED',
+        failureCode: 'ACTION_CONTRACT_INVALID',
+        reason: `动作参数连续 ${actionRejections.length} 次不符合执行契约，已停止当前用例。`,
+      });
+    }
+    if (latestRejectionEntry && latestRejectionEntry.index > decisionIndex) {
+      return decorate({
+        type: 'DECIDE_STEP',
+        step,
+        stepIntent: buildStepIntent(step),
+        latestObservation: observationSummary(observation, execDir),
+        visualRetryContext: visualRetryContext(events, step.id, observation),
+        lastActionRejection,
+      });
+    }
     if (decision?.decision === 'act' && decisionIndex > observationIndex && actionIndex < decisionIndex) {
-      return decorate({ type: 'EXECUTE_STEP_ACTION', step, requestedAction: decision.action, latestObservation: observationSummary(observation, execDir) });
+      validateActionAuthorization(step, decision.authorization);
+      return decorate({
+        type: 'EXECUTE_STEP_ACTION',
+        step,
+        stepIntent: buildStepIntent(step),
+        authorization: actionAuthorization(step),
+        requestedAction: decision.action,
+        decisionTurnId: decision.turnId || null,
+        latestObservation: observationSummary(observation, execDir),
+      });
     }
     return decorate({
       type: 'DECIDE_STEP',
       step,
+      stepIntent: buildStepIntent(step),
       latestObservation: observationSummary(observation, execDir),
       visualRetryContext: visualRetryContext(events, step.id, observation),
+      lastActionRejection,
     });
   }
   return decorate({ type: 'FINALIZE_PASS', reason: '所有业务步骤均已有 assertion PASS。' });

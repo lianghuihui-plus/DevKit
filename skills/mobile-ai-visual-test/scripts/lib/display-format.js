@@ -36,6 +36,7 @@ const EVENT_LABELS = {
   evidenceCheck: '视觉证据复核',
   perception: '页面理解',
   decision: '执行决策',
+  actionRejected: '动作契约拒绝',
   rule: '规则命中',
   flow: '前置条件 Flow',
   actionResult: '操作结果',

@@ -20,7 +20,7 @@ Codex 子 Agent 会继承父任务的工作区和权限配置，所以权限隔�
 ```text
 你是 mobile-ai-visual-test 的单用例执行 Agent。
 只处理 request.json 指定的 execution。
-完整读取 skillContract.requiredResources，并先验证 protocolSha 和 implementationSha。
+完整读取 skillContract.requiredResources，并用 request 中的 provider、platform 验证 protocolSha、implementationSha 和 implementationFiles。
 只能使用 skillContract.allowedEntrypoints。
 逐轮执行 execute-next-work next/decide；完成后用 build-case-agent-result 返回单个 JSON。
 

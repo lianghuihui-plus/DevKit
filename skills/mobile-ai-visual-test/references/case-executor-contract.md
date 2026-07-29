@@ -5,7 +5,7 @@
 ## 启动
 
 1. 完整读取请求携带的 `skillContract.requiredResources`，校验路径均位于 `skillContract.root`。
-2. 执行 `scripts/build-agent-contract.js --role case-executor --verify-sha <protocolSha>`，同时确认输出的 `implementationSha` 与请求一致；任一不一致时停止并返回协议错误。
+2. 执行 `scripts/build-agent-contract.js --role case-executor --provider <provider> --platform <platform> --verify-sha <protocolSha>`，同时确认输出的 `implementationSha`、`implementationFiles` 与请求一致；任一不一致时停止并返回协议错误。
 3. 只使用 `skillContract.allowedEntrypoints`。所有命令都显式传绝对 `caseDir`、`platform` 和 `executionId`。
 4. 调用 `scripts/execute-next-work.js next`。脚本会连续推进确定性工作，直到返回 `DECISION_REQUIRED` 或 `COMPLETED`。
 
@@ -17,6 +17,10 @@
 - Flow 入口只返回 `ALREADY_SATISFIED`、`STARTABLE`、`START_MISMATCH` 或 `OBSERVATION_UNUSABLE`。
 - Flow 终点只返回 `TARGET_REACHED`、`TARGET_NOT_REACHED` 或 `OBSERVATION_UNUSABLE`。
 - 业务步骤只返回 `PASS`、`FAIL`、`ACT`、`BLOCKED` 或 `RETRY_VISUAL_INPUT`。
+- 业务步骤返回 `ACT` 时必须原样回传 DecisionRequest 的 `stepIntent.intentSha`；缺失或不一致会以 `ACTION_OUTSIDE_CASE_INTENT` 在设备动作前拒绝。
+- 返回 `ACT` 时必须按 DecisionRequest 的 `actionConstraints` 构造动作；截图取点使用 `coordinateSource=visual`，不能填写 `screenshot`。框架会兼容归一常见别名，但 `actionConstraints` 和 `references/action-schema.md` 才是权威契约。
+- 动作参数被拒绝后必须阅读新 DecisionRequest 的 `lastActionRejection` 并重新决策；业务步骤和 Flow 都不得重复提交同一非法值，连续两次非法提案会阻塞当前用例。
+- 当前冻结步骤明确要求的删除、支付、发布、资料修改等操作属于已授权业务意图，不得仅因操作语义返回 BLOCKED；不得自行扩展当前步骤未要求的副作用。
 - 只有 DecisionRequest 的 `visualRetryContext.retryAllowed=true` 时才能返回 `RETRY_VISUAL_INPUT`；第二次结构化异常检查必须使用新的 `attemptId` 并按 `requiredRetryOf` 填写 `retryOf`。
 - 完整可执行的冻结 Flow 动作由引擎确定性执行；只有 `DECIDE_FLOW_ACTION` 才补齐当前截图能够证明的执行参数，并保持冻结动作的类型和业务目标。
 

@@ -90,7 +90,7 @@ flowchart TB
 | --- | --- |
 | Skill 协议层 | 约束执行顺序、Flow 边界和禁止行为 |
 | Agent Runtime 层 | 为每个 case 创建无父会话历史的独立 Agent，并只返回结构化结果 |
-| Case Engine 层 | 连续推进确定性工作，只把必须看图的单次决定交给 Agent |
+| Case Engine 层 | 连续推进确定性工作，只把必须看图的单次决定交给 Agent，并用冻结步骤 intentSha 约束业务动作边界 |
 | 稳定入口层 | 暴露公开 CLI，封装来源、预算和平台分发 |
 | 计划与执行状态层 | 加载资产、严格匹配、固定计划、校验状态机和归一结果 |
 | 平台能力层 | 适配设备能力，不做业务判断、不写 case 事实 |
@@ -102,7 +102,8 @@ flowchart TB
 ```mermaid
 flowchart LR
   CE["execute-next-work<br/>重新归约 + workToken"] --> OBS["observe.sh<br/>observation"]
-  CE --> ACT["action.sh<br/>actionResult"]
+  CE --> AUTH["case-step authorization<br/>stepId + intentSha"]
+  AUTH --> ACT["action.sh<br/>actionResult"]
   CE --> AG["受保护事实入口<br/>precondition / flow / assertion"]
   OBS --> TL["timeline.jsonl"]
   ACT --> TL
@@ -116,15 +117,19 @@ flowchart LR
   CMP --> REP["CONTEXT / index"]
 ```
 
+业务步骤授权以 `case.snapshot.json` 当前步骤为唯一来源。DecisionRequest 生成 `stepIntent`，Agent 返回 ACT 时回传 intentSha，decision 与 actionResult 均保存同一授权；Core 在设备调用前和事实写入前双重校验。该链路不按删除、支付、发布等语义分类，因此用例明确要求的操作可以执行，同时阻止 Agent 把授权扩展到其他步骤。前置条件 Flow 不使用该授权，仍保留静态副作用拒绝。
+
 主要硬守卫：
 
 - `preconditionPlanSha` 防止 preflight 与执行之间资产漂移。
 - `environmentSha` 和 `preconditionInputsSha` 把设备、App、入口、启动策略、依赖与执行前业务输入冻结在 execution；正式动作和结果不再读取可变 state。
-- `protocolSha` 冻结角色规范，`implementationSha` 冻结实际运行脚本，二者贯穿 request、BOUND、Runtime 和结果。
+- `protocolSha` 冻结角色、provider、platform、资源与入口契约，`implementationSha` 只冻结该角色 Core 与当前平台实现，二者贯穿 request、BOUND、Runtime 和结果。
 - 启动阶段只有 `executionStart`、`environmentProbe` 和 `scope=execution-bootstrap` 的 restartApp 可以早于 BOUND；所有 Case Engine 事实都要求先绑定 Runtime。
 - provider 由 Runtime Core 规范化并写入 requestSha，子 Agent 和 Host Adapter 不能覆盖。
 - completion 在写入和报告读取时都校验 batch/case/platform/execution 绑定及 result、metrics、validation 哈希；校验失败只派生 `EXECUTION_COMPLETION_INVALID`，不发布原业务结论。
 - `workToken` 绑定当前 execution、timeline 位置和 NextWork，拒绝过期或伪造决定。
+- 动作契约由 Core 单一模块按 case-step、precondition-flow、execution-bootstrap 作用域生成 DecisionRequest 约束、归一 Agent 别名并执行入口校验；业务或 Flow 非法提案在事实提交前写框架 `actionRejected` 并回到同类视觉决策，最多允许一次修正。
+- Runtime 失败事实与 execution 终态强制闭环；历史上已释放但未收尾的失败 Runtime 由批次归约为 `RECOVER_RUNTIME_TERMINAL`，不再留下 RUNNING execution。
 - 前置条件按 case 顺序写入，全部通过或准备完成后才能进入步骤。
 - Flow 事件必须绑定计划中的 `preconditionId`、`flowId` 和合法 `flowStepId`。
 - 同一时间只能有一个活动 Flow；起点、步骤前后和终点都要求对应 observation/action 证据。

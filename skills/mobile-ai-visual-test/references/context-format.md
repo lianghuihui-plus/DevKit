@@ -26,9 +26,12 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 
 当前 execution 的事实源。结果和统计使用 timeline 与 `case.snapshot.json`；报告使用当前 `case.json` 判断执行契约是否仍适用。
 
-事件类型：`executionStart`、`environmentProbe`、`executionRecovery`、`agentRuntime`、`precondition`、`observation`、`evidenceCheck`、`perception`、`decision`、`rule`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。`agentRuntime` 只记录独立 Agent 会话绑定或失败，不参与业务 PASS；`evidenceCheck` 只能由 `run-case.js` 根据 perception 的结构化 `qualityClaim` 生成；`flow` 及 `scope=precondition-flow` 的 observation/actionResult 只属于前置条件。
+事件类型：`executionStart`、`environmentProbe`、`executionRecovery`、`agentRuntime`、`precondition`、`observation`、`evidenceCheck`、`perception`、`decision`、`actionRejected`、`rule`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。`agentRuntime` 只记录独立 Agent 会话绑定或失败，不参与业务 PASS；`evidenceCheck` 只能由 `run-case.js` 根据 perception 的结构化 `qualityClaim` 生成；`actionRejected` 只能由 Case Engine 写入，记录未触发设备动作的参数拒绝，业务拒绝绑定 stepId/intentSha，Flow 拒绝绑定 preconditionId/flowId/flowStepId；业务 ACT decision 和 actionResult 都保存 `{source:"case-step",stepId,intentSha}` 授权，`flow` 及 `scope=precondition-flow` 的 observation/actionResult 只属于前置条件且不继承业务步骤授权。
 
 事件 schema 见 `interfaces.md`。
+
+`metrics.json.actions.caseStepAuthorized` 统计带有效 case-step 授权的业务动作数量；报告据此展示授权动作审计，Flow 和启动动作不计入该值。
+`metrics.json.actionRejections` 统计动作契约拒绝总数、修正后恢复数和重试耗尽数；拒绝不计入动作次数。
 
 ## execution.json
 

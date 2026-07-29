@@ -19,6 +19,8 @@
 | `ASSERTION_UNKNOWN` | `FAIL` | 不能证明业务步骤通过 |
 | `ASSERTION_EVIDENCE_REQUIRED` | `BLOCKED` | PASS 断言缺合法 observation 证据 |
 | `STEP_ORDER_VIOLATION` | `BLOCKED` | 跳序、回补或步骤绑定非法 |
+| `ACTION_OUTSIDE_CASE_INTENT` | `BLOCKED` | ACT 或 actionResult 缺少当前冻结步骤授权，或授权步骤/哈希不匹配 |
+| `ACTION_CONTRACT_INVALID` | `BLOCKED` | 同一观察下的业务步骤或 Flow 动作参数连续两次不符合当前平台/作用域契约；首次拒绝会返回同类 DecisionRequest 供修正 |
 | `PRECONDITION_REQUIRED` | `BLOCKED` | 进入步骤前缺前置条件事实 |
 | `PRECONDITION_FAILED` | `BLOCKED` | 前置条件明确不满足 |
 | `PRECONDITION_UNKNOWN` | `BLOCKED` | 前置条件无法判断 |
@@ -100,6 +102,6 @@
 - 前置条件 Flow 每个条件默认最多 5 个动作，单 case 默认最多 12 个；超限为 `PRECONDITION_FLOW_BUDGET_EXCEEDED`。
 - Flow observation 失败仍写入 timeline 供审计，但不能作为 STARTED、STEP_COMPLETED、COMPLETED 或 already-satisfied 的证据。
 - Flow observation/action 的确定性技术失败由框架写入 Flow 和前置条件阻塞终态并立即收尾。
-- 明确断言失败、前置条件终态、环境不可用、工具错误、未知弹窗、破坏性风险或预算超限时立即停止当前 case。
+- 明确断言失败、前置条件终态、环境不可用、工具错误、未知弹窗、动作超出当前步骤授权或预算超限时立即停止当前 case；业务步骤或 Flow 动作参数首次不合法时不触发设备并允许一次重新决策，第二次仍不合法才以 `ACTION_CONTRACT_INVALID` 停止；用例步骤明确要求的副作用不因语义敏感而阻塞。
 - Agent Runtime 在 execution 收尾前失败必须有 `agentRuntime FAILED/INTERRUPTED` 框架事实；result 已锁定后的释放失败记录在 runtime、validation 和 batch，不追加 finalized timeline。它不归类为设备 `TOOL_ERROR`，也不自动重试业务动作。
 - 没有 Runtime 的过期孤立 execution 只能由 `executionRecovery BLOCKED/EXECUTION_ORPHANED` 支持收尾，不得伪装成 Agent Runtime 失败。

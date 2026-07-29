@@ -61,8 +61,12 @@ function main() {
     preconditionInputs,
     executionPolicy: {
       maxDurationMs: execution.budget?.maxDurationMs || 30 * 60 * 1000,
-      allowDestructiveActions: false,
       sessionScope: 'case',
+      actionPolicy: {
+        mode: 'case_step_authorized',
+        authorizationSource: 'case.snapshot.json',
+        allowAgentInitiatedSideEffects: false,
+      },
     },
   };
   request.requestSha = caseAgentRequestSha(request);

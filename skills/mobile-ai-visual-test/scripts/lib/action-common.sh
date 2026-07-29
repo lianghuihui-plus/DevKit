@@ -1,66 +1,5 @@
 #!/usr/bin/env bash
 
-mavt_validate_coordinate_metadata() {
-  local coordinate_source="${1:-}"
-  local target_bounds="${2:-}"
-  if [[ -n "$coordinate_source" ]]; then
-    case "$coordinate_source" in
-      layout|visual|pixel|manual|flow) ;;
-      *)
-        echo "无效 --coordinate-source: $coordinate_source" >&2
-        exit 2
-        ;;
-    esac
-  fi
-  if [[ -n "$target_bounds" ]]; then
-    if ! node -e '
-const parts = String(process.argv[1] || "").split(",").map((item) => Number(item.trim()));
-process.exit(parts.length === 4 && parts.every((item) => Number.isFinite(item)) ? 0 : 1);
-' "$target_bounds"; then
-      echo "无效 --target-bounds: $target_bounds" >&2
-      exit 2
-    fi
-  fi
-}
-
-mavt_validate_coordinate_action() {
-  local mode="${1:-case}"
-  local action="${2:-}"
-  local x="${3:-}"
-  local y="${4:-}"
-  local coordinate_source="${5:-}"
-  local coordinate_evidence="${6:-}"
-  local target_bounds="${7:-}"
-
-  mavt_validate_coordinate_metadata "$coordinate_source" "$target_bounds"
-  if [[ "$mode" == "case" && "$coordinate_source" == "manual" ]]; then
-    echo "正式用例执行不允许使用 --coordinate-source manual；请改用 layout、visual、pixel 或 flow，并记录可复核证据。" >&2
-    exit 2
-  fi
-
-  case "$action" in
-    tap|toggle|longPress|inputText)
-      if [[ -n "$x" || -n "$y" ]]; then
-        if [[ -z "$coordinate_source" ]]; then
-          echo "坐标动作必须提供 --coordinate-source" >&2
-          exit 2
-        fi
-        if [[ -z "$coordinate_evidence" ]]; then
-          echo "坐标动作必须提供 --coordinate-evidence" >&2
-          exit 2
-        fi
-      fi
-      ;;
-  esac
-
-  if [[ "$coordinate_source" == "visual" || "$coordinate_source" == "pixel" || "$coordinate_source" == "flow" ]]; then
-    if [[ -z "$target_bounds" ]]; then
-      echo "${coordinate_source} 坐标动作必须提供 --target-bounds" >&2
-      exit 2
-    fi
-  fi
-}
-
 mavt_latest_execution_id() {
   node -e '
 const fs = require("fs");
@@ -297,13 +236,14 @@ try {
   const action = JSON.parse(process.argv[2]);
   const context = process.argv[3] || "action.sh";
   const platform = process.argv[4] || "";
-  if (platform) validateActionExecution(action, { context, platform });
+  const scope = process.argv[5] || "formal-execution";
+  if (platform) validateActionExecution(action, { context, platform, scope });
   else validateAction(action, { context });
 } catch (error) {
   console.error(error.message || String(error));
   process.exit(error.exitCode || 2);
 }
-' "$1" "$2" "${3:-action.sh}" "${4:-}"
+' "$1" "$2" "${3:-action.sh}" "${4:-}" "${5:-formal-execution}"
 }
 
 mavt_resolve_swipe_velocity() {

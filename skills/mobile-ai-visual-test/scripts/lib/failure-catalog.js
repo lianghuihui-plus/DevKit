@@ -6,6 +6,8 @@ const FAILURE_CATALOG = Object.freeze({
   ASSERTION_UNKNOWN: { status: 'FAIL', label: '断言证据不足' },
   ASSERTION_EVIDENCE_REQUIRED: { status: 'BLOCKED', label: '断言缺少观察证据' },
   STEP_ORDER_VIOLATION: { status: 'BLOCKED', label: '步骤顺序违规' },
+  ACTION_OUTSIDE_CASE_INTENT: { status: 'BLOCKED', label: '动作超出当前用例步骤授权' },
+  ACTION_CONTRACT_INVALID: { status: 'BLOCKED', label: '动作参数不符合执行契约' },
   PRECONDITION_REQUIRED: { status: 'BLOCKED', label: '需要先处理前置条件' },
   PRECONDITION_FAILED: { status: 'BLOCKED', label: '前置条件不满足' },
   PRECONDITION_NOT_MET: { status: 'BLOCKED', label: '前置条件不满足' },

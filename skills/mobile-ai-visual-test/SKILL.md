@@ -25,12 +25,13 @@ description: 当需要基于 Markdown 人工用例，对移动端应用进行 AI
 - `references/context-format.md`：可信发布、结果、报告和 index 产物语义。
 - Codex 平台再读 `references/agent-runtimes/codex.md`。
 
-独立 case 子 Agent 只读：
+独立 case 子 Agent 只读当前 SkillContract 的 `requiredResources`；当前固定为：
 
+- `SKILL.md`：角色边界、硬禁令和关键执行规则。
 - `references/case-executor-contract.md`：Case Engine、视觉决定和结果返回协议。
-- `references/interfaces.md`：子 Agent 白名单入口和事实 schema。
-- `references/failure-policy.md`：视觉证据、失败码和结果归一。
-- `references/context-format.md`：execution 与结果产物语义。
+- `references/action-schema.md`：动作作用域、参数、坐标证据和平台差异。
+
+`requiredResources` 是子 Agent 的唯一规范读取清单；不得按批次协调器列表自行扩读，也不得读取已退出契约的历史说明文件。
 
 按需再读：
 
@@ -70,7 +71,8 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 - 禁止手写正式 `observation` 或 `actionResult`；正式观察只能由 `scripts/observe.sh` 写入，正式动作结果只能由 `scripts/action.sh` 写入。
 - 禁止把 `launchApp`、`restartApp`、`wait`、`observation`、`perception`、`flow` 或页面状态本身当作业务步骤通过证据。
 - 禁止在业务步骤中现场安装依赖、修改 adapter、修框架、编译辅助程序或换用未封装设备命令。
-- 禁止静默执行清数据、卸载、支付、删除、发布、修改真实资料等破坏性操作。
+- `case.snapshot.json` 当前业务步骤明确要求的操作即为本步骤授权；不得因为清数据、卸载、支付、删除、发布、修改真实资料等语义自行阻塞。
+- 禁止执行当前业务步骤未要求的副作用动作；ACT 必须回传 DecisionRequest 的 `stepIntent.intentSha`，动作结果必须保留同一授权凭证。
 
 ## 关键执行规则
 
@@ -86,8 +88,10 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 - `executionStart`、`environmentProbe` 和 `scope=execution-bootstrap` 的启动级 `restartApp` 是 BOUND 前唯一允许存在的启动事实；前置条件、Flow 和业务步骤事实必须晚于 Agent Runtime BOUND。
 - 批次协调器负责 `--start` 和 Runtime Core，独立 case 子 Agent 只接管已处于 RUNNING 的指定 execution，不重复 start、probe 或 prepare。
 - provider 是 Runtime Core 所有的规范机器标识，写入 `runtime.json` 与带 requestSha 的 `request.json`；子 Agent 不得填写或覆盖 provider。
-- protocolSha 冻结角色规范，implementationSha 冻结运行实现；request、Runtime BOUND 和结果必须全链路一致。
+- protocolSha 冻结角色、provider、platform、资源清单、入口清单及规范内容，implementationSha 冻结该角色实际依赖的 Core 与当前平台实现；request、Runtime BOUND 和结果必须全链路一致。
 - 子 Agent 每轮以 `execute-next-work.js` 的 DecisionRequest 为准；脚本每次重新归约并校验 workToken，不得仅凭会话记忆推进步骤。
+- DecisionRequest 的 `actionConstraints` 是当前平台与作用域的动作参数权威约束；动作被拒绝后按 `lastActionRejection` 修正并重新决策，不得重复提交同一非法参数。
+- CaseAgentRequest 的 `actionPolicy=case_step_authorized` 只授权冻结当前步骤；它不改变前置条件 Flow 对支付、删除、发布等副作用的静态拒绝。
 - 步骤事实必须按 `case.json.steps` 顺序写入；进入后续步骤后不能回头补写前置步骤事实。
 - 每个业务步骤都必须以 `assertion PASS` 作为通过证据；成功 actionResult 和动作后的 observation 只是必要过程事实，不能单独完成步骤或推进到下一步。
 - `assertion PASS` 必须绑定 `stepId`，引用当前步骤最新 observation 的截图，并且前一条相关视觉理解必须是引用同一截图、包含 `reason` 的 `perception status=USABLE`；observation `label` 不能作为业务证据。

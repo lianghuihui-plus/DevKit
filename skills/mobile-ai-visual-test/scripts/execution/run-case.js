@@ -22,6 +22,7 @@ const { buildPreconditionPlan, planFlowSummaries } = require('../lib/preconditio
 const { failureStatus } = require('../lib/failure-catalog');
 const { validateActionAsset, validateActionExecution } = require('../lib/action-contract');
 const { deriveNextWork } = require('../lib/execution-reducer');
+const { actionAuthorization, validateActionAuthorization } = require('../lib/step-intent');
 const { evaluateFrameworkPrecondition } = require('../lib/framework-preconditions');
 const {
   buildExecutionEnvironment,
@@ -55,6 +56,7 @@ const VALID_EVENT_TYPES = new Set([
   'evidenceCheck',
   'perception',
   'decision',
+  'actionRejected',
   'rule',
   'flow',
   'actionResult',
@@ -115,11 +117,11 @@ const VALID_PRECONDITION_FLOW_FAILURES = new Set([
   'PRECONDITION_FLOW_UNSAFE',
   'PRECONDITION_FLOW_BUDGET_EXCEEDED',
 ]);
-const VALID_COORDINATE_SOURCES = new Set(['layout', 'visual', 'pixel', 'manual', 'flow']);
 const STEP_ORDER_GUARDED_EVENT_TYPES = new Set([
   'observation',
   'perception',
   'decision',
+  'actionRejected',
   'rule',
   'flow',
   'actionResult',
@@ -144,10 +146,11 @@ function usage() {
     'Usage:',
     '  run-case.js <case-dir> --platform <platform> --start [--precondition-plan-sha <sha>] [--precondition-inputs-json <json>] [--batch-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --resume-start --execution-id <id> --batch-id <id>',
-    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--action-json <json>] [--step-id <step-id>] [--scope global|precondition-flow] [--precondition-id <id>] [--flow-id <id>] [--flow-step-id <id>] [--phase <phase>] [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--action-json <json>] [--step-id <step-id> --authorization-source case-step --authorization-step-id <step-id> --authorization-intent-sha <sha>] [--scope global|precondition-flow] [--precondition-id <id>] [--flow-id <id>] [--flow-step-id <id>] [--phase <phase>] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --recover-orphaned --execution-id <id> --batch-id <id> [--reason <text>]',
     '  run-case.js <case-dir> --platform <platform> --record-json <json> [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --record-agent-runtime-json <json> --execution-id <id>',
+    '  run-case.js <case-dir> --platform <platform> --record-action-rejection-json <json> --execution-id <id>',
     '  run-case.js <case-dir> --platform <platform> --finalize --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>] [--execution-id <id>]',
     '  run-case.js <case-dir> --platform <platform> --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>]',
     '  run-case.js <case-dir> --legacy-runtime ...',
@@ -478,7 +481,6 @@ function validateEvent(event) {
     if (!action || typeof action !== 'string') throw new Error('actionResult missing required field: action');
     if (!VALID_ACTIONS.has(action)) throw new Error(`Unsupported actionResult action: ${action}`);
     if (typeof event.ok !== 'boolean') throw new Error('actionResult missing required boolean field: ok');
-    validateCoordinateMetadata(event, action);
     validatePreconditionFlowScope(event);
     if (event.scope === EXECUTION_BOOTSTRAP_SCOPE && !isExecutionBootstrapFact(event)) {
       throw new Error('EXECUTION_BOOTSTRAP_SCOPE_INVALID: execution-bootstrap 只允许 run-case 启动阶段写入的无步骤 restartApp。');
@@ -496,6 +498,25 @@ function validateEvent(event) {
       event.action = action;
       delete event.requestedAction;
     }
+  }
+  if (event.type === 'actionRejected') {
+    if (event.source !== 'execute-next-work.js') throw new Error('actionRejected source must be execute-next-work.js');
+    if (!event.workToken || typeof event.workToken !== 'string') throw new Error('actionRejected requires workToken');
+    if (!['decision-validation', 'execution-entry'].includes(event.phase)) throw new Error('actionRejected phase is invalid');
+    const flowScoped = event.scope === PRECONDITION_FLOW_SCOPE;
+    if (flowScoped) {
+      validatePreconditionFlowScope(event);
+      if (!['ACTION_CONTRACT_INVALID', 'PRECONDITION_FLOW_ACTION_MISMATCH'].includes(event.failureCode)) throw new Error('Flow actionRejected failureCode is invalid');
+    } else {
+      if (!event.stepId || typeof event.stepId !== 'string') throw new Error('actionRejected requires stepId');
+      if (!event.intentSha || typeof event.intentSha !== 'string') throw new Error('actionRejected requires intentSha');
+      if (event.failureCode !== 'ACTION_CONTRACT_INVALID') throw new Error('actionRejected failureCode must be ACTION_CONTRACT_INVALID');
+    }
+    if (!String(event.reason || '').trim()) throw new Error('actionRejected requires reason');
+    if (event.recoverable !== true) throw new Error('actionRejected must be recoverable');
+    if (!event.attemptedAction || typeof event.attemptedAction !== 'object' || Array.isArray(event.attemptedAction)) throw new Error('actionRejected requires attemptedAction');
+    if (event.allowed !== undefined && !Array.isArray(event.allowed)) throw new Error('actionRejected allowed must be an array');
+    if (event.decisionTurnId !== undefined && (typeof event.decisionTurnId !== 'string' || !event.decisionTurnId)) throw new Error('actionRejected decisionTurnId must be a non-empty string');
   }
   if (event.type === 'perception' && event.status !== undefined && !VALID_PERCEPTION_STATUSES.has(event.status)) {
     throw new Error('perception status must be USABLE, UNUSABLE, or UNCERTAIN');
@@ -572,7 +593,7 @@ function isExecutionBootstrapFact(event) {
 
 function isCaseExecutionFact(event) {
   if (!event || event.type === 'agentRuntime' || isExecutionBootstrapFact(event)) return false;
-  return AGENT_WRITABLE_EVENT_TYPES.has(event.type) || ['observation', 'actionResult'].includes(event.type);
+  return AGENT_WRITABLE_EVENT_TYPES.has(event.type) || ['observation', 'actionResult', 'actionRejected'].includes(event.type);
 }
 
 function allowUnboundSelfTestFacts() {
@@ -650,26 +671,6 @@ function validatePreconditionFlowScope(event) {
   }
 }
 
-function validateCoordinateMetadata(event, action) {
-  const hasCoordinates = event.x !== undefined || event.y !== undefined;
-  if (!hasCoordinates) return;
-  if (!['tap', 'toggle', 'longPress', 'inputText'].includes(action)) return;
-  if (event.x === undefined || event.y === undefined) throw new Error('coordinate action requires both x and y');
-  if (!event.coordinateSource || !VALID_COORDINATE_SOURCES.has(event.coordinateSource)) {
-    throw new Error('coordinate action missing valid coordinateSource');
-  }
-  if (event.coordinateSource === 'manual') {
-    throw new Error('manual coordinateSource is not allowed in case execution; use layout, visual, pixel, or flow');
-  }
-  if (!event.coordinateEvidence || typeof event.coordinateEvidence !== 'string') {
-    throw new Error('coordinate action missing coordinateEvidence');
-  }
-  if ((event.coordinateSource === 'visual' || event.coordinateSource === 'pixel' || event.coordinateSource === 'flow') &&
-    (!Array.isArray(event.targetBounds) || event.targetBounds.length !== 4 || !event.targetBounds.every((item) => Number.isFinite(Number(item))))) {
-    throw new Error(`${event.coordinateSource} coordinate action requires targetBounds [x1,y1,x2,y2]`);
-  }
-}
-
 function validateGlobalRules(caseJson) {
   const rules = caseJson.globalRules || [];
   if (!Array.isArray(rules)) throw new Error('case.json globalRules must be an array');
@@ -717,6 +718,29 @@ function validatePreconditionEventAgainstCase(event, caseJson) {
   if (!known) {
     throw new Error(`PRECONDITION_REQUIRED: precondition event references unknown case precondition id: ${event.id}`);
   }
+}
+
+function validateCaseStepAuthorization(event, caseJson) {
+  if (event.type === 'actionRejected') {
+    if (event.scope === PRECONDITION_FLOW_SCOPE) return;
+    const step = (caseJson.steps || []).find((item) => item.id === event.stepId);
+    if (!step || actionAuthorization(step).intentSha !== event.intentSha) {
+      throw new Error('ACTION_OUTSIDE_CASE_INTENT: actionRejected does not match the frozen case step');
+    }
+    return;
+  }
+  const requiresAuthorization = (event.type === 'actionResult' && Boolean(event.stepId))
+    || (event.type === 'decision' && event.decision === 'act');
+  if (!requiresAuthorization) {
+    if (event.authorization !== undefined) {
+      throw new Error('ACTION_OUTSIDE_CASE_INTENT: authorization is only valid for an ACT decision or business step actionResult');
+    }
+    return;
+  }
+  const stepId = eventStepId(event);
+  const step = (caseJson.steps || []).find((item) => item.id === stepId);
+  if (!step) throw new Error(`ACTION_OUTSIDE_CASE_INTENT: step ${stepId || '<missing>'} is not present in frozen case snapshot`);
+  validateActionAuthorization(step, event.authorization);
 }
 
 function validatePreconditionEventAgainstPlan(event, executionState, events) {
@@ -1034,7 +1058,7 @@ function budgetViolation(events, nextEvent, budget, startedAt) {
     const stepId = event.stepId || event.step?.id;
     if (!stepId) continue;
     const item = byStep.get(stepId) || { total: 0, waits: 0 };
-    if (['observation', 'decision', 'rule', 'flow', 'actionResult', 'assertion', 'perception'].includes(event.type)) item.total += 1;
+    if (['observation', 'decision', 'actionRejected', 'rule', 'flow', 'actionResult', 'assertion', 'perception'].includes(event.type)) item.total += 1;
     if (event.type === 'actionResult' && actionType(event) === 'wait') item.waits += 1;
     byStep.set(stepId, item);
   }
@@ -1594,11 +1618,12 @@ function countArtifacts(events) {
 
 function buildMetrics(caseJson, state, events, result, executionState = {}) {
   const actionTypes = ['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'launchApp', 'restartApp', 'wait', 'home'];
-  const actions = { total: 0, tap: 0, toggle: 0, longPress: 0, inputText: 0, swipe: 0, back: 0, launchApp: 0, restartApp: 0, wait: 0, home: 0 };
+  const actions = { total: 0, caseStepAuthorized: 0, tap: 0, toggle: 0, longPress: 0, inputText: 0, swipe: 0, back: 0, launchApp: 0, restartApp: 0, wait: 0, home: 0 };
   for (const event of events) {
     if (event.type !== 'actionResult') continue;
     const action = actionType(event);
     actions.total += 1;
+    if (event.authorization?.source === 'case-step') actions.caseStepAuthorized += 1;
     if (actionTypes.includes(action)) actions[action] += 1;
   }
 
@@ -1703,6 +1728,21 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     sourceInvalid: evidenceChecks.filter((event) => event.verdict === 'SOURCE_INVALID').length,
     sourceChanged: evidenceChecks.filter((event) => event.verdict === 'SOURCE_CHANGED').length,
   };
+  const rejectionEntries = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event.type === 'actionRejected');
+  const sameRejectedAction = (event, actionResult) => event.scope === PRECONDITION_FLOW_SCOPE
+    ? actionResult.scope === PRECONDITION_FLOW_SCOPE
+      && actionResult.preconditionId === event.preconditionId
+      && actionResult.flowId === event.flowId
+      && actionResult.flowStepId === event.flowStepId
+    : actionResult.stepId === event.stepId;
+  const actionRejections = {
+    total: rejectionEntries.length,
+    recovered: rejectionEntries.filter(({ event, index }) => events.slice(index + 1).some((item) =>
+      item.type === 'actionResult' && sameRejectedAction(event, item) && item.ok === true)).length,
+    exhausted: result.failureCode === 'ACTION_CONTRACT_INVALID' ? 1 : 0,
+  };
 
   return {
     schemaVersion: 1,
@@ -1725,6 +1765,7 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     steps,
     executionPhase: result.failedStep ? 'step' : preconditions.blocked || preconditions.failed || preconditions.unknown ? 'precondition' : result.status === 'BLOCKED' ? 'environment-or-framework' : 'completed',
     actions,
+    actionRejections,
     flows,
     visualEvidence,
     stability,
@@ -2205,6 +2246,9 @@ for (let i = 1; i < args.length; i++) {
     case '--precondition-id': options.preconditionId = args[++i]; break;
     case '--flow-id': options.flowId = args[++i]; break;
     case '--flow-step-id': options.flowStepId = args[++i]; break;
+    case '--authorization-source': options.authorizationSource = args[++i]; break;
+    case '--authorization-step-id': options.authorizationStepId = args[++i]; break;
+    case '--authorization-intent-sha': options.authorizationIntentSha = args[++i]; break;
     case '--phase': options.phase = args[++i]; break;
     case '--precondition-plan-sha': options.preconditionPlanSha = args[++i]; break;
     case '--precondition-inputs-json': options.preconditionInputs = JSON.parse(args[++i]); break;
@@ -2213,6 +2257,7 @@ for (let i = 1; i < args.length; i++) {
     case '--record-action-json': command = 'recordAction'; options.recordJson = args[++i]; break;
     case '--record-observation-json': command = 'recordObservation'; options.recordJson = args[++i]; break;
     case '--record-agent-runtime-json': command = 'recordAgentRuntime'; options.recordJson = args[++i]; break;
+    case '--record-action-rejection-json': command = 'recordActionRejection'; options.recordJson = args[++i]; break;
     case '--finalize': command = 'finalize'; break;
     case '--legacy-runtime': options.legacyRuntime = true; break;
     case '--execution-id': options.executionId = args[++i]; break;
@@ -2401,7 +2446,19 @@ try {
       ...(options.eventType === 'actionResult' ? requestedActionFields : {}),
       requestedAction: options.eventType === 'actionResult' ? requestedAction || undefined : undefined,
       source: options.eventType === 'actionResult' ? 'action.sh' : undefined,
+      authorization: options.eventType === 'actionResult' && options.authorizationSource ? {
+        source: options.authorizationSource,
+        stepId: options.authorizationStepId,
+        intentSha: options.authorizationIntentSha,
+      } : undefined,
     });
+    if (event.type === 'actionResult') {
+      validateActionExecution(actionSpecFromEvent(event), {
+        platform: options.platform,
+        scope: event.scope || (event.stepId ? 'case-step' : 'formal-execution'),
+        context: 'action budget precheck',
+      });
+    }
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
     assertCaseFactWritable(execDir, executionState, events, event);
@@ -2410,6 +2467,7 @@ try {
       if (conflictingTurn) throw new Error(`AGENT_RESULT_INVALID: turnId ${event.turnId} already belongs to step ${eventStepId(conflictingTurn) || '<none>'}.`);
     }
     const caseJson = readExecutionCase(caseDir, execDir);
+    validateCaseStepAuthorization(event, caseJson);
     const preconditionReady = preconditionReadiness(caseJson, events, event);
     if (!preconditionReady.ok) {
       throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
@@ -2455,10 +2513,11 @@ try {
       process.exit(3);
     }
     console.log(JSON.stringify({ executionId, budgetOk: true, eventType: options.eventType, paceHint: paceHint(events, event) }, null, 2));
-  } else if (command === 'record' || command === 'recordAction' || command === 'recordObservation' || command === 'recordAgentRuntime') {
+  } else if (command === 'record' || command === 'recordAction' || command === 'recordObservation' || command === 'recordAgentRuntime' || command === 'recordActionRejection') {
     const allowActionResult = command === 'recordAction';
     const allowObservation = command === 'recordObservation';
     const allowAgentRuntime = command === 'recordAgentRuntime';
+    const allowActionRejection = command === 'recordActionRejection';
     const runtimeDir = caseRuntimeDir(caseDir, options.platform);
     const executionId = options.executionId || latestExecutionId(runtimeDir);
     if (!executionId) throw new Error('No execution exists. Run --start first or pass --execution-id.');
@@ -2469,12 +2528,6 @@ try {
     const caseJson = readExecutionCase(caseDir, execDir);
     validateGlobalRules(caseJson);
     let event = normalizeEvent(JSON.parse(options.recordJson));
-    if (event.type === 'decision' && event.decision === 'act') {
-      validateActionExecution(event.action || event.requestedAction, {
-        platform: options.platform,
-        context: 'act decision action',
-      });
-    }
     if (event.type === 'evidenceCheck') {
       throw new Error('EVIDENCE_CHECK_SOURCE_REQUIRED: evidenceCheck 只能由 run-case.js 根据结构化 qualityClaim 生成。');
     }
@@ -2490,11 +2543,32 @@ try {
     if (allowAgentRuntime && event.type !== 'agentRuntime') {
       throw new Error('EVENT_SOURCE_REQUIRED: --record-agent-runtime-json 只接受 agentRuntime。');
     }
+    if (allowActionRejection && event.type !== 'actionRejected') {
+      throw new Error('EVENT_SOURCE_REQUIRED: --record-action-rejection-json 只接受 actionRejected。');
+    }
+    if (event.type === 'actionRejected' && (!allowActionRejection || process.env.MAVT_ACTION_REJECTION_WRITER !== '1')) {
+      throw new Error('EVENT_SOURCE_REQUIRED: actionRejected 只能由 execute-next-work.js 写入。');
+    }
     if (event.type === 'agentRuntime' && (!allowAgentRuntime || process.env.MAVT_AGENT_RUNTIME_WRITER !== '1')) {
       throw new Error('EVENT_SOURCE_REQUIRED: agentRuntime 只能由顶层 scripts/record-agent-runtime.js 写入。');
     }
     validateRuleEventAgainstCase(event, caseJson);
     validatePreconditionEventAgainstCase(event, caseJson);
+    validateCaseStepAuthorization(event, caseJson);
+    if (event.type === 'decision' && event.decision === 'act') {
+      validateActionExecution(event.action || event.requestedAction, {
+        platform: options.platform,
+        scope: 'case-step',
+        context: 'act decision action',
+      });
+    }
+    if (event.type === 'actionResult') {
+      validateActionExecution(actionSpecFromEvent(event), {
+        platform: options.platform,
+        scope: event.scope || (event.stepId ? 'case-step' : 'formal-execution'),
+        context: 'actionResult requestedAction',
+      });
+    }
     const timelinePath = path.join(execDir, 'timeline.jsonl');
     const events = readJsonl(timelinePath);
     validatePreconditionEventAgainstPlan(event, executionState, events);
@@ -2530,7 +2604,16 @@ try {
         const sameFailure = ['provider', 'status', 'failureCode', 'protocolSha', 'implementationSha', 'requestSha', 'environmentSha', 'preconditionInputsSha', 'sessionId']
           .every((field) => (existingFailure[field] || null) === (event[field] || null));
         if (!sameFailure) throw new Error('AGENT_RESULT_INVALID: Agent Runtime 已有不同的失败终态。');
-        console.log(JSON.stringify({ executionId, eventType: event.type, alreadyRecorded: true, timeline: timelinePath }, null, 2));
+        const finalized = finalize(caseDir, {
+          platform: options.platform,
+          executionId,
+          status: 'BLOCKED',
+          failureCode: existingFailure.failureCode,
+          reason: existingFailure.reason || `Agent runtime ${existingFailure.status.toLowerCase()}.`,
+          allowIncompletePreconditions: true,
+          allowAlreadyFinalized: true,
+        });
+        console.log(JSON.stringify({ executionId, eventType: event.type, alreadyRecorded: true, timeline: timelinePath, finalized }, null, 2));
         process.exit(0);
       }
     }

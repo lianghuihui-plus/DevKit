@@ -38,7 +38,7 @@ PREPARED
 
 持有 session 的创建后失败、等待失败、校验失败或超时必须经过 `INTERRUPTING -> RELEASING`，释放后才能进入 `FAILED`、`INTERRUPTED` 或 `TIMED_OUT`。`VALIDATING` 可重入；`next` 对同一待执行操作幂等，未 `apply` 前重复调用返回相同 operationId。释放失败最多产生三次 `RELEASE_SESSION`，仍未确认时进入 `RELEASE_FAILED`，批次必须阻塞而不能继续下一个 case。
 
-所有 Runtime 终态都写 `validation.json`。Agent 结果校验通过时 `valid=true`；创建失败、中断、超时或结果无效时 `valid=false` 并保留对应 failureCode。未取得 session 的失败直接记录无会话可释放的终态时间，取得 session 后仍必须先中断和释放。
+所有 Runtime 终态都写 `validation.json`。Agent 结果校验通过时 `valid=true`；创建失败、中断、超时或结果无效时 `valid=false` 并保留对应 failureCode。Runtime 失败一经确定就必须通过受保护失败事实同步收尾 execution，保证 `execution.json.finalized=true` 且 `result.json`、`metrics.json` 同时存在；session 的中断和释放仍独立完成，批次只有确认释放后才能提交。
 
 ## 统一 Host Adapter 契约
 
@@ -77,9 +77,11 @@ Host Adapter 输入是 `next.operation`，输出统一为：
 
 后续 reducer、事实写入、Agent request、finalize 和结果校验都读取 snapshot。源 `case.json` 在执行中变化，只会让报告变为过期，不会改变当前 execution。
 
-CaseAgentRequest 带 Runtime Core 固化的规范 provider 和 `requestSha`，并绑定 `environmentSha` 与 `preconditionInputsSha`。SkillContract 用 `protocolSha` 冻结角色规范文件，用 `implementationSha` 冻结实际运行脚本；Agent Runtime 的 `BOUND` 事实同时绑定这些哈希、provider、requestSha 和 sessionId。provider 只允许在 Runtime 初始化入口输入一次，子 Agent 结果构造器从 request 读取，不能覆盖。`BOUND` 必须先于子 Agent 业务事实；相同绑定可幂等重放，不同绑定被拒绝。
+CaseAgentRequest 带 Runtime Core 固化的规范 provider 和 `requestSha`，绑定 `environmentSha`、`preconditionInputsSha`，并声明 `actionPolicy.mode=case_step_authorized`。该策略以 `case.snapshot.json` 当前步骤为授权源，允许步骤明确要求的副作用，同时禁止 Agent 自行扩展步骤外副作用。SkillContract 用 `protocolSha` 冻结角色、provider、platform、资源清单、入口清单及规范内容，用 `implementationSha` 冻结 `implementationFiles` 列出的 Core 与当前平台实现；其他平台 adapter 不进入当前平台摘要。Agent Runtime 的 `BOUND` 事实同时绑定这些哈希、provider、requestSha 和 sessionId。provider 只允许在 Runtime 初始化入口输入一次，子 Agent 结果构造器从 request 读取，不能覆盖。`BOUND` 必须先于子 Agent 业务事实；相同绑定可幂等重放，不同绑定被拒绝。
 
 `run-case --start` 在 Runtime 初始化前写入的 `executionStart`、`environmentProbe` 和 `scope=execution-bootstrap` 的 `restartApp actionResult` 属于启动事实。Runtime init 会拒绝除此以外的既有事实，BOUND 写入后才允许 Case Engine 产生前置条件和业务步骤事实。
+
+规范资源变化只改变 protocolSha，实际执行文件变化只改变 implementationSha；platform、provider、资源或入口清单变化属于协议变化。requestSha 同时绑定二者。部署任一不兼容变化前应先收尾正在运行的 execution，不支持把旧 Runtime 在执行中热切换到新契约；历史已完成产物仍按原内容只读展示。
 
 ## 角色所有权
 
@@ -91,6 +93,6 @@ CaseAgentRequest 带 Runtime Core 固化的规范 provider 和 `requestSha`，�
 
 `scripts/batch-runtime.js init --provider <id>` 在 `<workspace>/runs/<batchId>/` 冻结 provider，并写 `contract.json`、`batch.json` 和 `events.jsonl`。contract 缺失视为损坏，不会静默重建。`commit-current` 自己读取绑定 runtime、validation、execution、result 和 metrics，逐一校验 batch、caseKey、platform 和 executionId，确认 session 已释放后生成 `completion.json`。start 阶段由框架直接收尾的 execution 使用 `commit-start-result`。
 
-`reconcile-current` 是批次开始时的一次性恢复归约，不是轮询监控。STARTING 返回 `RESUME_START`；无 Runtime 的已收尾启动失败返回 `COMMIT_START_RESULT`；RUNNING 且只有 bootstrap facts 才返回 `INIT_RUNTIME`。候选包含未完成 execution 和当前批次尚未发布 completion 的已收尾 execution；候选不唯一直接判为损坏。
+`reconcile-current` 是批次开始时的一次性恢复归约，不是轮询监控。STARTING 返回 `RESUME_START`；无 Runtime 的已收尾启动失败返回 `COMMIT_START_RESULT`；RUNNING 且只有 bootstrap facts 才返回 `INIT_RUNTIME`。若历史 Runtime 已失败并释放、但 execution 未收尾，则返回 `RECOVER_RUNTIME_TERMINAL`，协调器调用一次 `agent-runtime.js next` 让 Core 幂等补齐失败事实与结果，再重新归约。候选包含未完成 execution 和当前批次尚未发布 completion 的已收尾 execution；候选不唯一直接判为损坏。
 
 批次必须串行。设备前台状态和单 active execution 约束高于宿主平台的并发能力。

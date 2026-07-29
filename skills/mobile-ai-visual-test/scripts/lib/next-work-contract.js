@@ -2,6 +2,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { validateActionAuthorization, validateStepIntent } = require('./step-intent');
 
 const NEXT_WORK_TYPES = Object.freeze([
   'STOP_FINALIZED',
@@ -13,6 +14,7 @@ const NEXT_WORK_TYPES = Object.freeze([
   'DECIDE_FLOW_ACTION',
   'OBSERVE_FLOW_AFTER',
   'RECORD_FLOW_STEP_COMPLETED',
+  'RECORD_FLOW_ACTION_REJECTION_TERMINAL',
   'OBSERVE_FLOW_END',
   'DECIDE_FLOW_END',
   'FINALIZE_PRECONDITION_BLOCKED',
@@ -37,7 +39,7 @@ function validateNextWork(value) {
   if (!NEXT_WORK_TYPES.includes(value.type)) throw new Error(`Unsupported nextWork type: ${value.type || 'unknown'}`);
   const flowType = value.type.includes('FLOW');
   if (flowType && (!value.preconditionId || !value.flowId)) throw new Error(`${value.type} requires preconditionId and flowId`);
-  if (['OBSERVE_FLOW_BEFORE', 'EXECUTE_FLOW_ACTION', 'DECIDE_FLOW_ACTION', 'OBSERVE_FLOW_AFTER', 'RECORD_FLOW_STEP_COMPLETED'].includes(value.type) && !value.flowStepId) {
+  if (['OBSERVE_FLOW_BEFORE', 'EXECUTE_FLOW_ACTION', 'DECIDE_FLOW_ACTION', 'OBSERVE_FLOW_AFTER', 'RECORD_FLOW_STEP_COMPLETED', 'RECORD_FLOW_ACTION_REJECTION_TERMINAL'].includes(value.type) && !value.flowStepId) {
     throw new Error(`${value.type} requires flowStepId`);
   }
   if (['OBSERVE_STEP', 'OBSERVE_AFTER_ACTION', 'EXECUTE_STEP_ACTION', 'DECIDE_STEP'].includes(value.type) && !value.step?.id) {
@@ -47,6 +49,8 @@ function validateNextWork(value) {
     throw new Error(`${value.type} requires latestObservation.label`);
   }
   if (value.type === 'EXECUTE_STEP_ACTION' && !value.requestedAction?.type) throw new Error('EXECUTE_STEP_ACTION requires requestedAction');
+  if (['EXECUTE_STEP_ACTION', 'DECIDE_STEP'].includes(value.type)) validateStepIntent(value.step, value.stepIntent);
+  if (value.type === 'EXECUTE_STEP_ACTION') validateActionAuthorization(value.step, value.authorization);
   return value;
 }
 

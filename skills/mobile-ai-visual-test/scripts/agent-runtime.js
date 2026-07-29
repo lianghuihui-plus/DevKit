@@ -71,10 +71,13 @@ function saveRuntime(paths, runtime) {
   return runtime;
 }
 
-function assertRuntimeContract(paths) {
+function assertRuntimeContract(paths, requestedPlatform) {
   const persisted = readJson(paths.contract);
   if (!persisted) throw new Error('AGENT_PROTOCOL_MISMATCH: Agent Runtime contract.json is missing');
-  const current = runJson('build-agent-contract.js', ['--role', 'case-executor', '--provider', persisted.provider || 'codex']);
+  if (persisted.platform && persisted.platform !== requestedPlatform) {
+    throw new Error('AGENT_PROTOCOL_MISMATCH: persisted case-executor contract platform does not match execution platform');
+  }
+  const current = runJson('build-agent-contract.js', ['--role', 'case-executor', '--provider', persisted.provider || 'codex', '--platform', persisted.platform || requestedPlatform]);
   if (persisted.protocolSha !== current.protocolSha || persisted.implementationSha !== current.implementationSha) {
     throw new Error('AGENT_PROTOCOL_MISMATCH: case-executor contract changed after Runtime initialization');
   }
@@ -134,10 +137,25 @@ function recordFailure(options, paths, runtime, status) {
   runtime.failureRecorded = true;
 }
 
+function ensureRuntimeTerminalClosure(options, paths, runtime) {
+  const execution = readJson(path.join(paths.execDir, 'execution.json'));
+  if (!execution || execution.finalized) return runtime;
+  const failureTarget = runtime.terminalTarget || (['FAILED', 'INTERRUPTED', 'TIMED_OUT'].includes(runtime.state) ? runtime.state : null);
+  if (!failureTarget || !runtime.failureCode) return runtime;
+  const eventStatus = runtime.failureEventStatus || (failureTarget === 'FAILED' ? 'FAILED' : 'INTERRUPTED');
+  recordFailure(options, paths, runtime, eventStatus);
+  const finalized = readJson(path.join(paths.execDir, 'execution.json'));
+  if (!finalized?.finalized || !fs.existsSync(path.join(paths.execDir, 'result.json')) || !fs.existsSync(path.join(paths.execDir, 'metrics.json'))) {
+    throw new Error(`AGENT_RESULT_INVALID: Runtime ${failureTarget} did not finalize execution ${options.executionId}`);
+  }
+  return runtime;
+}
+
 function failRuntime(options, paths, runtime, { targetState, failureCode, reason, eventStatus = 'INTERRUPTED', record = true }) {
   runtime.terminalTarget = targetState;
   runtime.failureCode = failureCode;
   runtime.reason = reason;
+  runtime.failureEventStatus = eventStatus;
   if (!fs.existsSync(paths.validation)) {
     writeJson(paths.validation, {
       schemaVersion: 1,
@@ -182,7 +200,7 @@ function assertBootstrapOnlyBeforeRuntime(options, paths) {
 
 function initialize(options, paths) {
   if (fs.existsSync(paths.runtime)) {
-    assertRuntimeContract(paths);
+    assertRuntimeContract(paths, options.platform);
     const existing = loadRuntime(paths);
     if (existing.provider !== options.provider) throw new Error('Agent Runtime already initialized with a different provider');
     const execution = readJson(path.join(paths.execDir, 'execution.json'));
@@ -198,7 +216,7 @@ function initialize(options, paths) {
   if (batch && (batch.provider || 'codex') !== options.provider) throw new Error('Agent Runtime provider does not match owning batch');
   assertBootstrapOnlyBeforeRuntime(options, paths);
   ensureDir(paths.agentDir);
-  const contract = runJson('build-agent-contract.js', ['--role', 'case-executor', '--provider', options.provider]);
+  const contract = runJson('build-agent-contract.js', ['--role', 'case-executor', '--provider', options.provider, '--platform', options.platform]);
   writeJson(paths.contract, contract);
   const requestArgs = [options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--provider', options.provider, '--skill-contract-json', JSON.stringify(contract), '--workspace-cwd', options.workspaceCwd, '--output', paths.request];
   const request = runJson('build-case-agent-request.js', requestArgs);
@@ -238,7 +256,7 @@ function validateReceivedResult(options, paths, runtime) {
     const validation = { schemaVersion: 1, valid: false, executionId: options.executionId, environmentSha: runtime.environmentSha, preconditionInputsSha: runtime.preconditionInputsSha, failureCode: 'AGENT_RESULT_INVALID', reason, time: nowIso() };
     writeJson(paths.validation, validation);
     runtime.validation = validation;
-    failRuntime(options, paths, runtime, { targetState: 'FAILED', failureCode: 'AGENT_RESULT_INVALID', reason, record: false });
+    failRuntime(options, paths, runtime, { targetState: 'FAILED', failureCode: 'AGENT_RESULT_INVALID', reason, eventStatus: 'FAILED' });
   }
   saveRuntime(paths, runtime);
 }
@@ -267,6 +285,9 @@ function next(options, paths) {
     runtime.cancelAfterOpen = { reason: 'Case deadline elapsed while Agent session was opening.', requestedAt: nowIso() };
     saveRuntime(paths, runtime);
   }
+  const failureRecordedBeforeClosure = runtime.failureRecorded === true;
+  ensureRuntimeTerminalClosure(options, paths, runtime);
+  if (!failureRecordedBeforeClosure && runtime.failureRecorded === true) saveRuntime(paths, runtime);
   if (runtime.pendingOperation) return operationResponse(runtime, runtime.pendingOperation);
   if (TERMINAL_STATES.has(runtime.state)) return terminalResponse(runtime);
 
@@ -395,7 +416,7 @@ function main() {
   const options = parseArgs(process.argv.slice(2));
   const paths = agentPaths(options);
   if (['next', 'apply', 'interrupt'].includes(options.command)) {
-    assertRuntimeContract(paths);
+    assertRuntimeContract(paths, options.platform);
     assertRuntimeExecutionBinding(paths);
   }
   let value;

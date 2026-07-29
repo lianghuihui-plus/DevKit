@@ -45,8 +45,8 @@ function batchPaths(options) {
   return { dir, state: path.join(dir, 'batch.json'), events: path.join(dir, 'events.jsonl'), contract: path.join(dir, 'contract.json'), operationDraft: path.join(dir, 'operation.draft.json') };
 }
 
-function currentCoordinatorContract(provider = 'codex') {
-  return JSON.parse(childProcess.execFileSync(process.execPath, [path.join(__dirname, 'build-agent-contract.js'), '--role', 'batch-coordinator', '--provider', provider], {
+function currentCoordinatorContract(provider = 'codex', platform) {
+  return JSON.parse(childProcess.execFileSync(process.execPath, [path.join(__dirname, 'build-agent-contract.js'), '--role', 'batch-coordinator', '--provider', provider, '--platform', platform], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }));
@@ -55,7 +55,7 @@ function currentCoordinatorContract(provider = 'codex') {
 function assertBatchContract(paths, state = null) {
   const persisted = readJson(paths.contract);
   if (!persisted) throw new Error('AGENT_PROTOCOL_MISMATCH: batch contract.json is missing');
-  const current = currentCoordinatorContract(state?.provider || persisted.provider || 'codex');
+  const current = currentCoordinatorContract(state?.provider || persisted.provider || 'codex', state?.platform || persisted.platform);
   if (persisted.protocolSha !== current.protocolSha || persisted.implementationSha !== current.implementationSha) {
     throw new Error('AGENT_PROTOCOL_MISMATCH: batch coordinator contract changed after initialization');
   }
@@ -199,6 +199,13 @@ function reconcileCurrent(options, state) {
     if (execution) assertBatchCaseBinding(state, item, execDir, { execution });
     if (execution?.finalized && !fs.existsSync(runtimePath)) return { schemaVersion: 1, batchId: state.batchId, action: 'COMMIT_START_RESULT', executionId: item.executionId, caseDir: item.caseDir, platform: state.platform };
     if (execution?.lifecycle === 'STARTING' || execution?.lifecycle === 'BLOCKED_START') return { schemaVersion: 1, batchId: state.batchId, action: 'RESUME_START', executionId: item.executionId, caseDir: item.caseDir, platform: state.platform };
+    if (execution?.finalized === false && fs.existsSync(runtimePath)) {
+      const runtime = readJson(runtimePath);
+      const releasedFailure = runtime?.releasedAt && ['FAILED', 'INTERRUPTED', 'TIMED_OUT'].includes(runtime.state);
+      if (releasedFailure) {
+        return { schemaVersion: 1, batchId: state.batchId, action: 'RECOVER_RUNTIME_TERMINAL', executionId: item.executionId, caseDir: item.caseDir, platform: state.platform, runtimePath };
+      }
+    }
     if (execution?.finalized && fs.existsSync(runtimePath)) {
       const runtime = readJson(runtimePath);
       const validation = readJson(path.join(path.dirname(runtimePath), 'validation.json'));
@@ -296,7 +303,7 @@ function initialize(options, paths) {
   if (!['harmony', 'android', 'ios'].includes(options.platform)) throw new Error('init requires a supported --platform');
   options.provider = (options.provider || 'codex').trim().toLowerCase();
   ensureDir(paths.dir);
-  writeJson(paths.contract, currentCoordinatorContract(options.provider));
+  writeJson(paths.contract, currentCoordinatorContract(options.provider, options.platform));
   const seenCaseKeys = new Set();
   const seenCaseDirs = new Set();
   const cases = options.targets.map((target, index) => {

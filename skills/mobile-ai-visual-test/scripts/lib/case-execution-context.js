@@ -41,6 +41,7 @@ function loadCaseExecutionContext(options) {
     preconditionInputs,
   });
   return {
+    platform: options.platform,
     runtimeDir,
     executionId,
     execDir,

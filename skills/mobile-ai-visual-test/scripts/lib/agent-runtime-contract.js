@@ -46,12 +46,14 @@ function validateSkillContract(contract) {
   if (contract.name !== 'mobile-ai-visual-test') throw new Error('skillContract.name must be mobile-ai-visual-test');
   if (!SKILL_ROLES.has(contract.role)) throw new Error('skillContract.role is invalid');
   if (normalizeProviderId(contract.provider || 'codex') !== (contract.provider || 'codex')) throw new Error('skillContract.provider must be canonical');
+  if (!PLATFORMS.has(contract.platform)) throw new Error('skillContract.platform is invalid');
   ensureAbsolute(contract.root, 'skillContract.root');
   if (!contract.protocolSha || !/^agent-protocol-[0-9a-f]{16}$/.test(contract.protocolSha)) throw new Error('skillContract.protocolSha is invalid');
   if (!/^agent-implementation-[0-9a-f]{16}$/.test(contract.implementationSha || '')) throw new Error('skillContract.implementationSha is invalid');
   if (!Array.isArray(contract.requiredResources) || !contract.requiredResources.length) throw new Error('skillContract.requiredResources must be a non-empty array');
   if (!Array.isArray(contract.allowedEntrypoints) || !contract.allowedEntrypoints.length) throw new Error('skillContract.allowedEntrypoints must be a non-empty array');
-  for (const value of [...contract.requiredResources, ...contract.allowedEntrypoints]) {
+  if (!Array.isArray(contract.implementationFiles) || !contract.implementationFiles.length) throw new Error('skillContract.implementationFiles must be a non-empty array');
+  for (const value of [...contract.requiredResources, ...contract.allowedEntrypoints, ...contract.implementationFiles]) {
     if (typeof value !== 'string' || path.isAbsolute(value) || value.split(/[\\/]+/).includes('..')) throw new Error('skillContract resources and entrypoints must be safe relative paths');
   }
   return contract;
@@ -78,6 +80,7 @@ function validateCaseAgentRequest(request) {
   validateSkillContract(request.skillContract);
   if (request.skillContract.role !== 'case-executor') throw new Error('CaseAgentRequest requires case-executor skillContract');
   if ((request.skillContract.provider || 'codex') !== request.provider) throw new Error('CaseAgentRequest provider does not match skillContract');
+  if (request.skillContract.platform !== request.platform) throw new Error('CaseAgentRequest platform does not match skillContract');
   if (!Array.isArray(request.preconditionInputs)) throw new Error('CaseAgentRequest.preconditionInputs must be an array');
   for (const item of request.preconditionInputs) {
     ensureObject(item, 'preconditionInput');
@@ -87,8 +90,19 @@ function validateCaseAgentRequest(request) {
     if (!String(item.reason || '').trim()) throw new Error('preconditionInput.reason is required');
   }
   const policy = ensureObject(request.executionPolicy, 'CaseAgentRequest.executionPolicy');
+  const policyKeys = Object.keys(policy).sort();
+  if (canonicalJson(policyKeys) !== canonicalJson(['actionPolicy', 'maxDurationMs', 'sessionScope'])) {
+    throw new Error('CaseAgentRequest.executionPolicy contains unsupported fields');
+  }
   if (policy.sessionScope !== 'case') throw new Error('CaseAgentRequest.executionPolicy.sessionScope must be case');
-  if (policy.allowDestructiveActions !== false) throw new Error('CaseAgentRequest must forbid destructive actions');
+  const actionPolicy = ensureObject(policy.actionPolicy, 'CaseAgentRequest.executionPolicy.actionPolicy');
+  const actionPolicyKeys = Object.keys(actionPolicy).sort();
+  if (canonicalJson(actionPolicyKeys) !== canonicalJson(['allowAgentInitiatedSideEffects', 'authorizationSource', 'mode'])) {
+    throw new Error('CaseAgentRequest.executionPolicy.actionPolicy contains unsupported fields');
+  }
+  if (actionPolicy.mode !== 'case_step_authorized') throw new Error('CaseAgentRequest actionPolicy.mode must be case_step_authorized');
+  if (actionPolicy.authorizationSource !== 'case.snapshot.json') throw new Error('CaseAgentRequest actionPolicy.authorizationSource must be case.snapshot.json');
+  if (actionPolicy.allowAgentInitiatedSideEffects !== false) throw new Error('CaseAgentRequest must forbid Agent-initiated side effects outside the current case step');
   if (!Number.isFinite(Number(policy.maxDurationMs)) || Number(policy.maxDurationMs) <= 0) throw new Error('CaseAgentRequest.executionPolicy.maxDurationMs is invalid');
   for (const forbidden of ['conversation', 'history', 'timeline', 'screenshots', 'imageBase64']) {
     if (request[forbidden] !== undefined) throw new Error(`CaseAgentRequest must not embed ${forbidden}`);

@@ -1106,7 +1106,8 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
     lines.push(`- 本次耗时：${formatDuration(metrics.durationMs || 0)}`);
     if (metrics.steps) lines.push(`- 步骤：${metrics.steps.passed || 0}/${metrics.steps.total || 0} 通过，${metrics.steps.failed || 0} 失败，${metrics.steps.unknown || 0} 未知，${metrics.steps.skipped || 0} 跳过`);
     if (metrics.preconditions) lines.push(`- 前置条件：${metrics.preconditions.passed || 0}/${metrics.preconditions.total || 0} 通过，${metrics.preconditions.prepared || 0} 已准备，${metrics.preconditions.blocked || 0} 阻塞，${metrics.preconditions.failed || 0} 失败，${metrics.preconditions.unknown || 0} 未知`);
-    if (metrics.actions) lines.push(`- 动作：${metrics.actions.total || 0} 次，点击 ${metrics.actions.tap || 0} 次，开关 ${metrics.actions.toggle || 0} 次，长按 ${metrics.actions.longPress || 0} 次，输入 ${metrics.actions.inputText || 0} 次，拉起 App ${metrics.actions.launchApp || 0} 次，冷启动 App ${metrics.actions.restartApp || 0} 次`);
+    if (metrics.actions) lines.push(`- 动作：${metrics.actions.total || 0} 次，其中用例步骤授权 ${metrics.actions.caseStepAuthorized || 0} 次；点击 ${metrics.actions.tap || 0} 次，开关 ${metrics.actions.toggle || 0} 次，长按 ${metrics.actions.longPress || 0} 次，输入 ${metrics.actions.inputText || 0} 次，拉起 App ${metrics.actions.launchApp || 0} 次，冷启动 App ${metrics.actions.restartApp || 0} 次`);
+    if (metrics.actionRejections) lines.push(`- 动作契约拒绝：${metrics.actionRejections.total || 0} 次，修正后恢复 ${metrics.actionRejections.recovered || 0} 次，重试耗尽 ${metrics.actionRejections.exhausted || 0} 次`);
     if (metrics.flows) lines.push(`- 前置条件 Flow：计划 ${metrics.flows.planned || 0} 个，动作 ${metrics.flows.actions || 0} 次，完成 ${metrics.flows.completed || 0} 个，已满足 ${metrics.flows.alreadySatisfied || 0} 个，失败 ${metrics.flows.failed || 0} 个，阻塞 ${metrics.flows.blocked || 0} 个`);
     if (metrics.stability) {
       const isolationText = metrics.stability.isolationCompromised
@@ -1208,6 +1209,7 @@ function eventSummary(event) {
   if (event.type === 'evidenceCheck') return `${event.verdict || 'UNVERIFIABLE'}${event.reason ? `：${event.reason}` : ''}`;
   if (event.type === 'perception') return event.pageState || event.summary || '页面理解';
   if (event.type === 'decision') return `决策：${displayDecision(event.decision)}${event.reason ? `，${event.reason}` : ''}`;
+  if (event.type === 'actionRejected') return `动作参数被拒绝${event.field ? `（${event.field}）` : ''}${event.reason ? `：${event.reason}` : ''}`;
   if (event.type === 'rule') return `${event.ruleId || '-'} ${event.status || ''}${event.reason ? `：${event.reason}` : ''}`.trim();
   if (event.type === 'flow') return `${event.flowId || '-'} ${event.status || ''}${event.preconditionId ? ` / ${event.preconditionId}` : ''}${event.flowStepId ? ` / ${event.flowStepId}` : ''}${event.reason ? `：${event.reason}` : ''}`.trim();
   if (event.type === 'actionResult') return `${displayAction(eventAction(event))}${event.ok ? '成功' : '失败'}${event.error ? `：${event.error}` : ''}`;

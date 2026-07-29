@@ -67,7 +67,7 @@ scripts/batch-runtime.js reconcile-current --workspace-cwd <workspace> --batch-i
 scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan-sha <sha> --precondition-inputs-json '<json>' --batch-id <id>
 ```
 
-批次先调用 `reconcile-current`，由脚本返回 `START_NEW`、`RESUME_START`、`INIT_RUNTIME`、`BIND_RUNTIME`、`RESUME_RUNTIME`、`COMMIT_START_RESULT`、`COMMIT_FINALIZED`、`RECOVER_FINALIZING`、`CLOSE_EXPIRED`、`CLOSE_ORPHANED`、`BLOCK_CONCURRENT`、`BLOCK_RUNTIME_RELEASE`、`BATCH_BLOCKED`、`BATCH_COMPLETE` 或 `CORRUPTED`，协调器不得自行推断恢复路径。
+批次先调用 `reconcile-current`，由脚本返回 `START_NEW`、`RESUME_START`、`INIT_RUNTIME`、`BIND_RUNTIME`、`RESUME_RUNTIME`、`COMMIT_START_RESULT`、`COMMIT_FINALIZED`、`RECOVER_FINALIZING`、`RECOVER_RUNTIME_TERMINAL`、`CLOSE_EXPIRED`、`CLOSE_ORPHANED`、`BLOCK_CONCURRENT`、`BLOCK_RUNTIME_RELEASE`、`BATCH_BLOCKED`、`BATCH_COMPLETE` 或 `CORRUPTED`，协调器不得自行推断恢复路径。
 
 - `RESUME_START`：调用 `run-case --resume-start` 幂等补齐冷启动；成功后初始化 Runtime，失败后提交框架启动结果。
 - `INIT_RUNTIME`：对返回的 executionId 调用 Runtime init，然后 bind。
@@ -76,6 +76,7 @@ scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan
 - `COMMIT_FINALIZED`：调用 batch `commit-current`。
 - `COMMIT_START_RESULT`：调用 batch `commit-start-result` 发布无 Runtime 的框架启动失败。
 - `RECOVER_FINALIZING`：对返回的 executionId 重入 `run-case --finalize`，再继续 Runtime 或提交。
+- `RECOVER_RUNTIME_TERMINAL`：对返回的 execution 调用一次 `agent-runtime.js next`，由 Core 幂等补齐失败事实、`result.json` 和 `metrics.json`，再重新调用 `reconcile-current`。
 - `CLOSE_EXPIRED`：由 Runtime interrupt/timeout 状态机完成中断、释放和收尾。
 - `CLOSE_ORPHANED`：调用 `run-case --recover-orphaned --execution-id <id> --batch-id <current>`。
 - `BLOCK_CONCURRENT` 或 `CORRUPTED`：停止批次，不接管设备和 execution。
@@ -110,13 +111,15 @@ Codex 主 Agent 只机械映射 Runtime operation，不直接写运行态。完�
 
 1. 用 `observe.sh ... --step-id <step-id>` 采集当前证据。
 2. agent 实际查看最新 observation 的截图；证据足以判断时写引用该截图、包含 `reason` 的 `perception status=USABLE`。若预览疑似存在黑屏、黑块、花屏或解码异常，写带异常类型和归一化区域的 `qualityClaim`；`run-case.js` 会绑定采集时 SHA-256、复核原始 PNG 并生成 `evidenceCheck`。复核完成前不得请求 PASS，也不得仅凭预览异常以 `TOOL_ERROR` 收尾。
-3. 需要动作时用 `action.sh ... --step-id <step-id>`。
+3. 需要动作时，Agent 按 DecisionRequest 的 `actionConstraints` 返回 ACT 并原样回传 `stepIntent.intentSha`；Case Engine 先归一常见动作别名、校验完整执行契约，再调用带 `case-step` 授权的 `action.sh ... --step-id <step-id>`。
 4. 动作后再次 observe 验证结果。
 5. 每个步骤的目标满足时立即写引用当前步骤最新截图的 `assertion PASS`；明确不满足时写失败断言或按失败策略收尾。成功 actionResult 和动作后的 observation 不能单独完成步骤，observation `label` 只用于定位和展示，不能作为业务证据。
 
 步骤阶段禁止 Flow 扫描、匹配和执行。前置条件 Flow 的 observation、action 和完成事件也不能充当业务步骤证据。
 
-子 Agent 调用 `execute-next-work.js next`。Case Engine 在一次脚本调用中连续推进 observation、冻结动作、Flow 事实配对和 finalize 等确定性工作，只在需要看图时返回带 workToken 的 DecisionRequest。子 Agent 查看指定截图后调用 `decide`；脚本重新归约当前 execution、校验 workToken 并继续推进，过期决定不能写入。视觉重试由 `visualRetryContext` 固定尝试次数和 retryOf；同一 turn 的 perception 与 decision/assertion 使用恢复 draft 幂等补齐。
+子 Agent 调用 `execute-next-work.js next`。Case Engine 在一次脚本调用中连续推进 observation、冻结动作、Flow 事实配对和 finalize 等确定性工作，只在需要看图时返回带 workToken、`stepIntent` 和 `actionConstraints` 的 DecisionRequest。子 Agent 查看指定截图后调用 `decide`；业务 ACT 必须回传对应 intentSha。脚本重新归约当前 execution、校验 workToken、冻结步骤授权并继续推进，过期决定不能写入。业务步骤或 Flow 的非法动作提案都不会提交该轮业务事实或触发设备，而是写入框架 `actionRejected` 后返回相同类型、带 `lastActionRejection` 的新 DecisionRequest；同一观察连续两次非法提案确定性阻塞。视觉重试由 `visualRetryContext` 固定尝试次数和 retryOf；同一 turn 的 perception 与 decision/assertion 使用恢复 draft 幂等补齐。
+
+冻结业务步骤中明确写出的删除、支付、发布、资料修改等操作视为用户已授权，框架不按敏感语义拦截；授权不向其他步骤、前置 Flow 或 Agent 自行发起的副作用扩散。
 
 ### 4. finalize
 

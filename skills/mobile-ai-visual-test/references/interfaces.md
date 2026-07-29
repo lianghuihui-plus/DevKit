@@ -62,7 +62,7 @@ agent 只调用稳定入口层。内部实现层、平台 adapter 和 atoms 不�
 | `scripts/probe-env.sh` | 探测平台和设备能力 |
 | `scripts/update-env.js` | 固化设备、App 和入口到平台 state |
 | `scripts/prepare-env.sh` | 准备平台依赖 |
-| `scripts/build-agent-contract.js` | 生成或校验独立 case Agent 的 SkillContract |
+| `scripts/build-agent-contract.js` | 按 role、provider、platform 生成或校验 SkillContract |
 | `scripts/build-case-agent-request.js` | 从已启动 execution 生成经过校验的 CaseAgentRequest |
 | `scripts/agent-runtime.js` | 持久化单 case Agent 状态机并产生统一 Host operation |
 | `scripts/batch-runtime.js` | 持久化串行批次、当前 case 和校验终态，归约遗留 execution，并通过 completion 可信发布报告 |
@@ -88,7 +88,7 @@ agent 只调用稳定入口层。内部实现层、平台 adapter 和 atoms 不�
 
 Agent Runtime 不操作设备、不写 observation/actionResult、不决定业务断言。Host Adapter 也不直接修改 runtime、timeline 或结果产物；所有状态变化必须通过 `agent-runtime.js apply`。
 
-provider 是 Runtime Core 所有的规范机器标识，初始化时统一转成小写并校验，只写入 `runtime.json`、CaseAgentRequest、RuntimeOperation 和 BOUND。CaseAgentResult 从签名 request 继承 provider；结果构造入口不接受 provider 参数。SkillContract 的 `protocolSha` 与 `implementationSha` 分别冻结角色规范和实际运行脚本；`environmentSha` 与 `preconditionInputsSha` 冻结本 execution 的设备环境和执行前输入。CaseAgentRequest、Runtime BOUND、runtime.json、CaseAgentResult、result、metrics 与 validation 必须全部一致。
+provider 是 Runtime Core 所有的规范机器标识，初始化时统一转成小写并校验，只写入 `runtime.json`、CaseAgentRequest、RuntimeOperation 和 BOUND。CaseAgentResult 从签名 request 继承 provider；结果构造入口不接受 provider 参数。SkillContract 的 `protocolSha` 冻结 role、provider、platform、`requiredResources`、`allowedEntrypoints` 及资源内容，`implementationSha` 冻结 `implementationFiles` 列出的 Core 和当前平台实现；`environmentSha` 与 `preconditionInputsSha` 冻结本 execution 的设备环境和执行前输入。CaseAgentRequest、Runtime BOUND、runtime.json、CaseAgentResult、result、metrics 与 validation 必须全部一致。
 
 ### 参数所有权
 
@@ -236,6 +236,11 @@ adapter 内部可以调用 atoms，但不得：
   "source": "action.sh",
   "platform": "android",
   "stepId": "step-001",
+  "authorization": {
+    "source": "case-step",
+    "stepId": "step-001",
+    "intentSha": "step-intent-0123456789abcdef"
+  },
   "action": "tap",
   "ok": true,
   "target": "登录按钮",
@@ -247,7 +252,9 @@ adapter 内部可以调用 atoms，但不得：
 
 动作集合和坐标要求见 `action-schema.md`。前置条件 Flow 动作使用 `scope=precondition-flow`，并绑定 `preconditionId`、`flowId`、`flowStepId`；它不属于 case step。
 
-业务步骤中的 `actionResult ok=true` 只证明动作执行成功。即使随后已有同步骤 observation，也不能单独完成步骤或进入下一步；每个业务步骤最终都必须写入满足下述视觉证据门禁的 `assertion PASS`。
+业务 ACT decision 必须回传 DecisionRequest 的 `stepIntent.intentSha`，引擎把它归一为 `authorization={source:"case-step",stepId,intentSha}`；`action.sh` 在设备调用前、`run-case.js` 在写入前分别对照 `case.snapshot.json` 校验。业务步骤中的 `actionResult ok=true` 只证明已授权动作执行成功。即使随后已有同步骤 observation，也不能单独完成步骤或进入下一步；每个业务步骤最终都必须写入满足下述视觉证据门禁的 `assertion PASS`。
+
+授权按冻结步骤而不是敏感词生效：步骤明确要求的删除、支付、发布、资料修改等操作不被框架语义拦截；步骤未要求的副作用不能借用该授权。前置条件 Flow 继续使用自身的冻结动作与安全规则，不接受 case-step 授权。
 
 Flow 动作执行前由 `run-case.js` 对照 `execution.json` 中冻结的 action 做硬校验，actionResult 同时保存 `requestedAction` 供执行后复核。
 
@@ -255,7 +262,7 @@ Flow 动作执行前由 `run-case.js` 对照 `execution.json` 中冻结的 actio
 
 ## Agent 事实
 
-agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionStart`、`environmentProbe`、`observation`、`evidenceCheck`、`actionResult`、`budgetExceeded`、`executionRecovery`、`agentRuntime`、`result` 属于框架事件，公开入口一律拒绝：
+agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionStart`、`environmentProbe`、`observation`、`evidenceCheck`、`actionRejected`、`actionResult`、`budgetExceeded`、`executionRecovery`、`agentRuntime`、`result` 属于框架事件，公开入口一律拒绝：
 
 | 类型 | 用途 |
 | --- | --- |
@@ -288,6 +295,7 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionSt
 | `COMMIT_START_RESULT` | 无 Runtime 的框架启动失败已 finalized，调用 `commit-start-result` |
 | `COMMIT_FINALIZED` | 当前绑定 execution 已 finalized，可提交可信产物 |
 | `RECOVER_FINALIZING` | 存在可重入的 finalize draft |
+| `RECOVER_RUNTIME_TERMINAL` | Runtime 已失败并释放但 execution 未收尾；调用一次 Runtime `next` 补齐失败闭环后重新归约 |
 | `CLOSE_EXPIRED` | 其他 execution 已过期且存在 Runtime，走超时、中断和释放 |
 | `CLOSE_ORPHANED` | 其他 execution 已过期、无 Runtime 且只有启动事实 |
 | `BLOCK_CONCURRENT` | 其他 batch 的 execution 尚未过期，禁止抢占 |
@@ -297,6 +305,8 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionSt
 | `CORRUPTED` | 候选 execution 不唯一、存在未绑定业务事实、身份不一致或缺少不可变环境/输入绑定 |
 
 `commit-agent-turn.js` 只接受一个 step 和一个 observation，第一条事实必须是 perception，第二条最多一条 decision 或 assertion。它为事件附加相同 `turnId`，提交前冻结 `<execution>/agent/turns/*.draft.json`，重试时校验原请求并跳过已提交事实，完整提交后删除 draft；不能批量写多个步骤。`execute-next-work decide` 只对命中该 draft 且内容完全一致的旧 workToken 开放恢复，不把普通过期决定重新放行。
+
+业务 ACT 在创建 turn draft 前先经过 `normalizeActionProposal + validateActionExecution(scope=case-step)`。失败时 perception 和 decision 都不写入；Case Engine 通过受保护入口写 `actionRejected`，重新归约为 `DECIDE_STEP`。业务拒绝绑定 stepId、intentSha、workToken、observation、失败字段和原动作提案。Flow 参数补齐经过 `validateActionExecution(scope=precondition-flow)`，失败时写绑定 preconditionId、flowId、flowStepId 和 observation 的 `actionRejected`，重新归约为 `DECIDE_FLOW_ACTION`。两种拒绝均不触发设备动作，公开 `--record-json` 与子 Agent 均不可伪造。
 
 用于支持业务 `assertion PASS` 的 `perception` 必须绑定当前步骤最新 observation 的截图：
 

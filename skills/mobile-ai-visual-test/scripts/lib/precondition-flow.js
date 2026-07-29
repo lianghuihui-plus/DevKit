@@ -10,14 +10,14 @@ const {
   readJson,
   workspaceRoot,
 } = require('./common');
-const { validateActionAsset } = require('./action-contract');
+const { SCOPE_ACTION_TYPES, validateActionAsset } = require('./action-contract');
 const { checkerForPrecondition } = require('./framework-preconditions');
 
 const FLOW_SCHEMA_VERSION = 2;
 const FLOW_USAGE = 'precondition';
 const UNIVERSAL_PLATFORM = 'universal';
 const SUPPORTED_PLATFORMS = new Set(['harmony', 'android', 'ios']);
-const VALID_ACTIONS = new Set(['launchApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']);
+const VALID_ACTIONS = new Set(SCOPE_ACTION_TYPES['precondition-flow']);
 const VALID_COORDINATE_SOURCES = new Set(['layout', 'visual', 'pixel', 'flow']);
 const MAX_ACTIONS_PER_FLOW = 5;
 const MAX_ACTIONS_PER_CASE = 12;
