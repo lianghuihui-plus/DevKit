@@ -10,7 +10,8 @@
 ```text
 resolve -> parse -> environment -> preflight plan -> prepare -> start
         -> Runtime Core -> isolated case Agent -> preconditions (optional Flow)
-        -> case steps -> finalize -> validate result -> release Agent -> batch commit
+        -> case steps (observe -> global rules -> business decision)
+        -> finalize -> validate result -> release Agent -> batch commit
 ```
 
 Flow 只属于前置条件阶段，业务步骤阶段没有 Flow。
@@ -110,14 +111,15 @@ Codex 主 Agent 只机械映射 Runtime operation，不直接写运行态。完�
 从 `case.json.steps[0]` 开始：
 
 1. 用 `observe.sh ... --step-id <step-id>` 采集当前证据。
-2. agent 实际查看最新 observation 的截图；证据足以判断时写引用该截图、包含 `reason` 的 `perception status=USABLE`。若预览疑似存在黑屏、黑块、花屏或解码异常，写带异常类型和归一化区域的 `qualityClaim`；`run-case.js` 会绑定采集时 SHA-256、复核原始 PNG 并生成 `evidenceCheck`。复核完成前不得请求 PASS，也不得仅凭预览异常以 `TOOL_ERROR` 收尾。
-3. 需要动作时，Agent 按 DecisionRequest 的 `actionConstraints` 返回 ACT 并原样回传 `stepIntent.intentSha`；Case Engine 先归一常见动作别名、校验完整执行契约，再调用带 `case-step` 授权的 `action.sh ... --step-id <step-id>`。
-4. 动作后再次 observe 验证结果。
-5. 每个步骤的目标满足时立即写引用当前步骤最新截图的 `assertion PASS`；明确不满足时写失败断言或按失败策略收尾。成功 actionResult 和动作后的 observation 不能单独完成步骤，observation `label` 只用于定位和展示，不能作为业务证据。
+2. Case Engine 按 priority 依次产生 `DECIDE_RULE`。Agent 对当前截图返回 `MATCHED`、`NOT_MATCHED` 或 `UNHANDLED_POPUP`；命中后引擎使用冻结规则动作和独立 `global-rule` 授权执行、再次观察并写 `HANDLED`，随后对新画面重新判断规则。规则超过 `maxAttempts` 按 `onFailure` 和 `GLOBAL_RULE_FAILED` 收尾。
+3. 全部适用规则对当前 observation 都已跳过后，agent 才进行业务判断；证据足以判断时写引用该截图、包含 `reason` 的 `perception status=USABLE`。若预览疑似存在黑屏、黑块、花屏或解码异常，写带异常类型和归一化区域的 `qualityClaim`；`run-case.js` 会绑定采集时 SHA-256、复核原始 PNG 并生成 `evidenceCheck`。复核完成前不得请求 PASS，也不得仅凭预览异常以 `TOOL_ERROR` 收尾。
+4. 需要业务动作时，Agent 按 DecisionRequest 的 `actionConstraints` 返回 ACT 并原样回传 `stepIntent.intentSha`；输入步骤还必须使用冻结的 `inputMode` 和目标文本。Case Engine 先归一常见动作别名、校验完整执行契约，再调用带 `case-step` 授权的 `action.sh ... --step-id <step-id>`。
+5. 动作后再次 observe，从规则判断重新开始。
+6. 每个步骤的目标满足时立即写引用当前步骤最新截图的 `assertion PASS`；明确不满足时写失败断言或按失败策略收尾。成功 actionResult 和动作后的 observation 不能单独完成步骤，observation `label` 只用于定位和展示，不能作为业务证据。
 
 步骤阶段禁止 Flow 扫描、匹配和执行。前置条件 Flow 的 observation、action 和完成事件也不能充当业务步骤证据。
 
-子 Agent 调用 `execute-next-work.js next`。Case Engine 在一次脚本调用中连续推进 observation、冻结动作、Flow 事实配对和 finalize 等确定性工作，只在需要看图时返回带 workToken、`stepIntent` 和 `actionConstraints` 的 DecisionRequest。子 Agent 查看指定截图后调用 `decide`；业务 ACT 必须回传对应 intentSha。脚本重新归约当前 execution、校验 workToken、冻结步骤授权并继续推进，过期决定不能写入。业务步骤或 Flow 的非法动作提案都不会提交该轮业务事实或触发设备，而是写入框架 `actionRejected` 后返回相同类型、带 `lastActionRejection` 的新 DecisionRequest；同一观察连续两次非法提案确定性阻塞。视觉重试由 `visualRetryContext` 固定尝试次数和 retryOf；同一 turn 的 perception 与 decision/assertion 使用恢复 draft 幂等补齐。
+子 Agent 调用 `execute-next-work.js next`。Case Engine 在一次脚本调用中连续推进 observation、规则动作、冻结业务动作、Flow 事实配对和 finalize 等确定性工作，只在需要看图时返回带 workToken 和当前作用域约束的 DecisionRequest。子 Agent 查看指定截图后调用 `decide`；业务 ACT 必须回传对应 intentSha，规则 MATCHED 不得改变冻结规则动作。脚本重新归约当前 execution、校验 workToken 和授权并继续推进，过期决定不能写入。业务步骤或 Flow 的非法动作提案都不会提交该轮业务事实或触发设备，而是写入框架 `actionRejected` 后返回相同类型、带 `lastActionRejection` 的新 DecisionRequest；同一观察连续两次非法提案确定性阻塞。视觉重试由 `visualRetryContext` 固定尝试次数和 retryOf；同一 turn 的 perception 与 decision/assertion 使用恢复 draft 幂等补齐。
 
 冻结业务步骤中明确写出的删除、支付、发布、资料修改等操作视为用户已授权，框架不按敏感语义拦截；授权不向其他步骤、前置 Flow 或 Agent 自行发起的副作用扩散。
 
@@ -141,5 +143,5 @@ finalize 前会校验前置条件事实形成连续闭环、没有活动 Flow，
 - 每个 case 使用独立 Agent 会话；关闭后不得把其截图、工具输出或推理历史传给下一 case。
 - 不复用上一 case 页面状态，不从中间步骤继续。
 - 无人值守开始后不再询问业务状态，不安装或修复依赖，不修改 skill 代码。
-- 底层命令失败按 `TOOL_ERROR`，未实现能力按 `PLATFORM_UNIMPLEMENTED` 收尾；原始截图有效但 Agent 图片输入经过一次复核重试仍无法可靠判断时使用 `VISUAL_INPUT_UNVERIFIABLE`。
+- 底层命令失败按 `TOOL_ERROR`，已执行输入但可读最终值与 `replace` 目标不一致时按 `ACTION_EFFECT_MISMATCH`，未实现能力按 `PLATFORM_UNIMPLEMENTED` 收尾；原始截图有效但 Agent 图片输入经过一次复核重试仍无法可靠判断时使用 `VISUAL_INPUT_UNVERIFIABLE`。
 - 当前 observation 足以判断时立即写事实，不反复追加无新证据的解释事件。

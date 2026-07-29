@@ -48,7 +48,6 @@ const root = casesRoot(cwd);
 const caseKey = parsed.caseJson.identity.caseKey;
 const existingCaseDir = findExistingCaseDir(root, caseKey);
 let caseDir = existingCaseDir || parsed.caseDir;
-ensureDir(caseDir);
 
 const casePath = path.join(caseDir, 'case.json');
 const sourceSnapshotPath = path.join(caseDir, 'source.md');
@@ -74,35 +73,33 @@ if (previous && fs.existsSync(sourceSnapshotPath) && !refreshFromInput) {
 }
 let caseJson = selected.caseJson;
 caseJson.identity.caseNo = normalizeCaseNo(previous?.identity?.caseNo) || nextCaseNo(root);
-if (previous?.globalRules) {
+if (previous?.globalRules?.length && !caseJson.globalRules?.length) {
   caseJson.globalRules = previous.globalRules;
 }
 let sourceChanged = false;
+let sourceChangeEvent = null;
 
 if (previous && previous.identity.sourceSha1 !== caseJson.identity.sourceSha1) {
   sourceChanged = true;
   caseJson.sourceChanged = true;
-  appendJsonl(notesPath, {
+  sourceChangeEvent = {
     time: nowIso(),
     source: 'system',
     type: sourceEventType,
     from: previous.identity.sourceSha1,
     to: caseJson.identity.sourceSha1,
     mode: caseJson.identity.sourceMode,
-  });
+  };
 }
 
-caseJson = reapplyNotes(caseJson, notes, { strictStepText: sourceChanged });
-validateCaseExecutionContract(caseJson);
+caseJson = validateCaseExecutionContract(reapplyNotes(caseJson, notes, { strictStepText: sourceChanged }));
 if (!existingCaseDir) {
-  const targetDir = desiredCaseDir(root, caseJson);
-  if (targetDir !== caseDir) {
-    fs.renameSync(caseDir, targetDir);
-    caseDir = targetDir;
-  }
+  caseDir = desiredCaseDir(root, caseJson);
+  ensureDir(caseDir);
 } else {
   caseDir = syncCaseDirectory(root, caseDir, caseJson);
 }
+if (sourceChangeEvent) appendJsonl(path.join(caseDir, 'notes.jsonl'), sourceChangeEvent);
 const finalCasePath = path.join(caseDir, 'case.json');
 const finalSourceSnapshotPath = path.join(caseDir, 'source.md');
 writeText(finalSourceSnapshotPath, selected.sourceMarkdown);

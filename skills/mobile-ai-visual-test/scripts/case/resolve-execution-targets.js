@@ -4,13 +4,11 @@
 const fs = require('fs');
 const path = require('path');
 const {
-  casesRoot,
   hasWorkspaceShape,
-  normalizeCaseNo,
-  readCaseEntries,
   workspaceRoot,
 } = require('../common');
 const { parseCliArgsOrExit } = require('../lib/cli-args');
+const { resolveCaseRef } = require('../lib/case-ref');
 
 function usage() {
   console.error('Usage: resolve-execution-targets.js <case-ref|case.md|dir> [...] [--cwd <workspace-cwd>]');
@@ -41,46 +39,6 @@ function walk(dir, out) {
     if (stat.isDirectory()) walk(file, out);
     else if (isCaseFile(file)) out.push(file);
   }
-}
-
-function resolveCaseRef(ref, cwd) {
-  const entries = readCaseEntries(casesRoot(cwd)).sort((a, b) => {
-    const noA = normalizeCaseNo(a.caseJson.identity?.caseNo);
-    const noB = normalizeCaseNo(b.caseJson.identity?.caseNo);
-    return noA.localeCompare(noB) || a.caseDir.localeCompare(b.caseDir);
-  });
-  const normalizedRef = normalizeCaseNo(ref);
-  const directMatches = normalizedRef
-    ? entries.filter((entry) => normalizeCaseNo(entry.caseJson.identity?.caseNo) === normalizedRef)
-    : entries.filter((entry) => entry.caseJson.identity?.caseKey === ref);
-  const matches = directMatches.length ? directMatches : matchByTitle(entries, ref);
-  if (!matches.length) {
-    throw new Error(`No path or case matched: ${ref}`);
-  }
-  if (matches.length > 1) {
-    const error = new Error(`Ambiguous case ref: ${ref}`);
-    error.code = 'AMBIGUOUS_CASE_REF';
-    error.matches = matches.map(toSummary);
-    throw error;
-  }
-  return toSummary(matches[0]);
-}
-
-function matchByTitle(items, keyword) {
-  const exact = items.filter((entry) => entry.caseJson.identity?.title === keyword);
-  if (exact.length) return exact;
-  return items.filter((entry) => String(entry.caseJson.identity?.title || '').includes(keyword));
-}
-
-function toSummary(entry) {
-  return {
-    caseNo: normalizeCaseNo(entry.caseJson.identity?.caseNo),
-    title: entry.caseJson.identity?.title || '',
-    caseKey: entry.caseJson.identity?.caseKey || '',
-    caseDir: entry.caseDir,
-    context: path.join(entry.caseDir, 'CONTEXT.md'),
-    contextHtml: path.join(entry.caseDir, 'CONTEXT.html'),
-  };
 }
 
 const args = process.argv.slice(2);

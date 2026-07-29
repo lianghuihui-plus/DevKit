@@ -7,14 +7,17 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
+const vm = require('vm');
 const zlib = require('zlib');
-const { caseContractSha, formatDuration, displayFailureCode, readPublishedExecution, writeCaseReports } = require('./common');
+const { caseContractSha, collectIndexCases, formatDuration, displayFailureCode, parseMarkdownCase, readPublishedExecution, writeCaseReports } = require('./common');
 const { describeActionConstraints, normalizeActionProposal, swipeDurationMs, validateAction, validateActionAsset, validateActionExecution } = require('./lib/action-contract');
 const { inspectPng, verifyQualityClaim } = require('./lib/image-evidence');
 const { evaluateFrameworkPrecondition } = require('./lib/framework-preconditions');
 const { normalizePreconditionInputs } = require('./lib/precondition-inputs');
 const { validateFlow } = require('./lib/precondition-flow');
 const { actionAuthorization, buildStepIntent, validateStepIntent } = require('./lib/step-intent');
+const { ruleAuthorization, validateRuleAuthorization } = require('./lib/rule-intent');
+const { validateCaseExecutionContract } = require('./lib/case-contract');
 const {
   normalizeDeviceFormFactor,
   normalizeStartupDisplayPolicy,
@@ -419,6 +422,11 @@ assert.throws(
   /requires executable x and y coordinates/,
 );
 assert.doesNotThrow(() => validateActionExecution({ type: 'inputText', x: 10, y: 20, text: '测试', coordinateSource: 'layout', coordinateEvidence: '输入框控件 bounds' }, { platform: 'harmony', scope: 'case-step' }));
+assert.strictEqual(normalizeActionProposal({ type: 'inputText', text: '测试' }).action.mode, 'replace');
+assert.strictEqual(normalizeActionProposal({ type: 'inputText', text: '测试', mode: 'addition' }).action.mode, 'append');
+assert.throws(() => validateAction({ type: 'inputText', text: '测试', mode: 'insert' }), /mode must be one of replace, append/);
+assert.deepStrictEqual(describeActionConstraints('android', 'case-step').inputText.modes, ['replace', 'append']);
+assert.strictEqual(describeActionConstraints('android', 'case-step').inputText.defaultMode, 'replace');
 assert.throws(
   () => validateActionExecution({ type: 'inputText', x: 10, y: 20, text: 'test' }, { platform: 'android' }),
   /does not accept x or y/,
@@ -428,6 +436,21 @@ assert.deepStrictEqual(normalizeActionProposal({ type: 'tap', x: 10, y: 20, coor
 assert.deepStrictEqual(normalizeActionProposal({ type: 'tap', x: 10, y: 20, coordinateSource: 'uiTree' }).action.coordinateSource, 'layout');
 assert.deepStrictEqual(describeActionConstraints('harmony', 'case-step').coordinateSources, ['layout', 'visual', 'pixel']);
 assert.deepStrictEqual(describeActionConstraints('ios', 'precondition-flow').coordinateSources, ['layout', 'visual', 'pixel', 'flow']);
+assert.deepStrictEqual(describeActionConstraints('harmony', 'global-rule').coordinateSources, ['layout', 'visual', 'pixel']);
+assert.deepStrictEqual(describeActionConstraints('harmony', 'global-rule').actionTypes, ['tap', 'toggle', 'longPress', 'back', 'home', 'wait']);
+const sampleRule = { id: 'rule-001', type: 'guard', scope: 'system_popup', appliesTo: 'any_step', priority: 100, when: '出现权限弹窗', then: { action: { type: 'tap', target: '允许' } }, maxAttempts: 1, onFailure: 'BLOCKED' };
+const sampleRuleAuthorization = ruleAuthorization(sampleRule, 'step-001');
+assert.deepStrictEqual(validateRuleAuthorization(sampleRule, 'step-001', sampleRuleAuthorization), sampleRuleAuthorization);
+assert.throws(() => validateRuleAuthorization(sampleRule, 'step-001', { ...sampleRuleAuthorization, ruleSha: 'rule-wrong' }), /ACTION_OUTSIDE_CASE_INTENT/);
+const normalizedLegacyRuleCase = validateCaseExecutionContract({
+  identity: { caseKey: 'ck-rule-defaults', sourceSha1: 'source-rule-defaults' },
+  steps: [{ id: 'step-001', index: 1, kind: 'action', goal: 'tap', sourceText: '点击继续' }],
+  globalRules: [{ id: 'rule-001', when: '出现权限弹窗', then: { action: { type: 'tap', target: '允许' } } }],
+  isolation: { requireCleanRestart: false },
+});
+assert.strictEqual(normalizedLegacyRuleCase.isolation, undefined);
+assert.strictEqual(normalizedLegacyRuleCase.globalRules[0].scope, 'system_popup');
+assert.strictEqual(normalizedLegacyRuleCase.globalRules[0].maxAttempts, 1);
 assert.throws(() => validateActionExecution({ type: 'tap', x: 10, y: 20, coordinateSource: 'flow', coordinateEvidence: 'Flow bounds', targetBounds: [0, 0, 20, 30] }, { platform: 'harmony', scope: 'case-step' }), /ACTION_CONTRACT_INVALID/);
 assert.doesNotThrow(() => validateActionExecution({ type: 'tap', x: 10, y: 20, coordinateSource: 'flow', coordinateEvidence: 'Flow bounds', targetBounds: [0, 0, 20, 30] }, { platform: 'harmony', scope: 'precondition-flow' }));
 assert.throws(() => validateActionExecution({ type: 'tap', x: 10, y: 20, coordinateSource: 'manual', coordinateEvidence: '历史坐标' }, { platform: 'harmony', scope: 'case-step' }), /ACTION_CONTRACT_INVALID/);
@@ -454,7 +477,7 @@ const resolved = JSON.parse(run('node', ['scripts/resolve-execution-targets.js',
 assert.deepStrictEqual(resolved.markdownFiles, [caseFile]);
 assert.deepStrictEqual(resolved.existingCases, []);
 const parsedForIsolationContract = JSON.parse(run('node', ['scripts/parse-case.js', caseFile, '--cwd', workspace]));
-assert.strictEqual(json(path.join(parsedForIsolationContract.caseDir, 'case.json')).isolation.requireCleanRestart, 'auto');
+assert.strictEqual(json(path.join(parsedForIsolationContract.caseDir, 'case.json')).isolation, undefined);
 write(path.join(workspace, 'platforms', 'harmony-probe.json'), `${JSON.stringify({
   schemaVersion: 1,
   type: 'environmentProbe',
@@ -519,7 +542,35 @@ assert.strictEqual(caseJson.steps[1].goal, 'tap');
 assert.strictEqual(caseJson.steps[2].goal, 'toggle');
 assert.strictEqual(caseJson.steps[2].target, '通知');
 assert.strictEqual(caseJson.steps[3].goal, 'input_text');
+assert.strictEqual(caseJson.steps[3].inputMode, 'replace');
+assert.strictEqual(caseJson.steps[3].value, '123456');
+assert.strictEqual(buildStepIntent(caseJson.steps[3]).inputMode, 'replace');
+assert.strictEqual(buildStepIntent({ id: 'step-append', kind: 'action', goal: 'input_text', sourceText: '继续输入后缀', value: '后缀' }).inputMode, 'append');
 assert.strictEqual(caseJson.steps[4].kind, 'assertion');
+assert.strictEqual(caseContractSha(caseJson), caseContractSha({ ...caseJson, isolation: { requireCleanRestart: false } }));
+
+const unquotedInputFile = path.join(sourceRoot, 'cases', 'unquoted-input.md');
+write(unquotedInputFile, `# 无引号输入值测试
+
+## 测试步骤
+1. 清空标题输入框并输入测试修改标题。
+`);
+const unquotedInputCase = validateCaseExecutionContract(parseMarkdownCase(unquotedInputFile, workspace).caseJson);
+assert.strictEqual(unquotedInputCase.steps[0].goal, 'input_text');
+assert.strictEqual(unquotedInputCase.steps[0].target, '标题输入框');
+assert.strictEqual(unquotedInputCase.steps[0].value, '测试修改标题');
+assert.strictEqual(unquotedInputCase.steps[0].inputMode, 'replace');
+
+const missingInputValueFile = path.join(sourceRoot, 'cases', 'missing-input-value.md');
+write(missingInputValueFile, `# 缺少输入值测试
+
+## 测试步骤
+1. 清空标题输入框。
+`);
+assert.throws(
+  () => validateCaseExecutionContract(parseMarkdownCase(missingInputValueFile, workspace).caseJson),
+  /CASE_INPUT_VALUE_REQUIRED/,
+);
 
 const noLoginFile = path.join(sourceRoot, 'cases', 'no-login.md');
 write(noLoginFile, `# 未登录前置条件测试
@@ -627,8 +678,8 @@ write(isolationNoteFile, `# 隔离补充测试
 const isolationNoteParsed = JSON.parse(run('node', ['scripts/parse-case.js', isolationNoteFile, '--cwd', workspace]));
 run('node', ['scripts/apply-note.js', isolationNoteParsed.caseDir, '--type', 'isolation', '--text', '不需要冷启动，允许隔离降级执行']);
 const isolationNoteCase = json(path.join(isolationNoteParsed.caseDir, 'case.json'));
-assert.strictEqual(isolationNoteCase.isolation.requireCleanRestart, false);
-assert.ok(isolationNoteCase.isolation.reason.includes('允许隔离降级'));
+assert.strictEqual(isolationNoteCase.isolation, undefined);
+assert.ok(isolationNoteCase.staleNotes.some((note) => note.reason.includes('框架固定策略')));
 
 const loosePreconditionsFile = path.join(sourceRoot, 'cases', 'loose-preconditions.md');
 write(loosePreconditionsFile, `# 宽松前置条件格式测试
@@ -674,6 +725,7 @@ assert.ok(preflight.groups.some((item) => item.status === 'UNSUPPORTED' && item.
 assert.strictEqual(preflight.cases.find((item) => item.caseNo === preflightRiskCaseNo).status, 'UNSUPPORTED');
 
 run('node', ['scripts/update-env.js', noLoginParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+assert.strictEqual(fs.existsSync(path.join(workspace, 'platforms', 'harmony.json')), false);
 const noLoginStart = JSON.parse(run('node', [
   'scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--start',
   '--precondition-inputs-json', JSON.stringify([{ id: 'pre-001', resolution: 'confirm', status: 'PASS', reason: '已确认当前处于未登录状态' }]),
@@ -779,6 +831,71 @@ assert.ok(!indexHtml.includes('<div class="pass-rate"><span>通过率</span><b>'
 assert.ok(indexHtml.includes('<span class="platform-pass-rate"><em>通过率</em><b>100%</b>'));
 assert.ok(indexHtml.includes('class="platform-details"'));
 assert.ok(indexHtml.includes('class="platform-brief-list"'));
+assert.ok(indexHtml.includes('class="case-filter-panel"'));
+assert.ok(indexHtml.includes('data-case-filter="ALL"'));
+assert.ok(indexHtml.includes('data-case-filter="PASS"'));
+assert.ok(indexHtml.includes('data-case-filter="FAIL"'));
+assert.ok(indexHtml.includes('data-case-filter="BLOCKED"'));
+assert.ok(indexHtml.includes('data-case-filter="UNKNOWN"'));
+assert.ok(indexHtml.includes('data-case-filter="NOT_RUN"'));
+assert.ok(indexHtml.includes('data-case-status="FAIL"'));
+assert.ok(indexHtml.includes('.case-card[hidden] { display: none; }'));
+assert.ok(indexHtml.includes("card.hidden = !visible"));
+assert.ok(indexHtml.includes('const selectedStatuses = new Set()'));
+assert.ok(indexHtml.includes("selectedStatuses.has(card.dataset.caseStatus || 'NOT_RUN')"));
+assert.ok(indexHtml.includes('selectedStatuses.add(status)'));
+assert.ok(indexHtml.includes('selectedStatuses.delete(status)'));
+assert.ok(indexHtml.includes('if (selectedStatuses.size === 0) allSelected = true'));
+assert.ok(indexHtml.includes("result.textContent = '显示 ' + visibleCount + ' / ' + cards.length"));
+const filterIndexCases = collectIndexCases(workspace);
+const filterStatusLabels = { PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', UNKNOWN: '未知', NOT_RUN: '未执行' };
+assert.ok(indexHtml.includes(`data-case-filter="ALL" aria-pressed="true">全部 <b>${filterIndexCases.length}</b>`));
+for (const [status, label] of Object.entries(filterStatusLabels)) {
+  const count = filterIndexCases.filter((item) => item.status === status).length;
+  assert.ok(indexHtml.includes(`data-case-filter="${status}" aria-pressed="false">${label} <b>${count}</b>`));
+}
+const filterClientScript = indexHtml.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+assert.ok(filterClientScript);
+const filterButtons = ['ALL', 'PASS', 'FAIL', 'BLOCKED', 'UNKNOWN', 'NOT_RUN'].map((status) => {
+  const listeners = {};
+  return {
+    dataset: { caseFilter: status },
+    classList: { toggle(name, active) { this[name] = active; } },
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
+    addEventListener(name, listener) { listeners[name] = listener; },
+    click() { listeners.click(); },
+  };
+});
+const filterCards = ['PASS', 'FAIL', 'BLOCKED'].map((status) => ({ dataset: { caseStatus: status }, hidden: false }));
+const filterResult = { textContent: '' };
+const filterEmpty = { hidden: true };
+const filterDocument = {
+  querySelectorAll(selector) {
+    if (selector === '[data-case-filter]') return filterButtons;
+    if (selector === '[data-case-status]') return filterCards;
+    return [];
+  },
+  querySelector(selector) {
+    if (selector === '.case-filter-result') return filterResult;
+    if (selector === '.case-filter-empty') return filterEmpty;
+    return null;
+  },
+};
+vm.runInNewContext(filterClientScript, { document: filterDocument });
+const visibleFilterStatuses = () => filterCards.filter((card) => !card.hidden).map((card) => card.dataset.caseStatus);
+assert.deepStrictEqual(visibleFilterStatuses(), ['PASS', 'FAIL', 'BLOCKED']);
+filterButtons.find((button) => button.dataset.caseFilter === 'FAIL').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['FAIL']);
+filterButtons.find((button) => button.dataset.caseFilter === 'BLOCKED').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['FAIL', 'BLOCKED']);
+filterButtons.find((button) => button.dataset.caseFilter === 'FAIL').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['BLOCKED']);
+filterButtons.find((button) => button.dataset.caseFilter === 'BLOCKED').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['PASS', 'FAIL', 'BLOCKED']);
+filterButtons.find((button) => button.dataset.caseFilter === 'FAIL').click();
+filterButtons.find((button) => button.dataset.caseFilter === 'ALL').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['PASS', 'FAIL', 'BLOCKED']);
 assert.ok(indexHtml.includes('display: flex; flex-wrap: wrap; gap: 8px'));
 assert.ok(!indexHtml.includes('repeat(auto-fit, minmax(260px, 1fr))'));
 assert.ok(!indexHtml.includes('class="platform-brief-result"'));
@@ -1114,28 +1231,30 @@ assert.ok(!contextHtml.includes('+08:00'));
 run('node', ['scripts/apply-note.js', parsed.caseDir, '--text', '执行后补充仍应保留最近执行报告。', '--applies-to', 'step-002']);
 let refreshedHtml = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
 let refreshedContext = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
-assert.ok(refreshedHtml.includes('未执行'));
-assert.ok(refreshedHtml.includes('源用例、执行契约或前置条件 Flow 已变更'));
-assert.ok(!refreshedHtml.includes('示例失败'));
-assert.ok(!refreshedHtml.includes(`executions/${state.latestExecutionId}/screenshots/step-001-before.png`));
-assert.ok(refreshedContext.includes('旧执行结果已隐藏'));
+assert.ok(refreshedHtml.includes('示例失败'));
+assert.ok(refreshedHtml.includes(`executions/${state.latestExecutionId}/screenshots/step-001-before.png`));
+assert.ok(!refreshedHtml.includes('源用例、执行契约或前置条件 Flow 已变更'));
+assert.ok(refreshedContext.includes('示例失败'));
+const historicalIndexCase = collectIndexCases(workspace).find((item) => item.caseDir === parsed.caseDir);
+assert.strictEqual(historicalIndexCase.status, 'FAIL');
+assert.strictEqual(historicalIndexCase.latestExecutionId, state.latestExecutionId);
+assert.ok(historicalIndexCase.platforms.some((item) => item.platform === 'harmony' && item.status === 'FAIL'));
 assert.ok(!refreshedHtml.includes('+08:00'));
 assert.ok(!refreshedContext.includes('+08:00'));
 run('node', ['scripts/update-env.js', parsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--screen', '1080x1920']);
 refreshedHtml = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
 refreshedContext = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
-assert.ok(refreshedHtml.includes('未执行'));
-assert.ok(!refreshedHtml.includes('示例失败'));
+assert.ok(refreshedHtml.includes('示例失败'));
 assert.ok(refreshedHtml.includes('1080x1920'));
 assert.ok(!refreshedHtml.includes('+08:00'));
 assert.ok(!refreshedContext.includes('+08:00'));
 run('node', ['scripts/parse-case.js', caseFile, '--cwd', workspace, '--refresh-from-input']);
 const staleSourceHtml = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
 const staleSourceContext = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
-assert.ok(staleSourceHtml.includes('未执行'));
-assert.ok(staleSourceHtml.includes('源用例变更'));
-assert.ok(!staleSourceHtml.includes('示例失败'));
-assert.ok(!staleSourceHtml.includes(`executions/${state.latestExecutionId}/screenshots/step-001-before.png`));
+assert.ok(staleSourceHtml.includes('示例失败'));
+assert.ok(staleSourceHtml.includes(`executions/${state.latestExecutionId}/screenshots/step-001-before.png`));
+assert.ok(!staleSourceHtml.includes('源用例变更'));
+assert.ok(staleSourceContext.includes('示例失败'));
 assert.ok(!staleSourceContext.includes('+08:00'));
 const currentSourceStart = JSON.parse(run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--start']));
 recordPreconditions(parsed.caseDir, 'harmony', currentSourceStart.executionId);
@@ -1792,10 +1911,14 @@ assert.strictEqual(androidSwipe.requestedAction.velocity, 600);
 const androidInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', 'hello world', '--settle-ms', '0'], { env: fakeAndroidEnv }));
 assert.strictEqual(androidInput.action, 'inputText');
 assert.strictEqual(androidInput.ok, true);
+assert.strictEqual(androidInput.inputMethod, 'mavt-input-ime');
+assert.strictEqual(androidInput.inputMode, 'replace');
+assert.strictEqual(androidInput.requestedAction.mode, 'replace');
 const androidUnicodeInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', '中文输入', '--settle-ms', '0'], { env: fakeAndroidEnv }));
 assert.strictEqual(androidUnicodeInput.action, 'inputText');
 assert.strictEqual(androidUnicodeInput.ok, true);
 assert.strictEqual(androidUnicodeInput.inputMethod, 'mavt-input-ime');
+assert.strictEqual(androidUnicodeInput.inputMode, 'replace');
 assert.strictEqual(androidUnicodeInput.inputStateUsage, 'diagnostic_only');
 assert.strictEqual(androidUnicodeInput.preInputState.hasEditableConnection, false);
 const androidWaitReason = '等待 Android 页面稳定';
@@ -1808,12 +1931,13 @@ run('node', ['scripts/run-case.js', androidParsed.caseDir, '--platform', 'androi
 const fakeAdbOutput = fs.readFileSync(fakeAdbLog, 'utf8');
 assert.ok(fakeAdbOutput.includes('shell am start -n com.example.demo/.PrivateActivity'));
 assert.ok(fakeAdbOutput.includes('shell monkey -p com.example.demo 1'));
+assert.ok(fakeAdbOutput.includes('--es mode replace'));
+assert.ok(!fakeAdbOutput.includes('shell input text'));
 assert.ok(fakeAdbOutput.includes('exec-out screencap -p'));
 assert.ok(fakeAdbOutput.includes('shell uiautomator dump'));
 assert.ok(fakeAdbOutput.includes('shell input tap 1 2'));
 assert.ok(fakeAdbOutput.includes('shell input swipe 3 4 3 4 900'));
 assert.ok(fakeAdbOutput.includes('shell input swipe 10 10 10 130 200'));
-assert.ok(fakeAdbOutput.includes('shell input text hello%sworld'));
 assert.ok(fakeAdbOutput.includes('install -r'));
 assert.strictEqual((fakeAdbOutput.match(/install -r/g) || []).length, 1);
 assert.ok(fakeAdbOutput.includes('shell am broadcast -a mavt.android.ime.INPUT_TEXT'));
@@ -1948,7 +2072,14 @@ assert.strictEqual(iosSwipe.requestedAction.velocity, undefined);
 const iosInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', '中文输入', '--settle-ms', '0'], { env: fakeIosEnv }));
 assert.strictEqual(iosInput.action, 'inputText');
 assert.strictEqual(iosInput.ok, true);
-assert.strictEqual(iosInput.inputMethod, 'wda-set-value');
+assert.strictEqual(iosInput.inputMethod, 'wda-clear-set-value');
+assert.strictEqual(iosInput.inputMode, 'replace');
+assert.strictEqual(iosInput.inputEffect.status, 'VERIFIED');
+const iosAppendInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', '-后缀', '--mode', 'append', '--settle-ms', '0'], { env: { ...fakeIosEnv, MAVT_IOS_FAKE_INPUT_VALUE: '原文本' } }));
+assert.strictEqual(iosAppendInput.inputMethod, 'wda-read-compose-set-value');
+assert.strictEqual(iosAppendInput.inputMode, 'append');
+assert.strictEqual(iosAppendInput.inputEffect.expectedText, '原文本-后缀');
+assert.strictEqual(iosAppendInput.inputEffect.actualText, '原文本-后缀');
 const iosInputWithCoordinates = runAllowFailure('./scripts/platform/adapters/ios/action.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo', '--type', 'inputText', '--x', '1', '--y', '2', '--text', 'hello'], { env: fakeIosEnv });
 assert.notStrictEqual(iosInputWithCoordinates.status, 0);
 assert.ok(iosInputWithCoordinates.stderr.includes('iOS inputText 只向已聚焦输入框输入文本'));
@@ -1988,7 +2119,9 @@ orientation_file="\${HDC_ORIENTATION_STATE:-$HDC_REMOTE_DIR/orientation}"
 remote_key() {
   printf '%s' "$1" | sed 's#[^A-Za-z0-9._-]#_#g'
 }
-if [[ "\${args[0]:-}" == "file" && "\${args[1]:-}" == "recv" ]]; then
+if [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "rm" && "\${args[2]:-}" == "-f" ]]; then
+  rm -f "$HDC_REMOTE_DIR/$(remote_key "\${args[3]:-}")"
+elif [[ "\${args[0]:-}" == "file" && "\${args[1]:-}" == "recv" ]]; then
   src="\${args[2]}"
   dest="\${args[3]}"
   mkdir -p "$(dirname "$dest")"
@@ -2001,11 +2134,11 @@ if [[ "\${args[0]:-}" == "file" && "\${args[1]:-}" == "recv" ]]; then
   fi
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uitest" && "\${args[2]:-}" == "dumpLayout" ]]; then
   for arg in "\${args[@]}"; do
-    if [[ "$arg" == "-m" ]]; then
+    if [[ "$arg" == "-m" && -z "\${HDC_INPUT_VALUE:-}" ]]; then
       printf 'uitest: unrecognized option: m\\nUSAGE: uitestkit dumpLayout -p <path>\\n'
       exit 0
     fi
-    if [[ "$arg" == "-b" ]]; then
+    if [[ "$arg" == "-b" && -z "\${HDC_INPUT_VALUE:-}" ]]; then
       printf 'uitest: unrecognized option: b\\nUSAGE: uitestkit dumpLayout -p <path>\\n'
       exit 0
     fi
@@ -2017,7 +2150,18 @@ elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uitest" && "\${args[2]
     fi
   done
   mkdir -p "$HDC_REMOTE_DIR"
-  printf '{"attributes":{"bounds":"[0,0][1260,2720]"},"children":[]}' > "$HDC_REMOTE_DIR/$(remote_key "$remote_path")"
+  if [[ -n "\${HDC_INPUT_VALUE:-}" ]]; then
+    input_counter="\${HDC_INPUT_LAYOUT_COUNTER:-$HDC_REMOTE_DIR/input-layout-count}"
+    input_count="$(( $(cat "$input_counter" 2>/dev/null || printf '0') + 1 ))"
+    printf '%s\n' "$input_count" > "$input_counter"
+    if [[ "$input_count" -ge "\${HDC_INPUT_VISIBLE_AFTER:-1}" ]]; then
+      printf '{"attributes":{"bounds":"[0,0][1260,2720]"},"children":[{"attributes":{"type":"TextInput","bounds":"[100,200][500,300]","text":"%s"}}]}' "$HDC_INPUT_VALUE" > "$HDC_REMOTE_DIR/$(remote_key "$remote_path")"
+    else
+      printf '{"attributes":{"bounds":"[0,0][1260,2720]"},"children":[{"attributes":{"type":"TextInput","bounds":"[100,200][500,300]","text":"旧标题"}}]}' > "$HDC_REMOTE_DIR/$(remote_key "$remote_path")"
+    fi
+  else
+    printf '{"attributes":{"bounds":"[0,0][1260,2720]"},"children":[]}' > "$HDC_REMOTE_DIR/$(remote_key "$remote_path")"
+  fi
   printf 'DumpLayout saved to:%s\\n' "$remote_path"
 elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uitest" && "\${args[2]:-}" == "--version" ]]; then
   printf 'uitest version 1.0\\n'
@@ -2286,7 +2430,7 @@ write(restartExplicitOptionalFile, `# 首次进入但显式允许降级
 `);
 const restartExplicitOptionalParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartExplicitOptionalFile, '--cwd', workspace]));
 const restartExplicitOptionalCase = json(path.join(restartExplicitOptionalParsed.caseDir, 'case.json'));
-restartExplicitOptionalCase.isolation.requireCleanRestart = false;
+restartExplicitOptionalCase.isolation = { requireCleanRestart: false };
 write(path.join(restartExplicitOptionalParsed.caseDir, 'case.json'), `${JSON.stringify(restartExplicitOptionalCase, null, 2)}\n`);
 run('node', ['scripts/update-env.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--startup-orientation', 'preserve']);
 fs.writeFileSync(fakeHdcState, '12345\n');
@@ -2308,7 +2452,7 @@ write(restartExplicitRequiredFile, `# 普通页面但显式要求冷启动
 `);
 const restartExplicitRequiredParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartExplicitRequiredFile, '--cwd', workspace]));
 const restartExplicitRequiredCase = json(path.join(restartExplicitRequiredParsed.caseDir, 'case.json'));
-restartExplicitRequiredCase.isolation.requireCleanRestart = true;
+restartExplicitRequiredCase.isolation = { requireCleanRestart: true };
 write(path.join(restartExplicitRequiredParsed.caseDir, 'case.json'), `${JSON.stringify(restartExplicitRequiredCase, null, 2)}\n`);
 run('node', ['scripts/update-env.js', restartExplicitRequiredParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 fs.writeFileSync(fakeHdcState, '12345\n');
@@ -2420,6 +2564,23 @@ assert.ok(invalidTargetBounds.stderr.includes('Invalid --target-bounds'));
 const harmonyInputWithoutCoordinates = runAllowFailure('./scripts/platform/adapters/harmony/action.sh', ['--device', '127.0.0.1:5555', '--type', 'inputText', '--text', 'hello'], { env: fakeEnv });
 assert.notStrictEqual(harmonyInputWithoutCoordinates.status, 0);
 assert.ok(harmonyInputWithoutCoordinates.stderr.includes('inputText 需要 --x 和 --y'));
+const harmonyReplaceInput = JSON.parse(run('./scripts/platform/adapters/harmony/action.sh', ['--device', '127.0.0.1:5555', '--bundle', 'com.example.demo', '--type', 'inputText', '--x', '120', '--y', '240', '--text', '新标题', '--mode', 'replace'], { env: fakeEnv }));
+assert.strictEqual(harmonyReplaceInput.ok, true);
+assert.strictEqual(harmonyReplaceInput.inputMode, 'replace');
+assert.strictEqual(harmonyReplaceInput.inputMethod, 'uitest-key-replace');
+assert.strictEqual(harmonyReplaceInput.inputEffect.status, 'UNVERIFIABLE');
+assert.strictEqual(harmonyReplaceInput.inputEffect.attempts, 7);
+const harmonyInputCounter = path.join(tmp, 'harmony-input-layout-count');
+const harmonyEventuallyConsistentInput = JSON.parse(run('./scripts/platform/adapters/harmony/action.sh', ['--device', '127.0.0.1:5555', '--bundle', 'com.example.demo', '--type', 'inputText', '--x', '120', '--y', '240', '--text', '新标题', '--mode', 'replace'], { env: {
+  ...fakeEnv,
+  HDC_INPUT_VALUE: '新标题',
+  HDC_INPUT_VISIBLE_AFTER: '3',
+  HDC_INPUT_LAYOUT_COUNTER: harmonyInputCounter,
+} }));
+assert.strictEqual(harmonyEventuallyConsistentInput.ok, true);
+assert.strictEqual(harmonyEventuallyConsistentInput.inputEffect.status, 'VERIFIED');
+assert.strictEqual(harmonyEventuallyConsistentInput.inputEffect.attempts, 3);
+assert.ok(harmonyEventuallyConsistentInput.inputEffect.settledMs >= 250);
 const harmonyInvalidTap = runAllowFailure('./scripts/platform/adapters/harmony/action.sh', ['--device', '127.0.0.1:5555', '--type', 'tap', '--x', '-1', '--y', '-1'], { env: fakeEnv });
 assert.notStrictEqual(harmonyInvalidTap.status, 0);
 assert.ok(harmonyInvalidTap.stderr.includes('Please confirm that the coordinate values are correct'));
@@ -2444,6 +2605,9 @@ assert.ok(fakeHdcActionLog.includes('shell aa start -b com.example.demo -a Entry
 assert.ok(fakeHdcActionLog.includes('shell uitest uiInput click 9 10'));
 assert.ok(fakeHdcActionLog.includes('shell uitest uiInput swipe 11 12 11 12 850'));
 assert.ok(fakeHdcActionLog.includes('shell uitest uiInput swipe 10 10 10 130 600'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput keyEvent 2072 2017'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput keyEvent 2055'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput inputText 120 240 新标题'));
 const defaultSettleEnv = { ...fakeEnv };
 delete defaultSettleEnv.MAVT_ACTION_SETTLE_MS;
 const harmonyWaitReason = '等待 Harmony 页面稳定';
@@ -2529,6 +2693,11 @@ write(rulesFile, `# 全局规则测试
 ## 前置条件
 - App 已安装。
 
+## 全局规则
+| id | scope | appliesTo | priority | when | action | target | maxAttempts | onFailure |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| rule-001 | system_popup | any_step | 100 | 出现权限弹窗 | tap | 允许 | 1 | BLOCKED |
+
 ## 步骤
 1. 点击「继续」。
 `);
@@ -2536,49 +2705,63 @@ const rulesParsed = JSON.parse(run('node', ['scripts/parse-case.js', rulesFile, 
 run('node', ['scripts/update-env.js', rulesParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
 const rulesCasePath = path.join(rulesParsed.caseDir, 'case.json');
 const rulesCase = json(rulesCasePath);
-rulesCase.globalRules = [{
-  id: 'rule-001',
-  type: 'guard',
-  scope: 'system_popup',
-  appliesTo: 'any_step',
-  priority: 100,
-  when: '出现权限弹窗',
-  then: {
-    decision: 'act',
-    action: { type: 'tap', target: '允许' },
-  },
-  maxAttempts: 1,
-  onFailure: 'BLOCKED',
-}];
-write(rulesCasePath, `${JSON.stringify(rulesCase, null, 2)}\n`);
+assert.strictEqual(rulesCase.globalRules.length, 1);
+assert.deepStrictEqual(rulesCase.globalRules[0].then.action, { type: 'tap', target: '允许' });
 const rulesStart = JSON.parse(run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--start']));
 recordPreconditions(rulesParsed.caseDir, 'harmony', rulesStart.executionId);
 recordGlobalFlowScan(rulesParsed.caseDir, 'harmony', rulesStart.executionId);
-run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
-  type: 'rule',
-  ruleId: 'rule-001',
-  status: 'MATCHED',
-  stepId: 'step-001',
-  reason: '检测到权限弹窗',
-}), '--execution-id', rulesStart.executionId]);
-recordActionResult(rulesParsed.caseDir, 'harmony', rulesStart.executionId, {
-  type: 'actionResult',
-  stepId: 'step-001',
-  action: 'tap',
-  ok: true,
-});
-recordPassAssertion(rulesParsed.caseDir, 'harmony', rulesStart.executionId, 'step-001', '规则动作完成后页面状态符合步骤预期', recordStepObservation(rulesParsed.caseDir, 'harmony', rulesStart.executionId, 'step-001', 'step-001-rule-after'));
-run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', rulesStart.executionId]);
+recordStepObservation(rulesParsed.caseDir, 'harmony', rulesStart.executionId, 'step-001', 'step-001-rule-before');
+const rulesDecision = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', rulesParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rulesStart.executionId,
+], { env: fakeEnv }));
+assert.strictEqual(rulesDecision.decisionRequest.type, 'DECIDE_RULE');
+assert.strictEqual(rulesDecision.decisionRequest.rule.id, 'rule-001');
+assert.deepStrictEqual(rulesDecision.decisionRequest.actionConstraints.actionTypes, ['tap', 'toggle', 'longPress', 'back', 'home', 'wait']);
+const rulesAfterMatch = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', rulesParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rulesStart.executionId,
+  '--work-token', rulesDecision.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'MATCHED',
+    reason: '当前截图出现系统权限弹窗，按规则点击允许',
+    action: { type: 'tap', target: '允许', x: 120, y: 240, coordinateSource: 'layout', targetBounds: [100, 220, 180, 270], coordinateEvidence: '权限弹窗允许按钮 bounds' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(rulesAfterMatch.decisionRequest.type, 'DECIDE_RULE');
+const rulesAfterSkip = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', rulesParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rulesStart.executionId,
+  '--work-token', rulesAfterMatch.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'NOT_MATCHED', reason: '动作后截图中权限弹窗已消失' }),
+], { env: fakeEnv }));
+assert.strictEqual(rulesAfterSkip.decisionRequest.type, 'DECIDE_STEP');
+const rulesCompleted = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', rulesParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rulesStart.executionId,
+  '--work-token', rulesAfterSkip.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'PASS', reason: '规则处理后当前页面已满足继续步骤', perception: { status: 'USABLE', reason: '页面清晰可判断' } }),
+], { env: fakeEnv }));
+assert.strictEqual(rulesCompleted.status, 'COMPLETED');
 const rulesMetrics = json(path.join(rulesStart.execDir, 'metrics.json'));
-assert.strictEqual(rulesMetrics.eventCounts.rule, 1);
+assert.strictEqual(rulesMetrics.eventCounts.rule, 3);
+assert.strictEqual(rulesMetrics.rules.matched, 1);
+assert.strictEqual(rulesMetrics.rules.handled, 1);
+assert.strictEqual(rulesMetrics.rules.skipped, 1);
+assert.strictEqual(rulesMetrics.rules.actions, 1);
 assert.ok(rulesMetrics.caseContractSha);
 const rulesResult = json(path.join(rulesStart.execDir, 'result.json'));
 assert.strictEqual(rulesResult.caseContractSha, rulesMetrics.caseContractSha);
+const rulesTimeline = readTimeline(rulesStart.execDir);
+const rulesAction = rulesTimeline.find((event) => event.type === 'actionResult' && event.scope === 'global-rule');
+assert.ok(rulesAction?.ok);
+assert.deepStrictEqual(rulesAction.authorization, ruleAuthorization(json(path.join(rulesStart.execDir, 'case.snapshot.json')).globalRules[0], 'step-001'));
 const rulesContext = fs.readFileSync(path.join(rulesParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
 assert.ok(rulesContext.includes('## 全局规则'));
 assert.ok(rulesContext.includes('rule-001'));
 assert.ok(rulesContext.includes('出现权限弹窗'));
 assert.ok(rulesContext.includes('MATCHED'));
+assert.ok(rulesContext.includes('HANDLED'));
 const rulesHtml = fs.readFileSync(path.join(rulesParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
 assert.ok(rulesHtml.includes('全局规则'));
 assert.ok(rulesHtml.includes('rule-001'));
@@ -2587,17 +2770,18 @@ rulesCase.globalRules[0].when = '出现新的权限弹窗';
 write(rulesCasePath, `${JSON.stringify(rulesCase, null, 2)}\n`);
 run('node', ['scripts/render-context.js', rulesParsed.caseDir, '--platform', 'harmony']);
 const changedRulesContext = fs.readFileSync(path.join(rulesParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
-assert.ok(changedRulesContext.includes('出现新的权限弹窗'));
-assert.ok(changedRulesContext.includes('尚未执行。'));
-assert.ok(!changedRulesContext.includes('执行通过。'));
+assert.ok(changedRulesContext.includes('出现权限弹窗'));
+assert.ok(!changedRulesContext.includes('出现新的权限弹窗'));
+assert.ok(changedRulesContext.includes('状态：PASS'));
+assert.ok(!changedRulesContext.includes('尚未执行。'));
 run('node', ['scripts/parse-case.js', rulesFile, '--cwd', workspace]);
 const reparsedRulesCase = json(rulesCasePath);
 assert.strictEqual(reparsedRulesCase.globalRules.length, 1);
-assert.strictEqual(reparsedRulesCase.globalRules[0].when, '出现新的权限弹窗');
+assert.strictEqual(reparsedRulesCase.globalRules[0].when, '出现权限弹窗');
 run('node', ['scripts/refresh-case.js', rulesParsed.caseDir]);
 const refreshedRulesCase = json(rulesCasePath);
 assert.strictEqual(refreshedRulesCase.globalRules.length, 1);
-assert.strictEqual(refreshedRulesCase.globalRules[0].when, '出现新的权限弹窗');
+assert.strictEqual(refreshedRulesCase.globalRules[0].when, '出现权限弹窗');
 
 const preconditionFlowDir = path.join(workspace, 'flows', 'preconditions', 'enter-creation-page');
 const universalPreconditionFlow = {
@@ -3629,6 +3813,56 @@ assert.deepStrictEqual(destructiveActionResult.authorization, actionAuthorizatio
 const destructiveAfter = destructiveEvents.filter((event) => event.type === 'observation' && event.stepId === 'step-001').at(-1);
 recordPassAssertion(destructiveParsed.caseDir, 'harmony', destructiveStart.executionId, 'step-001', '删除步骤已按预期完成', destructiveAfter.artifacts.screenshot);
 run('node', ['scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', destructiveStart.executionId]);
+
+const replaceInputCaseFile = path.join(sourceRoot, 'cases', 'replace-input-contract.md');
+write(replaceInputCaseFile, `# 替换输入契约
+
+## 测试步骤
+1. 清空标题输入框并输入“测试修改标题-1”。
+`);
+const replaceInputParsed = JSON.parse(run('node', ['scripts/parse-case.js', replaceInputCaseFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', replaceInputParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const replaceInputStart = JSON.parse(run('node', ['scripts/run-case.js', replaceInputParsed.caseDir, '--platform', 'harmony', '--start']));
+recordStepObservation(replaceInputParsed.caseDir, 'harmony', replaceInputStart.executionId, 'step-001', 'replace-input-before');
+const replaceInputWork = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', replaceInputParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', replaceInputStart.executionId,
+], { env: fakeEnv }));
+assert.strictEqual(replaceInputWork.decisionRequest.stepIntent.inputMode, 'replace');
+assert.strictEqual(replaceInputWork.decisionRequest.actionConstraints.inputText.expectedMode, 'replace');
+const wrongInputMode = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', replaceInputParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', replaceInputStart.executionId,
+  '--work-token', replaceInputWork.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    intentSha: replaceInputWork.decisionRequest.stepIntent.intentSha,
+    reason: '故意提交追加模式以验证拒绝',
+    perception: { status: 'USABLE', reason: '标题输入框清晰可见' },
+    action: { type: 'inputText', x: 120, y: 240, text: '测试修改标题-1', mode: 'append', coordinateSource: 'layout', coordinateEvidence: '标题输入框 bounds' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(wrongInputMode.decisionRequest.lastActionRejection.field, 'mode');
+assert.deepStrictEqual(wrongInputMode.decisionRequest.lastActionRejection.allowed, ['replace']);
+const correctedInputMode = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', replaceInputParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', replaceInputStart.executionId,
+  '--work-token', wrongInputMode.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    intentSha: wrongInputMode.decisionRequest.stepIntent.intentSha,
+    reason: '按冻结输入语义改为替换',
+    perception: { status: 'USABLE', reason: '标题输入框清晰可见' },
+    action: { type: 'inputText', x: 120, y: 240, text: '测试修改标题-1', mode: 'replace', coordinateSource: 'layout', coordinateEvidence: '标题输入框 bounds' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(correctedInputMode.status, 'DECISION_REQUIRED');
+const replaceInputEvents = readTimeline(replaceInputStart.execDir);
+const replaceInputAction = replaceInputEvents.find((event) => event.type === 'actionResult' && event.stepId === 'step-001');
+assert.strictEqual(replaceInputAction.requestedAction.mode, 'replace');
+const replaceInputAfter = replaceInputEvents.filter((event) => event.type === 'observation' && event.stepId === 'step-001').at(-1);
+recordPassAssertion(replaceInputParsed.caseDir, 'harmony', replaceInputStart.executionId, 'step-001', '标题已替换为目标值', replaceInputAfter.artifacts.screenshot);
+run('node', ['scripts/run-case.js', replaceInputParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', replaceInputStart.executionId]);
 
 const rejectedActionStart = JSON.parse(run('node', ['scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--start']));
 recordStepObservation(destructiveParsed.caseDir, 'harmony', rejectedActionStart.executionId, 'step-001', 'rejected-action-before');

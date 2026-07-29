@@ -198,7 +198,7 @@ console.log(JSON.stringify({
 mavt_action_request_json() {
   node -e '
 const values = process.argv.slice(1);
-const [type, target, x, y, text, fromX, fromY, toX, toY, durationMs, ms, reason, velocity, coordinateSource, targetBounds, coordinateEvidence] = values;
+const [type, target, x, y, text, fromX, fromY, toX, toY, durationMs, ms, reason, velocity, coordinateSource, targetBounds, coordinateEvidence, mode] = values;
 const request = { type };
 function addString(key, value) { if (value !== "") request[key] = value; }
 function addNumber(key, value) {
@@ -210,6 +210,7 @@ addString("target", target);
 addNumber("x", x);
 addNumber("y", y);
 addString("text", text);
+addString("mode", mode);
 addNumber("fromX", fromX);
 addNumber("fromY", fromY);
 addNumber("toX", toX);

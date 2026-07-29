@@ -52,6 +52,7 @@
 | `AGENT_RUNTIME_INTERRUPTED` | `BLOCKED` | 独立 case Agent 会话异常中断 |
 | `AGENT_RUNTIME_RELEASE_FAILED` | `BLOCKED` | Host 连续三次无法确认独立 case 会话已释放，批次不得继续 |
 | `AGENT_RESULT_INVALID` | `BLOCKED` | Agent 返回结果与 execution/result 事实不一致 |
+| `ACTION_EFFECT_MISMATCH` | `BLOCKED` | 平台已执行动作，但可读取的最终输入值与 `replace` 目标不一致 |
 | `TOOL_ERROR` | `BLOCKED` | 工具或底层命令异常；必须有失败 observation、actionResult 或框架技术事件支持 |
 | `ACTION_RESULT_SOURCE_REQUIRED` | `BLOCKED` | actionResult 来源非法 |
 | `OBSERVATION_SOURCE_REQUIRED` | `BLOCKED` | observation 来源非法 |
@@ -64,10 +65,13 @@
 | `APP_CONTEXT_LOST` | `BLOCKED` | 恢复前台后业务上下文不可判断 |
 | `APP_LEFT_FOREGROUND` | `BLOCKED` | 多次离开目标 App |
 | `UNKNOWN_POPUP` | `BLOCKED` | 未知弹窗无法安全处理 |
+| `GLOBAL_RULE_FAILED` | `FAIL`/`BLOCKED`/`UNKNOWN` | 已定义全局规则在 `maxAttempts` 内仍未处理完成，结果由规则 `onFailure` 决定 |
 | `CASE_TIMEOUT` | `BLOCKED` | 单 case 超时 |
 | `EXECUTION_BUDGET_EXCEEDED` | `BLOCKED` | 普通 observation、action、wait 等预算超限 |
 | `EVENT_SOURCE_REQUIRED` | `BLOCKED` | 公开入口尝试写框架所有事件 |
 | `CASE_STEPS_REQUIRED` | `BLOCKED` | 用例未解析出任何可执行步骤 |
+| `CASE_INPUT_VALUE_REQUIRED` | `BLOCKED` | 输入步骤无法从原文确定目标文本，必须在执行前修正用例 |
+| `CASE_GLOBAL_RULE_INVALID` | `BLOCKED` | 全局规则表格或结构不符合 guard 契约 |
 | `EXECUTION_RECOVERY_CONTRACT_CHANGED` | `BLOCKED` | 半提交 draft 与当前 execution 或 case contract 不一致，禁止自动恢复 |
 | `EXECUTION_COMPLETION_INVALID` | `BLOCKED` | completion 绑定或已发布产物哈希在读取时不一致 |
 | `EXECUTION_ORPHANED` | `BLOCKED` | execution 已超过 deadline、未初始化 Runtime 且只有启动事实，由框架确定性收尾 |

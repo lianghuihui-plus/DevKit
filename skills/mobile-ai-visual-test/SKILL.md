@@ -90,6 +90,8 @@ agent 负责视觉理解、前置 Flow 起终点判断、决策和断言；脚�
 - provider 是 Runtime Core 所有的规范机器标识，写入 `runtime.json` 与带 requestSha 的 `request.json`；子 Agent 不得填写或覆盖 provider。
 - protocolSha 冻结角色、provider、platform、资源清单、入口清单及规范内容，implementationSha 冻结该角色实际依赖的 Core 与当前平台实现；request、Runtime BOUND 和结果必须全链路一致。
 - 子 Agent 每轮以 `execute-next-work.js` 的 DecisionRequest 为准；脚本每次重新归约并校验 workToken，不得仅凭会话记忆推进步骤。
+- 每次业务 observation 后先处理 `DECIDE_RULE`：只返回 `MATCHED`、`NOT_MATCHED` 或 `UNHANDLED_POPUP`；命中时保持冻结规则动作的类型与目标，由引擎使用独立 `global-rule` 授权执行，不能借用业务步骤 intentSha。
+- 输入步骤必须使用冻结的 `inputMode` 与目标文本；默认 `replace`，只有原用例明确要求追加时才用 `append`，不得通过软键盘清空或重复输入来修正平台动作。
 - DecisionRequest 的 `actionConstraints` 是当前平台与作用域的动作参数权威约束；动作被拒绝后按 `lastActionRejection` 修正并重新决策，不得重复提交同一非法参数。
 - CaseAgentRequest 的 `actionPolicy=case_step_authorized` 只授权冻结当前步骤；它不改变前置条件 Flow 对支付、删除、发布等副作用的静态拒绝。
 - 步骤事实必须按 `case.json.steps` 顺序写入；进入后续步骤后不能回头补写前置步骤事实。

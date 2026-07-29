@@ -8,6 +8,8 @@ const FAILURE_CATALOG = Object.freeze({
   STEP_ORDER_VIOLATION: { status: 'BLOCKED', label: '步骤顺序违规' },
   ACTION_OUTSIDE_CASE_INTENT: { status: 'BLOCKED', label: '动作超出当前用例步骤授权' },
   ACTION_CONTRACT_INVALID: { status: 'BLOCKED', label: '动作参数不符合执行契约' },
+  GLOBAL_RULE_FAILED: { status: 'CONTEXTUAL', label: '全局规则处理失败' },
+  ACTION_EFFECT_MISMATCH: { status: 'BLOCKED', label: '动作执行结果与请求不一致' },
   PRECONDITION_REQUIRED: { status: 'BLOCKED', label: '需要先处理前置条件' },
   PRECONDITION_FAILED: { status: 'BLOCKED', label: '前置条件不满足' },
   PRECONDITION_NOT_MET: { status: 'BLOCKED', label: '前置条件不满足' },
@@ -55,6 +57,8 @@ const FAILURE_CATALOG = Object.freeze({
   APP_LEFT_FOREGROUND: { status: 'BLOCKED', label: '应用离开前台' },
   UNKNOWN_POPUP: { status: 'BLOCKED', label: '未知弹窗阻塞' },
   CASE_CONTRACT_INVALID: { status: 'BLOCKED', label: '用例执行契约无效' },
+  CASE_INPUT_VALUE_REQUIRED: { status: 'BLOCKED', label: '输入步骤缺少目标文本' },
+  CASE_GLOBAL_RULE_INVALID: { status: 'BLOCKED', label: '全局规则配置无效' },
   CASE_STEPS_REQUIRED: { status: 'BLOCKED', label: '用例缺少测试步骤' },
   EXECUTION_RECOVERY_CONTRACT_CHANGED: { status: 'BLOCKED', label: '半提交恢复契约已变化' },
   EXECUTION_COMPLETION_INVALID: { status: 'BLOCKED', label: '完成态产物校验失败' },
@@ -65,9 +69,8 @@ const FAILURE_CATALOG = Object.freeze({
 
 function failureStatus(code, fallbackStatus) {
   const configured = FAILURE_CATALOG[code]?.status;
-  if (!configured || configured === 'CONTEXTUAL') {
-    return configured === 'CONTEXTUAL' && fallbackStatus === 'BLOCKED' ? 'BLOCKED' : configured === 'CONTEXTUAL' ? 'FAIL' : fallbackStatus;
-  }
+  if (!configured) return fallbackStatus;
+  if (configured === 'CONTEXTUAL') return ['FAIL', 'BLOCKED', 'UNKNOWN'].includes(fallbackStatus) ? fallbackStatus : 'FAIL';
   return configured;
 }
 

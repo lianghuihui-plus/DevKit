@@ -20,6 +20,11 @@ const {
   formatDuration,
 } = require('./display-format');
 const { completionDisplayResult, validatePublishedCompletion } = require('./completion-contract');
+const {
+  caseContractSha,
+  normalizeCaseContract,
+  validateCaseExecutionContract,
+} = require('./case-contract');
 
 const WORKSPACE_TYPE = 'mobile-ai-visual-test-workspace';
 const PRECONDITION_STATUS_PRIORITY = {
@@ -41,78 +46,6 @@ function sha1(value) {
   return crypto.createHash('sha1').update(value).digest('hex');
 }
 
-function stableJson(value) {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function caseContractSha(caseJson = {}) {
-  const contract = {
-    schemaVersion: caseJson.schemaVersion || 1,
-    parserVersion: caseJson.parserVersion || 1,
-    sourceSha1: caseJson.identity?.sourceSha1 || '',
-    preconditions: Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [],
-    steps: Array.isArray(caseJson.steps)
-      ? caseJson.steps.map((step) => ({
-        id: step.id,
-        index: step.index,
-        kind: step.kind,
-        goal: step.goal,
-        sourceText: step.sourceText,
-        target: step.target,
-        value: step.value,
-        expected: step.expected,
-        assertions: Array.isArray(step.assertions) ? step.assertions : [],
-        hints: Array.isArray(step.hints) ? step.hints : [],
-      }))
-      : [],
-    globalRules: Array.isArray(caseJson.globalRules) ? caseJson.globalRules : [],
-  };
-  if (caseJson.isolation && typeof caseJson.isolation === 'object') {
-    contract.isolation = caseJson.isolation;
-  }
-  return `contract-${sha1(stableJson(contract)).slice(0, 12)}`;
-}
-
-function validateCaseExecutionContract(caseJson = {}) {
-  const error = (code, reason) => {
-    const failure = new Error(`${code}: ${reason}`);
-    failure.failureCode = code;
-    return failure;
-  };
-  if (!caseJson || typeof caseJson !== 'object' || Array.isArray(caseJson)) {
-    throw error('CASE_CONTRACT_INVALID', 'case.json 必须是对象。');
-  }
-  if (!caseJson.identity?.caseKey || !caseJson.identity?.sourceSha1) {
-    throw error('CASE_CONTRACT_INVALID', 'case.json 缺少 identity.caseKey 或 identity.sourceSha1。');
-  }
-  if (!Array.isArray(caseJson.steps) || caseJson.steps.length === 0) {
-    throw error('CASE_STEPS_REQUIRED', '用例至少需要一个可执行测试步骤。');
-  }
-  const ids = new Set();
-  for (const [index, step] of caseJson.steps.entries()) {
-    if (!step || typeof step !== 'object' || Array.isArray(step)) {
-      throw error('CASE_CONTRACT_INVALID', `steps[${index}] 必须是对象。`);
-    }
-    if (!step.id || typeof step.id !== 'string') {
-      throw error('CASE_STEP_ID_REQUIRED', `steps[${index}] 缺少 id。`);
-    }
-    if (ids.has(step.id)) {
-      throw error('CASE_STEP_ID_DUPLICATED', `步骤 id 重复: ${step.id}`);
-    }
-    ids.add(step.id);
-    if (Number(step.index) !== index + 1) {
-      throw error('CASE_STEP_INDEX_INVALID', `${step.id} 的 index 必须为 ${index + 1}。`);
-    }
-    if (!String(step.sourceText || '').trim()) {
-      throw error('CASE_STEP_SOURCE_REQUIRED', `${step.id} 缺少 sourceText。`);
-    }
-  }
-  return caseJson;
-}
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -402,12 +335,26 @@ function parseOrderedSteps(lines) {
     .map((match) => ({ sourceText: match[1].trim() }));
 }
 
+function inferInputMode(text) {
+  const value = String(text || '');
+  if (/(追加输入|继续输入|接着输入|在末尾(?:输入|追加)|补充输入|append)/i.test(value)) return 'append';
+  return 'replace';
+}
+
 function classifyStep(text) {
   if (/打开.*App|启动.*App|拉起/.test(text)) return { kind: 'action', goal: 'launch_app' };
   if (/开关|toggle/i.test(text) || /(切换|开启|关闭|启用|禁用).*(功能|权限|模式|选项|设置|通知)/.test(text)) return { kind: 'action', goal: 'toggle', target: extractQuoted(text) };
   if (/长按|long\s*press/i.test(text)) return { kind: 'action', goal: 'long_press', target: extractQuoted(text) };
+  if (/(输入|填写|清空.*(?:输入框|文本框)|替换为|修改为|改为|重新输入|追加输入|继续输入)/.test(text)) {
+    return {
+      kind: 'action',
+      goal: 'input_text',
+      value: extractValue(text),
+      target: extractInputTarget(text),
+      inputMode: inferInputMode(text),
+    };
+  }
   if (/点击|点按|选择/.test(text)) return { kind: 'action', goal: 'tap', target: extractQuoted(text) };
-  if (/输入|填写/.test(text)) return { kind: 'action', goal: 'input_text', value: extractValue(text), target: extractInputTarget(text) };
   if (/滑动|上滑|下滑|左滑|右滑/.test(text)) return { kind: 'action', goal: 'swipe' };
   if (/返回/.test(text)) return { kind: 'action', goal: 'back' };
   if (/等待/.test(text)) return { kind: 'action', goal: 'wait' };
@@ -427,16 +374,82 @@ function extractQuoted(text) {
 }
 
 function extractValue(text) {
-  const quoted = extractQuoted(text);
-  if (quoted) return quoted;
-  const match = text.match(/(?:输入|填写)\s*([A-Za-z0-9_@.+-]+)/);
-  return match ? match[1] : undefined;
+  const source = String(text || '');
+  const verbs = [...source.matchAll(/(?:追加输入|继续输入|接着输入|重新输入|输入(?!框)|填写|替换为|修改为|改为)/g)];
+  const verb = verbs.at(-1);
+  if (!verb) return undefined;
+  let tail = source.slice(verb.index + verb[0].length).trim();
+  const quoted = tail.match(/^[：:\s]*[「“"]([^」”"]+)[」”"]/);
+  if (quoted) return quoted[1];
+  tail = tail
+    .replace(/^[：:\s]+/, '')
+    .replace(/^(?:(?:到|向|在)\s*)?(?:手机号|手机号码|验证码|密码|标题|名称|昵称|备注|[^\s，,。；;]{1,24}(?:输入框|文本框))\s*(?:中|内)?\s*/, '')
+    .split(/(?:，|,|。|；|;)\s*(?:然后|随后|并且|并确认|并验证|预期|期望)/)[0]
+    .split(/\s+并(?:点击|点按|选择|确认|验证|保存|提交)/)[0]
+    .replace(/[。；;]+$/, '')
+    .trim();
+  return tail || undefined;
+}
+
+function parseGlobalRules(lines) {
+  const content = lines.map((line) => line.trim()).filter(Boolean);
+  if (!content.length) return [];
+  const rows = content
+    .filter((line) => /^\|.*\|$/.test(line))
+    .map((line) => line.slice(1, -1).split('|').map((cell) => cell.trim()));
+  const invalid = () => {
+    const error = new Error('CASE_GLOBAL_RULE_INVALID: 全局规则必须使用约定表格，并提供 when、action 和 target。');
+    error.failureCode = 'CASE_GLOBAL_RULE_INVALID';
+    throw error;
+  };
+  if (rows.length < 3 || !rows[1].every((cell) => /^:?-{3,}:?$/.test(cell))) invalid();
+  const headers = rows[0].map((cell) => cell.toLowerCase().replace(/[\s_-]+/g, ''));
+  const column = (...names) => headers.findIndex((header) => names.includes(header));
+  const indexes = {
+    id: column('id', '规则id', '规则编号'),
+    scope: column('scope', '范围', '类型'),
+    when: column('when', '触发条件', '条件'),
+    action: column('action', '动作'),
+    target: column('target', '目标'),
+    appliesTo: column('appliesto', '适用步骤'),
+    priority: column('priority', '优先级'),
+    maxAttempts: column('maxattempts', '最大次数'),
+    onFailure: column('onfailure', '失败处理'),
+    ms: column('ms', '等待毫秒'),
+  };
+  if (indexes.when < 0 || indexes.action < 0) invalid();
+  const actionAliases = { 点击: 'tap', '点按': 'tap', 开关: 'toggle', 长按: 'longPress', 等待: 'wait', 返回: 'back', 主页: 'home' };
+  return rows.slice(2).filter((row) => row.some(Boolean)).map((row, index) => {
+    const rawAction = String(row[indexes.action] || '').trim();
+    const actionType = actionAliases[rawAction] || rawAction;
+    const target = indexes.target >= 0 ? String(row[indexes.target] || '').trim() : '';
+    const action = { type: actionType };
+    if (target) action.target = target;
+    if (actionType === 'wait') action.ms = Number(indexes.ms >= 0 ? row[indexes.ms] : target || 1000);
+    const appliesRaw = indexes.appliesTo >= 0 ? String(row[indexes.appliesTo] || '').trim() : '';
+    const appliesTo = !appliesRaw || /^(any_step|全部|任意步骤)$/i.test(appliesRaw)
+      ? 'any_step'
+      : appliesRaw.split(/[,，]/).map((item) => item.trim()).filter(Boolean);
+    return {
+      id: indexes.id >= 0 && row[indexes.id] ? String(row[indexes.id]).trim() : `rule-${pad3(index + 1)}`,
+      type: 'guard',
+      scope: indexes.scope >= 0 && row[indexes.scope] ? String(row[indexes.scope]).trim() : 'system_popup',
+      appliesTo,
+      priority: Number(indexes.priority >= 0 && row[indexes.priority] ? row[indexes.priority] : 100 - index),
+      when: String(row[indexes.when] || '').trim(),
+      then: { action },
+      maxAttempts: Number(indexes.maxAttempts >= 0 && row[indexes.maxAttempts] ? row[indexes.maxAttempts] : 1),
+      onFailure: String(indexes.onFailure >= 0 && row[indexes.onFailure] ? row[indexes.onFailure] : 'BLOCKED').trim().toUpperCase(),
+    };
+  });
 }
 
 function extractInputTarget(text) {
   if (/手机号|手机/.test(text)) return '手机号输入框';
   if (/验证码/.test(text)) return '验证码输入框';
   if (/密码/.test(text)) return '密码输入框';
+  const generic = String(text || '').match(/([\p{L}\p{N}_-]{1,24}(?:输入框|文本框))/u);
+  if (generic) return generic[1].replace(/^(?:清空|点击|点按|选择|在|向)/, '');
   return undefined;
 }
 
@@ -454,6 +467,7 @@ function parseMarkdownCase(file, cwd = process.cwd(), options = {}) {
   }));
   const parsedSteps = parseOrderedSteps(sectionLines(markdown, ['步骤', '测试步骤', '操作步骤', 'steps', 'test steps']));
   const expectedResults = parsePreconditions(sectionLines(markdown, ['预期结果', '期望结果', 'expected result', 'expected results']));
+  const globalRules = parseGlobalRules(sectionLines(markdown, ['全局规则', 'global rules', 'globalrules']));
   const steps = parsedSteps.map((parsedStep, idx) => {
     const sourceText = parsedStep.sourceText;
     const expected = parsedStep.expected || expectedResults[idx] || (parsedSteps.length === 1 ? expectedResults[0] : undefined);
@@ -473,7 +487,7 @@ function parseMarkdownCase(file, cwd = process.cwd(), options = {}) {
     sourceMarkdown: markdown,
     caseJson: {
       schemaVersion: 1,
-      parserVersion: 2,
+      parserVersion: 4,
       identity: {
         caseKey,
         title,
@@ -485,10 +499,7 @@ function parseMarkdownCase(file, cwd = process.cwd(), options = {}) {
       },
       preconditions,
       steps,
-      isolation: {
-        requireCleanRestart: 'auto',
-      },
-      globalRules: [],
+      globalRules,
       sourceChanged: false,
       staleNotes: [],
     },
@@ -561,30 +572,12 @@ function displayPreconditionStatus(status) {
   return PRECONDITION_STATUS_LABELS[status] || status || '-';
 }
 
-function isolationRequirementFromNote(note = {}) {
-  const text = String(note.text || '');
-  const type = String(note.type || '');
-  if (type === 'isolation') {
-    if (/不要求|不需要|无需|允许降级|可降级|false|optional/i.test(text)) return false;
-    if (/必须|要求|需要|强制|true|required/i.test(text)) return true;
-  }
-  if (!/(冷启动|重启|重新启动|隔离|clean\s*restart|cold\s*start)/i.test(text)) return null;
-  if (/不要求|不需要|无需|允许降级|可降级|不必/.test(text)) return false;
-  if (/必须|要求|需要|强制/.test(text)) return true;
-  return null;
-}
-
 function reapplyNotes(caseJson, notes, options = {}) {
   const staleNotes = [];
   for (const note of notes) {
     if (note.source !== 'conversation' || note.stale) continue;
-    const isolationRequirement = isolationRequirementFromNote(note);
-    if (isolationRequirement !== null) {
-      caseJson.isolation = {
-        ...(caseJson.isolation || {}),
-        requireCleanRestart: isolationRequirement,
-        reason: note.text,
-      };
+    if (note.type === 'isolation' || /(冷启动|重启|重新启动|隔离|clean\s*restart|cold\s*start)/i.test(String(note.text || ''))) {
+      staleNotes.push({ ...note, stale: true, applied: false, reason: '冷启动隔离由框架固定策略管理，用户补充不能修改。' });
       continue;
     }
     const target = findStepForNote(caseJson, note, options);
@@ -595,7 +588,7 @@ function reapplyNotes(caseJson, notes, options = {}) {
     }
   }
   caseJson.staleNotes = staleNotes;
-  return caseJson;
+  return normalizeCaseContract(caseJson);
 }
 
 function resolveNotes(caseJson, notes = []) {
@@ -647,7 +640,9 @@ function latestPublishedExecutionDir(caseDir) {
 }
 
 function readPublishedExecution(execDir) {
-  if (!execDir) return { latest: null, result: null, metrics: null, events: [], completion: null };
+  if (!execDir) return { latest: null, execution: null, snapshot: null, result: null, metrics: null, events: [], completion: null };
+  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  const snapshot = readJson(path.join(execDir, 'case.snapshot.json'), null);
   const result = readJson(path.join(execDir, 'result.json'), null);
   const metrics = readJson(path.join(execDir, 'metrics.json'), null);
   const completion = readJson(path.join(execDir, 'completion.json'), null);
@@ -656,8 +651,8 @@ function readPublishedExecution(execDir) {
   if (result && completion) {
     try {
       validatePublishedCompletion(execDir, completion, {
-        execution: readJson(path.join(execDir, 'execution.json'), null),
-        snapshot: readJson(path.join(execDir, 'case.snapshot.json'), null),
+        execution,
+        snapshot,
         result,
         metrics,
       });
@@ -678,6 +673,8 @@ function readPublishedExecution(execDir) {
   }
   return {
     latest: execDir,
+    execution,
+    snapshot,
     result: displayResult,
     metrics,
     events: readJsonl(path.join(execDir, 'timeline.jsonl')),
@@ -690,42 +687,6 @@ function caseRootFromCaseDir(caseDir) {
   return path.dirname(path.dirname(caseDir));
 }
 
-function reportSourceSha(report = {}) {
-  return report.result?.sourceSha1 ||
-    report.metrics?.sourceSha1 ||
-    report.events?.find((event) => event.sourceSha1)?.sourceSha1 ||
-    '';
-}
-
-function reportCaseContractSha(report = {}) {
-  return report.result?.caseContractSha ||
-    report.metrics?.caseContractSha ||
-    report.events?.find((event) => event.caseContractSha)?.caseContractSha ||
-    '';
-}
-
-function reportMatchesCaseSource(caseJson, report = {}, options = {}) {
-  const caseSha = caseJson.identity?.sourceSha1 || '';
-  const sourceSha = reportSourceSha(report);
-  const expectedContractSha = caseContractSha(caseJson);
-  const actualContractSha = reportCaseContractSha(report);
-  if (actualContractSha && actualContractSha !== expectedContractSha) return false;
-  const actualPlanSha = report.result?.preconditionPlanSha || report.metrics?.preconditionPlanSha || '';
-  if (actualPlanSha && options.caseDir && options.platform) {
-    try {
-      const { buildPreconditionPlan } = require('./precondition-flow');
-      const currentPlan = buildPreconditionPlan(caseJson, caseRootFromCaseDir(options.caseDir), options.platform);
-      if (currentPlan.preconditionPlanSha !== actualPlanSha) return false;
-    } catch {
-      return false;
-    }
-  }
-  if (actualContractSha) return true;
-  const hasRules = Array.isArray(caseJson.globalRules) && caseJson.globalRules.length > 0;
-  if (hasRules) return false;
-  return !caseSha || !sourceSha || caseSha === sourceSha;
-}
-
 function readCaseRuntimeSummary(caseDir, caseJson, platform = '') {
   const runtimeDir = caseRuntimeDir(caseDir, platform);
   const state = readJson(path.join(runtimeDir, 'state.json'), {});
@@ -733,24 +694,21 @@ function readCaseRuntimeSummary(caseDir, caseJson, platform = '') {
   const published = readPublishedExecution(latest);
   const result = published.result;
   const metrics = published.metrics;
-  const current = reportMatchesCaseSource(caseJson, { result, metrics }, { caseDir, platform });
-  const currentResult = current ? result : null;
-  const currentMetrics = current ? metrics : null;
-  const status = currentResult?.status || (!result ? state.latestStatus : 'NOT_RUN') || 'NOT_RUN';
-  const steps = currentMetrics?.steps;
+  const status = result?.status || state.latestStatus || 'NOT_RUN';
+  const steps = metrics?.steps;
   return {
     platform: platform || state.environment?.platform || '',
     runtimeDir,
     status,
-    latestExecutionId: currentResult?.executionId || (!result ? state.latestExecutionId : '') || '',
-    startedAt: currentResult?.startedAt || '',
-    endedAt: currentResult?.endedAt || '',
-    durationMs: currentMetrics?.durationMs,
+    latestExecutionId: result?.executionId || state.latestExecutionId || '',
+    startedAt: result?.startedAt || '',
+    endedAt: result?.endedAt || '',
+    durationMs: metrics?.durationMs,
     stepsSummary: steps ? `${steps.passed || 0}/${steps.total || 0}` : `${caseJson.steps?.length || 0}`,
-    failureCode: currentResult?.failureCode || (!result ? state.latestFailureCode : '') || '',
-    failedStep: currentResult?.failedStep || '',
-    reason: currentResult?.reason || (!result ? state.latestReason : '') || '',
-    updatedAt: currentResult?.endedAt || state.environmentConfirmedAt || caseJson.identity?.sourceUpdatedAt || '',
+    failureCode: result?.failureCode || state.latestFailureCode || '',
+    failedStep: result?.failedStep || '',
+    reason: result?.reason || state.latestReason || '',
+    updatedAt: result?.endedAt || state.environmentConfirmedAt || caseJson.identity?.sourceUpdatedAt || '',
     contextPath: path.join(runtimeDir, 'CONTEXT.html'),
   };
 }
@@ -894,10 +852,10 @@ function refreshIndexForCase(caseDir) {
 function readLatestExecutionReport(caseDir, options = {}) {
   const runtimeDir = caseRuntimeDir(caseDir, options.platform);
   const latest = latestPublishedExecutionDir(runtimeDir) || latestExecutionDir(runtimeDir);
-  if (!latest) return { latest: null, result: null, metrics: null, events: [], completion: null };
+  if (!latest) return { latest: null, execution: null, snapshot: null, result: null, metrics: null, events: [], completion: null };
   const execution = readJson(path.join(latest, 'execution.json'), {});
   if (execution.batchId && !fs.existsSync(path.join(latest, 'completion.json'))) {
-    return { latest, result: null, metrics: null, events: [], completion: null, pendingCompletion: true };
+    return { latest, execution, snapshot: readJson(path.join(latest, 'case.snapshot.json'), null), result: null, metrics: null, events: [], completion: null, pendingCompletion: true };
   }
   return readPublishedExecution(latest);
 }
@@ -905,31 +863,30 @@ function readLatestExecutionReport(caseDir, options = {}) {
 function writeCaseReports(caseDir, caseJson, state = {}, notes = [], report = null, options = {}) {
   const resolvedNotes = resolveNotes(caseJson, notes);
   const runtimeDir = caseRuntimeDir(caseDir, options.platform);
-  const rawReport = report || readLatestExecutionReport(caseDir, options);
-  const sourceMatches = reportMatchesCaseSource(caseJson, rawReport, { caseDir, platform: options.platform });
-  const latestReport = sourceMatches ? rawReport : { latest: rawReport.latest, result: null, metrics: null, events: [] };
-  const reportState = sourceMatches && rawReport.completionError ? {
+  const latestReport = report || readLatestExecutionReport(caseDir, options);
+  const reportCaseJson = options.platform && latestReport.snapshot ? latestReport.snapshot : caseJson;
+  const reportState = latestReport.completionError ? {
     ...state,
     latestStatus: 'BLOCKED',
-    latestExecutionId: rawReport.result?.executionId || state.latestExecutionId || '',
+    latestExecutionId: latestReport.result?.executionId || state.latestExecutionId || '',
     latestFailureCode: 'EXECUTION_COMPLETION_INVALID',
-    latestReason: rawReport.result?.reason || rawReport.completionError,
-  } : sourceMatches ? state : {
+    latestReason: latestReport.result?.reason || latestReport.completionError,
+  } : latestReport.result ? {
     ...state,
-    latestStatus: 'NOT_RUN',
-    latestExecutionId: '',
-    latestFailedStep: null,
-    latestFailureCode: null,
-    contractMismatch: Boolean(rawReport.result || rawReport.metrics || rawReport.events?.length),
-  };
+    latestStatus: latestReport.result.status,
+    latestExecutionId: latestReport.result.executionId || state.latestExecutionId || '',
+    latestFailedStep: latestReport.result.failedStep || null,
+    latestFailureCode: latestReport.result.failureCode || null,
+    latestReason: latestReport.result.reason || '',
+  } : state;
   if (options.platform) {
-    writeText(path.join(runtimeDir, 'CONTEXT.md'), renderContext(caseJson, reportState, latestReport.result, latestReport.metrics, resolvedNotes, latestReport.events));
+    writeText(path.join(runtimeDir, 'CONTEXT.md'), renderContext(reportCaseJson, reportState, latestReport.result, latestReport.metrics, resolvedNotes, latestReport.events));
     if (!options.skipRootOverview) writeText(path.join(caseDir, 'CONTEXT.md'), renderCaseOverviewMarkdown(caseDir, caseJson, resolvedNotes));
   } else {
     writeText(path.join(runtimeDir, 'CONTEXT.md'), renderCaseOverviewMarkdown(caseDir, caseJson, resolvedNotes));
   }
   if (options.platform) {
-    writeText(path.join(runtimeDir, 'CONTEXT.html'), renderContextHtml(caseJson, reportState, latestReport.result, latestReport.metrics, resolvedNotes, latestReport.events, { runtimeDir, executionDir: latestReport.latest }));
+    writeText(path.join(runtimeDir, 'CONTEXT.html'), renderContextHtml(reportCaseJson, reportState, latestReport.result, latestReport.metrics, resolvedNotes, latestReport.events, { runtimeDir, executionDir: latestReport.latest }));
     if (!options.skipRootOverview) writeText(path.join(caseDir, 'CONTEXT.html'), renderCaseOverviewHtml(caseDir, caseJson, resolvedNotes));
   } else {
     writeText(path.join(runtimeDir, 'CONTEXT.html'), renderCaseOverviewHtml(caseDir, caseJson, resolvedNotes));
@@ -1000,7 +957,7 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
   const lines = [];
   lines.push(`# ${caseJson.identity.title}`);
   lines.push('');
-  lines.push(`状态：${state.latestStatus || result?.status || 'NOT_RUN'}`);
+  lines.push(`状态：${result?.status || state.latestStatus || 'NOT_RUN'}`);
   if (state.latestExecutionId) lines.push(`最近执行：${state.latestExecutionId}`);
   if (caseJson.identity.caseNo) lines.push(`编号：${caseJson.identity.caseNo}`);
   lines.push(`导入来源：${caseJson.identity.importSource || caseJson.identity.sourceFile || '未知'}`);
@@ -1152,17 +1109,6 @@ function renderContext(caseJson, state = {}, result = null, metrics = null, note
     lines.push('');
     lines.push('## 用户补充');
     for (const note of conversationNotes) lines.push(`- ${formatDisplayTime(note.time)}：${note.text}${note.stale ? '（已失效）' : ''}`);
-  }
-  const showSourceChangeWarning = !result && (state.contractMismatch || caseJson.sourceChanged || caseJson.staleNotes?.length);
-  if (showSourceChangeWarning) {
-    lines.push('');
-    lines.push('## 源用例变更');
-    lines.push('- 检测到 Markdown 内容、执行契约或前置条件 Flow 已变化，旧执行结果已隐藏。');
-    if (caseJson.staleNotes?.length) {
-      lines.push('');
-      lines.push('## 失效补充');
-      for (const note of caseJson.staleNotes) lines.push(`- ${formatDisplayTime(note.time)}：${note.text}\n  - 原因：${note.reason}`);
-    }
   }
   lines.push('');
   lines.push('## 下次执行依据');
@@ -1527,22 +1473,8 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
   const headerTime = result?.startedAt || result?.endedAt
     ? `${formatDisplayTime(result?.startedAt)} - ${formatDisplayTime(result?.endedAt)}`
     : '尚未执行';
-  const showSourceChangeWarning = !result && (state.contractMismatch || caseJson.sourceChanged || caseJson.staleNotes?.length);
-  const sourceChangeBanner = showSourceChangeWarning
-    ? `<div class="source-warning">源用例、执行契约或前置条件 Flow 已变更，当前报告只展示与最新 sourceSha1、caseContractSha 和 preconditionPlanSha 匹配的执行结果。</div>`
-    : '';
   const isolationBanner = metrics?.stability?.isolationCompromised
     ? `<div class="isolation-warning">本次执行未完成干净冷启动隔离${metrics.stability.isolationRequired ? '，且用例依赖冷启动语义' : ''}：${escapeHtml(metrics.stability.isolationReason || 'App 重启失败，执行结果可信度已降级。')}</div>`
-    : '';
-  const sourceChangeSection = showSourceChangeWarning
-    ? `<section>
-    <h2>源用例变更</h2>
-    <p class="empty">Markdown 内容、执行契约或前置条件 Flow 已变化，当前报告只展示与最新 sourceSha1、caseContractSha 和 preconditionPlanSha 匹配的执行结果。</p>
-    ${(caseJson.staleNotes || []).length ? `<div class="table-wrap"><table>
-      <thead><tr><th style="width:210px">时间</th><th>补充</th><th>原因</th></tr></thead>
-      <tbody>${caseJson.staleNotes.map((note) => `<tr><td>${escapeHtml(formatDisplayTime(note.time))}</td><td>${escapeHtml(note.text || '')}</td><td>${escapeHtml(note.reason || '')}</td></tr>`).join('\n')}</tbody>
-    </table></div>` : ''}
-  </section>`
     : '';
   const technicalRows = [
     ['executionId', executionId || '-'],
@@ -1588,7 +1520,6 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     .fact span { display: block; color: var(--muted); font-size: 12px; }
     .fact strong { display: block; margin-top: 3px; font-size: 14px; word-break: break-word; }
     .fact small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; word-break: break-word; }
-    .source-warning { margin: -4px 0 14px; padding: 10px 12px; border: 1px solid var(--blocked-line); border-radius: 8px; background: var(--blocked-soft); color: #7c4a03; font-weight: 700; }
     .isolation-warning { margin: -4px 0 14px; padding: 10px 12px; border: 1px solid var(--blocked-line); border-radius: 8px; background: var(--blocked-soft); color: #7c4a03; font-weight: 800; }
     .startup-display-summary { margin: -4px 0 14px; padding: 10px 12px; border: 1px solid #bae6fd; border-radius: 8px; background: #f0f9ff; color: #075985; font-weight: 800; }
     .evidence-card { display: block; min-width: 0; color: var(--text); font-weight: 500; }
@@ -1713,7 +1644,6 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     </div>
     <span class="status ${escapeHtml(className(status))}">${escapeHtml(displayStatus(status))}</span>
   </header>
-  ${sourceChangeBanner}
   ${isolationBanner}
   ${startupDisplayBanner}
 
@@ -1813,7 +1743,6 @@ function renderContextHtml(caseJson, state = {}, result = null, metrics = null, 
     </div>
   </details>
 
-  ${sourceChangeSection}
   <div class="shot-lightbox" hidden>
     <div class="shot-lightbox-panel" role="dialog" aria-modal="true" aria-label="截图预览">
       <div class="shot-lightbox-head">
@@ -2124,6 +2053,21 @@ function renderCaseOverviewMarkdown(caseDir, caseJson, notes = []) {
 function renderIndexHtml(rootDir, cases = []) {
   const total = cases.length;
   const platformStats = summarizeIndexPlatforms(cases);
+  const filterStatuses = ['PASS', 'FAIL', 'BLOCKED', 'UNKNOWN', 'NOT_RUN'];
+  const statusCounts = new Map(filterStatuses.map((status) => [
+    status,
+    cases.filter((item) => (item.status || 'NOT_RUN') === status).length,
+  ]));
+  const statusFilter = `<section class="case-filter-panel" aria-label="用例状态筛选">
+      <div class="case-filter-head">
+        <strong>按状态筛选</strong>
+        <span class="case-filter-result" aria-live="polite">显示 ${escapeHtml(total)} / ${escapeHtml(total)}</span>
+      </div>
+      <div class="case-filter-controls" role="group" aria-label="选择用例状态，可多选">
+        <button type="button" class="case-filter-button active" data-case-filter="ALL" aria-pressed="true">全部 <b>${escapeHtml(total)}</b></button>
+        ${filterStatuses.map((status) => `<button type="button" class="case-filter-button ${escapeHtml(className(status))}" data-case-filter="${escapeHtml(status)}" aria-pressed="false">${escapeHtml(displayStatus(status))} <b>${escapeHtml(statusCounts.get(status) || 0)}</b></button>`).join('')}
+      </div>
+    </section>`;
   const platformSummary = `<div class="platform-overview">${platformStats.map((item) => `<section class="platform-overview-card">
         <div class="platform-overview-head">
           <span>${escapeHtml(displayPlatform(item.platform))}</span>
@@ -2194,7 +2138,7 @@ function renderIndexHtml(rootDir, cases = []) {
         }).join('')}</div>
         </details>`
         : `<div class="platform-details empty-panel"><p>暂无平台执行记录</p></div>`;
-      return `<div class="case-card ${escapeHtml(statusClass)}">
+      return `<div class="case-card ${escapeHtml(statusClass)}" data-case-status="${escapeHtml(item.status || 'NOT_RUN')}">
         <div class="case-header">
           <div class="case-kicker">
             <span class="case-no">${escapeHtml(caseNo)}</span>
@@ -2254,6 +2198,20 @@ function renderIndexHtml(rootDir, cases = []) {
     .platform-status-grid .fail b { color: var(--fail); }
     .platform-status-grid .blocked b { color: var(--blocked); }
     .platform-status-grid .unknown b, .platform-status-grid .not-run b { color: var(--unknown); }
+    .case-filter-panel { display: grid; gap: 12px; margin: 0 0 16px; padding: 14px 16px; }
+    .case-filter-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .case-filter-head strong { color: #172033; font-size: 14px; }
+    .case-filter-result { color: var(--muted); font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .case-filter-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+    .case-filter-button { min-height: 34px; padding: 6px 11px; border: 1px solid #cbd5e1; border-radius: 999px; background: #fff; color: #334155; cursor: pointer; font: inherit; font-size: 12px; font-weight: 800; }
+    .case-filter-button b { margin-left: 4px; font-variant-numeric: tabular-nums; }
+    .case-filter-button:hover { border-color: #7dd3fc; background: var(--accent-soft); }
+    .case-filter-button.active { border-color: var(--accent); background: var(--accent); color: #fff; box-shadow: 0 5px 14px rgba(14, 165, 233, .18); }
+    .case-filter-button.pass.active { border-color: var(--pass); background: var(--pass); }
+    .case-filter-button.fail.active { border-color: var(--fail); background: var(--fail); }
+    .case-filter-button.blocked.active { border-color: var(--blocked); background: var(--blocked); }
+    .case-filter-button.unknown.active, .case-filter-button.not_run.active { border-color: var(--unknown); background: var(--unknown); }
+    .case-filter-empty { margin: 0; padding: 22px; border: 1px dashed #cbd5e1; border-radius: 8px; background: var(--surface-soft); color: var(--muted); text-align: center; }
     section { padding: 16px; overflow: hidden; }
     table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; overflow: hidden; border-radius: 8px; }
     th, td { padding: 8px 10px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; word-break: break-word; }
@@ -2266,6 +2224,7 @@ function renderIndexHtml(rootDir, cases = []) {
     .pill.unknown, .pill.not_run, .pill.pending { color: var(--unknown); background: var(--unknown-soft); border-color: #cbd5e1; }
     .case-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
     .case-card { position: relative; display: block; min-height: 128px; padding: 16px 18px 15px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); overflow: hidden; }
+    .case-card[hidden] { display: none; }
     .case-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 5px; background: var(--unknown); }
     .case-card.pass::before { background: var(--pass); }
     .case-card.fail::before { background: var(--fail); }
@@ -2334,7 +2293,7 @@ function renderIndexHtml(rootDir, cases = []) {
     .platform-detail-meta b { color: #334155; font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .empty-panel p { margin: 0; color: var(--muted); font-size: 12px; }
     @media (max-width: 1060px) { .platform-status-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .platform-detail-meta { grid-template-columns: 76px 92px minmax(220px, 1fr) minmax(220px, 1fr); } }
-    @media (max-width: 760px) { main { width: calc(100vw - 20px); margin-top: 14px; } .platform-overview { grid-template-columns: 1fr; } h1 { font-size: 22px; } section { padding: 12px; } .case-header { align-items: flex-start; flex-direction: column; gap: 8px; } .case-open { margin-left: 0; } .case-kicker { min-width: 0; } .case-card h2 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; } .case-preconditions { grid-template-columns: 1fr; gap: 6px; } .case-precondition-label { line-height: 1.2; } .precondition-tag { max-width: 100%; } .platform-details summary { grid-template-columns: 1fr; align-items: start; } .details-toggle { justify-self: start; } .platform-detail-main { grid-template-columns: 1fr; } .platform-report-link { justify-self: start; } .platform-detail-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); } .platform-time { grid-column: 1 / -1; } }
+    @media (max-width: 760px) { main { width: calc(100vw - 20px); margin-top: 14px; } .platform-overview { grid-template-columns: 1fr; } h1 { font-size: 22px; } section { padding: 12px; } .case-filter-head { align-items: flex-start; flex-direction: column; gap: 4px; } .case-filter-button { flex: 1 0 auto; } .case-header { align-items: flex-start; flex-direction: column; gap: 8px; } .case-open { margin-left: 0; } .case-kicker { min-width: 0; } .case-card h2 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; } .case-preconditions { grid-template-columns: 1fr; gap: 6px; } .case-precondition-label { line-height: 1.2; } .precondition-tag { max-width: 100%; } .platform-details summary { grid-template-columns: 1fr; align-items: start; } .details-toggle { justify-self: start; } .platform-detail-main { grid-template-columns: 1fr; } .platform-report-link { justify-self: start; } .platform-detail-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); } .platform-time { grid-column: 1 / -1; } }
     @media (max-width: 520px) { .platform-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .platform-detail-meta { grid-template-columns: 1fr; } .platform-detail-meta div { white-space: normal; } }
   </style>
 </head>
@@ -2347,8 +2306,55 @@ function renderIndexHtml(rootDir, cases = []) {
     </div>
   </header>
   ${platformSummary}
+  ${statusFilter}
   <div class="case-grid">${cards}</div>
+  ${cases.length ? '<p class="case-filter-empty" hidden>当前筛选条件下没有用例。</p>' : ''}
 </main>
+<script>
+(() => {
+  const buttons = Array.from(document.querySelectorAll('[data-case-filter]'));
+  const cards = Array.from(document.querySelectorAll('[data-case-status]'));
+  const result = document.querySelector('.case-filter-result');
+  const empty = document.querySelector('.case-filter-empty');
+  const selectedStatuses = new Set();
+  let allSelected = true;
+  const applyFilters = () => {
+    let visibleCount = 0;
+    for (const card of cards) {
+      const visible = allSelected || selectedStatuses.has(card.dataset.caseStatus || 'NOT_RUN');
+      card.hidden = !visible;
+      if (visible) visibleCount += 1;
+    }
+    for (const button of buttons) {
+      const status = button.dataset.caseFilter || 'ALL';
+      const active = status === 'ALL' ? allSelected : !allSelected && selectedStatuses.has(status);
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    if (result) result.textContent = '显示 ' + visibleCount + ' / ' + cards.length;
+    if (empty) empty.hidden = visibleCount !== 0;
+  };
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const status = button.dataset.caseFilter || 'ALL';
+      if (status === 'ALL') {
+        allSelected = true;
+        selectedStatuses.clear();
+      } else {
+        if (allSelected) {
+          allSelected = false;
+          selectedStatuses.clear();
+        }
+        if (selectedStatuses.has(status)) selectedStatuses.delete(status);
+        else selectedStatuses.add(status);
+        if (selectedStatuses.size === 0) allSelected = true;
+      }
+      applyFilters();
+    });
+  }
+  applyFilters();
+})();
+</script>
 </body>
 </html>
 `;

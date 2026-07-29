@@ -13,6 +13,7 @@ const {
   readJsonl,
   rebuildCaseDerivedArtifacts,
   reapplyNotes,
+  validateCaseExecutionContract,
   writeJson,
 } = require('../common');
 const { parseCliArgsOrExit } = require('../lib/cli-args');
@@ -54,24 +55,26 @@ const parsed = parseMarkdownCase(previous.identity.importSource || previous.iden
 
 let caseJson = parsed.caseJson;
 caseJson.identity.caseNo = normalizeCaseNo(previous.identity?.caseNo);
-if (previous?.globalRules) {
+if (previous?.globalRules?.length && !caseJson.globalRules?.length) {
   caseJson.globalRules = previous.globalRules;
 }
 const sourceChanged = previous.identity.sourceSha1 !== caseJson.identity.sourceSha1;
+let sourceChangeEvent = null;
 if (sourceChanged) {
   caseJson.sourceChanged = true;
-  appendJsonl(notesPath, {
+  sourceChangeEvent = {
     time: nowIso(),
     source: 'system',
     type: 'source_snapshot_changed',
     from: previous.identity.sourceSha1,
     to: caseJson.identity.sourceSha1,
     mode: 'snapshot',
-  });
+  };
 }
 
 const notes = readJsonl(notesPath);
-caseJson = reapplyNotes(caseJson, notes, { strictStepText: sourceChanged });
+caseJson = validateCaseExecutionContract(reapplyNotes(caseJson, notes, { strictStepText: sourceChanged }));
+if (sourceChangeEvent) appendJsonl(notesPath, sourceChangeEvent);
 writeJson(casePath, caseJson);
 
 const rebuilt = rebuildCaseDerivedArtifacts(caseDir);

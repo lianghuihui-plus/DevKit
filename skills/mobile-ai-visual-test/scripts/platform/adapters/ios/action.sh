@@ -33,6 +33,9 @@ run_atom() {
   status=$?
   set -e
   if [[ $status -ne 0 ]]; then
+    if node -e 'JSON.parse(process.argv[1])' "$output" 2>/dev/null; then
+      normalize_action "$output" "$action"
+    fi
     return "$status"
   fi
   normalize_action "$output" "$action"

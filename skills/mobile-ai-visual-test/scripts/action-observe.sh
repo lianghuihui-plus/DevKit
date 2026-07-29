@@ -23,10 +23,10 @@ while [[ $# -gt 0 ]]; do
     --precondition-id) precondition_id="${2:-}"; action_args+=("$1" "$2"); shift 2 ;;
     --flow-id) flow_id="${2:-}"; action_args+=("$1" "$2"); shift 2 ;;
     --flow-step-id) flow_step_id="${2:-}"; action_args+=("$1" "$2"); shift 2 ;;
-    --authorization-source|--authorization-step-id|--authorization-intent-sha)
+    --authorization-source|--authorization-step-id|--authorization-intent-sha|--authorization-rule-id|--authorization-rule-sha)
       action_args+=("$1" "${2:-}"); shift 2 ;;
     --observe-label) observe_label="${2:-}"; shift 2 ;;
-    --type|--target|--x|--y|--text|--from-x|--from-y|--to-x|--to-y|--duration-ms|--ms|--reason|--velocity|--coordinate-source|--target-bounds|--coordinate-evidence|--settle-ms|--device|--app|--bundle|--entry|--ability)
+    --type|--target|--x|--y|--text|--mode|--from-x|--from-y|--to-x|--to-y|--duration-ms|--ms|--reason|--velocity|--coordinate-source|--target-bounds|--coordinate-evidence|--settle-ms|--device|--app|--bundle|--entry|--ability)
       action_args+=("$1" "${2:-}"); shift 2 ;;
     *) echo "action-observe.sh 未知参数: $1" >&2; exit 2 ;;
   esac
@@ -37,7 +37,7 @@ if [[ -z "$case_dir" || -z "$platform" || -z "$execution_id" ]]; then
   exit 2
 fi
 if [[ -z "$step_id" && "$scope" != "precondition-flow" ]]; then
-  echo "action-observe.sh 仅支持业务 step 或 precondition-flow。" >&2
+  echo "action-observe.sh 仅支持业务 step、global-rule 或 precondition-flow。" >&2
   exit 2
 fi
 

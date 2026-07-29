@@ -24,6 +24,10 @@ function intentFields(step) {
     goal: String(step.goal || ''),
     target: String(step.target || ''),
     sourceText: String(step.sourceText || ''),
+    value: String(step.value || ''),
+    inputMode: step.goal === 'input_text'
+      ? String(step.inputMode || (/(追加输入|继续输入|接着输入|在末尾(?:输入|追加)|补充输入|append)/i.test(String(step.sourceText || '')) ? 'append' : 'replace'))
+      : '',
   };
 }
 

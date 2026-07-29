@@ -9,6 +9,7 @@ const { describeActionConstraints, normalizeActionProposal, validateActionExecut
 const { loadCaseExecutionContext } = require('./lib/case-execution-context');
 const { operationClass } = require('./lib/next-work-contract');
 const { actionAuthorization, validateStepIntent } = require('./lib/step-intent');
+const { ruleAuthorization } = require('./lib/rule-intent');
 
 const MAX_DETERMINISTIC_TRANSITIONS = 100;
 
@@ -73,6 +74,28 @@ function actionContractFailure(error) {
   };
 }
 
+function inputIntentFailure(field, received, allowed, suggestion) {
+  const error = new Error(`ACTION_CONTRACT_INVALID: inputText ${field} does not match the frozen step intent`);
+  error.code = 'ACTION_CONTRACT_INVALID';
+  error.field = field;
+  error.received = received;
+  error.allowed = allowed;
+  error.suggestion = suggestion;
+  return error;
+}
+
+function validateActionAgainstStep(action, step, stepIntent) {
+  if (action?.type !== 'inputText' || step?.goal !== 'input_text') return action;
+  const expectedMode = stepIntent?.inputMode || step.inputMode || 'replace';
+  if (action.mode !== expectedMode) {
+    throw inputIntentFailure('mode', action.mode, [expectedMode], `use mode=${expectedMode}`);
+  }
+  if (step.value !== undefined && step.value !== null && String(action.text) !== String(step.value)) {
+    throw inputIntentFailure('text', action.text, [String(step.value)], 'use the exact text frozen in the current case step');
+  }
+  return action;
+}
+
 function recordActionRejection(options, work, attemptedAction, failure, phase, workToken, decisionTurnId) {
   const event = {
     type: 'actionRejected',
@@ -118,7 +141,7 @@ function flowObservationArgs(options, work) {
 
 function executeDeterministic(options, work, workToken) {
   if (work.type === 'STOP_FINALIZED') return;
-  if (work.type === 'OBSERVE_STEP' || work.type === 'OBSERVE_AFTER_ACTION') {
+  if (work.type === 'OBSERVE_STEP' || work.type === 'OBSERVE_AFTER_ACTION' || work.type === 'OBSERVE_AFTER_RULE') {
     run('observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--step-id', work.step.id]);
     return;
   }
@@ -128,8 +151,10 @@ function executeDeterministic(options, work, workToken) {
   }
   if (work.type === 'EXECUTE_STEP_ACTION') {
     try {
-      validateActionExecution(work.requestedAction, { platform: options.platform, scope: 'case-step', context: work.type });
+      const requestedAction = normalizeActionProposal(work.requestedAction, { context: work.type }).action;
+      validateActionExecution(requestedAction, { platform: options.platform, scope: 'case-step', context: work.type });
       validateStepIntent(work.step, work.stepIntent);
+      validateActionAgainstStep(requestedAction, work.step, work.stepIntent);
       run('action-observe.sh', [
         '--case-dir', options.caseDir,
         '--platform', options.platform,
@@ -138,7 +163,7 @@ function executeDeterministic(options, work, workToken) {
         '--authorization-source', work.authorization.source,
         '--authorization-step-id', work.authorization.stepId,
         '--authorization-intent-sha', work.authorization.intentSha,
-        ...actionArgs(work.requestedAction),
+        ...actionArgs(requestedAction),
       ]);
     } catch (error) {
       const failure = actionContractFailure(error);
@@ -147,9 +172,40 @@ function executeDeterministic(options, work, workToken) {
     }
     return;
   }
+  if (work.type === 'EXECUTE_RULE_ACTION') {
+    const requestedAction = normalizeActionProposal(work.requestedAction, { context: work.type }).action;
+    validateActionExecution(requestedAction, { platform: options.platform, scope: 'global-rule', context: work.type });
+    const authorization = ruleAuthorization(work.rule, work.step.id);
+    run('action-observe.sh', [
+      '--case-dir', options.caseDir,
+      '--platform', options.platform,
+      '--execution-id', options.executionId,
+      '--scope', 'global-rule',
+      '--step-id', work.step.id,
+      '--authorization-source', authorization.source,
+      '--authorization-step-id', authorization.stepId,
+      '--authorization-rule-id', authorization.ruleId,
+      '--authorization-rule-sha', authorization.ruleSha,
+      ...actionArgs(requestedAction),
+    ]);
+    return;
+  }
+  if (work.type === 'RECORD_RULE_HANDLED') {
+    record(options, {
+      type: 'rule',
+      ruleId: work.rule.id,
+      ruleScope: work.rule.scope,
+      stepId: work.step.id,
+      status: 'HANDLED',
+      observation: work.latestObservation.evidenceRef,
+      reason: '规则动作执行成功，并已完成动作后观察。',
+    });
+    return;
+  }
   if (work.type === 'EXECUTE_FLOW_ACTION') {
-    validateActionExecution(work.requestedAction, { platform: options.platform, scope: 'precondition-flow', context: work.type });
-    run('action-observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--scope', 'precondition-flow', '--precondition-id', work.preconditionId, '--flow-id', work.flowId, '--flow-step-id', work.flowStepId, ...actionArgs(work.requestedAction)]);
+    const requestedAction = normalizeActionProposal(work.requestedAction, { context: work.type }).action;
+    validateActionExecution(requestedAction, { platform: options.platform, scope: 'precondition-flow', context: work.type });
+    run('action-observe.sh', ['--case-dir', options.caseDir, '--platform', options.platform, '--execution-id', options.executionId, '--scope', 'precondition-flow', '--precondition-id', work.preconditionId, '--flow-id', work.flowId, '--flow-step-id', work.flowStepId, ...actionArgs(requestedAction)]);
     return;
   }
   if (work.type === 'RECORD_PRECONDITION') {
@@ -240,10 +296,24 @@ function decisionRequest(context) {
   if (work.type === 'DECIDE_FLOW_ENTRY') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, startCondition: work.startCondition, endCondition: work.endCondition, allowedOutcomes: ['ALREADY_SATISFIED', 'STARTABLE', 'START_MISMATCH', 'OBSERVATION_UNUSABLE'] };
   if (work.type === 'DECIDE_FLOW_ACTION') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, flowStepId: work.flowStepId, instruction: work.instruction, requestedAction: work.requestedAction, actionConstraints: describeActionConstraints(context.platform, 'precondition-flow'), lastActionRejection: work.lastActionRejection || null, allowedOutcomes: ['ACT', 'BLOCKED'] };
   if (work.type === 'DECIDE_FLOW_END') return { ...common, preconditionId: work.preconditionId, flowId: work.flowId, endCondition: work.endCondition, allowedOutcomes: ['TARGET_REACHED', 'TARGET_NOT_REACHED', 'OBSERVATION_UNUSABLE'] };
+  if (work.type === 'DECIDE_RULE') return {
+    ...common,
+    stepId: work.step.id,
+    rule: work.rule,
+    attemptCount: work.attempts,
+    remainingAttempts: work.remainingAttempts,
+    actionConstraints: describeActionConstraints(context.platform, 'global-rule'),
+    allowedOutcomes: ['MATCHED', 'NOT_MATCHED', 'UNHANDLED_POPUP'],
+  };
   if (work.type === 'DECIDE_STEP') {
     const allowedOutcomes = ['PASS', 'FAIL', 'ACT', 'BLOCKED'];
     if (work.visualRetryContext?.retryAllowed) allowedOutcomes.push('RETRY_VISUAL_INPUT');
-    return { ...common, step: work.step, stepIntent: work.stepIntent, visualRetryContext: work.visualRetryContext, actionConstraints: describeActionConstraints(context.platform, 'case-step'), lastActionRejection: work.lastActionRejection || null, allowedOutcomes };
+    const actionConstraints = describeActionConstraints(context.platform, 'case-step');
+    if (work.step?.goal === 'input_text') {
+      actionConstraints.inputText.expectedMode = work.stepIntent.inputMode;
+      if (work.step.value !== undefined) actionConstraints.inputText.expectedText = work.step.value;
+    }
+    return { ...common, step: work.step, stepIntent: work.stepIntent, visualRetryContext: work.visualRetryContext, actionConstraints, lastActionRejection: work.lastActionRejection || null, allowedOutcomes };
   }
   throw new Error(`No DecisionRequest for ${work.type}`);
 }
@@ -313,6 +383,62 @@ function applyFlowEndDecision(options, work, decision) {
   });
 }
 
+function validateRuleAction(action, rule) {
+  const frozen = rule.then.action;
+  for (const [field, value] of Object.entries(frozen)) {
+    if (JSON.stringify(action[field]) !== JSON.stringify(value)) {
+      throw new Error(`ACTION_CONTRACT_INVALID: global rule ${rule.id} action.${field} must remain ${JSON.stringify(value)}`);
+    }
+  }
+}
+
+function applyRuleDecision(options, work, decision) {
+  requireDecision(decision, ['MATCHED', 'NOT_MATCHED', 'UNHANDLED_POPUP']);
+  if (decision.outcome === 'UNHANDLED_POPUP') {
+    record(options, { type: 'rule', ruleId: work.rule.id, ruleScope: work.rule.scope, stepId: work.step.id, status: 'UNKNOWN', observation: work.latestObservation.evidenceRef, reason: decision.reason });
+    finalize(options, 'BLOCKED', decision.reason, ['--failure-code', 'UNKNOWN_POPUP', '--failed-step', work.step.id]);
+    return;
+  }
+  if (decision.outcome === 'NOT_MATCHED') {
+    record(options, {
+      type: 'rule',
+      ruleId: work.rule.id,
+      ruleScope: work.rule.scope,
+      stepId: work.step.id,
+      status: 'SKIPPED',
+      observation: work.latestObservation.evidenceRef,
+      reason: decision.reason,
+    });
+    return;
+  }
+  if (work.remainingAttempts <= 0) {
+    const status = work.rule.onFailure === 'FAIL' ? 'FAIL' : work.rule.onFailure === 'UNKNOWN' ? 'UNKNOWN' : 'BLOCKED';
+    const ruleStatus = status === 'FAIL' ? 'FAILED' : status;
+    record(options, { type: 'rule', ruleId: work.rule.id, ruleScope: work.rule.scope, stepId: work.step.id, status: ruleStatus, observation: work.latestObservation.evidenceRef, reason: decision.reason });
+    finalize(options, status, `规则 ${work.rule.id} 已达到最大处理次数：${decision.reason}`, ['--failure-code', 'GLOBAL_RULE_FAILED', '--failed-step', work.step.id]);
+    return;
+  }
+  try {
+    const normalized = normalizeActionProposal(decision.action, { context: `global rule ${work.rule.id}` }).action;
+    validateRuleAction(normalized, work.rule);
+    validateActionExecution(normalized, { platform: options.platform, scope: 'global-rule', context: `global rule ${work.rule.id}` });
+    record(options, {
+      type: 'rule',
+      ruleId: work.rule.id,
+      ruleScope: work.rule.scope,
+      stepId: work.step.id,
+      status: 'MATCHED',
+      attempt: work.attempts + 1,
+      observation: work.latestObservation.evidenceRef,
+      action: normalized,
+      reason: decision.reason,
+    });
+  } catch (error) {
+    record(options, { type: 'rule', ruleId: work.rule.id, ruleScope: work.rule.scope, stepId: work.step.id, status: 'BLOCKED', observation: work.latestObservation.evidenceRef, reason: error.message || String(error) });
+    finalize(options, 'BLOCKED', error.message || String(error), ['--failure-code', 'ACTION_CONTRACT_INVALID', '--failed-step', work.step.id]);
+  }
+}
+
 function stepTurn(work, decision, workToken, platform) {
   const allowed = ['PASS', 'FAIL', 'ACT', 'BLOCKED'];
   if (work.visualRetryContext?.retryAllowed) allowed.push('RETRY_VISUAL_INPUT');
@@ -349,6 +475,7 @@ function stepTurn(work, decision, workToken, platform) {
     }
     const normalized = normalizeActionProposal(decision.action, { context: 'step decision action' });
     validateActionExecution(normalized.action, { platform, scope: 'case-step', context: 'step decision action' });
+    validateActionAgainstStep(normalized.action, work.step, stepIntent);
     facts.push({
       type: 'decision',
       decision: 'act',
@@ -412,6 +539,7 @@ function applyDecision(options, context) {
   if (work.type === 'DECIDE_FLOW_ENTRY') applyFlowEntryDecision(options, work, options.decision);
   else if (work.type === 'DECIDE_FLOW_ACTION') applyFlowActionDecision(options, work, options.decision, context.workToken);
   else if (work.type === 'DECIDE_FLOW_END') applyFlowEndDecision(options, work, options.decision);
+  else if (work.type === 'DECIDE_RULE') applyRuleDecision(options, work, options.decision);
   else if (work.type === 'DECIDE_STEP') applyStepDecision(options, work, options.decision, context.workToken);
   else throw new Error(`No decision executor for ${work.type}`);
 }

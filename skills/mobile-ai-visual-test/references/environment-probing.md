@@ -91,7 +91,7 @@ HarmonyOS 启动显示策略：
 - 一个执行请求只做一次环境确认。
 - 多个候选存在时，执行前让用户指定。
 - 关键能力不可用时，不开始执行。
-- 用户确认后同步写入每个目标 case 的平台 state 和工作空间级 `platforms/<platform>.json`。
+- 用户确认后只写入每个目标 case 的 `platforms/<platform>/state.json`；工作空间不再维护一份可漂移的环境确认副本。
 - 同一 case/platform 存在未结束 execution 时，`update-env.js` 以 `ACTIVE_EXECUTION_ENVIRONMENT_LOCKED` 拒绝修改；state 只能配置下一次 execution。
 - 在合法工作空间中，`probe-env.sh` 同时保存 `platforms/<platform>-probe.json`；`update-env.js` 把其哈希和能力摘要绑定到 case state，`--start` 再写入只读 `environmentProbe` 框架事件。
 - 显式设备必须精确命中 probe 的 `devices[]`，不能继承其他设备或 probe 顶层的设备形态。

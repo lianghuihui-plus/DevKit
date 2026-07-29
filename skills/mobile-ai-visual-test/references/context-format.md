@@ -14,7 +14,7 @@ index.html
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.html` | 工作空间总览、平台统计、通过率、case 卡片、前置条件标签、多端摘要 |
+| `index.html` | 工作空间总览、平台统计、通过率、按聚合状态筛选 case、case 卡片、前置条件标签、多端摘要 |
 | `cases/<case>/CONTEXT.html` | 单 case 多平台概览、共享前置条件、步骤、规则和用户补充 |
 | `cases/<case>/platforms/<platform>/CONTEXT.html` | 单平台执行详情、失败现场、步骤复盘、Flow、环境和调试信息 |
 | `cases/<case>/CONTEXT.md` | 与根 HTML 同步刷新的多平台文本概览，便于 diff |
@@ -24,13 +24,14 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 
 ## timeline.jsonl
 
-当前 execution 的事实源。结果和统计使用 timeline 与 `case.snapshot.json`；报告使用当前 `case.json` 判断执行契约是否仍适用。
+当前 execution 的事实源。结果和统计使用 timeline 与 `case.snapshot.json`；报告展示最新可信发布 execution 的原始结论，并使用该 execution 的 `case.snapshot.json` 还原当次步骤，不用当前 `case.json` 的哈希过滤历史结果。
 
-事件类型：`executionStart`、`environmentProbe`、`executionRecovery`、`agentRuntime`、`precondition`、`observation`、`evidenceCheck`、`perception`、`decision`、`actionRejected`、`rule`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。`agentRuntime` 只记录独立 Agent 会话绑定或失败，不参与业务 PASS；`evidenceCheck` 只能由 `run-case.js` 根据 perception 的结构化 `qualityClaim` 生成；`actionRejected` 只能由 Case Engine 写入，记录未触发设备动作的参数拒绝，业务拒绝绑定 stepId/intentSha，Flow 拒绝绑定 preconditionId/flowId/flowStepId；业务 ACT decision 和 actionResult 都保存 `{source:"case-step",stepId,intentSha}` 授权，`flow` 及 `scope=precondition-flow` 的 observation/actionResult 只属于前置条件且不继承业务步骤授权。
+事件类型：`executionStart`、`environmentProbe`、`executionRecovery`、`agentRuntime`、`precondition`、`observation`、`evidenceCheck`、`perception`、`decision`、`actionRejected`、`rule`、`flow`、`actionResult`、`assertion`、`popup`、`appForeground`、`budgetExceeded`、`result`。`popup` 只兼容读取历史产物，新执行统一写 `rule`；规则动作写 `scope=global-rule` 并保存 `{source:"global-rule",ruleId,ruleSha,stepId}`。`agentRuntime` 只记录独立 Agent 会话绑定或失败，不参与业务 PASS；`evidenceCheck` 只能由 `run-case.js` 根据 perception 的结构化 `qualityClaim` 生成；`actionRejected` 只能由 Case Engine 写入，记录未触发设备动作的参数拒绝，业务拒绝绑定 stepId/intentSha，Flow 拒绝绑定 preconditionId/flowId/flowStepId；业务 ACT decision 和 actionResult 都保存 `{source:"case-step",stepId,intentSha}` 授权，`flow` 及 `scope=precondition-flow` 的 observation/actionResult 只属于前置条件且不继承业务步骤授权。
 
 事件 schema 见 `interfaces.md`。
 
 `metrics.json.actions.caseStepAuthorized` 统计带有效 case-step 授权的业务动作数量；报告据此展示授权动作审计，Flow 和启动动作不计入该值。
+`metrics.json.actions.globalRuleAuthorized` 和 `metrics.json.rules` 分别统计规则授权动作及规则的命中、处理、跳过和失败；弹窗统计优先从 `scope=system_popup` 的规则事件派生，旧 `popup` 只做兼容累加。
 `metrics.json.actionRejections` 统计动作契约拒绝总数、修正后恢复数和重试耗尽数；拒绝不计入动作次数。
 
 ## execution.json
@@ -102,7 +103,7 @@ case 卡片状态是多平台聚合摘要；真实结论以平台报告为准。
 }
 ```
 
-`status` 是归一结果，`requestedStatus` 是 agent 原始请求。`sourceSha1`、`caseContractSha`、`preconditionPlanSha`、`preconditionInputsSha` 和 `environmentSha` 共同绑定执行事实；Flow 资产变化后旧结果不再展示。
+`status` 是归一结果，`requestedStatus` 是 agent 原始请求。`sourceSha1`、`caseContractSha`、`preconditionPlanSha`、`preconditionInputsSha` 和 `environmentSha` 共同绑定执行事实并继续用于执行期校验；报告与 index 始终展示最新可信发布 execution 的结论，不因当前契约变化隐藏历史结果。
 
 ## metrics.json
 
@@ -122,15 +123,13 @@ cases/<case>/platforms/<platform>/state.json
 
 保存已确认环境、依赖状态、最新 execution、最新结果和轻量累计统计。根目录 `state.json` 只兼容旧产物。
 
-## 源契约变化
+## 历史结果展示
 
-当最新结果与当前 `sourceSha1`、`caseContractSha` 或重新计算的 `preconditionPlanSha` 不匹配：
-
-- 隐藏旧结果。
-- 显示“源用例或执行契约变更”。
-- 基于当前 contract 重新执行后警告消失。
-
-`caseContractSha` 至少覆盖源用例、前置条件、步骤、规则、用户补充和 isolation。
+- 平台报告和 index 读取最新可信发布 execution；其 `status`、executionId、时间、失败原因和证据按原始结果展示。
+- 只有不存在任何可信发布 execution 时才显示 `NOT_RUN`。
+- 平台执行详情使用 execution 同目录的 `case.snapshot.json` 渲染，避免当前用例步骤变化后错误解释历史事实。
+- 当前 `sourceSha1`、`caseContractSha` 或 `preconditionPlanSha` 与历史 execution 不一致，不影响报告展示；这些哈希只继续约束 execution 启动、续跑、动作和结果提交。
+- `caseContractSha` 至少覆盖源用例、前置条件、步骤、规则和用户补充；execution 的冷启动隔离运行态不进入用例契约摘要。
 
 ## index 聚合
 
@@ -141,6 +140,8 @@ FAIL > BLOCKED > UNKNOWN > NOT_RUN > PASS
 ```
 
 只有所有已展示平台都通过时，case 聚合状态才是通过。
+
+index 的状态筛选基于 case 聚合状态，支持同时选择 `PASS`、`FAIL`、`BLOCKED`、`UNKNOWN` 和 `NOT_RUN`；“全部”用于清除组合并恢复所有卡片，取消最后一个已选状态时也自动恢复全部。筛选只控制卡片可见性，不改写平台统计、执行结果或任何事实产物。
 
 ## 证据展示
 

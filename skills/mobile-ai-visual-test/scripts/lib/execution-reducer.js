@@ -6,6 +6,7 @@ const { validateActionExecution } = require('./action-contract');
 const { evaluateFrameworkPrecondition } = require('./framework-preconditions');
 const { operationClass, validateNextWork } = require('./next-work-contract');
 const { actionAuthorization, buildStepIntent, validateActionAuthorization } = require('./step-intent');
+const { ruleAuthorization } = require('./rule-intent');
 
 function lastIndex(events, predicate) {
   for (let i = events.length - 1; i >= 0; i--) if (predicate(events[i])) return i;
@@ -66,6 +67,68 @@ function visualRetryContext(events, stepId, observation) {
 function decorate(nextWork) {
   validateNextWork(nextWork);
   return { ...nextWork, operationClass: operationClass(nextWork) };
+}
+
+function applicableRules(caseJson, step) {
+  return (caseJson.globalRules || [])
+    .filter((rule) => rule.appliesTo === 'any_step' || (Array.isArray(rule.appliesTo) && rule.appliesTo.includes(step.id)))
+    .sort((left, right) => Number(right.priority || 0) - Number(left.priority || 0) || left.id.localeCompare(right.id));
+}
+
+function reduceRules(caseJson, step, events, execDir, observation, observationIndex) {
+  const rules = applicableRules(caseJson, step);
+  if (!rules.length) return null;
+  const evidence = observation.artifacts?.screenshot || observation.observation?.artifacts?.screenshot || null;
+  const globalActions = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event.type === 'actionResult' && event.scope === 'global-rule' && eventStepId(event) === step.id);
+  const latestGlobalAction = globalActions.at(-1) || null;
+  if (latestGlobalAction && latestGlobalAction.index > observationIndex) {
+    const rule = rules.find((item) => item.id === latestGlobalAction.event.ruleId);
+    if (rule) return decorate({ type: 'OBSERVE_AFTER_RULE', step, rule, latestAction: latestGlobalAction.event });
+  }
+  if (latestGlobalAction && latestGlobalAction.index < observationIndex) {
+    const handled = events.slice(latestGlobalAction.index + 1).some((event) => event.type === 'rule'
+      && event.ruleId === latestGlobalAction.event.ruleId
+      && event.status === 'HANDLED');
+    if (!handled) {
+      const rule = rules.find((item) => item.id === latestGlobalAction.event.ruleId);
+      if (rule) return decorate({ type: 'RECORD_RULE_HANDLED', step, rule, latestAction: latestGlobalAction.event, latestObservation: observationSummary(observation, execDir) });
+    }
+  }
+  for (const rule of rules) {
+    const facts = events
+      .map((event, index) => ({ event, index }))
+      .filter(({ event, index }) => index > observationIndex
+        && event.type === 'rule'
+        && event.ruleId === rule.id
+        && eventStepId(event) === step.id
+        && (!event.observation || !evidence || event.observation === evidence));
+    const matched = facts.findLast(({ event }) => event.status === 'MATCHED');
+    if (matched) {
+      const action = globalActions.find(({ event, index }) => index > matched.index && event.ruleId === rule.id);
+      if (!action) return decorate({
+        type: 'EXECUTE_RULE_ACTION',
+        step,
+        rule,
+        requestedAction: matched.event.action,
+        authorization: ruleAuthorization(rule, step.id),
+        latestObservation: observationSummary(observation, execDir),
+      });
+      continue;
+    }
+    if (facts.some(({ event }) => event.status === 'SKIPPED')) continue;
+    const lastSkippedIndex = lastIndex(events, (event) => event.type === 'rule'
+      && event.ruleId === rule.id
+      && eventStepId(event) === step.id
+      && event.status === 'SKIPPED');
+    const attempts = events.slice(lastSkippedIndex + 1).filter((event) => event.type === 'rule'
+      && event.ruleId === rule.id
+      && eventStepId(event) === step.id
+      && event.status === 'MATCHED').length;
+    return decorate({ type: 'DECIDE_RULE', step, rule, attempts, remainingAttempts: Math.max(0, rule.maxAttempts - attempts), latestObservation: observationSummary(observation, execDir) });
+  }
+  return null;
 }
 
 function reduceFlow(casePrecondition, planEntry, events, execDir, platform) {
@@ -162,11 +225,13 @@ function deriveNextWork({ caseJson, execution, events, execDir, preconditionInpu
     if (assertion && ['FAIL', 'UNKNOWN'].includes(assertion.status)) return decorate({ type: 'FINALIZE_STEP_FAILURE', stepId: step.id, status: assertion.status, reason: assertion.reason || '' });
     const observationIndex = lastIndex(events, (event) => event.type === 'observation' && eventStepId(event) === step.id);
     const observation = observationIndex >= 0 ? events[observationIndex] : null;
-    const actionIndex = lastIndex(events, (event) => event.type === 'actionResult' && eventStepId(event) === step.id);
-    const decisionIndex = lastIndex(events, (event) => event.type === 'decision' && eventStepId(event) === step.id);
+    const actionIndex = lastIndex(events, (event) => event.type === 'actionResult' && event.scope !== 'global-rule' && eventStepId(event) === step.id);
+    const decisionIndex = lastIndex(events, (event) => event.type === 'decision' && event.scope !== 'global-rule' && eventStepId(event) === step.id);
     const decision = decisionIndex >= 0 ? events[decisionIndex] : null;
     if (!observation) return decorate({ type: 'OBSERVE_STEP', step, phase: 'before' });
     if (actionIndex > observationIndex) return decorate({ type: 'OBSERVE_AFTER_ACTION', step, latestAction: events[actionIndex] });
+    const ruleWork = reduceRules(caseJson, step, events, execDir, observation, observationIndex);
+    if (ruleWork) return ruleWork;
     const observationEvidence = observation.artifacts?.screenshot || observation.observation?.artifacts?.screenshot || null;
     const actionRejections = events
       .map((event, index) => ({ event, index }))

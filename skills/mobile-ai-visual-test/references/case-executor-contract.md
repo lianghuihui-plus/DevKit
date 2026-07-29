@@ -16,9 +16,11 @@
 - 使用 DecisionRequest 原样提供的 workToken 调用 `scripts/execute-next-work.js decide`；普通 workToken 过期后重新调用 `next`，不得复用旧决定。唯一例外是同一 turn 已存在恢复 draft，此时可原样重放该决定以补齐半提交，脚本会严格比对冻结内容。
 - Flow 入口只返回 `ALREADY_SATISFIED`、`STARTABLE`、`START_MISMATCH` 或 `OBSERVATION_UNUSABLE`。
 - Flow 终点只返回 `TARGET_REACHED`、`TARGET_NOT_REACHED` 或 `OBSERVATION_UNUSABLE`。
+- 全局规则判断只返回 `MATCHED`、`NOT_MATCHED` 或 `UNHANDLED_POPUP`。`MATCHED` 必须补齐规则冻结动作缺少的坐标证据，不能改变规则动作类型和目标；规则动作由独立的 `global-rule` 授权执行，不使用业务步骤 intentSha。
 - 业务步骤只返回 `PASS`、`FAIL`、`ACT`、`BLOCKED` 或 `RETRY_VISUAL_INPUT`。
 - 业务步骤返回 `ACT` 时必须原样回传 DecisionRequest 的 `stepIntent.intentSha`；缺失或不一致会以 `ACTION_OUTSIDE_CASE_INTENT` 在设备动作前拒绝。
 - 返回 `ACT` 时必须按 DecisionRequest 的 `actionConstraints` 构造动作；截图取点使用 `coordinateSource=visual`，不能填写 `screenshot`。框架会兼容归一常见别名，但 `actionConstraints` 和 `references/action-schema.md` 才是权威契约。
+- `goal=input_text` 时必须原样使用 `stepIntent.inputMode` 和步骤目标文本；清空、全选、删除已有文本由 `inputText mode=replace` 的平台原子能力完成，不得拆成软键盘点击或重复输入来补救。
 - 动作参数被拒绝后必须阅读新 DecisionRequest 的 `lastActionRejection` 并重新决策；业务步骤和 Flow 都不得重复提交同一非法值，连续两次非法提案会阻塞当前用例。
 - 当前冻结步骤明确要求的删除、支付、发布、资料修改等操作属于已授权业务意图，不得仅因操作语义返回 BLOCKED；不得自行扩展当前步骤未要求的副作用。
 - 只有 DecisionRequest 的 `visualRetryContext.retryAllowed=true` 时才能返回 `RETRY_VISUAL_INPUT`；第二次结构化异常检查必须使用新的 `attemptId` 并按 `requiredRetryOf` 填写 `retryOf`。

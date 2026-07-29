@@ -19,7 +19,7 @@ flowchart TD
   S --> AR["Runtime Core + Host Adapter<br/>硬 deadline + 每 case 独立会话"]
   AR --> CE["Case Engine<br/>确定性推进到 DecisionRequest"]
   CE --> C["前置条件阶段<br/>起点判断 → Flow → 终点判断"]
-  C --> T["业务步骤阶段<br/>observe → action → assertion"]
+  C --> T["业务步骤阶段<br/>observe → global rules → action → assertion"]
   T --> Z["finalize<br/>业务结果归一"]
   Z --> V["Runtime validation + release"]
   V --> PUBLISH["Batch commit<br/>completion 可信发布"]
@@ -90,7 +90,7 @@ flowchart TB
 | --- | --- |
 | Skill 协议层 | 约束执行顺序、Flow 边界和禁止行为 |
 | Agent Runtime 层 | 为每个 case 创建无父会话历史的独立 Agent，并只返回结构化结果 |
-| Case Engine 层 | 连续推进确定性工作，只把必须看图的单次决定交给 Agent，并用冻结步骤 intentSha 约束业务动作边界 |
+| Case Engine 层 | 连续推进确定性工作，只把必须看图的单次决定交给 Agent；规则动作使用 ruleSha 授权，业务动作使用冻结步骤 intentSha 授权 |
 | 稳定入口层 | 暴露公开 CLI，封装来源、预算和平台分发 |
 | 计划与执行状态层 | 加载资产、严格匹配、固定计划、校验状态机和归一结果 |
 | 平台能力层 | 适配设备能力，不做业务判断、不写 case 事实 |
@@ -102,7 +102,7 @@ flowchart TB
 ```mermaid
 flowchart LR
   CE["execute-next-work<br/>重新归约 + workToken"] --> OBS["observe.sh<br/>observation"]
-  CE --> AUTH["case-step authorization<br/>stepId + intentSha"]
+  CE --> AUTH["action authorization<br/>ruleId + ruleSha / stepId + intentSha"]
   AUTH --> ACT["action.sh<br/>actionResult"]
   CE --> AG["受保护事实入口<br/>precondition / flow / assertion"]
   OBS --> TL["timeline.jsonl"]
@@ -117,7 +117,7 @@ flowchart LR
   CMP --> REP["CONTEXT / index"]
 ```
 
-业务步骤授权以 `case.snapshot.json` 当前步骤为唯一来源。DecisionRequest 生成 `stepIntent`，Agent 返回 ACT 时回传 intentSha，decision 与 actionResult 均保存同一授权；Core 在设备调用前和事实写入前双重校验。该链路不按删除、支付、发布等语义分类，因此用例明确要求的操作可以执行，同时阻止 Agent 把授权扩展到其他步骤。前置条件 Flow 不使用该授权，仍保留静态副作用拒绝。
+业务步骤授权以 `case.snapshot.json` 当前步骤为唯一来源。DecisionRequest 生成 `stepIntent`，Agent 返回 ACT 时回传 intentSha，decision 与 actionResult 均保存同一授权；Core 在设备调用前和事实写入前双重校验。全局规则同样从 snapshot 生成 ruleSha，规则动作绑定规则和当前步骤，但不获得业务步骤授权。两条链路都不按删除、支付、发布等敏感词分类；前置条件 Flow 仍使用自身冻结动作和安全规则。
 
 主要硬守卫：
 
@@ -135,7 +135,7 @@ flowchart LR
 - 同一时间只能有一个活动 Flow；起点、步骤前后和终点都要求对应 observation/action 证据。
 - Flow 终态不可逆，必须紧接同一前置条件终态；finalize 拒绝活动或悬空 Flow。
 - 步骤顺序、assertion evidence 和 observation/action 来源继续由原守卫校验。
-- 报告重算当前计划哈希；Flow 资产变化后隐藏旧结果。
+- 报告读取最新可信发布 execution，并使用当次 `case.snapshot.json` 展示原始结论和步骤；契约与 Flow 哈希只约束执行链路，不用于隐藏历史结果。
 
 ## 设计边界
 

@@ -4,6 +4,13 @@
 const SWIPE_DEFAULT_VELOCITY = 600;
 const SWIPE_MIN_VELOCITY = 200;
 const SWIPE_MAX_VELOCITY = 40000;
+const INPUT_TEXT_DEFAULT_MODE = 'replace';
+const INPUT_TEXT_MODES = Object.freeze(['replace', 'append']);
+const INPUT_TEXT_MODE_ALIASES = Object.freeze({
+  addition: 'append',
+  overwrite: 'replace',
+  set: 'replace',
+});
 
 const ACTION_FIELDS = Object.freeze({
   launchApp: ['reason'],
@@ -11,7 +18,7 @@ const ACTION_FIELDS = Object.freeze({
   tap: ['target', 'x', 'y', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'reason'],
   toggle: ['target', 'x', 'y', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'reason'],
   longPress: ['target', 'x', 'y', 'durationMs', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'reason'],
-  inputText: ['target', 'x', 'y', 'text', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'reason'],
+  inputText: ['target', 'x', 'y', 'text', 'mode', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'reason'],
   swipe: ['fromX', 'fromY', 'toX', 'toY', 'velocity', 'reason'],
   back: ['reason'],
   home: ['reason'],
@@ -20,6 +27,7 @@ const ACTION_FIELDS = Object.freeze({
 
 const SCOPE_ACTION_TYPES = Object.freeze({
   'case-step': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']),
+  'global-rule': Object.freeze(['tap', 'toggle', 'longPress', 'back', 'home', 'wait']),
   'precondition-flow': Object.freeze(['launchApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']),
   'execution-bootstrap': Object.freeze(['restartApp']),
   'formal-execution': Object.freeze(Object.keys(ACTION_FIELDS)),
@@ -33,6 +41,7 @@ const COORDINATE_SOURCE_ALIASES = Object.freeze({
 });
 const SCOPE_COORDINATE_SOURCES = Object.freeze({
   'case-step': Object.freeze(['layout', 'visual', 'pixel']),
+  'global-rule': Object.freeze(['layout', 'visual', 'pixel']),
   'precondition-flow': Object.freeze(['layout', 'visual', 'pixel', 'flow']),
   'execution-bootstrap': Object.freeze([]),
   'formal-execution': Object.freeze(['layout', 'visual', 'pixel', 'flow']),
@@ -83,6 +92,16 @@ function normalizeActionProposal(action, options = {}) {
       normalized.coordinateSource = canonical;
     }
   }
+  if (normalized.type === 'inputText') {
+    const rawMode = normalized.mode === undefined || normalized.mode === null || normalized.mode === ''
+      ? INPUT_TEXT_DEFAULT_MODE
+      : String(normalized.mode).trim().toLowerCase();
+    const canonicalMode = INPUT_TEXT_MODE_ALIASES[rawMode] || rawMode;
+    if (canonicalMode !== normalized.mode) {
+      normalizations.push({ field: 'mode', from: normalized.mode, to: canonicalMode });
+      normalized.mode = canonicalMode;
+    }
+  }
   return { action: normalized, normalizations };
 }
 
@@ -103,9 +122,13 @@ function describeActionConstraints(platform, scope = 'case-step') {
       targetBoundsRequiredFor: [...BOUNDS_REQUIRED_SOURCES],
       manualAllowed: false,
     },
-    inputText: normalizedPlatform === 'harmony'
-      ? { coordinates: 'required' }
-      : { coordinates: 'forbidden', focusedFieldRequired: true },
+    inputText: {
+      modes: [...INPUT_TEXT_MODES],
+      defaultMode: INPUT_TEXT_DEFAULT_MODE,
+      ...(normalizedPlatform === 'harmony'
+        ? { coordinates: 'required' }
+        : { coordinates: 'forbidden', focusedFieldRequired: true }),
+    },
   };
 }
 
@@ -139,6 +162,12 @@ function validateAction(action, options = {}) {
   }
   if (action.type === 'inputText' && (typeof action.text !== 'string' || action.text.length === 0)) {
     fail(context, 'text is required for inputText', { field: 'text', received: action.text });
+  }
+  if (action.type === 'inputText' && action.mode !== undefined && !INPUT_TEXT_MODES.includes(action.mode)) {
+    fail(context, `mode must be one of ${INPUT_TEXT_MODES.join(', ')} for inputText`, {
+      field: 'mode', received: action.mode, allowed: [...INPUT_TEXT_MODES],
+      suggestion: `use ${INPUT_TEXT_DEFAULT_MODE} unless the step explicitly requires appending`,
+    });
   }
   if (action.type === 'swipe') {
     for (const field of ['fromX', 'fromY', 'toX', 'toY']) {
@@ -225,6 +254,8 @@ module.exports = {
   SCOPE_ACTION_TYPES,
   COORDINATE_SOURCES,
   COORDINATE_SOURCE_ALIASES,
+  INPUT_TEXT_DEFAULT_MODE,
+  INPUT_TEXT_MODES,
   SCOPE_COORDINATE_SOURCES,
   SWIPE_DEFAULT_VELOCITY,
   SWIPE_MAX_VELOCITY,

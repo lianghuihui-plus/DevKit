@@ -13,6 +13,7 @@ type=""
 x=""
 y=""
 text=""
+mode=""
 from_x=""
 from_y=""
 to_x=""
@@ -32,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --x) x="${2:-}"; shift 2 ;;
     --y) y="${2:-}"; shift 2 ;;
     --text) text="${2:-}"; shift 2 ;;
+    --mode) mode="${2:-}"; shift 2 ;;
     --from-x) from_x="${2:-}"; shift 2 ;;
     --from-y) from_y="${2:-}"; shift 2 ;;
     --to-x) to_x="${2:-}"; shift 2 ;;
@@ -51,7 +53,8 @@ if [[ -z "$type" ]]; then
   exit 2
 fi
 
-adapter_action="$(mavt_action_request_json "$type" "" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$ms" "" "$velocity" "" "" "")"
+[[ "$type" == "inputText" && -z "$mode" ]] && mode="replace"
+adapter_action="$(mavt_action_request_json "$type" "" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$ms" "" "$velocity" "" "" "" "$mode")"
 mavt_validate_action_request "$script_dir/../../../lib/action-contract.js" "$adapter_action" "Android adapter"
 
 device_args=()
@@ -103,7 +106,7 @@ case "$type" in
       echo "Android inputText 只向当前焦点输入文本，不接受 --x/--y；请先调用 tap 聚焦输入框，再调用 inputText。" >&2
       exit 2
     fi
-    run_atom "$type" "$atoms_dir/input-text.sh" "${device_args[@]}" --text "$text"
+    run_atom "$type" "$atoms_dir/input-text.sh" "${device_args[@]}" --text "$text" --mode "$mode"
     ;;
   swipe)
     swipe_duration_ms="$(node -e '

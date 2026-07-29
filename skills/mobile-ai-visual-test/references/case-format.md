@@ -48,8 +48,7 @@ Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、�
     {"id": "step-001", "kind": "action", "sourceText": "进入 AI 精灵页面", "expected": "页面展示 AI 精灵入口"},
     {"id": "step-002", "kind": "assertion", "sourceText": "确认最新回复展示语音播放按钮", "assertions": ["最新 AI 回复区域展示单条语音播放按钮"]}
   ],
-  "globalRules": [],
-  "isolation": {"requireCleanRestart": "auto"}
+  "globalRules": []
 }
 ```
 
@@ -84,19 +83,28 @@ Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、�
 - `assertion`：主要验证预期结果。
 - `setup`：用例内准备动作。
 
+输入步骤解析为 `goal=input_text`，并冻结 `value` 与 `inputMode`。`inputMode` 只允许 `replace`、`append`：默认 `replace`，仅当原步骤明确要求追加或继续输入时使用 `append`；该字段纳入 `caseContractSha`。
+
 所有 kind 的业务步骤都必须以 `assertion PASS` 作为最终通过证据，并满足 `failure-policy.md` 的视觉证据规则。`action` 和 `setup` 发生动作时，成功动作与动作后 observation 只记录过程是否完成，不能替代步骤断言。
 
 ## globalRules
 
-用于表达跨步骤规则，例如系统弹窗处理、禁止破坏性操作、页面稳定条件、业务入口偏好。运行期 `rule` 事件 schema 见 `interfaces.md`。
+用于表达每次业务步骤观察后都要先判断的安全处理规则，当前只支持无业务副作用的 guard 动作：`tap`、`toggle`、`longPress`、`back`、`home`、`wait`。Markdown 必须使用严格表格：
 
-## isolation
+```markdown
+## 全局规则
+| id | scope | appliesTo | priority | when | action | target | maxAttempts | onFailure |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| rule-001 | system_popup | any_step | 100 | 出现权限弹窗 | tap | 允许 | 1 | BLOCKED |
+```
 
-所有正式 execution 都必须真实冷启动，失败直接 `BLOCKED/CASE_RESTART_FAILED`。历史 `requireCleanRestart` 字段只为兼容既有 case 保留，不再允许 `false`、`optional` 或 `auto` 降级绕过批量用例隔离。
+`id` 可省略并按顺序生成；`scope` 默认 `system_popup`；`appliesTo` 支持 `any_step` 或逗号分隔的步骤 id；`priority` 越大越先判断；`maxAttempts` 是同一规则在弹窗消失前允许处理的次数；`onFailure` 只支持 `BLOCKED`、`UNKNOWN`、`FAIL`。规则动作必须写目标，等待动作通过 `ms` 列指定时长。运行期 `rule` 事件 schema 见 `interfaces.md`。
+
+正式 execution 的冷启动隔离由框架固定管理，不属于 case 业务契约。旧 `isolation` 字段和相关 notes 在解析、刷新时移除或标记失效，不能改变启动策略。
 
 ## source.md
 
-保存原始用例文本，是稳定输入源。原始 Markdown 变化会更新 `sourceSha1`；报告发现 `sourceSha1`、`caseContractSha` 或 `preconditionPlanSha` 不匹配时，应隐藏旧结果并提示重新执行。
+保存原始用例文本，是稳定输入源。原始 Markdown 变化会更新 `sourceSha1`；这些哈希继续约束 execution 执行链路，但报告始终按最新可信发布 execution 的 `case.snapshot.json` 展示历史结果。
 
 ## notes.jsonl
 
@@ -110,7 +118,7 @@ Markdown 应尽量包含标题、前置条件、测试步骤、预期结果、�
 
 ## caseContractSha
 
-执行契约摘要覆盖 schema/parser 版本、`sourceSha1`、完整规范化 `preconditions`、`steps`、`globalRules`、notes 重放 hints 和 `isolation`。result 的 contract 与当前 case 不一致时，不展示为当前有效结果。
+执行契约摘要覆盖 schema/parser 版本、`sourceSha1`、完整规范化 `preconditions`、`steps`、`globalRules` 和 notes 重放 hints；不包含框架冷启动运行态。result 的 contract 继续用于执行期绑定校验，不参与报告与 index 的历史结果过滤。
 
 ## 编号与刷新
 

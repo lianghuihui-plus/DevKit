@@ -29,8 +29,8 @@
 {"type":"tap","x":512,"y":1720,"target":"登录按钮","coordinateSource":"layout","targetBounds":[120,1680,900,1780],"coordinateEvidence":"控件树存在登录按钮 bounds"}
 {"type":"toggle","x":920,"y":640,"target":"通知开关","coordinateSource":"layout","targetBounds":[860,590,980,700],"coordinateEvidence":"控件树存在通知开关 bounds"}
 {"type":"longPress","x":512,"y":1720,"durationMs":800,"target":"会话项","coordinateSource":"layout","targetBounds":[120,1680,900,1780],"coordinateEvidence":"控件树存在会话项 bounds"}
-{"type":"inputText","text":"13800000000","target":"当前已聚焦输入框"}
-{"type":"inputText","x":360,"y":640,"text":"13800000000","target":"手机号输入框","coordinateSource":"layout","coordinateEvidence":"控件树存在手机号输入框 bounds"}
+{"type":"inputText","text":"13800000000","mode":"replace","target":"当前已聚焦输入框"}
+{"type":"inputText","x":360,"y":640,"text":"13800000000","mode":"replace","target":"手机号输入框","coordinateSource":"layout","coordinateEvidence":"控件树存在手机号输入框 bounds"}
 {"type":"swipe","fromX":800,"fromY":1800,"toX":800,"toY":600,"velocity":600}
 {"type":"back"}
 {"type":"home"}
@@ -41,11 +41,14 @@
 
 动作字段由 `scripts/lib/action-contract.js` 作为唯一契约源：`validateActionAsset` 校验 Agent/Flow 资产的结构，`normalizeActionProposal` 归一 Agent 提案，`validateActionExecution` 按平台和作用域校验最终可执行参数，`describeActionConstraints` 把同一约束写入 DecisionRequest。未知字段、非法枚举或平台不支持的组合都在设备调用前以 `ACTION_CONTRACT_INVALID` 拒绝，不记录为设备 `TOOL_ERROR`。
 
+`inputText.mode` 只支持 `replace` 和 `append`，缺省统一归一为 `replace`。人工步骤明确包含“追加输入、继续输入、在末尾输入”等语义时才使用 `append`；“输入、填写、清空后输入、修改为、替换为”均使用 `replace`。对于 `goal=input_text` 的业务步骤，Case Engine 会冻结 `inputMode` 和目标文本，Agent 不得改变这两个值。
+
 动作类型按作用域开放：
 
 | scope | 允许的动作 |
 | --- | --- |
 | `case-step` | `tap`、`toggle`、`longPress`、`inputText`、`swipe`、`back`、`home`、`wait` |
+| `global-rule` | `tap`、`toggle`、`longPress`、`back`、`home`、`wait` |
 | `precondition-flow` | `launchApp`、`tap`、`toggle`、`longPress`、`inputText`、`swipe`、`back`、`home`、`wait` |
 | `execution-bootstrap` | `restartApp` |
 | `formal-execution` | 框架内部完整动作集合，仅用于统一入口防御性校验 |
@@ -68,7 +71,7 @@
 | `flow` | 前置条件 Flow 资产提供坐标 | 提供 Flow 原始 bounds 和当前页面证据 |
 | `manual` | 历史值 | 正式执行禁用 |
 
-业务步骤只接受 `layout`、`visual`、`pixel`；前置条件 Flow 额外接受 `flow`；`manual` 在所有正式执行中禁用。Agent 常见表达会在校验前归一并只保存规范值：`screenshot/image -> visual`，`uiTree -> layout`。DecisionRequest 中的 `actionConstraints` 是当前平台和作用域的机器可读权威约束。
+业务步骤和全局规则只接受 `layout`、`visual`、`pixel`；前置条件 Flow 额外接受 `flow`；`manual` 在所有正式执行中禁用。Agent 常见表达会在校验前归一并只保存规范值：`screenshot/image -> visual`，`uiTree -> layout`。DecisionRequest 中的 `actionConstraints` 是当前平台和作用域的机器可读权威约束。
 
 若业务步骤或 Flow 动作提案仍不合法，框架不提交该轮 perception/decision，也不调用设备；它写入受保护的 `actionRejected` 事实并返回相同类型的新 DecisionRequest，其中 `lastActionRejection` 给出字段、允许值和修正建议。连续两次不合法后以 `BLOCKED/ACTION_CONTRACT_INVALID` 确定性收尾，避免停留在同一动作执行状态。
 
@@ -78,9 +81,9 @@
 
 | 平台 | 差异 |
 | --- | --- |
-| Android | `inputText` 不接受 `x/y`；必须先 `tap` 聚焦，再输入；中文等非 ASCII 依赖已由 `prepare-env.sh` 准备好的 MAVT Input IME |
-| HarmonyOS | `inputText` 原子命令需要 `x/y/text`；这是平台约束，不推广到 Android |
-| iOS | `inputText` 不接受 `x/y`；优先写入已聚焦输入框，仅在页面只有一个可见输入框时兜底；多输入框页面必须先 `tap` 聚焦目标输入框 |
+| Android | `inputText` 不接受 `x/y`；必须先 `tap` 聚焦；ASCII 与非 ASCII 都由 MAVT Input IME 按 mode 写入，避免两条路径语义不一致 |
+| HarmonyOS | `inputText` 需要 `x/y/text`；`replace` 在单个 atom 内执行聚焦、全选、删除、输入，并在有限次数内等待布局值稳定；首个旧值不会立即判失败 |
+| iOS | `inputText` 不接受 `x/y`；`replace` 通过 WDA clear 后写值；可读的非安全输入框执行 `append` 时先读取当前值、合成最终值、clear 后一次写入并校验；多输入框页面必须先 `tap` 聚焦 |
 
 上方第一个 `inputText` 示例适用于 Android/iOS 已聚焦输入框，第二个带坐标示例适用于 HarmonyOS；不要跨平台复用参数形态。
 
@@ -106,7 +109,7 @@ scripts/platform/adapters/<platform>/action.sh
 scripts/platform/adapters/<platform>/atoms/
 ```
 
-atoms 只做最小能力：`tap`、`long-press`、`swipe`、`input-text`、`screenshot`、`dump-tree`、`foreground`、`logs`、`launch-app`、`restart-app`、`wait`。
+atoms 只做最小能力：`tap`、`long-press`、`swipe`、`input-text`、`screenshot`、`dump-tree`、`foreground`、`logs`、`launch-app`、`restart-app`、`wait`。`input-text replace` 内部的清空与写入是一个不可分割的平台原子动作，不属于跨业务步骤编排。
 
 不要在底层封装 `tap + inputText`、`tap + wait + assert`、`scroll until visible + tap`、`longPress + tap menu item` 这类 agent 可审计流程。
 

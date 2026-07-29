@@ -21,6 +21,10 @@ const NEXT_WORK_TYPES = Object.freeze([
   'RECORD_PRECONDITION',
   'FINALIZE_STEP_FAILURE',
   'OBSERVE_STEP',
+  'DECIDE_RULE',
+  'EXECUTE_RULE_ACTION',
+  'OBSERVE_AFTER_RULE',
+  'RECORD_RULE_HANDLED',
   'OBSERVE_AFTER_ACTION',
   'EXECUTE_STEP_ACTION',
   'DECIDE_STEP',
@@ -31,6 +35,7 @@ const VISUAL_DECISION_TYPES = new Set([
   'DECIDE_FLOW_ENTRY',
   'DECIDE_FLOW_ACTION',
   'DECIDE_FLOW_END',
+  'DECIDE_RULE',
   'DECIDE_STEP',
 ]);
 
@@ -42,13 +47,15 @@ function validateNextWork(value) {
   if (['OBSERVE_FLOW_BEFORE', 'EXECUTE_FLOW_ACTION', 'DECIDE_FLOW_ACTION', 'OBSERVE_FLOW_AFTER', 'RECORD_FLOW_STEP_COMPLETED', 'RECORD_FLOW_ACTION_REJECTION_TERMINAL'].includes(value.type) && !value.flowStepId) {
     throw new Error(`${value.type} requires flowStepId`);
   }
-  if (['OBSERVE_STEP', 'OBSERVE_AFTER_ACTION', 'EXECUTE_STEP_ACTION', 'DECIDE_STEP'].includes(value.type) && !value.step?.id) {
+  if (['OBSERVE_STEP', 'DECIDE_RULE', 'EXECUTE_RULE_ACTION', 'OBSERVE_AFTER_RULE', 'RECORD_RULE_HANDLED', 'OBSERVE_AFTER_ACTION', 'EXECUTE_STEP_ACTION', 'DECIDE_STEP'].includes(value.type) && !value.step?.id) {
     throw new Error(`${value.type} requires step.id`);
   }
-  if (['DECIDE_FLOW_ENTRY', 'DECIDE_FLOW_ACTION', 'DECIDE_FLOW_END', 'DECIDE_STEP'].includes(value.type) && !value.latestObservation?.label) {
+  if (['DECIDE_FLOW_ENTRY', 'DECIDE_FLOW_ACTION', 'DECIDE_FLOW_END', 'DECIDE_RULE', 'DECIDE_STEP'].includes(value.type) && !value.latestObservation?.label) {
     throw new Error(`${value.type} requires latestObservation.label`);
   }
   if (value.type === 'EXECUTE_STEP_ACTION' && !value.requestedAction?.type) throw new Error('EXECUTE_STEP_ACTION requires requestedAction');
+  if (['DECIDE_RULE', 'EXECUTE_RULE_ACTION', 'OBSERVE_AFTER_RULE', 'RECORD_RULE_HANDLED'].includes(value.type) && !value.rule?.id) throw new Error(`${value.type} requires rule.id`);
+  if (value.type === 'EXECUTE_RULE_ACTION' && !value.requestedAction?.type) throw new Error('EXECUTE_RULE_ACTION requires requestedAction');
   if (['EXECUTE_STEP_ACTION', 'DECIDE_STEP'].includes(value.type)) validateStepIntent(value.step, value.stepIntent);
   if (value.type === 'EXECUTE_STEP_ACTION') validateActionAuthorization(value.step, value.authorization);
   return value;

@@ -9,6 +9,8 @@ const {
   readJsonl,
   rebuildCaseDerivedArtifacts,
   reapplyNotes,
+  sha1,
+  validateCaseExecutionContract,
   writeJson,
 } = require('../common');
 
@@ -39,7 +41,10 @@ if (!text) usage();
 const notesPath = path.join(caseDir, 'notes.jsonl');
 const caseJsonBefore = readJson(path.join(caseDir, 'case.json'));
 const sourceStep = appliesTo ? caseJsonBefore.steps.find((step) => step.id === appliesTo) : null;
+const existingNotes = readJsonl(notesPath);
+const duplicate = existingNotes.find((item) => item.source === 'conversation' && item.type === type && item.appliesTo === appliesTo && item.text === text);
 const note = {
+  noteId: duplicate?.noteId || `note-${sha1(`${type}\n${appliesTo || ''}\n${text}`).slice(0, 16)}`,
   time: nowIso(),
   source: 'conversation',
   type,
@@ -49,14 +54,13 @@ const note = {
   applied: true,
   stale: false,
 };
-appendJsonl(notesPath, note);
-
-let caseJson = caseJsonBefore;
-caseJson = reapplyNotes(caseJson, readJsonl(notesPath));
+const candidateNotes = duplicate ? existingNotes : [...existingNotes, note];
+const caseJson = validateCaseExecutionContract(reapplyNotes(caseJsonBefore, candidateNotes));
+if (!duplicate) appendJsonl(notesPath, note);
 writeJson(path.join(caseDir, 'case.json'), caseJson);
 
 const rebuilt = rebuildCaseDerivedArtifacts(caseDir);
 const reports = rebuilt.rootReport;
 const indexHtml = rebuilt.indexHtml;
 
-console.log(JSON.stringify({ note, ...reports, indexHtml }, null, 2));
+console.log(JSON.stringify({ note: duplicate || note, duplicate: Boolean(duplicate), ...reports, indexHtml }, null, 2));

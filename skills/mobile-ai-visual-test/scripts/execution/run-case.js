@@ -19,10 +19,12 @@ const {
   writeJson,
 } = require('../common');
 const { buildPreconditionPlan, planFlowSummaries } = require('../lib/precondition-flow');
+const { VALID_RULE_STATUSES, validateGlobalRules } = require('../lib/case-contract');
 const { failureStatus } = require('../lib/failure-catalog');
 const { validateActionAsset, validateActionExecution } = require('../lib/action-contract');
 const { deriveNextWork } = require('../lib/execution-reducer');
 const { actionAuthorization, validateActionAuthorization } = require('../lib/step-intent');
+const { validateRuleAuthorization } = require('../lib/rule-intent');
 const { evaluateFrameworkPrecondition } = require('../lib/framework-preconditions');
 const {
   buildExecutionEnvironment,
@@ -75,7 +77,6 @@ const AGENT_WRITABLE_EVENT_TYPES = new Set([
   'rule',
   'flow',
   'assertion',
-  'popup',
   'appForeground',
 ]);
 const VALID_DECISIONS = new Set(['act', 'assert_pass', 'assert_fail', 'wait', 'blocked', 'retry_visual_input']);
@@ -89,9 +90,6 @@ const EVIDENCE_CHECK_VERDICTS = new Set([
   'UNVERIFIABLE',
 ]);
 const VALID_ACTIONS = new Set(['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']);
-const VALID_RULE_STATUSES = new Set(['MATCHED', 'SKIPPED', 'FAILED', 'BLOCKED', 'UNKNOWN']);
-const VALID_RULE_TYPES = new Set(['guard']);
-const VALID_RULE_FAILURES = new Set(['BLOCKED', 'UNKNOWN', 'FAIL']);
 const VALID_FLOW_STATUSES = new Set(['STARTED', 'STEP_COMPLETED', 'COMPLETED', 'FAILED', 'BLOCKED']);
 const VALID_AGENT_RUNTIME_STATUSES = new Set(['BOUND', 'FAILED', 'INTERRUPTED']);
 const VALID_AGENT_RUNTIME_FAILURES = new Set([
@@ -671,44 +669,14 @@ function validatePreconditionFlowScope(event) {
   }
 }
 
-function validateGlobalRules(caseJson) {
-  const rules = caseJson.globalRules || [];
-  if (!Array.isArray(rules)) throw new Error('case.json globalRules must be an array');
-  const ids = new Set();
-  for (const [index, rule] of rules.entries()) {
-    const label = `globalRules[${index}]`;
-    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) throw new Error(`${label} must be an object`);
-    if (!rule.id || typeof rule.id !== 'string') throw new Error(`${label}.id must be a string`);
-    if (ids.has(rule.id)) throw new Error(`Duplicate globalRules id: ${rule.id}`);
-    ids.add(rule.id);
-    if (!rule.type || !VALID_RULE_TYPES.has(rule.type)) throw new Error(`${label}.type must be guard`);
-    if (!rule.scope || typeof rule.scope !== 'string') throw new Error(`${label}.scope must be a string`);
-    if (rule.appliesTo !== undefined && rule.appliesTo !== 'any_step' && !(Array.isArray(rule.appliesTo) && rule.appliesTo.every((item) => typeof item === 'string'))) {
-      throw new Error(`${label}.appliesTo must be "any_step" or a string array`);
-    }
-    if (rule.priority !== undefined && typeof rule.priority !== 'number') throw new Error(`${label}.priority must be a number`);
-    if (rule.when === undefined || rule.when === null || rule.when === '') throw new Error(`${label}.when is required`);
-    if (rule.then !== undefined) validateRuleThen(rule.then, label);
-    if (rule.maxAttempts !== undefined && (!Number.isInteger(rule.maxAttempts) || rule.maxAttempts < 1)) throw new Error(`${label}.maxAttempts must be a positive integer`);
-    if (rule.onFailure !== undefined && !VALID_RULE_FAILURES.has(rule.onFailure)) throw new Error(`${label}.onFailure must be BLOCKED, UNKNOWN, or FAIL`);
-  }
-}
-
-function validateRuleThen(value, label) {
-  if (typeof value === 'string') return;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}.then must be a string or object`);
-  if (value.decision && !VALID_DECISIONS.has(value.decision)) throw new Error(`${label}.then.decision is unsupported: ${value.decision}`);
-  if (value.action !== undefined) {
-    if (!value.action || typeof value.action !== 'object' || Array.isArray(value.action)) throw new Error(`${label}.then.action must be an object`);
-    if (!value.action.type || !VALID_ACTIONS.has(value.action.type)) throw new Error(`${label}.then.action.type is unsupported: ${value.action.type}`);
-  }
-}
-
 function validateRuleEventAgainstCase(event, caseJson) {
   if (event.type !== 'rule') return;
   const rules = caseJson.globalRules || [];
-  const known = rules.some((rule) => rule.id === event.ruleId);
-  if (!known) throw new Error(`rule event references unknown globalRule: ${event.ruleId}`);
+  const rule = rules.find((item) => item.id === event.ruleId);
+  if (!rule) throw new Error(`rule event references unknown globalRule: ${event.ruleId}`);
+  if (event.ruleScope !== undefined && event.ruleScope !== rule.scope) {
+    throw new Error(`rule event scope mismatch for ${event.ruleId}: expected ${rule.scope}`);
+  }
 }
 
 function validatePreconditionEventAgainstCase(event, caseJson) {
@@ -727,6 +695,13 @@ function validateCaseStepAuthorization(event, caseJson) {
     if (!step || actionAuthorization(step).intentSha !== event.intentSha) {
       throw new Error('ACTION_OUTSIDE_CASE_INTENT: actionRejected does not match the frozen case step');
     }
+    return;
+  }
+  if (event.type === 'actionResult' && event.scope === 'global-rule') {
+    const step = (caseJson.steps || []).find((item) => item.id === event.stepId);
+    const rule = (caseJson.globalRules || []).find((item) => item.id === event.ruleId);
+    if (!step || !rule) throw new Error('ACTION_OUTSIDE_CASE_INTENT: global rule action references an unknown step or rule');
+    validateRuleAuthorization(rule, step.id, event.authorization);
     return;
   }
   const requiresAuthorization = (event.type === 'actionResult' && Boolean(event.stepId))
@@ -841,7 +816,7 @@ function matchingObservations(events, event, phase, flowStepId) {
 
 function actionSpecFromEvent(event) {
   if (event?.requestedAction && typeof event.requestedAction === 'object' && !Array.isArray(event.requestedAction)) return event.requestedAction;
-  const fields = ['target', 'x', 'y', 'text', 'fromX', 'fromY', 'toX', 'toY', 'durationMs', 'ms', 'reason', 'velocity', 'coordinateSource', 'targetBounds', 'coordinateEvidence'];
+  const fields = ['target', 'x', 'y', 'text', 'mode', 'fromX', 'fromY', 'toX', 'toY', 'durationMs', 'ms', 'reason', 'velocity', 'coordinateSource', 'targetBounds', 'coordinateEvidence'];
   const action = { type: actionType(event) };
   for (const field of fields) if (event?.[field] !== undefined) action[field] = event[field];
   return action;
@@ -1049,7 +1024,8 @@ function budgetViolation(events, nextEvent, budget, startedAt) {
   if (noChange.length > budget.maxNoChangeObservations) {
     return { failureCode: 'EXECUTION_BUDGET_EXCEEDED', reason: `no-change observation count exceeded: ${noChange.length} > ${budget.maxNoChangeObservations}` };
   }
-  const knownPopups = nextEvents.filter((event) => event.type === 'popup' && event.status === 'HANDLED');
+  const knownPopups = nextEvents.filter((event) => event.status === 'HANDLED'
+    && (event.type === 'popup' || (event.type === 'rule' && event.ruleScope === 'system_popup')));
   if (knownPopups.length > budget.maxKnownPopups) {
     return { failureCode: 'EXECUTION_BUDGET_EXCEEDED', reason: `known popup count exceeded: ${knownPopups.length} > ${budget.maxKnownPopups}` };
   }
@@ -1618,12 +1594,13 @@ function countArtifacts(events) {
 
 function buildMetrics(caseJson, state, events, result, executionState = {}) {
   const actionTypes = ['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'launchApp', 'restartApp', 'wait', 'home'];
-  const actions = { total: 0, caseStepAuthorized: 0, tap: 0, toggle: 0, longPress: 0, inputText: 0, swipe: 0, back: 0, launchApp: 0, restartApp: 0, wait: 0, home: 0 };
+  const actions = { total: 0, caseStepAuthorized: 0, globalRuleAuthorized: 0, tap: 0, toggle: 0, longPress: 0, inputText: 0, swipe: 0, back: 0, launchApp: 0, restartApp: 0, wait: 0, home: 0 };
   for (const event of events) {
     if (event.type !== 'actionResult') continue;
     const action = actionType(event);
     actions.total += 1;
     if (event.authorization?.source === 'case-step') actions.caseStepAuthorized += 1;
+    if (event.authorization?.source === 'global-rule') actions.globalRuleAuthorized += 1;
     if (actionTypes.includes(action)) actions[action] += 1;
   }
 
@@ -1682,6 +1659,18 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
   const relaunchEvents = events.filter((event) => event.type === 'actionResult' && ['launchApp', 'restartApp'].includes(actionType(event)));
   const relaunchSuccessCount = relaunchEvents.filter((event) => event.ok === true).length;
   const latestRestart = [...relaunchEvents].reverse().find((event) => actionType(event) === 'restartApp') || null;
+  const ruleById = new Map((caseJson.globalRules || []).map((rule) => [rule.id, rule]));
+  const ruleEvents = events.filter((event) => event.type === 'rule');
+  const systemPopupRule = (event) => ruleById.get(event.ruleId)?.scope === 'system_popup' || event.ruleScope === 'system_popup';
+  const rules = {
+    defined: ruleById.size,
+    totalEvents: ruleEvents.length,
+    matched: ruleEvents.filter((event) => event.status === 'MATCHED').length,
+    handled: ruleEvents.filter((event) => event.status === 'HANDLED').length,
+    skipped: ruleEvents.filter((event) => event.status === 'SKIPPED').length,
+    failed: ruleEvents.filter((event) => ['FAILED', 'BLOCKED', 'UNKNOWN'].includes(event.status)).length,
+    actions: events.filter((event) => event.type === 'actionResult' && event.scope === 'global-rule').length,
+  };
   const stability = {
     appForegroundLossCount: events.filter((event) => event.type === 'appForeground' && event.status === 'LEFT_TARGET').length,
     appRelaunchCount: relaunchSuccessCount,
@@ -1694,8 +1683,10 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     isolationReason: executionState.isolation?.reason || '',
     startupDisplay: executionState.isolation?.startupDisplay || latestRestart?.startupDisplay || null,
     noChangeObservationCount: events.filter((event) => event.type === 'observation' && event.noChange === true).length,
-    knownPopupHandledCount: events.filter((event) => event.type === 'popup' && event.status === 'HANDLED').length,
-    unknownPopupCount: events.filter((event) => event.type === 'popup' && event.status !== 'HANDLED').length,
+    knownPopupHandledCount: events.filter((event) => event.type === 'popup' && event.status === 'HANDLED').length
+      + ruleEvents.filter((event) => event.status === 'HANDLED' && systemPopupRule(event)).length,
+    unknownPopupCount: events.filter((event) => event.type === 'popup' && event.status !== 'HANDLED').length
+      + ruleEvents.filter((event) => ['FAILED', 'BLOCKED', 'UNKNOWN'].includes(event.status) && systemPopupRule(event)).length,
   };
   const flowEvents = events.filter((event) => event.type === 'flow');
   const preconditionFlowActions = events.filter((event) => event.type === 'actionResult' && event.scope === PRECONDITION_FLOW_SCOPE);
@@ -1766,6 +1757,7 @@ function buildMetrics(caseJson, state, events, result, executionState = {}) {
     executionPhase: result.failedStep ? 'step' : preconditions.blocked || preconditions.failed || preconditions.unknown ? 'precondition' : result.status === 'BLOCKED' ? 'environment-or-framework' : 'completed',
     actions,
     actionRejections,
+    rules,
     flows,
     visualEvidence,
     stability,
@@ -2249,6 +2241,8 @@ for (let i = 1; i < args.length; i++) {
     case '--authorization-source': options.authorizationSource = args[++i]; break;
     case '--authorization-step-id': options.authorizationStepId = args[++i]; break;
     case '--authorization-intent-sha': options.authorizationIntentSha = args[++i]; break;
+    case '--authorization-rule-id': options.authorizationRuleId = args[++i]; break;
+    case '--authorization-rule-sha': options.authorizationRuleSha = args[++i]; break;
     case '--phase': options.phase = args[++i]; break;
     case '--precondition-plan-sha': options.preconditionPlanSha = args[++i]; break;
     case '--precondition-inputs-json': options.preconditionInputs = JSON.parse(args[++i]); break;
@@ -2446,11 +2440,12 @@ try {
       ...(options.eventType === 'actionResult' ? requestedActionFields : {}),
       requestedAction: options.eventType === 'actionResult' ? requestedAction || undefined : undefined,
       source: options.eventType === 'actionResult' ? 'action.sh' : undefined,
-      authorization: options.eventType === 'actionResult' && options.authorizationSource ? {
-        source: options.authorizationSource,
-        stepId: options.authorizationStepId,
-        intentSha: options.authorizationIntentSha,
-      } : undefined,
+      authorization: options.eventType === 'actionResult' && options.authorizationSource
+        ? options.authorizationSource === 'global-rule'
+          ? { source: options.authorizationSource, stepId: options.authorizationStepId, ruleId: options.authorizationRuleId, ruleSha: options.authorizationRuleSha }
+          : { source: options.authorizationSource, stepId: options.authorizationStepId, intentSha: options.authorizationIntentSha }
+        : undefined,
+      ruleId: options.scope === 'global-rule' ? options.authorizationRuleId : undefined,
     });
     if (event.type === 'actionResult') {
       validateActionExecution(actionSpecFromEvent(event), {

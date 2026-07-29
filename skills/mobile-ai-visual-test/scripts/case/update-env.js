@@ -178,13 +178,6 @@ if (missing.length) {
 }
 state.environmentConfirmedAt = nowIso();
 writeJson(statePath, state);
-writeJson(path.join(caseRootFromCaseDir(caseDir), 'platforms', `${platform}.json`), {
-  schemaVersion: 1,
-  platform,
-  environment: state.environment,
-  environmentProbe: state.environmentProbe || null,
-  confirmedAt: state.environmentConfirmedAt,
-});
 
 const rebuilt = rebuildCaseDerivedArtifacts(caseDir, { scope: 'platform', platform });
 const platformSegment = `${path.sep}platforms${path.sep}${platform}${path.sep}`;

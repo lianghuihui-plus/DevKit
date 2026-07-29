@@ -14,6 +14,7 @@ type=""
 x=""
 y=""
 text=""
+mode=""
 from_x=""
 from_y=""
 to_x=""
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     --x) x="${2:-}"; shift 2 ;;
     --y) y="${2:-}"; shift 2 ;;
     --text) text="${2:-}"; shift 2 ;;
+    --mode) mode="${2:-}"; shift 2 ;;
     --from-x) from_x="${2:-}"; shift 2 ;;
     --from-y) from_y="${2:-}"; shift 2 ;;
     --to-x) to_x="${2:-}"; shift 2 ;;
@@ -63,7 +65,8 @@ if [[ -z "$type" ]]; then
   exit 2
 fi
 
-adapter_action="$(mavt_action_request_json "$type" "" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$ms" "" "$velocity" "" "" "")"
+[[ "$type" == "inputText" && -z "$mode" ]] && mode="replace"
+adapter_action="$(mavt_action_request_json "$type" "" "$x" "$y" "$text" "$from_x" "$from_y" "$to_x" "$to_y" "$duration_ms" "$ms" "" "$velocity" "" "" "" "$mode")"
 mavt_validate_action_request "$script_dir/../../../lib/action-contract.js" "$adapter_action" "Harmony adapter"
 
 device_args=()
@@ -119,7 +122,10 @@ case "$type" in
     run_atom "$type" "$atoms_dir/long-press.sh" "${device_args[@]}" --x "$x" --y "$y" ${duration_ms:+--duration-ms "$duration_ms"}
     ;;
   inputText)
-    run_atom "$type" "$atoms_dir/input-text.sh" "${device_args[@]}" --x "$x" --y "$y" --text "$text"
+    input_args=("${device_args[@]}")
+    [[ -n "$bundle" ]] && input_args+=(--bundle "$bundle")
+    input_args+=(--x "$x" --y "$y" --text "$text" --mode "$mode")
+    run_atom "$type" "$atoms_dir/input-text.sh" "${input_args[@]}"
     ;;
   swipe)
     run_atom "$type" "$atoms_dir/swipe.sh" "${device_args[@]}" --from-x "$from_x" --from-y "$from_y" --to-x "$to_x" --to-y "$to_y" --velocity "${velocity:-600}"

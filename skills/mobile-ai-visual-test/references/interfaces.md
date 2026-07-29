@@ -98,7 +98,7 @@ provider 是 Runtime Core 所有的规范机器标识，初始化时统一转成
 | --- | --- | --- |
 | `case-dir`、`execution-id`、`step-id`、`scope`、Flow 绑定参数 | 稳定入口 | 否 |
 | `reason`、`target`、`coordinate-*`、`settle-ms` | 稳定入口的审计或编排信息 | 否 |
-| `type`、坐标、`text`、`ms`、`velocity`、`duration-ms` | 统一动作参数 | 是，仅传动作所需字段 |
+| `type`、坐标、`text`、`mode`、`ms`、`velocity`、`duration-ms` | 统一动作参数 | 是，仅传动作所需字段 |
 | `device`、`app/bundle`、`entry/ability` | 平台环境参数；case-bound 时必须等于 execution environmentSnapshot | 是 |
 | iOS Appium/WDA 参数 | `update-env.js` 配置并由 `--start` 冻结到 environmentSnapshot | 仅在 case-bound 入口解析完成后注入 iOS adapter |
 
@@ -252,6 +252,10 @@ adapter 内部可以调用 atoms，但不得：
 
 动作集合和坐标要求见 `action-schema.md`。前置条件 Flow 动作使用 `scope=precondition-flow`，并绑定 `preconditionId`、`flowId`、`flowStepId`；它不属于 case step。
 
+全局规则动作使用 `scope=global-rule`，必须绑定当前 `stepId`、`ruleId` 和 `authorization={source:"global-rule",ruleId,ruleSha,stepId}`。`ruleSha` 从 `case.snapshot.json` 中的完整规则生成；`action.sh` 在设备调用前、`run-case.js` 在事实写入前分别校验，不能借用业务步骤 intentSha。规则动作成功后必须产生动作后 observation 和 `rule status=HANDLED`，才可回到规则判断或业务步骤。
+
+`inputText actionResult` 必须保存 `inputMode` 与 `inputEffect.status`。status 为 `VERIFIED`、`UNVERIFIABLE` 或 `MISMATCH`；只有平台能够读取最终值且值不符合 `replace` 目标时才写 `MISMATCH`，并以 `ACTION_EFFECT_MISMATCH` 阻塞。无法读取安全输入框或追加后的完整值时允许 `UNVERIFIABLE`，后续仍由动作后 observation 和步骤断言闭环。
+
 业务 ACT decision 必须回传 DecisionRequest 的 `stepIntent.intentSha`，引擎把它归一为 `authorization={source:"case-step",stepId,intentSha}`；`action.sh` 在设备调用前、`run-case.js` 在写入前分别对照 `case.snapshot.json` 校验。业务步骤中的 `actionResult ok=true` 只证明已授权动作执行成功。即使随后已有同步骤 observation，也不能单独完成步骤或进入下一步；每个业务步骤最终都必须写入满足下述视觉证据门禁的 `assertion PASS`。
 
 授权按冻结步骤而不是敏感词生效：步骤明确要求的删除、支付、发布、资料修改等操作不被框架语义拦截；步骤未要求的副作用不能借用该授权。前置条件 Flow 继续使用自身的冻结动作与安全规则，不接受 case-step 授权。
@@ -269,7 +273,7 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionSt
 | `precondition` | 当前 execution 内的前置条件结果 |
 | `perception` | 影响后续动作的视觉理解 |
 | `decision` | 影响后续动作或断言的决策 |
-| `rule` | 全局规则或弹窗规则处理 |
+| `rule` | 全局规则判断与处理，status 为 `MATCHED`、`SKIPPED`、`HANDLED`、`FAILED`、`BLOCKED` 或 `UNKNOWN` |
 | `flow` | 前置条件 Flow 的开始、步骤完成、完成或失败事实 |
 | `assertion` | 步骤断言结果 |
 
@@ -306,7 +310,7 @@ agent 可通过 `run-case.js --record-json` 写入非平台事实。`executionSt
 
 `commit-agent-turn.js` 只接受一个 step 和一个 observation，第一条事实必须是 perception，第二条最多一条 decision 或 assertion。它为事件附加相同 `turnId`，提交前冻结 `<execution>/agent/turns/*.draft.json`，重试时校验原请求并跳过已提交事实，完整提交后删除 draft；不能批量写多个步骤。`execute-next-work decide` 只对命中该 draft 且内容完全一致的旧 workToken 开放恢复，不把普通过期决定重新放行。
 
-业务 ACT 在创建 turn draft 前先经过 `normalizeActionProposal + validateActionExecution(scope=case-step)`。失败时 perception 和 decision 都不写入；Case Engine 通过受保护入口写 `actionRejected`，重新归约为 `DECIDE_STEP`。业务拒绝绑定 stepId、intentSha、workToken、observation、失败字段和原动作提案。Flow 参数补齐经过 `validateActionExecution(scope=precondition-flow)`，失败时写绑定 preconditionId、flowId、flowStepId 和 observation 的 `actionRejected`，重新归约为 `DECIDE_FLOW_ACTION`。两种拒绝均不触发设备动作，公开 `--record-json` 与子 Agent 均不可伪造。
+业务 ACT 在创建 turn draft 前先经过 `normalizeActionProposal + validateActionExecution(scope=case-step)`。失败时 perception 和 decision 都不写入；Case Engine 通过受保护入口写 `actionRejected`，重新归约为 `DECIDE_STEP`。业务拒绝绑定 stepId、intentSha、workToken、observation、失败字段和原动作提案。Flow 参数补齐经过 `validateActionExecution(scope=precondition-flow)`，失败时写绑定 preconditionId、flowId、flowStepId 和 observation 的 `actionRejected`，重新归约为 `DECIDE_FLOW_ACTION`。规则动作通过 `validateActionExecution(scope=global-rule)` 并逐字段保持冻结动作类型和目标；不合法时直接以 `ACTION_CONTRACT_INVALID` 收尾，不触发设备动作。公开 `--record-json` 与子 Agent均不可伪造框架动作结果。
 
 用于支持业务 `assertion PASS` 的 `perception` 必须绑定当前步骤最新 observation 的截图：
 

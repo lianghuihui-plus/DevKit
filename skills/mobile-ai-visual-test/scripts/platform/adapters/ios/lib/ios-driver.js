@@ -26,7 +26,7 @@ const ATOM_OPTIONS = Object.freeze({
   'tap': ['--x', '--y'],
   'long-press': ['--x', '--y', '--duration-ms'],
   'swipe': ['--from-x', '--from-y', '--to-x', '--to-y', '--velocity'],
-  'input-text': ['--x', '--y', '--text'],
+  'input-text': ['--x', '--y', '--text', '--mode'],
   'keyevent': ['--key'],
 });
 
@@ -455,10 +455,10 @@ async function findEditableElement(target, sessionId) {
     throw new Error('No editable XCUI element found. Tap/focus an input field before inputText.');
   }
   const focused = candidates.filter((item) => truthyAttribute(item.focused) && !falseyAttribute(item.enabled));
-  if (focused.length === 1) return { elementId: focused[0].elementId, selection: 'focused' };
+  if (focused.length === 1) return { elementId: focused[0].elementId, className: focused[0].className, selection: 'focused' };
   const visible = candidates.filter((item) => !falseyAttribute(item.visible) && !falseyAttribute(item.enabled));
-  if (visible.length === 1) return { elementId: visible[0].elementId, selection: 'single-visible-editable' };
-  if (candidates.length === 1) return { elementId: candidates[0].elementId, selection: 'single-editable' };
+  if (visible.length === 1) return { elementId: visible[0].elementId, className: visible[0].className, selection: 'single-visible-editable' };
+  if (candidates.length === 1) return { elementId: candidates[0].elementId, className: candidates[0].className, selection: 'single-editable' };
   throw new Error(`Multiple editable XCUI elements found (${candidates.length}). Tap/focus the target input before inputText.`);
 }
 
@@ -537,8 +537,13 @@ async function runAtom(atom, argv) {
       writeJson(atomResult('logs', { files: [path.resolve(outFile)] }));
       return;
     }
+    const fakeInputMode = atom === 'input-text' ? optionValue(rest, '--mode', 'replace') : undefined;
+    const fakeInputText = atom === 'input-text' ? optionValue(rest, '--text') : undefined;
+    const fakeInputExpected = fakeInputMode === 'append' ? `${process.env.MAVT_IOS_FAKE_INPUT_VALUE || ''}${fakeInputText}` : fakeInputText;
     writeJson(actionResult(atom === 'launch-app' ? 'launchApp' : atom === 'restart-app' ? 'restartApp' : atom === 'long-press' ? 'longPress' : atom === 'input-text' ? 'inputText' : atom === 'keyevent' ? optionValue(rest, '--key', 'keyevent') : atom, {
-      inputMethod: atom === 'input-text' ? 'wda-set-value' : undefined,
+      inputMethod: atom === 'input-text' ? (fakeInputMode === 'replace' ? 'wda-clear-set-value' : 'wda-read-compose-set-value') : undefined,
+      inputMode: fakeInputMode,
+      inputEffect: atom === 'input-text' ? { status: 'VERIFIED', expectedText: fakeInputExpected, actualText: fakeInputExpected } : undefined,
       restart: atom === 'restart-app' ? true : undefined,
       coldStartVerified: atom === 'restart-app' ? true : undefined,
       verification: atom === 'restart-app' ? 'fake-appium-app-state' : undefined,
@@ -663,12 +668,37 @@ async function runAtom(atom, argv) {
   }
   if (atom === 'input-text') {
     const text = optionValue(rest, '--text');
+    const mode = optionValue(rest, '--mode', 'replace');
     if (!text) throw new Error('inputText 需要 --text');
+    if (!['replace', 'append'].includes(mode)) throw new Error('inputText --mode 仅支持 replace/append');
     await appium.withSession(target, async ({ sessionId }) => {
       const editable = await findEditableElement(target, sessionId);
       const elementId = editable.elementId;
-      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${elementId}/value`, { text, value: Array.from(text) });
-      writeJson(actionResult('inputText', { inputMethod: 'wda-set-value', inputTarget: editable.selection }));
+      const secure = editable.className === 'XCUIElementTypeSecureTextField';
+      const placeholder = secure ? null : await getElementAttribute(target, sessionId, elementId, 'placeholderValue');
+      const beforeValue = secure ? null : await getElementAttribute(target, sessionId, elementId, 'value');
+      const beforeText = beforeValue !== null && placeholder !== null && String(beforeValue) === String(placeholder) ? '' : beforeValue;
+      let expectedText = text;
+      if (mode === 'replace') {
+        await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${elementId}/clear`, {});
+      } else if (beforeText !== null) {
+        expectedText = `${String(beforeText)}${text}`;
+        await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${elementId}/clear`, {});
+      }
+      const writeText = mode === 'append' && beforeText !== null ? expectedText : text;
+      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${elementId}/value`, { text: writeText, value: Array.from(writeText) });
+      const actualText = secure ? null : await getElementAttribute(target, sessionId, elementId, 'value');
+      const inputEffect = actualText !== null
+        ? { status: String(actualText) === expectedText ? 'VERIFIED' : 'MISMATCH', expectedText, actualText: String(actualText) }
+        : { status: 'UNVERIFIABLE', expectedText: mode === 'replace' ? text : undefined, reason: 'secure field masks its value' };
+      const inputMethod = mode === 'replace' ? 'wda-clear-set-value' : beforeText !== null ? 'wda-read-compose-set-value' : 'wda-set-value';
+      const event = actionResult('inputText', { inputMethod, inputMode: mode, inputTarget: editable.selection, inputEffect });
+      if (inputEffect.status === 'MISMATCH') {
+        event.ok = false;
+        event.failureCode = 'ACTION_EFFECT_MISMATCH';
+        process.exitCode = 1;
+      }
+      writeJson(event);
     });
     return;
   }
