@@ -1,0 +1,4957 @@
+#!/usr/bin/env node
+'use strict';
+
+const assert = require('assert');
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const childProcess = require('child_process');
+const vm = require('vm');
+const zlib = require('zlib');
+const { caseContractSha, collectIndexCases, formatDuration, displayFailureCode, parseMarkdownCase, readPublishedExecution, writeCaseReports } = require('./common');
+const { describeActionConstraints, normalizeActionProposal, swipeDurationMs, validateAction, validateActionAsset, validateActionExecution } = require('./lib/action-contract');
+const { inspectPng, verifyQualityClaim } = require('./lib/image-evidence');
+const { evaluateFrameworkPrecondition } = require('./lib/framework-preconditions');
+const { normalizePreconditionInputs } = require('./lib/precondition-inputs');
+const { validateFlow } = require('./lib/precondition-flow');
+const { actionAuthorization, buildStepIntent, validateStepIntent } = require('./lib/step-intent');
+const { ruleAuthorization, validateRuleAuthorization } = require('./lib/rule-intent');
+const { validateCaseExecutionContract } = require('./lib/case-contract');
+const {
+  normalizeDeviceFormFactor,
+  normalizeStartupDisplayPolicy,
+  startupDisplayRequirement,
+  startupDisplayVerified,
+} = require('./lib/startup-display');
+const {
+  parseDeviceList,
+  parseDisplayState,
+  selectDeviceProfile,
+} = require('./platform/adapters/harmony/lib/display-state');
+
+const repo = path.resolve(__dirname, '..');
+process.env.MAVT_SELF_TEST = '1';
+process.env.MAVT_SELF_TEST_SKIP_CASE_RESTART = '1';
+process.env.MAVT_SELF_TEST_ALLOW_UNBATCHED_START = '1';
+process.env.MAVT_SELF_TEST_ALLOW_UNBOUND_FACTS = '1';
+process.env.MAVT_SELF_TEST_ALLOW_MISSING_BATCH = '1';
+
+const harmonyStartupPolicy = normalizeStartupDisplayPolicy(undefined, { platform: 'harmony' });
+assert.deepStrictEqual(harmonyStartupPolicy, { orientation: 'portrait', enforcement: 'required', appliesTo: ['phone'] });
+assert.deepStrictEqual(normalizeStartupDisplayPolicy(undefined, { platform: 'android' }), { orientation: 'preserve', enforcement: 'none', appliesTo: [] });
+assert.strictEqual(normalizeDeviceFormFactor('SmartPhone'), 'phone');
+assert.strictEqual(normalizeDeviceFormFactor('PAD'), 'tablet');
+assert.strictEqual(startupDisplayRequirement(harmonyStartupPolicy, 'phone', { platform: 'harmony' }).required, true);
+assert.strictEqual(startupDisplayRequirement(harmonyStartupPolicy, 'tablet', { platform: 'harmony' }).required, false);
+assert.strictEqual(startupDisplayRequirement(harmonyStartupPolicy, null, { platform: 'harmony' }).reason, 'DEVICE_FORM_FACTOR_UNKNOWN');
+assert.strictEqual(startupDisplayRequirement({ orientation: 'portrait', enforcement: 'none', appliesTo: ['phone'] }, 'phone', { platform: 'harmony' }).reason, 'POLICY_NOT_ENFORCED');
+const verifiedStartupDisplay = {
+  requestedOrientation: 'portrait', enforcement: 'required', appliesTo: ['phone'], deviceFormFactor: 'phone', required: true,
+  verified: true, status: 'VERIFIED', afterLaunch: { orientation: 'portrait' },
+};
+assert.strictEqual(startupDisplayVerified(harmonyStartupPolicy, verifiedStartupDisplay, 'phone', { platform: 'harmony' }).verified, true);
+assert.strictEqual(startupDisplayVerified(harmonyStartupPolicy, { ...verifiedStartupDisplay, status: 'FAILED' }, 'phone', { platform: 'harmony' }).verified, false);
+assert.strictEqual(parseDisplayState('Rotation: 270\nWidth: 2720\nHeight: 1260\n').orientation, 'landscape');
+const parsedDeviceProfiles = parseDeviceList('Name              Serial             Type    Form Factor\nDemo Phone        127.0.0.1:5555     device  phone\n');
+assert.strictEqual(selectDeviceProfile(parsedDeviceProfiles, '127.0.0.1:5555').deviceFormFactor, 'phone');
+assert.throws(() => normalizePreconditionInputs({ preconditions: [{ id: 'pre-001', resolution: 'unsupported' }] }, [{ id: 'pre-001', status: 'PASS', reason: '不得绕过' }]), /cannot accept external input/);
+assert.deepStrictEqual(normalizePreconditionInputs({ preconditions: [{ id: 'pre-001', resolution: 'external_setup' }] }, [{ id: 'pre-001', resolution: 'external_setup', status: 'PREPARED', reason: '已准备' }]), [{ id: 'pre-001', resolution: 'external_setup', status: 'PREPARED', reason: '已准备' }]);
+assert.strictEqual(evaluateFrameworkPrecondition('capability.uiTree', { environmentSnapshot: { probe: { ready: true, capabilities: { layout: true } } } }, []).status, 'PASS');
+assert.throws(() => validateFlow({
+  schemaVersion: 2,
+  id: 'unsafe-flow',
+  name: '不安全前置条件',
+  usage: 'precondition',
+  platform: 'harmony',
+  startCondition: { description: '列表页可见' },
+  endCondition: { description: '目标项消失' },
+  steps: [{ id: 'flow-step-001', instruction: '删除真实作品', action: { type: 'tap', target: '删除按钮' } }],
+}, 'unsafe-flow.json', 'harmony'), /unsafe Flow action is not allowed/);
+for (const sourceText of [
+  '删除账号和真实资料',
+  '删除作品或业务记录',
+  '发布内容到线上生产环境',
+  '修改真实个人资料和业务数据',
+  '完成真实支付并提交订单',
+  '清除应用数据后卸载应用',
+]) {
+  assert.match(buildStepIntent({ id: 'step-001', kind: 'action', sourceText }).intentSha, /^step-intent-[0-9a-f]{16}$/);
+}
+
+function run(cmd, args, options = {}) {
+  const { skipStepAuthorization = false, ...execOptions } = options;
+  let finalArgs = args;
+  if (!skipStepAuthorization && ['action.sh', 'action-observe.sh'].includes(path.basename(cmd))) {
+    const value = (flag) => {
+      const index = args.indexOf(flag);
+      return index >= 0 ? args[index + 1] : '';
+    };
+    const caseDir = value('--case-dir');
+    const platform = value('--platform');
+    const executionId = value('--execution-id');
+    const stepId = value('--step-id');
+    if (caseDir && platform && executionId && stepId && !args.includes('--authorization-intent-sha')) {
+      const snapshot = JSON.parse(fs.readFileSync(path.join(caseDir, 'platforms', platform, 'executions', executionId, 'case.snapshot.json'), 'utf8'));
+      const step = snapshot.steps.find((item) => item.id === stepId);
+      const authorization = actionAuthorization(step);
+      finalArgs = [...args,
+        '--authorization-source', authorization.source,
+        '--authorization-step-id', authorization.stepId,
+        '--authorization-intent-sha', authorization.intentSha,
+      ];
+    }
+  }
+  return childProcess.execFileSync(cmd, finalArgs, {
+    cwd: repo,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...execOptions,
+  });
+}
+
+function runAllowFailure(cmd, args, options = {}) {
+  try {
+    return {
+      status: 0,
+      stdout: run(cmd, args, options),
+      stderr: '',
+    };
+  } catch (error) {
+    return {
+      status: error.status,
+      stdout: error.stdout || '',
+      stderr: error.stderr || '',
+    };
+  }
+}
+
+function assertUnknownStableArgument(cmd, platform) {
+  const result = runAllowFailure(cmd, ['--platform', platform, '--definitely-unknown', 'value']);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('未知参数'));
+}
+
+function write(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+}
+
+let pngCrcTable = null;
+
+function pngCrc32(buffer) {
+  if (!pngCrcTable) {
+    pngCrcTable = [];
+    for (let n = 0; n < 256; n++) {
+      let value = n;
+      for (let bit = 0; bit < 8; bit++) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+      pngCrcTable[n] = value >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = pngCrcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, 'ascii');
+  const result = Buffer.alloc(12 + data.length);
+  result.writeUInt32BE(data.length, 0);
+  typeBuffer.copy(result, 4);
+  data.copy(result, 8);
+  result.writeUInt32BE(pngCrc32(Buffer.concat([typeBuffer, data])), 8 + data.length);
+  return result;
+}
+
+function testPngBuffer(width = 4, height = 4, pixel = () => [255, 255, 255, 255]) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const rows = [];
+  for (let y = 0; y < height; y++) {
+    const row = Buffer.alloc(1 + width * 4);
+    row[0] = 0;
+    for (let x = 0; x < width; x++) {
+      const rgba = pixel(x, y);
+      for (let channel = 0; channel < 4; channel++) row[1 + x * 4 + channel] = rgba[channel];
+    }
+    rows.push(row);
+  }
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(Buffer.concat(rows))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function writeTestPng(file, options = {}) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, testPngBuffer(options.width, options.height, options.pixel));
+}
+
+function json(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function readTimeline(execDir) {
+  return fs.readFileSync(path.join(execDir, 'timeline.jsonl'), 'utf8')
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+function recordPreconditions(caseDir, platform, executionId, status = 'PASS', reason = 'self-test precondition satisfied') {
+  const caseJson = json(path.join(caseDir, 'case.json'));
+  const execDir = path.join(caseDir, 'platforms', platform, 'executions', executionId);
+  const execution = json(path.join(execDir, 'execution.json'));
+  const events = fs.readFileSync(path.join(execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  for (const item of caseJson.preconditions || []) {
+    const planned = execution.preconditionPlan.preconditions.find((entry) => entry.id === item.id);
+    let event;
+    if (planned.resolution === 'framework') {
+      event = { type: 'precondition', id: item.id, resolution: 'framework', checkerId: planned.checkerId, ...evaluateFrameworkPrecondition(planned.checkerId, execution, events) };
+    } else if (planned.resolution === 'unsupported') {
+      event = { type: 'precondition', id: item.id, resolution: 'unsupported', status: 'BLOCKED', failureCode: 'PRECONDITION_UNSUPPORTED', reason };
+    } else {
+      const input = execution.preconditionInputs.find((entry) => entry.id === item.id);
+      event = input
+        ? { type: 'precondition', id: item.id, resolution: planned.resolution, status: input.status, reason: input.reason }
+        : { type: 'precondition', id: item.id, resolution: planned.resolution, status: status === 'PASS' ? 'BLOCKED' : status, failureCode: 'PRECONDITION_REQUIRED', reason };
+    }
+    run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-json', JSON.stringify(event), '--execution-id', executionId]);
+    events.push(event);
+  }
+}
+
+function recordGlobalFlowScan(caseDir, platform, executionId, reason = 'self-test global Flow scan') {
+  void caseDir;
+  void platform;
+  void executionId;
+  void reason;
+}
+
+function ensureObservationArtifacts(caseDir, platform, executionId, event) {
+  const execDir = path.join(caseDir, 'platforms', platform, 'executions', executionId);
+  const artifacts = event.artifacts || {};
+  const paths = [];
+  if (artifacts.screenshot) paths.push(artifacts.screenshot);
+  if (artifacts.layout) paths.push(artifacts.layout);
+  if (Array.isArray(artifacts.logs)) paths.push(...artifacts.logs);
+  for (const item of paths) {
+    if (item === artifacts.screenshot) writeTestPng(path.join(execDir, item));
+    else write(path.join(execDir, item), `self-test artifact: ${item}\n`);
+  }
+}
+
+function recordObservationEvent(caseDir, platform, executionId, event) {
+  const observation = { ...event, source: 'observe.sh' };
+  ensureObservationArtifacts(caseDir, platform, executionId, observation);
+  return run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-observation-json', JSON.stringify(observation), '--execution-id', executionId], {
+    env: { ...process.env, MAVT_OBSERVATION_WRITER: '1' },
+  });
+}
+
+function recordStepObservation(caseDir, platform, executionId, stepId, label = `${stepId}-evidence`) {
+  const screenshot = `screenshots/${label}.png`;
+  recordObservationEvent(caseDir, platform, executionId, {
+    type: 'observation',
+    stepId,
+    label,
+    artifacts: { screenshot },
+  });
+  return screenshot;
+}
+
+function recordUsablePerception(caseDir, platform, executionId, stepId, evidence, reason = 'self-test visual evidence is usable') {
+  return run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-json', JSON.stringify({
+    type: 'perception',
+    stepId,
+    status: 'USABLE',
+    evidence: Array.isArray(evidence) ? evidence : [evidence],
+    reason,
+  }), '--execution-id', executionId]);
+}
+
+function recordPassAssertion(caseDir, platform, executionId, stepId, reason, evidence) {
+  recordUsablePerception(caseDir, platform, executionId, stepId, evidence);
+  return run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-json', JSON.stringify({
+    type: 'assertion',
+    stepId,
+    status: 'PASS',
+    reason,
+    evidence: Array.isArray(evidence) ? evidence : [evidence],
+  }), '--execution-id', executionId]);
+}
+
+function recordActionResult(caseDir, platform, executionId, event) {
+  let authorization;
+  if (event.stepId) {
+    const snapshot = json(path.join(caseDir, 'platforms', platform, 'executions', executionId, 'case.snapshot.json'));
+    authorization = actionAuthorization(snapshot.steps.find((item) => item.id === event.stepId));
+  }
+  const actionName = event.action?.type || event.action;
+  const coordinateDefaults = ['tap', 'toggle', 'longPress', 'inputText'].includes(actionName)
+    ? { x: 1, y: 2, coordinateSource: 'layout', coordinateEvidence: 'self-test synthetic target bounds' }
+    : {};
+  const actionEvent = { source: 'action.sh', ...coordinateDefaults, ...event, ...(authorization ? { authorization } : {}) };
+  return run('node', ['scripts/run-case.js', caseDir, '--platform', platform, '--record-action-json', JSON.stringify(actionEvent), '--execution-id', executionId], {
+    env: { ...process.env, MAVT_ACTION_WRITER: '1' },
+  });
+}
+
+function treeSha256(root) {
+  const hash = crypto.createHash('sha256');
+  function walk(dir) {
+    for (const name of fs.readdirSync(dir).sort()) {
+      const file = path.join(dir, name);
+      const stat = fs.statSync(file);
+      if (stat.isDirectory()) {
+        walk(file);
+      } else {
+        hash.update(path.relative(root, file));
+        hash.update('\0');
+        hash.update(fs.readFileSync(file));
+        hash.update('\0');
+      }
+    }
+  }
+  walk(root);
+  return hash.digest('hex');
+}
+
+function assertLocalTime(value) {
+  assert.match(value, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/);
+  assert.ok(!value.endsWith('Z'));
+}
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'havt-self-test-'));
+const sharedTestPng = path.join(tmp, 'shared-test.png');
+writeTestPng(sharedTestPng);
+const sharedTestPngMetadata = inspectPng(sharedTestPng);
+assert.strictEqual(sharedTestPngMetadata.decodeStatus, 'VALID');
+assert.strictEqual(sharedTestPngMetadata.width, 4);
+assert.strictEqual(sharedTestPngMetadata.height, 4);
+const trailingBytesPng = path.join(tmp, 'trailing-bytes.png');
+fs.writeFileSync(trailingBytesPng, Buffer.concat([fs.readFileSync(sharedTestPng), Buffer.from('stale-remote-tail')]));
+const trailingBytesMetadata = inspectPng(trailingBytesPng);
+assert.strictEqual(trailingBytesMetadata.decodeStatus, 'VALID');
+assert.strictEqual(trailingBytesMetadata.trailingBytes, Buffer.byteLength('stale-remote-tail'));
+const blackStripePng = path.join(tmp, 'black-stripe.png');
+writeTestPng(blackStripePng, {
+  width: 10,
+  height: 10,
+  pixel: (x) => (x >= 4 && x < 6 ? [0, 0, 0, 255] : [255, 255, 255, 255]),
+});
+const blackStripeClaim = {
+  source: 'agent_preview',
+  kind: 'VERTICAL_BLACK_BLOCKS',
+  coordinateSpace: 'normalized',
+  regions: [{ x: 0.4, y: 0, width: 0.2, height: 1 }],
+};
+assert.strictEqual(verifyQualityClaim(blackStripePng, blackStripeClaim).verdict, 'CLAIM_PRESENT_IN_SOURCE');
+assert.strictEqual(verifyQualityClaim(sharedTestPng, blackStripeClaim).verdict, 'CLAIM_NOT_PRESENT_IN_SOURCE');
+const corruptTestPng = path.join(tmp, 'corrupt.png');
+write(corruptTestPng, 'not a png');
+assert.strictEqual(inspectPng(corruptTestPng).decodeStatus, 'INVALID');
+const workspace = path.join(tmp, 'workspace');
+const sourceRoot = path.join(tmp, 'source');
+fs.mkdirSync(workspace);
+const untouchedNodeCliWorkspace = path.join(tmp, 'node-cli-untouched');
+for (const [script, scriptArgs] of [
+  ['scripts/resolve-execution-targets.js', [path.join(tmp, 'missing-case.md'), '--cwd', untouchedNodeCliWorkspace, '--definitely-unknown', 'value']],
+  ['scripts/parse-case.js', [path.join(tmp, 'missing-case.md'), '--cwd', untouchedNodeCliWorkspace, '--definitely-unknown', 'value']],
+  ['scripts/preflight-preconditions.js', [path.join(tmp, 'missing-case'), '--platform', 'harmony', '--cwd', untouchedNodeCliWorkspace, '--definitely-unknown', 'value']],
+  ['scripts/refresh-case.js', [path.join(tmp, 'missing-case'), '--definitely-unknown', 'value']],
+  ['scripts/render-index.js', [untouchedNodeCliWorkspace, '--definitely-unknown', 'value']],
+]) {
+  const result = runAllowFailure('node', [script, ...scriptArgs]);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('未知参数'));
+}
+assert.strictEqual(fs.existsSync(untouchedNodeCliWorkspace), false);
+for (const [script, scriptArgs] of [
+  ['scripts/resolve-execution-targets.js', ['--cwd']],
+  ['scripts/parse-case.js', [path.join(tmp, 'missing-case.md'), '--cwd']],
+  ['scripts/preflight-preconditions.js', [path.join(tmp, 'missing-case'), '--platform']],
+]) {
+  const result = runAllowFailure('node', [script, ...scriptArgs]);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('缺少参数值'));
+}
+for (const [script, scriptArgs] of [
+  ['scripts/parse-case.js', [path.join(tmp, 'missing-case.md'), 'extra']],
+  ['scripts/refresh-case.js', [path.join(tmp, 'missing-case'), 'extra']],
+  ['scripts/render-index.js', [untouchedNodeCliWorkspace, 'extra']],
+]) {
+  const result = runAllowFailure('node', [script, ...scriptArgs]);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('多余位置参数'));
+}
+assert.strictEqual(fs.existsSync(untouchedNodeCliWorkspace), false);
+for (const platform of ['harmony', 'android', 'ios']) {
+  assertUnknownStableArgument('./scripts/probe-env.sh', platform);
+  assertUnknownStableArgument('./scripts/prepare-env.sh', platform);
+  assertUnknownStableArgument('./scripts/observe.sh', platform);
+  assertUnknownStableArgument('./scripts/action.sh', platform);
+}
+for (const command of [
+  ['./scripts/platform/adapters/harmony/prepare-env.sh', ['--definitely-unknown', 'value']],
+  ['./scripts/platform/adapters/android/prepare-env.sh', ['--definitely-unknown', 'value']],
+  ['node', ['scripts/platform/adapters/ios/lib/ios-driver.js', 'prepare', '--definitely-unknown', 'value']],
+]) {
+  const result = runAllowFailure(command[0], command[1]);
+  assert.strictEqual(result.status, 2);
+  assert.ok(result.stderr.includes('未知参数'));
+}
+assert.strictEqual(swipeDurationMs({ type: 'swipe', fromX: 10, fromY: 10, toX: 10, toY: 130, velocity: 600 }), 200);
+assert.throws(
+  () => validateAction({ type: 'swipe', fromX: 10, fromY: 10, toX: 10, toY: 130, velocity: 199 }),
+  /velocity must be an integer from 200 to 40000 px\/s/,
+);
+assert.throws(
+  () => validateAction({ type: 'swipe', fromX: 10, fromY: 10, toX: 10, toY: 130, durationMs: 200 }),
+  /durationMs is not allowed for swipe/,
+);
+assert.doesNotThrow(() => validateActionAsset({ type: 'tap', target: '登录按钮' }));
+assert.throws(
+  () => validateActionExecution({ type: 'tap', target: '登录按钮' }, { platform: 'harmony' }),
+  /requires executable x and y coordinates/,
+);
+assert.doesNotThrow(() => validateActionExecution({ type: 'inputText', x: 10, y: 20, text: '测试', coordinateSource: 'layout', coordinateEvidence: '输入框控件 bounds' }, { platform: 'harmony', scope: 'case-step' }));
+assert.strictEqual(normalizeActionProposal({ type: 'inputText', text: '测试' }).action.mode, 'replace');
+assert.strictEqual(normalizeActionProposal({ type: 'inputText', text: '测试', mode: 'addition' }).action.mode, 'append');
+assert.throws(() => validateAction({ type: 'inputText', text: '测试', mode: 'insert' }), /mode must be one of replace, append/);
+assert.deepStrictEqual(describeActionConstraints('android', 'case-step').inputText.modes, ['replace', 'append']);
+assert.strictEqual(describeActionConstraints('android', 'case-step').inputText.defaultMode, 'replace');
+assert.throws(
+  () => validateActionExecution({ type: 'inputText', x: 10, y: 20, text: 'test' }, { platform: 'android' }),
+  /does not accept x or y/,
+);
+assert.deepStrictEqual(normalizeActionProposal({ type: 'tap', x: 10, y: 20, coordinateSource: 'screenshot' }).action.coordinateSource, 'visual');
+assert.deepStrictEqual(normalizeActionProposal({ type: 'tap', x: 10, y: 20, coordinateSource: 'image' }).action.coordinateSource, 'visual');
+assert.deepStrictEqual(normalizeActionProposal({ type: 'tap', x: 10, y: 20, coordinateSource: 'uiTree' }).action.coordinateSource, 'layout');
+assert.deepStrictEqual(describeActionConstraints('harmony', 'case-step').coordinateSources, ['layout', 'visual', 'pixel']);
+assert.deepStrictEqual(describeActionConstraints('ios', 'precondition-flow').coordinateSources, ['layout', 'visual', 'pixel', 'flow']);
+assert.deepStrictEqual(describeActionConstraints('harmony', 'global-rule').coordinateSources, ['layout', 'visual', 'pixel']);
+assert.deepStrictEqual(describeActionConstraints('harmony', 'global-rule').actionTypes, ['tap', 'toggle', 'longPress', 'back', 'home', 'wait']);
+const sampleRule = { id: 'rule-001', type: 'guard', scope: 'system_popup', appliesTo: 'any_step', priority: 100, when: '出现权限弹窗', then: { action: { type: 'tap', target: '允许' } }, maxAttempts: 1, onFailure: 'BLOCKED' };
+const sampleRuleAuthorization = ruleAuthorization(sampleRule, 'step-001');
+assert.deepStrictEqual(validateRuleAuthorization(sampleRule, 'step-001', sampleRuleAuthorization), sampleRuleAuthorization);
+assert.throws(() => validateRuleAuthorization(sampleRule, 'step-001', { ...sampleRuleAuthorization, ruleSha: 'rule-wrong' }), /ACTION_OUTSIDE_CASE_INTENT/);
+const normalizedLegacyRuleCase = validateCaseExecutionContract({
+  identity: { caseKey: 'ck-rule-defaults', sourceSha1: 'source-rule-defaults' },
+  steps: [{ id: 'step-001', index: 1, kind: 'action', goal: 'tap', sourceText: '点击继续' }],
+  globalRules: [{ id: 'rule-001', when: '出现权限弹窗', then: { action: { type: 'tap', target: '允许' } } }],
+  isolation: { requireCleanRestart: false },
+});
+assert.strictEqual(normalizedLegacyRuleCase.isolation, undefined);
+assert.strictEqual(normalizedLegacyRuleCase.globalRules[0].scope, 'system_popup');
+assert.strictEqual(normalizedLegacyRuleCase.globalRules[0].maxAttempts, 1);
+assert.throws(() => validateActionExecution({ type: 'tap', x: 10, y: 20, coordinateSource: 'flow', coordinateEvidence: 'Flow bounds', targetBounds: [0, 0, 20, 30] }, { platform: 'harmony', scope: 'case-step' }), /ACTION_CONTRACT_INVALID/);
+assert.doesNotThrow(() => validateActionExecution({ type: 'tap', x: 10, y: 20, coordinateSource: 'flow', coordinateEvidence: 'Flow bounds', targetBounds: [0, 0, 20, 30] }, { platform: 'harmony', scope: 'precondition-flow' }));
+assert.throws(() => validateActionExecution({ type: 'tap', x: 10, y: 20, coordinateSource: 'manual', coordinateEvidence: '历史坐标' }, { platform: 'harmony', scope: 'case-step' }), /ACTION_CONTRACT_INVALID/);
+assert.strictEqual(formatDuration(850), '850ms');
+assert.strictEqual(formatDuration(12300), '12s');
+assert.strictEqual(formatDuration(200000), '3m 20s');
+assert.strictEqual(formatDuration(3720000), '1h 2m');
+const caseFile = path.join(sourceRoot, 'cases', 'login.md');
+
+write(caseFile, `# 登录成功
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+2. 点击「登录」。
+3. 开启「通知」开关。
+4. 输入验证码 123456。
+5. 预期看到成功。
+`);
+
+const resolved = JSON.parse(run('node', ['scripts/resolve-execution-targets.js', path.join(sourceRoot, 'cases'), '--cwd', workspace]));
+assert.deepStrictEqual(resolved.markdownFiles, [caseFile]);
+assert.deepStrictEqual(resolved.existingCases, []);
+const parsedForIsolationContract = JSON.parse(run('node', ['scripts/parse-case.js', caseFile, '--cwd', workspace]));
+assert.strictEqual(json(path.join(parsedForIsolationContract.caseDir, 'case.json')).isolation, undefined);
+write(path.join(workspace, 'platforms', 'harmony-probe.json'), `${JSON.stringify({
+  schemaVersion: 1,
+  type: 'environmentProbe',
+  platform: 'harmony',
+  device: '127.0.0.1:5555',
+  devices: [{ id: '127.0.0.1:5555', serial: '127.0.0.1:5555', name: 'Demo Phone', deviceFormFactor: 'phone' }],
+  targets: ['127.0.0.1:5555'],
+  ready: true,
+  diagnostics: [],
+  capabilities: { screenshot: true, layout: true, foregroundApp: true, launchApp: true },
+}, null, 2)}\n`);
+const deprecatedResolveCases = runAllowFailure('node', ['scripts/resolve-cases.js', path.join(sourceRoot, 'cases')]);
+assert.notStrictEqual(deprecatedResolveCases.status, 0);
+assert.ok(deprecatedResolveCases.stderr.includes('已废弃'));
+
+const invalidWorkspace = path.join(tmp, 'invalid-workspace');
+write(path.join(invalidWorkspace, 'README.md'), '# 普通目录\n');
+const invalidWorkspaceParse = runAllowFailure('node', ['scripts/parse-case.js', caseFile, '--cwd', invalidWorkspace]);
+assert.notStrictEqual(invalidWorkspaceParse.status, 0);
+assert.ok(invalidWorkspaceParse.stderr.includes('不是 mobile-ai-visual-test 工作空间'));
+const invalidWorkspaceResolve = runAllowFailure('node', ['scripts/resolve-execution-targets.js', caseFile, '--cwd', invalidWorkspace]);
+assert.notStrictEqual(invalidWorkspaceResolve.status, 0);
+assert.ok(invalidWorkspaceResolve.stderr.includes('不是 mobile-ai-visual-test 工作空间'));
+
+const legacyWorkspaceRoot = path.join(tmp, 'legacy-ai-visual-test');
+write(path.join(legacyWorkspaceRoot, 'cases', 'C001__旧工作空间__ck-legacy', 'case.json'), `${JSON.stringify({
+  schemaVersion: 1,
+  identity: {
+    caseNo: 'C001',
+    caseKey: 'ck-legacy',
+    title: '旧工作空间',
+    sourceSha1: 'source-legacy',
+    sourceUpdatedAt: '2026-01-01T00:00:00.000+08:00',
+  },
+  preconditions: [],
+  steps: [],
+  globalRules: [],
+}, null, 2)}\n`);
+const legacyWorkspaceIndex = run('node', ['scripts/render-index.js', legacyWorkspaceRoot]).trim();
+assert.strictEqual(legacyWorkspaceIndex, path.join(legacyWorkspaceRoot, 'index.html'));
+assert.ok(fs.existsSync(path.join(legacyWorkspaceRoot, 'workspace.json')));
+
+const parsed = JSON.parse(run('node', ['scripts/parse-case.js', caseFile, '--cwd', workspace]));
+assert.ok(parsed.caseDir.includes('C001__登录成功__ck-'));
+assert.ok(fs.existsSync(parsed.indexHtml));
+assert.strictEqual(parsed.indexHtml, path.join(workspace, 'index.html'));
+assert.ok(fs.existsSync(path.join(workspace, 'workspace.json')));
+assert.ok(!fs.existsSync(path.join(workspace, 'ai-visual-test')));
+const resolvedParent = JSON.parse(run('node', ['scripts/resolve-execution-targets.js', tmp, '--cwd', workspace]));
+assert.deepStrictEqual(resolvedParent.markdownFiles, [caseFile]);
+let indexHtml = fs.readFileSync(parsed.indexHtml, 'utf8');
+assert.ok(indexHtml.includes('AI 视觉测试总览'));
+assert.ok(indexHtml.includes('登录成功'));
+assert.ok(indexHtml.includes('C001'));
+assert.ok(indexHtml.includes('CONTEXT.html'));
+assert.ok(fs.existsSync(path.join(parsed.caseDir, 'source.md')));
+let caseJson = json(path.join(parsed.caseDir, 'case.json'));
+assert.strictEqual(caseJson.identity.caseNo, 'C001');
+assert.strictEqual(caseJson.identity.sourceSnapshot, 'source.md');
+assertLocalTime(caseJson.identity.sourceUpdatedAt);
+assert.strictEqual(caseJson.steps[1].goal, 'tap');
+assert.strictEqual(caseJson.steps[2].goal, 'toggle');
+assert.strictEqual(caseJson.steps[2].target, '通知');
+assert.strictEqual(caseJson.steps[3].goal, 'input_text');
+assert.strictEqual(caseJson.steps[3].inputMode, 'replace');
+assert.strictEqual(caseJson.steps[3].value, '123456');
+assert.strictEqual(buildStepIntent(caseJson.steps[3]).inputMode, 'replace');
+assert.strictEqual(buildStepIntent({ id: 'step-append', kind: 'action', goal: 'input_text', sourceText: '继续输入后缀', value: '后缀' }).inputMode, 'append');
+assert.strictEqual(caseJson.steps[4].kind, 'assertion');
+assert.strictEqual(caseContractSha(caseJson), caseContractSha({ ...caseJson, isolation: { requireCleanRestart: false } }));
+
+const unquotedInputFile = path.join(sourceRoot, 'cases', 'unquoted-input.md');
+write(unquotedInputFile, `# 无引号输入值测试
+
+## 测试步骤
+1. 清空标题输入框并输入测试修改标题。
+`);
+const unquotedInputCase = validateCaseExecutionContract(parseMarkdownCase(unquotedInputFile, workspace).caseJson);
+assert.strictEqual(unquotedInputCase.steps[0].goal, 'input_text');
+assert.strictEqual(unquotedInputCase.steps[0].target, '标题输入框');
+assert.strictEqual(unquotedInputCase.steps[0].value, '测试修改标题');
+assert.strictEqual(unquotedInputCase.steps[0].inputMode, 'replace');
+
+const missingInputValueFile = path.join(sourceRoot, 'cases', 'missing-input-value.md');
+write(missingInputValueFile, `# 缺少输入值测试
+
+## 测试步骤
+1. 清空标题输入框。
+`);
+assert.throws(
+  () => validateCaseExecutionContract(parseMarkdownCase(missingInputValueFile, workspace).caseJson),
+  /CASE_INPUT_VALUE_REQUIRED/,
+);
+
+const noLoginFile = path.join(sourceRoot, 'cases', 'no-login.md');
+write(noLoginFile, `# 未登录前置条件测试
+
+## 前置条件
+- 未登录。
+
+## 步骤
+1. 预期看到登录按钮。
+`);
+const noLoginParsed = JSON.parse(run('node', ['scripts/parse-case.js', noLoginFile, '--cwd', workspace]));
+const noLoginCase = json(path.join(noLoginParsed.caseDir, 'case.json'));
+assert.ok(noLoginParsed.caseDir.includes('C002__未登录前置条件测试__ck-'));
+assert.strictEqual(noLoginCase.identity.caseNo, 'C002');
+assert.strictEqual(noLoginCase.preconditions[0].checkMode, 'manual_context');
+assert.notStrictEqual(caseContractSha(noLoginCase), caseContractSha({
+  ...noLoginCase,
+  preconditions: [
+    ...noLoginCase.preconditions,
+    { id: 'pre-999', text: '账号具备灰度资格。', checkMode: 'manual_context', hints: [] },
+  ],
+}));
+
+const resolvedByNo = JSON.parse(run('node', ['scripts/resolve-case-ref.js', 'C001', '--cwd', workspace]));
+assert.strictEqual(resolvedByNo.caseNo, 'C001');
+assert.strictEqual(resolvedByNo.title, '登录成功');
+assert.strictEqual(resolvedByNo.caseDir, parsed.caseDir);
+const resolvedByKey = JSON.parse(run('node', ['scripts/resolve-case-ref.js', caseJson.identity.caseKey, '--cwd', workspace]));
+assert.strictEqual(resolvedByKey.caseNo, 'C001');
+const resolvedByTitle = JSON.parse(run('node', ['scripts/resolve-case-ref.js', '登录成功', '--cwd', workspace]));
+assert.strictEqual(resolvedByTitle.caseNo, 'C001');
+const executionTargetsByNo = JSON.parse(run('node', ['scripts/resolve-execution-targets.js', 'C001', '--cwd', workspace]));
+assert.strictEqual(executionTargetsByNo.existingCases.length, 1);
+assert.strictEqual(executionTargetsByNo.existingCases[0].caseDir, parsed.caseDir);
+assert.deepStrictEqual(executionTargetsByNo.markdownFiles, []);
+const executionTargetsByPath = JSON.parse(run('node', ['scripts/resolve-execution-targets.js', caseFile, '--cwd', workspace]));
+assert.deepStrictEqual(executionTargetsByPath.existingCases, []);
+assert.deepStrictEqual(executionTargetsByPath.markdownFiles, [caseFile]);
+const executionTargetsByRelativePath = JSON.parse(run('node', ['scripts/resolve-execution-targets.js', path.relative(workspace, caseFile), '--cwd', workspace]));
+assert.deepStrictEqual(executionTargetsByRelativePath.existingCases, []);
+assert.deepStrictEqual(executionTargetsByRelativePath.markdownFiles, [caseFile]);
+const nestedOldWorkspace = path.join(sourceRoot, 'cases', 'nested-old-workspace');
+write(path.join(nestedOldWorkspace, 'cases', 'C999__旧产物__ck-nested', 'case.json'), `${JSON.stringify({
+  schemaVersion: 1,
+  identity: {
+    caseNo: 'C999',
+    caseKey: 'ck-nested',
+    title: '旧产物',
+    sourceSha1: 'source-nested',
+    sourceUpdatedAt: '2026-01-01T00:00:00.000+08:00',
+  },
+  preconditions: [],
+  steps: [],
+  globalRules: [],
+}, null, 2)}\n`);
+write(path.join(nestedOldWorkspace, 'cases', 'C999__旧产物__ck-nested', 'source.md'), `# 不应导入的旧产物
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+`);
+const executionTargetsByDir = JSON.parse(run('node', ['scripts/resolve-execution-targets.js', path.join(sourceRoot, 'cases'), '--cwd', workspace]));
+assert.ok(executionTargetsByDir.markdownFiles.includes(caseFile));
+assert.ok(executionTargetsByDir.markdownFiles.includes(noLoginFile));
+assert.ok(!executionTargetsByDir.markdownFiles.some((file) => file.includes('nested-old-workspace')));
+const parsedContext = fs.readFileSync(path.join(parsed.caseDir, 'CONTEXT.md'), 'utf8');
+assert.ok(parsedContext.includes('编号：C001'));
+
+const legacyFile = path.join(sourceRoot, 'cases', 'legacy.md');
+write(legacyFile, `# 旧目录迁移测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+`);
+const legacyInitial = JSON.parse(run('node', ['scripts/parse-case.js', legacyFile, '--cwd', workspace]));
+const legacyOriginalDir = legacyInitial.caseDir;
+const legacyCase = json(path.join(legacyOriginalDir, 'case.json'));
+const legacyDir = path.join(workspace, 'cases', `旧目录迁移测试__${legacyCase.identity.caseKey}`);
+fs.renameSync(legacyOriginalDir, legacyDir);
+delete legacyCase.identity.caseNo;
+write(path.join(legacyDir, 'case.json'), `${JSON.stringify(legacyCase, null, 2)}\n`);
+const assigned = JSON.parse(run('node', ['scripts/assign-case-nos.js', '--cwd', workspace]));
+assert.strictEqual(assigned.updated.length, 1);
+assert.ok(assigned.updated[0].caseDir.includes('C003__旧目录迁移测试__ck-'));
+assert.ok(!fs.existsSync(legacyDir));
+const migratedCase = json(path.join(assigned.updated[0].caseDir, 'case.json'));
+assert.strictEqual(migratedCase.identity.caseNo, 'C003');
+const resolvedLegacy = JSON.parse(run('node', ['scripts/resolve-case-ref.js', 'C003', '--cwd', workspace]));
+assert.strictEqual(resolvedLegacy.caseDir, assigned.updated[0].caseDir);
+
+const isolationNoteFile = path.join(sourceRoot, 'cases', 'isolation-note.md');
+write(isolationNoteFile, `# 隔离补充测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 查看页面入口。
+`);
+const isolationNoteParsed = JSON.parse(run('node', ['scripts/parse-case.js', isolationNoteFile, '--cwd', workspace]));
+run('node', ['scripts/apply-note.js', isolationNoteParsed.caseDir, '--type', 'isolation', '--text', '不需要冷启动，允许隔离降级执行']);
+const isolationNoteCase = json(path.join(isolationNoteParsed.caseDir, 'case.json'));
+assert.strictEqual(isolationNoteCase.isolation, undefined);
+assert.ok(isolationNoteCase.staleNotes.some((note) => note.reason.includes('框架固定策略')));
+
+const loosePreconditionsFile = path.join(sourceRoot, 'cases', 'loose-preconditions.md');
+write(loosePreconditionsFile, `# 宽松前置条件格式测试
+
+## 前置条件
+1. App 已安装。
+2、设备已连接。
+（3）已登录。
+网络正常。
+
+## 步骤
+1. 预期看到首页。
+`);
+const loosePreconditionsParsed = JSON.parse(run('node', ['scripts/parse-case.js', loosePreconditionsFile, '--cwd', workspace]));
+const loosePreconditionsCase = json(path.join(loosePreconditionsParsed.caseDir, 'case.json'));
+assert.deepStrictEqual(loosePreconditionsCase.preconditions.map((item) => item.text), [
+  'App 已安装。',
+  '设备已连接。',
+  '已登录。',
+  '网络正常。',
+]);
+
+const preflightRiskFile = path.join(sourceRoot, 'cases', 'preflight-risk.md');
+write(preflightRiskFile, `# 前置条件预检风险测试
+
+## 前置条件
+- 已有一篇草稿。
+- 真实支付完成。
+
+## 步骤
+1. 预期看到订单详情。
+`);
+const preflightRiskParsed = JSON.parse(run('node', ['scripts/parse-case.js', preflightRiskFile, '--cwd', workspace]));
+const preflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', noLoginParsed.caseDir, loosePreconditionsParsed.caseDir, preflightRiskParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
+const preflightRiskCaseNo = json(path.join(preflightRiskParsed.caseDir, 'case.json')).identity.caseNo;
+assert.strictEqual(preflight.type, 'preconditionPreflight');
+assert.strictEqual(preflight.summary.totalCases, 3);
+assert.ok(preflight.groups.some((item) => item.status === 'READY' && item.text.includes('App 已安装')));
+assert.ok(preflight.groups.some((item) => item.status === 'CONFIRM' && item.text.includes('已登录')));
+assert.ok(preflight.groups.some((item) => item.status === 'CONFIRM' && item.text.includes('未登录')));
+assert.ok(preflight.groups.some((item) => item.status === 'NEEDS_SETUP' && item.text.includes('草稿')));
+assert.ok(preflight.groups.some((item) => item.status === 'UNSUPPORTED' && item.text.includes('真实支付')));
+assert.strictEqual(preflight.cases.find((item) => item.caseNo === preflightRiskCaseNo).status, 'UNSUPPORTED');
+
+run('node', ['scripts/update-env.js', noLoginParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+assert.strictEqual(fs.existsSync(path.join(workspace, 'platforms', 'harmony.json')), false);
+const noLoginStart = JSON.parse(run('node', [
+  'scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--start',
+  '--precondition-inputs-json', JSON.stringify([{ id: 'pre-001', resolution: 'confirm', status: 'PASS', reason: '已确认当前处于未登录状态' }]),
+]));
+recordPreconditions(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId);
+recordGlobalFlowScan(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId);
+recordPassAssertion(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId, 'step-001', '看到登录按钮', recordStepObservation(noLoginParsed.caseDir, 'harmony', noLoginStart.executionId, 'step-001', 'step-001-login'));
+run('node', ['scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', noLoginStart.executionId]);
+indexHtml = fs.readFileSync(path.join(workspace, 'index.html'), 'utf8');
+assert.ok(indexHtml.indexOf('C001') < indexHtml.indexOf('C002'));
+assert.ok(indexHtml.indexOf('C002') < indexHtml.indexOf('C003'));
+assert.ok(indexHtml.includes('class="case-preconditions"'));
+assert.ok(indexHtml.includes('class="precondition-tag confirm"'));
+assert.ok(indexHtml.includes('<b>需确认</b><em>未登录。</em>'));
+assert.ok(indexHtml.includes('class="precondition-tag needs_setup"'));
+assert.ok(indexHtml.includes('<b>需准备</b><em>已有一篇草稿。</em>'));
+assert.ok(indexHtml.includes('class="precondition-tag unsupported"'));
+assert.ok(indexHtml.includes('<b>不支持</b><em>真实支付完成。</em>'));
+
+const manyPreconditionsFile = path.join(sourceRoot, 'cases', 'many-preconditions.md');
+write(manyPreconditionsFile, `# 多前置条件展示测试
+
+## 前置条件
+- 条件一已满足。
+- 条件二已满足。
+- 条件三已满足。
+- 条件四已满足。
+- 条件五已满足。
+- 条件六已满足。
+
+## 步骤
+1. 预期看到首页。
+`);
+const manyPreconditionsParsed = JSON.parse(run('node', ['scripts/parse-case.js', manyPreconditionsFile, '--cwd', workspace]));
+run('node', ['scripts/render-index.js', workspace]);
+const manyPreconditionsIndex = fs.readFileSync(path.join(workspace, 'index.html'), 'utf8');
+assert.ok(manyPreconditionsIndex.includes('<b>需确认</b><em>条件五已满足。</em>'));
+assert.ok(!manyPreconditionsIndex.includes('<b>需确认</b><em>条件六已满足。</em>'));
+assert.ok(manyPreconditionsIndex.includes('还有 1 条前置条件'));
+assert.ok(manyPreconditionsParsed.caseDir.includes('多前置条件展示测试'));
+
+const multiPlatformFile = path.join(sourceRoot, 'cases', 'multi-platform.md');
+write(multiPlatformFile, `# 多平台隔离测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 预期看到首页。
+`);
+const multiPlatformParsed = JSON.parse(run('node', ['scripts/parse-case.js', multiPlatformFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', multiPlatformParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const harmonyPlatformStart = JSON.parse(run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(multiPlatformParsed.caseDir, 'harmony', harmonyPlatformStart.executionId);
+recordGlobalFlowScan(multiPlatformParsed.caseDir, 'harmony', harmonyPlatformStart.executionId);
+run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'FAIL',
+  reason: 'Harmony 未看到首页',
+}), '--execution-id', harmonyPlatformStart.executionId]);
+run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'FAIL', '--failure-code', 'ASSERTION_FAILED', '--failed-step', 'step-001', '--reason', 'Harmony 未看到首页', '--execution-id', harmonyPlatformStart.executionId]);
+run('node', ['scripts/update-env.js', multiPlatformParsed.caseDir, '--platform', 'android', '--device', 'emulator-5554', '--app', 'com.example.demo', '--entry', 'MainActivity']);
+const multiPlatformAndroidStatePath = path.join(multiPlatformParsed.caseDir, 'platforms', 'android', 'state.json');
+const multiPlatformAndroidState = json(multiPlatformAndroidStatePath);
+multiPlatformAndroidState.dependencies = { mavtInputIme: { id: 'mavtInputIme', ok: true, required: true } };
+write(multiPlatformAndroidStatePath, `${JSON.stringify(multiPlatformAndroidState, null, 2)}\n`);
+const androidPlatformStart = JSON.parse(run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'android', '--start']));
+recordPreconditions(multiPlatformParsed.caseDir, 'android', androidPlatformStart.executionId);
+recordGlobalFlowScan(multiPlatformParsed.caseDir, 'android', androidPlatformStart.executionId);
+recordPassAssertion(multiPlatformParsed.caseDir, 'android', androidPlatformStart.executionId, 'step-001', 'Android 看到首页', recordStepObservation(multiPlatformParsed.caseDir, 'android', androidPlatformStart.executionId, 'step-001', 'step-001-android-home'));
+run('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--platform', 'android', '--finalize', '--status', 'PASS', '--execution-id', androidPlatformStart.executionId]);
+run('node', ['scripts/update-env.js', multiPlatformParsed.caseDir, '--platform', 'ios', '--device', 'simulator', '--app', 'com.example.demo', '--entry', 'MainView']);
+const missingPlatformStart = runAllowFailure('node', ['scripts/run-case.js', multiPlatformParsed.caseDir, '--start']);
+assert.notStrictEqual(missingPlatformStart.status, 0);
+assert.ok(missingPlatformStart.stderr.includes('Missing --platform'));
+assert.ok(harmonyPlatformStart.execDir.includes('/platforms/harmony/executions/'));
+assert.ok(androidPlatformStart.execDir.includes('/platforms/android/executions/'));
+assert.ok(fs.existsSync(path.join(multiPlatformParsed.caseDir, 'platforms', 'harmony', 'state.json')));
+assert.ok(fs.existsSync(path.join(multiPlatformParsed.caseDir, 'platforms', 'android', 'state.json')));
+assert.ok(fs.existsSync(path.join(multiPlatformParsed.caseDir, 'platforms', 'ios', 'state.json')));
+assert.strictEqual(json(path.join(harmonyPlatformStart.execDir, 'result.json')).status, 'FAIL');
+assert.strictEqual(json(path.join(androidPlatformStart.execDir, 'result.json')).status, 'PASS');
+assert.ok(fs.existsSync(path.join(multiPlatformParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html')));
+assert.ok(fs.existsSync(path.join(multiPlatformParsed.caseDir, 'platforms', 'android', 'CONTEXT.html')));
+assert.ok(fs.existsSync(path.join(multiPlatformParsed.caseDir, 'platforms', 'ios', 'CONTEXT.html')));
+indexHtml = fs.readFileSync(path.join(workspace, 'index.html'), 'utf8');
+assert.ok(fs.existsSync(path.join(multiPlatformParsed.caseDir, 'CONTEXT.html')));
+assert.ok(indexHtml.includes(`${path.relative(workspace, path.join(multiPlatformParsed.caseDir, 'CONTEXT.html')).replace(/\\/g, '/')}`));
+assert.ok(indexHtml.includes('platforms/harmony/CONTEXT.html'));
+assert.ok(indexHtml.includes('platforms/android/CONTEXT.html'));
+assert.ok(indexHtml.includes('class="platform-overview"'));
+assert.ok(indexHtml.includes('class="platform-overview-card"'));
+assert.ok(indexHtml.includes('>Android<'));
+assert.ok(indexHtml.includes('>Harmony<'));
+assert.ok(indexHtml.includes('>iOS<'));
+assert.ok(indexHtml.indexOf('>Android<') < indexHtml.indexOf('>iOS<'));
+assert.ok(indexHtml.indexOf('>iOS<') < indexHtml.indexOf('>Harmony<'));
+assert.ok(indexHtml.includes('<div class="total"><span>用例</span><b>'));
+assert.ok(!indexHtml.includes('共 '));
+assert.ok(!indexHtml.includes('class="summary status-breakdown"'));
+assert.ok(!indexHtml.includes('<div class="pass-rate"><span>通过率</span><b>'));
+assert.ok(indexHtml.includes('<span class="platform-pass-rate"><em>通过率</em><b>100%</b>'));
+assert.ok(indexHtml.includes('class="platform-details"'));
+assert.ok(indexHtml.includes('class="platform-brief-list"'));
+assert.ok(indexHtml.includes('class="case-filter-panel"'));
+assert.ok(indexHtml.includes('data-case-filter="ALL"'));
+assert.ok(indexHtml.includes('data-case-filter="PASS"'));
+assert.ok(indexHtml.includes('data-case-filter="FAIL"'));
+assert.ok(indexHtml.includes('data-case-filter="BLOCKED"'));
+assert.ok(indexHtml.includes('data-case-filter="UNKNOWN"'));
+assert.ok(indexHtml.includes('data-case-filter="NOT_RUN"'));
+assert.ok(indexHtml.includes('data-case-status="FAIL"'));
+assert.ok(indexHtml.includes('.case-card[hidden] { display: none; }'));
+assert.ok(indexHtml.includes("card.hidden = !visible"));
+assert.ok(indexHtml.includes('const selectedStatuses = new Set()'));
+assert.ok(indexHtml.includes("selectedStatuses.has(card.dataset.caseStatus || 'NOT_RUN')"));
+assert.ok(indexHtml.includes('selectedStatuses.add(status)'));
+assert.ok(indexHtml.includes('selectedStatuses.delete(status)'));
+assert.ok(indexHtml.includes('if (selectedStatuses.size === 0) allSelected = true'));
+assert.ok(indexHtml.includes("result.textContent = '显示 ' + visibleCount + ' / ' + cards.length"));
+const filterIndexCases = collectIndexCases(workspace);
+const filterStatusLabels = { PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', UNKNOWN: '未知', NOT_RUN: '未执行' };
+assert.ok(indexHtml.includes(`data-case-filter="ALL" aria-pressed="true">全部 <b>${filterIndexCases.length}</b>`));
+for (const [status, label] of Object.entries(filterStatusLabels)) {
+  const count = filterIndexCases.filter((item) => item.status === status).length;
+  assert.ok(indexHtml.includes(`data-case-filter="${status}" aria-pressed="false">${label} <b>${count}</b>`));
+}
+const filterClientScript = indexHtml.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+assert.ok(filterClientScript);
+const filterButtons = ['ALL', 'PASS', 'FAIL', 'BLOCKED', 'UNKNOWN', 'NOT_RUN'].map((status) => {
+  const listeners = {};
+  return {
+    dataset: { caseFilter: status },
+    classList: { toggle(name, active) { this[name] = active; } },
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
+    addEventListener(name, listener) { listeners[name] = listener; },
+    click() { listeners.click(); },
+  };
+});
+const filterCards = ['PASS', 'FAIL', 'BLOCKED'].map((status) => ({ dataset: { caseStatus: status }, hidden: false }));
+const filterResult = { textContent: '' };
+const filterEmpty = { hidden: true };
+const filterDocument = {
+  querySelectorAll(selector) {
+    if (selector === '[data-case-filter]') return filterButtons;
+    if (selector === '[data-case-status]') return filterCards;
+    return [];
+  },
+  querySelector(selector) {
+    if (selector === '.case-filter-result') return filterResult;
+    if (selector === '.case-filter-empty') return filterEmpty;
+    return null;
+  },
+};
+vm.runInNewContext(filterClientScript, { document: filterDocument });
+const visibleFilterStatuses = () => filterCards.filter((card) => !card.hidden).map((card) => card.dataset.caseStatus);
+assert.deepStrictEqual(visibleFilterStatuses(), ['PASS', 'FAIL', 'BLOCKED']);
+filterButtons.find((button) => button.dataset.caseFilter === 'FAIL').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['FAIL']);
+filterButtons.find((button) => button.dataset.caseFilter === 'BLOCKED').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['FAIL', 'BLOCKED']);
+filterButtons.find((button) => button.dataset.caseFilter === 'FAIL').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['BLOCKED']);
+filterButtons.find((button) => button.dataset.caseFilter === 'BLOCKED').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['PASS', 'FAIL', 'BLOCKED']);
+filterButtons.find((button) => button.dataset.caseFilter === 'FAIL').click();
+filterButtons.find((button) => button.dataset.caseFilter === 'ALL').click();
+assert.deepStrictEqual(visibleFilterStatuses(), ['PASS', 'FAIL', 'BLOCKED']);
+assert.ok(indexHtml.includes('display: flex; flex-wrap: wrap; gap: 8px'));
+assert.ok(!indexHtml.includes('repeat(auto-fit, minmax(260px, 1fr))'));
+assert.ok(!indexHtml.includes('class="platform-brief-result"'));
+assert.ok(indexHtml.includes('class="platform-result"'));
+assert.ok(indexHtml.includes('class="platform-reason"'));
+assert.ok(indexHtml.includes('class="platform-detail-card'));
+assert.ok(indexHtml.includes('class="platform-time"'));
+assert.ok(!indexHtml.includes('class="case-conclusion"'));
+assert.ok(!indexHtml.includes('class="case-summary"'));
+assert.ok(indexHtml.includes('查看多端详情'));
+assert.ok(indexHtml.includes('查看报告'));
+assert.ok(indexHtml.includes('harmony'));
+assert.ok(indexHtml.includes('android'));
+assert.ok(indexHtml.includes('class="case-card fail"'));
+assert.ok(indexHtml.includes('<span class="pill fail">失败</span>'));
+assert.ok(indexHtml.match(/多平台隔离测试[\s\S]*?<summary>[\s\S]*?Android[\s\S]*?iOS[\s\S]*?Harmony/));
+assert.ok(indexHtml.match(/多平台隔离测试[\s\S]*?<span>开始<\/span><b>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}<\/b>/));
+const multiPlatformCaseHtml = fs.readFileSync(path.join(multiPlatformParsed.caseDir, 'CONTEXT.html'), 'utf8');
+assert.ok(multiPlatformCaseHtml.includes('多平台用例详情'));
+assert.ok(multiPlatformCaseHtml.includes('平台执行概览'));
+assert.ok(multiPlatformCaseHtml.includes('class="platform-report-grid"'));
+assert.ok(multiPlatformCaseHtml.includes('class="platform-report-card'));
+assert.ok(multiPlatformCaseHtml.includes('.platform-report-grid { display: grid; grid-template-columns: 1fr;'));
+assert.ok(!multiPlatformCaseHtml.includes('repeat(auto-fit, minmax(320px, 1fr))'));
+assert.ok(multiPlatformCaseHtml.includes('共享前置条件'));
+assert.ok(multiPlatformCaseHtml.includes('共享用例步骤'));
+assert.ok(multiPlatformCaseHtml.includes('platforms/harmony/CONTEXT.html'));
+assert.ok(multiPlatformCaseHtml.includes('platforms/android/CONTEXT.html'));
+assert.ok(multiPlatformCaseHtml.indexOf('>Android<') < multiPlatformCaseHtml.indexOf('>iOS<'));
+assert.ok(multiPlatformCaseHtml.indexOf('>iOS<') < multiPlatformCaseHtml.indexOf('>Harmony<'));
+assert.ok(multiPlatformCaseHtml.includes('断言不通过'));
+assert.ok(!multiPlatformCaseHtml.includes('共享概览'));
+assert.ok(!multiPlatformCaseHtml.includes('class="shared-overview"'));
+assert.ok(!multiPlatformCaseHtml.includes('class="shared-grid"'));
+assert.ok(!multiPlatformCaseHtml.includes('<h2>平台报告</h2>'));
+assert.ok(!multiPlatformCaseHtml.includes('<h2>平台对比</h2>'));
+assert.ok(!multiPlatformCaseHtml.includes('ASSERTION_FAILED'));
+assert.ok(!multiPlatformCaseHtml.includes('<h2>执行时间线</h2>'));
+
+const partialPlatformFile = path.join(sourceRoot, 'cases', 'partial-platform.md');
+write(partialPlatformFile, `# 部分平台未执行聚合测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 预期看到首页。
+`);
+const partialPlatformParsed = JSON.parse(run('node', ['scripts/parse-case.js', partialPlatformFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', partialPlatformParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const partialHarmonyStart = JSON.parse(run('node', ['scripts/run-case.js', partialPlatformParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(partialPlatformParsed.caseDir, 'harmony', partialHarmonyStart.executionId);
+recordGlobalFlowScan(partialPlatformParsed.caseDir, 'harmony', partialHarmonyStart.executionId);
+recordPassAssertion(partialPlatformParsed.caseDir, 'harmony', partialHarmonyStart.executionId, 'step-001', 'Harmony 看到首页', recordStepObservation(partialPlatformParsed.caseDir, 'harmony', partialHarmonyStart.executionId, 'step-001', 'step-001-harmony-home'));
+run('node', ['scripts/run-case.js', partialPlatformParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', partialHarmonyStart.executionId]);
+run('node', ['scripts/update-env.js', partialPlatformParsed.caseDir, '--platform', 'ios', '--device', 'simulator', '--app', 'com.example.demo', '--entry', 'MainView']);
+const partialPlatformHtml = fs.readFileSync(path.join(partialPlatformParsed.caseDir, 'CONTEXT.html'), 'utf8');
+assert.ok(partialPlatformHtml.includes('<span class="status not_run">未执行</span>'));
+assert.ok(!partialPlatformHtml.includes('<span class="status unknown">未知</span>'));
+
+const noEnvFile = path.join(sourceRoot, 'cases', 'no-env.md');
+write(noEnvFile, `# 未确认环境测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+`);
+const noEnvParsed = JSON.parse(run('node', ['scripts/parse-case.js', noEnvFile, '--cwd', workspace]));
+const unconfirmedStart = runAllowFailure('node', ['scripts/run-case.js', noEnvParsed.caseDir, '--platform', 'harmony', '--start']);
+assert.notStrictEqual(unconfirmedStart.status, 0);
+assert.ok(unconfirmedStart.stderr.includes('Environment is not confirmed'));
+run('node', ['scripts/update-env.js', noEnvParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const finalizeWithoutStart = runAllowFailure('node', ['scripts/run-case.js', noEnvParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', '未 start 不应收尾']);
+assert.notStrictEqual(finalizeWithoutStart.status, 0);
+assert.ok(finalizeWithoutStart.stderr.includes('No started execution exists'));
+const incompleteEnv = runAllowFailure('node', ['scripts/update-env.js', noEnvParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', '']);
+assert.notStrictEqual(incompleteEnv.status, 0);
+assert.ok(incompleteEnv.stderr.includes('ENV_UNCONFIRMED'));
+assert.ok(!fs.existsSync(path.join(noEnvParsed.caseDir, 'state.json')));
+
+const probeWithoutPlatform = runAllowFailure('./scripts/probe-env.sh', []);
+assert.notStrictEqual(probeWithoutPlatform.status, 0);
+assert.ok(probeWithoutPlatform.stderr.includes('需要显式传 --platform'));
+const probeNoHdc = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'harmony'], {
+  env: { ...process.env, PATH: '/usr/local/bin:/bin:/usr/bin' },
+}));
+assert.strictEqual(probeNoHdc.capabilities.hdc, false);
+assert.strictEqual(probeNoHdc.capabilities.launchApp, false);
+assert.deepStrictEqual(probeNoHdc.capabilities.actions, []);
+assert.strictEqual(probeNoHdc.ready, false);
+assert.ok(probeNoHdc.diagnostics.some((item) => item.id === 'hdcMissing' && item.level === 'ERROR'));
+const probeWithApp = runAllowFailure('./scripts/probe-env.sh', ['--platform', 'harmony', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+assert.notStrictEqual(probeWithApp.status, 0);
+assert.ok(probeWithApp.stderr.includes('probe-env 只探测平台/设备能力'));
+assert.ok(probeWithApp.stderr.includes('scripts/update-env.js'));
+assert.ok(probeWithApp.stderr.includes('scripts/observe.sh'));
+const platformActionWithoutPlatform = runAllowFailure('./scripts/platform/action.sh', ['--type', 'wait', '--ms', '0']);
+assert.notStrictEqual(platformActionWithoutPlatform.status, 0);
+assert.ok(platformActionWithoutPlatform.stderr.includes('需要显式传 --platform'));
+const platformObserveWithoutPlatform = runAllowFailure('./scripts/platform/observe.sh', ['--out', tmp]);
+assert.notStrictEqual(platformObserveWithoutPlatform.status, 0);
+assert.ok(platformObserveWithoutPlatform.stderr.includes('需要显式传 --platform'));
+
+run('node', ['scripts/update-env.js', parsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+let state = json(path.join(parsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.strictEqual(state.environment.platform, 'harmony');
+assert.strictEqual(state.environment.appId, 'com.example.demo');
+assertLocalTime(state.environmentConfirmedAt);
+
+run('node', ['scripts/apply-note.js', parsed.caseDir, '--text', '验证码输入框没有 placeholder，在手机号输入框下方。', '--applies-to', 'step-004']);
+caseJson = json(path.join(parsed.caseDir, 'case.json'));
+assert.ok(caseJson.steps[3].hints.length);
+
+write(caseFile, `# 登录成功
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+2. 点击「登录」。
+3. 点击「获取验证码」。
+4. 输入验证码 123456。
+5. 预期看到成功。
+`);
+
+run('node', ['scripts/parse-case.js', caseFile, '--cwd', workspace]);
+caseJson = json(path.join(parsed.caseDir, 'case.json'));
+assert.strictEqual(caseJson.identity.sourceMode, 'snapshot');
+assert.ok(!fs.readFileSync(path.join(parsed.caseDir, 'source.md'), 'utf8').includes('点击「获取验证码」'));
+assert.strictEqual(caseJson.steps.length, 5);
+
+run('node', ['scripts/parse-case.js', caseFile, '--cwd', workspace, '--refresh-from-input']);
+caseJson = json(path.join(parsed.caseDir, 'case.json'));
+assert.strictEqual(caseJson.sourceChanged, true);
+assert.strictEqual(caseJson.identity.sourceMode, 'external');
+assert.ok(fs.readFileSync(path.join(parsed.caseDir, 'source.md'), 'utf8').includes('点击「获取验证码」'));
+assert.deepStrictEqual(caseJson.staleNotes, []);
+assert.strictEqual(caseJson.steps[3].target, '验证码输入框');
+assert.ok(caseJson.steps[3].hints.some((hint) => hint.includes('验证码输入框')));
+
+const sourceSnapshot = path.join(parsed.caseDir, 'source.md');
+write(sourceSnapshot, `# 登录成功改名
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+2. 点击「登录」。
+3. 预期看到成功。
+`);
+const future = new Date(Date.now() + 2000);
+fs.utimesSync(sourceSnapshot, future, future);
+run('node', ['scripts/refresh-case.js', parsed.caseDir]);
+caseJson = json(path.join(parsed.caseDir, 'case.json'));
+assert.strictEqual(caseJson.identity.sourceMode, 'snapshot');
+assert.strictEqual(caseJson.identity.title, '登录成功改名');
+assert.strictEqual(caseJson.steps.length, 3);
+
+run('node', ['scripts/update-env.js', parsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const started = JSON.parse(run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--start']));
+assert.ok(fs.existsSync(started.timeline));
+const startEvent = JSON.parse(fs.readFileSync(started.timeline, 'utf8').trim().split(/\r?\n/)[0]);
+assertLocalTime(startEvent.time);
+const startedExecution = json(path.join(started.execDir, 'execution.json'));
+assertLocalTime(startedExecution.startedAt);
+assert.ok(/^environment-[0-9a-f]{16}$/.test(startedExecution.environmentSha));
+assert.ok(/^precondition-inputs-[0-9a-f]{16}$/.test(startedExecution.preconditionInputsSha));
+assert.strictEqual(startEvent.environmentSha, startedExecution.environmentSha);
+const lockedEnvironmentUpdate = runAllowFailure('node', ['scripts/update-env.js', parsed.caseDir, '--platform', 'harmony', '--device', 'other-device', '--app', 'com.other.app', '--entry', 'OtherAbility']);
+assert.notStrictEqual(lockedEnvironmentUpdate.status, 0);
+assert.ok(lockedEnvironmentUpdate.stderr.includes('ACTIVE_EXECUTION_ENVIRONMENT_LOCKED'));
+const startedStatePath = path.join(parsed.caseDir, 'platforms', 'harmony', 'state.json');
+const startedState = json(startedStatePath);
+const tamperedState = JSON.parse(JSON.stringify(startedState));
+tamperedState.environment.device = 'other-device';
+tamperedState.environment.appId = 'com.other.app';
+write(startedStatePath, `${JSON.stringify(tamperedState, null, 2)}\n`);
+const frozenArgs = run('node', ['scripts/execution/resolve-execution-environment.js', 'args', '--case-dir', parsed.caseDir, '--platform', 'harmony', '--execution-id', started.executionId, '--purpose', 'action']);
+assert.ok(frozenArgs.includes('127.0.0.1:5555'));
+assert.ok(!frozenArgs.includes('other-device'));
+const frozenObserveArgs = run('node', ['scripts/execution/resolve-execution-environment.js', 'args', '--case-dir', parsed.caseDir, '--platform', 'harmony', '--execution-id', started.executionId, '--purpose', 'observe']);
+assert.ok(!frozenObserveArgs.includes('EntryAbility'));
+write(startedStatePath, `${JSON.stringify(startedState, null, 2)}\n`);
+const activeExecutionGuard = runAllowFailure('node', ['scripts/run-case.js', noLoginParsed.caseDir, '--platform', 'harmony', '--start']);
+assert.notStrictEqual(activeExecutionGuard.status, 0);
+assert.ok(activeExecutionGuard.stderr.includes('Unfinalized execution exists'));
+run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'framework',
+  checkerId: 'app.launchable',
+  evidenceRefs: ['execution-isolation'],
+  reason: '目标 App 的 execution 启动隔离已通过。',
+})]);
+const duplicatePrecondition = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'framework',
+  checkerId: 'app.launchable',
+  evidenceRefs: ['execution-isolation'],
+  reason: '目标 App 的 execution 启动隔离已通过。',
+})]);
+assert.notStrictEqual(duplicatePrecondition.status, 0);
+assert.ok(duplicatePrecondition.stderr.includes('STEP_ORDER_VIOLATION'));
+recordGlobalFlowScan(parsed.caseDir, 'harmony', started.executionId);
+recordObservationEvent(parsed.caseDir, 'harmony', started.executionId, {
+  type: 'observation',
+  stepId: 'step-001',
+  label: 'step-001-before',
+  artifacts: {
+    screenshot: 'screenshots/step-001-before.png',
+    layout: 'layouts/step-001-before.json',
+    logs: ['logs/step-001-before-aa-dump.txt'],
+  },
+  app: {
+    appId: 'com.example.demo',
+    foregroundApp: 'com.example.demo',
+    entry: 'EntryAbility',
+    inTargetApp: true,
+  },
+});
+run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'decision',
+  stepId: 'step-001',
+  decision: 'act',
+  action: { type: 'wait', ms: 0, reason: '等待页面稳定' },
+  authorization: actionAuthorization(json(path.join(started.execDir, 'case.snapshot.json')).steps[0]),
+  reason: '等待页面稳定',
+})]);
+recordActionResult(parsed.caseDir, 'harmony', started.executionId, {
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'wait',
+  ms: 0,
+  ok: true,
+});
+run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'FAIL', '--reason', '示例失败', '--failure-code', 'ASSERTION_FAILED', '--failed-step', 'step-003']);
+state = json(path.join(parsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.strictEqual(state.latestStatus, 'FAIL');
+assert.strictEqual(state.statusCounts.FAIL, 1);
+const restartFinalized = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--start', '--execution-id', state.latestExecutionId]);
+assert.notStrictEqual(restartFinalized.status, 0);
+assert.ok(restartFinalized.stderr.includes('Execution already exists'));
+const latestExec = path.join(parsed.caseDir, 'platforms', 'harmony', 'executions', state.latestExecutionId);
+const metrics = json(path.join(latestExec, 'metrics.json'));
+assert.strictEqual(metrics.preconditions.passed, 1);
+assert.strictEqual(metrics.actions.launchApp, 0);
+assert.strictEqual(metrics.actions.wait, 1);
+assert.strictEqual(metrics.actions.restartApp, 0);
+assert.strictEqual(metrics.artifacts.screenshots, 1);
+assert.strictEqual(metrics.eventCounts.observation, 1);
+const context = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(context.includes('## 执行统计'));
+assert.ok(context.includes('## 执行事实'));
+assert.ok(context.includes('示例失败'));
+assert.ok(!context.includes('+08:00'));
+const contextHtml = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+assert.ok(contextHtml.includes('<table>'));
+assert.ok(contextHtml.includes('步骤'));
+assert.ok(contextHtml.includes('示例失败'));
+assert.ok(contextHtml.includes('执行：'));
+assert.ok(!contextHtml.includes('最近执行：'));
+assert.ok(!contextHtml.includes('sourceSha1：source-'));
+assert.ok(contextHtml.includes('class="fact-code"'));
+assert.ok(contextHtml.includes('断言不通过'));
+assert.ok(contextHtml.includes('<section class="failure-evidence">'));
+assert.ok(contextHtml.includes('失败证据'));
+assert.ok(contextHtml.includes('class="failure-shot"'));
+assert.ok(!contextHtml.includes('box-shadow: inset 4px 0 0 var(--fail)'));
+assert.ok(contextHtml.includes('.step-failure { margin-top: 9px; padding: 8px 10px;'));
+assert.ok(contextHtml.includes('.precondition-item { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 12px; align-items: center;'));
+assert.ok(contextHtml.includes('<section class="precondition-summary">'));
+assert.ok(contextHtml.includes('前置条件'));
+assert.ok(contextHtml.includes('class="precondition-list"'));
+assert.ok(contextHtml.indexOf('class="summary"') < contextHtml.indexOf('<section class="failure-evidence">'));
+assert.ok(contextHtml.indexOf('<section class="failure-evidence">') < contextHtml.indexOf('class="precondition-summary"'));
+assert.ok(contextHtml.indexOf('class="precondition-summary"') < contextHtml.indexOf('<h2>步骤复盘</h2>'));
+assert.ok(!contextHtml.includes('关键截图'));
+assert.ok(!contextHtml.includes('evidence-focus'));
+assert.ok(contextHtml.includes('class="step-review-list"'));
+assert.ok(contextHtml.includes('class="step-review-card'));
+assert.ok(contextHtml.includes('class="step-review-main"'));
+assert.ok(contextHtml.includes('.step-facts { display: grid; gap: 5px; margin: 10px 0 0; padding: 0; list-style: none; color: #334155; font-size: 14px; line-height: 1.45; }'));
+assert.ok(contextHtml.includes('.step-facts span { flex: 0 0 auto; color: var(--muted); font-size: 14px; line-height: 1.45; font-weight: 800; }'));
+assert.ok(contextHtml.includes('class="step-shot-row"'));
+assert.ok(contextHtml.includes('.shot-strip { display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch; }'));
+assert.ok(contextHtml.includes('.shot-card { flex: 0 0 320px; width: 320px; max-width: 100%; height: 224px;'));
+assert.ok(contextHtml.includes('.shot-head { min-width: 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); }'));
+assert.ok(contextHtml.includes('.shot-body { min-width: 0; display: grid; grid-template-columns: 92px minmax(0, 1fr);'));
+assert.ok(contextHtml.includes('.shot-links a { display: flex; align-items: center; width: 100%; min-height: 22px;'));
+assert.ok(contextHtml.includes('.shot-label { min-width: 0; color: var(--text); font-size: 13px;'));
+assert.ok(contextHtml.includes('.shot-links { display: grid; align-content: start; gap: 4px; min-width: 0; color: var(--muted); font-size: 12px; }'));
+assert.ok(!contextHtml.includes('.shot-time { margin-top: auto;'));
+assert.ok(contextHtml.includes('class="shot-head"'));
+assert.ok(contextHtml.includes('class="shot-body"'));
+assert.ok(contextHtml.includes('class="shot-visual"'));
+assert.ok(!contextHtml.includes('class="shot-meta"'));
+assert.ok(!contextHtml.includes('class="step-review-evidence"'));
+assert.ok(!contextHtml.includes('class="step-evidence-title"'));
+assert.ok(!contextHtml.includes('暂无步骤截图'));
+assert.ok(!contextHtml.includes('<table class="step-table">'));
+assert.ok(!contextHtml.includes('<h2>截图证据</h2>\n    <table>'));
+assert.ok(contextHtml.includes('class="table-wrap"'));
+assert.ok(contextHtml.includes('<details class="debug-details">'));
+assert.ok(contextHtml.includes('<summary><span>调试信息</span><small>环境、事件、时间线和原始证据链接</small></summary>'));
+assert.ok(contextHtml.includes('class="debug-content"'));
+assert.ok(contextHtml.includes('class="debug-overview"'));
+assert.ok(contextHtml.includes('grid-template-columns: minmax(240px, 1.08fr) minmax(210px, .92fr) minmax(260px, 1.18fr) minmax(160px, .62fr)'));
+assert.ok(contextHtml.includes('class="debug-section compact"'));
+assert.ok(contextHtml.includes('技术标识'));
+assert.ok(contextHtml.includes(state.latestExecutionId));
+assert.ok(contextHtml.includes('source-'));
+assert.ok(contextHtml.includes('截图观察'));
+assert.ok(contextHtml.includes('操作结果'));
+assert.ok(contextHtml.includes('操作次数'));
+assert.ok(contextHtml.includes('等待 1'));
+assert.ok(contextHtml.includes('步骤复盘'));
+assert.ok(contextHtml.includes('shot-strip'));
+assert.ok(!contextHtml.includes('evidence-list'));
+assert.ok(!contextHtml.includes('width:260px">证据'));
+assert.ok(contextHtml.includes('screenshots/step-001-before.png'));
+assert.ok(contextHtml.includes('layouts/step-001-before.json'));
+assert.ok(contextHtml.includes('失败'));
+assert.ok(!contextHtml.includes('actionResult'));
+assert.ok(!contextHtml.includes('observation：'));
+assert.ok(!contextHtml.includes('+08:00'));
+run('node', ['scripts/apply-note.js', parsed.caseDir, '--text', '执行后补充仍应保留最近执行报告。', '--applies-to', 'step-002']);
+let refreshedHtml = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+let refreshedContext = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(refreshedHtml.includes('示例失败'));
+assert.ok(refreshedHtml.includes(`executions/${state.latestExecutionId}/screenshots/step-001-before.png`));
+assert.ok(!refreshedHtml.includes('源用例、执行契约或前置条件 Flow 已变更'));
+assert.ok(refreshedContext.includes('示例失败'));
+const historicalIndexCase = collectIndexCases(workspace).find((item) => item.caseDir === parsed.caseDir);
+assert.strictEqual(historicalIndexCase.status, 'FAIL');
+assert.strictEqual(historicalIndexCase.latestExecutionId, state.latestExecutionId);
+assert.ok(historicalIndexCase.platforms.some((item) => item.platform === 'harmony' && item.status === 'FAIL'));
+assert.ok(!refreshedHtml.includes('+08:00'));
+assert.ok(!refreshedContext.includes('+08:00'));
+run('node', ['scripts/update-env.js', parsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--screen', '1080x1920']);
+refreshedHtml = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+refreshedContext = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(refreshedHtml.includes('示例失败'));
+assert.ok(refreshedHtml.includes('1080x1920'));
+assert.ok(!refreshedHtml.includes('+08:00'));
+assert.ok(!refreshedContext.includes('+08:00'));
+run('node', ['scripts/parse-case.js', caseFile, '--cwd', workspace, '--refresh-from-input']);
+const staleSourceHtml = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+const staleSourceContext = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(staleSourceHtml.includes('示例失败'));
+assert.ok(staleSourceHtml.includes(`executions/${state.latestExecutionId}/screenshots/step-001-before.png`));
+assert.ok(!staleSourceHtml.includes('源用例变更'));
+assert.ok(staleSourceContext.includes('示例失败'));
+assert.ok(!staleSourceContext.includes('+08:00'));
+const currentSourceStart = JSON.parse(run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(parsed.caseDir, 'harmony', currentSourceStart.executionId);
+recordGlobalFlowScan(parsed.caseDir, 'harmony', currentSourceStart.executionId);
+run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'FAIL',
+  reason: '新 source 已重新执行',
+}), '--execution-id', currentSourceStart.executionId]);
+run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'FAIL', '--failure-code', 'ASSERTION_FAILED', '--failed-step', 'step-001', '--reason', '新 source 已重新执行', '--execution-id', currentSourceStart.executionId]);
+const currentSourceHtml = fs.readFileSync(path.join(parsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+assert.ok(currentSourceHtml.includes('新 source 已重新执行'));
+assert.ok(!currentSourceHtml.includes('源用例变更'));
+
+const invalidStart = JSON.parse(run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(parsed.caseDir, 'harmony', invalidStart.executionId);
+recordGlobalFlowScan(parsed.caseDir, 'harmony', invalidStart.executionId);
+const invalidEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({ type: 'observation', label: 'bad', scope: 'global', artifacts: { screenshot: '../bad.png' } }), '--execution-id', invalidStart.executionId]);
+assert.notStrictEqual(invalidEvent.status, 0);
+assert.ok(invalidEvent.stderr.includes('Invalid artifact path'));
+const forgedObservationEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'observation',
+  scope: 'global',
+  label: 'forged-observation',
+  source: 'observe.sh',
+  artifacts: { screenshot: 'screenshots/forged-observation.png' },
+}), '--execution-id', invalidStart.executionId]);
+assert.notStrictEqual(forgedObservationEvent.status, 0);
+assert.ok(forgedObservationEvent.stderr.includes('OBSERVATION_SOURCE_REQUIRED'));
+const missingActionSourceEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'launchApp',
+  ok: true,
+}), '--execution-id', invalidStart.executionId]);
+assert.notStrictEqual(missingActionSourceEvent.status, 0);
+assert.ok(missingActionSourceEvent.stderr.includes('ACTION_RESULT_SOURCE_REQUIRED'));
+const forgedActionSourceEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'actionResult',
+  stepId: 'step-001',
+  source: 'action.sh',
+  action: 'launchApp',
+  ok: true,
+}), '--execution-id', invalidStart.executionId]);
+assert.notStrictEqual(forgedActionSourceEvent.status, 0);
+assert.ok(forgedActionSourceEvent.stderr.includes('ACTION_RESULT_SOURCE_REQUIRED'));
+const stepActionWithoutFlowScan = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-action-json', JSON.stringify({
+  type: 'actionResult',
+  stepId: 'step-001',
+  source: 'action.sh',
+  action: 'wait',
+  ok: true,
+  authorization: actionAuthorization(json(path.join(invalidStart.execDir, 'case.snapshot.json')).steps[0]),
+}), '--execution-id', invalidStart.executionId], { env: { ...process.env, MAVT_ACTION_WRITER: '1' } });
+assert.strictEqual(stepActionWithoutFlowScan.status, 0);
+const invalidCoordinateEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-action-json', JSON.stringify({
+  type: 'actionResult',
+  stepId: 'step-001',
+  source: 'action.sh',
+  action: 'tap',
+  ok: true,
+  x: 1,
+  y: 2,
+  coordinateSource: 'layout',
+  authorization: actionAuthorization(json(path.join(invalidStart.execDir, 'case.snapshot.json')).steps[0]),
+}), '--execution-id', invalidStart.executionId], { env: { ...process.env, MAVT_ACTION_WRITER: '1' } });
+assert.notStrictEqual(invalidCoordinateEvent.status, 0);
+assert.ok(invalidCoordinateEvent.stderr.includes('coordinateEvidence is required'));
+const manualCoordinateEvent = runAllowFailure('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--record-action-json', JSON.stringify({
+  type: 'actionResult',
+  stepId: 'step-001',
+  source: 'action.sh',
+  action: 'tap',
+  ok: true,
+  x: 1,
+  y: 2,
+  coordinateSource: 'manual',
+  coordinateEvidence: '人工指定坐标',
+  authorization: actionAuthorization(json(path.join(invalidStart.execDir, 'case.snapshot.json')).steps[0]),
+}), '--execution-id', invalidStart.executionId], { env: { ...process.env, MAVT_ACTION_WRITER: '1' } });
+assert.notStrictEqual(manualCoordinateEvent.status, 0);
+assert.ok(manualCoordinateEvent.stderr.includes('coordinateSource must be one of'));
+run('node', ['scripts/run-case.js', parsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', 'invalid event guard cleanup', '--execution-id', invalidStart.executionId]);
+
+const preconditionTerminalFile = path.join(sourceRoot, 'cases', 'precondition-terminal.md');
+write(preconditionTerminalFile, `# 前置条件终态自动收尾测试
+
+## 前置条件
+- 真实支付完成。
+
+## 步骤
+1. 预期看到支付成功页。
+`);
+const preconditionTerminalParsed = JSON.parse(run('node', ['scripts/parse-case.js', preconditionTerminalFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', preconditionTerminalParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const preconditionTerminalStart = JSON.parse(run('node', ['scripts/run-case.js', preconditionTerminalParsed.caseDir, '--platform', 'harmony', '--start']));
+const unknownPreconditionId = runAllowFailure('node', ['scripts/run-case.js', preconditionTerminalParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-999',
+  status: 'BLOCKED',
+  reason: '未知前置条件 id 不应触发收尾',
+}), '--execution-id', preconditionTerminalStart.executionId]);
+assert.notStrictEqual(unknownPreconditionId.status, 0);
+assert.ok(unknownPreconditionId.stderr.includes('PRECONDITION_REQUIRED'));
+assert.ok(!fs.existsSync(path.join(preconditionTerminalStart.execDir, 'result.json')));
+recordPreconditions(preconditionTerminalParsed.caseDir, 'harmony', preconditionTerminalStart.executionId, 'BLOCKED', '前置条件不支持自动处理');
+const preconditionTerminalResult = json(path.join(preconditionTerminalStart.execDir, 'result.json'));
+assert.strictEqual(preconditionTerminalResult.status, 'BLOCKED');
+assert.strictEqual(preconditionTerminalResult.failureCode, 'PRECONDITION_UNSUPPORTED');
+assert.strictEqual(json(path.join(preconditionTerminalStart.execDir, 'execution.json')).finalized, true);
+
+const passFile = path.join(sourceRoot, 'cases', 'pass.md');
+write(passFile, `# 通过证据测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+2. 预期看到首页。
+`);
+const passParsed = JSON.parse(run('node', ['scripts/parse-case.js', passFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', passParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const passStart = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--start']));
+const missingPrecondition = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '未写前置条件就进入步骤',
+}), '--execution-id', passStart.executionId]);
+assert.notStrictEqual(missingPrecondition.status, 0);
+assert.ok(missingPrecondition.stderr.includes('PRECONDITION_REQUIRED'));
+recordPreconditions(passParsed.caseDir, 'harmony', passStart.executionId);
+const assertionStillNeedsEvidenceWithoutFlowScan = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '步骤不再需要 FlowScan，但仍然需要观察证据',
+}), '--execution-id', passStart.executionId]);
+assert.notStrictEqual(assertionStillNeedsEvidenceWithoutFlowScan.status, 0);
+assert.ok(assertionStillNeedsEvidenceWithoutFlowScan.stderr.includes('ASSERTION_EVIDENCE_REQUIRED'));
+recordGlobalFlowScan(passParsed.caseDir, 'harmony', passStart.executionId);
+const passSkipStep = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-002',
+  status: 'PASS',
+  reason: '试图跳过第一步',
+}), '--execution-id', passStart.executionId]);
+assert.notStrictEqual(passSkipStep.status, 0);
+assert.ok(passSkipStep.stderr.includes('STEP_ORDER_VIOLATION'));
+assert.ok(!fs.existsSync(path.join(passStart.execDir, 'result.json')));
+const restartWithStepIdAction = runAllowFailure('./scripts/action.sh', ['--case-dir', passParsed.caseDir, '--platform', 'harmony', '--execution-id', passStart.executionId, '--step-id', 'step-001', '--type', 'restartApp', '--settle-ms', '0']);
+assert.notStrictEqual(restartWithStepIdAction.status, 0);
+assert.ok(restartWithStepIdAction.stderr.includes('ACTION_CONTRACT_INVALID'));
+const restartWithStepIdRecord = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-action-json', JSON.stringify({
+  source: 'action.sh',
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'restartApp',
+  ok: true,
+  authorization: actionAuthorization(json(path.join(passStart.execDir, 'case.snapshot.json')).steps[0]),
+}), '--execution-id', passStart.executionId], { env: { ...process.env, MAVT_ACTION_WRITER: '1' } });
+assert.notStrictEqual(restartWithStepIdRecord.status, 0);
+assert.ok(restartWithStepIdRecord.stderr.includes('ACTION_CONTRACT_INVALID'));
+const passNakedAssertion = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '没有引用观察证据的裸断言',
+}), '--execution-id', passStart.executionId]);
+assert.notStrictEqual(passNakedAssertion.status, 0);
+assert.ok(passNakedAssertion.stderr.includes('ASSERTION_EVIDENCE_REQUIRED'));
+recordActionResult(passParsed.caseDir, 'harmony', passStart.executionId, {
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'wait',
+  ms: 0,
+  ok: true,
+});
+recordActionResult(passParsed.caseDir, 'harmony', passStart.executionId, {
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'back',
+  ok: true,
+});
+recordStepObservation(passParsed.caseDir, 'harmony', passStart.executionId, 'step-001', 'step-001-action-after');
+const passMissingEvidence = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', passStart.executionId]));
+assert.ok(fs.existsSync(passMissingEvidence.result));
+const passMissingEvidenceResult = json(path.join(passStart.execDir, 'result.json'));
+assert.strictEqual(passMissingEvidenceResult.status, 'FAIL');
+assert.strictEqual(passMissingEvidenceResult.requestedStatus, 'PASS');
+assert.strictEqual(passMissingEvidenceResult.failureCode, 'ASSERTION_UNKNOWN');
+assert.strictEqual(passMissingEvidenceResult.failedStep, 'step-001');
+assert.strictEqual(json(path.join(passStart.execDir, 'execution.json')).finalized, true);
+const passHtml = fs.readFileSync(path.join(passParsed.caseDir, 'CONTEXT.html'), 'utf8');
+assert.ok(passHtml.includes('预期看到首页'));
+assert.ok(!passHtml.match(/预期看到首页[\s\S]*?<span class="pill pass">通过<\/span>/));
+const passSuccessStart = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(passParsed.caseDir, 'harmony', passSuccessStart.executionId);
+recordGlobalFlowScan(passParsed.caseDir, 'harmony', passSuccessStart.executionId);
+recordActionResult(passParsed.caseDir, 'harmony', passSuccessStart.executionId, {
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'wait',
+  ms: 0,
+  ok: true,
+});
+recordActionResult(passParsed.caseDir, 'harmony', passSuccessStart.executionId, {
+  type: 'actionResult',
+  stepId: 'step-001',
+  action: 'back',
+  ok: true,
+});
+const paceEvidence = recordStepObservation(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-001', 'step-001-after');
+const repeatedObservePrecheck = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--check-budget', '--event-type', 'observation', '--step-id', 'step-001', '--execution-id', passSuccessStart.executionId]));
+assert.strictEqual(repeatedObservePrecheck.budgetOk, true);
+assert.strictEqual(repeatedObservePrecheck.paceHint?.level, 'WARN');
+assert.strictEqual(repeatedObservePrecheck.paceHint?.suggestedNextAction, 'assert_or_act');
+const actionAndObservationCannotAdvance = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'decision',
+  stepId: 'step-002',
+  decision: 'assert_pass',
+  reason: '动作成功并有后续 observation 仍不能代替步骤 PASS 断言',
+}), '--execution-id', passSuccessStart.executionId]);
+assert.notStrictEqual(actionAndObservationCannotAdvance.status, 0);
+assert.ok(actionAndObservationCannotAdvance.stderr.includes('进入 step-002 前，必须先为 step-001 写入通过证据'));
+const passWithoutPerception = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '引用了截图但没有当前视觉判断',
+  evidence: [paceEvidence],
+}), '--execution-id', passSuccessStart.executionId]);
+assert.notStrictEqual(passWithoutPerception.status, 0);
+assert.ok(passWithoutPerception.stderr.includes('status=USABLE'));
+recordUsablePerception(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-001', paceEvidence);
+const passWithLabelEvidence = runAllowFailure('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: 'label 不能充当业务证据',
+  evidence: ['step-001-after'],
+}), '--execution-id', passSuccessStart.executionId]);
+assert.notStrictEqual(passWithLabelEvidence.status, 0);
+assert.ok(passWithLabelEvidence.stderr.includes('label 不能作为业务证据'));
+recordPassAssertion(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-001', 'App 已打开，当前页面满足第一步目标', paceEvidence);
+recordPassAssertion(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-002', '看到首页', recordStepObservation(passParsed.caseDir, 'harmony', passSuccessStart.executionId, 'step-002', 'step-002-after'));
+run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', passSuccessStart.executionId]);
+const passResult = json(path.join(passSuccessStart.execDir, 'result.json'));
+assert.strictEqual(passResult.status, 'PASS');
+const passStateBefore = json(path.join(passParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+const duplicateFinalize = JSON.parse(run('node', ['scripts/run-case.js', passParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', passSuccessStart.executionId]));
+assert.strictEqual(duplicateFinalize.alreadyFinalized, true);
+const passStateAfter = json(path.join(passParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.strictEqual(passStateAfter.executionCount, passStateBefore.executionCount);
+indexHtml = fs.readFileSync(path.join(workspace, 'index.html'), 'utf8');
+assert.ok(indexHtml.includes('通过证据测试'));
+assert.ok(indexHtml.includes('通过'));
+assert.ok(!indexHtml.includes('关键信息'));
+assert.ok(indexHtml.includes('class="platform-overview"'));
+assert.ok(indexHtml.includes('class="platform-status-grid"'));
+assert.ok(indexHtml.includes('class="platform-pass-rate"'));
+assert.ok(indexHtml.includes('grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px'));
+assert.ok(indexHtml.includes('min-height: 132px'));
+assert.ok(indexHtml.includes('padding: 16px 18px'));
+assert.ok(indexHtml.includes('font-size: 18px; line-height: 1.1'));
+assert.ok(!indexHtml.includes('class="overview-panel"'));
+assert.ok(indexHtml.includes('<em>通过率</em><b>'));
+assert.ok(!indexHtml.includes('class="pass-rate"'));
+assert.ok(indexHtml.includes('class="case-kicker"'));
+assert.ok(!indexHtml.includes('class="case-conclusion"'));
+assert.ok(indexHtml.includes('class="platform-details"'));
+assert.ok(indexHtml.includes('class="platform-detail-list"'));
+assert.ok(indexHtml.includes('grid-template-columns: 1fr; gap: 8px'));
+assert.ok(indexHtml.includes('grid-template-columns: minmax(112px, auto) minmax(260px, 1fr) auto'));
+assert.ok(indexHtml.includes('grid-template-columns: 76px 92px minmax(220px, 1fr) minmax(220px, 1fr)'));
+assert.ok(!indexHtml.includes('min-width: 560px'));
+assert.ok(indexHtml.includes('font-variant-numeric: tabular-nums'));
+assert.ok(indexHtml.includes('-webkit-line-clamp: 2'));
+assert.ok(!indexHtml.includes('class="case-state"'));
+assert.ok(indexHtml.includes('执行结果'));
+assert.ok(!indexHtml.includes('PASS 缺少步骤证据'));
+assert.ok(!indexHtml.includes('PRECONDITION_NOT_MET'));
+assert.strictEqual(displayFailureCode('PRECONDITION_NOT_MET'), '前置条件不满足');
+assert.ok(!indexHtml.includes('<span>执行结果</span>ASSERTION_UNKNOWN'));
+assert.ok(indexHtml.includes('开始'));
+assert.ok(indexHtml.includes('结束'));
+assert.ok(!indexHtml.includes('+08:00'));
+const renderedIndex = run('node', ['scripts/render-index.js', workspace]).trim();
+assert.strictEqual(renderedIndex, path.join(workspace, 'index.html'));
+
+const unknownFile = path.join(sourceRoot, 'cases', 'unknown.md');
+write(unknownFile, `# 未知断言测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 预期看到首页。
+`);
+const unknownParsed = JSON.parse(run('node', ['scripts/parse-case.js', unknownFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', unknownParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const unknownStart = JSON.parse(run('node', ['scripts/run-case.js', unknownParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(unknownParsed.caseDir, 'harmony', unknownStart.executionId);
+recordGlobalFlowScan(unknownParsed.caseDir, 'harmony', unknownStart.executionId);
+run('node', ['scripts/run-case.js', unknownParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'UNKNOWN',
+  reason: '证据不足',
+}), '--execution-id', unknownStart.executionId]);
+run('node', ['scripts/run-case.js', unknownParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--failed-step', 'step-001', '--execution-id', unknownStart.executionId]);
+const unknownResult = json(path.join(unknownStart.execDir, 'result.json'));
+assert.strictEqual(unknownResult.status, 'FAIL');
+assert.strictEqual(unknownResult.requestedStatus, 'UNKNOWN');
+assert.strictEqual(unknownResult.failureCode, 'ASSERTION_UNKNOWN');
+const unknownMetrics = json(path.join(unknownStart.execDir, 'metrics.json'));
+assert.strictEqual(unknownMetrics.steps.failed, 0);
+assert.strictEqual(unknownMetrics.steps.unknown, 1);
+
+const blockingPriorityFile = path.join(sourceRoot, 'cases', 'blocking-priority.md');
+write(blockingPriorityFile, `# 阻塞优先级测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 预期看到首页。
+`);
+const blockingPriorityParsed = JSON.parse(run('node', ['scripts/parse-case.js', blockingPriorityFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const blockingPriorityStart = JSON.parse(run('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(blockingPriorityParsed.caseDir, 'harmony', blockingPriorityStart.executionId);
+recordGlobalFlowScan(blockingPriorityParsed.caseDir, 'harmony', blockingPriorityStart.executionId);
+run('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'UNKNOWN',
+  reason: '先记录一个证据不足断言',
+}), '--execution-id', blockingPriorityStart.executionId]);
+const unsupportedToolError = runAllowFailure('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'TOOL_ERROR', '--failed-step', 'step-001', '--reason', '不能只凭 Agent 结论写工具失败', '--execution-id', blockingPriorityStart.executionId]);
+assert.notStrictEqual(unsupportedToolError.status, 0);
+assert.ok(unsupportedToolError.stderr.includes('TOOL_ERROR_EVIDENCE_REQUIRED'));
+recordActionResult(blockingPriorityParsed.caseDir, 'harmony', blockingPriorityStart.executionId, {
+  type: 'actionResult',
+  action: 'wait',
+  ok: false,
+  failureCode: 'TOOL_ERROR',
+  error: 'self-test deterministic tool failure',
+});
+run('node', ['scripts/run-case.js', blockingPriorityParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'TOOL_ERROR', '--failed-step', 'step-001', '--reason', '已有正式工具失败事实，应优先归为阻塞', '--execution-id', blockingPriorityStart.executionId]);
+const blockingPriorityResult = json(path.join(blockingPriorityStart.execDir, 'result.json'));
+assert.strictEqual(blockingPriorityResult.status, 'BLOCKED');
+assert.strictEqual(blockingPriorityResult.failureCode, 'TOOL_ERROR');
+
+const visualEvidenceFile = path.join(sourceRoot, 'cases', 'visual-evidence.md');
+write(visualEvidenceFile, `# 视觉输入复核测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 预期看到首页。
+`);
+const visualEvidenceParsed = JSON.parse(run('node', ['scripts/parse-case.js', visualEvidenceFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const visualEvidenceStart = JSON.parse(run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(visualEvidenceParsed.caseDir, 'harmony', visualEvidenceStart.executionId);
+const visualEvidenceScreenshot = recordStepObservation(visualEvidenceParsed.caseDir, 'harmony', visualEvidenceStart.executionId, 'step-001', 'visual-evidence-source');
+let visualEvents = fs.readFileSync(path.join(visualEvidenceStart.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+const visualObservation = visualEvents.findLast((event) => event.type === 'observation');
+assert.strictEqual(visualObservation.artifactMetadata.screenshot.decodeStatus, 'VALID');
+assert.strictEqual(visualObservation.artifactMetadata.screenshot.sha256.length, 64);
+const previewArtifactPerception = {
+  type: 'perception',
+  stepId: 'step-001',
+  status: 'UNUSABLE',
+  attemptId: 'preview-attempt-001',
+  presentationMode: 'scaled',
+  evidence: [visualEvidenceScreenshot],
+  qualityClaim: blackStripeClaim,
+  reason: 'Agent 预览中疑似存在竖向黑块',
+};
+run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify(previewArtifactPerception), '--execution-id', visualEvidenceStart.executionId]);
+const firstVisualRetryWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--execution-id', visualEvidenceStart.executionId,
+]));
+assert.strictEqual(firstVisualRetryWork.nextWork.visualRetryContext.attemptCount, 1);
+assert.strictEqual(firstVisualRetryWork.nextWork.visualRetryContext.retryAllowed, true);
+const duplicatePreviewAttempt = runAllowFailure('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify(previewArtifactPerception), '--execution-id', visualEvidenceStart.executionId]);
+assert.notStrictEqual(duplicatePreviewAttempt.status, 0);
+assert.ok(duplicatePreviewAttempt.stderr.includes('VISUAL_INPUT_RETRY_INVALID'));
+run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'decision',
+  stepId: 'step-001',
+  decision: 'retry_visual_input',
+  reason: '以原始尺寸重新打开同一原图',
+}), '--execution-id', visualEvidenceStart.executionId]);
+const linkedVisualRetryWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--execution-id', visualEvidenceStart.executionId,
+]));
+assert.strictEqual(linkedVisualRetryWork.nextWork.visualRetryContext.requiredRetryOf, 'preview-attempt-001');
+run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  ...previewArtifactPerception,
+  attemptId: 'preview-attempt-002',
+  retryOf: 'preview-attempt-001',
+  presentationMode: 'original',
+}), '--execution-id', visualEvidenceStart.executionId]);
+visualEvents = fs.readFileSync(path.join(visualEvidenceStart.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+const exhaustedVisualRetryWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--execution-id', visualEvidenceStart.executionId,
+]));
+assert.strictEqual(exhaustedVisualRetryWork.nextWork.visualRetryContext.attemptCount, 2);
+assert.strictEqual(exhaustedVisualRetryWork.nextWork.visualRetryContext.retryAllowed, false);
+const visualChecks = visualEvents.filter((event) => event.type === 'evidenceCheck');
+assert.strictEqual(visualChecks.length, 2);
+assert.deepStrictEqual(visualChecks.map((event) => event.attemptId), ['preview-attempt-001', 'preview-attempt-002']);
+assert.ok(visualChecks.every((event) => event.source === 'run-case.js' && event.verdict === 'CLAIM_NOT_PRESENT_IN_SOURCE'));
+const normalizedPreviewPerception = visualEvents.filter((event) => event.type === 'perception').slice(-1)[0];
+assert.strictEqual(normalizedPreviewPerception.status, 'UNCERTAIN');
+assert.strictEqual(normalizedPreviewPerception.requestedStatus, 'UNUSABLE');
+assert.strictEqual(normalizedPreviewPerception.inputArtifact.sha256, visualObservation.artifactMetadata.screenshot.sha256);
+assert.strictEqual(normalizedPreviewPerception.inputArtifact.sourceVerified, true);
+assert.strictEqual(normalizedPreviewPerception.inputArtifact.presentationVerified, false);
+const forgedEvidenceCheck = runAllowFailure('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'evidenceCheck',
+  source: 'run-case.js',
+  verdict: 'CLAIM_NOT_PRESENT_IN_SOURCE',
+}), '--execution-id', visualEvidenceStart.executionId]);
+assert.notStrictEqual(forgedEvidenceCheck.status, 0);
+assert.ok(forgedEvidenceCheck.stderr.includes('EVIDENCE_CHECK_SOURCE_REQUIRED'));
+run('node', ['scripts/run-case.js', visualEvidenceParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'VISUAL_INPUT_UNVERIFIABLE', '--failed-step', 'step-001', '--reason', '两次预览均与原始像素复核冲突', '--execution-id', visualEvidenceStart.executionId]);
+const visualEvidenceResult = json(path.join(visualEvidenceStart.execDir, 'result.json'));
+const visualEvidenceMetrics = json(path.join(visualEvidenceStart.execDir, 'metrics.json'));
+assert.strictEqual(visualEvidenceResult.failureCode, 'VISUAL_INPUT_UNVERIFIABLE');
+assert.strictEqual(visualEvidenceMetrics.visualEvidence.checks, 2);
+assert.strictEqual(visualEvidenceMetrics.visualEvidence.claimAbsent, 2);
+
+const changedEvidenceFile = path.join(sourceRoot, 'cases', 'changed-evidence.md');
+write(changedEvidenceFile, `# 截图哈希变化测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 预期看到首页。
+`);
+const changedEvidenceParsed = JSON.parse(run('node', ['scripts/parse-case.js', changedEvidenceFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', changedEvidenceParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const changedEvidenceStart = JSON.parse(run('node', ['scripts/run-case.js', changedEvidenceParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(changedEvidenceParsed.caseDir, 'harmony', changedEvidenceStart.executionId);
+const changedScreenshot = recordStepObservation(changedEvidenceParsed.caseDir, 'harmony', changedEvidenceStart.executionId, 'step-001', 'changed-evidence-source');
+recordUsablePerception(changedEvidenceParsed.caseDir, 'harmony', changedEvidenceStart.executionId, 'step-001', changedScreenshot);
+writeTestPng(path.join(changedEvidenceStart.execDir, changedScreenshot), { pixel: () => [0, 0, 0, 255] });
+const changedAssertion = runAllowFailure('node', ['scripts/run-case.js', changedEvidenceParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'assertion',
+  stepId: 'step-001',
+  status: 'PASS',
+  reason: '不应接受被替换的截图',
+  evidence: [changedScreenshot],
+}), '--execution-id', changedEvidenceStart.executionId]);
+assert.notStrictEqual(changedAssertion.status, 0);
+assert.ok(changedAssertion.stderr.includes('OBSERVATION_ARTIFACT_CHANGED'));
+run('node', ['scripts/run-case.js', changedEvidenceParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--failure-code', 'OBSERVATION_ARTIFACT_CHANGED', '--failed-step', 'step-001', '--reason', '截图哈希发生变化', '--execution-id', changedEvidenceStart.executionId]);
+assert.strictEqual(json(path.join(changedEvidenceStart.execDir, 'result.json')).failureCode, 'OBSERVATION_ARTIFACT_CHANGED');
+
+const fakeAndroidBin = path.join(tmp, 'fake-android-bin');
+const fakeAdbLog = path.join(tmp, 'fake-adb.log');
+const fakeAdb = path.join(fakeAndroidBin, 'adb');
+write(fakeAdb, `#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "\${args[0]:-}" == "-s" ]]; then
+  args=("\${args[@]:2}")
+fi
+printf '%s\\n' "\${args[*]}" >> "$ADB_LOG"
+state_file="\${ADB_STATE:-}"
+if [[ -z "$state_file" ]]; then
+  state_file="$(dirname "$ADB_LOG")/fake-adb-state"
+fi
+if [[ "\${args[0]:-}" == "devices" ]]; then
+  printf 'List of devices attached\\nemulator-5554\\tdevice\\n'
+elif [[ "\${args[0]:-}" == "install" ]]; then
+  printf 'Success\\n'
+elif [[ "\${args[0]:-}" == "exec-out" && "\${args[1]:-}" == "screencap" ]]; then
+  cat "$MAVT_TEST_PNG"
+elif [[ "\${args[0]:-}" == "pull" ]]; then
+  dest="\${args[2]}"
+  mkdir -p "$(dirname "$dest")"
+  printf '<hierarchy><node text="登录" bounds="[1,2][30,40]"/></hierarchy>' > "$dest"
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uiautomator" ]]; then
+  printf 'UI hierchary dumped to: %s\\n' "\${args[3]:-/sdcard/window.xml}"
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "dumpsys" && "\${args[2]:-}" == "window" ]]; then
+  printf 'mCurrentFocus=Window{abc u0 com.example.demo/.MainActivity}\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "dumpsys" && "\${args[2]:-}" == "activity" ]]; then
+  printf 'topResumedActivity=ActivityRecord{abc u0 com.example.demo/.MainActivity t1}\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "wm" && "\${args[2]:-}" == "size" ]]; then
+  printf 'Physical size: 1080x2400\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "pm" && "\${args[2]:-}" == "path" ]]; then
+  printf 'package:/data/app/mavt.android.ime/base.apk\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "settings" && "\${args[2]:-}" == "get" ]]; then
+  printf 'com.example/.Ime\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "ime" && "\${args[2]:-}" == "list" ]]; then
+  printf 'mavt.android.ime/.MavtInputMethodService\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "ime" ]]; then
+  printf 'Input method changed\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "am" && "\${args[2]:-}" == "start" && "\${args[3]:-}" == "-n" ]]; then
+  if [[ "\${args[4]:-}" == *"PrivateActivity"* ]]; then
+    printf 'SecurityException: Permission Denial: starting Intent not exported\\n' >&2
+    exit 255
+  fi
+  mkdir -p "$(dirname "$state_file")"
+  printf '34567\\n' > "$state_file"
+  printf 'Starting: Intent { cmp=%s }\\n' "\${args[4]:-}"
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "am" && "\${args[2]:-}" == "force-stop" ]]; then
+  if [[ "\${ADB_FORCE_STOP_FAIL:-}" == "1" ]]; then
+    printf 'Failure [not stopped]\\n' >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$state_file")"
+  : > "$state_file"
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "am" && "\${args[2]:-}" == "broadcast" ]]; then
+  printf 'Broadcast completed: result=-1, data="OK"\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "monkey" ]]; then
+  mkdir -p "$(dirname "$state_file")"
+  printf '45678\\n' > "$state_file"
+  printf 'Events injected: 1\\n'
+elif [[ "\${args[0]:-}" == "logcat" ]]; then
+  printf 'fake android log\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "pidof" ]]; then
+  if [[ -s "$state_file" ]]; then
+    cat "$state_file"
+  else
+    exit 1
+  fi
+fi
+`);
+fs.chmodSync(fakeAdb, 0o755);
+const fakeAdbState = path.join(tmp, 'fake-adb-state');
+const fakeAndroidImeCache = path.join(tmp, 'fake-android-ime-cache');
+write(path.join(fakeAndroidImeCache, 'mavt-input.apk'), 'fake apk\n');
+write(path.join(fakeAndroidImeCache, 'source.sha256'), treeSha256(path.join(repo, 'scripts/platform/adapters/android/ime')));
+const fakeAndroidEnv = {
+  ...process.env,
+  PATH: `${fakeAndroidBin}:${process.env.PATH}`,
+  ADB_LOG: fakeAdbLog,
+  ADB_STATE: fakeAdbState,
+  MAVT_TEST_PNG: sharedTestPng,
+  MAVT_ACTION_SETTLE_MS: '0',
+  MAVT_ANDROID_IME_BUILD_DIR: fakeAndroidImeCache,
+};
+
+const androidProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'android'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidProbe.platform, 'android');
+assert.deepStrictEqual(androidProbe.targets, ['emulator-5554']);
+assert.deepStrictEqual(androidProbe.devices, [{ id: 'emulator-5554', serial: 'emulator-5554' }]);
+assert.strictEqual(androidProbe.ready, true);
+assert.ok(Array.isArray(androidProbe.diagnostics));
+assert.ok(!androidProbe.diagnostics.some((item) => item.level === 'ERROR'));
+assert.strictEqual(androidProbe.capabilities.adb, true);
+assert.strictEqual(androidProbe.capabilities.screenshot, true);
+assert.strictEqual(androidProbe.capabilities.layout, true);
+assert.strictEqual(androidProbe.capabilities.foregroundApp, true);
+assert.strictEqual(androidProbe.capabilities.launchApp, true);
+assert.ok(androidProbe.capabilities.actions.includes('restartApp'));
+assert.ok(androidProbe.capabilities.actions.includes('tap'));
+assert.ok(androidProbe.capabilities.actions.includes('longPress'));
+assert.ok(androidProbe.capabilities.actions.includes('inputText'));
+assert.ok(androidProbe.capabilities.dependencies.some((item) => item.id === 'mavtInputIme'));
+const androidProbeNoAdb = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'android'], { env: { ...process.env, PATH: `${path.dirname(process.execPath)}:/bin:/usr/bin` } }));
+assert.strictEqual(androidProbeNoAdb.ready, false);
+assert.ok(androidProbeNoAdb.diagnostics.some((item) => item.id === 'adbMissing' && item.level === 'ERROR'));
+
+const androidLaunchFallback = JSON.parse(run('./scripts/platform/adapters/android/atoms/launch-app.sh', ['--device', 'emulator-5554', '--app', 'com.example.demo', '--entry', 'PrivateActivity'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidLaunchFallback.action, 'launchApp');
+assert.strictEqual(androidLaunchFallback.ok, true);
+assert.strictEqual(androidLaunchFallback.launchMethod, 'monkey-fallback');
+assert.ok(androidLaunchFallback.fallbackReason.includes('not exported'));
+
+fs.writeFileSync(fakeAdbState, '23456\n');
+const androidRestart = JSON.parse(run('./scripts/platform/adapters/android/atoms/restart-app.sh', ['--device', 'emulator-5554', '--app', 'com.example.demo', '--entry', 'MainActivity'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidRestart.action, 'restartApp');
+assert.strictEqual(androidRestart.ok, true);
+assert.strictEqual(androidRestart.restart, true);
+assert.strictEqual(androidRestart.coldStartVerified, true);
+assert.strictEqual(androidRestart.oldPid, '23456');
+assert.strictEqual(androidRestart.newPid, '34567');
+assert.strictEqual(androidRestart.stopMethod, 'am-force-stop');
+
+const androidFile = path.join(sourceRoot, 'cases', 'android.md');
+write(androidFile, `# Android 适配测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 点击「登录」。
+`);
+const androidParsed = JSON.parse(run('node', ['scripts/parse-case.js', androidFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', androidParsed.caseDir, '--platform', 'android', '--device', 'emulator-5554', '--app', 'com.example.demo', '--entry', 'MainActivity']);
+const androidStartBeforePrepare = runAllowFailure('node', ['scripts/run-case.js', androidParsed.caseDir, '--platform', 'android', '--start']);
+assert.notStrictEqual(androidStartBeforePrepare.status, 0);
+assert.ok(androidStartBeforePrepare.stderr.includes('Environment dependencies are not prepared'));
+const androidPrepare = JSON.parse(run('./scripts/prepare-env.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidPrepare.ok, true);
+assert.strictEqual(androidPrepare.dependencies[0].id, 'mavtInputIme');
+assert.strictEqual(androidPrepare.dependencies[0].ok, true);
+const androidPreparedState = json(path.join(androidParsed.caseDir, 'platforms', 'android', 'state.json'));
+assert.strictEqual(androidPreparedState.dependencies.mavtInputIme.ok, true);
+const androidPreparedContext = fs.readFileSync(path.join(androidParsed.caseDir, 'platforms', 'android', 'CONTEXT.md'), 'utf8');
+const androidPreparedHtml = fs.readFileSync(path.join(androidParsed.caseDir, 'platforms', 'android', 'CONTEXT.html'), 'utf8');
+assert.ok(androidPreparedContext.includes('## 平台依赖'));
+assert.ok(androidPreparedContext.includes('mavtInputIme: READY'));
+assert.ok(androidPreparedHtml.includes('<h2>平台依赖</h2>'));
+assert.ok(androidPreparedHtml.includes('mavtInputIme'));
+assert.ok(androidPreparedHtml.includes('class="dependency-list"'));
+assert.ok(androidPreparedHtml.includes('class="dependency-card"'));
+assert.ok(!androidPreparedHtml.includes('<th>ID</th><th>名称</th><th>状态</th><th>阶段</th><th>必需</th><th>详情</th>'));
+const androidStart = JSON.parse(run('node', ['scripts/run-case.js', androidParsed.caseDir, '--platform', 'android', '--start']));
+assert.ok(androidStart.execDir.includes('/platforms/android/executions/'));
+recordPreconditions(androidParsed.caseDir, 'android', androidStart.executionId);
+recordGlobalFlowScan(androidParsed.caseDir, 'android', androidStart.executionId);
+const androidTimelinePath = path.join(androidStart.execDir, 'timeline.jsonl');
+const androidTimelineBeforeInvalidAction = fs.readFileSync(androidTimelinePath, 'utf8');
+const androidInvalidActionArgument = runAllowFailure('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--definitely-unknown', 'value'], { env: fakeAndroidEnv });
+assert.strictEqual(androidInvalidActionArgument.status, 2);
+assert.ok(androidInvalidActionArgument.stderr.includes('action.sh 未知参数'));
+assert.strictEqual(fs.readFileSync(androidTimelinePath, 'utf8'), androidTimelineBeforeInvalidAction);
+assert.ok(!fs.existsSync(path.join(androidStart.execDir, 'result.json')));
+const androidObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--label', 'step-001-before'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidObservation.platform, 'android');
+assert.strictEqual(androidObservation.label, '001-step-001-before');
+assert.strictEqual(androidObservation.artifacts.screenshot, 'screenshots/001-step-001-before.png');
+assert.strictEqual(androidObservation.artifacts.layout, 'layouts/001-step-001-before.xml');
+assert.strictEqual(androidObservation.app.foregroundApp, 'com.example.demo');
+assert.strictEqual(androidObservation.app.entry, 'MainActivity');
+assert.strictEqual(androidObservation.app.inTargetApp, true);
+const androidAction = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '1', '--y', '2', '--coordinate-source', 'layout', '--target-bounds', '0,0,2,3', '--coordinate-evidence', 'android uiautomator bounds', '--settle-ms', '0'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidAction.platform, 'android');
+assert.strictEqual(androidAction.action, 'tap');
+assert.strictEqual(androidAction.ok, true);
+assert.strictEqual(androidAction.coordinateSource, 'layout');
+const androidLongPress = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'longPress', '--x', '3', '--y', '4', '--duration-ms', '900', '--coordinate-source', 'layout', '--target-bounds', '0,0,8,9', '--coordinate-evidence', 'android uiautomator long press bounds', '--settle-ms', '0'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidLongPress.action, 'longPress');
+assert.strictEqual(androidLongPress.ok, true);
+assert.strictEqual(androidLongPress.durationMs, 900);
+assert.strictEqual(androidLongPress.coordinateSource, 'layout');
+const androidSwipe = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'swipe', '--from-x', '10', '--from-y', '10', '--to-x', '10', '--to-y', '130', '--velocity', '600', '--settle-ms', '0'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidSwipe.action, 'swipe');
+assert.strictEqual(androidSwipe.ok, true);
+assert.strictEqual(androidSwipe.durationMs, 200);
+assert.strictEqual(androidSwipe.requestedAction.velocity, 600);
+const androidInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', 'hello world', '--settle-ms', '0'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidInput.action, 'inputText');
+assert.strictEqual(androidInput.ok, true);
+assert.strictEqual(androidInput.inputMethod, 'mavt-input-ime');
+assert.strictEqual(androidInput.inputMode, 'replace');
+assert.strictEqual(androidInput.requestedAction.mode, 'replace');
+const androidUnicodeInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', '中文输入', '--settle-ms', '0'], { env: fakeAndroidEnv }));
+assert.strictEqual(androidUnicodeInput.action, 'inputText');
+assert.strictEqual(androidUnicodeInput.ok, true);
+assert.strictEqual(androidUnicodeInput.inputMethod, 'mavt-input-ime');
+assert.strictEqual(androidUnicodeInput.inputMode, 'replace');
+assert.strictEqual(androidUnicodeInput.inputStateUsage, 'diagnostic_only');
+assert.strictEqual(androidUnicodeInput.preInputState.hasEditableConnection, false);
+const androidWaitReason = '等待 Android 页面稳定';
+const androidWait = JSON.parse(run('./scripts/action.sh', ['--case-dir', androidParsed.caseDir, '--platform', 'android', '--execution-id', androidStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--reason', androidWaitReason], { env: fakeAndroidEnv }));
+assert.strictEqual(androidWait.action, 'wait');
+assert.strictEqual(androidWait.ok, true);
+assert.strictEqual(androidWait.ms, 0);
+assert.strictEqual(androidWait.requestedAction.reason, androidWaitReason);
+run('node', ['scripts/run-case.js', androidParsed.caseDir, '--platform', 'android', '--finalize', '--status', 'UNKNOWN', '--reason', 'Android adapter smoke test complete', '--execution-id', androidStart.executionId]);
+const fakeAdbOutput = fs.readFileSync(fakeAdbLog, 'utf8');
+assert.ok(fakeAdbOutput.includes('shell am start -n com.example.demo/.PrivateActivity'));
+assert.ok(fakeAdbOutput.includes('shell monkey -p com.example.demo 1'));
+assert.ok(fakeAdbOutput.includes('--es mode replace'));
+assert.ok(!fakeAdbOutput.includes('shell input text'));
+assert.ok(fakeAdbOutput.includes('exec-out screencap -p'));
+assert.ok(fakeAdbOutput.includes('shell uiautomator dump'));
+assert.ok(fakeAdbOutput.includes('shell input tap 1 2'));
+assert.ok(fakeAdbOutput.includes('shell input swipe 3 4 3 4 900'));
+assert.ok(fakeAdbOutput.includes('shell input swipe 10 10 10 130 200'));
+assert.ok(fakeAdbOutput.includes('install -r'));
+assert.strictEqual((fakeAdbOutput.match(/install -r/g) || []).length, 1);
+assert.ok(fakeAdbOutput.includes('shell am broadcast -a mavt.android.ime.INPUT_TEXT'));
+
+const fakeIosEnv = {
+  ...process.env,
+  MAVT_IOS_FAKE: '1',
+  MAVT_TEST_PNG: sharedTestPng,
+  MAVT_ACTION_SETTLE_MS: '0',
+};
+const fakeIosDevice = '00000000-0000-0000-0000-000000000000';
+const iosProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'ios', '--device', fakeIosDevice], { env: fakeIosEnv }));
+assert.strictEqual(iosProbe.platform, 'ios');
+assert.deepStrictEqual(iosProbe.targets, [fakeIosDevice]);
+assert.strictEqual(iosProbe.devices[0].id, fakeIosDevice);
+assert.strictEqual(iosProbe.capabilities.connector, 'appium-xcuitest');
+assert.strictEqual(iosProbe.capabilities.deviceType, 'simulator');
+assert.strictEqual(iosProbe.capabilities.implemented, true);
+assert.strictEqual(iosProbe.capabilities.screenshot, true);
+assert.strictEqual(iosProbe.capabilities.layout, true);
+assert.strictEqual(iosProbe.capabilities.foregroundApp, true);
+assert.strictEqual(iosProbe.ready, true);
+assert.ok(Array.isArray(iosProbe.diagnostics));
+assert.ok(!iosProbe.diagnostics.some((item) => item.level === 'ERROR'));
+assert.ok(iosProbe.capabilities.actions.includes('restartApp'));
+assert.ok(iosProbe.capabilities.actions.includes('tap'));
+assert.ok(iosProbe.capabilities.actions.includes('toggle'));
+assert.ok(iosProbe.capabilities.actions.includes('longPress'));
+assert.ok(iosProbe.capabilities.actions.includes('inputText'));
+assert.ok(iosProbe.capabilities.actions.includes('swipe'));
+assert.ok(iosProbe.capabilities.actions.includes('back'));
+assert.ok(iosProbe.capabilities.actions.includes('home'));
+assert.ok(iosProbe.capabilities.actions.includes('wait'));
+assert.strictEqual(iosProbe.capabilities.logs, true);
+
+const iosRealDeviceProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'ios', '--device', fakeIosDevice, '--device-type', 'realDevice'], { env: fakeIosEnv }));
+assert.strictEqual(iosRealDeviceProbe.capabilities.deviceType, 'realDevice');
+assert.strictEqual(iosRealDeviceProbe.capabilities.logs, false);
+assert.strictEqual(iosRealDeviceProbe.ready, true);
+assert.ok(iosRealDeviceProbe.diagnostics.some((item) => item.id === 'iosRealDeviceLogsUnavailable' && item.level === 'WARN'));
+
+const iosRestart = JSON.parse(run('./scripts/platform/adapters/ios/atoms/restart-app.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo'], { env: fakeIosEnv }));
+assert.strictEqual(iosRestart.action, 'restartApp');
+assert.strictEqual(iosRestart.ok, true);
+assert.strictEqual(iosRestart.restart, true);
+assert.strictEqual(iosRestart.coldStartVerified, true);
+assert.strictEqual(iosRestart.verification, 'fake-appium-app-state');
+assert.strictEqual(iosRestart.stateAfterTerminate, 1);
+assert.strictEqual(iosRestart.stateAfterActivate, 4);
+
+const iosFile = path.join(sourceRoot, 'cases', 'ios.md');
+write(iosFile, `# iOS 适配测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 点击「登录」。
+`);
+const iosParsed = JSON.parse(run('node', ['scripts/parse-case.js', iosFile, '--cwd', workspace]));
+run('node', [
+  'scripts/update-env.js',
+  iosParsed.caseDir,
+  '--platform', 'ios',
+  '--device', fakeIosDevice,
+  '--app', 'com.example.demo',
+  '--device-type', 'realDevice',
+  '--xcode-org-id', 'TEAM123456',
+  '--xcode-signing-id', 'Apple Development',
+  '--updated-wda-bundle-id', 'com.example.WebDriverAgentRunner',
+  '--allow-provisioning-device-registration',
+  '--wda-launch-timeout', '180000',
+  '--show-xcode-log', 'false',
+  '--use-new-wda', 'true',
+]);
+const iosStateBeforePrepare = json(path.join(iosParsed.caseDir, 'platforms', 'ios', 'state.json'));
+assert.strictEqual(iosStateBeforePrepare.environment.entry, undefined);
+assert.strictEqual(iosStateBeforePrepare.environment.deviceType, 'realDevice');
+assert.strictEqual(iosStateBeforePrepare.environment.xcodeOrgId, 'TEAM123456');
+assert.strictEqual(iosStateBeforePrepare.environment.xcodeSigningId, 'Apple Development');
+assert.strictEqual(iosStateBeforePrepare.environment.updatedWDABundleId, 'com.example.WebDriverAgentRunner');
+assert.strictEqual(iosStateBeforePrepare.environment.allowProvisioningDeviceRegistration, true);
+assert.strictEqual(iosStateBeforePrepare.environment.wdaLaunchTimeout, '180000');
+assert.strictEqual(iosStateBeforePrepare.environment.showXcodeLog, false);
+assert.strictEqual(iosStateBeforePrepare.environment.useNewWDA, true);
+const iosStartBeforePrepare = runAllowFailure('node', ['scripts/run-case.js', iosParsed.caseDir, '--platform', 'ios', '--start']);
+assert.notStrictEqual(iosStartBeforePrepare.status, 0);
+assert.ok(iosStartBeforePrepare.stderr.includes('iosAutomation'));
+const iosPrepare = JSON.parse(run('./scripts/prepare-env.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios'], { env: fakeIosEnv }));
+assert.strictEqual(iosPrepare.ok, true);
+assert.ok(iosPrepare.dependencies.some((item) => item.id === 'iosAutomation' && item.ok));
+const iosPreparedState = json(path.join(iosParsed.caseDir, 'platforms', 'ios', 'state.json'));
+assert.strictEqual(iosPreparedState.dependencies.iosAutomation.ok, true);
+const iosStart = JSON.parse(run('node', ['scripts/run-case.js', iosParsed.caseDir, '--platform', 'ios', '--start']));
+assert.ok(iosStart.execDir.includes('/platforms/ios/executions/'));
+recordPreconditions(iosParsed.caseDir, 'ios', iosStart.executionId);
+recordGlobalFlowScan(iosParsed.caseDir, 'ios', iosStart.executionId);
+const iosTimelinePath = path.join(iosStart.execDir, 'timeline.jsonl');
+const iosTimelineBeforeInvalidAction = fs.readFileSync(iosTimelinePath, 'utf8');
+const iosInvalidActionArgument = runAllowFailure('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--definitely-unknown', 'value'], { env: fakeIosEnv });
+assert.strictEqual(iosInvalidActionArgument.status, 2);
+assert.ok(iosInvalidActionArgument.stderr.includes('action.sh 未知参数'));
+assert.strictEqual(fs.readFileSync(iosTimelinePath, 'utf8'), iosTimelineBeforeInvalidAction);
+assert.ok(!fs.existsSync(path.join(iosStart.execDir, 'result.json')));
+const iosObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--label', 'step-001-before'], { env: fakeIosEnv }));
+assert.strictEqual(iosObservation.platform, 'ios');
+assert.strictEqual(iosObservation.label, '001-step-001-before');
+assert.strictEqual(iosObservation.artifacts.screenshot, 'screenshots/001-step-001-before.png');
+assert.strictEqual(iosObservation.artifacts.layout, 'layouts/001-step-001-before.xml');
+assert.strictEqual(iosObservation.app.foregroundApp, 'com.example.demo');
+assert.strictEqual(iosObservation.app.entry, null);
+assert.strictEqual(iosObservation.app.inTargetApp, true);
+const iosAction = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '10', '--y', '20', '--coordinate-source', 'layout', '--target-bounds', '8,18,12,22', '--coordinate-evidence', 'ios xcuitest frame', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosAction.platform, 'ios');
+assert.strictEqual(iosAction.action, 'tap');
+assert.strictEqual(iosAction.ok, true);
+assert.strictEqual(iosAction.coordinateSource, 'layout');
+const iosToggle = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'toggle', '--x', '12', '--y', '22', '--coordinate-source', 'layout', '--target-bounds', '8,18,16,26', '--coordinate-evidence', 'ios xcuitest switch frame', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosToggle.action, 'toggle');
+assert.strictEqual(iosToggle.ok, true);
+assert.strictEqual(iosToggle.coordinateSource, 'layout');
+const iosLongPress = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'longPress', '--x', '30', '--y', '40', '--duration-ms', '900', '--coordinate-source', 'layout', '--target-bounds', '20,30,40,50', '--coordinate-evidence', 'ios xcuitest long press frame', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosLongPress.action, 'longPress');
+assert.strictEqual(iosLongPress.ok, true);
+assert.strictEqual(iosLongPress.durationMs, 900);
+const iosSwipe = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'swipe', '--from-x', '30', '--from-y', '200', '--to-x', '30', '--to-y', '80', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosSwipe.action, 'swipe');
+assert.strictEqual(iosSwipe.ok, true);
+assert.strictEqual(iosSwipe.durationMs, 200);
+assert.strictEqual(iosSwipe.velocity, 600);
+assert.strictEqual(iosSwipe.requestedAction.velocity, undefined);
+const iosInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', '中文输入', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosInput.action, 'inputText');
+assert.strictEqual(iosInput.ok, true);
+assert.strictEqual(iosInput.inputMethod, 'wda-clear-set-value');
+assert.strictEqual(iosInput.inputMode, 'replace');
+assert.strictEqual(iosInput.inputEffect.status, 'VERIFIED');
+const iosAppendInput = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'inputText', '--text', '-后缀', '--mode', 'append', '--settle-ms', '0'], { env: { ...fakeIosEnv, MAVT_IOS_FAKE_INPUT_VALUE: '原文本' } }));
+assert.strictEqual(iosAppendInput.inputMethod, 'wda-read-compose-set-value');
+assert.strictEqual(iosAppendInput.inputMode, 'append');
+assert.strictEqual(iosAppendInput.inputEffect.expectedText, '原文本-后缀');
+assert.strictEqual(iosAppendInput.inputEffect.actualText, '原文本-后缀');
+const iosInputWithCoordinates = runAllowFailure('./scripts/platform/adapters/ios/action.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo', '--type', 'inputText', '--x', '1', '--y', '2', '--text', 'hello'], { env: fakeIosEnv });
+assert.notStrictEqual(iosInputWithCoordinates.status, 0);
+assert.ok(iosInputWithCoordinates.stderr.includes('iOS inputText 只向已聚焦输入框输入文本'));
+const iosUnknownAtomArgument = runAllowFailure('./scripts/platform/adapters/ios/action.sh', ['--device', fakeIosDevice, '--app', 'com.example.demo', '--type', 'tap', '--x', '1', '--y', '2', '--definitely-unknown', 'value'], { env: fakeIosEnv });
+assert.strictEqual(iosUnknownAtomArgument.status, 2);
+assert.ok(iosUnknownAtomArgument.stderr.includes('iOS tap 未知参数'));
+const iosWaitReason = '等待 iOS 页面稳定';
+const iosWait = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--reason', iosWaitReason], { env: fakeIosEnv }));
+assert.strictEqual(iosWait.action, 'wait');
+assert.strictEqual(iosWait.ok, true);
+assert.strictEqual(iosWait.ms, 0);
+assert.strictEqual(iosWait.requestedAction.reason, iosWaitReason);
+const iosBack = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'back', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosBack.action, 'back');
+assert.strictEqual(iosBack.ok, true);
+const iosHome = JSON.parse(run('./scripts/action.sh', ['--case-dir', iosParsed.caseDir, '--platform', 'ios', '--execution-id', iosStart.executionId, '--step-id', 'step-001', '--type', 'home', '--settle-ms', '0'], { env: fakeIosEnv }));
+assert.strictEqual(iosHome.action, 'home');
+assert.strictEqual(iosHome.ok, true);
+run('node', ['scripts/run-case.js', iosParsed.caseDir, '--platform', 'ios', '--finalize', '--status', 'UNKNOWN', '--reason', 'iOS adapter smoke test complete', '--execution-id', iosStart.executionId]);
+
+const fakeBin = path.join(tmp, 'fake-bin');
+const fakeHdcLog = path.join(tmp, 'fake-hdc.log');
+const fakeHdcRemote = path.join(tmp, 'fake-hdc-remote');
+const fakeHdcState = path.join(tmp, 'fake-hdc-state');
+const fakeHdcOrientation = path.join(tmp, 'fake-hdc-orientation');
+const fakeHdc = path.join(fakeBin, 'hdc');
+const fakeDevecoCli = path.join(fakeBin, 'devecocli');
+write(fakeHdc, `#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "\${args[0]:-}" == "-t" ]]; then
+  args=("\${args[@]:2}")
+fi
+printf '%s\\n' "\${args[*]}" >> "$HDC_LOG"
+state_file="\${HDC_STATE:-$HDC_REMOTE_DIR/state}"
+orientation_file="\${HDC_ORIENTATION_STATE:-$HDC_REMOTE_DIR/orientation}"
+remote_key() {
+  printf '%s' "$1" | sed 's#[^A-Za-z0-9._-]#_#g'
+}
+if [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "rm" && "\${args[2]:-}" == "-f" ]]; then
+  rm -f "$HDC_REMOTE_DIR/$(remote_key "\${args[3]:-}")"
+elif [[ "\${args[0]:-}" == "file" && "\${args[1]:-}" == "recv" ]]; then
+  src="\${args[2]}"
+  dest="\${args[3]}"
+  mkdir -p "$(dirname "$dest")"
+  if [[ "$src" == *.png ]]; then
+    cp "$MAVT_TEST_PNG" "$dest"
+  elif [[ -f "$HDC_REMOTE_DIR/$(remote_key "$src")" ]]; then
+    cp "$HDC_REMOTE_DIR/$(remote_key "$src")" "$dest"
+  else
+    printf '[Fail]Error opening file: no such file or directory, path:%s\\n' "$src"
+  fi
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uitest" && "\${args[2]:-}" == "dumpLayout" ]]; then
+  for arg in "\${args[@]}"; do
+    if [[ "$arg" == "-m" && -z "\${HDC_INPUT_VALUE:-}" ]]; then
+      printf 'uitest: unrecognized option: m\\nUSAGE: uitestkit dumpLayout -p <path>\\n'
+      exit 0
+    fi
+    if [[ "$arg" == "-b" && -z "\${HDC_INPUT_VALUE:-}" ]]; then
+      printf 'uitest: unrecognized option: b\\nUSAGE: uitestkit dumpLayout -p <path>\\n'
+      exit 0
+    fi
+  done
+  remote_path=""
+  for ((i=0; i<\${#args[@]}; i++)); do
+    if [[ "\${args[$i]}" == "-p" ]]; then
+      remote_path="\${args[$((i+1))]:-}"
+    fi
+  done
+  mkdir -p "$HDC_REMOTE_DIR"
+  if [[ -n "\${HDC_INPUT_VALUE:-}" ]]; then
+    input_counter="\${HDC_INPUT_LAYOUT_COUNTER:-$HDC_REMOTE_DIR/input-layout-count}"
+    input_count="$(( $(cat "$input_counter" 2>/dev/null || printf '0') + 1 ))"
+    printf '%s\n' "$input_count" > "$input_counter"
+    if [[ "$input_count" -ge "\${HDC_INPUT_VISIBLE_AFTER:-1}" ]]; then
+      printf '{"attributes":{"bounds":"[0,0][1260,2720]"},"children":[{"attributes":{"type":"TextInput","bounds":"[100,200][500,300]","text":"%s"}}]}' "$HDC_INPUT_VALUE" > "$HDC_REMOTE_DIR/$(remote_key "$remote_path")"
+    else
+      printf '{"attributes":{"bounds":"[0,0][1260,2720]"},"children":[{"attributes":{"type":"TextInput","bounds":"[100,200][500,300]","text":"旧标题"}}]}' > "$HDC_REMOTE_DIR/$(remote_key "$remote_path")"
+    fi
+  else
+    printf '{"attributes":{"bounds":"[0,0][1260,2720]"},"children":[]}' > "$HDC_REMOTE_DIR/$(remote_key "$remote_path")"
+  fi
+  printf 'DumpLayout saved to:%s\\n' "$remote_path"
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uitest" && "\${args[2]:-}" == "--version" ]]; then
+  printf 'uitest version 1.0\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "uitest" && "\${args[2]:-}" == "uiInput" && "\${args[3]:-}" == "click" && "\${args[4]:-}" == -* ]]; then
+  printf 'Please confirm that the coordinate values are correct.\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "hidumper" && "\${args[2]:-}" == "-s" && "\${args[3]:-}" == "DisplayManagerService" && "\${args[5]:-}" == "-a" ]]; then
+  if [[ "$(cat "$orientation_file" 2>/dev/null || true)" == "landscape" ]]; then
+    printf 'Rotation: 270\\nWidth: 2720\\nHeight: 1260\\n'
+  else
+    printf 'Rotation: 0\\nWidth: 1260\\nHeight: 2720\\n'
+  fi
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "hidumper" && "\${args[2]:-}" == "-s" && "\${args[3]:-}" == "DisplayManagerService" && "\${args[5]:-}" == "-motion,0" ]]; then
+  if [[ "\${HDC_ORIENTATION_RESET_FAIL:-}" == "1" ]]; then
+    printf 'failed to reset orientation\\n' >&2
+    exit 1
+  fi
+  if [[ "\${HDC_ORIENTATION_RESET_NO_EFFECT:-}" != "1" ]]; then
+    if [[ "\${HDC_ORIENTATION_RESET_AFTER_START_NO_EFFECT:-}" != "1" || ! -s "$state_file" ]]; then
+      printf 'portrait\\n' > "$orientation_file"
+    fi
+  fi
+  printf 'reset orientation successfully\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}" == "dump" ]]; then
+  printf 'AbilityRecord ID #1\\nstate #FOREGROUND\\nability type [PAGE]\\nbundle name [com.example.demo]\\nmain name [EntryAbility]\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}" == "force-stop" ]]; then
+  if [[ "\${HDC_FORCE_STOP_FAIL:-}" == "1" ]]; then
+    printf 'error: failed to force stop process.\\nError Code:10104002\\n' >&2
+    exit 1
+  fi
+  if [[ "\${args[3]:-}" == "-b" ]]; then
+    printf 'error: failed to force stop process.\\nError Code:10104002  Error Message:Failed to retrieve specified package information.\\n'
+    exit 0
+  fi
+  mkdir -p "$(dirname "$state_file")"
+  : > "$state_file"
+  printf 'force stop process successfully.\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "aa" && "\${args[2]:-}" == "start" ]]; then
+  mkdir -p "$(dirname "$state_file")"
+  printf '23456\\n' > "$state_file"
+  if [[ -n "\${HDC_ORIENTATION_AFTER_START:-}" ]]; then
+    printf '%s\\n' "$HDC_ORIENTATION_AFTER_START" > "$orientation_file"
+  fi
+  printf 'start ability successfully.\\n'
+elif [[ "\${args[0]:-}" == "shell" && "\${args[1]:-}" == "pidof" ]]; then
+  if [[ -s "$state_file" ]]; then
+    cat "$state_file"
+  else
+    exit 1
+  fi
+fi
+`);
+fs.chmodSync(fakeHdc, 0o755);
+write(fakeDevecoCli, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "device" && "\${2:-}" == "list" ]]; then
+  printf 'Name              Serial             Type    Form Factor\\n'
+  printf 'Demo Phone        127.0.0.1:5555     device  phone\\n'
+  exit 0
+fi
+exit 2
+`);
+fs.chmodSync(fakeDevecoCli, 0o755);
+fs.writeFileSync(fakeHdcOrientation, 'portrait\n');
+const fakeEnv = {
+  ...process.env,
+  PATH: `${fakeBin}:${process.env.PATH}`,
+  HDC_LOG: fakeHdcLog,
+  HDC_REMOTE_DIR: fakeHdcRemote,
+  HDC_STATE: fakeHdcState,
+  HDC_ORIENTATION_STATE: fakeHdcOrientation,
+  MAVT_DEVECOCLI: fakeDevecoCli,
+  MAVT_TEST_PNG: sharedTestPng,
+  MAVT_ACTION_SETTLE_MS: '0',
+  MAVT_ORIENTATION_SETTLE_MS: '0',
+  MAVT_ORIENTATION_AFTER_LAUNCH_SETTLE_MS: '0',
+};
+
+const invalidAndroidDeviceFormFactor = runAllowFailure('./scripts/probe-env.sh', ['--platform', 'android', '--device-form-factor', 'phone']);
+assert.strictEqual(invalidAndroidDeviceFormFactor.status, 2);
+assert.ok(invalidAndroidDeviceFormFactor.stderr.includes('--device-form-factor 当前仅适用于 HarmonyOS'));
+const bootstrapHarmonyProbe = JSON.parse(run(path.join(repo, 'scripts/probe-env.sh'), ['--platform', 'harmony', '--device', '127.0.0.1:5555'], { cwd: workspace, env: fakeEnv }));
+assert.strictEqual(bootstrapHarmonyProbe.ready, true);
+assert.strictEqual(bootstrapHarmonyProbe.deviceFormFactor, 'phone');
+assert.strictEqual(bootstrapHarmonyProbe.capabilities.startupDisplay.canReadOrientation, true);
+assert.strictEqual(bootstrapHarmonyProbe.capabilities.startupDisplay.canSetOrientation, true);
+assert.strictEqual(bootstrapHarmonyProbe.capabilities.startupDisplay.current.orientation, 'portrait');
+const unmatchedProbeDevice = runAllowFailure('node', ['scripts/update-env.js', noEnvParsed.caseDir, '--platform', 'harmony', '--device', 'different-device', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+assert.notStrictEqual(unmatchedProbeDevice.status, 0);
+assert.ok(unmatchedProbeDevice.stderr.includes('PROBE_DEVICE_NOT_FOUND'));
+const crossPlatformFormFactor = runAllowFailure('node', ['scripts/update-env.js', multiPlatformParsed.caseDir, '--platform', 'android', '--device', 'emulator-5554', '--app', 'com.example.demo', '--entry', 'MainActivity', '--device-form-factor', 'phone']);
+assert.strictEqual(crossPlatformFormFactor.status, 2);
+assert.ok(crossPlatformFormFactor.stderr.includes('ENVIRONMENT_OPTION_OWNERSHIP'));
+
+function runHarmonyRestartAtom(extraArgs = [], env = fakeEnv) {
+  fs.writeFileSync(fakeHdcState, '12345\n');
+  return JSON.parse(run('./scripts/platform/adapters/harmony/atoms/restart-app.sh', [
+    '--device', '127.0.0.1:5555', '--bundle', 'com.example.demo', '--ability', 'EntryAbility', ...extraArgs,
+  ], { env }));
+}
+
+fs.writeFileSync(fakeHdcOrientation, 'portrait\n');
+fs.writeFileSync(fakeHdcLog, '');
+const alreadyPortraitRestart = runHarmonyRestartAtom(['--device-form-factor', 'phone']);
+assert.strictEqual(alreadyPortraitRestart.startupDisplay.status, 'VERIFIED');
+assert.strictEqual(alreadyPortraitRestart.startupDisplay.normalizationApplied, false);
+assert.strictEqual(alreadyPortraitRestart.startupDisplay.verified, true);
+assert.ok(!fs.readFileSync(fakeHdcLog, 'utf8').includes('-motion,0'));
+
+fs.writeFileSync(fakeHdcOrientation, 'landscape\n');
+fs.writeFileSync(fakeHdcLog, '');
+const tabletRestart = runHarmonyRestartAtom(['--device-form-factor', 'tablet']);
+assert.strictEqual(tabletRestart.startupDisplay.status, 'SKIPPED');
+assert.strictEqual(tabletRestart.startupDisplay.skippedReason, 'DEVICE_FORM_FACTOR_NOT_APPLICABLE');
+assert.strictEqual(tabletRestart.startupDisplay.deviceFormFactor, 'tablet');
+assert.ok(!fs.readFileSync(fakeHdcLog, 'utf8').includes('-motion,0'));
+
+fs.writeFileSync(fakeHdcOrientation, 'landscape\n');
+fs.writeFileSync(fakeHdcLog, '');
+const preserveRestart = runHarmonyRestartAtom(['--device-form-factor', 'phone', '--startup-orientation', 'preserve']);
+assert.strictEqual(preserveRestart.startupDisplay.status, 'SKIPPED');
+assert.strictEqual(preserveRestart.startupDisplay.skippedReason, 'POLICY_PRESERVE');
+assert.ok(!fs.readFileSync(fakeHdcLog, 'utf8').includes('-motion,0'));
+
+const restartFile = path.join(sourceRoot, 'cases', 'restart-isolation.md');
+write(restartFile, `# 每用例冷启动测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+`);
+const restartParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', restartParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const invalidStartupOrientation = runAllowFailure('node', ['scripts/update-env.js', restartParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--startup-orientation', 'landscape']);
+assert.strictEqual(invalidStartupOrientation.status, 2);
+assert.ok(invalidStartupOrientation.stderr.includes('startupDisplayPolicy.orientation'));
+const restartEnv = { ...fakeEnv };
+delete restartEnv.MAVT_SELF_TEST_SKIP_CASE_RESTART;
+fs.writeFileSync(fakeHdcLog, '');
+fs.writeFileSync(fakeHdcState, '12345\n');
+fs.writeFileSync(fakeHdcOrientation, 'landscape\n');
+const restartStart = JSON.parse(run('node', ['scripts/run-case.js', restartParsed.caseDir, '--platform', 'harmony', '--start'], { env: restartEnv }));
+assert.strictEqual(restartStart.appRestart.action, 'restartApp');
+assert.strictEqual(restartStart.appRestart.ok, true);
+assert.strictEqual(restartStart.appRestart.restart, true);
+assert.strictEqual(restartStart.appRestart.coldStartVerified, true);
+assert.strictEqual(restartStart.appRestart.oldPid, '12345');
+assert.strictEqual(restartStart.appRestart.newPid, '23456');
+assert.strictEqual(restartStart.appRestart.stopMethod, 'aa-force-stop');
+assert.strictEqual(restartStart.appRestart.startupDisplay.requestedOrientation, 'portrait');
+assert.strictEqual(restartStart.appRestart.startupDisplay.deviceFormFactor, 'phone');
+assert.strictEqual(restartStart.appRestart.startupDisplay.before.orientation, 'landscape');
+assert.strictEqual(restartStart.appRestart.startupDisplay.afterNormalization.orientation, 'portrait');
+assert.strictEqual(restartStart.appRestart.startupDisplay.afterLaunch.orientation, 'portrait');
+assert.strictEqual(restartStart.appRestart.startupDisplay.normalizationApplied, true);
+assert.strictEqual(restartStart.appRestart.startupDisplay.verified, true);
+assert.strictEqual(restartStart.appRestart.startupDisplay.status, 'VERIFIED');
+assert.strictEqual(restartStart.isolation.clean, true);
+assert.strictEqual(restartStart.isolation.required, true);
+assert.strictEqual(restartStart.isolation.requirementSource, 'cold-restart-and-startup-display-policy');
+const restartState = json(path.join(restartParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.strictEqual(restartState.environment.deviceFormFactor, 'phone');
+assert.deepStrictEqual(restartState.environment.startupDisplayPolicy, { orientation: 'portrait', enforcement: 'required', appliesTo: ['phone'] });
+const restartEvents = fs.readFileSync(restartStart.timeline, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+const restartBootstrap = restartEvents.find((event) => event.type === 'actionResult' && event.action === 'restartApp');
+assert.ok(restartBootstrap && restartBootstrap.ok === true && restartBootstrap.source === 'action.sh');
+assert.strictEqual(restartBootstrap.scope, 'execution-bootstrap');
+const fakeHdcRestartLog = fs.readFileSync(fakeHdcLog, 'utf8');
+assert.ok(fakeHdcRestartLog.includes('shell aa force-stop com.example.demo'));
+assert.ok(fakeHdcRestartLog.includes('shell aa start -b com.example.demo -a EntryAbility'));
+const restartOrientationIndex = fakeHdcRestartLog.indexOf('shell hidumper -s DisplayManagerService -a -motion,0');
+const restartLaunchIndex = fakeHdcRestartLog.indexOf('shell aa start -b com.example.demo -a EntryAbility');
+assert.ok(restartOrientationIndex >= 0 && restartOrientationIndex < restartLaunchIndex);
+const restartRuntime = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'init', restartParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', restartStart.executionId,
+  '--provider', 'Codex', '--workspace-cwd', workspace,
+]));
+assert.strictEqual(restartRuntime.provider, 'codex');
+const restartOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: restartOpen.operation.operationId, ok: true, sessionId: 'restart-runtime-session' }),
+]);
+const restartBoundEvents = fs.readFileSync(restartStart.timeline, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+const restartBootstrapIndex = restartBoundEvents.findIndex((event) => event.type === 'actionResult' && event.scope === 'execution-bootstrap');
+const restartBoundIndex = restartBoundEvents.findIndex((event) => event.type === 'agentRuntime' && event.status === 'BOUND');
+assert.ok(restartBootstrapIndex >= 0 && restartBoundIndex > restartBootstrapIndex);
+run('node', [
+  'scripts/agent-runtime.js', 'interrupt', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId, '--reason', 'restart runtime smoke complete',
+]);
+const restartInterrupt = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: restartInterrupt.operation.operationId, ok: true }),
+]);
+const restartRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', restartParsed.caseDir, '--platform', 'harmony', '--execution-id', restartStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: restartRelease.operation.operationId, ok: true }),
+]);
+
+const restartDegradedFile = path.join(sourceRoot, 'cases', 'restart-degraded.md');
+write(restartDegradedFile, `# 普通交互隔离降级测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 查看页面入口。
+`);
+const restartDegradedParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartDegradedFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--startup-orientation', 'preserve']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const restartDegradedStart = JSON.parse(run('node', ['scripts/run-case.js', restartDegradedParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+assert.strictEqual(restartDegradedStart.appRestart.ok, false);
+assert.strictEqual(restartDegradedStart.isolation.compromised, true);
+assert.strictEqual(restartDegradedStart.isolation.required, true);
+assert.ok(restartDegradedStart.finalized);
+assert.strictEqual(json(path.join(restartDegradedStart.execDir, 'result.json')).failureCode, 'CASE_RESTART_FAILED');
+const restartDegradedMetrics = json(path.join(restartDegradedStart.execDir, 'metrics.json'));
+assert.strictEqual(restartDegradedMetrics.stability.isolationCompromised, true);
+assert.strictEqual(restartDegradedMetrics.stability.restartFailureCount, 1);
+assert.strictEqual(restartDegradedMetrics.stability.appRelaunchAttemptCount, 1);
+assert.strictEqual(restartDegradedMetrics.stability.appRelaunchSuccessCount, 0);
+assert.strictEqual(restartDegradedMetrics.stability.appRelaunchCount, 0);
+
+const restartSensitiveFile = path.join(sourceRoot, 'cases', 'restart-sensitive.md');
+write(restartSensitiveFile, `# 首次进入冷启动敏感测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 首次进入页面。
+`);
+const restartSensitiveParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartSensitiveFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', restartSensitiveParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const restartSensitiveStart = JSON.parse(run('node', ['scripts/run-case.js', restartSensitiveParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+assert.strictEqual(restartSensitiveStart.appRestart.ok, false);
+assert.strictEqual(restartSensitiveStart.isolation.compromised, true);
+assert.strictEqual(restartSensitiveStart.isolation.required, true);
+assert.ok(restartSensitiveStart.finalized);
+const restartSensitiveResult = json(path.join(restartSensitiveStart.execDir, 'result.json'));
+assert.strictEqual(restartSensitiveResult.status, 'BLOCKED');
+assert.strictEqual(restartSensitiveResult.failureCode, 'CASE_RESTART_FAILED');
+assert.strictEqual(restartSensitiveStart.blockedOnStart, true);
+assert.strictEqual(restartSensitiveStart.nextAction, 'stop-current-case');
+
+const restartExplicitOptionalFile = path.join(sourceRoot, 'cases', 'restart-explicit-optional.md');
+write(restartExplicitOptionalFile, `# 首次进入但显式允许降级
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 首次进入页面。
+`);
+const restartExplicitOptionalParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartExplicitOptionalFile, '--cwd', workspace]));
+const restartExplicitOptionalCase = json(path.join(restartExplicitOptionalParsed.caseDir, 'case.json'));
+restartExplicitOptionalCase.isolation = { requireCleanRestart: false };
+write(path.join(restartExplicitOptionalParsed.caseDir, 'case.json'), `${JSON.stringify(restartExplicitOptionalCase, null, 2)}\n`);
+run('node', ['scripts/update-env.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--startup-orientation', 'preserve']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const restartExplicitOptionalStart = JSON.parse(run('node', ['scripts/run-case.js', restartExplicitOptionalParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+assert.strictEqual(restartExplicitOptionalStart.isolation.required, true);
+assert.strictEqual(restartExplicitOptionalStart.isolation.requirementSource, 'cold-restart-policy');
+assert.strictEqual(restartExplicitOptionalStart.blockedOnStart, true);
+assert.ok(restartExplicitOptionalStart.finalized);
+assert.strictEqual(json(path.join(restartExplicitOptionalStart.execDir, 'result.json')).failureCode, 'CASE_RESTART_FAILED');
+
+const restartExplicitRequiredFile = path.join(sourceRoot, 'cases', 'restart-explicit-required.md');
+write(restartExplicitRequiredFile, `# 普通页面但显式要求冷启动
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 查看页面入口。
+`);
+const restartExplicitRequiredParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartExplicitRequiredFile, '--cwd', workspace]));
+const restartExplicitRequiredCase = json(path.join(restartExplicitRequiredParsed.caseDir, 'case.json'));
+restartExplicitRequiredCase.isolation = { requireCleanRestart: true };
+write(path.join(restartExplicitRequiredParsed.caseDir, 'case.json'), `${JSON.stringify(restartExplicitRequiredCase, null, 2)}\n`);
+run('node', ['scripts/update-env.js', restartExplicitRequiredParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const restartExplicitRequiredStart = JSON.parse(run('node', ['scripts/run-case.js', restartExplicitRequiredParsed.caseDir, '--platform', 'harmony', '--start'], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+assert.strictEqual(restartExplicitRequiredStart.isolation.required, true);
+assert.strictEqual(restartExplicitRequiredStart.isolation.requirementSource, 'cold-restart-and-startup-display-policy');
+assert.strictEqual(restartExplicitRequiredStart.blockedOnStart, true);
+assert.ok(restartExplicitRequiredStart.finalized);
+const restartExplicitRequiredResult = json(path.join(restartExplicitRequiredStart.execDir, 'result.json'));
+assert.strictEqual(restartExplicitRequiredResult.status, 'BLOCKED');
+assert.strictEqual(restartExplicitRequiredResult.failureCode, 'CASE_RESTART_FAILED');
+
+const restartOrientationFailureFile = path.join(sourceRoot, 'cases', 'restart-orientation-failure.md');
+write(restartOrientationFailureFile, `# 手机启动方向校验失败测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 查看页面入口。
+`);
+const restartOrientationFailureParsed = JSON.parse(run('node', ['scripts/parse-case.js', restartOrientationFailureFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', restartOrientationFailureParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+fs.writeFileSync(fakeHdcState, '12345\n');
+fs.writeFileSync(fakeHdcOrientation, 'landscape\n');
+const restartOrientationFailureStart = JSON.parse(run('node', ['scripts/run-case.js', restartOrientationFailureParsed.caseDir, '--platform', 'harmony', '--start'], {
+  env: {
+    ...restartEnv,
+    HDC_ORIENTATION_AFTER_START: 'landscape',
+    HDC_ORIENTATION_RESET_AFTER_START_NO_EFFECT: '1',
+  },
+}));
+assert.strictEqual(restartOrientationFailureStart.appRestart.ok, false);
+assert.strictEqual(restartOrientationFailureStart.appRestart.coldStartVerified, false);
+assert.strictEqual(restartOrientationFailureStart.appRestart.failureStage, 'ORIENTATION_VERIFY_AFTER_START');
+assert.strictEqual(restartOrientationFailureStart.appRestart.startupDisplay.retryApplied, true);
+assert.strictEqual(restartOrientationFailureStart.appRestart.startupDisplay.verified, false);
+assert.strictEqual(restartOrientationFailureStart.isolation.required, true);
+assert.strictEqual(restartOrientationFailureStart.isolation.compromised, true);
+assert.strictEqual(restartOrientationFailureStart.isolation.requirementSource, 'cold-restart-and-startup-display-policy');
+assert.strictEqual(restartOrientationFailureStart.blockedOnStart, true);
+const restartOrientationFailureResult = json(path.join(restartOrientationFailureStart.execDir, 'result.json'));
+assert.strictEqual(restartOrientationFailureResult.status, 'BLOCKED');
+assert.strictEqual(restartOrientationFailureResult.failureCode, 'CASE_RESTART_FAILED');
+const restartOrientationFailureMetrics = json(path.join(restartOrientationFailureStart.execDir, 'metrics.json'));
+assert.strictEqual(restartOrientationFailureMetrics.stability.startupDisplay.failureStage, 'ORIENTATION_VERIFY_AFTER_START');
+assert.strictEqual(restartOrientationFailureMetrics.stability.startupDisplay.verified, false);
+const restartOrientationFailureHtml = fs.readFileSync(path.join(restartOrientationFailureParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+assert.ok(restartOrientationFailureHtml.includes('启动显示：策略 portrait'));
+assert.ok(restartOrientationFailureHtml.includes('FAILED'));
+
+const injectedFile = path.join(sourceRoot, 'cases', 'injected-env.md');
+write(injectedFile, `# 环境注入测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+`);
+const injectedParsed = JSON.parse(run('node', ['scripts/parse-case.js', injectedFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', injectedParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const injectedStart = JSON.parse(run('node', ['scripts/run-case.js', injectedParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(injectedParsed.caseDir, 'harmony', injectedStart.executionId);
+recordGlobalFlowScan(injectedParsed.caseDir, 'harmony', injectedStart.executionId);
+const harmonyTimelinePath = path.join(injectedStart.execDir, 'timeline.jsonl');
+const harmonyTimelineBeforeInvalidAction = fs.readFileSync(harmonyTimelinePath, 'utf8');
+const harmonyInvalidActionArgument = runAllowFailure('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--definitely-unknown', 'value'], { env: fakeEnv });
+assert.strictEqual(harmonyInvalidActionArgument.status, 2);
+assert.ok(harmonyInvalidActionArgument.stderr.includes('action.sh 未知参数'));
+assert.strictEqual(fs.readFileSync(harmonyTimelinePath, 'utf8'), harmonyTimelineBeforeInvalidAction);
+assert.ok(!fs.existsSync(path.join(injectedStart.execDir, 'result.json')));
+const harmonyProbe = JSON.parse(run('./scripts/probe-env.sh', ['--platform', 'harmony', '--device', '127.0.0.1:5555'], { env: fakeEnv }));
+assert.strictEqual(harmonyProbe.ready, true);
+assert.ok(Array.isArray(harmonyProbe.diagnostics));
+assert.ok(!harmonyProbe.diagnostics.some((item) => item.level === 'ERROR'));
+assert.strictEqual(harmonyProbe.deviceFormFactor, 'phone');
+assert.strictEqual(harmonyProbe.devices[0].deviceFormFactor, 'phone');
+assert.strictEqual(harmonyProbe.capabilities.layout, true);
+assert.strictEqual(harmonyProbe.capabilities.startupDisplay.canReadOrientation, true);
+assert.strictEqual(harmonyProbe.capabilities.startupDisplay.canVerifyAfterLaunch, true);
+assert.ok(harmonyProbe.capabilities.actions.includes('restartApp'));
+assert.ok(harmonyProbe.capabilities.actions.includes('longPress'));
+let fakeHdcProbeLog = fs.readFileSync(fakeHdcLog, 'utf8');
+assert.ok(fakeHdcProbeLog.includes('shell uitest dumpLayout -p /data/local/tmp/mavt-probe.json -m true'));
+assert.ok(fakeHdcProbeLog.includes('shell uitest dumpLayout -p /data/local/tmp/mavt-probe.json'));
+const injectedAction = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'back', '--settle-ms', '25'], { env: fakeEnv }));
+assert.strictEqual(injectedAction.ok, true);
+assert.strictEqual(injectedAction.settleMs, 25);
+assertLocalTime(injectedAction.time);
+const missingCoordinateSource = runAllowFailure('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '9', '--y', '10', '--settle-ms', '0'], { env: fakeEnv });
+assert.notStrictEqual(missingCoordinateSource.status, 0);
+assert.ok(missingCoordinateSource.stderr.includes('coordinateSource must be one of'));
+const missingCoordinateEvidence = runAllowFailure('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '9', '--y', '10', '--coordinate-source', 'layout', '--settle-ms', '0'], { env: fakeEnv });
+assert.notStrictEqual(missingCoordinateEvidence.status, 0);
+assert.ok(missingCoordinateEvidence.stderr.includes('coordinateEvidence is required'));
+const invalidCoordinateSource = runAllowFailure('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '9', '--y', '10', '--coordinate-source', 'nearby-text', '--settle-ms', '0'], { env: fakeEnv });
+assert.notStrictEqual(invalidCoordinateSource.status, 0);
+assert.ok(invalidCoordinateSource.stderr.includes('coordinateSource must be one of'));
+const manualCoordinateSource = runAllowFailure('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '9', '--y', '10', '--coordinate-source', 'manual', '--coordinate-evidence', '人工指定坐标', '--settle-ms', '0'], { env: fakeEnv });
+assert.notStrictEqual(manualCoordinateSource.status, 0);
+assert.ok(manualCoordinateSource.stderr.includes('coordinateSource must be one of'));
+const flowCoordinateWithoutBounds = runAllowFailure('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '9', '--y', '10', '--coordinate-source', 'flow', '--coordinate-evidence', '沿用 Flow 坐标', '--settle-ms', '0'], { env: fakeEnv });
+assert.notStrictEqual(flowCoordinateWithoutBounds.status, 0);
+assert.ok(flowCoordinateWithoutBounds.stderr.includes('coordinateSource must be one of'));
+const invalidTargetBounds = runAllowFailure('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '9', '--y', '10', '--coordinate-source', 'visual', '--target-bounds', '1,2,3', '--settle-ms', '0'], { env: fakeEnv });
+assert.notStrictEqual(invalidTargetBounds.status, 0);
+assert.ok(invalidTargetBounds.stderr.includes('Invalid --target-bounds'));
+const harmonyInputWithoutCoordinates = runAllowFailure('./scripts/platform/adapters/harmony/action.sh', ['--device', '127.0.0.1:5555', '--type', 'inputText', '--text', 'hello'], { env: fakeEnv });
+assert.notStrictEqual(harmonyInputWithoutCoordinates.status, 0);
+assert.ok(harmonyInputWithoutCoordinates.stderr.includes('inputText 需要 --x 和 --y'));
+const harmonyReplaceInput = JSON.parse(run('./scripts/platform/adapters/harmony/action.sh', ['--device', '127.0.0.1:5555', '--bundle', 'com.example.demo', '--type', 'inputText', '--x', '120', '--y', '240', '--text', '新标题', '--mode', 'replace'], { env: fakeEnv }));
+assert.strictEqual(harmonyReplaceInput.ok, true);
+assert.strictEqual(harmonyReplaceInput.inputMode, 'replace');
+assert.strictEqual(harmonyReplaceInput.inputMethod, 'uitest-key-replace');
+assert.strictEqual(harmonyReplaceInput.inputEffect.status, 'UNVERIFIABLE');
+assert.strictEqual(harmonyReplaceInput.inputEffect.attempts, 7);
+const harmonyInputCounter = path.join(tmp, 'harmony-input-layout-count');
+const harmonyEventuallyConsistentInput = JSON.parse(run('./scripts/platform/adapters/harmony/action.sh', ['--device', '127.0.0.1:5555', '--bundle', 'com.example.demo', '--type', 'inputText', '--x', '120', '--y', '240', '--text', '新标题', '--mode', 'replace'], { env: {
+  ...fakeEnv,
+  HDC_INPUT_VALUE: '新标题',
+  HDC_INPUT_VISIBLE_AFTER: '3',
+  HDC_INPUT_LAYOUT_COUNTER: harmonyInputCounter,
+} }));
+assert.strictEqual(harmonyEventuallyConsistentInput.ok, true);
+assert.strictEqual(harmonyEventuallyConsistentInput.inputEffect.status, 'VERIFIED');
+assert.strictEqual(harmonyEventuallyConsistentInput.inputEffect.attempts, 3);
+assert.ok(harmonyEventuallyConsistentInput.inputEffect.settledMs >= 250);
+const harmonyInvalidTap = runAllowFailure('./scripts/platform/adapters/harmony/action.sh', ['--device', '127.0.0.1:5555', '--type', 'tap', '--x', '-1', '--y', '-1'], { env: fakeEnv });
+assert.notStrictEqual(harmonyInvalidTap.status, 0);
+assert.ok(harmonyInvalidTap.stderr.includes('Please confirm that the coordinate values are correct'));
+const injectedToggle = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'toggle', '--x', '9', '--y', '10', '--coordinate-source', 'layout', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '控件树通知开关 bounds', '--settle-ms', '0'], { env: fakeEnv }));
+assert.strictEqual(injectedToggle.action, 'toggle');
+assert.strictEqual(injectedToggle.ok, true);
+assert.strictEqual(injectedToggle.coordinateSource, 'layout');
+assert.deepStrictEqual(injectedToggle.targetBounds, [1, 2, 30, 40]);
+assert.strictEqual(injectedToggle.coordinateEvidence, '控件树通知开关 bounds');
+const injectedLongPress = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'longPress', '--x', '11', '--y', '12', '--duration-ms', '850', '--coordinate-source', 'layout', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '控件树列表项 bounds', '--settle-ms', '0'], { env: fakeEnv }));
+assert.strictEqual(injectedLongPress.action, 'longPress');
+assert.strictEqual(injectedLongPress.ok, true);
+assert.strictEqual(injectedLongPress.durationMs, 850);
+const harmonySwipe = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'swipe', '--from-x', '10', '--from-y', '10', '--to-x', '10', '--to-y', '130', '--velocity', '600', '--settle-ms', '0'], { env: fakeEnv }));
+assert.strictEqual(harmonySwipe.action, 'swipe');
+assert.strictEqual(harmonySwipe.ok, true);
+assert.strictEqual(harmonySwipe.velocity, 600);
+assert.strictEqual(harmonySwipe.requestedAction.velocity, 600);
+run('./scripts/platform/action.sh', ['--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility', '--type', 'launchApp'], { env: fakeEnv });
+const fakeHdcActionLog = fs.readFileSync(fakeHdcLog, 'utf8');
+assert.ok(fakeHdcActionLog.includes('shell aa start -b com.example.demo -a EntryAbility'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput click 9 10'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput swipe 11 12 11 12 850'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput swipe 10 10 10 130 600'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput keyEvent 2072 2017'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput keyEvent 2055'));
+assert.ok(fakeHdcActionLog.includes('shell uitest uiInput inputText 120 240 新标题'));
+const defaultSettleEnv = { ...fakeEnv };
+delete defaultSettleEnv.MAVT_ACTION_SETTLE_MS;
+const harmonyWaitReason = '等待 Harmony 页面稳定';
+const injectedDefaultWait = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'wait', '--ms', '0', '--reason', harmonyWaitReason], { env: defaultSettleEnv }));
+assert.strictEqual(injectedDefaultWait.settleMs, undefined);
+assert.strictEqual(injectedDefaultWait.requestedAction.reason, harmonyWaitReason);
+const injectedDefaultTap = JSON.parse(run('./scripts/action.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '9', '--y', '10', '--coordinate-source', 'visual', '--target-bounds', '1,2,30,40', '--coordinate-evidence', '截图像素区域中心'], { env: defaultSettleEnv }));
+assert.strictEqual(injectedDefaultTap.settleMs, 1000);
+assert.strictEqual(injectedDefaultTap.coordinateSource, 'visual');
+
+const missingObserveStepId = runAllowFailure('./scripts/observe.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--label', 'step-001-missing-step-id'], { env: fakeEnv });
+assert.notStrictEqual(missingObserveStepId.status, 0);
+assert.ok(missingObserveStepId.stderr.includes('OBSERVATION_SCOPE_REQUIRED'));
+const injectedObservation = JSON.parse(run('./scripts/observe.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--label', '../bad'], { env: fakeEnv }));
+assert.strictEqual(injectedObservation.label, '001-bad');
+assert.strictEqual(injectedObservation.stepId, 'step-001');
+assertLocalTime(injectedObservation.time);
+assert.strictEqual(injectedObservation.artifacts.screenshot, 'screenshots/001-bad.png');
+assert.strictEqual(injectedObservation.artifacts.layout, 'layouts/001-bad.json');
+const injectedObservation2 = JSON.parse(run('./scripts/observe.sh', ['--case-dir', injectedParsed.caseDir, '--platform', 'harmony', '--execution-id', injectedStart.executionId, '--step-id', 'step-001', '--label', 'step-001-after'], { env: fakeEnv }));
+assert.strictEqual(injectedObservation2.label, '002-step-001-after');
+assert.strictEqual(injectedObservation2.artifacts.screenshot, 'screenshots/002-step-001-after.png');
+run('node', ['scripts/render-context.js', injectedParsed.caseDir, '--platform', 'harmony']);
+const injectedHtmlPath = path.join(injectedParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html');
+assert.ok(fs.existsSync(injectedHtmlPath));
+const injectedHtml = fs.readFileSync(injectedHtmlPath, 'utf8');
+assert.ok(injectedHtml.includes(`executions/${injectedStart.executionId}/screenshots/001-bad.png`));
+assert.ok(injectedHtml.includes('step-001'));
+assert.ok(!injectedHtml.includes('未关联步骤'));
+assert.ok(injectedHtml.includes('class="step-review-list"'));
+assert.ok(injectedHtml.includes('class="step-review-card'));
+assert.ok(injectedHtml.includes('class="shot-lightbox"'));
+assert.ok(injectedHtml.includes('data-lightbox-src='));
+assert.ok(injectedHtml.includes('data-lightbox-index='));
+assert.ok(injectedHtml.includes('class="shot-lightbox-nav prev"'));
+assert.ok(injectedHtml.includes('class="shot-lightbox-nav next"'));
+assert.ok(injectedHtml.includes("event.key === 'ArrowLeft'"));
+assert.ok(injectedHtml.includes("event.key === 'ArrowRight'"));
+assert.ok(injectedHtml.includes('.shot-lightbox-body { position: relative; min-height: 0; height: min(78vh, 860px);'));
+assert.ok(injectedHtml.includes('.shot-lightbox-body img { width: 100%; height: 100%; object-fit: contain;'));
+assert.ok(injectedHtml.includes('class="shot-links"'));
+assert.ok(injectedHtml.includes('>控件树</a>'));
+assert.ok(injectedHtml.includes('>Ability状态</a>'));
+assert.ok(!injectedHtml.includes('>日志1</a>'));
+assert.ok(!injectedHtml.includes('data-artifact-panel='));
+assert.ok(!injectedHtml.includes('class="artifact-preview"'));
+assert.ok(!injectedHtml.includes('控件树预览'));
+assert.ok(!injectedHtml.includes('日志预览'));
+assert.ok(!injectedHtml.includes('打开原文件'));
+assert.ok(!injectedHtml.includes('<h2>截图证据</h2>'));
+assert.ok(!injectedHtml.includes('<h2>步骤结果</h2>'));
+assert.ok(injectedHtml.includes('观察记录'));
+assert.ok(injectedHtml.includes('截图观察'));
+assert.ok(injectedHtml.includes('切换开关成功'));
+assert.ok(!injectedHtml.includes('actionResult'));
+run('node', ['scripts/run-case.js', injectedParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'UNKNOWN', '--reason', '环境注入测试完成', '--execution-id', injectedStart.executionId]);
+
+const toolErrorFile = path.join(sourceRoot, 'cases', 'tool-error.md');
+write(toolErrorFile, `# 工具错误自动收尾测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 点击「异常坐标」。
+`);
+const toolErrorParsed = JSON.parse(run('node', ['scripts/parse-case.js', toolErrorFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', toolErrorParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const toolErrorStart = JSON.parse(run('node', ['scripts/run-case.js', toolErrorParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(toolErrorParsed.caseDir, 'harmony', toolErrorStart.executionId);
+recordGlobalFlowScan(toolErrorParsed.caseDir, 'harmony', toolErrorStart.executionId);
+const toolErrorAction = runAllowFailure('./scripts/action.sh', ['--case-dir', toolErrorParsed.caseDir, '--platform', 'harmony', '--execution-id', toolErrorStart.executionId, '--step-id', 'step-001', '--type', 'tap', '--x', '-1', '--y', '-1', '--coordinate-source', 'layout', '--target-bounds', '0,0,2,2', '--coordinate-evidence', '测试异常坐标', '--settle-ms', '0'], { env: fakeEnv });
+assert.notStrictEqual(toolErrorAction.status, 0);
+const toolErrorResult = json(path.join(toolErrorStart.execDir, 'result.json'));
+assert.strictEqual(toolErrorResult.status, 'BLOCKED');
+assert.strictEqual(toolErrorResult.failureCode, 'TOOL_ERROR');
+assert.strictEqual(toolErrorResult.failedStep, 'step-001');
+assert.strictEqual(json(path.join(toolErrorStart.execDir, 'execution.json')).finalized, true);
+
+const rulesFile = path.join(sourceRoot, 'cases', 'global-rules.md');
+write(rulesFile, `# 全局规则测试
+
+## 前置条件
+- App 已安装。
+
+## 全局规则
+| id | scope | appliesTo | priority | when | action | target | maxAttempts | onFailure |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| rule-001 | system_popup | any_step | 100 | 出现权限弹窗 | tap | 允许 | 1 | BLOCKED |
+
+## 步骤
+1. 点击「继续」。
+`);
+const rulesParsed = JSON.parse(run('node', ['scripts/parse-case.js', rulesFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', rulesParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const rulesCasePath = path.join(rulesParsed.caseDir, 'case.json');
+const rulesCase = json(rulesCasePath);
+assert.strictEqual(rulesCase.globalRules.length, 1);
+assert.deepStrictEqual(rulesCase.globalRules[0].then.action, { type: 'tap', target: '允许' });
+const rulesStart = JSON.parse(run('node', ['scripts/run-case.js', rulesParsed.caseDir, '--platform', 'harmony', '--start']));
+recordPreconditions(rulesParsed.caseDir, 'harmony', rulesStart.executionId);
+recordGlobalFlowScan(rulesParsed.caseDir, 'harmony', rulesStart.executionId);
+recordStepObservation(rulesParsed.caseDir, 'harmony', rulesStart.executionId, 'step-001', 'step-001-rule-before');
+const rulesDecision = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', rulesParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rulesStart.executionId,
+], { env: fakeEnv }));
+assert.strictEqual(rulesDecision.decisionRequest.type, 'DECIDE_RULE');
+assert.strictEqual(rulesDecision.decisionRequest.rule.id, 'rule-001');
+assert.deepStrictEqual(rulesDecision.decisionRequest.actionConstraints.actionTypes, ['tap', 'toggle', 'longPress', 'back', 'home', 'wait']);
+const rulesAfterMatch = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', rulesParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rulesStart.executionId,
+  '--work-token', rulesDecision.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'MATCHED',
+    reason: '当前截图出现系统权限弹窗，按规则点击允许',
+    action: { type: 'tap', target: '允许', x: 120, y: 240, coordinateSource: 'layout', targetBounds: [100, 220, 180, 270], coordinateEvidence: '权限弹窗允许按钮 bounds' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(rulesAfterMatch.decisionRequest.type, 'DECIDE_RULE');
+const rulesAfterSkip = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', rulesParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rulesStart.executionId,
+  '--work-token', rulesAfterMatch.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'NOT_MATCHED', reason: '动作后截图中权限弹窗已消失' }),
+], { env: fakeEnv }));
+assert.strictEqual(rulesAfterSkip.decisionRequest.type, 'DECIDE_STEP');
+const rulesCompleted = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', rulesParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rulesStart.executionId,
+  '--work-token', rulesAfterSkip.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'PASS', reason: '规则处理后当前页面已满足继续步骤', perception: { status: 'USABLE', reason: '页面清晰可判断' } }),
+], { env: fakeEnv }));
+assert.strictEqual(rulesCompleted.status, 'COMPLETED');
+const rulesMetrics = json(path.join(rulesStart.execDir, 'metrics.json'));
+assert.strictEqual(rulesMetrics.eventCounts.rule, 3);
+assert.strictEqual(rulesMetrics.rules.matched, 1);
+assert.strictEqual(rulesMetrics.rules.handled, 1);
+assert.strictEqual(rulesMetrics.rules.skipped, 1);
+assert.strictEqual(rulesMetrics.rules.actions, 1);
+assert.ok(rulesMetrics.caseContractSha);
+const rulesResult = json(path.join(rulesStart.execDir, 'result.json'));
+assert.strictEqual(rulesResult.caseContractSha, rulesMetrics.caseContractSha);
+const rulesTimeline = readTimeline(rulesStart.execDir);
+const rulesAction = rulesTimeline.find((event) => event.type === 'actionResult' && event.scope === 'global-rule');
+assert.ok(rulesAction?.ok);
+assert.deepStrictEqual(rulesAction.authorization, ruleAuthorization(json(path.join(rulesStart.execDir, 'case.snapshot.json')).globalRules[0], 'step-001'));
+const rulesContext = fs.readFileSync(path.join(rulesParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(rulesContext.includes('## 全局规则'));
+assert.ok(rulesContext.includes('rule-001'));
+assert.ok(rulesContext.includes('出现权限弹窗'));
+assert.ok(rulesContext.includes('MATCHED'));
+assert.ok(rulesContext.includes('HANDLED'));
+const rulesHtml = fs.readFileSync(path.join(rulesParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+assert.ok(rulesHtml.includes('全局规则'));
+assert.ok(rulesHtml.includes('rule-001'));
+assert.ok(rulesHtml.includes('规则命中'));
+rulesCase.globalRules[0].when = '出现新的权限弹窗';
+write(rulesCasePath, `${JSON.stringify(rulesCase, null, 2)}\n`);
+run('node', ['scripts/render-context.js', rulesParsed.caseDir, '--platform', 'harmony']);
+const changedRulesContext = fs.readFileSync(path.join(rulesParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(changedRulesContext.includes('出现权限弹窗'));
+assert.ok(!changedRulesContext.includes('出现新的权限弹窗'));
+assert.ok(changedRulesContext.includes('状态：PASS'));
+assert.ok(!changedRulesContext.includes('尚未执行。'));
+run('node', ['scripts/parse-case.js', rulesFile, '--cwd', workspace]);
+const reparsedRulesCase = json(rulesCasePath);
+assert.strictEqual(reparsedRulesCase.globalRules.length, 1);
+assert.strictEqual(reparsedRulesCase.globalRules[0].when, '出现权限弹窗');
+run('node', ['scripts/refresh-case.js', rulesParsed.caseDir]);
+const refreshedRulesCase = json(rulesCasePath);
+assert.strictEqual(refreshedRulesCase.globalRules.length, 1);
+assert.strictEqual(refreshedRulesCase.globalRules[0].when, '出现权限弹窗');
+
+const preconditionFlowDir = path.join(workspace, 'flows', 'preconditions', 'enter-creation-page');
+const universalPreconditionFlow = {
+  schemaVersion: 2,
+  id: 'flow-enter-creation-page-universal',
+  name: '进入创作页',
+  usage: 'precondition',
+  platform: 'universal',
+  startCondition: { description: '当前位于首页，底部展示创作入口' },
+  endCondition: { description: '当前位于创作页，页面展示创作标题' },
+  steps: [{
+    id: 'flow-step-001',
+    instruction: '点击底部创作入口',
+    action: { type: 'tap', target: '创作入口' },
+  }],
+};
+const androidPreconditionFlow = {
+  ...universalPreconditionFlow,
+  id: 'flow-enter-creation-page-android',
+  platform: 'android',
+  startCondition: { description: '当前位于 Android 首页，底部展示创作入口' },
+};
+write(path.join(preconditionFlowDir, 'flow.json'), `${JSON.stringify(universalPreconditionFlow, null, 2)}\n`);
+write(path.join(preconditionFlowDir, 'android', 'flow.json'), `${JSON.stringify(androidPreconditionFlow, null, 2)}\n`);
+const {
+  validateFlow: validatePreconditionFlow,
+  validateFlowAction: validatePreconditionFlowAction,
+} = require('./lib/precondition-flow');
+assert.throws(
+  () => validatePreconditionFlowAction({ type: 'swipe', fromX: 10, fromY: 10, toX: 10, toY: 130, velocity: 199 }, 'steps[0].action', 'flow.json'),
+  /velocity must be an integer from 200 to 40000 px\/s/,
+);
+assert.throws(() => validatePreconditionFlow({
+  ...universalPreconditionFlow,
+  steps: [{ id: 'flow-step-001', instruction: '输入内容', action: { type: 'inputText', target: '输入框' } }],
+}, path.join(preconditionFlowDir, 'flow.json'), 'universal'), /text is required/);
+assert.throws(() => validatePreconditionFlow({
+  ...universalPreconditionFlow,
+  steps: Array.from({ length: 6 }, (_, index) => ({
+    id: `flow-step-${String(index + 1).padStart(3, '0')}`,
+    instruction: `等待页面稳定 ${index + 1}`,
+    action: { type: 'wait', ms: 100, reason: '等待页面稳定' },
+  })),
+}, path.join(preconditionFlowDir, 'flow.json'), 'universal'), /PRECONDITION_FLOW_BUDGET_EXCEEDED/);
+
+const harmonyFlowIndex = JSON.parse(run('node', ['scripts/flow/load-precondition-flows.js', '--platform', 'harmony', '--cwd', workspace]));
+assert.strictEqual(harmonyFlowIndex.flows.length, 1);
+assert.strictEqual(harmonyFlowIndex.flows[0].flowId, universalPreconditionFlow.id);
+assert.strictEqual(harmonyFlowIndex.flows[0].platform, 'universal');
+const androidFlowIndex = JSON.parse(run('node', ['scripts/flow/load-precondition-flows.js', '--platform', 'android', '--cwd', workspace]));
+assert.strictEqual(androidFlowIndex.flows[0].flowId, androidPreconditionFlow.id);
+assert.strictEqual(androidFlowIndex.flows[0].platform, 'android');
+assert.ok(!fs.existsSync(path.join(repo, 'scripts', 'flow', 'start-recording.js')));
+assert.ok(!fs.existsSync(path.join(repo, 'scripts', 'flow', 'record-scan.js')));
+
+const preconditionFlowCaseFile = path.join(sourceRoot, 'cases', 'precondition-flow.md');
+write(preconditionFlowCaseFile, `# 前置条件 Flow 执行测试
+
+## 前置条件
+- 用户已登录
+- 进入创作页
+
+## 步骤
+1. 验证创作页内容。
+`);
+const preconditionFlowParsed = JSON.parse(run('node', ['scripts/parse-case.js', preconditionFlowCaseFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const preconditionFlowPreflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
+assert.strictEqual(preconditionFlowPreflight.summary.flowMatchedPreconditions, 1);
+assert.strictEqual(preconditionFlowPreflight.cases[0].preconditions[0].resolution, 'confirm');
+assert.strictEqual(preconditionFlowPreflight.cases[0].preconditions[1].resolution, 'flow');
+assert.strictEqual(preconditionFlowPreflight.cases[0].preconditions[1].flowId, universalPreconditionFlow.id);
+assert.ok(preconditionFlowPreflight.cases[0].preconditionPlanSha.startsWith('precondition-plan-'));
+const loginPreconditionInputs = JSON.stringify([{ id: 'pre-001', resolution: 'confirm', status: 'PASS', reason: '用户已确认登录态' }]);
+const wrongFlowPlan = runAllowFailure('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--start', '--precondition-plan-sha', 'precondition-plan-wrong']);
+assert.notStrictEqual(wrongFlowPlan.status, 0);
+assert.ok(wrongFlowPlan.stderr.includes('PRECONDITION_FLOW_CHANGED'));
+
+const strictFlowCaseFile = path.join(sourceRoot, 'cases', 'precondition-flow-strict.md');
+write(strictFlowCaseFile, `# 前置条件 Flow 严格匹配测试
+
+## 前置条件
+- 进入创作页。
+
+## 步骤
+1. 验证页面。
+`);
+const strictFlowParsed = JSON.parse(run('node', ['scripts/parse-case.js', strictFlowCaseFile, '--cwd', workspace]));
+const strictFlowPreflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', strictFlowParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
+assert.strictEqual(strictFlowPreflight.summary.flowMatchedPreconditions, 0);
+assert.notStrictEqual(strictFlowPreflight.cases[0].preconditions[0].resolution, 'flow');
+const mixedStrictFlowPreflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', preconditionFlowParsed.caseDir, strictFlowParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
+const exactFlowGroup = mixedStrictFlowPreflight.groups.find((item) => item.text === '进入创作页');
+const punctuatedFlowGroup = mixedStrictFlowPreflight.groups.find((item) => item.text === '进入创作页。');
+assert.ok(exactFlowGroup);
+assert.ok(punctuatedFlowGroup);
+assert.strictEqual(exactFlowGroup.resolution, 'flow');
+assert.strictEqual(punctuatedFlowGroup.resolution, 'confirm');
+assert.deepStrictEqual(exactFlowGroup.caseRefs, ['C028']);
+assert.deepStrictEqual(punctuatedFlowGroup.caseRefs, ['C029']);
+
+const preconditionFlowStart = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
+]));
+const preconditionFlowExecution = json(path.join(preconditionFlowStart.execDir, 'execution.json'));
+assert.strictEqual(preconditionFlowExecution.preconditionPlanSha, preconditionFlowPreflight.cases[0].preconditionPlanSha);
+assert.strictEqual(preconditionFlowExecution.preconditionPlan.preconditions[1].flowId, universalPreconditionFlow.id);
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'confirm',
+  reason: '用户已确认登录态',
+}), '--execution-id', preconditionFlowStart.executionId]);
+
+const entryObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv }));
+assert.strictEqual(entryObservation.scope, 'precondition-flow');
+assert.strictEqual(entryObservation.phase, 'entry-check');
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
+  status: 'STARTED',
+  reason: 'entry-check observation 显示当前位于 Flow 起点',
+}), '--execution-id', preconditionFlowStart.executionId]);
+
+const beforeFlowStep = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--phase', 'before',
+], { env: fakeEnv }));
+assert.strictEqual(beforeFlowStep.flowStepId, 'flow-step-001');
+const preconditionFlowAction = JSON.parse(run('./scripts/action.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--type', 'tap',
+  '--target', '创作入口',
+  '--x', '9',
+  '--y', '10',
+  '--coordinate-source', 'visual',
+  '--target-bounds', '1,2,30,40',
+  '--coordinate-evidence', '当前截图中创作入口区域',
+  '--settle-ms', '0',
+], { env: fakeEnv }));
+assert.strictEqual(preconditionFlowAction.scope, 'precondition-flow');
+assert.strictEqual(preconditionFlowAction.preconditionId, 'pre-002');
+const afterFlowStep = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--phase', 'after',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
+  flowStepId: 'flow-step-001',
+  status: 'STEP_COMPLETED',
+  evidenceObservation: afterFlowStep.label,
+  reason: '动作成功且已完成动作后观察',
+}), '--execution-id', preconditionFlowStart.executionId]);
+const endFlowObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', preconditionFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'end-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
+  status: 'COMPLETED',
+  evidenceObservation: endFlowObservation.label,
+  reason: 'end-check observation 显示已到达 Flow 终点',
+}), '--execution-id', preconditionFlowStart.executionId]);
+const repeatedTerminalFlow = runAllowFailure('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
+  status: 'STARTED',
+  reason: '不应允许终态后重新开始',
+}), '--execution-id', preconditionFlowStart.executionId]);
+assert.notStrictEqual(repeatedTerminalFlow.status, 0);
+assert.ok(repeatedTerminalFlow.stderr.includes('STEP_ORDER_VIOLATION'));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-002',
+  status: 'PREPARED',
+  resolution: 'flow',
+  flowId: universalPreconditionFlow.id,
+  evidenceObservation: endFlowObservation.label,
+  reason: 'Flow 已完成并验证终点',
+}), '--execution-id', preconditionFlowStart.executionId]);
+const preconditionFlowStepEvidence = recordStepObservation(preconditionFlowParsed.caseDir, 'harmony', preconditionFlowStart.executionId, 'step-001', 'precondition-flow-case-step');
+recordPassAssertion(preconditionFlowParsed.caseDir, 'harmony', preconditionFlowStart.executionId, 'step-001', '创作页内容符合预期', preconditionFlowStepEvidence);
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', preconditionFlowStart.executionId]);
+const preconditionFlowResult = json(path.join(preconditionFlowStart.execDir, 'result.json'));
+const preconditionFlowMetrics = json(path.join(preconditionFlowStart.execDir, 'metrics.json'));
+assert.strictEqual(preconditionFlowResult.status, 'PASS');
+assert.strictEqual(preconditionFlowResult.preconditionPlanSha, preconditionFlowPreflight.cases[0].preconditionPlanSha);
+assert.strictEqual(preconditionFlowResult.flowAssets[0].flowSha1, preconditionFlowPreflight.cases[0].flowMatches[0].flowSha1);
+assert.strictEqual(preconditionFlowMetrics.flows.planned, 1);
+assert.strictEqual(preconditionFlowMetrics.flows.completed, 1);
+assert.strictEqual(preconditionFlowMetrics.flows.actions, 1);
+const preconditionFlowContext = fs.readFileSync(path.join(preconditionFlowParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(preconditionFlowContext.includes('## 前置条件 Flow'));
+assert.ok(preconditionFlowContext.includes('before'));
+assert.ok(preconditionFlowContext.includes('ACTION_OK'));
+assert.ok(!preconditionFlowContext.includes('Flow 扫描'));
+const preconditionFlowHtml = fs.readFileSync(path.join(preconditionFlowParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
+assert.ok(preconditionFlowHtml.includes('pre-002-flow-step-001-before'));
+
+const actionMismatch = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
+]));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'confirm',
+  reason: '用户已确认登录态',
+}), '--execution-id', actionMismatch.executionId]);
+run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionMismatch.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv });
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
+  status: 'STARTED',
+  reason: '起点匹配',
+}), '--execution-id', actionMismatch.executionId]);
+const activeFlowFinalize = runAllowFailure('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'BLOCKED', '--reason', '不应允许活动 Flow 收尾', '--execution-id', actionMismatch.executionId]);
+assert.notStrictEqual(activeFlowFinalize.status, 0);
+assert.ok(activeFlowFinalize.stderr.includes('PRECONDITION_FLOW_INVALID'));
+run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionMismatch.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--phase', 'before',
+], { env: fakeEnv });
+const mismatchedAction = runAllowFailure('./scripts/action.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionMismatch.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--flow-step-id', 'flow-step-001',
+  '--type', 'wait',
+  '--ms', '100',
+  '--reason', '错误动作',
+], { env: fakeEnv });
+assert.notStrictEqual(mismatchedAction.status, 0);
+assert.ok(`${mismatchedAction.stdout}\n${mismatchedAction.stderr}`.includes('PRECONDITION_FLOW_ACTION_MISMATCH'));
+const actionMismatchResult = json(path.join(actionMismatch.execDir, 'result.json'));
+const actionMismatchMetrics = json(path.join(actionMismatch.execDir, 'metrics.json'));
+assert.strictEqual(actionMismatchResult.status, 'BLOCKED');
+assert.strictEqual(actionMismatchResult.failureCode, 'PRECONDITION_FLOW_ACTION_MISMATCH');
+assert.strictEqual(actionMismatchMetrics.preconditions.blocked, 1);
+const actionMismatchEvents = fs.readFileSync(path.join(actionMismatch.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+assert.ok(actionMismatchEvents.some((event) => event.type === 'actionResult' && event.ok === false && event.failureCode === 'PRECONDITION_FLOW_ACTION_MISMATCH'));
+assert.ok(actionMismatchEvents.some((event) => event.type === 'flow' && event.status === 'FAILED' && event.failureCode === 'PRECONDITION_FLOW_ACTION_MISMATCH'));
+assert.ok(actionMismatchEvents.some((event) => event.type === 'precondition' && event.status === 'BLOCKED' && event.failureCode === 'PRECONDITION_FLOW_ACTION_MISMATCH'));
+
+const observationFailure = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
+]));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'confirm',
+  reason: '用户已确认登录态',
+}), '--execution-id', observationFailure.executionId]);
+const failingHdcBin = path.join(tmp, 'failing-hdc-bin');
+const failingHdc = path.join(failingHdcBin, 'hdc');
+write(failingHdc, '#!/usr/bin/env bash\nprintf "forced observation failure\\n" >&2\nexit 9\n');
+fs.chmodSync(failingHdc, 0o755);
+const failedEntryObservation = runAllowFailure('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', observationFailure.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: { ...fakeEnv, PATH: `${failingHdcBin}:${process.env.PATH}` } });
+assert.notStrictEqual(failedEntryObservation.status, 0);
+const observationFailureResult = json(path.join(observationFailure.execDir, 'result.json'));
+const observationFailureMetrics = json(path.join(observationFailure.execDir, 'metrics.json'));
+assert.strictEqual(observationFailureResult.status, 'BLOCKED');
+assert.strictEqual(observationFailureResult.failureCode, 'PRECONDITION_FLOW_OBSERVATION_FAILED');
+assert.strictEqual(observationFailureMetrics.preconditions.blocked, 1);
+const observationFailureEvents = fs.readFileSync(path.join(observationFailure.execDir, 'timeline.jsonl'), 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+const failedObservationEvent = observationFailureEvents.find((event) => event.type === 'observation' && event.scope === 'precondition-flow');
+assert.strictEqual(failedObservationEvent.ok, false);
+assert.strictEqual(failedObservationEvent.failureCode, 'PRECONDITION_FLOW_OBSERVATION_FAILED');
+assert.ok(observationFailureEvents.some((event) => event.type === 'flow' && event.status === 'BLOCKED'));
+
+const startMismatch = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
+]));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'confirm',
+  reason: '用户已确认登录态',
+}), '--execution-id', startMismatch.executionId]);
+const mismatchObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', startMismatch.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-002',
+  flowId: universalPreconditionFlow.id,
+  status: 'BLOCKED',
+  failureCode: 'PRECONDITION_FLOW_START_MISMATCH',
+  evidenceObservation: mismatchObservation.label,
+  reason: '当前页面既不是起点也不是终点',
+}), '--execution-id', startMismatch.executionId]);
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-002',
+  status: 'BLOCKED',
+  resolution: 'flow',
+  flowId: universalPreconditionFlow.id,
+  failureCode: 'PRECONDITION_FLOW_START_MISMATCH',
+  evidenceObservation: mismatchObservation.label,
+  reason: 'Flow 起点不匹配',
+}), '--execution-id', startMismatch.executionId]);
+const startMismatchResult = json(path.join(startMismatch.execDir, 'result.json'));
+assert.strictEqual(startMismatchResult.status, 'BLOCKED');
+assert.strictEqual(startMismatchResult.failureCode, 'PRECONDITION_FLOW_START_MISMATCH');
+
+const alreadySatisfied = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
+]));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PASS',
+  resolution: 'confirm',
+  reason: '用户已确认登录态',
+}), '--execution-id', alreadySatisfied.executionId]);
+const alreadySatisfiedObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', alreadySatisfied.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-002',
+  '--flow-id', universalPreconditionFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-002',
+  status: 'PASS',
+  resolution: 'already_satisfied',
+  flowId: universalPreconditionFlow.id,
+  evidenceObservation: alreadySatisfiedObservation.label,
+  reason: 'entry-check observation 显示已经满足 Flow 终点',
+}), '--execution-id', alreadySatisfied.executionId]);
+const alreadySatisfiedStepEvidence = recordStepObservation(preconditionFlowParsed.caseDir, 'harmony', alreadySatisfied.executionId, 'step-001', 'already-satisfied-case-step');
+recordPassAssertion(preconditionFlowParsed.caseDir, 'harmony', alreadySatisfied.executionId, 'step-001', '创作页内容符合预期', alreadySatisfiedStepEvidence);
+run('node', ['scripts/run-case.js', preconditionFlowParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', alreadySatisfied.executionId]);
+const alreadySatisfiedMetrics = json(path.join(alreadySatisfied.execDir, 'metrics.json'));
+assert.strictEqual(alreadySatisfiedMetrics.flows.started, 0);
+assert.strictEqual(alreadySatisfiedMetrics.flows.alreadySatisfied, 1);
+
+const budgetFile = path.join(sourceRoot, 'cases', 'budget.md');
+write(budgetFile, `# 预算测试
+
+## 前置条件
+- App 已安装。
+
+## 步骤
+1. 打开 App。
+`);
+const budgetParsed = JSON.parse(run('node', ['scripts/parse-case.js', budgetFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', budgetParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const budgetStart = JSON.parse(run('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--start']));
+assert.strictEqual(json(path.join(budgetStart.execDir, 'execution.json')).budget.maxDurationMs, 30 * 60 * 1000);
+recordPreconditions(budgetParsed.caseDir, 'harmony', budgetStart.executionId);
+for (let i = 0; i < 80; i++) {
+  recordObservationEvent(budgetParsed.caseDir, 'harmony', budgetStart.executionId, {
+    type: 'observation',
+    scope: 'global',
+    label: `obs-${i}`,
+    artifacts: { screenshot: `screenshots/obs-${i}.png` },
+  });
+}
+writeTestPng(path.join(budgetStart.execDir, 'screenshots/obs-80.png'));
+const overBudget = runAllowFailure('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--record-observation-json', JSON.stringify({
+  type: 'observation',
+  scope: 'global',
+  label: 'obs-80',
+  source: 'observe.sh',
+  artifacts: { screenshot: 'screenshots/obs-80.png' },
+}), '--execution-id', budgetStart.executionId], {
+  env: { ...process.env, MAVT_OBSERVATION_WRITER: '1' },
+});
+assert.strictEqual(overBudget.status, 3);
+assert.ok(overBudget.stderr.includes('EXECUTION_BUDGET_EXCEEDED'));
+const budgetState = json(path.join(budgetParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.strictEqual(budgetState.latestStatus, 'BLOCKED');
+assert.strictEqual(budgetState.latestFailureCode, 'EXECUTION_BUDGET_EXCEEDED');
+const budgetExecState = json(path.join(budgetStart.execDir, 'execution.json'));
+assert.strictEqual(budgetExecState.finalized, true);
+const afterFinalized = runAllowFailure('node', ['scripts/run-case.js', budgetParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({ type: 'decision', decision: 'act' })]);
+assert.notStrictEqual(afterFinalized.status, 0);
+assert.ok(afterFinalized.stderr.includes('Execution already finalized'));
+
+const waitReasonFlowDir = path.join(workspace, 'flows', 'preconditions', 'wait-for-stable-page');
+const waitReasonFlow = {
+  schemaVersion: 2,
+  id: 'flow-wait-for-stable-page',
+  name: '等待页面稳定',
+  usage: 'precondition',
+  platform: 'universal',
+  startCondition: { description: '当前页面已打开但仍在加载' },
+  endCondition: { description: '当前页面内容已稳定展示' },
+  steps: [{
+    id: 'flow-step-wait-001',
+    instruction: '等待页面稳定',
+    action: { type: 'wait', ms: 1, reason: '等待页面稳定' },
+  }],
+};
+write(path.join(waitReasonFlowDir, 'flow.json'), `${JSON.stringify(waitReasonFlow, null, 2)}\n`);
+const waitReasonFlowCaseFile = path.join(sourceRoot, 'cases', 'wait-reason-flow.md');
+write(waitReasonFlowCaseFile, `# Flow wait reason 执行测试
+
+## 前置条件
+- 等待页面稳定
+
+## 步骤
+1. 验证页面已稳定。
+`);
+const waitReasonFlowParsed = JSON.parse(run('node', ['scripts/parse-case.js', waitReasonFlowCaseFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const waitReasonFlowPreflight = JSON.parse(run('node', ['scripts/preflight-preconditions.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--cwd', workspace]));
+assert.strictEqual(waitReasonFlowPreflight.summary.flowMatchedPreconditions, 1);
+assert.strictEqual(waitReasonFlowPreflight.cases[0].preconditions[0].flowId, waitReasonFlow.id);
+const waitReasonFlowStart = JSON.parse(run('node', [
+  'scripts/run-case.js',
+  waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--start',
+  '--precondition-plan-sha', waitReasonFlowPreflight.cases[0].preconditionPlanSha,
+]));
+const waitReasonEntryObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--phase', 'entry-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-001',
+  flowId: waitReasonFlow.id,
+  status: 'STARTED',
+  evidenceObservation: waitReasonEntryObservation.label,
+  reason: 'entry-check observation 显示当前位于 Flow 起点',
+}), '--execution-id', waitReasonFlowStart.executionId]);
+run('./scripts/observe.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--flow-step-id', 'flow-step-wait-001',
+  '--phase', 'before',
+], { env: fakeEnv });
+const waitReasonFlowAction = JSON.parse(run('./scripts/action.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--flow-step-id', 'flow-step-wait-001',
+  '--type', 'wait',
+  '--ms', '1',
+  '--reason', '等待页面稳定',
+], { env: fakeEnv }));
+assert.strictEqual(waitReasonFlowAction.ok, true);
+assert.deepStrictEqual(waitReasonFlowAction.requestedAction, waitReasonFlow.steps[0].action);
+const waitReasonAfterObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--flow-step-id', 'flow-step-wait-001',
+  '--phase', 'after',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-001',
+  flowId: waitReasonFlow.id,
+  flowStepId: 'flow-step-wait-001',
+  status: 'STEP_COMPLETED',
+  evidenceObservation: waitReasonAfterObservation.label,
+  reason: 'wait 动作成功且已完成动作后观察',
+}), '--execution-id', waitReasonFlowStart.executionId]);
+const waitReasonEndObservation = JSON.parse(run('./scripts/observe.sh', [
+  '--case-dir', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', waitReasonFlowStart.executionId,
+  '--scope', 'precondition-flow',
+  '--precondition-id', 'pre-001',
+  '--flow-id', waitReasonFlow.id,
+  '--phase', 'end-check',
+], { env: fakeEnv }));
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'flow',
+  usage: 'precondition',
+  preconditionId: 'pre-001',
+  flowId: waitReasonFlow.id,
+  status: 'COMPLETED',
+  evidenceObservation: waitReasonEndObservation.label,
+  reason: 'end-check observation 显示页面已稳定',
+}), '--execution-id', waitReasonFlowStart.executionId]);
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'precondition',
+  id: 'pre-001',
+  status: 'PREPARED',
+  resolution: 'flow',
+  flowId: waitReasonFlow.id,
+  evidenceObservation: waitReasonEndObservation.label,
+  reason: '等待页面稳定 Flow 已完成',
+}), '--execution-id', waitReasonFlowStart.executionId]);
+const waitReasonStepEvidence = recordStepObservation(waitReasonFlowParsed.caseDir, 'harmony', waitReasonFlowStart.executionId, 'step-001', 'wait-reason-step');
+recordPassAssertion(waitReasonFlowParsed.caseDir, 'harmony', waitReasonFlowStart.executionId, 'step-001', '页面已稳定', waitReasonStepEvidence);
+run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', waitReasonFlowStart.executionId]);
+const waitReasonFlowResult = json(path.join(waitReasonFlowStart.execDir, 'result.json'));
+assert.strictEqual(waitReasonFlowResult.status, 'PASS');
+
+const commonHeadingFile = path.join(sourceRoot, 'cases', 'common-heading.md');
+write(commonHeadingFile, `# 常见步骤标题测试
+
+## 测试步骤
+1. 点击登录按钮。
+
+## 预期结果
+- 成功进入首页。
+`);
+const commonHeadingParsed = JSON.parse(run('node', ['scripts/parse-case.js', commonHeadingFile, '--cwd', workspace]));
+const commonHeadingCase = json(path.join(commonHeadingParsed.caseDir, 'case.json'));
+assert.strictEqual(commonHeadingCase.steps.length, 1);
+assert.strictEqual(commonHeadingCase.steps[0].expected, '成功进入首页。');
+
+const zeroStepFile = path.join(sourceRoot, 'cases', 'zero-step.md');
+write(zeroStepFile, `# 零步骤拒绝测试
+
+## 补充说明
+当前文档没有可执行步骤。
+`);
+const zeroStepParse = runAllowFailure('node', ['scripts/parse-case.js', zeroStepFile, '--cwd', workspace]);
+assert.notStrictEqual(zeroStepParse.status, 0);
+assert.ok(zeroStepParse.stderr.includes('CASE_STEPS_REQUIRED'));
+
+assert.notStrictEqual(caseContractSha({
+  identity: { sourceSha1: 'source-fixed' },
+  preconditions: [],
+  steps: [{ id: 'step-001', index: 1, sourceText: '点击 A', kind: 'action', goal: 'tap', hints: [] }],
+  globalRules: [],
+}), caseContractSha({
+  identity: { sourceSha1: 'source-fixed' },
+  preconditions: [],
+  steps: [{ id: 'step-001', index: 1, sourceText: '点击 B', kind: 'action', goal: 'tap', hints: [] }],
+  globalRules: [],
+}));
+
+run('node', ['scripts/update-env.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const recoveryStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const mismatchedEnvironment = runAllowFailure('./scripts/action.sh', [
+  '--case-dir', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', recoveryStart.executionId,
+  '--device', 'different-device',
+  '--type', 'wait',
+  '--ms', '1',
+]);
+assert.strictEqual(mismatchedEnvironment.status, 2);
+assert.ok(mismatchedEnvironment.stderr.includes('ENVIRONMENT_BINDING_MISMATCH'));
+const forgedFrameworkResult = runAllowFailure('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+  type: 'result',
+  status: 'PASS',
+  reason: '伪造框架终态',
+}), '--execution-id', recoveryStart.executionId]);
+assert.notStrictEqual(forgedFrameworkResult.status, 0);
+assert.ok(forgedFrameworkResult.stderr.includes('EVENT_SOURCE_REQUIRED'));
+const recoveryStateBefore = json(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+const interruptedFinalize = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--finalize',
+  '--status', 'BLOCKED',
+  '--failure-code', 'CASE_TIMEOUT',
+  '--reason', '恢复测试',
+  '--execution-id', recoveryStart.executionId,
+], { env: { ...process.env, MAVT_SELF_TEST_FINALIZE_INTERRUPT: 'after-draft' } });
+assert.notStrictEqual(interruptedFinalize.status, 0);
+assert.ok(fs.existsSync(path.join(recoveryStart.execDir, 'result.draft.json')));
+const recoveredFinalize = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--finalize',
+  '--status', 'BLOCKED',
+  '--failure-code', 'CASE_TIMEOUT',
+  '--reason', '恢复测试',
+  '--execution-id', recoveryStart.executionId,
+]));
+assert.strictEqual(recoveredFinalize.recovered, true);
+assert.ok(fs.existsSync(path.join(recoveryStart.execDir, 'result.json')));
+assert.ok(fs.existsSync(path.join(recoveryStart.execDir, 'metrics.json')));
+assert.ok(!fs.existsSync(path.join(recoveryStart.execDir, 'result.draft.json')));
+const recoveredExecution = json(path.join(recoveryStart.execDir, 'execution.json'));
+assert.strictEqual(recoveredExecution.lifecycle, 'FINALIZED');
+const recoveryStateAfter = json(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.strictEqual(recoveryStateAfter.executionCount, recoveryStateBefore.executionCount + 1);
+assert.strictEqual(recoveryStateAfter.committedExecutionIds.filter((id) => id === recoveryStart.executionId).length, 1);
+
+const agentContract = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony']));
+assert.strictEqual(agentContract.name, 'mobile-ai-visual-test');
+assert.strictEqual(agentContract.role, 'case-executor');
+assert.strictEqual(agentContract.platform, 'harmony');
+assert.ok(agentContract.protocolSha.startsWith('agent-protocol-'));
+assert.ok(agentContract.implementationSha.startsWith('agent-implementation-'));
+assert.deepStrictEqual(agentContract.requiredResources, [
+  'SKILL.md',
+  'references/case-executor-contract.md',
+  'references/action-schema.md',
+]);
+for (const relative of ['scripts/commit-agent-turn.js', 'scripts/common.js', 'scripts/platform/action.sh', 'scripts/platform/observe.sh']) {
+  assert.ok(agentContract.implementationFiles.includes(relative), `case-executor implementation must include ${relative}`);
+}
+assert.ok(agentContract.implementationFiles.some((relative) => relative.startsWith('scripts/platform/adapters/harmony/')));
+assert.ok(!agentContract.implementationFiles.some((relative) => relative.startsWith('scripts/platform/adapters/ios/')));
+const verifiedAgentContract = JSON.parse(run('node', [
+  'scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--verify-sha', agentContract.protocolSha,
+]));
+assert.strictEqual(verifiedAgentContract.verified, true);
+const mismatchedAgentContract = runAllowFailure('node', [
+  'scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--verify-sha', 'agent-protocol-invalid',
+]);
+assert.notStrictEqual(mismatchedAgentContract.status, 0);
+assert.ok(mismatchedAgentContract.stderr.includes('AGENT_PROTOCOL_MISMATCH'));
+
+const lateBoundStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const lateBoundEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', lateBoundStart.executionId, 'step-001', 'late-bound-evidence');
+const lateBoundRequest = JSON.parse(run('node', [
+  'scripts/build-case-agent-request.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', lateBoundStart.executionId, '--provider', 'codex',
+  '--workspace-cwd', workspace, '--skill-contract-json', JSON.stringify(agentContract),
+]));
+const lateBound = runAllowFailure('node', [
+  'scripts/record-agent-runtime.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', lateBoundStart.executionId,
+  '--event-json', JSON.stringify({ provider: 'codex', status: 'BOUND', sessionScope: 'case', protocolSha: agentContract.protocolSha, implementationSha: agentContract.implementationSha, requestSha: lateBoundRequest.requestSha, environmentSha: lateBoundRequest.environmentSha, preconditionInputsSha: lateBoundRequest.preconditionInputsSha, sessionId: 'late-bound-session' }),
+]);
+assert.notStrictEqual(lateBound.status, 0);
+assert.ok(lateBound.stderr.includes('BOUND 必须先于业务事实'));
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', lateBoundStart.executionId, 'step-001', 'late BOUND guard verified', lateBoundEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', lateBoundStart.executionId]);
+
+const agentTurnStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+assert.ok(fs.existsSync(path.join(agentTurnStart.execDir, 'case.snapshot.json')));
+const agentTurnExecution = json(path.join(agentTurnStart.execDir, 'execution.json'));
+assert.strictEqual(agentTurnExecution.caseContractSha, caseContractSha(json(path.join(agentTurnStart.execDir, 'case.snapshot.json'))));
+const forgedAgentRuntime = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--record-json', JSON.stringify({
+    type: 'agentRuntime', source: 'record-agent-runtime.js', provider: 'codex', status: 'BOUND', sessionScope: 'case', protocolSha: agentContract.protocolSha, implementationSha: agentContract.implementationSha, requestSha: 'request-0000000000000000', environmentSha: agentTurnExecution.environmentSha, preconditionInputsSha: agentTurnExecution.preconditionInputsSha, sessionId: 'forged-session',
+  }), '--execution-id', agentTurnStart.executionId,
+]);
+assert.notStrictEqual(forgedAgentRuntime.status, 0);
+assert.ok(forgedAgentRuntime.stderr.includes('EVENT_SOURCE_REQUIRED'));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', agentTurnStart.executionId, '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const caseAgentRequest = json(path.join(agentTurnStart.execDir, 'agent', 'request.json'));
+const agentTurnOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: agentTurnOpen.operation.operationId, ok: true, sessionId: 'self-test-session' }),
+]);
+assert.strictEqual(caseAgentRequest.executionId, agentTurnStart.executionId);
+assert.strictEqual(caseAgentRequest.provider, 'codex');
+assert.strictEqual(caseAgentRequest.environmentSha, json(path.join(agentTurnStart.execDir, 'execution.json')).environmentSha);
+assert.strictEqual(caseAgentRequest.preconditionInputsSha, json(path.join(agentTurnStart.execDir, 'execution.json')).preconditionInputsSha);
+assert.strictEqual(caseAgentRequest.executionPolicy.sessionScope, 'case');
+assert.deepStrictEqual(caseAgentRequest.executionPolicy.actionPolicy, {
+  mode: 'case_step_authorized',
+  authorizationSource: 'case.snapshot.json',
+  allowAgentInitiatedSideEffects: false,
+});
+assert.deepStrictEqual(Object.keys(caseAgentRequest.executionPolicy).sort(), ['actionPolicy', 'maxDurationMs', 'sessionScope']);
+const initialNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+assert.strictEqual(initialNextWork.nextWork.type, 'OBSERVE_STEP');
+const agentTurnEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', agentTurnStart.executionId, 'step-001', 'agent-turn-evidence');
+const decideNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+assert.strictEqual(decideNextWork.nextWork.type, 'DECIDE_STEP');
+assert.strictEqual(decideNextWork.nextWork.latestObservation.screenshot, agentTurnEvidence);
+assert.deepStrictEqual(decideNextWork.nextWork.stepIntent, buildStepIntent(decideNextWork.nextWork.step));
+validateStepIntent(decideNextWork.nextWork.step, decideNextWork.nextWork.stepIntent);
+const missingActAction = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--record-json', JSON.stringify({ type: 'decision', stepId: 'step-001', decision: 'act', reason: 'missing executable action' }),
+]);
+assert.notStrictEqual(missingActAction.status, 0);
+assert.ok(missingActAction.stderr.includes('act decision action'));
+const agentTurn = {
+  schemaVersion: 1,
+  turnId: 'turn-agent-self-test-001',
+  stepId: 'step-001',
+  observation: agentTurnEvidence,
+  facts: [
+    { type: 'perception', status: 'USABLE', reason: 'self-test 当前截图可用于判断' },
+    { type: 'assertion', status: 'PASS', reason: 'self-test 当前步骤满足预期' },
+  ],
+};
+const interruptedAgentTurnCommit = runAllowFailure('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--turn-json', JSON.stringify(agentTurn),
+], { env: { ...process.env, MAVT_SELF_TEST_TURN_INTERRUPT: 'after-first-fact' } });
+assert.notStrictEqual(interruptedAgentTurnCommit.status, 0);
+assert.ok(interruptedAgentTurnCommit.stderr.includes('MAVT_SELF_TEST_TURN_INTERRUPT'));
+assert.strictEqual(fs.readdirSync(path.join(agentTurnStart.execDir, 'agent', 'turns')).filter((name) => name.endsWith('.draft.json')).length, 1);
+const committedAgentTurn = JSON.parse(run('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--turn-json', JSON.stringify(agentTurn),
+]));
+assert.deepStrictEqual(committedAgentTurn.committed, ['perception', 'assertion']);
+assert.strictEqual(committedAgentTurn.alreadyCommitted, false);
+assert.strictEqual(committedAgentTurn.recovered, true);
+assert.strictEqual(fs.readdirSync(path.join(agentTurnStart.execDir, 'agent', 'turns')).filter((name) => name.endsWith('.draft.json')).length, 0);
+const recommittedAgentTurn = JSON.parse(run('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--turn-json', JSON.stringify(agentTurn),
+]));
+assert.strictEqual(recommittedAgentTurn.alreadyCommitted, true);
+const conflictingAgentTurn = runAllowFailure('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--turn-json', JSON.stringify({
+    ...agentTurn,
+    facts: [
+      { type: 'perception', status: 'USABLE', reason: '与原 turnId 不同的事实' },
+      agentTurn.facts[1],
+    ],
+  }),
+]);
+assert.notStrictEqual(conflictingAgentTurn.status, 0);
+assert.ok(conflictingAgentTurn.stderr.includes('turnId already used by a different fact'));
+const finalNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+assert.strictEqual(finalNextWork.nextWork.type, 'FINALIZE_PASS');
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', agentTurnStart.executionId]);
+const agentTurnAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+const agentTurnResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+const validatedAgentResult = JSON.parse(run('node', [
+  'scripts/validate-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--request-json', JSON.stringify(caseAgentRequest),
+  '--result-json', JSON.stringify(agentTurnResult),
+]));
+assert.strictEqual(validatedAgentResult.valid, true);
+const invalidAgentResult = runAllowFailure('node', [
+  'scripts/validate-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--request-json', JSON.stringify(caseAgentRequest),
+  '--result-json', JSON.stringify({
+    schemaVersion: 1,
+    provider: 'codex',
+    executionId: agentTurnStart.executionId,
+    requestSha: caseAgentRequest.requestSha,
+    protocolSha: agentContract.protocolSha,
+    implementationSha: agentContract.implementationSha,
+    status: 'FAIL',
+    failureCode: 'ASSERTION_FAILED',
+    finalized: true,
+    resultPath: path.join(agentTurnStart.execDir, 'result.json'),
+    metricsPath: path.join(agentTurnStart.execDir, 'metrics.json'),
+  }),
+]);
+assert.notStrictEqual(invalidAgentResult.status, 0);
+assert.ok(invalidAgentResult.stderr.includes('AGENT_RESULT_INVALID'));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: agentTurnAwait.operation.operationId, ok: true, result: agentTurnResult }),
+]);
+const agentTurnRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', agentTurnStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: agentTurnRelease.operation.operationId, ok: true }),
+]);
+
+const staleTurnRecoveryStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const staleTurnRecoveryEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', staleTurnRecoveryStart.executionId, 'step-001', 'stale-turn-recovery-evidence');
+const staleTurnRecoveryWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', staleTurnRecoveryStart.executionId,
+]));
+const staleTurnRecoveryDecision = {
+  outcome: 'PASS',
+  turnId: `turn-${staleTurnRecoveryWork.workToken.slice('work-'.length)}`,
+  reason: '恢复后提交通过断言',
+  perception: { status: 'USABLE', reason: '恢复前已查看当前截图' },
+};
+const staleTurnRecoveryDraft = {
+  schemaVersion: 1,
+  turnId: staleTurnRecoveryDecision.turnId,
+  stepId: 'step-001',
+  observation: staleTurnRecoveryEvidence,
+  facts: [
+    { type: 'perception', status: 'USABLE', reason: staleTurnRecoveryDecision.perception.reason },
+    { type: 'assertion', status: 'PASS', reason: staleTurnRecoveryDecision.reason },
+  ],
+};
+const staleTurnInterrupted = runAllowFailure('node', [
+  'scripts/commit-agent-turn.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', staleTurnRecoveryStart.executionId,
+  '--turn-json', JSON.stringify(staleTurnRecoveryDraft),
+], { env: { ...process.env, MAVT_SELF_TEST_TURN_INTERRUPT: 'after-first-fact' } });
+assert.notStrictEqual(staleTurnInterrupted.status, 0);
+const staleTurnRecovered = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', staleTurnRecoveryStart.executionId,
+  '--work-token', staleTurnRecoveryWork.workToken,
+  '--decision-json', JSON.stringify(staleTurnRecoveryDecision),
+], { env: fakeEnv }));
+assert.strictEqual(staleTurnRecovered.status, 'COMPLETED');
+assert.strictEqual(json(path.join(staleTurnRecoveryStart.execDir, 'result.json')).status, 'PASS');
+
+const actionObserveStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+recordStepObservation(commonHeadingParsed.caseDir, 'harmony', actionObserveStart.executionId, 'step-001', 'action-observe-before');
+const missingActionAuthorization = runAllowFailure('./scripts/action-observe.sh', [
+  '--case-dir', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionObserveStart.executionId,
+  '--step-id', 'step-001',
+  '--type', 'wait',
+  '--ms', '1',
+  '--settle-ms', '0',
+], { env: fakeEnv, skipStepAuthorization: true });
+assert.notStrictEqual(missingActionAuthorization.status, 0);
+assert.ok(missingActionAuthorization.stderr.includes('ACTION_OUTSIDE_CASE_INTENT'));
+const forgedActionAuthorization = runAllowFailure('./scripts/action-observe.sh', [
+  '--case-dir', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionObserveStart.executionId,
+  '--step-id', 'step-001',
+  '--authorization-source', 'case-step',
+  '--authorization-step-id', 'step-001',
+  '--authorization-intent-sha', 'step-intent-0000000000000000',
+  '--type', 'wait',
+  '--ms', '1',
+  '--settle-ms', '0',
+], { env: fakeEnv });
+assert.notStrictEqual(forgedActionAuthorization.status, 0);
+assert.ok(forgedActionAuthorization.stderr.includes('ACTION_OUTSIDE_CASE_INTENT'));
+const actionObserveResult = JSON.parse(run('./scripts/action-observe.sh', [
+  '--case-dir', commonHeadingParsed.caseDir,
+  '--platform', 'harmony',
+  '--execution-id', actionObserveStart.executionId,
+  '--step-id', 'step-001',
+  '--type', 'wait',
+  '--ms', '1',
+  '--settle-ms', '0',
+  '--observe-label', 'action-observe-after',
+], { env: fakeEnv }));
+assert.strictEqual(actionObserveResult.actionResult.ok, true);
+assert.deepStrictEqual(actionObserveResult.actionResult.authorization, actionAuthorization(json(path.join(actionObserveStart.execDir, 'case.snapshot.json')).steps[0]));
+assert.strictEqual(actionObserveResult.observation.ok, true);
+const actionObserveEvidence = actionObserveResult.observation.artifacts.screenshot;
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', actionObserveStart.executionId, 'step-001', 'action-observe 后页面满足预期', actionObserveEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', actionObserveStart.executionId]);
+
+const destructiveCaseFile = path.join(sourceRoot, 'cases', 'case-step-sensitive-action.md');
+write(destructiveCaseFile, `# 用例步骤显式授权敏感操作
+
+## 测试步骤
+1. 点击该作品卡片的删除图标并确认删除作品。
+
+## 预期结果
+- 作品删除成功且列表不再展示该作品。
+`);
+const destructiveParsed = JSON.parse(run('node', ['scripts/parse-case.js', destructiveCaseFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', destructiveParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const destructiveStart = JSON.parse(run('node', ['scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--start']));
+recordStepObservation(destructiveParsed.caseDir, 'harmony', destructiveStart.executionId, 'step-001', 'destructive-case-before');
+const destructiveWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', destructiveParsed.caseDir, '--platform', 'harmony', '--execution-id', destructiveStart.executionId,
+]));
+assert.strictEqual(destructiveWork.nextWork.type, 'DECIDE_STEP');
+assert.ok(destructiveWork.nextWork.stepIntent.sourceText.includes('删除'));
+const missingDecisionIntent = runAllowFailure('node', [
+  'scripts/execute-next-work.js', 'decide', destructiveParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', destructiveStart.executionId,
+  '--work-token', destructiveWork.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    reason: '用例步骤明确要求点击删除图标',
+    perception: { status: 'USABLE', reason: '截图中删除图标清晰可见' },
+    action: { type: 'tap', x: 20, y: 20, target: '作品删除图标', coordinateSource: 'visual', targetBounds: [10, 10, 30, 30], coordinateEvidence: '当前截图中作品卡片右上角删除图标 bounds' },
+  }),
+], { env: fakeEnv });
+assert.notStrictEqual(missingDecisionIntent.status, 0);
+assert.ok(missingDecisionIntent.stderr.includes('ACTION_OUTSIDE_CASE_INTENT'));
+assert.strictEqual(readTimeline(destructiveStart.execDir).filter((event) => event.type === 'actionResult' && event.stepId).length, 0);
+const missingRecordedAuthorization = runAllowFailure('node', [
+  'scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--execution-id', destructiveStart.executionId,
+  '--record-action-json', JSON.stringify({ type: 'actionResult', source: 'action.sh', stepId: 'step-001', action: 'tap', ok: true }),
+], { env: { ...process.env, MAVT_ACTION_WRITER: '1' } });
+assert.notStrictEqual(missingRecordedAuthorization.status, 0);
+assert.ok(missingRecordedAuthorization.stderr.includes('ACTION_OUTSIDE_CASE_INTENT'));
+const destructiveAdvance = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', destructiveParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', destructiveStart.executionId,
+  '--work-token', destructiveWork.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    intentSha: destructiveWork.nextWork.stepIntent.intentSha,
+    reason: '用例步骤明确要求点击删除图标，框架按当前步骤授权执行',
+    perception: { status: 'USABLE', reason: '截图中删除图标清晰可见' },
+    action: { type: 'tap', x: 20, y: 20, target: '作品删除图标', coordinateSource: 'screenshot', targetBounds: [10, 10, 30, 30], coordinateEvidence: '当前截图中作品卡片右上角删除图标 bounds' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(destructiveAdvance.status, 'DECISION_REQUIRED');
+const destructiveEvents = readTimeline(destructiveStart.execDir);
+const destructiveActionResult = destructiveEvents.find((event) => event.type === 'actionResult' && event.stepId === 'step-001');
+assert.ok(destructiveActionResult?.ok);
+assert.strictEqual(destructiveActionResult.requestedAction.coordinateSource, 'visual');
+assert.strictEqual(destructiveEvents.find((event) => event.type === 'decision' && event.decision === 'act').action.coordinateSource, 'visual');
+assert.deepStrictEqual(destructiveEvents.find((event) => event.type === 'decision' && event.decision === 'act').actionNormalizations, [{ field: 'coordinateSource', from: 'screenshot', to: 'visual' }]);
+assert.deepStrictEqual(destructiveActionResult.authorization, actionAuthorization(json(path.join(destructiveStart.execDir, 'case.snapshot.json')).steps[0]));
+const destructiveAfter = destructiveEvents.filter((event) => event.type === 'observation' && event.stepId === 'step-001').at(-1);
+recordPassAssertion(destructiveParsed.caseDir, 'harmony', destructiveStart.executionId, 'step-001', '删除步骤已按预期完成', destructiveAfter.artifacts.screenshot);
+run('node', ['scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', destructiveStart.executionId]);
+
+const replaceInputCaseFile = path.join(sourceRoot, 'cases', 'replace-input-contract.md');
+write(replaceInputCaseFile, `# 替换输入契约
+
+## 测试步骤
+1. 清空标题输入框并输入“测试修改标题-1”。
+`);
+const replaceInputParsed = JSON.parse(run('node', ['scripts/parse-case.js', replaceInputCaseFile, '--cwd', workspace]));
+run('node', ['scripts/update-env.js', replaceInputParsed.caseDir, '--platform', 'harmony', '--device', '127.0.0.1:5555', '--app', 'com.example.demo', '--entry', 'EntryAbility']);
+const replaceInputStart = JSON.parse(run('node', ['scripts/run-case.js', replaceInputParsed.caseDir, '--platform', 'harmony', '--start']));
+recordStepObservation(replaceInputParsed.caseDir, 'harmony', replaceInputStart.executionId, 'step-001', 'replace-input-before');
+const replaceInputWork = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', replaceInputParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', replaceInputStart.executionId,
+], { env: fakeEnv }));
+assert.strictEqual(replaceInputWork.decisionRequest.stepIntent.inputMode, 'replace');
+assert.strictEqual(replaceInputWork.decisionRequest.actionConstraints.inputText.expectedMode, 'replace');
+const wrongInputMode = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', replaceInputParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', replaceInputStart.executionId,
+  '--work-token', replaceInputWork.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    intentSha: replaceInputWork.decisionRequest.stepIntent.intentSha,
+    reason: '故意提交追加模式以验证拒绝',
+    perception: { status: 'USABLE', reason: '标题输入框清晰可见' },
+    action: { type: 'inputText', x: 120, y: 240, text: '测试修改标题-1', mode: 'append', coordinateSource: 'layout', coordinateEvidence: '标题输入框 bounds' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(wrongInputMode.decisionRequest.lastActionRejection.field, 'mode');
+assert.deepStrictEqual(wrongInputMode.decisionRequest.lastActionRejection.allowed, ['replace']);
+const correctedInputMode = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', replaceInputParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', replaceInputStart.executionId,
+  '--work-token', wrongInputMode.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    intentSha: wrongInputMode.decisionRequest.stepIntent.intentSha,
+    reason: '按冻结输入语义改为替换',
+    perception: { status: 'USABLE', reason: '标题输入框清晰可见' },
+    action: { type: 'inputText', x: 120, y: 240, text: '测试修改标题-1', mode: 'replace', coordinateSource: 'layout', coordinateEvidence: '标题输入框 bounds' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(correctedInputMode.status, 'DECISION_REQUIRED');
+const replaceInputEvents = readTimeline(replaceInputStart.execDir);
+const replaceInputAction = replaceInputEvents.find((event) => event.type === 'actionResult' && event.stepId === 'step-001');
+assert.strictEqual(replaceInputAction.requestedAction.mode, 'replace');
+const replaceInputAfter = replaceInputEvents.filter((event) => event.type === 'observation' && event.stepId === 'step-001').at(-1);
+recordPassAssertion(replaceInputParsed.caseDir, 'harmony', replaceInputStart.executionId, 'step-001', '标题已替换为目标值', replaceInputAfter.artifacts.screenshot);
+run('node', ['scripts/run-case.js', replaceInputParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', replaceInputStart.executionId]);
+
+const rejectedActionStart = JSON.parse(run('node', ['scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--start']));
+recordStepObservation(destructiveParsed.caseDir, 'harmony', rejectedActionStart.executionId, 'step-001', 'rejected-action-before');
+const rejectedActionWork = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', destructiveParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rejectedActionStart.executionId,
+], { env: fakeEnv }));
+assert.strictEqual(rejectedActionWork.decisionRequest.type, 'DECIDE_STEP');
+assert.deepStrictEqual(rejectedActionWork.decisionRequest.actionConstraints.coordinateSources, ['layout', 'visual', 'pixel']);
+assert.strictEqual(rejectedActionWork.decisionRequest.actionConstraints.coordinateSourceAliases.screenshot, 'visual');
+const rejectedActionDecision = {
+  outcome: 'ACT',
+  intentSha: rejectedActionWork.decisionRequest.stepIntent.intentSha,
+  reason: '提交一个不在动作契约中的坐标来源',
+  perception: { status: 'USABLE', reason: '当前截图可用于定位目标' },
+  action: { type: 'tap', x: 20, y: 20, target: '作品删除图标', coordinateSource: 'nearby-text', targetBounds: [10, 10, 30, 30], coordinateEvidence: '相邻文本位置' },
+};
+const rejectedActionRetry = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', destructiveParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rejectedActionStart.executionId,
+  '--work-token', rejectedActionWork.decisionRequest.workToken,
+  '--decision-json', JSON.stringify(rejectedActionDecision),
+], { env: fakeEnv }));
+assert.strictEqual(rejectedActionRetry.status, 'DECISION_REQUIRED');
+assert.notStrictEqual(rejectedActionRetry.decisionRequest.workToken, rejectedActionWork.decisionRequest.workToken);
+assert.strictEqual(rejectedActionRetry.decisionRequest.lastActionRejection.field, 'coordinateSource');
+assert.strictEqual(rejectedActionRetry.decisionRequest.lastActionRejection.received, 'nearby-text');
+assert.deepStrictEqual(rejectedActionRetry.decisionRequest.lastActionRejection.allowed, ['layout', 'visual', 'pixel']);
+const rejectedBeforeCorrection = readTimeline(rejectedActionStart.execDir);
+assert.strictEqual(rejectedBeforeCorrection.filter((event) => event.type === 'actionRejected').length, 1);
+assert.strictEqual(rejectedBeforeCorrection.filter((event) => event.type === 'perception').length, 0);
+assert.strictEqual(rejectedBeforeCorrection.filter((event) => event.type === 'decision').length, 0);
+assert.strictEqual(rejectedBeforeCorrection.filter((event) => event.type === 'actionResult' && event.stepId).length, 0);
+const forgedActionRejection = runAllowFailure('node', [
+  'scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--execution-id', rejectedActionStart.executionId,
+  '--record-json', JSON.stringify({
+    type: 'actionRejected', source: 'execute-next-work.js', stepId: 'step-001', workToken: 'work-forged',
+    intentSha: rejectedActionWork.decisionRequest.stepIntent.intentSha, phase: 'decision-validation',
+    failureCode: 'ACTION_CONTRACT_INVALID', reason: '伪造拒绝', attemptedAction: { type: 'tap' }, recoverable: true,
+  }),
+]);
+assert.notStrictEqual(forgedActionRejection.status, 0);
+assert.ok(forgedActionRejection.stderr.includes('EVENT_SOURCE_REQUIRED'));
+const correctedAction = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', destructiveParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', rejectedActionStart.executionId,
+  '--work-token', rejectedActionRetry.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    ...rejectedActionDecision,
+    reason: '按拒绝反馈改为合法的 visual 坐标来源',
+    action: { ...rejectedActionDecision.action, coordinateSource: 'visual' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(correctedAction.status, 'DECISION_REQUIRED');
+const correctedEvents = readTimeline(rejectedActionStart.execDir);
+assert.ok(correctedEvents.some((event) => event.type === 'actionResult' && event.stepId === 'step-001' && event.ok));
+const correctedAfter = correctedEvents.filter((event) => event.type === 'observation' && event.stepId === 'step-001').at(-1);
+recordPassAssertion(destructiveParsed.caseDir, 'harmony', rejectedActionStart.executionId, 'step-001', '参数修正后动作完成', correctedAfter.artifacts.screenshot);
+run('node', ['scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', rejectedActionStart.executionId]);
+const correctedMetrics = json(path.join(rejectedActionStart.execDir, 'metrics.json'));
+assert.deepStrictEqual(correctedMetrics.actionRejections, { total: 1, recovered: 1, exhausted: 0 });
+
+const scopeRejectedActionStart = JSON.parse(run('node', ['scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--start']));
+recordStepObservation(destructiveParsed.caseDir, 'harmony', scopeRejectedActionStart.executionId, 'step-001', 'scope-rejected-action-before');
+const scopeRejectedWork = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', destructiveParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', scopeRejectedActionStart.executionId,
+], { env: fakeEnv }));
+assert.ok(!scopeRejectedWork.decisionRequest.actionConstraints.actionTypes.includes('restartApp'));
+assert.ok(!scopeRejectedWork.decisionRequest.actionConstraints.actionTypes.includes('launchApp'));
+const scopeRejectedRetry = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', destructiveParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', scopeRejectedActionStart.executionId,
+  '--work-token', scopeRejectedWork.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    intentSha: scopeRejectedWork.decisionRequest.stepIntent.intentSha,
+    reason: '尝试提交仅属于启动阶段的动作',
+    perception: { status: 'USABLE', reason: '当前截图可用于判断' },
+    action: { type: 'restartApp', reason: '不应作为业务步骤动作' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(scopeRejectedRetry.status, 'DECISION_REQUIRED');
+assert.strictEqual(scopeRejectedRetry.decisionRequest.lastActionRejection.field, 'type');
+assert.strictEqual(scopeRejectedRetry.decisionRequest.lastActionRejection.received, 'restartApp');
+assert.strictEqual(readTimeline(scopeRejectedActionStart.execDir).filter((event) => event.type === 'decision').length, 0);
+const scopeCorrectedAction = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', destructiveParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', scopeRejectedActionStart.executionId,
+  '--work-token', scopeRejectedRetry.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    intentSha: scopeRejectedRetry.decisionRequest.stepIntent.intentSha,
+    reason: '修正为当前业务步骤允许的点击动作',
+    perception: { status: 'USABLE', reason: '当前截图可用于定位删除图标' },
+    action: { type: 'tap', x: 20, y: 20, target: '作品删除图标', coordinateSource: 'visual', targetBounds: [10, 10, 30, 30], coordinateEvidence: '当前截图中的删除图标 bounds' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(scopeCorrectedAction.status, 'DECISION_REQUIRED');
+const scopeCorrectedAfter = readTimeline(scopeRejectedActionStart.execDir).filter((event) => event.type === 'observation' && event.stepId === 'step-001').at(-1);
+recordPassAssertion(destructiveParsed.caseDir, 'harmony', scopeRejectedActionStart.executionId, 'step-001', '作用域动作修正后执行成功', scopeCorrectedAfter.artifacts.screenshot);
+run('node', ['scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', scopeRejectedActionStart.executionId]);
+
+const exhaustedActionStart = JSON.parse(run('node', ['scripts/run-case.js', destructiveParsed.caseDir, '--platform', 'harmony', '--start']));
+recordStepObservation(destructiveParsed.caseDir, 'harmony', exhaustedActionStart.executionId, 'step-001', 'exhausted-action-before');
+let exhaustedActionWork = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', destructiveParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', exhaustedActionStart.executionId,
+], { env: fakeEnv }));
+for (let attempt = 0; attempt < 2; attempt++) {
+  exhaustedActionWork = JSON.parse(run('node', [
+    'scripts/execute-next-work.js', 'decide', destructiveParsed.caseDir,
+    '--platform', 'harmony', '--execution-id', exhaustedActionStart.executionId,
+    '--work-token', exhaustedActionWork.decisionRequest.workToken,
+    '--decision-json', JSON.stringify({
+      ...rejectedActionDecision,
+      intentSha: exhaustedActionWork.decisionRequest.stepIntent.intentSha,
+      reason: `第 ${attempt + 1} 次非法动作参数`,
+    }),
+  ], { env: fakeEnv }));
+}
+assert.strictEqual(exhaustedActionWork.status, 'COMPLETED');
+assert.strictEqual(json(path.join(exhaustedActionStart.execDir, 'result.json')).failureCode, 'ACTION_CONTRACT_INVALID');
+assert.deepStrictEqual(json(path.join(exhaustedActionStart.execDir, 'metrics.json')).actionRejections, { total: 2, recovered: 0, exhausted: 1 });
+
+const interruptedAgentStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const interruptedAgentResult = JSON.parse(run('node', [
+  'scripts/record-agent-runtime.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', interruptedAgentStart.executionId,
+  '--event-json', JSON.stringify({
+    provider: 'codex', status: 'INTERRUPTED', failureCode: 'AGENT_RUNTIME_INTERRUPTED', reason: 'self-test agent session interrupted',
+  }),
+]));
+assert.strictEqual(interruptedAgentResult.agentRuntimeFailure.failureCode, 'AGENT_RUNTIME_INTERRUPTED');
+assert.strictEqual(json(path.join(interruptedAgentStart.execDir, 'result.json')).failureCode, 'AGENT_RUNTIME_INTERRUPTED');
+const interruptedNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', interruptedAgentStart.executionId,
+]));
+assert.strictEqual(interruptedNextWork.nextWork.type, 'STOP_FINALIZED');
+
+const interruptedBeforePreconditions = JSON.parse(run('node', ['scripts/run-case.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--start']));
+const flowInitialNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', waitReasonFlowParsed.caseDir, '--platform', 'harmony', '--execution-id', interruptedBeforePreconditions.executionId,
+]));
+assert.strictEqual(flowInitialNextWork.nextWork.type, 'OBSERVE_FLOW_ENTRY');
+run('node', [
+  'scripts/record-agent-runtime.js', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', interruptedBeforePreconditions.executionId,
+  '--event-json', JSON.stringify({
+    provider: 'codex', status: 'FAILED', failureCode: 'AGENT_RUNTIME_UNAVAILABLE', reason: 'self-test runtime unavailable before preconditions',
+  }),
+]);
+const interruptedBeforePreconditionsResult = json(path.join(interruptedBeforePreconditions.execDir, 'result.json'));
+assert.strictEqual(interruptedBeforePreconditionsResult.status, 'BLOCKED');
+assert.strictEqual(interruptedBeforePreconditionsResult.failureCode, 'AGENT_RUNTIME_UNAVAILABLE');
+
+const runtimeStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', 'batch-self-test']));
+const runtimeSourceCasePath = path.join(commonHeadingParsed.caseDir, 'case.json');
+const runtimeSourceCase = json(runtimeSourceCasePath);
+const runtimeFrozenStepText = json(path.join(runtimeStart.execDir, 'case.snapshot.json')).steps[0].sourceText;
+const changedRuntimeSourceCase = JSON.parse(JSON.stringify(runtimeSourceCase));
+changedRuntimeSourceCase.steps[0].sourceText = 'execution 启动后的源文件变更';
+write(runtimeSourceCasePath, `${JSON.stringify(changedRuntimeSourceCase, null, 2)}\n`);
+const frozenNextWork = JSON.parse(run('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(frozenNextWork.nextWork.step.sourceText, runtimeFrozenStepText);
+write(runtimeSourceCasePath, `${JSON.stringify(runtimeSourceCase, null, 2)}\n`);
+const runtimeInit = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]));
+assert.strictEqual(runtimeInit.state, 'PREPARED');
+const runtimeAgentDir = path.join(runtimeStart.execDir, 'agent');
+assert.ok(fs.existsSync(path.join(runtimeAgentDir, 'contract.json')));
+assert.ok(fs.existsSync(path.join(runtimeAgentDir, 'request.json')));
+assert.ok(json(path.join(runtimeAgentDir, 'request.json')).requestSha.startsWith('request-'));
+const openOperation = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(openOperation.operation.kind, 'OPEN_SESSION');
+assert.match(openOperation.operation.providerTaskName, /^mavt_case_[0-9a-f]{16}$/);
+assert.ok(openOperation.operation.remainingMs > 0);
+const repeatedOpenOperation = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(repeatedOpenOperation.operation.operationId, openOperation.operation.operationId);
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: openOperation.operation.operationId, ok: true, sessionId: 'codex-self-test-session' }),
+]);
+const awaitOperation = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(awaitOperation.operation.kind, 'AWAIT_RESULT');
+const runtimeEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', runtimeStart.executionId, 'step-001', 'runtime-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', runtimeStart.executionId, 'step-001', 'runtime self-test pass', runtimeEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', runtimeStart.executionId]);
+assert.ok(!fs.existsSync(path.join(runtimeStart.execDir, 'completion.json')));
+const runtimeCaseResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(runtimeCaseResult.provider, 'codex');
+const providerOverride = runAllowFailure('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId, '--provider', 'Codex',
+]);
+assert.strictEqual(providerOverride.status, 2);
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: awaitOperation.operation.operationId, ok: true, result: runtimeCaseResult }),
+]);
+const releaseOperation = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(releaseOperation.operation.kind, 'RELEASE_SESSION');
+assert.strictEqual(json(path.join(runtimeAgentDir, 'validation.json')).valid, true);
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', runtimeStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: releaseOperation.operation.operationId, ok: true }),
+]);
+assert.strictEqual(json(path.join(runtimeAgentDir, 'runtime.json')).state, 'COMPLETED');
+assert.strictEqual(json(path.join(runtimeStart.execDir, 'execution.json')).schemaVersion, 2);
+
+const batchId = 'batch-self-test';
+const batchState = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', batchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]));
+assert.strictEqual(batchState.status, 'RUNNING');
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', batchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', runtimeStart.executionId,
+  '--runtime-path', path.join(runtimeAgentDir, 'runtime.json'),
+]);
+const batchCompleted = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', batchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(batchCompleted.status, 'COMPLETED');
+assert.ok(fs.existsSync(path.join(workspace, 'runs', batchId, 'events.jsonl')));
+assert.ok(fs.existsSync(path.join(workspace, 'runs', batchId, 'contract.json')));
+const successfulCompletion = json(path.join(runtimeStart.execDir, 'completion.json'));
+assert.strictEqual(successfulCompletion.status, 'PASS');
+assert.strictEqual(successfulCompletion.businessStatus, 'PASS');
+assert.strictEqual(successfulCompletion.controlStatus, 'VALIDATED');
+const repeatedBatchCompleted = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', batchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', runtimeStart.executionId,
+]));
+assert.strictEqual(repeatedBatchCompleted.status, 'COMPLETED');
+const completedReconcile = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', batchId,
+]));
+assert.strictEqual(completedReconcile.action, 'BATCH_COMPLETE');
+
+const interruptedBatchId = 'batch-operation-recovery';
+const interruptedBatchInit = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', interruptedBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+], { env: { ...process.env, MAVT_SELF_TEST_BATCH_INTERRUPT: 'after-events' } });
+assert.notStrictEqual(interruptedBatchInit.status, 0);
+assert.ok(fs.existsSync(path.join(workspace, 'runs', interruptedBatchId, 'operation.draft.json')));
+const recoveredBatchState = JSON.parse(run('node', ['scripts/batch-runtime.js', 'status', '--workspace-cwd', workspace, '--batch-id', interruptedBatchId]));
+assert.strictEqual(recoveredBatchState.status, 'RUNNING');
+assert.ok(!fs.existsSync(path.join(workspace, 'runs', interruptedBatchId, 'operation.draft.json')));
+const recoveredBatchEvents = fs.readFileSync(path.join(workspace, 'runs', interruptedBatchId, 'events.jsonl'), 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+assert.strictEqual(new Set(recoveredBatchEvents.map((event) => event.eventId)).size, recoveredBatchEvents.length);
+
+const forgedBatchCompletion = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'complete', '--workspace-cwd', workspace, '--batch-id', batchId,
+  '--case-key', commonHeadingCase.identity.caseKey,
+  '--validation-json', JSON.stringify({ valid: true, status: 'PASS' }),
+]);
+assert.notStrictEqual(forgedBatchCompletion.status, 0);
+
+const startFailureBatchId = 'batch-start-failure';
+const restartSensitiveCase = json(path.join(restartSensitiveParsed.caseDir, 'case.json'));
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', startFailureBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: restartSensitiveCase.identity.caseKey, caseDir: restartSensitiveParsed.caseDir }]),
+]);
+fs.writeFileSync(fakeHdcState, '12345\n');
+const batchedRestartSensitiveStart = JSON.parse(run('node', [
+  'scripts/run-case.js', restartSensitiveParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', startFailureBatchId,
+], { env: { ...restartEnv, HDC_FORCE_STOP_FAIL: '1' } }));
+const interruptedStartFailureCommit = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'commit-start-result', '--workspace-cwd', workspace, '--batch-id', startFailureBatchId,
+  '--case-key', restartSensitiveCase.identity.caseKey, '--execution-id', batchedRestartSensitiveStart.executionId,
+], { env: { ...process.env, MAVT_SELF_TEST_COMPLETION_INTERRUPT: 'after-publish' } });
+assert.notStrictEqual(interruptedStartFailureCommit.status, 0);
+assert.ok(fs.existsSync(path.join(batchedRestartSensitiveStart.execDir, 'completion.json')));
+const stateBeforeCompletionRecovery = json(path.join(restartSensitiveParsed.caseDir, 'platforms', 'harmony', 'state.json'));
+assert.ok(!(stateBeforeCompletionRecovery.committedExecutionIds || []).includes(batchedRestartSensitiveStart.executionId));
+const startFailureBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-start-result', '--workspace-cwd', workspace, '--batch-id', startFailureBatchId,
+  '--case-key', restartSensitiveCase.identity.caseKey, '--execution-id', batchedRestartSensitiveStart.executionId,
+]));
+assert.strictEqual(startFailureBatch.status, 'COMPLETED');
+assert.strictEqual(startFailureBatch.cases[0].resultStatus, 'BLOCKED');
+assert.strictEqual(startFailureBatch.cases[0].completionSource, 'framework');
+
+const protocolRoot = path.join(tmp, 'protocol-root');
+fs.cpSync(repo, protocolRoot, { recursive: true });
+const protocolBeforeScriptChange = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--skill-root', protocolRoot]));
+fs.appendFileSync(path.join(protocolRoot, 'scripts', 'execute-next-work.js'), '\n// protocol digest self-test\n');
+const protocolAfterScriptChange = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--skill-root', protocolRoot]));
+assert.strictEqual(protocolBeforeScriptChange.protocolSha, protocolAfterScriptChange.protocolSha);
+assert.notStrictEqual(protocolBeforeScriptChange.implementationSha, protocolAfterScriptChange.implementationSha);
+const implementationBeforeResourceChange = protocolAfterScriptChange.implementationSha;
+fs.appendFileSync(path.join(protocolRoot, 'references', 'case-executor-contract.md'), '\n协议摘要自测。\n');
+const protocolAfterResourceChange = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--skill-root', protocolRoot]));
+assert.notStrictEqual(protocolAfterScriptChange.protocolSha, protocolAfterResourceChange.protocolSha);
+assert.strictEqual(implementationBeforeResourceChange, protocolAfterResourceChange.implementationSha);
+const harmonyBeforeIosChange = protocolAfterResourceChange.implementationSha;
+fs.appendFileSync(path.join(protocolRoot, 'scripts', 'platform', 'adapters', 'ios', 'action.sh'), '\n# unrelated platform digest self-test\n');
+const harmonyAfterIosChange = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--skill-root', protocolRoot]));
+assert.strictEqual(harmonyBeforeIosChange, harmonyAfterIosChange.implementationSha);
+const harmonyBeforeCoreDependencyChange = harmonyAfterIosChange.implementationSha;
+fs.appendFileSync(path.join(protocolRoot, 'scripts', 'commit-agent-turn.js'), '\n// core dependency digest self-test\n');
+const harmonyAfterCoreDependencyChange = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--skill-root', protocolRoot]));
+assert.strictEqual(harmonyAfterIosChange.protocolSha, harmonyAfterCoreDependencyChange.protocolSha);
+assert.notStrictEqual(harmonyBeforeCoreDependencyChange, harmonyAfterCoreDependencyChange.implementationSha);
+
+const engineStart = JSON.parse(run('node', [
+  'scripts/run-case.js', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--start',
+  '--precondition-plan-sha', waitReasonFlowPreflight.cases[0].preconditionPlanSha,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const engineOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: engineOpen.operation.operationId, ok: true, sessionId: 'case-engine-session' }),
+]);
+const engineEntry = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+], { env: fakeEnv }));
+assert.strictEqual(engineEntry.status, 'DECISION_REQUIRED');
+assert.strictEqual(engineEntry.decisionRequest.type, 'DECIDE_FLOW_ENTRY');
+assert.ok(path.isAbsolute(engineEntry.decisionRequest.screenshotPath));
+assert.ok(engineEntry.decisionRequest.evidenceRef.startsWith('screenshots/'));
+const staleEngineDecision = runAllowFailure('node', [
+  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--work-token', 'work-stale', '--decision-json', JSON.stringify({ outcome: 'STARTABLE', reason: 'stale token test' }),
+], { env: fakeEnv });
+assert.notStrictEqual(staleEngineDecision.status, 0);
+assert.ok(staleEngineDecision.stderr.includes('STALE_NEXT_WORK'));
+const engineAction = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--work-token', engineEntry.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'STARTABLE', reason: '当前 observation 满足 Flow 起点' }),
+], { env: fakeEnv }));
+assert.strictEqual(engineAction.decisionRequest.type, 'DECIDE_FLOW_END');
+const engineEnd = engineAction;
+const engineStep = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--work-token', engineEnd.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'TARGET_REACHED', reason: '终点页面已经稳定' }),
+], { env: fakeEnv }));
+assert.strictEqual(engineStep.decisionRequest.type, 'DECIDE_STEP');
+const engineCompleted = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--work-token', engineStep.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'PASS', reason: '截图证明页面已稳定' }),
+], { env: fakeEnv }));
+assert.strictEqual(engineCompleted.status, 'COMPLETED');
+const engineEvents = fs.readFileSync(path.join(engineStart.execDir, 'timeline.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+const engineFlowStarted = engineEvents.find((event) => event.type === 'flow' && event.status === 'STARTED');
+const engineFlowStepCompleted = engineEvents.find((event) => event.type === 'flow' && event.status === 'STEP_COMPLETED');
+assert.ok(engineFlowStarted && engineFlowStarted.scope === undefined);
+assert.ok(engineFlowStepCompleted?.evidenceObservation);
+assert.ok(engineEvents.some((event) => event.type === 'precondition' && event.status === 'PREPARED' && event.resolution === 'flow'));
+const engineAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+]));
+const engineResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: engineAwait.operation.operationId, ok: true, result: engineResult }),
+]);
+const engineRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+]));
+assert.strictEqual(engineRelease.operation.kind, 'RELEASE_SESSION');
+run('node', [
+  'scripts/agent-runtime.js', 'apply', waitReasonFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', engineStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: engineRelease.operation.operationId, ok: true }),
+]);
+
+const flowRejectionStart = JSON.parse(run('node', [
+  'scripts/run-case.js', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--start',
+  '--precondition-plan-sha', preconditionFlowPreflight.cases[0].preconditionPlanSha,
+  '--precondition-inputs-json', loginPreconditionInputs,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const flowRejectionOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: flowRejectionOpen.operation.operationId, ok: true, sessionId: 'flow-rejection-session' }),
+]);
+const flowRejectionEntry = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'next', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+], { env: fakeEnv }));
+assert.strictEqual(flowRejectionEntry.decisionRequest.type, 'DECIDE_FLOW_ENTRY');
+const flowRejectionAction = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+  '--work-token', flowRejectionEntry.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'STARTABLE', reason: '当前页面满足 Flow 起点' }),
+], { env: fakeEnv }));
+assert.strictEqual(flowRejectionAction.decisionRequest.type, 'DECIDE_FLOW_ACTION');
+const flowRejectionRetry = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+  '--work-token', flowRejectionAction.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    reason: '提交非法 Flow 坐标来源以验证结构化拒绝',
+    action: { type: 'tap', target: '创作入口', x: 20, y: 20, coordinateSource: 'nearby-text', targetBounds: [10, 10, 30, 30], coordinateEvidence: '相邻文本位置' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(flowRejectionRetry.decisionRequest.type, 'DECIDE_FLOW_ACTION');
+assert.strictEqual(flowRejectionRetry.decisionRequest.lastActionRejection.field, 'coordinateSource');
+assert.strictEqual(flowRejectionRetry.decisionRequest.lastActionRejection.count, 1);
+const flowRejectionCorrected = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+  '--work-token', flowRejectionRetry.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({
+    outcome: 'ACT',
+    reason: '按拒绝反馈修正 Flow 动作参数',
+    action: { type: 'tap', target: '创作入口', x: 20, y: 20, coordinateSource: 'visual', targetBounds: [10, 10, 30, 30], coordinateEvidence: '当前截图中的创作入口 bounds' },
+  }),
+], { env: fakeEnv }));
+assert.strictEqual(flowRejectionCorrected.decisionRequest.type, 'DECIDE_FLOW_END');
+const flowRejectionStep = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+  '--work-token', flowRejectionCorrected.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'TARGET_REACHED', reason: 'Flow 终点已经到达' }),
+], { env: fakeEnv }));
+assert.strictEqual(flowRejectionStep.decisionRequest.type, 'DECIDE_STEP');
+const flowRejectionCompleted = JSON.parse(run('node', [
+  'scripts/execute-next-work.js', 'decide', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+  '--work-token', flowRejectionStep.decisionRequest.workToken,
+  '--decision-json', JSON.stringify({ outcome: 'PASS', reason: '截图证明业务步骤通过' }),
+], { env: fakeEnv }));
+assert.strictEqual(flowRejectionCompleted.status, 'COMPLETED');
+assert.deepStrictEqual(json(path.join(flowRejectionStart.execDir, 'metrics.json')).actionRejections, { total: 1, recovered: 1, exhausted: 0 });
+const flowRejectionAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+]));
+const flowRejectionResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: flowRejectionAwait.operation.operationId, ok: true, result: flowRejectionResult }),
+]);
+const flowRejectionRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', preconditionFlowParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', flowRejectionStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: flowRejectionRelease.operation.operationId, ok: true }),
+]);
+
+const timeoutBatchId = 'batch-timeout-self-test';
+const timeoutStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', timeoutBatchId]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const timeoutOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: timeoutOpen.operation.operationId, ok: true, sessionId: 'timeout-session' }),
+]);
+const timeoutRuntimePath = path.join(timeoutStart.execDir, 'agent', 'runtime.json');
+const expiredRuntime = json(timeoutRuntimePath);
+expiredRuntime.deadlineAt = new Date(Date.now() - 1000).toISOString();
+write(timeoutRuntimePath, `${JSON.stringify(expiredRuntime, null, 2)}\n`);
+const timeoutInterrupt = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+]));
+assert.strictEqual(timeoutInterrupt.operation.kind, 'INTERRUPT_SESSION');
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: timeoutInterrupt.operation.operationId, ok: true }),
+]);
+const timeoutRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+]));
+assert.strictEqual(timeoutRelease.operation.kind, 'RELEASE_SESSION');
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', timeoutStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: timeoutRelease.operation.operationId, ok: true }),
+]);
+const timeoutRuntime = json(timeoutRuntimePath);
+assert.strictEqual(timeoutRuntime.state, 'TIMED_OUT');
+assert.ok(timeoutRuntime.releasedAt);
+assert.strictEqual(json(path.join(timeoutStart.execDir, 'result.json')).failureCode, 'CASE_TIMEOUT');
+assert.strictEqual(json(path.join(timeoutStart.execDir, 'agent', 'validation.json')).failureCode, 'CASE_TIMEOUT');
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', timeoutBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', timeoutBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', timeoutStart.executionId, '--runtime-path', timeoutRuntimePath,
+]);
+const timeoutBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', timeoutBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', timeoutStart.executionId,
+]));
+assert.strictEqual(timeoutBatch.status, 'BLOCKED');
+assert.strictEqual(timeoutBatch.cases[0].failureCode, 'CASE_TIMEOUT');
+
+const releaseFailureBatchId = 'batch-release-failure';
+const releaseFailureStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', releaseFailureBatchId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const unboundReleaseRuntimePlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId,
+]));
+assert.strictEqual(unboundReleaseRuntimePlan.action, 'BIND_RUNTIME');
+const releaseFailureRuntimePath = path.join(releaseFailureStart.execDir, 'agent', 'runtime.json');
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', releaseFailureStart.executionId, '--runtime-path', releaseFailureRuntimePath,
+]);
+const releaseFailureOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: releaseFailureOpen.operation.operationId, ok: true, sessionId: 'release-failure-session' }),
+]);
+const releaseFailureAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+]));
+const releaseFailureEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', releaseFailureStart.executionId, 'step-001', 'release-failure-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', releaseFailureStart.executionId, 'step-001', 'release failure business result', releaseFailureEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', releaseFailureStart.executionId]);
+const releaseFailureResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: releaseFailureAwait.operation.operationId, ok: true, result: releaseFailureResult }),
+]);
+for (let releaseAttempt = 1; releaseAttempt <= 3; releaseAttempt++) {
+  const releaseFailureOperation = JSON.parse(run('node', [
+    'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+    '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+  ]));
+  assert.strictEqual(releaseFailureOperation.operation.kind, 'RELEASE_SESSION');
+  run('node', [
+    'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+    '--platform', 'harmony', '--execution-id', releaseFailureStart.executionId,
+    '--operation-result-json', JSON.stringify({ operationId: releaseFailureOperation.operation.operationId, ok: false, reason: `release failure ${releaseAttempt}` }),
+  ]);
+}
+assert.strictEqual(json(releaseFailureRuntimePath).state, 'RELEASE_FAILED');
+assert.strictEqual(json(path.join(releaseFailureStart.execDir, 'agent', 'validation.json')).failureCode, 'AGENT_RUNTIME_RELEASE_FAILED');
+const releaseFailurePlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId,
+]));
+assert.strictEqual(releaseFailurePlan.action, 'BLOCK_RUNTIME_RELEASE');
+const releaseFailureBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'fail', '--workspace-cwd', workspace, '--batch-id', releaseFailureBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', releaseFailureStart.executionId,
+  '--failure-code', releaseFailurePlan.failureCode, '--reason', releaseFailurePlan.reason,
+]));
+assert.strictEqual(releaseFailureBatch.status, 'BLOCKED');
+assert.ok(!fs.existsSync(path.join(releaseFailureStart.execDir, 'completion.json')));
+
+const unavailableStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', unavailableStart.executionId, '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const unavailableOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', unavailableStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', unavailableStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: unavailableOpen.operation.operationId, ok: false, reason: 'self-test host unavailable' }),
+]);
+const unavailableRuntime = json(path.join(unavailableStart.execDir, 'agent', 'runtime.json'));
+assert.strictEqual(unavailableRuntime.state, 'FAILED');
+assert.ok(unavailableRuntime.releasedAt);
+assert.strictEqual(json(path.join(unavailableStart.execDir, 'agent', 'validation.json')).failureCode, 'AGENT_RUNTIME_UNAVAILABLE');
+assert.strictEqual(json(path.join(unavailableStart.execDir, 'result.json')).failureCode, 'AGENT_RUNTIME_UNAVAILABLE');
+
+const invalidResultBatchId = 'batch-invalid-result';
+const invalidResultStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', invalidResultBatchId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const invalidResultOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidResultOpen.operation.operationId, ok: true, sessionId: 'invalid-result-session' }),
+]);
+const invalidResultAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+const invalidResultEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', invalidResultStart.executionId, 'step-001', 'invalid-result-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', invalidResultStart.executionId, 'step-001', 'invalid result runtime test', invalidResultEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', invalidResultStart.executionId]);
+const mismatchedRuntimeResult = JSON.parse(run('node', [
+  'scripts/build-case-agent-result.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+mismatchedRuntimeResult.provider = 'Codex';
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidResultAwait.operation.operationId, ok: true, result: mismatchedRuntimeResult }),
+]);
+const invalidResultInterrupt = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+assert.strictEqual(invalidResultInterrupt.operation.kind, 'INTERRUPT_SESSION');
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidResultInterrupt.operation.operationId, ok: true }),
+]);
+const invalidResultRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidResultStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidResultRelease.operation.operationId, ok: true }),
+]);
+const invalidResultRuntimePath = path.join(invalidResultStart.execDir, 'agent', 'runtime.json');
+assert.strictEqual(json(invalidResultRuntimePath).state, 'FAILED');
+assert.ok(json(invalidResultRuntimePath).releasedAt);
+assert.strictEqual(json(path.join(invalidResultStart.execDir, 'agent', 'validation.json')).valid, false);
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', invalidResultStart.executionId,
+  '--runtime-path', invalidResultRuntimePath,
+]);
+const invalidResultBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', invalidResultStart.executionId,
+]));
+assert.strictEqual(invalidResultBatch.status, 'BLOCKED');
+assert.strictEqual(invalidResultBatch.cases[0].failureCode, 'AGENT_RESULT_INVALID');
+const invalidCompletion = json(path.join(invalidResultStart.execDir, 'completion.json'));
+assert.strictEqual(invalidCompletion.status, 'BLOCKED');
+assert.strictEqual(invalidCompletion.businessStatus, 'PASS');
+assert.strictEqual(invalidCompletion.controlStatus, 'BLOCKED');
+const invalidCompletionContext = fs.readFileSync(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(invalidCompletionContext.includes('对外结论：BLOCKED'));
+assert.ok(invalidCompletionContext.includes('业务执行结果：PASS'));
+assert.ok(invalidCompletionContext.includes('Runtime 校验：BLOCKED'));
+const repeatedInvalidBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', invalidResultStart.executionId,
+]));
+assert.strictEqual(repeatedInvalidBatch.status, 'BLOCKED');
+const blockedReconcile = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', invalidResultBatchId,
+]));
+assert.strictEqual(blockedReconcile.action, 'BATCH_BLOCKED');
+
+const invalidUnfinalizedBatchId = 'batch-invalid-unfinalized-result';
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', invalidUnfinalizedBatchId, '--platform', 'harmony', '--provider', 'codex',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const invalidUnfinalizedStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', invalidUnfinalizedBatchId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidUnfinalizedStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const invalidUnfinalizedRuntimePath = path.join(invalidUnfinalizedStart.execDir, 'agent', 'runtime.json');
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', invalidUnfinalizedBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', invalidUnfinalizedStart.executionId,
+  '--runtime-path', invalidUnfinalizedRuntimePath,
+]);
+const invalidUnfinalizedOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidUnfinalizedStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidUnfinalizedStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidUnfinalizedOpen.operation.operationId, ok: true, sessionId: 'invalid-unfinalized-session' }),
+]);
+const invalidUnfinalizedAwait = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidUnfinalizedStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidUnfinalizedStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidUnfinalizedAwait.operation.operationId, ok: true, result: { schemaVersion: 1 } }),
+]);
+const invalidUnfinalizedInterrupt = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidUnfinalizedStart.executionId,
+]));
+assert.strictEqual(invalidUnfinalizedInterrupt.operation.kind, 'INTERRUPT_SESSION');
+assert.strictEqual(json(path.join(invalidUnfinalizedStart.execDir, 'execution.json')).finalized, true);
+assert.strictEqual(json(path.join(invalidUnfinalizedStart.execDir, 'result.json')).failureCode, 'AGENT_RESULT_INVALID');
+assert.ok(fs.existsSync(path.join(invalidUnfinalizedStart.execDir, 'metrics.json')));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidUnfinalizedStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidUnfinalizedInterrupt.operation.operationId, ok: true }),
+]);
+const invalidUnfinalizedRelease = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidUnfinalizedStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', invalidUnfinalizedStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: invalidUnfinalizedRelease.operation.operationId, ok: true }),
+]);
+const invalidUnfinalizedPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', invalidUnfinalizedBatchId,
+]));
+assert.strictEqual(invalidUnfinalizedPlan.action, 'COMMIT_FINALIZED');
+const invalidUnfinalizedBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', invalidUnfinalizedBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', invalidUnfinalizedStart.executionId,
+]));
+assert.strictEqual(invalidUnfinalizedBatch.status, 'BLOCKED');
+assert.strictEqual(json(path.join(invalidUnfinalizedStart.execDir, 'completion.json')).failureCode, 'AGENT_RESULT_INVALID');
+
+const releasedTerminalRecoveryBatchId = 'batch-released-terminal-recovery';
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', releasedTerminalRecoveryBatchId, '--platform', 'harmony', '--provider', 'codex',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const releasedTerminalRecoveryStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', releasedTerminalRecoveryBatchId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'init', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releasedTerminalRecoveryStart.executionId,
+  '--provider', 'codex', '--workspace-cwd', workspace,
+]);
+const releasedTerminalRuntimePath = path.join(releasedTerminalRecoveryStart.execDir, 'agent', 'runtime.json');
+run('node', [
+  'scripts/batch-runtime.js', 'bind', '--workspace-cwd', workspace, '--batch-id', releasedTerminalRecoveryBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', releasedTerminalRecoveryStart.executionId,
+  '--runtime-path', releasedTerminalRuntimePath,
+]);
+const releasedTerminalOpen = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releasedTerminalRecoveryStart.executionId,
+]));
+run('node', [
+  'scripts/agent-runtime.js', 'apply', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releasedTerminalRecoveryStart.executionId,
+  '--operation-result-json', JSON.stringify({ operationId: releasedTerminalOpen.operation.operationId, ok: true, sessionId: 'released-terminal-recovery-session' }),
+]);
+const releasedTerminalRuntime = json(releasedTerminalRuntimePath);
+const releasedTerminalTime = new Date().toISOString();
+const interruptedReleasedTerminalFailure = runAllowFailure('node', [
+  'scripts/record-agent-runtime.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releasedTerminalRecoveryStart.executionId,
+  '--event-json', JSON.stringify({
+    provider: releasedTerminalRuntime.provider,
+    status: 'FAILED',
+    failureCode: 'AGENT_RESULT_INVALID',
+    reason: '模拟历史 Runtime 已释放但 execution 未收尾。',
+    protocolSha: releasedTerminalRuntime.protocolSha,
+    implementationSha: releasedTerminalRuntime.implementationSha,
+    requestSha: releasedTerminalRuntime.requestSha,
+    environmentSha: releasedTerminalRuntime.environmentSha,
+    preconditionInputsSha: releasedTerminalRuntime.preconditionInputsSha,
+    sessionScope: 'case',
+    sessionId: releasedTerminalRuntime.sessionId,
+  }),
+], { env: { ...process.env, MAVT_SELF_TEST_FINALIZE_INTERRUPT: 'after-draft' } });
+assert.notStrictEqual(interruptedReleasedTerminalFailure.status, 0);
+assert.ok(fs.existsSync(path.join(releasedTerminalRecoveryStart.execDir, 'result.draft.json')));
+assert.strictEqual(json(path.join(releasedTerminalRecoveryStart.execDir, 'execution.json')).finalized, false);
+Object.assign(releasedTerminalRuntime, {
+  state: 'FAILED',
+  terminalTarget: 'FAILED',
+  failureCode: 'AGENT_RESULT_INVALID',
+  reason: '模拟历史 Runtime 已释放但 execution 未收尾。',
+  failureEventStatus: 'FAILED',
+  pendingOperation: null,
+  completedAt: releasedTerminalTime,
+  releasedAt: releasedTerminalTime,
+});
+write(releasedTerminalRuntimePath, `${JSON.stringify(releasedTerminalRuntime, null, 2)}\n`);
+write(path.join(releasedTerminalRecoveryStart.execDir, 'agent', 'validation.json'), `${JSON.stringify({
+  schemaVersion: 1,
+  valid: false,
+  executionId: releasedTerminalRecoveryStart.executionId,
+  environmentSha: releasedTerminalRuntime.environmentSha,
+  preconditionInputsSha: releasedTerminalRuntime.preconditionInputsSha,
+  failureCode: 'AGENT_RESULT_INVALID',
+  reason: releasedTerminalRuntime.reason,
+  time: releasedTerminalTime,
+}, null, 2)}\n`);
+const releasedTerminalRecoveryPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', releasedTerminalRecoveryBatchId,
+]));
+assert.strictEqual(releasedTerminalRecoveryPlan.action, 'RECOVER_RUNTIME_TERMINAL');
+const releasedTerminalClosure = JSON.parse(run('node', [
+  'scripts/agent-runtime.js', 'next', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', releasedTerminalRecoveryStart.executionId,
+]));
+assert.strictEqual(releasedTerminalClosure.terminal, true);
+assert.strictEqual(json(path.join(releasedTerminalRecoveryStart.execDir, 'execution.json')).finalized, true);
+assert.strictEqual(json(path.join(releasedTerminalRecoveryStart.execDir, 'result.json')).failureCode, 'AGENT_RESULT_INVALID');
+const releasedTerminalCommitPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', releasedTerminalRecoveryBatchId,
+]));
+assert.strictEqual(releasedTerminalCommitPlan.action, 'COMMIT_FINALIZED');
+const releasedTerminalBatch = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'commit-current', '--workspace-cwd', workspace, '--batch-id', releasedTerminalRecoveryBatchId,
+  '--case-key', commonHeadingCase.identity.caseKey, '--execution-id', releasedTerminalRecoveryStart.executionId,
+]));
+assert.strictEqual(releasedTerminalBatch.status, 'BLOCKED');
+
+const snapshotGuardStart = JSON.parse(run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start']));
+const snapshotGuardPath = path.join(snapshotGuardStart.execDir, 'case.snapshot.json');
+const snapshotGuardValue = json(snapshotGuardPath);
+fs.unlinkSync(snapshotGuardPath);
+const missingSnapshot = runAllowFailure('node', [
+  'scripts/get-next-work.js', commonHeadingParsed.caseDir,
+  '--platform', 'harmony', '--execution-id', snapshotGuardStart.executionId,
+]);
+assert.notStrictEqual(missingSnapshot.status, 0);
+assert.ok(missingSnapshot.stderr.includes('EXECUTION_CONTRACT_CORRUPTED'));
+write(snapshotGuardPath, `${JSON.stringify(snapshotGuardValue, null, 2)}\n`);
+const snapshotEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', snapshotGuardStart.executionId, 'step-001', 'snapshot-guard-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', snapshotGuardStart.executionId, 'step-001', 'snapshot restored', snapshotEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', snapshotGuardStart.executionId]);
+
+const recoveryOwnerBatchId = 'batch-orphan-owner';
+const recoveryBatchId = 'batch-recovery-self-test';
+const orphanStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', recoveryOwnerBatchId,
+]));
+const orphanExecutionPath = path.join(orphanStart.execDir, 'execution.json');
+const orphanExecution = json(orphanExecutionPath);
+orphanExecution.startedAt = '2000-01-01T00:00:00.000Z';
+orphanExecution.budget.maxDurationMs = 1;
+write(orphanExecutionPath, `${JSON.stringify(orphanExecution, null, 2)}\n`);
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const orphanPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(orphanPlan.action, 'CLOSE_ORPHANED');
+assert.strictEqual(orphanPlan.executionId, orphanStart.executionId);
+run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--recover-orphaned',
+  '--execution-id', orphanStart.executionId, '--batch-id', recoveryBatchId,
+]);
+assert.strictEqual(json(path.join(orphanStart.execDir, 'result.json')).failureCode, 'EXECUTION_ORPHANED');
+const afterOrphanPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(afterOrphanPlan.action, 'START_NEW');
+const ownedStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', recoveryBatchId,
+]));
+const ownedPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(ownedPlan.action, 'INIT_RUNTIME');
+assert.strictEqual(ownedPlan.ownerBatchId, recoveryBatchId);
+const ownedEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', ownedStart.executionId, 'step-001', 'owned-recovery-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', ownedStart.executionId, 'step-001', 'recovery ownership verified', ownedEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', ownedStart.executionId]);
+const concurrentStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', 'batch-concurrent-owner',
+]));
+const concurrentPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(concurrentPlan.action, 'CORRUPTED');
+const concurrentEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', concurrentStart.executionId, 'step-001', 'concurrent-evidence');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', concurrentStart.executionId, 'step-001', 'concurrent guard verified', concurrentEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', concurrentStart.executionId]);
+const corruptedStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', recoveryBatchId,
+]));
+const corruptedEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', corruptedStart.executionId, 'step-001', 'corrupted-evidence');
+const corruptedPlan = JSON.parse(run('node', [
+  'scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', recoveryBatchId,
+]));
+assert.strictEqual(corruptedPlan.action, 'CORRUPTED');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', corruptedStart.executionId, 'step-001', 'corrupted state classified', corruptedEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--finalize', '--status', 'PASS', '--execution-id', corruptedStart.executionId]);
+
+const productionGateEnv = { ...process.env };
+delete productionGateEnv.MAVT_SELF_TEST_ALLOW_UNBATCHED_START;
+delete productionGateEnv.MAVT_SELF_TEST_ALLOW_UNBOUND_FACTS;
+const missingBatchStart = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start',
+], { env: productionGateEnv });
+assert.notStrictEqual(missingBatchStart.status, 0);
+assert.ok(missingBatchStart.stderr.includes('必须通过 --batch-id'));
+
+const runtimeGuardBatchId = 'batch-runtime-write-guard';
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', runtimeGuardBatchId, '--platform', 'harmony', '--provider', 'codex',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const runtimeGuardStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', runtimeGuardBatchId,
+]));
+const unboundFact = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', runtimeGuardStart.executionId,
+  '--record-json', JSON.stringify({ type: 'assertion', stepId: 'step-001', status: 'PASS', reason: 'must be rejected before Runtime BOUND', evidence: ['screenshots/none.png'] }),
+], { env: productionGateEnv });
+assert.notStrictEqual(unboundFact.status, 0);
+assert.ok(unboundFact.stderr.includes('不能早于 Agent Runtime 初始化'));
+const guardEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', runtimeGuardStart.executionId, 'step-001', 'runtime-guard-cleanup');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', runtimeGuardStart.executionId, 'step-001', 'cleanup', guardEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', runtimeGuardStart.executionId, '--finalize', '--status', 'PASS']);
+
+const resumeBatchId = 'batch-resume-start';
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', resumeBatchId, '--platform', 'harmony', '--provider', 'codex',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+const interruptedStarting = runAllowFailure('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--start', '--batch-id', resumeBatchId,
+], { env: { ...process.env, MAVT_SELF_TEST_START_INTERRUPT: 'after-execution-start' } });
+assert.notStrictEqual(interruptedStarting.status, 0);
+const resumePlan = JSON.parse(run('node', ['scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', resumeBatchId]));
+assert.strictEqual(resumePlan.action, 'RESUME_START');
+const resumedStart = JSON.parse(run('node', [
+  'scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--resume-start', '--execution-id', resumePlan.executionId, '--batch-id', resumeBatchId,
+]));
+assert.strictEqual(resumedStart.resumed, true);
+assert.strictEqual(json(path.join(resumedStart.execDir, 'execution.json')).lifecycle, 'RUNNING');
+const resumedEvidence = recordStepObservation(commonHeadingParsed.caseDir, 'harmony', resumedStart.executionId, 'step-001', 'resumed-start-cleanup');
+recordPassAssertion(commonHeadingParsed.caseDir, 'harmony', resumedStart.executionId, 'step-001', 'cleanup', resumedEvidence);
+run('node', ['scripts/run-case.js', commonHeadingParsed.caseDir, '--platform', 'harmony', '--execution-id', resumedStart.executionId, '--finalize', '--status', 'PASS']);
+
+const duplicateBatch = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', 'batch-duplicate-target', '--platform', 'harmony',
+  '--targets-json', JSON.stringify([
+    { caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir },
+    { caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir },
+  ]),
+]);
+assert.notStrictEqual(duplicateBatch.status, 0);
+assert.ok(duplicateBatch.stderr.includes('Duplicate batch target'));
+const wrongCaseKeyBatch = runAllowFailure('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', 'batch-wrong-case-key', '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: 'wrong-case-key', caseDir: commonHeadingParsed.caseDir }]),
+]);
+assert.notStrictEqual(wrongCaseKeyBatch.status, 0);
+assert.ok(wrongCaseKeyBatch.stderr.includes('does not match case.json'));
+
+const missingContractBatchId = 'batch-missing-contract';
+run('node', [
+  'scripts/batch-runtime.js', 'init', '--workspace-cwd', workspace, '--batch-id', missingContractBatchId, '--platform', 'harmony',
+  '--targets-json', JSON.stringify([{ caseKey: commonHeadingCase.identity.caseKey, caseDir: commonHeadingParsed.caseDir }]),
+]);
+fs.unlinkSync(path.join(workspace, 'runs', missingContractBatchId, 'contract.json'));
+const missingBatchContract = runAllowFailure('node', ['scripts/batch-runtime.js', 'reconcile-current', '--workspace-cwd', workspace, '--batch-id', missingContractBatchId]);
+assert.notStrictEqual(missingBatchContract.status, 0);
+assert.ok(missingBatchContract.stderr.includes('contract.json is missing'));
+
+const otherProviderContract = JSON.parse(run('node', ['scripts/build-agent-contract.js', '--role', 'case-executor', '--provider', 'other', '--platform', 'harmony']));
+assert.strictEqual(otherProviderContract.provider, 'other');
+assert.ok(!otherProviderContract.requiredResources.includes('references/agent-runtimes/codex.md'));
+
+const invalidMetricsPath = path.join(invalidResultStart.execDir, 'metrics.json');
+const originalInvalidMetrics = fs.readFileSync(invalidMetricsPath, 'utf8');
+const tamperedMetrics = JSON.parse(originalInvalidMetrics);
+tamperedMetrics.durationMs = Number(tamperedMetrics.durationMs || 0) + 1;
+write(invalidMetricsPath, `${JSON.stringify(tamperedMetrics, null, 2)}\n`);
+const invalidPublishedReport = readPublishedExecution(invalidResultStart.execDir);
+assert.strictEqual(invalidPublishedReport.result.status, 'BLOCKED');
+assert.strictEqual(invalidPublishedReport.result.failureCode, 'EXECUTION_COMPLETION_INVALID');
+assert.ok(invalidPublishedReport.completionError);
+writeCaseReports(
+  commonHeadingParsed.caseDir,
+  commonHeadingCase,
+  json(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'state.json')),
+  [],
+  invalidPublishedReport,
+  { platform: 'harmony' },
+);
+const invalidPublishedContext = fs.readFileSync(path.join(commonHeadingParsed.caseDir, 'platforms', 'harmony', 'CONTEXT.md'), 'utf8');
+assert.ok(invalidPublishedContext.includes('状态：BLOCKED'));
+assert.ok(invalidPublishedContext.includes('完成态校验失败'));
+write(invalidMetricsPath, originalInvalidMetrics);
+run('node', ['scripts/render-context.js', commonHeadingParsed.caseDir, '--platform', 'harmony']);
+
+console.log(`self-test passed: ${tmp}`);

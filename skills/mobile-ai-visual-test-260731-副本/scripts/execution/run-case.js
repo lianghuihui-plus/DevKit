@@ -1,0 +1,2755 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const childProcess = require('child_process');
+const {
+  appendJsonl,
+  caseContractSha,
+  caseRootFromCaseDir,
+  caseRuntimeDir,
+  ensureDir,
+  nowIso,
+  normalizePlatform,
+  readJson,
+  readJsonl,
+  rebuildCaseDerivedArtifacts,
+  validateCaseExecutionContract,
+  writeJson,
+} = require('../common');
+const { buildPreconditionPlan, planFlowSummaries } = require('../lib/precondition-flow');
+const { VALID_RULE_STATUSES, validateGlobalRules } = require('../lib/case-contract');
+const { failureStatus } = require('../lib/failure-catalog');
+const { validateActionAsset, validateActionExecution } = require('../lib/action-contract');
+const { deriveNextWork } = require('../lib/execution-reducer');
+const { actionAuthorization, validateActionAuthorization } = require('../lib/step-intent');
+const { validateRuleAuthorization } = require('../lib/rule-intent');
+const { evaluateFrameworkPrecondition } = require('../lib/framework-preconditions');
+const {
+  buildExecutionEnvironment,
+  safeEnvironmentSummary,
+  validateExecutionEnvironment,
+} = require('../lib/execution-environment');
+const {
+  normalizePreconditionInputs,
+  preconditionInputsSha,
+  validateFrozenPreconditionInputs,
+} = require('../lib/precondition-inputs');
+const {
+  normalizeStartupDisplayPolicy,
+  startupDisplayVerified,
+} = require('../lib/startup-display');
+const {
+  enrichObservationScreenshot,
+  inspectPng,
+  screenshotMetadata,
+  validateQualityClaim,
+  verifyQualityClaim,
+} = require('../lib/image-evidence');
+
+const VALID_STATUS = new Set(['PASS', 'FAIL', 'BLOCKED', 'UNKNOWN']);
+const PRECONDITION_PASSING_STATUSES = new Set(['PASS', 'PREPARED']);
+const VALID_EVENT_TYPES = new Set([
+  'executionStart',
+  'environmentProbe',
+  'precondition',
+  'observation',
+  'evidenceCheck',
+  'perception',
+  'decision',
+  'actionRejected',
+  'rule',
+  'flow',
+  'actionResult',
+  'assertion',
+  'popup',
+  'appForeground',
+  'budgetExceeded',
+  'executionRecovery',
+  'agentRuntime',
+  'result',
+]);
+const AGENT_WRITABLE_EVENT_TYPES = new Set([
+  'precondition',
+  'perception',
+  'decision',
+  'rule',
+  'flow',
+  'assertion',
+  'appForeground',
+]);
+const VALID_DECISIONS = new Set(['act', 'assert_pass', 'assert_fail', 'wait', 'blocked', 'retry_visual_input']);
+const VALID_PRESENTATION_MODES = new Set(['scaled', 'original', 'reopen']);
+const VALID_PERCEPTION_STATUSES = new Set(['USABLE', 'UNUSABLE', 'UNCERTAIN']);
+const EVIDENCE_CHECK_VERDICTS = new Set([
+  'SOURCE_INVALID',
+  'SOURCE_CHANGED',
+  'CLAIM_PRESENT_IN_SOURCE',
+  'CLAIM_NOT_PRESENT_IN_SOURCE',
+  'UNVERIFIABLE',
+]);
+const VALID_ACTIONS = new Set(['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']);
+const VALID_FLOW_STATUSES = new Set(['STARTED', 'STEP_COMPLETED', 'COMPLETED', 'FAILED', 'BLOCKED']);
+const VALID_AGENT_RUNTIME_STATUSES = new Set(['BOUND', 'FAILED', 'INTERRUPTED']);
+const VALID_AGENT_RUNTIME_FAILURES = new Set([
+  'AGENT_PROTOCOL_MISMATCH',
+  'AGENT_RUNTIME_UNAVAILABLE',
+  'AGENT_RUNTIME_INTERRUPTED',
+  'AGENT_RESULT_INVALID',
+]);
+const VALID_AGENT_RUNTIME_EVENT_FAILURES = new Set([...VALID_AGENT_RUNTIME_FAILURES, 'CASE_TIMEOUT']);
+const TERMINAL_FLOW_STATUSES = new Set(['COMPLETED', 'FAILED', 'BLOCKED']);
+const PRECONDITION_FLOW_SCOPE = 'precondition-flow';
+const EXECUTION_BOOTSTRAP_SCOPE = 'execution-bootstrap';
+const VALID_PRECONDITION_FLOW_PHASES = new Set(['entry-check', 'before', 'after', 'end-check']);
+const VALID_PRECONDITION_FLOW_FAILURES = new Set([
+  'PRECONDITION_FLOW_AMBIGUOUS',
+  'PRECONDITION_FLOW_INVALID',
+  'PRECONDITION_FLOW_CHANGED',
+  'PRECONDITION_FLOW_START_MISMATCH',
+  'PRECONDITION_FLOW_OBSERVATION_FAILED',
+  'PRECONDITION_FLOW_ACTION_MISMATCH',
+  'PRECONDITION_FLOW_ACTION_FAILED',
+  'PRECONDITION_FLOW_TARGET_NOT_REACHED',
+  'PRECONDITION_FLOW_UNSAFE',
+  'PRECONDITION_FLOW_BUDGET_EXCEEDED',
+]);
+const STEP_ORDER_GUARDED_EVENT_TYPES = new Set([
+  'observation',
+  'perception',
+  'decision',
+  'actionRejected',
+  'rule',
+  'flow',
+  'actionResult',
+  'assertion',
+  'popup',
+  'appForeground',
+]);
+const DEFAULT_BUDGET = {
+  maxDurationMs: 30 * 60 * 1000,
+  maxObservations: 80,
+  maxActions: 60,
+  maxStepEvents: 24,
+  maxStepWaits: 8,
+  maxKnownPopups: 5,
+  maxNoChangeObservations: 5,
+  maxPreconditionActions: 12,
+  maxActionsPerPrecondition: 5,
+};
+
+function usage() {
+  console.error([
+    'Usage:',
+    '  run-case.js <case-dir> --platform <platform> --start [--precondition-plan-sha <sha>] [--precondition-inputs-json <json>] [--batch-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --resume-start --execution-id <id> --batch-id <id>',
+    '  run-case.js <case-dir> --platform <platform> --check-budget --event-type <type> [--action <action>] [--action-json <json>] [--step-id <step-id> --authorization-source case-step --authorization-step-id <step-id> --authorization-intent-sha <sha>] [--scope global|precondition-flow] [--precondition-id <id>] [--flow-id <id>] [--flow-step-id <id>] [--phase <phase>] [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --recover-orphaned --execution-id <id> --batch-id <id> [--reason <text>]',
+    '  run-case.js <case-dir> --platform <platform> --record-json <json> [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --record-agent-runtime-json <json> --execution-id <id>',
+    '  run-case.js <case-dir> --platform <platform> --record-action-rejection-json <json> --execution-id <id>',
+    '  run-case.js <case-dir> --platform <platform> --finalize --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>] [--execution-id <id>]',
+    '  run-case.js <case-dir> --platform <platform> --status <PASS|FAIL|BLOCKED|UNKNOWN> [--reason <text>] [--failure-code <code>] [--failed-step <step-id>]',
+    '  run-case.js <case-dir> --legacy-runtime ...',
+  ].join('\n'));
+  process.exit(2);
+}
+
+function executionIdFromDate(date = new Date()) {
+  const stamp = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+    '-',
+    String(date.getHours()).padStart(2, '0'),
+    String(date.getMinutes()).padStart(2, '0'),
+    String(date.getSeconds()).padStart(2, '0'),
+    '-',
+    String(date.getMilliseconds()).padStart(3, '0'),
+  ].join('');
+  return `${stamp}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function allocateExecutionId(caseDir) {
+  for (let i = 0; i < 20; i++) {
+    const executionId = executionIdFromDate();
+    if (!fs.existsSync(path.join(caseDir, 'executions', executionId))) return executionId;
+  }
+  throw new Error('Failed to allocate unique execution id');
+}
+
+function createExecution(caseDir, executionId = executionIdFromDate()) {
+  const execDir = path.join(caseDir, 'executions', executionId);
+  ensureDir(path.join(execDir, 'screenshots'));
+  ensureDir(path.join(execDir, 'layouts'));
+  ensureDir(path.join(execDir, 'logs'));
+  return { executionId, execDir };
+}
+
+function executionExists(caseDir, executionId) {
+  return fs.existsSync(path.join(caseDir, 'executions', executionId));
+}
+
+function executionStatePath(execDir) {
+  return path.join(execDir, 'execution.json');
+}
+
+function readExecutionState(execDir) {
+  return readJson(executionStatePath(execDir), null);
+}
+
+function writeExecutionState(execDir, state) {
+  writeJson(executionStatePath(execDir), state);
+}
+
+function readExecutionCase(caseDir, execDir) {
+  const snapshot = readJson(path.join(execDir, 'case.snapshot.json'), null);
+  const executionState = readExecutionState(execDir);
+  if (!snapshot && executionState?.schemaVersion) {
+    throw new Error('EXECUTION_CONTRACT_CORRUPTED: case.snapshot.json is required for a started execution.');
+  }
+  const caseJson = snapshot || readJson(path.join(caseDir, 'case.json'));
+  if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
+  validateCaseExecutionContract(caseJson);
+  if (snapshot && executionState?.caseContractSha && executionState.caseContractSha !== caseContractSha(snapshot)) {
+    throw new Error('EXECUTION_CONTRACT_CORRUPTED: case.snapshot.json does not match execution.json.');
+  }
+  return caseJson;
+}
+
+function latestExecutionId(caseDir) {
+  const execRoot = path.join(caseDir, 'executions');
+  if (!fs.existsSync(execRoot)) return null;
+  const names = fs.readdirSync(execRoot).filter((name) => fs.statSync(path.join(execRoot, name)).isDirectory()).sort();
+  return names.length ? names[names.length - 1] : null;
+}
+
+function normalizeEvent(event) {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) {
+    throw new Error('record-json must be a JSON object');
+  }
+  const normalized = {
+    time: event.time || nowIso(),
+    ...event,
+  };
+  validateEvent(normalized);
+  return normalized;
+}
+
+function actionType(event) {
+  return event.action?.type || event.action;
+}
+
+function eventStepId(event) {
+  return event?.stepId || event?.step?.id || '';
+}
+
+function eventArtifacts(event) {
+  return (event?.observation || event || {}).artifacts || {};
+}
+
+function normalizeEvidenceValue(value) {
+  return String(value || '').replace(/\\/g, '/').trim();
+}
+
+function assertionEvidenceRefs(event) {
+  const refs = [];
+  if (Array.isArray(event.evidence)) refs.push(...event.evidence);
+  if (typeof event.evidence === 'string') refs.push(event.evidence);
+  if (event.evidenceObservation) refs.push(event.evidenceObservation);
+  if (Array.isArray(event.evidenceObservations)) refs.push(...event.evidenceObservations);
+  return refs.map(normalizeEvidenceValue).filter(Boolean);
+}
+
+function observationEvidenceValues(event) {
+  const observation = event.observation || event;
+  const artifacts = eventArtifacts(event);
+  const values = [
+    observation.label,
+    artifacts.screenshot,
+    artifacts.layout,
+    ...(Array.isArray(artifacts.logs) ? artifacts.logs : []),
+  ];
+  return new Set(values.map(normalizeEvidenceValue).filter(Boolean));
+}
+
+function observationMatchesEvidenceRef(observation, ref) {
+  return observationEvidenceValues(observation).has(normalizeEvidenceValue(ref));
+}
+
+function observationArtifactRefs(observation) {
+  return new Set(artifactPaths(observation).map(normalizeEvidenceValue).filter(Boolean));
+}
+
+function isSafeRelativeArtifact(value) {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    !path.isAbsolute(value) &&
+    !value.split(/[\\/]+/).includes('..');
+}
+
+function validateArtifacts(event) {
+  const artifacts = (event.observation || event).artifacts;
+  if (!artifacts) return;
+  const paths = [];
+  if (artifacts.screenshot) paths.push(artifacts.screenshot);
+  if (artifacts.layout) paths.push(artifacts.layout);
+  if (Array.isArray(artifacts.logs)) paths.push(...artifacts.logs);
+  for (const item of paths) {
+    if (!isSafeRelativeArtifact(item)) {
+      throw new Error(`Invalid artifact path: ${item}`);
+    }
+  }
+}
+
+function artifactPaths(event) {
+  const artifacts = (event.observation || event).artifacts || {};
+  const paths = [];
+  if (artifacts.screenshot) paths.push(artifacts.screenshot);
+  if (artifacts.layout) paths.push(artifacts.layout);
+  if (Array.isArray(artifacts.logs)) paths.push(...artifacts.logs);
+  return paths;
+}
+
+function validateArtifactFilesExist(execDir, event) {
+  if (!event || event.type !== 'observation') return;
+  for (const item of artifactPaths(event)) {
+    const file = path.join(execDir, item);
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      throw new Error(`OBSERVATION_ARTIFACT_MISSING: observation artifact does not exist: ${item}`);
+    }
+  }
+}
+
+function latestStepObservation(events, stepId) {
+  return events
+    .filter((event) => event.type === 'observation' && eventStepId(event) === stepId && event.source === 'observe.sh')
+    .slice(-1)[0] || null;
+}
+
+function screenshotBindingReadiness(observation, execDir) {
+  const screenshot = normalizeEvidenceValue(eventArtifacts(observation).screenshot);
+  if (!screenshot) {
+    return { ok: false, failureCode: 'ASSERTION_EVIDENCE_REQUIRED', reason: 'observation 缺少截图产物。' };
+  }
+  const file = path.join(execDir, screenshot);
+  const actual = inspectPng(file);
+  if (actual.decodeStatus === 'INVALID') {
+    return {
+      ok: false,
+      failureCode: 'OBSERVATION_ARTIFACT_INVALID',
+      reason: `截图产物无法解码: ${screenshot}${actual.error ? `；${actual.error}` : ''}`,
+      screenshot,
+      actual,
+    };
+  }
+  const recorded = screenshotMetadata(observation);
+  if (recorded?.sha256 && recorded.sha256 !== actual.sha256) {
+    return {
+      ok: false,
+      failureCode: 'OBSERVATION_ARTIFACT_CHANGED',
+      reason: `截图产物在 observation 后发生变化: ${screenshot}`,
+      screenshot,
+      recorded,
+      actual,
+    };
+  }
+  return {
+    ok: true,
+    screenshot,
+    recorded,
+    actual,
+    sourceVerified: Boolean(recorded?.sha256 && recorded.sha256 === actual.sha256),
+  };
+}
+
+function preparePerceptionEvidence(events, event, execDir) {
+  if (event.type !== 'perception') return { event, evidenceCheck: null };
+  const stepId = eventStepId(event);
+  if (!stepId) return { event, evidenceCheck: null };
+  const observation = latestStepObservation(events, stepId);
+  if (!observation) {
+    if (event.qualityClaim) throw new Error('ASSERTION_EVIDENCE_REQUIRED: 带 qualityClaim 的 perception 前必须有当前步骤 observation。');
+    return { event, evidenceCheck: null };
+  }
+  const binding = screenshotBindingReadiness(observation, execDir);
+  const refs = assertionEvidenceRefs(event);
+  if (event.qualityClaim && (!binding.screenshot || !refs.includes(binding.screenshot))) {
+    throw new Error('ASSERTION_EVIDENCE_REQUIRED: 带 qualityClaim 的 perception 必须引用当前步骤最新 observation 的截图。');
+  }
+  if (!binding.screenshot || !refs.includes(binding.screenshot)) return { event, evidenceCheck: null };
+
+  event.inputArtifact = {
+    path: binding.screenshot,
+    sha256: binding.actual?.sha256 || null,
+    width: binding.actual?.width || binding.recorded?.width || null,
+    height: binding.actual?.height || binding.recorded?.height || null,
+    sourceVerified: binding.ok === true && binding.sourceVerified === true,
+    presentationVerified: false,
+  };
+  if (!event.qualityClaim) {
+    if (!binding.ok) throw new Error(`${binding.failureCode}: ${binding.reason}`);
+    return { event, evidenceCheck: null };
+  }
+
+  const priorAttempts = events.filter((item) =>
+    item.type === 'perception' &&
+    eventStepId(item) === stepId &&
+    item.qualityClaim,
+  );
+  if (priorAttempts.length >= 2) {
+    throw new Error('VISUAL_INPUT_RETRY_EXHAUSTED: 同一步骤最多允许首次图片异常检查和一次有限重试。');
+  }
+  const priorAttempt = priorAttempts.slice(-1)[0] || null;
+  if (!priorAttempt && event.retryOf) {
+    throw new Error('VISUAL_INPUT_RETRY_INVALID: 首次图片异常检查不能包含 retryOf。');
+  }
+  if (priorAttempt) {
+    if (event.retryOf !== priorAttempt.attemptId || event.attemptId === priorAttempt.attemptId) {
+      throw new Error(`VISUAL_INPUT_RETRY_INVALID: 重试必须使用新的 attemptId，并以 retryOf=${priorAttempt.attemptId} 绑定首次检查。`);
+    }
+    const priorIndex = events.lastIndexOf(priorAttempt);
+    const retryDecision = events.slice(priorIndex + 1).some((item) =>
+      item.type === 'decision' &&
+      item.decision === 'retry_visual_input' &&
+      eventStepId(item) === stepId,
+    );
+    if (!retryDecision) {
+      throw new Error('VISUAL_INPUT_RETRY_DECISION_REQUIRED: 第二次图片检查前必须写 retry_visual_input decision。');
+    }
+  }
+
+  let verification = verifyQualityClaim(
+    path.join(execDir, binding.screenshot),
+    event.qualityClaim,
+    binding.recorded?.sha256 || '',
+  );
+  if (!binding.recorded?.sha256 && !['SOURCE_INVALID', 'SOURCE_CHANGED'].includes(verification.verdict)) {
+    verification = {
+      ...verification,
+      verdict: 'UNVERIFIABLE',
+      reason: '旧 observation 没有采集时 SHA-256，无法确认 Agent 声明对应的原始字节未发生变化。',
+    };
+  }
+  const checkNumber = events.filter((item) => item.type === 'evidenceCheck').length + 1;
+  const checkId = `evidence-check-${String(checkNumber).padStart(3, '0')}`;
+  const evidenceCheck = {
+    schemaVersion: 1,
+    time: nowIso(),
+    type: 'evidenceCheck',
+    source: 'run-case.js',
+    checkId,
+    stepId,
+    evidence: [binding.screenshot],
+    artifactSha256: verification.artifactSha256 || binding.actual?.sha256 || null,
+    sourceVerified: binding.ok === true && binding.sourceVerified === true,
+    presentationVerified: false,
+    attemptId: event.attemptId,
+    retryOf: event.retryOf || null,
+    presentationMode: event.presentationMode,
+    claim: verification.claim || event.qualityClaim,
+    verdict: verification.verdict,
+    reason: verification.reason,
+    image: verification.image || (binding.actual ? { width: binding.actual.width, height: binding.actual.height } : undefined),
+    pixelStats: verification.pixelStats || [],
+  };
+  event.evidenceCheckId = checkId;
+  if (event.status === 'UNUSABLE' && verification.verdict !== 'CLAIM_PRESENT_IN_SOURCE') {
+    event.requestedStatus = 'UNUSABLE';
+    event.status = 'UNCERTAIN';
+  }
+  return { event, evidenceCheck };
+}
+
+function validateEvent(event) {
+  if (!event.type || typeof event.type !== 'string') throw new Error('record-json missing required field: type');
+  if (!VALID_EVENT_TYPES.has(event.type)) throw new Error(`Unsupported event type: ${event.type}`);
+  if (event.time && Number.isNaN(new Date(event.time).getTime())) throw new Error(`Invalid event time: ${event.time}`);
+  if (event.stepId && typeof event.stepId !== 'string') throw new Error('stepId must be a string');
+  if (event.turnId !== undefined && (typeof event.turnId !== 'string' || !event.turnId.trim())) throw new Error('turnId must be a non-empty string');
+  if (event.type === 'observation') {
+    if (!event.label || typeof event.label !== 'string') throw new Error('observation missing required field: label');
+    if (!event.artifacts || typeof event.artifacts !== 'object' || Array.isArray(event.artifacts)) throw new Error('observation missing required field: artifacts');
+    validateObservationScope(event);
+    validateArtifacts(event);
+  }
+  if (event.type === 'actionResult') {
+    const action = actionType(event);
+    if (!action || typeof action !== 'string') throw new Error('actionResult missing required field: action');
+    if (!VALID_ACTIONS.has(action)) throw new Error(`Unsupported actionResult action: ${action}`);
+    if (typeof event.ok !== 'boolean') throw new Error('actionResult missing required boolean field: ok');
+    validatePreconditionFlowScope(event);
+    if (event.scope === EXECUTION_BOOTSTRAP_SCOPE && !isExecutionBootstrapFact(event)) {
+      throw new Error('EXECUTION_BOOTSTRAP_SCOPE_INVALID: execution-bootstrap 只允许 run-case 启动阶段写入的无步骤 restartApp。');
+    }
+    if (event.scope && ![PRECONDITION_FLOW_SCOPE, EXECUTION_BOOTSTRAP_SCOPE].includes(event.scope) && !event.stepId) {
+      throw new Error(`ACTION_SCOPE_INVALID: unsupported actionResult scope ${event.scope}`);
+    }
+  }
+  if (event.type === 'decision') {
+    if (!event.decision || !VALID_DECISIONS.has(event.decision)) throw new Error(`Unsupported decision: ${event.decision}`);
+    if (event.decision === 'retry_visual_input' && !eventStepId(event)) throw new Error('retry_visual_input decision 必须绑定 stepId');
+    if (event.decision === 'act') {
+      const action = event.action || event.requestedAction;
+      validateActionAsset(action, { context: 'act decision action' });
+      event.action = action;
+      delete event.requestedAction;
+    }
+  }
+  if (event.type === 'actionRejected') {
+    if (event.source !== 'execute-next-work.js') throw new Error('actionRejected source must be execute-next-work.js');
+    if (!event.workToken || typeof event.workToken !== 'string') throw new Error('actionRejected requires workToken');
+    if (!['decision-validation', 'execution-entry'].includes(event.phase)) throw new Error('actionRejected phase is invalid');
+    const flowScoped = event.scope === PRECONDITION_FLOW_SCOPE;
+    if (flowScoped) {
+      validatePreconditionFlowScope(event);
+      if (!['ACTION_CONTRACT_INVALID', 'PRECONDITION_FLOW_ACTION_MISMATCH'].includes(event.failureCode)) throw new Error('Flow actionRejected failureCode is invalid');
+    } else {
+      if (!event.stepId || typeof event.stepId !== 'string') throw new Error('actionRejected requires stepId');
+      if (!event.intentSha || typeof event.intentSha !== 'string') throw new Error('actionRejected requires intentSha');
+      if (event.failureCode !== 'ACTION_CONTRACT_INVALID') throw new Error('actionRejected failureCode must be ACTION_CONTRACT_INVALID');
+    }
+    if (!String(event.reason || '').trim()) throw new Error('actionRejected requires reason');
+    if (event.recoverable !== true) throw new Error('actionRejected must be recoverable');
+    if (!event.attemptedAction || typeof event.attemptedAction !== 'object' || Array.isArray(event.attemptedAction)) throw new Error('actionRejected requires attemptedAction');
+    if (event.allowed !== undefined && !Array.isArray(event.allowed)) throw new Error('actionRejected allowed must be an array');
+    if (event.decisionTurnId !== undefined && (typeof event.decisionTurnId !== 'string' || !event.decisionTurnId)) throw new Error('actionRejected decisionTurnId must be a non-empty string');
+  }
+  if (event.type === 'perception' && event.status !== undefined && !VALID_PERCEPTION_STATUSES.has(event.status)) {
+    throw new Error('perception status must be USABLE, UNUSABLE, or UNCERTAIN');
+  }
+  if (event.type === 'perception' && event.qualityClaim !== undefined) {
+    if (!event.stepId) throw new Error('带 qualityClaim 的 perception 必须绑定 stepId');
+    if (!['UNUSABLE', 'UNCERTAIN'].includes(event.status)) throw new Error('带 qualityClaim 的 perception status 必须是 UNUSABLE 或 UNCERTAIN');
+    if (!String(event.reason || '').trim()) throw new Error('带 qualityClaim 的 perception 必须包含 reason');
+    if (!event.attemptId || typeof event.attemptId !== 'string') throw new Error('带 qualityClaim 的 perception 必须包含 attemptId');
+    if (!VALID_PRESENTATION_MODES.has(event.presentationMode)) throw new Error('带 qualityClaim 的 perception presentationMode 必须是 scaled、original 或 reopen');
+    if (event.retryOf !== undefined && typeof event.retryOf !== 'string') throw new Error('perception retryOf 必须是字符串');
+    event.qualityClaim = validateQualityClaim(event.qualityClaim);
+  }
+  if (event.type === 'evidenceCheck') {
+    if (event.source !== 'run-case.js') throw new Error('evidenceCheck source must be run-case.js');
+    if (!EVIDENCE_CHECK_VERDICTS.has(event.verdict)) throw new Error(`Unsupported evidenceCheck verdict: ${event.verdict}`);
+  }
+  if (event.type === 'rule') {
+    if (!event.ruleId || typeof event.ruleId !== 'string') throw new Error('rule event missing required field: ruleId');
+    if (!event.status || !VALID_RULE_STATUSES.has(event.status)) throw new Error(`Unsupported rule status: ${event.status}`);
+  }
+  if (event.type === 'flow') {
+    if (!event.flowId || typeof event.flowId !== 'string') throw new Error('flow event missing required field: flowId');
+    if (!event.status || !VALID_FLOW_STATUSES.has(event.status)) throw new Error(`Unsupported flow status: ${event.status}`);
+    if (event.flowStepId !== undefined && typeof event.flowStepId !== 'string') throw new Error('flowStepId must be a string');
+    if (event.usage !== 'precondition') throw new Error('flow event usage must be precondition');
+    if (!event.preconditionId || typeof event.preconditionId !== 'string') throw new Error('precondition flow event missing preconditionId');
+    if (event.stepId) throw new Error('precondition flow event cannot bind stepId');
+    if (['FAILED', 'BLOCKED'].includes(event.status) && !VALID_PRECONDITION_FLOW_FAILURES.has(event.failureCode)) {
+      throw new Error('failed or blocked precondition flow event requires a valid PRECONDITION_FLOW_* failureCode');
+    }
+  }
+  if (event.type === 'agentRuntime') {
+    if (event.source !== 'record-agent-runtime.js') throw new Error('agentRuntime source must be record-agent-runtime.js');
+    if (!event.provider || typeof event.provider !== 'string') throw new Error('agentRuntime missing provider');
+    if (!VALID_AGENT_RUNTIME_STATUSES.has(event.status)) throw new Error(`Unsupported agentRuntime status: ${event.status}`);
+    if (event.protocolSha !== undefined && !/^agent-protocol-[0-9a-f]{16}$/.test(event.protocolSha)) throw new Error('agentRuntime protocolSha is invalid');
+    if (event.implementationSha !== undefined && !/^agent-implementation-[0-9a-f]{16}$/.test(event.implementationSha)) throw new Error('agentRuntime implementationSha is invalid');
+    if (event.environmentSha !== undefined && !/^environment-[0-9a-f]{16}$/.test(event.environmentSha)) throw new Error('agentRuntime environmentSha is invalid');
+    if (event.preconditionInputsSha !== undefined && !/^precondition-inputs-[0-9a-f]{16}$/.test(event.preconditionInputsSha)) throw new Error('agentRuntime preconditionInputsSha is invalid');
+    if (event.status === 'BOUND' && (!event.protocolSha || !event.implementationSha || !event.requestSha || !event.environmentSha || !event.preconditionInputsSha || !event.sessionId || event.sessionScope !== 'case')) throw new Error('agentRuntime BOUND requires protocolSha, implementationSha, requestSha, environmentSha, preconditionInputsSha, sessionId, and sessionScope=case');
+    if (['FAILED', 'INTERRUPTED'].includes(event.status) && !VALID_AGENT_RUNTIME_EVENT_FAILURES.has(event.failureCode)) {
+      throw new Error('agentRuntime FAILED/INTERRUPTED requires a valid AGENT_* failureCode');
+    }
+  }
+  if (event.type === 'executionRecovery') {
+    if (event.source !== 'run-case.js' || event.status !== 'BLOCKED' || event.failureCode !== 'EXECUTION_ORPHANED') {
+      throw new Error('executionRecovery must be a framework-owned BLOCKED/EXECUTION_ORPHANED event');
+    }
+    if (!event.recoveryBatchId || typeof event.recoveryBatchId !== 'string') throw new Error('executionRecovery requires recoveryBatchId');
+  }
+  if (event.type === 'assertion' && !['PASS', 'FAIL', 'UNKNOWN'].includes(event.status)) {
+    throw new Error('assertion status must be PASS, FAIL, or UNKNOWN');
+  }
+  if (event.type === 'precondition' && !['PASS', 'PREPARED', 'FAIL', 'UNKNOWN', 'BLOCKED'].includes(event.status)) {
+    throw new Error('precondition status must be PASS, PREPARED, FAIL, UNKNOWN, or BLOCKED');
+  }
+  if (event.type === 'precondition' && (!event.id || typeof event.id !== 'string')) {
+    throw new Error('precondition event missing required field: id');
+  }
+  validateArtifacts(event);
+}
+
+function isExecutionBootstrapFact(event) {
+  return event?.type === 'actionResult'
+    && event.scope === EXECUTION_BOOTSTRAP_SCOPE
+    && event.source === 'action.sh'
+    && actionType(event) === 'restartApp'
+    && !event.stepId
+    && !event.preconditionId
+    && !event.flowId
+    && !event.flowStepId;
+}
+
+function isCaseExecutionFact(event) {
+  if (!event || event.type === 'agentRuntime' || isExecutionBootstrapFact(event)) return false;
+  return AGENT_WRITABLE_EVENT_TYPES.has(event.type) || ['observation', 'actionResult', 'actionRejected'].includes(event.type);
+}
+
+function allowUnboundSelfTestFacts() {
+  return process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_ALLOW_UNBOUND_FACTS === '1';
+}
+
+function allowUnbatchedSelfTestStart() {
+  return process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_ALLOW_UNBATCHED_START === '1';
+}
+
+function assertCaseFactWritable(execDir, execution, events, event) {
+  if (!isCaseExecutionFact(event)) return;
+  if (allowUnboundSelfTestFacts()) return;
+  if (execution?.lifecycle !== 'RUNNING' || execution?.finalized) {
+    throw new Error(`AGENT_RESULT_INVALID: ${event.type} 只能写入 RUNNING execution。`);
+  }
+  const runtimePath = path.join(execDir, 'agent', 'runtime.json');
+  const runtime = readJson(runtimePath, null);
+  if (!runtime) throw new Error(`AGENT_RESULT_INVALID: ${event.type} 不能早于 Agent Runtime 初始化。`);
+  if (runtime.executionId !== execution.executionId || (runtime.batchId || null) !== (execution.batchId || null)) throw new Error('AGENT_RESULT_INVALID: Agent Runtime execution/batch binding mismatch。');
+  if (!['SESSION_RUNNING', 'AWAITING_RESULT'].includes(runtime.state)) {
+    throw new Error(`AGENT_RESULT_INVALID: ${event.type} 不能写入 Runtime 状态 ${runtime.state || '<missing>'}。`);
+  }
+  const bindings = events.filter((item) => item.type === 'agentRuntime' && item.status === 'BOUND');
+  if (bindings.length !== 1) throw new Error(`AGENT_RESULT_INVALID: ${event.type} 要求唯一的 Agent Runtime BOUND。`);
+  const bound = bindings[0];
+  const expected = {
+    provider: runtime.provider,
+    protocolSha: runtime.protocolSha,
+    implementationSha: runtime.implementationSha,
+    requestSha: runtime.requestSha,
+    environmentSha: execution.environmentSha,
+    preconditionInputsSha: execution.preconditionInputsSha,
+    sessionId: runtime.sessionId,
+  };
+  for (const [field, value] of Object.entries(expected)) {
+    if ((bound[field] || null) !== (value || null)) throw new Error(`AGENT_RESULT_INVALID: Runtime BOUND ${field} mismatch。`);
+  }
+}
+
+function validateObservationScope(event) {
+  if (eventStepId(event)) return;
+  if (event.scope === PRECONDITION_FLOW_SCOPE) {
+    validatePreconditionFlowScope(event);
+    return;
+  }
+  if (event.scope === 'global' || event.global === true || event.observation?.scope === 'global') return;
+  if (/\bstep-\d{3}\b/i.test(event.label || '')) {
+    throw new Error('STEP_OBSERVATION_REQUIRES_STEP_ID: observation label looks step-scoped; pass --step-id for step evidence.');
+  }
+  throw new Error('OBSERVATION_SCOPE_REQUIRED: observation without stepId must explicitly set scope=global.');
+}
+
+function validatePreconditionFlowScope(event) {
+  if (event.scope !== PRECONDITION_FLOW_SCOPE) {
+    if (event.preconditionId || event.flowId || event.flowStepId || event.phase) {
+      throw new Error('PRECONDITION_FLOW_SCOPE_REQUIRED: preconditionId/flowId/flowStepId/phase require scope=precondition-flow');
+    }
+    return;
+  }
+  if (event.stepId) throw new Error('PRECONDITION_FLOW_SCOPE_INVALID: precondition-flow event cannot bind stepId');
+  if (!event.preconditionId || typeof event.preconditionId !== 'string') throw new Error('precondition-flow event missing preconditionId');
+  if (!event.flowId || typeof event.flowId !== 'string') throw new Error('precondition-flow event missing flowId');
+  if (event.type === 'observation') {
+    if (!VALID_PRECONDITION_FLOW_PHASES.has(event.phase)) throw new Error('precondition-flow observation requires phase entry-check, before, after, or end-check');
+    if (['before', 'after'].includes(event.phase) && (!event.flowStepId || typeof event.flowStepId !== 'string')) {
+      throw new Error(`precondition-flow ${event.phase} observation requires flowStepId`);
+    }
+    if (['entry-check', 'end-check'].includes(event.phase) && event.flowStepId) {
+      throw new Error(`precondition-flow ${event.phase} observation cannot bind flowStepId`);
+    }
+  }
+  if (event.type === 'actionResult' && (!event.flowStepId || typeof event.flowStepId !== 'string')) {
+    throw new Error('precondition-flow actionResult requires flowStepId');
+  }
+}
+
+function validateRuleEventAgainstCase(event, caseJson) {
+  if (event.type !== 'rule') return;
+  const rules = caseJson.globalRules || [];
+  const rule = rules.find((item) => item.id === event.ruleId);
+  if (!rule) throw new Error(`rule event references unknown globalRule: ${event.ruleId}`);
+  if (event.ruleScope !== undefined && event.ruleScope !== rule.scope) {
+    throw new Error(`rule event scope mismatch for ${event.ruleId}: expected ${rule.scope}`);
+  }
+}
+
+function validatePreconditionEventAgainstCase(event, caseJson) {
+  if (event.type !== 'precondition') return;
+  const preconditions = Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [];
+  const known = preconditions.some((item) => item.id === event.id);
+  if (!known) {
+    throw new Error(`PRECONDITION_REQUIRED: precondition event references unknown case precondition id: ${event.id}`);
+  }
+}
+
+function validateCaseStepAuthorization(event, caseJson) {
+  if (event.type === 'actionRejected') {
+    if (event.scope === PRECONDITION_FLOW_SCOPE) return;
+    const step = (caseJson.steps || []).find((item) => item.id === event.stepId);
+    if (!step || actionAuthorization(step).intentSha !== event.intentSha) {
+      throw new Error('ACTION_OUTSIDE_CASE_INTENT: actionRejected does not match the frozen case step');
+    }
+    return;
+  }
+  if (event.type === 'actionResult' && event.scope === 'global-rule') {
+    const step = (caseJson.steps || []).find((item) => item.id === event.stepId);
+    const rule = (caseJson.globalRules || []).find((item) => item.id === event.ruleId);
+    if (!step || !rule) throw new Error('ACTION_OUTSIDE_CASE_INTENT: global rule action references an unknown step or rule');
+    validateRuleAuthorization(rule, step.id, event.authorization);
+    return;
+  }
+  const requiresAuthorization = (event.type === 'actionResult' && Boolean(event.stepId))
+    || (event.type === 'decision' && event.decision === 'act');
+  if (!requiresAuthorization) {
+    if (event.authorization !== undefined) {
+      throw new Error('ACTION_OUTSIDE_CASE_INTENT: authorization is only valid for an ACT decision or business step actionResult');
+    }
+    return;
+  }
+  const stepId = eventStepId(event);
+  const step = (caseJson.steps || []).find((item) => item.id === stepId);
+  if (!step) throw new Error(`ACTION_OUTSIDE_CASE_INTENT: step ${stepId || '<missing>'} is not present in frozen case snapshot`);
+  validateActionAuthorization(step, event.authorization);
+}
+
+function validatePreconditionEventAgainstPlan(event, executionState, events) {
+  if (event.type !== 'precondition') return;
+  const planned = planEntryFor(executionState, event.id);
+  if (!planned) throw new Error(`PRECONDITION_REQUIRED: precondition ${event.id} is missing from frozen plan`);
+  if (planned.resolution === 'flow') return;
+  if (event.resolution !== planned.resolution) throw new Error(`PRECONDITION_INPUT_INVALID: resolution mismatch for ${event.id}`);
+  if (planned.resolution === 'framework') {
+    if (!planned.checkerId || event.checkerId !== planned.checkerId) throw new Error(`PRECONDITION_INPUT_INVALID: framework checker mismatch for ${event.id}`);
+    if (!Array.isArray(event.evidenceRefs) || !event.evidenceRefs.length) throw new Error(`PRECONDITION_INPUT_INVALID: framework precondition ${event.id} requires evidenceRefs`);
+    const expected = evaluateFrameworkPrecondition(planned.checkerId, executionState, events);
+    for (const field of ['status', 'failureCode', 'reason']) {
+      if ((event[field] || null) !== (expected[field] || null)) throw new Error(`PRECONDITION_INPUT_INVALID: framework result ${field} mismatch for ${event.id}`);
+    }
+    if (JSON.stringify(event.evidenceRefs) !== JSON.stringify(expected.evidenceRefs)) throw new Error(`PRECONDITION_INPUT_INVALID: framework evidence mismatch for ${event.id}`);
+  }
+  if (planned.resolution === 'confirm' && !['PASS', 'BLOCKED'].includes(event.status)) throw new Error(`PRECONDITION_INPUT_INVALID: confirm ${event.id} requires PASS or BLOCKED`);
+  if (['confirm', 'external_setup'].includes(planned.resolution) && event.status === 'BLOCKED' && event.failureCode !== 'PRECONDITION_REQUIRED') {
+    throw new Error(`PRECONDITION_INPUT_INVALID: missing input ${event.id} must use PRECONDITION_REQUIRED`);
+  }
+  if ((planned.resolution === 'confirm' && event.status === 'PASS') || (planned.resolution === 'external_setup' && event.status === 'PREPARED')) {
+    const input = executionState.preconditionInputs?.find((item) => item.id === event.id);
+    if (!input || input.resolution !== planned.resolution || input.status !== event.status || input.reason !== event.reason) {
+      throw new Error(`PRECONDITION_INPUT_INVALID: precondition fact does not match frozen input for ${event.id}`);
+    }
+  }
+  if (planned.resolution === 'external_setup' && event.status !== 'PREPARED' && event.status !== 'BLOCKED') throw new Error(`PRECONDITION_INPUT_INVALID: external_setup ${event.id} requires PREPARED or BLOCKED`);
+  if (planned.resolution === 'unsupported' && (event.status !== 'BLOCKED' || event.failureCode !== 'PRECONDITION_UNSUPPORTED')) {
+    throw new Error(`PRECONDITION_INPUT_INVALID: unsupported ${event.id} must be BLOCKED/PRECONDITION_UNSUPPORTED`);
+  }
+}
+
+function planEntryFor(executionState, preconditionId) {
+  return executionState?.preconditionPlan?.preconditions?.find((item) => item.id === preconditionId) || null;
+}
+
+function flowLifecycle(events, preconditionId, flowId) {
+  const lifecycle = { state: 'NOT_STARTED', started: null, terminal: null };
+  for (const event of events) {
+    if (event.type !== 'flow' || event.usage !== 'precondition' || event.preconditionId !== preconditionId || event.flowId !== flowId) continue;
+    if (event.status === 'STARTED') {
+      lifecycle.state = 'STARTED';
+      lifecycle.started = event;
+    } else if (TERMINAL_FLOW_STATUSES.has(event.status)) {
+      lifecycle.state = event.status;
+      lifecycle.terminal = event;
+    }
+  }
+  return lifecycle;
+}
+
+function activePreconditionFlow(events) {
+  let active = null;
+  for (const event of events) {
+    if (event.type !== 'flow' || event.usage !== 'precondition') continue;
+    if (event.status === 'STARTED') active = { preconditionId: event.preconditionId, flowId: event.flowId };
+    if (active && event.preconditionId === active.preconditionId && event.flowId === active.flowId && TERMINAL_FLOW_STATUSES.has(event.status)) active = null;
+  }
+  return active;
+}
+
+function pendingFlowTerminal(events) {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event.type !== 'flow' || event.usage !== 'precondition' || !TERMINAL_FLOW_STATUSES.has(event.status)) continue;
+    const hasPreconditionTerminal = events.slice(index + 1).some((item) => item.type === 'precondition' && item.id === event.preconditionId);
+    if (!hasPreconditionTerminal) return event;
+  }
+  return null;
+}
+
+function observationFailureCode(event) {
+  const observation = event?.observation || event || {};
+  return event?.failureCode || observation.failureCode || observation.raw?.failureCode || null;
+}
+
+function usableFlowObservation(event) {
+  if (!event || event.type !== 'observation' || event.scope !== PRECONDITION_FLOW_SCOPE) return false;
+  const observation = event.observation || event;
+  if (event.ok === false || observation.ok === false || observationFailureCode(event)) return false;
+  const artifacts = eventArtifacts(event);
+  const hasArtifact = Boolean(artifacts.screenshot || artifacts.layout);
+  const app = observation.app || event.app;
+  const hasAppFact = Boolean(app && typeof app === 'object' && (typeof app.inTargetApp === 'boolean' || app.foregroundApp || app.activity));
+  return hasArtifact || hasAppFact;
+}
+
+function matchingObservations(events, event, phase, flowStepId) {
+  return events.filter((item) => item.type === 'observation' &&
+    usableFlowObservation(item) &&
+    item.scope === PRECONDITION_FLOW_SCOPE &&
+    item.preconditionId === event.preconditionId &&
+    item.flowId === event.flowId &&
+    item.phase === phase &&
+    (flowStepId === undefined || item.flowStepId === flowStepId));
+}
+
+function actionSpecFromEvent(event) {
+  if (event?.requestedAction && typeof event.requestedAction === 'object' && !Array.isArray(event.requestedAction)) return event.requestedAction;
+  const fields = ['target', 'x', 'y', 'text', 'mode', 'fromX', 'fromY', 'toX', 'toY', 'durationMs', 'ms', 'reason', 'velocity', 'coordinateSource', 'targetBounds', 'coordinateEvidence'];
+  const action = { type: actionType(event) };
+  for (const field of fields) if (event?.[field] !== undefined) action[field] = event[field];
+  return action;
+}
+
+function actionValueEqual(field, expected, actual) {
+  if (['x', 'y', 'fromX', 'fromY', 'toX', 'toY', 'durationMs', 'ms', 'velocity'].includes(field)) {
+    return Number.isFinite(Number(expected)) && Number(expected) === Number(actual);
+  }
+  if (Array.isArray(expected)) return Array.isArray(actual) && JSON.stringify(expected.map(Number)) === JSON.stringify(actual.map(Number));
+  return expected === actual;
+}
+
+function flowActionReadiness(expectedStep, event) {
+  const expected = expectedStep?.action || {};
+  const actual = actionSpecFromEvent(event);
+  if (expected.type !== actual.type) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_ACTION_MISMATCH', reason: `Flow step ${expectedStep?.id || '-'} 要求 ${expected.type || '-'}，实际为 ${actual.type || '-'}` };
+  }
+  for (const [field, value] of Object.entries(expected)) {
+    if (field === 'type') continue;
+    if (!actionValueEqual(field, value, actual[field])) {
+      return { ok: false, failureCode: 'PRECONDITION_FLOW_ACTION_MISMATCH', reason: `Flow step ${expectedStep.id} 动作参数不一致: ${field}` };
+    }
+  }
+  return { ok: true };
+}
+
+function evidenceObservation(events, event, phase, flowStepId) {
+  const ref = normalizeEvidenceValue(event.evidenceObservation);
+  if (!ref) return null;
+  return matchingObservations(events, event, phase, flowStepId)
+    .find((observation) => observationMatchesEvidenceRef(observation, ref)) || null;
+}
+
+function preconditionOrderReadiness(caseJson, events, nextEvent) {
+  const pending = pendingFlowTerminal(events);
+  if (pending && !(nextEvent?.type === 'precondition' && nextEvent.id === pending.preconditionId)) {
+    return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow ${pending.flowId} 已终结，下一事实必须是前置条件 ${pending.preconditionId} 的对应终态。` };
+  }
+  const preconditionId = nextEvent?.type === 'precondition'
+    ? nextEvent.id
+    : nextEvent?.preconditionId;
+  if (!preconditionId) return { ok: true };
+  const preconditions = Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [];
+  const index = preconditions.findIndex((item) => item.id === preconditionId);
+  if (index < 0) return { ok: false, failureCode: 'PRECONDITION_REQUIRED', reason: `unknown precondition: ${preconditionId}` };
+  const latestById = new Map();
+  for (const event of events) {
+    if (event.type === 'precondition' && event.id) latestById.set(event.id, event);
+  }
+  const missingPrior = preconditions.slice(0, index).filter((item) => !PRECONDITION_PASSING_STATUSES.has(latestById.get(item.id)?.status));
+  if (missingPrior.length) {
+    return {
+      ok: false,
+      failureCode: 'PRECONDITION_REQUIRED',
+      reason: `前置条件必须按 case.json 顺序处理；${preconditionId} 之前尚未通过: ${missingPrior.map((item) => item.id).join(', ')}`,
+    };
+  }
+  if (latestById.has(preconditionId)) {
+    return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `前置条件 ${preconditionId} 已有终态事实，不能重复写入或继续追加 Flow 事件。` };
+  }
+  const active = activePreconditionFlow(events);
+  if (active && active.preconditionId !== preconditionId) {
+    return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `必须先结束当前 Precondition Flow: ${active.preconditionId}/${active.flowId}` };
+  }
+  return { ok: true };
+}
+
+function currentFlowStep(planEntry, events) {
+  const completed = new Set(events.filter((event) => event.type === 'flow' &&
+    event.preconditionId === planEntry.id &&
+    event.flowId === planEntry.flowId &&
+    event.status === 'STEP_COMPLETED')
+    .map((event) => event.flowStepId));
+  return planEntry.flow?.steps?.find((step) => !completed.has(step.id)) || null;
+}
+
+function preconditionFlowReadiness(caseJson, executionState, events, nextEvent) {
+  const isFlowScoped = nextEvent?.scope === PRECONDITION_FLOW_SCOPE || nextEvent?.type === 'flow';
+  const isFlowPrecondition = nextEvent?.type === 'precondition' && planEntryFor(executionState, nextEvent.id)?.resolution === 'flow';
+  if (!isFlowScoped && !isFlowPrecondition) return { ok: true };
+  const preconditionId = nextEvent.type === 'precondition' ? nextEvent.id : nextEvent.preconditionId;
+  const planEntry = planEntryFor(executionState, preconditionId);
+  if (!planEntry || planEntry.resolution !== 'flow') {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Precondition Flow 不在 execution 计划中: ${preconditionId}` };
+  }
+  if (nextEvent.flowId && nextEvent.flowId !== planEntry.flowId) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_CHANGED', reason: `Flow 与 execution 计划不一致: ${nextEvent.flowId} != ${planEntry.flowId}` };
+  }
+  if (nextEvent.flowStepId && !planEntry.flow.steps.some((step) => step.id === nextEvent.flowStepId)) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow step 不在 execution 计划中: ${nextEvent.flowStepId}` };
+  }
+  const active = activePreconditionFlow(events);
+  const expectedStep = currentFlowStep(planEntry, events);
+  const lifecycle = flowLifecycle(events, preconditionId, planEntry.flowId);
+  if (nextEvent.scope === PRECONDITION_FLOW_SCOPE) {
+    if (nextEvent.phase === 'entry-check') {
+      if (lifecycle.state !== 'NOT_STARTED') return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow 已处于 ${lifecycle.state}，不能重复写 entry-check observation。` };
+      return { ok: true };
+    }
+    if (!active || active.preconditionId !== preconditionId || active.flowId !== planEntry.flowId) {
+      return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Precondition Flow 尚未 STARTED: ${preconditionId}/${planEntry.flowId}` };
+    }
+    if (nextEvent.phase === 'end-check') {
+      if (expectedStep) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow 尚有未完成步骤: ${expectedStep.id}` };
+      return { ok: true };
+    }
+    if (!expectedStep || nextEvent.flowStepId !== expectedStep.id) {
+      return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `当前应执行 Flow step: ${expectedStep?.id || 'none'}` };
+    }
+    if (nextEvent.type === 'actionResult') {
+      const before = matchingObservations(events, nextEvent, 'before', nextEvent.flowStepId);
+      if (!before.length) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow action 前缺少 before observation: ${nextEvent.flowStepId}` };
+      if (!(nextEvent.ok === false && nextEvent.failureCode === 'PRECONDITION_FLOW_ACTION_MISMATCH')) {
+        const actionReady = flowActionReadiness(expectedStep, nextEvent);
+        if (!actionReady.ok) return actionReady;
+      }
+    }
+    if (nextEvent.type === 'observation' && nextEvent.phase === 'after') {
+      const action = events.findLast((event) => event.type === 'actionResult' &&
+        event.scope === PRECONDITION_FLOW_SCOPE &&
+        event.preconditionId === preconditionId &&
+        event.flowId === planEntry.flowId &&
+        event.flowStepId === nextEvent.flowStepId &&
+        event.ok === true);
+      if (!action) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow after observation 前缺少成功 actionResult: ${nextEvent.flowStepId}` };
+    }
+    return { ok: true };
+  }
+  if (nextEvent.type === 'flow') {
+    if (nextEvent.status === 'STARTED') {
+      if (lifecycle.state !== 'NOT_STARTED') return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Precondition Flow 已处于 ${lifecycle.state}，不能再次 STARTED。` };
+      if (active) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: '已有未结束的 Precondition Flow。' };
+      if (!matchingObservations(events, nextEvent, 'entry-check').length) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_START_MISMATCH', reason: 'Flow STARTED 前缺少 entry-check observation。' };
+      }
+      return { ok: true };
+    }
+    if (nextEvent.status === 'BLOCKED' && ['PRECONDITION_FLOW_START_MISMATCH', 'PRECONDITION_FLOW_OBSERVATION_FAILED'].includes(nextEvent.failureCode) && !active && lifecycle.state === 'NOT_STARTED') {
+      if (!evidenceObservation(events, nextEvent, 'entry-check')) {
+        return { ok: false, failureCode: nextEvent.failureCode, reason: 'Flow 入口阻塞必须引用 entry-check observation。' };
+      }
+      return { ok: true };
+    }
+    if (!active || active.preconditionId !== preconditionId || active.flowId !== planEntry.flowId) {
+      return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: 'Precondition Flow 没有活动的 STARTED 事实。' };
+    }
+    if (nextEvent.status === 'STEP_COMPLETED') {
+      if (!expectedStep || nextEvent.flowStepId !== expectedStep.id) {
+        return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `当前应完成 Flow step: ${expectedStep?.id || 'none'}` };
+      }
+      const action = events.findLast((event) => event.type === 'actionResult' && event.scope === PRECONDITION_FLOW_SCOPE && event.preconditionId === preconditionId && event.flowId === planEntry.flowId && event.flowStepId === nextEvent.flowStepId && event.ok === true);
+      const actionReady = action ? flowActionReadiness(expectedStep, action) : { ok: false };
+      if (!action || !actionReady.ok || !evidenceObservation(events, nextEvent, 'after', nextEvent.flowStepId)) {
+        return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow STEP_COMPLETED 缺少成功动作或 after observation 证据: ${nextEvent.flowStepId}` };
+      }
+    }
+    if (nextEvent.status === 'COMPLETED') {
+      if (expectedStep) return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `Flow 尚有未完成步骤: ${expectedStep.id}` };
+      if (!evidenceObservation(events, nextEvent, 'end-check')) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_TARGET_NOT_REACHED', reason: 'Flow COMPLETED 必须引用 end-check observation。' };
+      }
+    }
+    return { ok: true };
+  }
+  if (nextEvent.type === 'precondition') {
+    if (nextEvent.status === 'PASS') {
+      if (nextEvent.resolution !== 'already_satisfied' || nextEvent.flowId !== planEntry.flowId || !evidenceObservation(events, { ...nextEvent, preconditionId, flowId: planEntry.flowId }, 'entry-check')) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_TARGET_NOT_REACHED', reason: 'Flow 前置条件 PASS 必须以 already_satisfied 引用 entry-check 终点证据。' };
+      }
+    } else if (nextEvent.status === 'PREPARED') {
+      const completed = events.findLast((event) => event.type === 'flow' && event.preconditionId === preconditionId && event.flowId === planEntry.flowId && event.status === 'COMPLETED');
+      if (nextEvent.resolution !== 'flow' || nextEvent.flowId !== planEntry.flowId || !completed || nextEvent.evidenceObservation !== completed.evidenceObservation) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_TARGET_NOT_REACHED', reason: 'Flow 前置条件 PREPARED 必须引用已完成 Flow 的终点证据。' };
+      }
+    } else if (nextEvent.status === 'BLOCKED') {
+      const terminal = events.findLast((event) => event.type === 'flow' && event.preconditionId === preconditionId && event.flowId === planEntry.flowId && ['FAILED', 'BLOCKED'].includes(event.status));
+      if (!terminal || nextEvent.flowId !== planEntry.flowId || nextEvent.failureCode !== terminal.failureCode) {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: 'Flow 前置条件 BLOCKED 必须与 Flow 失败终态使用同一个 failureCode。' };
+      }
+    } else {
+      return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件不支持状态: ${nextEvent.status}` };
+    }
+  }
+  return { ok: true };
+}
+
+function budgetViolation(events, nextEvent, budget, startedAt) {
+  const nextEvents = nextEvent ? [...events, nextEvent] : events;
+  const now = new Date(nextEvent?.time || nowIso()).getTime();
+  const started = new Date(startedAt || events[0]?.time || nowIso()).getTime();
+  if (Number.isFinite(now) && Number.isFinite(started) && now - started > budget.maxDurationMs) {
+    return { failureCode: 'CASE_TIMEOUT', reason: `case duration exceeded: ${now - started}ms > ${budget.maxDurationMs}ms` };
+  }
+  const observations = nextEvents.filter((event) => event.type === 'observation');
+  if (observations.length > budget.maxObservations) {
+    return { failureCode: 'EXECUTION_BUDGET_EXCEEDED', reason: `observation count exceeded: ${observations.length} > ${budget.maxObservations}` };
+  }
+  const actions = nextEvents.filter((event) => event.type === 'actionResult');
+  if (actions.length > budget.maxActions) {
+    return { failureCode: 'EXECUTION_BUDGET_EXCEEDED', reason: `action count exceeded: ${actions.length} > ${budget.maxActions}` };
+  }
+  const noChange = observations.filter((event) => event.noChange === true);
+  if (noChange.length > budget.maxNoChangeObservations) {
+    return { failureCode: 'EXECUTION_BUDGET_EXCEEDED', reason: `no-change observation count exceeded: ${noChange.length} > ${budget.maxNoChangeObservations}` };
+  }
+  const knownPopups = nextEvents.filter((event) => event.status === 'HANDLED'
+    && (event.type === 'popup' || (event.type === 'rule' && event.ruleScope === 'system_popup')));
+  if (knownPopups.length > budget.maxKnownPopups) {
+    return { failureCode: 'EXECUTION_BUDGET_EXCEEDED', reason: `known popup count exceeded: ${knownPopups.length} > ${budget.maxKnownPopups}` };
+  }
+  const byStep = new Map();
+  for (const event of nextEvents) {
+    const stepId = event.stepId || event.step?.id;
+    if (!stepId) continue;
+    const item = byStep.get(stepId) || { total: 0, waits: 0 };
+    if (['observation', 'decision', 'actionRejected', 'rule', 'flow', 'actionResult', 'assertion', 'perception'].includes(event.type)) item.total += 1;
+    if (event.type === 'actionResult' && actionType(event) === 'wait') item.waits += 1;
+    byStep.set(stepId, item);
+  }
+  for (const [stepId, item] of byStep.entries()) {
+    if (item.total > budget.maxStepEvents) {
+      return { failureCode: 'EXECUTION_BUDGET_EXCEEDED', reason: `step event count exceeded for ${stepId}: ${item.total} > ${budget.maxStepEvents}` };
+    }
+    if (item.waits > budget.maxStepWaits) {
+      return { failureCode: 'EXECUTION_BUDGET_EXCEEDED', reason: `step wait count exceeded for ${stepId}: ${item.waits} > ${budget.maxStepWaits}` };
+    }
+  }
+  const preconditionActions = nextEvents.filter((event) => event.type === 'actionResult' && event.scope === PRECONDITION_FLOW_SCOPE);
+  if (preconditionActions.length > budget.maxPreconditionActions) {
+    return { failureCode: 'PRECONDITION_FLOW_BUDGET_EXCEEDED', reason: `precondition Flow action count exceeded: ${preconditionActions.length} > ${budget.maxPreconditionActions}` };
+  }
+  const actionsByPrecondition = new Map();
+  for (const event of preconditionActions) {
+    actionsByPrecondition.set(event.preconditionId, (actionsByPrecondition.get(event.preconditionId) || 0) + 1);
+  }
+  for (const [preconditionId, count] of actionsByPrecondition.entries()) {
+    if (count > budget.maxActionsPerPrecondition) {
+      return { failureCode: 'PRECONDITION_FLOW_BUDGET_EXCEEDED', reason: `precondition Flow action count exceeded for ${preconditionId}: ${count} > ${budget.maxActionsPerPrecondition}` };
+    }
+  }
+  return null;
+}
+
+function paceHint(events, nextEvent) {
+  const stepId = eventStepId(nextEvent);
+  if (!stepId) return null;
+  const stepEvents = events.filter((event) => eventStepId(event) === stepId);
+  const observations = stepEvents.filter((event) => event.type === 'observation');
+  const agentFacts = stepEvents.filter((event) => ['perception', 'decision', 'rule', 'flow'].includes(event.type));
+  const hint = {
+    level: 'INFO',
+    stepId,
+    suggestedNextAction: 'continue',
+    message: '',
+  };
+  if (nextEvent?.type === 'observation' && observations.length >= 1) {
+    hint.level = 'WARN';
+    hint.suggestedNextAction = 'assert_or_act';
+    hint.message = `当前步骤 ${stepId} 已有 observation；如果页面状态已明确，请立即写带证据引用的 assertion，避免重复观察。`;
+    return hint;
+  }
+  if (['perception', 'decision'].includes(nextEvent?.type) && observations.length >= 1 && agentFacts.length >= 2) {
+    hint.level = 'WARN';
+    hint.suggestedNextAction = 'assert_or_act';
+    hint.message = `当前步骤 ${stepId} 已有 observation 和多条 agent 事实；若不会改变下一步动作，请停止补充解释性事实并尽快断言或执行动作。`;
+    return hint;
+  }
+  if (nextEvent?.type === 'actionResult' && actionType(nextEvent) === 'wait') {
+    const waits = stepEvents.filter((event) => event.type === 'actionResult' && actionType(event) === 'wait').length;
+    if (waits >= 1) {
+      hint.level = 'WARN';
+      hint.suggestedNextAction = 'observe_then_assert_or_fail';
+      hint.message = `当前步骤 ${stepId} 已等待过；再次等待后应立即 observe 并判断 PASS/FAIL/BLOCKED。`;
+      return hint;
+    }
+  }
+  return null;
+}
+
+function stepEvidence(events, step) {
+  const stepId = step.id;
+  return events.some((event) => eventStepId(event) === stepId && event.type === 'assertion' && event.status === 'PASS');
+}
+
+function preconditionFailureCode(status) {
+  if (status === 'FAIL') return 'PRECONDITION_FAILED';
+  if (status === 'UNKNOWN') return 'PRECONDITION_UNKNOWN';
+  if (status === 'BLOCKED') return 'PRECONDITION_UNSUPPORTED';
+  return 'PRECONDITION_REQUIRED';
+}
+
+function preconditionReadiness(caseJson, events, nextEvent) {
+  if (!nextEvent || !STEP_ORDER_GUARDED_EVENT_TYPES.has(nextEvent.type)) return { ok: true };
+  if (!eventStepId(nextEvent)) return { ok: true };
+  const preconditions = Array.isArray(caseJson.preconditions) ? caseJson.preconditions : [];
+  if (!preconditions.length) return { ok: true };
+
+  const latestById = new Map();
+  for (const event of events) {
+    if (event.type === 'precondition' && event.id) latestById.set(event.id, event);
+  }
+  const missing = preconditions.filter((item) => !latestById.has(item.id));
+  if (missing.length) {
+    return {
+      ok: false,
+      failureCode: 'PRECONDITION_REQUIRED',
+      reason: `进入步骤前必须先处理所有前置条件，缺少: ${missing.map((item) => item.id).join(', ')}。`,
+    };
+  }
+  const blocking = preconditions
+    .map((item) => ({ item, event: latestById.get(item.id) }))
+    .filter(({ event }) => !PRECONDITION_PASSING_STATUSES.has(event.status));
+  if (blocking.length) {
+    const first = blocking[0];
+    return {
+      ok: false,
+      failureCode: preconditionFailureCode(first.event.status),
+      reason: `前置条件未满足，不能进入步骤: ${first.item.id} ${first.item.text || ''} (${first.event.status})${first.event.reason ? `；${first.event.reason}` : ''}`,
+    };
+  }
+  return { ok: true };
+}
+
+function preconditionTerminalOptions(event) {
+  if (event.type !== 'precondition') return null;
+  if (event.status === 'FAIL') {
+    return {
+      status: 'BLOCKED',
+      failureCode: 'PRECONDITION_FAILED',
+      reason: event.reason || `前置条件不满足: ${event.id}`,
+    };
+  }
+  if (event.status === 'UNKNOWN') {
+    return {
+      status: 'UNKNOWN',
+      failureCode: 'PRECONDITION_UNKNOWN',
+      reason: event.reason || `前置条件无法确认: ${event.id}`,
+    };
+  }
+  if (event.status === 'BLOCKED') {
+    const preserved = new Set([
+      'PRECONDITION_REQUIRED',
+      'PRECONDITION_UNSUPPORTED',
+      'PRECONDITION_FAILED',
+      'ENV_UNAVAILABLE',
+      ...VALID_PRECONDITION_FLOW_FAILURES,
+    ]);
+    return {
+      status: 'BLOCKED',
+      failureCode: preserved.has(event.failureCode) ? event.failureCode : 'PRECONDITION_UNSUPPORTED',
+      reason: event.reason || `前置条件不支持自动处理: ${event.id}`,
+    };
+  }
+  return null;
+}
+
+function preconditionFlowTechnicalFailure(event) {
+  if (event?.scope !== PRECONDITION_FLOW_SCOPE) return null;
+  if (event.type === 'observation' && (event.ok === false || observationFailureCode(event))) {
+    return {
+      flowStatus: 'BLOCKED',
+      failureCode: 'PRECONDITION_FLOW_OBSERVATION_FAILED',
+      reason: event.raw?.error || event.observation?.raw?.error || '前置条件 Flow observation 采集失败。',
+    };
+  }
+  if (event.type === 'actionResult' && event.ok === false) {
+    return {
+      flowStatus: 'FAILED',
+      failureCode: VALID_PRECONDITION_FLOW_FAILURES.has(event.failureCode) ? event.failureCode : 'PRECONDITION_FLOW_ACTION_FAILED',
+      reason: event.error || event.raw?.error || event.reason || '前置条件 Flow 动作执行失败。',
+    };
+  }
+  return null;
+}
+
+function appendPreconditionFlowFailure(timelinePath, event, failure) {
+  const time = nowIso();
+  const flowEvent = {
+    time,
+    type: 'flow',
+    usage: 'precondition',
+    preconditionId: event.preconditionId,
+    flowId: event.flowId,
+    flowStepId: event.flowStepId,
+    status: failure.flowStatus || 'BLOCKED',
+    failureCode: failure.failureCode,
+    reason: failure.reason,
+  };
+  const preconditionEvent = {
+    time,
+    type: 'precondition',
+    id: event.preconditionId,
+    status: 'BLOCKED',
+    resolution: 'flow',
+    flowId: event.flowId,
+    failureCode: failure.failureCode,
+    reason: failure.reason,
+  };
+  appendJsonl(timelinePath, flowEvent);
+  appendJsonl(timelinePath, preconditionEvent);
+  return { flowEvent, preconditionEvent };
+}
+
+function assertionEvidenceReadiness(events, nextEvent, execDir = '') {
+  if (!nextEvent || nextEvent.type !== 'assertion' || nextEvent.status !== 'PASS') return { ok: true };
+  const stepId = eventStepId(nextEvent);
+  if (!stepId) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: 'assertion PASS 必须绑定 stepId，并引用当前步骤的观察证据。',
+    };
+  }
+  const refs = assertionEvidenceRefs(nextEvent);
+  if (!refs.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 必须通过 evidence 或 evidenceObservation 引用 ${stepId} 的 observation 证据。`,
+    };
+  }
+  const observations = events.filter((event) => event.type === 'observation' && eventStepId(event) === stepId && event.source === 'observe.sh');
+  if (!observations.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 前必须已有 ${stepId} 由 scripts/observe.sh 写入的 observation 证据。`,
+    };
+  }
+  const missing = refs.filter((ref) => !observations.some((observation) => observationMatchesEvidenceRef(observation, ref)));
+  if (missing.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 引用的证据不属于当前步骤 observation: ${missing.join(', ')}。`,
+    };
+  }
+  const nonArtifactRefs = refs.filter((ref) => !observations.some((observation) => observationArtifactRefs(observation).has(ref)));
+  if (nonArtifactRefs.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 只能引用 observation 产物，label 不能作为业务证据: ${nonArtifactRefs.join(', ')}。`,
+    };
+  }
+  const missingArtifacts = [];
+  for (const ref of refs) {
+    for (const observation of observations) {
+      if (!observationMatchesEvidenceRef(observation, ref)) continue;
+      if (!observationArtifactRefs(observation).has(normalizeEvidenceValue(ref))) continue;
+      const file = path.join(execDir, ref);
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) missingArtifacts.push(ref);
+    }
+  }
+  if (missingArtifacts.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 引用的 observation 产物不存在: ${[...new Set(missingArtifacts)].join(', ')}。`,
+    };
+  }
+  const latestObservation = observations[observations.length - 1];
+  const latestObservationData = latestObservation.observation || latestObservation;
+  const latestScreenshot = normalizeEvidenceValue(latestObservationData.artifacts?.screenshot);
+  if (!latestScreenshot || !refs.includes(latestScreenshot)) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 必须引用 ${stepId} 最新 observation 的截图证据。`,
+    };
+  }
+  const screenshotBinding = screenshotBindingReadiness(latestObservation, execDir);
+  if (!screenshotBinding.ok) return screenshotBinding;
+  const latestObservationIndex = events.lastIndexOf(latestObservation);
+  const factsAfterObservation = events.slice(latestObservationIndex + 1)
+    .filter((event) => eventStepId(event) === stepId);
+  const actionAfterObservation = factsAfterObservation.find((event) => event.type === 'actionResult');
+  if (actionAfterObservation) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 前发生了未重新观察的动作；请重新 observe ${stepId} 并基于新截图判断。`,
+    };
+  }
+  const latestPerception = factsAfterObservation
+    .filter((event) => event.type === 'perception')
+    .slice(-1)[0];
+  const perceptionRefs = latestPerception ? assertionEvidenceRefs(latestPerception) : [];
+  if (!latestPerception || latestPerception.status !== 'USABLE' || !perceptionRefs.includes(latestScreenshot) || !String(latestPerception.reason || '').trim()) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 前必须为 ${stepId} 最新截图写入 status=USABLE、evidence 指向该截图且包含 reason 的 perception。`,
+    };
+  }
+  if (screenshotBinding.recorded?.sha256 && latestPerception.inputArtifact?.sha256 !== screenshotBinding.recorded.sha256) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_EVIDENCE_REQUIRED',
+      reason: `assertion PASS 前的 perception 未绑定 ${stepId} 最新截图的采集时 SHA-256。`,
+    };
+  }
+  return { ok: true };
+}
+
+function stepOrderReadiness(caseJson, events, nextEvent) {
+  if (!nextEvent || !STEP_ORDER_GUARDED_EVENT_TYPES.has(nextEvent.type)) return { ok: true };
+  const stepId = eventStepId(nextEvent);
+  if (stepId && nextEvent.type === 'actionResult' && actionType(nextEvent) === 'restartApp') {
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: 'restartApp 是 execution 级隔离动作，不能绑定步骤 stepId 或作为步骤证据。',
+    };
+  }
+  if (!stepId) {
+    if (nextEvent.scope === PRECONDITION_FLOW_SCOPE) return { ok: true };
+    if (nextEvent.type === 'actionResult' && actionRequiresStepId(actionType(nextEvent))) {
+      return {
+        ok: false,
+        failureCode: 'STEP_ORDER_VIOLATION',
+        reason: `业务动作必须绑定当前步骤 stepId: ${actionType(nextEvent)}。`,
+      };
+    }
+    return { ok: true };
+  }
+
+  const steps = Array.isArray(caseJson.steps) ? caseJson.steps : [];
+  const stepIndex = steps.findIndex((step) => step.id === stepId);
+  if (stepIndex === -1) {
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: `事件引用了不存在的步骤: ${stepId}。`,
+    };
+  }
+
+  const startedIndexes = events
+    .filter((event) => STEP_ORDER_GUARDED_EVENT_TYPES.has(event.type))
+    .map((event) => steps.findIndex((step) => step.id === eventStepId(event)))
+    .filter((index) => index >= 0);
+  const highestStartedIndex = startedIndexes.length ? Math.max(...startedIndexes) : -1;
+
+  if (highestStartedIndex === -1) {
+    if (stepIndex === 0) return { ok: true };
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: `必须从 ${steps[0]?.id || '第一个步骤'} 开始执行，不能先记录 ${stepId}。`,
+    };
+  }
+
+  if (stepIndex < highestStartedIndex) {
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: `已开始 ${steps[highestStartedIndex].id}，不能回头补写 ${stepId}。`,
+    };
+  }
+  if (stepIndex === highestStartedIndex) return { ok: true };
+  if (stepIndex === highestStartedIndex + 1) {
+    const previousStep = steps[highestStartedIndex];
+    if (stepEvidence(events, previousStep)) return { ok: true };
+    return {
+      ok: false,
+      failureCode: 'STEP_ORDER_VIOLATION',
+      reason: `进入 ${stepId} 前，必须先为 ${previousStep.id} 写入通过证据。`,
+    };
+  }
+
+  return {
+    ok: false,
+    failureCode: 'STEP_ORDER_VIOLATION',
+    reason: `必须按顺序执行；当前只能进入 ${steps[highestStartedIndex + 1]?.id || steps[highestStartedIndex].id}，不能先记录 ${stepId}。`,
+  };
+}
+
+function passReadiness(caseJson, events) {
+  const missing = caseJson.steps
+    .filter((step) => !stepEvidence(events, step))
+    .map((step) => step.id);
+  if (missing.length) {
+    return {
+      ok: false,
+      failureCode: 'ASSERTION_UNKNOWN',
+      reason: `PASS 缺少步骤证据: ${missing.join(', ')}`,
+      failedStep: missing[0],
+    };
+  }
+  return { ok: true };
+}
+
+function finalizeReadiness(caseJson, executionState, events) {
+  const active = activePreconditionFlow(events);
+  if (active) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Precondition Flow 尚未终结: ${active.preconditionId}/${active.flowId}` };
+  }
+  const pending = pendingFlowTerminal(events);
+  if (pending) {
+    return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow ${pending.flowId} 已终结，但缺少前置条件 ${pending.preconditionId} 的对应终态。` };
+  }
+  const latestById = new Map();
+  for (const event of events) if (event.type === 'precondition' && event.id) latestById.set(event.id, event);
+  let blocked = false;
+  for (const item of caseJson.preconditions || []) {
+    const fact = latestById.get(item.id);
+    if (!fact) {
+      if (blocked) continue;
+      return { ok: false, failureCode: 'PRECONDITION_REQUIRED', reason: `finalize 前缺少前置条件终态: ${item.id}` };
+    }
+    if (blocked) {
+      return { ok: false, failureCode: 'STEP_ORDER_VIOLATION', reason: `阻塞前置条件之后仍存在额外前置条件事实: ${item.id}` };
+    }
+    const planEntry = planEntryFor(executionState, item.id);
+    if (planEntry?.resolution === 'flow') {
+      if (fact.status === 'PASS') {
+        const evidence = evidenceObservation(events, { ...fact, preconditionId: item.id, flowId: planEntry.flowId }, 'entry-check');
+        if (fact.resolution !== 'already_satisfied' || fact.flowId !== planEntry.flowId || !evidence) {
+          return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件 ${item.id} 的 already_satisfied 事实不完整。` };
+        }
+      } else if (fact.status === 'PREPARED') {
+        const lifecycle = flowLifecycle(events, item.id, planEntry.flowId);
+        if (fact.flowId !== planEntry.flowId || lifecycle.state !== 'COMPLETED' || fact.evidenceObservation !== lifecycle.terminal?.evidenceObservation) {
+          return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件 ${item.id} 的 PREPARED 事实与 Flow COMPLETED 不一致。` };
+        }
+      } else if (fact.status === 'BLOCKED') {
+        const lifecycle = flowLifecycle(events, item.id, planEntry.flowId);
+        if (!['FAILED', 'BLOCKED'].includes(lifecycle.state) || fact.flowId !== planEntry.flowId || fact.failureCode !== lifecycle.terminal?.failureCode) {
+          return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件 ${item.id} 的失败终态不一致。` };
+        }
+      } else {
+        return { ok: false, failureCode: 'PRECONDITION_FLOW_INVALID', reason: `Flow 前置条件 ${item.id} 不支持终态 ${fact.status}。` };
+      }
+    }
+    if (!PRECONDITION_PASSING_STATUSES.has(fact.status)) blocked = true;
+  }
+  return { ok: true };
+}
+
+function firstAssertion(events, status) {
+  return events.find((event) => event.type === 'assertion' && event.status === status) || null;
+}
+
+function eventFailedWithCode(event, failureCode) {
+  if (!event) return false;
+  const code = event.failureCode || event.causeFailureCode || observationFailureCode(event);
+  const failed = event.ok === false || event.observation?.ok === false || event.status === 'BLOCKED' || event.status === 'FAILED';
+  return failed && code === failureCode;
+}
+
+function finalizeFailureReadiness(events, requested, execDir) {
+  const failureCode = requested.failureCode || null;
+  if (failureCode === 'EXECUTION_ORPHANED') {
+    const supported = events.some((event) => event.type === 'executionRecovery' && event.failureCode === failureCode && event.status === 'BLOCKED');
+    if (!supported) return { ok: false, failureCode: 'EXECUTION_RECOVERY_CONTRACT_CHANGED', reason: 'EXECUTION_ORPHANED 缺少 executionRecovery 框架事实。' };
+  }
+  if (VALID_AGENT_RUNTIME_FAILURES.has(failureCode)) {
+    const supported = events.some((event) => event.type === 'agentRuntime' && event.failureCode === failureCode && ['FAILED', 'INTERRUPTED'].includes(event.status));
+    if (!supported) {
+      return { ok: false, failureCode: 'AGENT_RESULT_INVALID', reason: `${failureCode} 缺少对应 agentRuntime 框架事实。` };
+    }
+  }
+  if (failureCode === 'TOOL_ERROR') {
+    const supported = events.some((event) => ['observation', 'actionResult', 'budgetExceeded'].includes(event.type) && eventFailedWithCode(event, 'TOOL_ERROR'));
+    if (!supported) {
+      return {
+        ok: false,
+        failureCode: 'TOOL_ERROR_EVIDENCE_REQUIRED',
+        reason: 'TOOL_ERROR 必须由失败的 observation、actionResult 或框架技术事件支持；Agent 图片预览异常请使用结构化 qualityClaim。',
+      };
+    }
+  }
+  if (failureCode === 'OBSERVATION_ARTIFACT_INVALID') {
+    const supported = events.some((event) => eventFailedWithCode(event, 'OBSERVATION_ARTIFACT_INVALID') ||
+      (event.type === 'evidenceCheck' && event.verdict === 'SOURCE_INVALID'));
+    if (!supported) {
+      return { ok: false, failureCode: 'OBSERVATION_ARTIFACT_INVALID', reason: '缺少原始截图解码失败事实。' };
+    }
+  }
+  if (failureCode === 'OBSERVATION_ARTIFACT_CHANGED') {
+    let supported = events.some((event) => event.type === 'evidenceCheck' && event.verdict === 'SOURCE_CHANGED');
+    if (!supported) {
+      for (const observation of events.filter((event) => event.type === 'observation' && screenshotMetadata(event)?.sha256)) {
+        const readiness = screenshotBindingReadiness(observation, execDir);
+        if (!readiness.ok && readiness.failureCode === 'OBSERVATION_ARTIFACT_CHANGED') supported = true;
+      }
+    }
+    if (!supported) return { ok: false, failureCode: 'OBSERVATION_ARTIFACT_CHANGED', reason: '缺少截图 SHA-256 变化事实。' };
+  }
+  if (failureCode === 'VISUAL_INPUT_UNVERIFIABLE') {
+    const stepId = requested.failedStep || events.filter((event) => event.type === 'evidenceCheck').slice(-1)[0]?.stepId;
+    const checks = events.filter((event) => event.type === 'evidenceCheck' && (!stepId || eventStepId(event) === stepId));
+    const latestPerception = events.filter((event) => event.type === 'perception' && (!stepId || eventStepId(event) === stepId)).slice(-1)[0];
+    const attemptIds = new Set(checks.map((item) => item.attemptId).filter(Boolean));
+    const retryLinked = checks.some((item) => item.retryOf && attemptIds.has(item.retryOf) && item.attemptId !== item.retryOf);
+    if (checks.length < 2 || attemptIds.size < 2 || !retryLinked || !latestPerception || !['UNUSABLE', 'UNCERTAIN'].includes(latestPerception.status)) {
+      return {
+        ok: false,
+        failureCode: 'VISUAL_INPUT_EVIDENCE_REQUIRED',
+        reason: 'VISUAL_INPUT_UNVERIFIABLE 需要首次检查和一次带新 attemptId、retryOf 绑定及 retry_visual_input decision 的有限重试。',
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function statusForFailureCode(failureCode, fallbackStatus) {
+  return failureStatus(failureCode, fallbackStatus);
+}
+
+function failureCodeForcesBlocked(failureCode, fallbackStatus) {
+  return failureCode && statusForFailureCode(failureCode, fallbackStatus) === 'BLOCKED';
+}
+
+function normalizeResultStatus(caseJson, events, requested) {
+  const next = {
+    status: requested.status,
+    failureCode: requested.failureCode || null,
+    failedStep: requested.failedStep || null,
+    reason: requested.reason || '',
+  };
+  if (failureCodeForcesBlocked(next.failureCode, next.status)) {
+    next.status = 'BLOCKED';
+    return next;
+  }
+
+  const failedAssertion = firstAssertion(events, 'FAIL');
+  if (failedAssertion) {
+    next.status = 'FAIL';
+    next.failureCode = next.failureCode || 'ASSERTION_FAILED';
+    next.failedStep = next.failedStep || eventStepId(failedAssertion) || null;
+    next.reason = next.reason || failedAssertion.reason || '断言不通过。';
+    return next;
+  }
+
+  const unknownAssertion = firstAssertion(events, 'UNKNOWN');
+  if (unknownAssertion) {
+    next.status = 'FAIL';
+    next.failureCode = 'ASSERTION_UNKNOWN';
+    next.failedStep = next.failedStep || eventStepId(unknownAssertion) || null;
+    next.reason = next.reason || unknownAssertion.reason || '断言证据不足。';
+    return next;
+  }
+
+  if (next.status === 'PASS') {
+    const passEvidenceReadiness = passReadiness(caseJson, events);
+    if (!passEvidenceReadiness.ok) {
+      next.status = 'FAIL';
+      next.failureCode = passEvidenceReadiness.failureCode;
+      next.failedStep = next.failedStep || passEvidenceReadiness.failedStep || null;
+      next.reason = next.reason || passEvidenceReadiness.reason;
+      return next;
+    }
+  }
+
+  next.status = statusForFailureCode(next.failureCode, next.status);
+  if (next.status === 'UNKNOWN' && next.failureCode === 'ASSERTION_UNKNOWN') next.status = 'FAIL';
+  return next;
+}
+
+function countArtifacts(events) {
+  const artifacts = { screenshots: 0, layouts: 0, logs: 0 };
+  for (const event of events) {
+    if (event.type !== 'observation') continue;
+    const data = event.observation || event;
+    const eventArtifacts = data.artifacts || {};
+    if (eventArtifacts.screenshot) artifacts.screenshots += 1;
+    if (eventArtifacts.layout) artifacts.layouts += 1;
+    if (Array.isArray(eventArtifacts.logs)) artifacts.logs += eventArtifacts.logs.length;
+  }
+  return artifacts;
+}
+
+function buildMetrics(caseJson, state, events, result, executionState = {}) {
+  const actionTypes = ['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'launchApp', 'restartApp', 'wait', 'home'];
+  const actions = { total: 0, caseStepAuthorized: 0, globalRuleAuthorized: 0, tap: 0, toggle: 0, longPress: 0, inputText: 0, swipe: 0, back: 0, launchApp: 0, restartApp: 0, wait: 0, home: 0 };
+  for (const event of events) {
+    if (event.type !== 'actionResult') continue;
+    const action = actionType(event);
+    actions.total += 1;
+    if (event.authorization?.source === 'case-step') actions.caseStepAuthorized += 1;
+    if (event.authorization?.source === 'global-rule') actions.globalRuleAuthorized += 1;
+    if (actionTypes.includes(action)) actions[action] += 1;
+  }
+
+  const preconditions = {
+    total: caseJson.preconditions.length,
+    passed: 0,
+    prepared: 0,
+    blocked: 0,
+    failed: 0,
+    unknown: 0,
+  };
+  const knownPreconditionIds = new Set(caseJson.preconditions.map((item) => item.id).filter(Boolean));
+  const latestPreconditionById = new Map();
+  for (const event of events) {
+    if (event.type !== 'precondition') continue;
+    if (!knownPreconditionIds.has(event.id)) continue;
+    latestPreconditionById.set(event.id, event);
+  }
+  for (const item of caseJson.preconditions) {
+    const event = latestPreconditionById.get(item.id);
+    if (!event) continue;
+    if (event.status === 'PASS') preconditions.passed += 1;
+    else if (event.status === 'PREPARED') preconditions.prepared += 1;
+    else if (event.status === 'BLOCKED') preconditions.blocked += 1;
+    else if (event.status === 'FAIL') preconditions.failed += 1;
+    else preconditions.unknown += 1;
+  }
+
+  const stepStatus = new Map();
+  for (const event of events) {
+    const stepId = event.stepId || event.step?.id;
+    if (!stepId) continue;
+    if (event.type === 'assertion') {
+      if (event.status === 'PASS') stepStatus.set(stepId, 'passed');
+      else if (event.status === 'FAIL') stepStatus.set(stepId, 'failed');
+      else if (event.status === 'UNKNOWN') stepStatus.set(stepId, 'unknown');
+    } else if (event.type === 'decision' && event.decision === 'blocked') {
+      stepStatus.set(stepId, 'blocked');
+    }
+  }
+  const knownCaseStep = result.failedStep && caseJson.steps.some((step) => step.id === result.failedStep);
+  const failedStepKnown = knownCaseStep && stepStatus.has(result.failedStep);
+  const steps = {
+    total: caseJson.steps.length,
+    passed: Array.from(stepStatus.values()).filter((value) => value === 'passed').length,
+    failed: Array.from(stepStatus.values()).filter((value) => value === 'failed').length + (knownCaseStep && result.status === 'FAIL' && !failedStepKnown ? 1 : 0),
+    blocked: Array.from(stepStatus.values()).filter((value) => value === 'blocked').length + (knownCaseStep && result.status === 'BLOCKED' && !failedStepKnown ? 1 : 0),
+    unknown: Array.from(stepStatus.values()).filter((value) => value === 'unknown').length + (knownCaseStep && result.status === 'UNKNOWN' && !failedStepKnown ? 1 : 0),
+    skipped: 0,
+    failedStepId: result.failedStep || null,
+  };
+  if (result.status === 'PASS') steps.passed = caseJson.steps.length;
+  const completed = Math.min(steps.passed + steps.failed + steps.blocked + steps.unknown, caseJson.steps.length);
+  steps.skipped = result.status === 'PASS' ? 0 : Math.max(caseJson.steps.length - completed, 0);
+
+  const relaunchEvents = events.filter((event) => event.type === 'actionResult' && ['launchApp', 'restartApp'].includes(actionType(event)));
+  const relaunchSuccessCount = relaunchEvents.filter((event) => event.ok === true).length;
+  const latestRestart = [...relaunchEvents].reverse().find((event) => actionType(event) === 'restartApp') || null;
+  const ruleById = new Map((caseJson.globalRules || []).map((rule) => [rule.id, rule]));
+  const ruleEvents = events.filter((event) => event.type === 'rule');
+  const systemPopupRule = (event) => ruleById.get(event.ruleId)?.scope === 'system_popup' || event.ruleScope === 'system_popup';
+  const rules = {
+    defined: ruleById.size,
+    totalEvents: ruleEvents.length,
+    matched: ruleEvents.filter((event) => event.status === 'MATCHED').length,
+    handled: ruleEvents.filter((event) => event.status === 'HANDLED').length,
+    skipped: ruleEvents.filter((event) => event.status === 'SKIPPED').length,
+    failed: ruleEvents.filter((event) => ['FAILED', 'BLOCKED', 'UNKNOWN'].includes(event.status)).length,
+    actions: events.filter((event) => event.type === 'actionResult' && event.scope === 'global-rule').length,
+  };
+  const stability = {
+    appForegroundLossCount: events.filter((event) => event.type === 'appForeground' && event.status === 'LEFT_TARGET').length,
+    appRelaunchCount: relaunchSuccessCount,
+    appRelaunchAttemptCount: relaunchEvents.length,
+    appRelaunchSuccessCount: relaunchSuccessCount,
+    restartFailureCount: events.filter((event) => event.type === 'actionResult' && actionType(event) === 'restartApp' && event.ok === false).length,
+    isolationClean: executionState.isolation?.clean !== false,
+    isolationCompromised: executionState.isolation?.clean === false,
+    isolationRequired: executionState.isolation?.required === true,
+    isolationReason: executionState.isolation?.reason || '',
+    startupDisplay: executionState.isolation?.startupDisplay || latestRestart?.startupDisplay || null,
+    noChangeObservationCount: events.filter((event) => event.type === 'observation' && event.noChange === true).length,
+    knownPopupHandledCount: events.filter((event) => event.type === 'popup' && event.status === 'HANDLED').length
+      + ruleEvents.filter((event) => event.status === 'HANDLED' && systemPopupRule(event)).length,
+    unknownPopupCount: events.filter((event) => event.type === 'popup' && event.status !== 'HANDLED').length
+      + ruleEvents.filter((event) => ['FAILED', 'BLOCKED', 'UNKNOWN'].includes(event.status) && systemPopupRule(event)).length,
+  };
+  const flowEvents = events.filter((event) => event.type === 'flow');
+  const preconditionFlowActions = events.filter((event) => event.type === 'actionResult' && event.scope === PRECONDITION_FLOW_SCOPE);
+  const flowInstances = new Map();
+  for (const event of flowEvents) {
+    const key = `${event.preconditionId || ''}\0${event.flowId || ''}`;
+    const instance = flowInstances.get(key) || { started: false, terminal: null };
+    if (event.status === 'STARTED') instance.started = true;
+    if (TERMINAL_FLOW_STATUSES.has(event.status)) instance.terminal = event.status;
+    flowInstances.set(key, instance);
+  }
+  const instanceValues = Array.from(flowInstances.values());
+  const flows = {
+    totalEvents: flowEvents.length,
+    usage: 'precondition',
+    planned: planFlowSummaries(executionState.preconditionPlan || { preconditions: [] }).length,
+    started: instanceValues.filter((item) => item.started).length,
+    completed: instanceValues.filter((item) => item.terminal === 'COMPLETED').length,
+    failed: instanceValues.filter((item) => item.terminal === 'FAILED').length,
+    blocked: instanceValues.filter((item) => item.terminal === 'BLOCKED').length,
+    alreadySatisfied: events.filter((event) => event.type === 'precondition' && event.resolution === 'already_satisfied' && event.flowId).length,
+    actions: preconditionFlowActions.length,
+  };
+  const evidenceChecks = events.filter((event) => event.type === 'evidenceCheck');
+  const visualEvidence = {
+    checks: evidenceChecks.length,
+    claimPresent: evidenceChecks.filter((event) => event.verdict === 'CLAIM_PRESENT_IN_SOURCE').length,
+    claimAbsent: evidenceChecks.filter((event) => event.verdict === 'CLAIM_NOT_PRESENT_IN_SOURCE').length,
+    unverifiable: evidenceChecks.filter((event) => event.verdict === 'UNVERIFIABLE').length,
+    sourceInvalid: evidenceChecks.filter((event) => event.verdict === 'SOURCE_INVALID').length,
+    sourceChanged: evidenceChecks.filter((event) => event.verdict === 'SOURCE_CHANGED').length,
+  };
+  const rejectionEntries = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event.type === 'actionRejected');
+  const sameRejectedAction = (event, actionResult) => event.scope === PRECONDITION_FLOW_SCOPE
+    ? actionResult.scope === PRECONDITION_FLOW_SCOPE
+      && actionResult.preconditionId === event.preconditionId
+      && actionResult.flowId === event.flowId
+      && actionResult.flowStepId === event.flowStepId
+    : actionResult.stepId === event.stepId;
+  const actionRejections = {
+    total: rejectionEntries.length,
+    recovered: rejectionEntries.filter(({ event, index }) => events.slice(index + 1).some((item) =>
+      item.type === 'actionResult' && sameRejectedAction(event, item) && item.ok === true)).length,
+    exhausted: result.failureCode === 'ACTION_CONTRACT_INVALID' ? 1 : 0,
+  };
+
+  return {
+    schemaVersion: 1,
+    caseKey: caseJson.identity.caseKey,
+    executionId: result.executionId,
+    sourceSha1: caseJson.identity.sourceSha1,
+    caseContractSha: caseContractSha(caseJson),
+    preconditionPlanSha: executionState.preconditionPlanSha || null,
+    flowAssets: planFlowSummaries(executionState.preconditionPlan || { preconditions: [] }),
+    status: result.status,
+    requestedStatus: result.requestedStatus || result.status,
+    failureCode: result.failureCode,
+    startedAt: result.startedAt,
+    endedAt: result.endedAt,
+    durationMs: Math.max(new Date(result.endedAt).getTime() - new Date(result.startedAt).getTime(), 0),
+    environment: executionState.environmentSnapshot?.binding || state.environment || {},
+    environmentSha: executionState.environmentSha || null,
+    preconditionInputsSha: executionState.preconditionInputsSha || null,
+    preconditions,
+    steps,
+    executionPhase: result.failedStep ? 'step' : preconditions.blocked || preconditions.failed || preconditions.unknown ? 'precondition' : result.status === 'BLOCKED' ? 'environment-or-framework' : 'completed',
+    actions,
+    actionRejections,
+    rules,
+    flows,
+    visualEvidence,
+    stability,
+    artifacts: countArtifacts(events),
+    budget: executionState.budget || DEFAULT_BUDGET,
+    eventCounts: events.reduce((acc, event) => {
+      acc[event.type || 'unknown'] = (acc[event.type || 'unknown'] || 0) + 1;
+      return acc;
+    }, {}),
+  };
+}
+
+function completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionState, draft, options = {}) {
+  const statePath = path.join(runtimeDir, 'state.json');
+  const timelinePath = path.join(execDir, 'timeline.jsonl');
+  const draftPath = path.join(execDir, 'result.draft.json');
+  const result = draft.result;
+  const metrics = draft.metrics;
+  const resultEvent = draft.resultEvent;
+  const publishImmediately = !executionState.batchId && (options.legacyRuntime === true || allowUnbatchedSelfTestStart());
+  if (result.executionId !== executionState.executionId || result.caseContractSha !== caseContractSha(caseJson)) {
+    throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: finalize draft 与当前 execution 或 case contract 不一致，不能自动恢复。');
+  }
+  let events = readJsonl(timelinePath);
+  if (!events.some((event) => event.type === 'result' && event.source === 'run-case.js')) {
+    appendJsonl(timelinePath, resultEvent);
+    events = [...events.filter((event) => event.type !== 'result'), resultEvent];
+  }
+  writeJson(path.join(execDir, 'result.json'), result);
+  writeJson(path.join(execDir, 'metrics.json'), metrics);
+
+  const state = readJson(statePath, {
+    schemaVersion: 1,
+    executionCount: 0,
+    statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 },
+    environment: {},
+  });
+  const committed = Array.isArray(state.committedExecutionIds) ? state.committedExecutionIds : [];
+  if (publishImmediately && !options.skipStateApply && !committed.includes(result.executionId)) {
+    state.executionCount = (state.executionCount || 0) + 1;
+    state.latestStatus = result.status;
+    state.latestExecutionId = result.executionId;
+    state.latestFailedStep = result.failedStep;
+    state.latestFailureCode = result.failureCode;
+    state.statusCounts = state.statusCounts || { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 };
+    state.statusCounts[result.status] = (state.statusCounts[result.status] || 0) + 1;
+    if (result.status === 'PASS') state.lastPassedAt = result.endedAt;
+    if (result.status !== 'PASS') state.lastFailedAt = result.endedAt;
+    state.committedExecutionIds = [...committed, result.executionId];
+    writeJson(statePath, state);
+  }
+  writeExecutionState(execDir, {
+    ...executionState,
+    schemaVersion: executionState.schemaVersion || 1,
+    executionId: result.executionId,
+    startedAt: result.startedAt,
+    endedAt: result.endedAt,
+    lifecycle: 'FINALIZED',
+    finalized: true,
+    status: result.status,
+    requestedStatus: result.requestedStatus,
+    failureCode: result.failureCode,
+  });
+  if (fs.existsSync(draftPath)) fs.unlinkSync(draftPath);
+  if (publishImmediately) {
+    rebuildCaseDerivedArtifacts(caseDir);
+  }
+  return {
+    executionId: result.executionId,
+    execDir,
+    result: path.join(execDir, 'result.json'),
+    metrics: path.join(execDir, 'metrics.json'),
+    timeline: timelinePath,
+    recovered: options.recovered === true,
+  };
+}
+
+function finalize(caseDir, options) {
+  const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+  let caseJson = null;
+  const statePath = path.join(runtimeDir, 'state.json');
+  const state = readJson(statePath, { schemaVersion: 1, executionCount: 0, statusCounts: { PASS: 0, FAIL: 0, BLOCKED: 0, UNKNOWN: 0 }, environment: {} });
+  let executionId = options.executionId || latestExecutionId(runtimeDir);
+  if (!executionId) {
+    if (!options.legacyRuntime) {
+      throw new Error('No started execution exists. Run --start first or pass --execution-id.');
+    }
+    executionId = allocateExecutionId(runtimeDir);
+  }
+  if (options.executionId && !executionExists(runtimeDir, options.executionId) && !options.legacyRuntime) {
+    throw new Error(`Execution was not started: ${options.executionId}`);
+  }
+  const { execDir } = createExecution(runtimeDir, executionId);
+  const executionState = readExecutionState(execDir) || {};
+  caseJson = readExecutionCase(caseDir, execDir);
+  validateGlobalRules(caseJson);
+  if (!options.legacyRuntime && !executionState.schemaVersion) {
+    throw new Error(`Execution was not started: ${executionId}`);
+  }
+  if (!options.legacyRuntime) {
+    validateExecutionEnvironment(executionState, options.platform);
+    validateFrozenPreconditionInputs(executionState);
+  }
+  const timelinePath = path.join(execDir, 'timeline.jsonl');
+  const existingEvents = readJsonl(timelinePath);
+  if (!options.legacyRuntime && !allowUnboundSelfTestFacts()) {
+    const frameworkTerminal = ['CASE_RESTART_FAILED', 'EXECUTION_ORPHANED'].includes(options.failureCode);
+    const runtimeOwned = fs.existsSync(path.join(execDir, 'agent', 'runtime.json'))
+      && existingEvents.some((event) => event.type === 'agentRuntime' && ['BOUND', 'FAILED', 'INTERRUPTED'].includes(event.status));
+    if (!frameworkTerminal && !runtimeOwned) throw new Error('AGENT_RESULT_INVALID: 正式业务收尾要求已绑定或已失败的 Agent Runtime。');
+  }
+  const resultPath = path.join(execDir, 'result.json');
+  const metricsPath = path.join(execDir, 'metrics.json');
+  const draftPath = path.join(execDir, 'result.draft.json');
+  const existingResult = readJson(resultPath, null);
+  const existingMetrics = readJson(metricsPath, null);
+  const existingDraft = readJson(draftPath, null);
+  const startedAt = options.startedAt || existingEvents[0]?.time || nowIso();
+  const endedAt = nowIso();
+  let status = options.status || 'BLOCKED';
+  if (!VALID_STATUS.has(status)) throw new Error(`Invalid status: ${status}`);
+  if (executionState.finalized && existingResult && existingMetrics) {
+    if (fs.existsSync(draftPath)) fs.unlinkSync(draftPath);
+    return { executionId, execDir, result: resultPath, metrics: metricsPath, timeline: timelinePath, alreadyFinalized: true };
+  }
+  if (!executionState.finalized && existingResult && existingMetrics) {
+    const recoveryEvent = existingEvents.find((event) => event.type === 'result' && event.source === 'run-case.js') || {
+      time: existingResult.endedAt || endedAt,
+      type: 'result',
+      source: 'run-case.js',
+      status: existingResult.status,
+      requestedStatus: existingResult.requestedStatus,
+      reason: existingResult.reason,
+      failedStep: existingResult.failedStep,
+      failureCode: existingResult.failureCode,
+    };
+    return completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionState, {
+      schemaVersion: 1,
+      result: existingResult,
+      metrics: existingMetrics,
+      resultEvent: recoveryEvent,
+    }, { platform: options.platform, recovered: true, legacyRuntime: options.legacyRuntime });
+  }
+  if (existingDraft?.result && existingDraft?.metrics && existingDraft?.resultEvent) {
+    return completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionState, existingDraft, {
+      platform: options.platform,
+      recovered: true,
+      skipStateApply: executionState.finalized === true,
+      legacyRuntime: options.legacyRuntime,
+    });
+  }
+  if (existingResult && !existingMetrics) {
+    const recoveryEvent = existingEvents.find((event) => event.type === 'result' && event.source === 'run-case.js') || {
+      time: existingResult.endedAt || endedAt,
+      type: 'result',
+      source: 'run-case.js',
+      status: existingResult.status,
+      requestedStatus: existingResult.requestedStatus,
+      reason: existingResult.reason,
+      failedStep: existingResult.failedStep,
+      failureCode: existingResult.failureCode,
+    };
+    const recoveryEvents = [...existingEvents.filter((event) => event.type !== 'result'), recoveryEvent];
+    const recoveryMetrics = buildMetrics(caseJson, state, recoveryEvents, existingResult, executionState);
+    writeJson(draftPath, { schemaVersion: 1, result: existingResult, metrics: recoveryMetrics, resultEvent: recoveryEvent });
+    return completeFinalization(caseDir, runtimeDir, caseJson, execDir, executionState, {
+      result: existingResult,
+      metrics: recoveryMetrics,
+      resultEvent: recoveryEvent,
+    }, { platform: options.platform, recovered: true, skipStateApply: executionState.finalized === true, legacyRuntime: options.legacyRuntime });
+  }
+  const eventsBeforeResult = existingEvents.filter((event) => event.type !== 'result');
+  const requestedStatus = status;
+  const readiness = options.legacyRuntime || options.allowIncompletePreconditions ? { ok: true } : finalizeReadiness(caseJson, executionState, eventsBeforeResult);
+  if (!readiness.ok) throw new Error(`${readiness.failureCode}: ${readiness.reason}`);
+  const failureReadiness = options.legacyRuntime
+    ? { ok: true }
+    : finalizeFailureReadiness(eventsBeforeResult, {
+      status,
+      failureCode: options.failureCode || null,
+      failedStep: options.failedStep || null,
+    }, execDir);
+  if (!failureReadiness.ok) throw new Error(`${failureReadiness.failureCode}: ${failureReadiness.reason}`);
+  const normalized = normalizeResultStatus(caseJson, eventsBeforeResult, {
+    status,
+    failureCode: options.failureCode || null,
+    failedStep: options.failedStep || null,
+    reason: options.reason || '',
+  });
+  status = normalized.status;
+  options.failureCode = normalized.failureCode;
+  options.failedStep = normalized.failedStep;
+  options.reason = normalized.reason;
+  const result = {
+    schemaVersion: 1,
+    executionId,
+    caseKey: caseJson.identity.caseKey,
+    platform: options.platform || state.environment?.platform || null,
+    sourceSha1: caseJson.identity.sourceSha1,
+    caseContractSha: caseContractSha(caseJson),
+    preconditionPlanSha: executionState.preconditionPlanSha || null,
+    flowAssets: planFlowSummaries(executionState.preconditionPlan || { preconditions: [] }),
+    status,
+    requestedStatus,
+    failureCode: options.failureCode || null,
+    startedAt,
+    endedAt,
+    failedStep: options.failedStep || null,
+    reason: options.reason || (status === 'PASS' ? '执行通过。' : 'Execution finalized by agent.'),
+    environment: executionState.environmentSnapshot?.binding || state.environment || {},
+    environmentSha: executionState.environmentSha || null,
+    preconditionInputsSha: executionState.preconditionInputsSha || null,
+    evidence: options.evidence || [],
+  };
+  const resultEvent = { time: endedAt, type: 'result', source: 'run-case.js', status, requestedStatus, reason: result.reason, failedStep: result.failedStep, failureCode: result.failureCode };
+  const events = [...eventsBeforeResult, resultEvent];
+  const metrics = buildMetrics(caseJson, state, events, result, executionState);
+  const draft = { schemaVersion: 1, result, metrics, resultEvent };
+  writeJson(draftPath, draft);
+  writeExecutionState(execDir, {
+    ...executionState,
+    schemaVersion: executionState.schemaVersion || 1,
+    executionId,
+    startedAt,
+    lifecycle: 'FINALIZING',
+    finalized: false,
+  });
+  if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_FINALIZE_INTERRUPT === 'after-draft') {
+    throw new Error('MAVT_SELF_TEST_FINALIZE_INTERRUPT: after-draft');
+  }
+  return completeFinalization(caseDir, runtimeDir, caseJson, execDir, readExecutionState(execDir), draft, { platform: options.platform, legacyRuntime: options.legacyRuntime });
+}
+
+function actionRequiresStepId(action) {
+  return action && !['launchApp', 'restartApp', 'wait'].includes(action);
+}
+
+
+function actionResultSourceReadiness(event, allowActionResult = false) {
+  if (!event || event.type !== 'actionResult') return { ok: true };
+  if (!allowActionResult) {
+    return {
+      ok: false,
+      failureCode: 'ACTION_RESULT_SOURCE_REQUIRED',
+      reason: '公开 record-json 不接受 actionResult；正式动作结果必须由顶层 scripts/action.sh 内部写入。',
+    };
+  }
+  if (process.env.MAVT_ACTION_WRITER !== '1') {
+    return {
+      ok: false,
+      failureCode: 'ACTION_RESULT_SOURCE_REQUIRED',
+      reason: 'actionResult 只能由顶层 scripts/action.sh 的内部写入通道记录。',
+    };
+  }
+  if (event.source === 'action.sh') return { ok: true };
+  return {
+    ok: false,
+    failureCode: 'ACTION_RESULT_SOURCE_REQUIRED',
+    reason: 'actionResult 必须由顶层 scripts/action.sh 写入；agent 事实请使用 perception/decision/flow/assertion。',
+  };
+}
+
+function observationSourceReadiness(event, allowObservation = false) {
+  if (!event || event.type !== 'observation') return { ok: true };
+  if (!allowObservation) {
+    return {
+      ok: false,
+      failureCode: 'OBSERVATION_SOURCE_REQUIRED',
+      reason: '公开 record-json 不接受 observation；正式观察必须由顶层 scripts/observe.sh 内部写入。',
+    };
+  }
+  if (process.env.MAVT_OBSERVATION_WRITER !== '1') {
+    return {
+      ok: false,
+      failureCode: 'OBSERVATION_SOURCE_REQUIRED',
+      reason: 'observation 只能由顶层 scripts/observe.sh 的内部写入通道记录。',
+    };
+  }
+  if (event.source === 'observe.sh') return { ok: true };
+  return {
+    ok: false,
+    failureCode: 'OBSERVATION_SOURCE_REQUIRED',
+    reason: 'observation 必须由顶层 scripts/observe.sh 写入；agent 事实请使用 perception/decision/flow/assertion。',
+  };
+}
+
+
+function requiredEnvironmentDependencies(platform) {
+  if (platform === 'android') return ['mavtInputIme'];
+  if (platform === 'ios') return ['iosAutomation'];
+  return [];
+}
+
+function missingEnvironmentDependencies(state, platform) {
+  const dependencies = state?.dependencies || {};
+  return requiredEnvironmentDependencies(platform).filter((id) => !dependencies[id]?.ok);
+}
+
+function findUnfinalizedExecution(caseDir) {
+  const casesDir = path.dirname(caseDir);
+  if (!fs.existsSync(casesDir)) return null;
+  for (const caseName of fs.readdirSync(casesDir).sort()) {
+    const currentCaseDir = path.join(casesDir, caseName);
+    if (!fs.statSync(currentCaseDir).isDirectory()) continue;
+    for (const runtime of caseRuntimeDirs(currentCaseDir)) {
+      const execRoot = path.join(runtime.runtimeDir, 'executions');
+      if (!fs.existsSync(execRoot)) continue;
+      for (const executionId of fs.readdirSync(execRoot).sort()) {
+        const execDir = path.join(execRoot, executionId);
+        if (!fs.statSync(execDir).isDirectory()) continue;
+        const executionState = readExecutionState(execDir);
+        if (executionState && executionState.finalized === false) {
+          return { caseDir: currentCaseDir, platform: runtime.platform, executionId, execDir };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function caseRuntimeDirs(caseDir) {
+  const items = [{ platform: '', runtimeDir: caseDir }];
+  const platformsDir = path.join(caseDir, 'platforms');
+  if (fs.existsSync(platformsDir)) {
+    for (const name of fs.readdirSync(platformsDir).sort()) {
+      const platform = normalizePlatform(name);
+      const runtimeDir = path.join(platformsDir, name);
+      if (platform && fs.statSync(runtimeDir).isDirectory()) items.push({ platform, runtimeDir });
+    }
+  }
+  return items;
+}
+
+function caseRestartDisabled(options) {
+  return process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_SKIP_CASE_RESTART === '1';
+}
+
+function summarizeCommandError(error) {
+  const stdout = error.stdout ? String(error.stdout).trim() : '';
+  const stderr = error.stderr ? String(error.stderr).trim() : '';
+  return [stderr, stdout].filter(Boolean).join('\n') || error.message || String(error);
+}
+
+function restartAppForExecution(caseDir, platform, executionId) {
+  const actionScript = path.join(__dirname, '..', 'action.sh');
+  const args = [
+    '--case-dir', caseDir,
+    '--platform', platform,
+    '--execution-id', executionId,
+    '--scope', EXECUTION_BOOTSTRAP_SCOPE,
+    '--type', 'restartApp',
+    '--settle-ms', '1000',
+  ];
+  try {
+    const output = childProcess.execFileSync(actionScript, args, {
+      cwd: path.join(__dirname, '..', '..'),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, MAVT_RESTART_FAILURE_NON_TERMINAL: '1' },
+    });
+    return JSON.parse(output);
+  } catch (error) {
+    const reason = summarizeCommandError(error);
+    const wrapped = new Error(`CASE_RESTART_FAILED: 每个用例开始前必须尝试冷启动目标 App；当前 restartApp 入口异常，无法记录可降级的动作事实。\n${reason}`);
+    wrapped.cause = error;
+    throw wrapped;
+  }
+}
+
+function restartFailureReason(appRestart = {}) {
+  if (appRestart?.coldStartVerified === false) {
+    return appRestart.reason || appRestart.error || appRestart.failureStage || 'restartApp 命令成功返回，但平台未能确认真实冷启动。';
+  }
+  return appRestart.error || appRestart.reason || appRestart.failureCode || '用例开始前未能完成 App 冷启动隔离。';
+}
+
+function buildIsolationState(caseJson, appRestart, environment = {}) {
+  if (appRestart?.skipped) {
+    return {
+      clean: true,
+      required: false,
+      skipped: true,
+      reason: appRestart.reason || 'restart skipped',
+    };
+  }
+  const policy = normalizeStartupDisplayPolicy(environment.startupDisplayPolicy, { platform: environment.platform });
+  const displayCheck = startupDisplayVerified(
+    policy,
+    appRestart?.startupDisplay,
+    appRestart?.startupDisplay?.deviceFormFactor || environment.deviceFormFactor,
+    { platform: environment.platform },
+  );
+  const required = true;
+  const restartVerified = appRestart?.ok === true && appRestart?.coldStartVerified === true;
+  const ok = restartVerified && displayCheck.verified;
+  const requirementSource = displayCheck.required ? 'cold-restart-and-startup-display-policy' : 'cold-restart-policy';
+  let reason = 'App cold restart verified by adapter.';
+  if (!restartVerified) reason = restartFailureReason(appRestart);
+  else if (!displayCheck.verified) reason = `冷启动显示策略未满足：${displayCheck.validation?.errors?.join('；') || `要求 ${displayCheck.policy.orientation}，启动后方向为 ${appRestart?.startupDisplay?.afterLaunch?.orientation || 'unknown'}`}。`;
+  return {
+    clean: ok,
+    required,
+    requirementSource,
+    compromised: !ok,
+    failureCode: ok ? null : 'CASE_RESTART_FAILED',
+    reason,
+    startupDisplayPolicy: policy,
+    startupDisplay: appRestart?.startupDisplay || null,
+  };
+}
+
+function bootstrapAction(events) {
+  return events.filter(isExecutionBootstrapFact).at(-1) || null;
+}
+
+function finishExecutionBootstrap(caseDir, platform, executionId, appRestart) {
+  const runtimeDir = caseRuntimeDir(caseDir, platform);
+  const execDir = path.join(runtimeDir, 'executions', executionId);
+  const execution = readExecutionState(execDir);
+  if (!execution) throw new Error(`Execution was not started: ${executionId}`);
+  if (execution.finalized) return { executionId, alreadyFinalized: true, result: path.join(execDir, 'result.json') };
+  const caseJson = readExecutionCase(caseDir, execDir);
+  const isolation = buildIsolationState(caseJson, appRestart, execution.environmentSnapshot?.binding || {});
+  const bootstrap = {
+    ...(execution.bootstrap || {}),
+    status: isolation.compromised ? 'FAILED' : 'VERIFIED',
+    completedAt: nowIso(),
+    reason: isolation.reason,
+  };
+  writeExecutionState(execDir, { ...execution, lifecycle: isolation.compromised ? 'BLOCKED_START' : 'RUNNING', finalized: false, isolation, bootstrap });
+  if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_START_INTERRUPT === 'after-bootstrap-state') throw new Error('MAVT_SELF_TEST_START_INTERRUPT: after-bootstrap-state');
+  let finalized = null;
+  if (isolation.compromised) {
+    finalized = finalize(caseDir, { platform, executionId, status: 'BLOCKED', failureCode: 'CASE_RESTART_FAILED', reason: `App 冷启动隔离失败，不能继续执行：${isolation.reason}`, allowAlreadyFinalized: true, allowIncompletePreconditions: true });
+  }
+  return { executionId, execDir, timeline: path.join(execDir, 'timeline.jsonl'), appRestart, isolation, blockedOnStart: Boolean(finalized), nextAction: finalized ? 'stop-current-case' : 'continue-current-case', finalized };
+}
+
+function resumeStart(caseDir, options) {
+  if (!options.executionId || !options.batchId) throw new Error('--resume-start requires --execution-id and --batch-id');
+  const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+  const execDir = path.join(runtimeDir, 'executions', options.executionId);
+  const execution = readExecutionState(execDir);
+  if (!execution) throw new Error(`Execution was not started: ${options.executionId}`);
+  if (execution.batchId !== options.batchId) throw new Error('STARTING execution does not belong to the requested batch');
+  if (execution.finalized) return { executionId: options.executionId, alreadyFinalized: true, result: path.join(execDir, 'result.json') };
+  if (execution.lifecycle === 'RUNNING') return { executionId: options.executionId, resumed: true, alreadyRunning: true, isolation: execution.isolation };
+  if (!['STARTING', 'BLOCKED_START'].includes(execution.lifecycle)) throw new Error(`Execution lifecycle ${execution.lifecycle} cannot resume start`);
+  const events = readJsonl(path.join(execDir, 'timeline.jsonl'));
+  let appRestart = bootstrapAction(events);
+  if (!appRestart) {
+    const attempt = Number(execution.bootstrap?.attempts || 0) + 1;
+    writeExecutionState(execDir, { ...execution, lifecycle: 'STARTING', bootstrap: { status: 'RESTARTING', attemptId: `bootstrap-${String(attempt).padStart(3, '0')}`, attempts: attempt, startedAt: nowIso() } });
+    appRestart = caseRestartDisabled(options) ? { skipped: true, reason: 'MAVT_SELF_TEST_SKIP_CASE_RESTART=1' } : restartAppForExecution(caseDir, options.platform, options.executionId);
+    if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_START_INTERRUPT === 'after-restart-fact') throw new Error('MAVT_SELF_TEST_START_INTERRUPT: after-restart-fact');
+  }
+  return { ...finishExecutionBootstrap(caseDir, options.platform, options.executionId, appRestart), resumed: true };
+}
+
+const args = process.argv.slice(2);
+if (!args.length) usage();
+const caseDir = path.resolve(args[0]);
+const options = { evidence: [] };
+let command = null;
+
+for (let i = 1; i < args.length; i++) {
+  switch (args[i]) {
+    case '--start': command = 'start'; break;
+    case '--resume-start': command = 'resumeStart'; break;
+    case '--recover-orphaned': command = 'recoverOrphaned'; break;
+    case '--platform': options.platform = normalizePlatform(args[++i]); if (!options.platform) usage(); break;
+    case '--check-budget': command = 'checkBudget'; break;
+    case '--event-type': options.eventType = args[++i]; break;
+    case '--action': options.action = args[++i]; break;
+    case '--action-json': options.actionJson = args[++i]; break;
+    case '--step-id': options.stepId = args[++i]; break;
+    case '--scope': options.scope = args[++i]; break;
+    case '--precondition-id': options.preconditionId = args[++i]; break;
+    case '--flow-id': options.flowId = args[++i]; break;
+    case '--flow-step-id': options.flowStepId = args[++i]; break;
+    case '--authorization-source': options.authorizationSource = args[++i]; break;
+    case '--authorization-step-id': options.authorizationStepId = args[++i]; break;
+    case '--authorization-intent-sha': options.authorizationIntentSha = args[++i]; break;
+    case '--authorization-rule-id': options.authorizationRuleId = args[++i]; break;
+    case '--authorization-rule-sha': options.authorizationRuleSha = args[++i]; break;
+    case '--phase': options.phase = args[++i]; break;
+    case '--precondition-plan-sha': options.preconditionPlanSha = args[++i]; break;
+    case '--precondition-inputs-json': options.preconditionInputs = JSON.parse(args[++i]); break;
+    case '--batch-id': options.batchId = args[++i]; break;
+    case '--record-json': command = 'record'; options.recordJson = args[++i]; break;
+    case '--record-action-json': command = 'recordAction'; options.recordJson = args[++i]; break;
+    case '--record-observation-json': command = 'recordObservation'; options.recordJson = args[++i]; break;
+    case '--record-agent-runtime-json': command = 'recordAgentRuntime'; options.recordJson = args[++i]; break;
+    case '--record-action-rejection-json': command = 'recordActionRejection'; options.recordJson = args[++i]; break;
+    case '--finalize': command = 'finalize'; break;
+    case '--legacy-runtime': options.legacyRuntime = true; break;
+    case '--execution-id': options.executionId = args[++i]; break;
+    case '--status': options.status = args[++i]; if (!command) command = 'finalize'; break;
+    case '--reason': options.reason = args[++i]; break;
+    case '--failure-code': options.failureCode = args[++i]; break;
+    case '--failed-step': options.failedStep = args[++i]; break;
+    case '--evidence': options.evidence.push(args[++i]); break;
+    default: usage();
+  }
+}
+
+try {
+  if (!options.platform && !options.legacyRuntime) {
+    throw new Error('Missing --platform. 正式执行必须写入 cases/<case>/platforms/<platform>/；旧根运行态请显式传 --legacy-runtime。');
+  }
+  if (options.batchId && (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(options.batchId) || ['.', '..'].includes(options.batchId))) {
+    throw new Error('batch-id contains unsafe characters');
+  }
+  if (command === 'start') {
+    if (options.legacyRuntime) throw new Error('--legacy-runtime 只允许读取或收尾历史 execution，不能创建新 execution。');
+    if (!options.batchId && !allowUnbatchedSelfTestStart()) throw new Error('正式 --start 必须通过 --batch-id 绑定批次。');
+    const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+    const caseJson = readJson(path.join(caseDir, 'case.json'));
+    if (!caseJson) throw new Error(`Missing case.json in ${caseDir}`);
+    validateCaseExecutionContract(caseJson);
+    validateGlobalRules(caseJson);
+    const state = readJson(path.join(runtimeDir, 'state.json'), null);
+    const missingEnv = requiredEnvironmentFields(state).filter((field) => !state?.environment?.[field]);
+    if (!state?.environmentConfirmedAt || missingEnv.length) {
+      throw new Error(`Environment is not confirmed. Run update-env.js first. Missing: ${missingEnv.join(', ') || 'environmentConfirmedAt'}`);
+    }
+    const missingDependencies = missingEnvironmentDependencies(state, options.platform);
+    if (missingDependencies.length) {
+      throw new Error(`Environment dependencies are not prepared. Run scripts/prepare-env.sh --case-dir <case-dir> --platform ${options.platform} before --start. Missing: ${missingDependencies.join(', ')}`);
+    }
+    const preconditionPlan = buildPreconditionPlan(caseJson, caseRootFromCaseDir(caseDir), options.platform);
+    if (options.preconditionPlanSha && options.preconditionPlanSha !== preconditionPlan.preconditionPlanSha) {
+      throw new Error(`PRECONDITION_FLOW_CHANGED: precondition plan changed after preflight: ${options.preconditionPlanSha} != ${preconditionPlan.preconditionPlanSha}`);
+    }
+    if (!options.preconditionPlanSha && process.env.MAVT_SELF_TEST !== '1') {
+      throw new Error('PRECONDITION_FLOW_CHANGED: --start must pass --precondition-plan-sha from preflight-preconditions.js.');
+    }
+    const frozenPreconditionInputs = normalizePreconditionInputs(preconditionPlan, options.preconditionInputs || []);
+    const frozenPreconditionInputsSha = preconditionInputsSha(frozenPreconditionInputs);
+    const frozenEnvironment = buildExecutionEnvironment(state, options.platform);
+    const active = findUnfinalizedExecution(caseDir);
+    if (active) {
+      throw new Error(`Unfinalized execution exists: ${active.executionId} in ${active.caseDir}. Finalize it before starting another execution.`);
+    }
+    if (options.executionId && executionExists(runtimeDir, options.executionId)) {
+      throw new Error(`Execution already exists: ${options.executionId}`);
+    }
+    const { executionId, execDir } = createExecution(runtimeDir, options.executionId || allocateExecutionId(runtimeDir));
+    writeJson(path.join(execDir, 'case.snapshot.json'), caseJson);
+    const frozenContractSha = caseContractSha(caseJson);
+    writeExecutionState(execDir, {
+      schemaVersion: 2,
+      executionId,
+      startedAt: nowIso(),
+      lifecycle: 'STARTING',
+      finalized: false,
+      sourceSha1: caseJson.identity.sourceSha1,
+      caseContractSha: frozenContractSha,
+      batchId: options.batchId || null,
+      preconditionPlan,
+      preconditionPlanSha: preconditionPlan.preconditionPlanSha,
+      preconditionInputs: frozenPreconditionInputs,
+      preconditionInputsSha: frozenPreconditionInputsSha,
+      environmentSnapshot: frozenEnvironment.snapshot,
+      environmentSha: frozenEnvironment.environmentSha,
+      budget: DEFAULT_BUDGET,
+      bootstrap: { status: 'PENDING', attemptId: null, attempts: 0 },
+    });
+    appendJsonl(path.join(execDir, 'timeline.jsonl'), {
+      time: nowIso(),
+      type: 'executionStart',
+      source: 'run-case.js',
+      executionId,
+      platform: options.platform || state.environment?.platform || null,
+      caseKey: caseJson.identity.caseKey,
+      sourceSha1: caseJson.identity.sourceSha1,
+      caseContractSha: frozenContractSha,
+      preconditionPlanSha: preconditionPlan.preconditionPlanSha,
+      preconditionInputsSha: frozenPreconditionInputsSha,
+      environmentSha: frozenEnvironment.environmentSha,
+      environment: safeEnvironmentSummary(frozenEnvironment.snapshot),
+      flowAssets: planFlowSummaries(preconditionPlan),
+    });
+    if (frozenEnvironment.snapshot.probe) {
+      appendJsonl(path.join(execDir, 'timeline.jsonl'), {
+        time: nowIso(),
+        type: 'environmentProbe',
+        source: 'run-case.js',
+        platform: options.platform,
+        ...frozenEnvironment.snapshot.probe,
+      });
+    }
+    writeExecutionState(execDir, { ...readExecutionState(execDir), bootstrap: { status: 'RESTARTING', attemptId: 'bootstrap-001', attempts: 1, startedAt: nowIso() } });
+    if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_START_INTERRUPT === 'after-execution-start') throw new Error('MAVT_SELF_TEST_START_INTERRUPT: after-execution-start');
+    let appRestart;
+    try {
+      appRestart = caseRestartDisabled(options)
+        ? { skipped: true, reason: 'MAVT_SELF_TEST_SKIP_CASE_RESTART=1' }
+        : restartAppForExecution(caseDir, options.platform, executionId);
+    } catch (error) {
+      const reason = error.message || String(error);
+      writeExecutionState(execDir, { ...readExecutionState(execDir), lifecycle: 'BLOCKED_START', finalized: false, isolation: { clean: false, required: true, reason }, bootstrap: { ...readExecutionState(execDir).bootstrap, status: 'FAILED', completedAt: nowIso(), reason } });
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: 'CASE_RESTART_FAILED',
+        reason,
+        allowIncompletePreconditions: true,
+      });
+      console.error(JSON.stringify({ executionId, blockedOnStart: true, nextAction: 'stop-current-case', failureCode: 'CASE_RESTART_FAILED', reason, finalized }, null, 2));
+      process.exit(3);
+    }
+    if (process.env.MAVT_SELF_TEST === '1' && process.env.MAVT_SELF_TEST_START_INTERRUPT === 'after-restart-fact') throw new Error('MAVT_SELF_TEST_START_INTERRUPT: after-restart-fact');
+    console.log(JSON.stringify({
+      ...finishExecutionBootstrap(caseDir, options.platform, executionId, appRestart),
+      preconditionPlanSha: preconditionPlan.preconditionPlanSha,
+      preconditionInputsSha: frozenPreconditionInputsSha,
+      environmentSha: frozenEnvironment.environmentSha,
+      flowAssets: planFlowSummaries(preconditionPlan),
+    }, null, 2));
+  } else if (command === 'resumeStart') {
+    console.log(JSON.stringify(resumeStart(caseDir, options), null, 2));
+  } else if (command === 'recoverOrphaned') {
+    if (!options.executionId || !options.batchId) throw new Error('recover-orphaned requires --execution-id and --batch-id');
+    const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+    const execDir = path.join(runtimeDir, 'executions', options.executionId);
+    const executionState = readExecutionState(execDir);
+    if (!executionState) throw new Error(`Execution was not started: ${options.executionId}`);
+    if (executionState.finalized) throw new Error(`Execution already finalized: ${options.executionId}`);
+    if (fs.existsSync(path.join(execDir, 'agent', 'runtime.json'))) throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: orphan recovery does not accept an initialized Agent Runtime');
+    const events = readJsonl(path.join(execDir, 'timeline.jsonl'));
+    if (events[0]?.type !== 'executionStart' || events[0]?.executionId !== options.executionId) throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: orphan execution is missing its executionStart fact');
+    const invalid = events.find((event) => !['executionStart', 'environmentProbe'].includes(event.type) && !isExecutionBootstrapFact(event));
+    if (invalid) throw new Error(`EXECUTION_RECOVERY_CONTRACT_CHANGED: orphan execution contains ${invalid.type}`);
+    const deadlineAt = new Date(new Date(executionState.startedAt).getTime() + Number(executionState.budget?.maxDurationMs || DEFAULT_BUDGET.maxDurationMs));
+    if (Number.isNaN(deadlineAt.getTime()) || deadlineAt.getTime() > Date.now()) throw new Error('EXECUTION_RECOVERY_CONTRACT_CHANGED: orphan execution has not exceeded its deadline');
+    const event = normalizeEvent({
+      type: 'executionRecovery',
+      source: 'run-case.js',
+      status: 'BLOCKED',
+      failureCode: 'EXECUTION_ORPHANED',
+      recoveryBatchId: options.batchId,
+      reason: options.reason || '遗留 execution 已超过 deadline 且未初始化 Agent Runtime，由批次协调器确定性收尾。',
+    });
+    appendJsonl(path.join(execDir, 'timeline.jsonl'), event);
+    const finalized = finalize(caseDir, {
+      platform: options.platform,
+      executionId: options.executionId,
+      status: 'BLOCKED',
+      failureCode: 'EXECUTION_ORPHANED',
+      reason: event.reason,
+      allowIncompletePreconditions: true,
+    });
+    console.log(JSON.stringify({ executionId: options.executionId, recovered: true, recovery: event, finalized }, null, 2));
+  } else if (command === 'checkBudget') {
+    const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+    const executionId = options.executionId || latestExecutionId(runtimeDir);
+    if (!executionId) throw new Error('No execution exists. Run --start first or pass --execution-id.');
+    const { execDir } = createExecution(runtimeDir, executionId);
+    const executionState = readExecutionState(execDir);
+    if (!executionState) throw new Error(`Execution was not started: ${executionId}`);
+    if (executionState?.finalized) throw new Error(`Execution already finalized: ${executionId}`);
+    if (!options.eventType) throw new Error('Missing --event-type');
+    const requestedAction = options.actionJson ? JSON.parse(options.actionJson) : null;
+    const requestedActionFields = requestedAction ? { ...requestedAction } : {};
+    delete requestedActionFields.type;
+    const event = normalizeEvent({
+      type: options.eventType,
+      stepId: options.stepId,
+      label: options.eventType === 'observation' ? 'budget-precheck' : undefined,
+      artifacts: options.eventType === 'observation' ? {} : undefined,
+      scope: options.scope,
+      preconditionId: options.preconditionId,
+      flowId: options.flowId,
+      flowStepId: options.flowStepId,
+      phase: options.eventType === 'observation' ? options.phase : undefined,
+      action: options.eventType === 'actionResult' ? (options.action || requestedAction?.type) : undefined,
+      ok: options.eventType === 'actionResult' ? true : undefined,
+      ...(options.eventType === 'actionResult' ? requestedActionFields : {}),
+      requestedAction: options.eventType === 'actionResult' ? requestedAction || undefined : undefined,
+      source: options.eventType === 'actionResult' ? 'action.sh' : undefined,
+      authorization: options.eventType === 'actionResult' && options.authorizationSource
+        ? options.authorizationSource === 'global-rule'
+          ? { source: options.authorizationSource, stepId: options.authorizationStepId, ruleId: options.authorizationRuleId, ruleSha: options.authorizationRuleSha }
+          : { source: options.authorizationSource, stepId: options.authorizationStepId, intentSha: options.authorizationIntentSha }
+        : undefined,
+      ruleId: options.scope === 'global-rule' ? options.authorizationRuleId : undefined,
+    });
+    if (event.type === 'actionResult') {
+      validateActionExecution(actionSpecFromEvent(event), {
+        platform: options.platform,
+        scope: event.scope || (event.stepId ? 'case-step' : 'formal-execution'),
+        context: 'action budget precheck',
+      });
+    }
+    const timelinePath = path.join(execDir, 'timeline.jsonl');
+    const events = readJsonl(timelinePath);
+    assertCaseFactWritable(execDir, executionState, events, event);
+    if (event.turnId) {
+      const conflictingTurn = events.find((item) => item.turnId === event.turnId && eventStepId(item) !== eventStepId(event));
+      if (conflictingTurn) throw new Error(`AGENT_RESULT_INVALID: turnId ${event.turnId} already belongs to step ${eventStepId(conflictingTurn) || '<none>'}.`);
+    }
+    const caseJson = readExecutionCase(caseDir, execDir);
+    validateCaseStepAuthorization(event, caseJson);
+    const preconditionReady = preconditionReadiness(caseJson, events, event);
+    if (!preconditionReady.ok) {
+      throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
+    }
+    const preconditionOrderReady = preconditionOrderReadiness(caseJson, events, event);
+    if (!preconditionOrderReady.ok) {
+      throw new Error(`${preconditionOrderReady.failureCode}: ${preconditionOrderReady.reason}`);
+    }
+    const preconditionFlowReady = preconditionFlowReadiness(caseJson, executionState, events, event);
+    if (!preconditionFlowReady.ok) {
+      throw new Error(`${preconditionFlowReady.failureCode}: ${preconditionFlowReady.reason}`);
+    }
+    const stepOrderReady = stepOrderReadiness(caseJson, events, event);
+    if (!stepOrderReady.ok) {
+      throw new Error(`${stepOrderReady.failureCode}: ${stepOrderReady.reason}`);
+    }
+    const violation = budgetViolation(events, event, executionState?.budget || DEFAULT_BUDGET, executionState?.startedAt);
+    if (violation) {
+      const finalViolation = event.scope === PRECONDITION_FLOW_SCOPE
+        ? { failureCode: 'PRECONDITION_FLOW_BUDGET_EXCEEDED', reason: violation.reason }
+        : violation;
+      const budgetEvent = {
+        time: nowIso(),
+        type: 'budgetExceeded',
+        source: 'run-case.js',
+        status: 'BLOCKED',
+        failureCode: finalViolation.failureCode,
+        reason: finalViolation.reason,
+      };
+      appendJsonl(timelinePath, budgetEvent);
+      if (event.scope === PRECONDITION_FLOW_SCOPE) {
+        appendPreconditionFlowFailure(timelinePath, event, { flowStatus: 'BLOCKED', ...finalViolation });
+      }
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: finalViolation.failureCode,
+        reason: finalViolation.reason,
+        allowAlreadyFinalized: true,
+      });
+      console.error(JSON.stringify({ executionId, budgetExceeded: true, ...finalViolation, finalized }, null, 2));
+      process.exit(3);
+    }
+    console.log(JSON.stringify({ executionId, budgetOk: true, eventType: options.eventType, paceHint: paceHint(events, event) }, null, 2));
+  } else if (command === 'record' || command === 'recordAction' || command === 'recordObservation' || command === 'recordAgentRuntime' || command === 'recordActionRejection') {
+    const allowActionResult = command === 'recordAction';
+    const allowObservation = command === 'recordObservation';
+    const allowAgentRuntime = command === 'recordAgentRuntime';
+    const allowActionRejection = command === 'recordActionRejection';
+    const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+    const executionId = options.executionId || latestExecutionId(runtimeDir);
+    if (!executionId) throw new Error('No execution exists. Run --start first or pass --execution-id.');
+    const { execDir } = createExecution(runtimeDir, executionId);
+    const executionState = readExecutionState(execDir);
+    if (!executionState) throw new Error(`Execution was not started: ${executionId}`);
+    if (executionState?.finalized) throw new Error(`Execution already finalized: ${executionId}`);
+    const caseJson = readExecutionCase(caseDir, execDir);
+    validateGlobalRules(caseJson);
+    let event = normalizeEvent(JSON.parse(options.recordJson));
+    if (event.type === 'evidenceCheck') {
+      throw new Error('EVIDENCE_CHECK_SOURCE_REQUIRED: evidenceCheck 只能由 run-case.js 根据结构化 qualityClaim 生成。');
+    }
+    if (command === 'record' && event.type === 'observation') {
+      throw new Error('OBSERVATION_SOURCE_REQUIRED: 公开 --record-json 不接受 observation；正式观察必须由顶层 scripts/observe.sh 内部写入。');
+    }
+    if (command === 'record' && event.type === 'actionResult') {
+      throw new Error('ACTION_RESULT_SOURCE_REQUIRED: 公开 --record-json 不接受 actionResult；正式动作结果必须由顶层 scripts/action.sh 内部写入。');
+    }
+    if (command === 'record' && !AGENT_WRITABLE_EVENT_TYPES.has(event.type)) {
+      throw new Error(`EVENT_SOURCE_REQUIRED: 公开 --record-json 不接受框架事件 ${event.type}。`);
+    }
+    if (allowAgentRuntime && event.type !== 'agentRuntime') {
+      throw new Error('EVENT_SOURCE_REQUIRED: --record-agent-runtime-json 只接受 agentRuntime。');
+    }
+    if (allowActionRejection && event.type !== 'actionRejected') {
+      throw new Error('EVENT_SOURCE_REQUIRED: --record-action-rejection-json 只接受 actionRejected。');
+    }
+    if (event.type === 'actionRejected' && (!allowActionRejection || process.env.MAVT_ACTION_REJECTION_WRITER !== '1')) {
+      throw new Error('EVENT_SOURCE_REQUIRED: actionRejected 只能由 execute-next-work.js 写入。');
+    }
+    if (event.type === 'agentRuntime' && (!allowAgentRuntime || process.env.MAVT_AGENT_RUNTIME_WRITER !== '1')) {
+      throw new Error('EVENT_SOURCE_REQUIRED: agentRuntime 只能由顶层 scripts/record-agent-runtime.js 写入。');
+    }
+    validateRuleEventAgainstCase(event, caseJson);
+    validatePreconditionEventAgainstCase(event, caseJson);
+    validateCaseStepAuthorization(event, caseJson);
+    if (event.type === 'decision' && event.decision === 'act') {
+      validateActionExecution(event.action || event.requestedAction, {
+        platform: options.platform,
+        scope: 'case-step',
+        context: 'act decision action',
+      });
+    }
+    if (event.type === 'actionResult') {
+      validateActionExecution(actionSpecFromEvent(event), {
+        platform: options.platform,
+        scope: event.scope || (event.stepId ? 'case-step' : 'formal-execution'),
+        context: 'actionResult requestedAction',
+      });
+    }
+    const timelinePath = path.join(execDir, 'timeline.jsonl');
+    const events = readJsonl(timelinePath);
+    validatePreconditionEventAgainstPlan(event, executionState, events);
+    assertCaseFactWritable(execDir, executionState, events, event);
+    if (event.turnId) {
+      const conflictingTurn = events.find((item) => item.turnId === event.turnId && eventStepId(item) !== eventStepId(event));
+      if (conflictingTurn) throw new Error(`AGENT_RESULT_INVALID: turnId ${event.turnId} already belongs to step ${eventStepId(conflictingTurn) || '<none>'}.`);
+    }
+    const preconditionReady = preconditionReadiness(caseJson, events, event);
+    if (!preconditionReady.ok) {
+      throw new Error(`${preconditionReady.failureCode}: ${preconditionReady.reason}`);
+    }
+    if (event.type === 'agentRuntime' && event.status === 'BOUND') {
+      if (event.environmentSha !== executionState.environmentSha || event.preconditionInputsSha !== executionState.preconditionInputsSha) {
+        throw new Error('AGENT_RESULT_INVALID: Agent Runtime BOUND 与 execution 冻结契约不一致。');
+      }
+      const existingBound = events.find((item) => item.type === 'agentRuntime' && item.status === 'BOUND');
+      if (existingBound) {
+        const sameBinding = ['provider', 'protocolSha', 'implementationSha', 'sessionScope', 'requestSha', 'environmentSha', 'preconditionInputsSha', 'sessionId']
+          .every((field) => (existingBound[field] || null) === (event[field] || null));
+        if (!sameBinding) throw new Error('AGENT_RESULT_INVALID: execution 已绑定不同的 Agent Runtime。');
+        console.log(JSON.stringify({ executionId, eventType: event.type, alreadyRecorded: true, timeline: timelinePath }, null, 2));
+        process.exit(0);
+      }
+      const businessFact = events.find((item) => isCaseExecutionFact(item));
+      if (businessFact) {
+        throw new Error(`AGENT_RESULT_INVALID: Agent Runtime BOUND 必须先于业务事实，当前已有 ${businessFact.type}。`);
+      }
+    }
+    if (event.type === 'agentRuntime' && ['FAILED', 'INTERRUPTED'].includes(event.status)) {
+      const existingFailure = events.find((item) => item.type === 'agentRuntime' && ['FAILED', 'INTERRUPTED'].includes(item.status));
+      if (existingFailure) {
+        const sameFailure = ['provider', 'status', 'failureCode', 'protocolSha', 'implementationSha', 'requestSha', 'environmentSha', 'preconditionInputsSha', 'sessionId']
+          .every((field) => (existingFailure[field] || null) === (event[field] || null));
+        if (!sameFailure) throw new Error('AGENT_RESULT_INVALID: Agent Runtime 已有不同的失败终态。');
+        const finalized = finalize(caseDir, {
+          platform: options.platform,
+          executionId,
+          status: 'BLOCKED',
+          failureCode: existingFailure.failureCode,
+          reason: existingFailure.reason || `Agent runtime ${existingFailure.status.toLowerCase()}.`,
+          allowIncompletePreconditions: true,
+          allowAlreadyFinalized: true,
+        });
+        console.log(JSON.stringify({ executionId, eventType: event.type, alreadyRecorded: true, timeline: timelinePath, finalized }, null, 2));
+        process.exit(0);
+      }
+    }
+    const preconditionOrderReady = event.type === 'agentRuntime'
+      ? { ok: true }
+      : preconditionOrderReadiness(caseJson, events, event);
+    if (!preconditionOrderReady.ok) {
+      throw new Error(`${preconditionOrderReady.failureCode}: ${preconditionOrderReady.reason}`);
+    }
+    const preconditionFlowReady = preconditionFlowReadiness(caseJson, executionState, events, event);
+    if (!preconditionFlowReady.ok) {
+      throw new Error(`${preconditionFlowReady.failureCode}: ${preconditionFlowReady.reason}`);
+    }
+    const stepOrderReady = stepOrderReadiness(caseJson, events, event);
+    if (!stepOrderReady.ok) {
+      throw new Error(`${stepOrderReady.failureCode}: ${stepOrderReady.reason}`);
+    }
+    const assertionEvidenceReady = assertionEvidenceReadiness(events, event, execDir);
+    if (!assertionEvidenceReady.ok) {
+      throw new Error(`${assertionEvidenceReady.failureCode}: ${assertionEvidenceReady.reason}`);
+    }
+    if (allowActionResult && event.type !== 'actionResult') {
+      throw new Error('ACTION_RESULT_SOURCE_REQUIRED: --record-action-json 只接受 actionResult。');
+    }
+    if (allowObservation && event.type !== 'observation') {
+      throw new Error('OBSERVATION_SOURCE_REQUIRED: --record-observation-json 只接受 observation。');
+    }
+    const actionSourceReady = actionResultSourceReadiness(event, allowActionResult);
+    if (!actionSourceReady.ok) {
+      throw new Error(`${actionSourceReady.failureCode}: ${actionSourceReady.reason}`);
+    }
+    const observationSourceReady = observationSourceReadiness(event, allowObservation);
+    if (!observationSourceReady.ok) {
+      throw new Error(`${observationSourceReady.failureCode}: ${observationSourceReady.reason}`);
+    }
+    validateArtifactFilesExist(execDir, event);
+    if (allowObservation && event.type === 'observation' && !screenshotMetadata(event)) {
+      event = enrichObservationScreenshot(event, execDir);
+    }
+    const preparedPerception = preparePerceptionEvidence(events, event, execDir);
+    event = preparedPerception.event;
+    if (preparedPerception.evidenceCheck) validateEvent(preparedPerception.evidenceCheck);
+    const budget = executionState?.budget || DEFAULT_BUDGET;
+    const violation = budgetViolation(events, event, budget, executionState?.startedAt);
+    if (violation) {
+      const finalViolation = event.scope === PRECONDITION_FLOW_SCOPE
+        ? { failureCode: 'PRECONDITION_FLOW_BUDGET_EXCEEDED', reason: violation.reason }
+        : violation;
+      const budgetEvent = {
+        time: nowIso(),
+        type: 'budgetExceeded',
+        source: 'run-case.js',
+        status: 'BLOCKED',
+        failureCode: finalViolation.failureCode,
+        reason: finalViolation.reason,
+      };
+      appendJsonl(timelinePath, budgetEvent);
+      if (event.scope === PRECONDITION_FLOW_SCOPE) {
+        appendPreconditionFlowFailure(timelinePath, event, { flowStatus: 'BLOCKED', ...finalViolation });
+      }
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: finalViolation.failureCode,
+        reason: finalViolation.reason,
+        allowAlreadyFinalized: true,
+      });
+      console.error(JSON.stringify({ executionId, budgetExceeded: true, ...finalViolation, finalized }, null, 2));
+      process.exit(3);
+    }
+    appendJsonl(timelinePath, event);
+    if (preparedPerception.evidenceCheck) appendJsonl(timelinePath, preparedPerception.evidenceCheck);
+    const flowTechnicalFailure = preconditionFlowTechnicalFailure(event);
+    const agentRuntimeFailure = event.type === 'agentRuntime' && ['FAILED', 'INTERRUPTED'].includes(event.status)
+      ? { failureCode: event.failureCode, reason: event.reason || `Agent runtime ${event.status.toLowerCase()}.` }
+      : null;
+    const terminalPrecondition = preconditionTerminalOptions(event);
+    const evidenceTechnicalFailure = event.failureCode === 'OBSERVATION_ARTIFACT_INVALID'
+      ? { failureCode: 'OBSERVATION_ARTIFACT_INVALID', reason: event.reason || '截图产物无法解码。' }
+      : preparedPerception.evidenceCheck?.verdict === 'SOURCE_INVALID'
+        ? { failureCode: 'OBSERVATION_ARTIFACT_INVALID', reason: preparedPerception.evidenceCheck.reason }
+        : preparedPerception.evidenceCheck?.verdict === 'SOURCE_CHANGED'
+          ? { failureCode: 'OBSERVATION_ARTIFACT_CHANGED', reason: preparedPerception.evidenceCheck.reason }
+          : null;
+    if (agentRuntimeFailure) {
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: agentRuntimeFailure.failureCode,
+        reason: agentRuntimeFailure.reason,
+        allowIncompletePreconditions: true,
+      });
+      console.log(JSON.stringify({ executionId, eventType: event.type, timeline: path.join(execDir, 'timeline.jsonl'), agentRuntimeFailure, finalized }, null, 2));
+    } else if (flowTechnicalFailure) {
+      appendPreconditionFlowFailure(timelinePath, event, flowTechnicalFailure);
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: flowTechnicalFailure.failureCode,
+        reason: flowTechnicalFailure.reason,
+      });
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), flowTechnicalFailure, finalized }, null, 2));
+    } else if (evidenceTechnicalFailure) {
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        status: 'BLOCKED',
+        failureCode: evidenceTechnicalFailure.failureCode,
+        failedStep: eventStepId(event) || null,
+        reason: evidenceTechnicalFailure.reason,
+      });
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), evidenceTechnicalFailure, finalized }, null, 2));
+    } else if (terminalPrecondition) {
+      const finalized = finalize(caseDir, {
+        platform: options.platform,
+        executionId,
+        ...terminalPrecondition,
+      });
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), paceHint: paceHint(events, event), finalized }, null, 2));
+    } else {
+      const nextAction = event.type === 'perception' && event.qualityClaim
+        ? (event.retryOf ? 'finalize-visual-input-unverifiable-or-continue' : 'retry-visual-input')
+        : undefined;
+      const nextWork = deriveNextWork({ caseJson, execution: readExecutionState(execDir), events: readJsonl(timelinePath), execDir });
+      console.log(JSON.stringify({ executionId, eventType: event.type || 'unknown', timeline: path.join(execDir, 'timeline.jsonl'), paceHint: paceHint(events, event), nextAction, nextWork }, null, 2));
+    }
+  } else if (command === 'finalize') {
+    console.log(JSON.stringify(finalize(caseDir, options), null, 2));
+  } else {
+    usage();
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
+
+function requiredEnvironmentFields(state) {
+  const platform = normalizePlatform(state?.environment?.platform);
+  if (platform === 'ios') return ['platform', 'device', 'appId'];
+  return ['platform', 'device', 'appId', 'entry'];
+}

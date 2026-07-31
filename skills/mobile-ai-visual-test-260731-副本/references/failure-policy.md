@@ -1,0 +1,111 @@
+# 失败策略
+
+> 负责：状态、failureCode、结果归一、预算和停止规则。
+
+## 状态
+
+| 状态 | 含义 |
+| --- | --- |
+| `PASS` | 所有业务步骤都有当前 execution 内的通过证据 |
+| `FAIL` | 明确不符合预期，或请求 PASS 但证据不足 |
+| `BLOCKED` | 环境、工具、前置条件、业务上下文或安全限制导致无法继续 |
+| `UNKNOWN` | 历史兼容状态；正式执行应尽量归一为 FAIL 或 BLOCKED |
+
+## failureCode
+
+| failureCode | 状态 | 含义 |
+| --- | --- | --- |
+| `ASSERTION_FAILED` | `FAIL` | 明确断言不通过 |
+| `ASSERTION_UNKNOWN` | `FAIL` | 不能证明业务步骤通过 |
+| `ASSERTION_EVIDENCE_REQUIRED` | `BLOCKED` | PASS 断言缺合法 observation 证据 |
+| `STEP_ORDER_VIOLATION` | `BLOCKED` | 跳序、回补或步骤绑定非法 |
+| `ACTION_OUTSIDE_CASE_INTENT` | `BLOCKED` | ACT 或 actionResult 缺少当前冻结步骤授权，或授权步骤/哈希不匹配 |
+| `ACTION_CONTRACT_INVALID` | `BLOCKED` | 同一观察下的业务步骤或 Flow 动作参数连续两次不符合当前平台/作用域契约；首次拒绝会返回同类 DecisionRequest 供修正 |
+| `PRECONDITION_REQUIRED` | `BLOCKED` | 进入步骤前缺前置条件事实 |
+| `PRECONDITION_FAILED` | `BLOCKED` | 前置条件明确不满足 |
+| `PRECONDITION_UNKNOWN` | `BLOCKED` | 前置条件无法判断 |
+| `PRECONDITION_UNSUPPORTED` | `BLOCKED` | 前置条件不支持自动处理 |
+| `PRECONDITION_FLOW_AMBIGUOUS` | `BLOCKED` | 当前平台存在严格同名 Flow |
+| `PRECONDITION_FLOW_INVALID` | `BLOCKED` | Flow 资产或事件序列非法 |
+| `PRECONDITION_FLOW_CHANGED` | `BLOCKED` | preflight 后 Flow 或计划发生变化 |
+| `PRECONDITION_FLOW_START_MISMATCH` | `BLOCKED` | 当前页面不满足 Flow 固定起点 |
+| `PRECONDITION_FLOW_OBSERVATION_FAILED` | `BLOCKED` | Flow 观察未获得截图、布局或有效前台事实 |
+| `PRECONDITION_FLOW_ACTION_MISMATCH` | `BLOCKED` | 实际动作与 execution 中冻结的 Flow action 不一致 |
+| `PRECONDITION_FLOW_ACTION_FAILED` | `BLOCKED` | Flow 动作执行失败 |
+| `PRECONDITION_FLOW_TARGET_NOT_REACHED` | `BLOCKED` | Flow 结束后未达到固定终点 |
+| `PRECONDITION_FLOW_UNSAFE` | `BLOCKED` | Flow 包含不安全动作 |
+| `PRECONDITION_FLOW_BUDGET_EXCEEDED` | `BLOCKED` | 前置条件 Flow 动作超预算 |
+| `ENV_UNCONFIRMED` | `BLOCKED` | 环境未确认 |
+| `ENVIRONMENT_BINDING_MISMATCH` | `BLOCKED` | 正式调用显式环境与 execution 冻结环境不一致 |
+| `ACTIVE_EXECUTION_ENVIRONMENT_LOCKED` | `BLOCKED` | 当前 case 存在未结束 execution，不能修改其环境配置 |
+| `EXECUTION_ENVIRONMENT_UNBOUND` | `BLOCKED` | execution 缺少不可变环境快照或环境哈希 |
+| `EXECUTION_ENVIRONMENT_CHANGED` | `BLOCKED` | execution 环境快照与环境哈希不一致 |
+| `PROBE_DEVICE_NOT_FOUND` | `BLOCKED` | 已确认设备不在当前 probe 设备列表中 |
+| `ENVIRONMENT_OPTION_OWNERSHIP` | `BLOCKED` | 平台专属环境参数被写入错误平台 |
+| `PRECONDITION_INPUT_INVALID` | `BLOCKED` | 执行前输入与前置条件 resolution 不匹配 |
+| `PRECONDITION_INPUT_CHANGED` | `BLOCKED` | execution 冻结的前置输入与哈希不一致 |
+| `ENV_UNAVAILABLE` | `BLOCKED` | 平台或设备不可用 |
+| `ENV_AMBIGUOUS` | `BLOCKED` | 设备、App 或入口歧义 |
+| `PLATFORM_UNIMPLEMENTED` | `BLOCKED` | 平台能力未实现 |
+| `AGENT_PROTOCOL_MISMATCH` | `BLOCKED` | 子 Agent 加载的 SkillContract 与请求不一致 |
+| `AGENT_RUNTIME_UNAVAILABLE` | `BLOCKED` | Agent 平台无法创建独立 case 会话 |
+| `AGENT_RUNTIME_INTERRUPTED` | `BLOCKED` | 独立 case Agent 会话异常中断 |
+| `AGENT_RUNTIME_RELEASE_FAILED` | `BLOCKED` | Host 连续三次无法确认独立 case 会话已释放，批次不得继续 |
+| `AGENT_RESULT_INVALID` | `BLOCKED` | Agent 返回结果与 execution/result 事实不一致 |
+| `ACTION_EFFECT_MISMATCH` | `BLOCKED` | 平台已执行动作，但可读取的最终输入值与 `replace` 目标不一致 |
+| `TOOL_ERROR` | `BLOCKED` | 工具或底层命令异常；必须有失败 observation、actionResult 或框架技术事件支持 |
+| `ACTION_RESULT_SOURCE_REQUIRED` | `BLOCKED` | actionResult 来源非法 |
+| `OBSERVATION_SOURCE_REQUIRED` | `BLOCKED` | observation 来源非法 |
+| `OBSERVATION_ARTIFACT_INVALID` | `BLOCKED` | 截图文件缺失有效 PNG 结构或无法解码 |
+| `OBSERVATION_ARTIFACT_CHANGED` | `BLOCKED` | 截图当前 SHA-256 与 observation 采集时记录不一致 |
+| `VISUAL_INPUT_UNVERIFIABLE` | `BLOCKED` | 原图有效，但 Agent 图片输入经过一次结构化复核重试后仍无法可靠判断 |
+| `CASE_RESTART_FAILED` | `BLOCKED` | 用例冷启动失败或不可验证 |
+| `ACTION_TARGET_NOT_FOUND` | `FAIL`/`BLOCKED` | 业务步骤目标不可定位；上下文丢失时阻塞 |
+| `PAGE_LOAD_BLOCKED` | `FAIL`/`BLOCKED` | 业务页面加载失败或长期无目标状态 |
+| `APP_CONTEXT_LOST` | `BLOCKED` | 恢复前台后业务上下文不可判断 |
+| `APP_LEFT_FOREGROUND` | `BLOCKED` | 多次离开目标 App |
+| `UNKNOWN_POPUP` | `BLOCKED` | 未知弹窗无法安全处理 |
+| `GLOBAL_RULE_FAILED` | `FAIL`/`BLOCKED`/`UNKNOWN` | 已定义全局规则在 `maxAttempts` 内仍未处理完成，结果由规则 `onFailure` 决定 |
+| `CASE_TIMEOUT` | `BLOCKED` | 单 case 超时 |
+| `EXECUTION_BUDGET_EXCEEDED` | `BLOCKED` | 普通 observation、action、wait 等预算超限 |
+| `EVENT_SOURCE_REQUIRED` | `BLOCKED` | 公开入口尝试写框架所有事件 |
+| `CASE_STEPS_REQUIRED` | `BLOCKED` | 用例未解析出任何可执行步骤 |
+| `CASE_INPUT_VALUE_REQUIRED` | `BLOCKED` | 输入步骤无法从原文确定目标文本，必须在执行前修正用例 |
+| `CASE_GLOBAL_RULE_INVALID` | `BLOCKED` | 全局规则表格或结构不符合 guard 契约 |
+| `EXECUTION_RECOVERY_CONTRACT_CHANGED` | `BLOCKED` | 半提交 draft 与当前 execution 或 case contract 不一致，禁止自动恢复 |
+| `EXECUTION_COMPLETION_INVALID` | `BLOCKED` | completion 绑定或已发布产物哈希在读取时不一致 |
+| `EXECUTION_ORPHANED` | `BLOCKED` | execution 已超过 deadline、未初始化 Runtime 且只有启动事实，由框架确定性收尾 |
+
+## 证据和顺序
+
+- 所有业务步骤：只有 `assertion PASS` 才是步骤通过证据；发生业务动作时，`ok=true` 和动作后的同步骤 observation 是必要过程事实，但不能单独完成步骤。
+- 每个 `assertion PASS` 都必须引用同一步骤最新 observation 的截图，并且此前有引用同一截图、包含 `reason` 的 `perception status=USABLE`。
+- 页面已满足当前步骤时，也要先 observe，再写带证据的 PASS。
+- observation `label` 只用于定位和展示，不能作为业务 assertion 的证据；布局和日志只能补充截图证据。
+- 最新 perception 为 `UNUSABLE`、`UNCERTAIN`，或最新 observation 之后又执行了动作时，禁止请求 PASS；必须重新观察和判断，或按现有失败策略收尾。
+- 新 observation 自动记录截图 SHA-256、尺寸和 PNG 解码状态；perception 和 assertion 使用截图前必须确认当前文件仍对应采集时 SHA-256。
+- 黑屏、黑块、花屏或预览解码异常首先属于 Agent 图片输入声明。Agent 必须写引用最新截图的结构化 `qualityClaim`，框架生成 `evidenceCheck` 后才能决定重试或收尾；仅凭自然语言 reason 或一次预览异常不得使用 `TOOL_ERROR`。
+- 原始像素未命中声明或当前规则无法验证时，请求的 `UNUSABLE` 会归一为 `UNCERTAIN`。`CLAIM_PRESENT_IN_SOURCE` 只证明原图存在相应像素特征，不自动证明截图损坏。
+- `VISUAL_INPUT_UNVERIFIABLE` 需要同一步骤两个不同 `attemptId` 的 `evidenceCheck`；第二次必须由 `retry_visual_input` decision 触发并用 `retryOf` 绑定首次检查。重复提交同一个 perception 不算重试。
+- `launchApp`、`restartApp`、`wait`、单独的 observation/perception/decision/rule，以及任何前置条件 Flow 事实都不能单独作为业务步骤通过证据。
+- 第一个步骤事实属于 `case.json.steps[0]`；前一步有通过证据后才能进入下一步；进入后续步骤后不能回补。
+
+请求 PASS 但业务步骤缺证据时，框架归一为：
+
+```json
+{"status":"FAIL","requestedStatus":"PASS","failureCode":"ASSERTION_UNKNOWN"}
+```
+
+## 冷启动、预算和停止
+
+- 每个正式 execution 都必须完成并验证 `restartApp`；任一平台冷启动失败都为 `BLOCKED/CASE_RESTART_FAILED`。
+- `completion.json` 的绑定或 result/metrics/validation 哈希在读取时不一致，报告只展示 `BLOCKED/EXECUTION_COMPLETION_INVALID`，不发布原业务结论。
+- 启动显示策略为 `required` 时，方向不可读、无法归一或 App 启动后方向不符合要求，都属于 `BLOCKED/CASE_RESTART_FAILED`；失败阶段保存在启动级 `restartApp actionResult`，不新增业务步骤。
+- 启动级 restartApp 使用 `scope=execution-bootstrap`，允许早于 Runtime BOUND；所有前置条件和业务步骤事实必须晚于 BOUND。
+- 单 case 默认 30 分钟；超时为 `CASE_TIMEOUT`，其他普通预算超限为 `EXECUTION_BUDGET_EXCEEDED`。
+- 前置条件 Flow 每个条件默认最多 5 个动作，单 case 默认最多 12 个；超限为 `PRECONDITION_FLOW_BUDGET_EXCEEDED`。
+- Flow observation 失败仍写入 timeline 供审计，但不能作为 STARTED、STEP_COMPLETED、COMPLETED 或 already-satisfied 的证据。
+- Flow observation/action 的确定性技术失败由框架写入 Flow 和前置条件阻塞终态并立即收尾。
+- 明确断言失败、前置条件终态、环境不可用、工具错误、未知弹窗、动作超出当前步骤授权或预算超限时立即停止当前 case；业务步骤或 Flow 动作参数首次不合法时不触发设备并允许一次重新决策，第二次仍不合法才以 `ACTION_CONTRACT_INVALID` 停止；用例步骤明确要求的副作用不因语义敏感而阻塞。
+- Agent Runtime 在 execution 收尾前失败必须有 `agentRuntime FAILED/INTERRUPTED` 框架事实；result 已锁定后的释放失败记录在 runtime、validation 和 batch，不追加 finalized timeline。它不归类为设备 `TOOL_ERROR`，也不自动重试业务动作。
+- 没有 Runtime 的过期孤立 execution 只能由 `executionRecovery BLOCKED/EXECUTION_ORPHANED` 支持收尾，不得伪装成 Agent Runtime 失败。
