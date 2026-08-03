@@ -34,8 +34,10 @@ function candidateFromSupplement(entry = {}) {
 }
 
 function reviewContainsCandidate(review, suggestion) {
-  const sourceSuggestionId = suggestion.sourceSuggestionId || suggestion.suggestionId;
-  if ((review.createdSuggestionIds || []).includes(sourceSuggestionId) || (review.affectedSuggestionIds || []).includes(sourceSuggestionId)) return true;
+  const suggestionIds = new Set([suggestion.suggestionId, suggestion.sourceSuggestionId].filter(Boolean));
+  for (const suggestionId of suggestionIds) {
+    if ((review.createdSuggestionIds || []).includes(suggestionId) || (review.affectedSuggestionIds || []).includes(suggestionId)) return true;
+  }
   const candidateHash = suggestion.candidateHash || (suggestion.candidate ? hashObject(suggestion.candidate) : null);
   if (!candidateHash) return false;
   for (const entry of review.review?.supplemented || []) {

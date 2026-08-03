@@ -31,19 +31,22 @@ main(() => {
   const restoreFile = path.join(scanDir, 'evidence', 'restores', `${restoreId}.json`);
   const restore = readJson(restoreFile);
   if (restore.contextId !== contextId || restore.reachableStateId !== attempt.fromReachableStateId) fail('Restore does not belong to the attempt source state', 'RESTORE_CHECKPOINT_INVALID');
-  if (restore.status !== 'REVIEW_REQUIRED') fail('Restore is not awaiting review', 'RESTORE_CHECKPOINT_INVALID');
+  if (!['REVIEW_REQUIRED', 'FAILED'].includes(restore.status)) fail('Restore is not awaiting review or already failed', 'RESTORE_CHECKPOINT_INVALID');
 
   const closedAt = now();
-  restore.status = 'FAILED';
-  restore.reasonCode = reasonCode;
-  restore.finishedAt = closedAt;
-  restore.updatedAt = closedAt;
+  if (restore.status === 'REVIEW_REQUIRED') {
+    restore.status = 'FAILED';
+    restore.reasonCode = reasonCode;
+    restore.finishedAt = closedAt;
+    restore.updatedAt = closedAt;
+  }
+  const finalReasonCode = restore.reasonCode || reasonCode;
 
   const restoreResults = (attempt.restoreResults || []).map(item => item.restoreId === restoreId ? restore : item);
   if (!restoreResults.some(item => item.restoreId === restoreId)) restoreResults.push(restore);
   attempt.restoreResults = restoreResults;
   attempt.status = 'FAILED';
-  attempt.reasonCode = reasonCode;
+  attempt.reasonCode = finalReasonCode;
   attempt.activeRestoreId = null;
   attempt.updatedAt = closedAt;
 
@@ -56,7 +59,7 @@ main(() => {
   const item = frontier.items.find(entry => entry.id === attempt.frontierId);
   if (item?.status === 'CLAIMED' && item.claimedAttemptId === attemptId) {
     item.status = Number(item.attempts || 0) < 3 ? 'RETRYABLE' : 'FAILED';
-    item.reasonCode = reasonCode;
+    item.reasonCode = finalReasonCode;
     item.claimToken = null;
     item.claimedAttemptId = null;
     item.lastAttemptId = attemptId;
@@ -70,7 +73,7 @@ main(() => {
     navigationExecution = readJson(navigationFile, null);
     if (navigationExecution && ['PLANNED', 'IN_PROGRESS'].includes(navigationExecution.status)) {
       navigationExecution.status = 'CANCELLED';
-      navigationExecution.reasonCode = reasonCode;
+      navigationExecution.reasonCode = finalReasonCode;
       navigationExecution.finishedAt = closedAt;
       ops.push({ path: `evidence/navigations/${attempt.navigationExecutionId}.json`, op: 'REPLACE', value: navigationExecution });
     }
@@ -80,7 +83,7 @@ main(() => {
     contextId,
     attemptId,
     restoreId,
-    reasonCode,
+    reasonCode: finalReasonCode,
     attempt,
     frontierItem: item || null,
     navigationExecution
