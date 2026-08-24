@@ -9,6 +9,7 @@ const appium = require('./appium-client');
 const {
   buildTarget,
   commandExists,
+  listAvailableRealDevices,
   listBootedSimulators,
   parseArgs,
   run,
@@ -67,10 +68,10 @@ async function runProbe(argv) {
   const parsed = parseArgs(argv);
   validateRestArgs(parsed.rest, [], 'iOS probe');
   const target = buildTarget(parsed);
-  const booted = fakeEnabled()
-    ? [{ name: 'Fake iPhone', udid: target.device || 'FAKE-IOS-SIMULATOR', state: 'Booted', deviceType: 'simulator' }]
-    : listBootedSimulators();
-  if (!target.device && booted.length === 1) target.device = booted[0].udid;
+  const devices = fakeEnabled()
+    ? [{ name: 'Fake iPhone', udid: target.device || 'FAKE-IOS-SIMULATOR', state: 'Available', deviceType: target.deviceType }]
+    : [...listBootedSimulators(), ...listAvailableRealDevices()];
+  if (!target.device && devices.length === 1) target.device = devices[0].udid;
   target.deviceType = target.deviceType || 'simulator';
   const xcode = fakeEnabled() || commandExists('xcodebuild');
   const simctl = fakeEnabled() || commandExists('xcrun');
@@ -107,14 +108,14 @@ async function runProbe(argv) {
     try {
       await appium.status(target.appiumServer, 3000);
       appiumServer = true;
-      wda = true;
+      wda = false;
     } catch {
       appiumServer = false;
       wda = false;
     }
   }
 
-  const hasTarget = !!target.device && (target.deviceType === 'simulator' ? simctl : true);
+  const hasTarget = !!target.device && devices.some((item) => item.udid === target.device && item.deviceType === target.deviceType);
   const implemented = xcode && simctl && appiumCli && xcuitestDriver && hasTarget;
   const logsImplemented = implemented && target.deviceType === 'simulator';
   const diagnostics = [];
@@ -135,10 +136,12 @@ async function runProbe(argv) {
   }
   if (!target.device) {
     addDiagnostic('iosDeviceMissing', 'ERROR', '未发现可用 iOS 设备', '启动一个 iOS 模拟器，或为真机传入 --device <udid> --device-type realDevice；详见 references/installation.md#ios-真机', 'xcrun simctl list devices booted');
+  } else if (!hasTarget) {
+    addDiagnostic('iosDeviceUnavailable', 'ERROR', '指定的 iOS 设备当前不可用', '确认设备已解锁、通过 USB 连接并启用 Developer Mode；模拟器需处于 Booted 状态', 'xcrun xcdevice list --timeout 10');
   }
   if (target.deviceType === 'realDevice') {
-    if (!target.xcodeOrgId || !target.xcodeSigningId || !target.updatedWDABundleId) {
-      addDiagnostic('iosRealDeviceSigningIncomplete', 'WARN', 'iOS 真机 WDA 签名参数不完整', '正式真机执行前请通过 update-env.js 固化 Team ID、Signing ID 和 WDA bundle id；详见 references/installation.md#ios-真机', 'scripts/update-env.js <case-dir> --platform ios --device-type realDevice ...');
+    if (!fakeEnabled() && (!target.xcodeOrgId || !target.xcodeSigningId || !target.updatedWDABundleId)) {
+      addDiagnostic('iosRealDeviceSigningIncomplete', 'ERROR', 'iOS 真机 WDA 签名参数不完整', '正式真机执行前请在环境确认 binding 中固定 Team ID、Signing ID 和 WDA bundle id；详见 references/installation.md#ios-真机', 'scripts/environment.js confirm --binding-json <json> ...');
     }
     if (!logsImplemented) {
       addDiagnostic('iosRealDeviceLogsUnavailable', 'WARN', 'iOS 真机日志暂不作为可用能力', '这是当前适配限制，不影响截图、控件树和动作能力', 'scripts/probe-env.sh --platform ios --device <udid> --device-type realDevice');
@@ -148,15 +151,15 @@ async function runProbe(argv) {
     addDiagnostic('iosAppiumServerNotReady', 'WARN', 'Appium server 当前不可连接', 'prepare-env 会尝试启动 Appium server；也可以手动执行 appium --address 127.0.0.1 --port 4723', 'curl http://127.0.0.1:4723/status');
   }
   if (appiumServer && !wda) {
-    addDiagnostic('iosWdaNotReady', 'WARN', 'WDA 当前不可确认', 'prepare-env 会创建 Appium session 验证 WDA；真机首次运行可能需要信任开发者证书', 'scripts/prepare-env.sh --case-dir <case-dir> --platform ios');
+    addDiagnostic('iosWdaNotReady', 'WARN', 'WDA 当前不可确认', 'prepare-env 会创建 Appium session 验证 WDA；真机首次运行可能需要信任开发者证书', 'scripts/prepare-env.sh --platform ios');
   }
   writeJson({
     schemaVersion: 1,
     type: 'environmentProbe',
     platform: 'ios',
     device: target.device || null,
-    devices: booted.map((item) => ({ id: item.udid, serial: item.udid, name: item.name || item.udid })),
-    targets: booted.map((item) => item.udid),
+    devices: devices.map((item) => ({ id: item.udid, serial: item.udid, name: item.name || item.udid, deviceType: item.deviceType })),
+    targets: devices.map((item) => item.udid),
     ready: !diagnostics.some((item) => item.level === 'ERROR'),
     diagnostics,
     capabilities: {

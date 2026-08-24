@@ -1,31 +1,20 @@
 #!/usr/bin/env node
 'use strict';
 
+const { HISTORICAL_FAILURE_CATALOG } = require('./historical-failure-catalog');
+
 const FAILURE_CATALOG = Object.freeze({
-  ASSERTION_FAILED: { status: 'FAIL', label: '断言不通过' },
-  ASSERTION_UNKNOWN: { status: 'FAIL', label: '断言证据不足' },
-  ASSERTION_EVIDENCE_REQUIRED: { status: 'BLOCKED', label: '断言缺少观察证据' },
-  STEP_ORDER_VIOLATION: { status: 'BLOCKED', label: '步骤顺序违规' },
-  ACTION_OUTSIDE_CASE_INTENT: { status: 'BLOCKED', label: '动作超出当前用例步骤授权' },
   ACTION_CONTRACT_INVALID: { status: 'BLOCKED', label: '动作参数不符合执行契约' },
-  GLOBAL_RULE_FAILED: { status: 'CONTEXTUAL', label: '全局规则处理失败' },
   ACTION_EFFECT_MISMATCH: { status: 'BLOCKED', label: '动作执行结果与请求不一致' },
-  PRECONDITION_REQUIRED: { status: 'BLOCKED', label: '需要先处理前置条件' },
-  PRECONDITION_FAILED: { status: 'BLOCKED', label: '前置条件不满足' },
-  PRECONDITION_NOT_MET: { status: 'BLOCKED', label: '前置条件不满足' },
-  PRECONDITION_UNMET: { status: 'BLOCKED', label: '前置条件未满足' },
-  PRECONDITION_UNKNOWN: { status: 'BLOCKED', label: '前置条件无法确认' },
-  PRECONDITION_UNSUPPORTED: { status: 'BLOCKED', label: '前置条件不支持自动处理' },
-  PRECONDITION_FLOW_AMBIGUOUS: { status: 'BLOCKED', label: '前置条件 Flow 名称冲突' },
-  PRECONDITION_FLOW_INVALID: { status: 'BLOCKED', label: '前置条件 Flow 配置无效' },
-  PRECONDITION_FLOW_CHANGED: { status: 'BLOCKED', label: '前置条件 Flow 已变更' },
-  PRECONDITION_FLOW_START_MISMATCH: { status: 'BLOCKED', label: '当前页面不符合 Flow 起点' },
-  PRECONDITION_FLOW_OBSERVATION_FAILED: { status: 'BLOCKED', label: '前置条件 Flow 观察失败' },
-  PRECONDITION_FLOW_ACTION_MISMATCH: { status: 'BLOCKED', label: '前置条件 Flow 动作不匹配' },
-  PRECONDITION_FLOW_ACTION_FAILED: { status: 'BLOCKED', label: '前置条件 Flow 操作失败' },
-  PRECONDITION_FLOW_TARGET_NOT_REACHED: { status: 'BLOCKED', label: '前置条件 Flow 未到达终点' },
-  PRECONDITION_FLOW_UNSAFE: { status: 'BLOCKED', label: '前置条件 Flow 存在风险' },
-  PRECONDITION_FLOW_BUDGET_EXCEEDED: { status: 'BLOCKED', label: '前置条件 Flow 超出预算' },
+  CASE_TIME_LIMIT_REACHED: { status: 'BLOCKED', label: '已达到单用例时限' },
+  DEVICE_OBSERVATION_OUTCOME_UNAVAILABLE: { status: 'BLOCKED', label: '观察事务无法在时限后恢复' },
+  CURRENT_OBSERVATION_REQUIRED: { status: 'BLOCKED', label: '缺少最新现场证据' },
+  BATCH_RECOVERY_COMMIT_INCOMPLETE: { status: 'BLOCKED', label: '应用恢复事务未完整提交' },
+  KNOWLEDGE_SNAPSHOT_MISSING: { status: 'BLOCKED', label: '知识快照缺失' },
+  KNOWLEDGE_SNAPSHOT_CHANGED: { status: 'BLOCKED', label: '知识快照已变化' },
+  KNOWLEDGE_SNAPSHOT_INVALID: { status: 'BLOCKED', label: '知识快照无效' },
+  WARM_SESSION_PROBE_FAILED: { status: 'BLOCKED', label: '暖会话探测失败' },
+  WARM_SESSION_BINDING_MISMATCH: { status: 'BLOCKED', label: '暖会话设备绑定不一致' },
   ENV_UNCONFIRMED: { status: 'BLOCKED', label: '环境未确认' },
   ENVIRONMENT_BINDING_MISMATCH: { status: 'BLOCKED', label: '正式环境绑定不一致' },
   ENVIRONMENT_OPTION_OWNERSHIP: { status: 'BLOCKED', label: '环境参数不属于当前平台' },
@@ -50,17 +39,10 @@ const FAILURE_CATALOG = Object.freeze({
   OBSERVATION_ARTIFACT_INVALID: { status: 'BLOCKED', label: '截图产物无效' },
   OBSERVATION_ARTIFACT_CHANGED: { status: 'BLOCKED', label: '截图产物已变化' },
   VISUAL_INPUT_UNVERIFIABLE: { status: 'BLOCKED', label: '视觉输入无法可靠验证' },
-  CASE_RESTART_FAILED: { status: 'BLOCKED', label: '用例冷启动失败' },
-  CASE_TIMEOUT: { status: 'BLOCKED', label: '用例执行超时' },
-  EXECUTION_BUDGET_EXCEEDED: { status: 'BLOCKED', label: '执行预算超限' },
   APP_CONTEXT_LOST: { status: 'BLOCKED', label: '应用上下文丢失' },
   APP_LEFT_FOREGROUND: { status: 'BLOCKED', label: '应用离开前台' },
   UNKNOWN_POPUP: { status: 'BLOCKED', label: '未知弹窗阻塞' },
   CASE_CONTRACT_INVALID: { status: 'BLOCKED', label: '用例执行契约无效' },
-  CASE_INPUT_VALUE_REQUIRED: { status: 'BLOCKED', label: '输入步骤缺少目标文本' },
-  CASE_GLOBAL_RULE_INVALID: { status: 'BLOCKED', label: '全局规则配置无效' },
-  CASE_STEPS_REQUIRED: { status: 'BLOCKED', label: '用例缺少测试步骤' },
-  EXECUTION_RECOVERY_CONTRACT_CHANGED: { status: 'BLOCKED', label: '半提交恢复契约已变化' },
   EXECUTION_COMPLETION_INVALID: { status: 'BLOCKED', label: '完成态产物校验失败' },
   EXECUTION_ORPHANED: { status: 'BLOCKED', label: '遗留执行已确定性收尾' },
   ACTION_TARGET_NOT_FOUND: { status: 'CONTEXTUAL', label: '未找到操作目标' },
@@ -68,14 +50,14 @@ const FAILURE_CATALOG = Object.freeze({
 });
 
 function failureStatus(code, fallbackStatus) {
-  const configured = FAILURE_CATALOG[code]?.status;
+  const configured = (FAILURE_CATALOG[code] || HISTORICAL_FAILURE_CATALOG[code])?.status;
   if (!configured) return fallbackStatus;
   if (configured === 'CONTEXTUAL') return ['FAIL', 'BLOCKED', 'UNKNOWN'].includes(fallbackStatus) ? fallbackStatus : 'FAIL';
   return configured;
 }
 
 function failureLabel(code) {
-  return FAILURE_CATALOG[code]?.label || code || '';
+  return FAILURE_CATALOG[code]?.label || HISTORICAL_FAILURE_CATALOG[code]?.label || code || '';
 }
 
 module.exports = { FAILURE_CATALOG, failureLabel, failureStatus };

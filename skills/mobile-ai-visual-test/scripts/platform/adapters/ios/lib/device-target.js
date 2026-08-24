@@ -138,6 +138,23 @@ function listBootedSimulators() {
   return devices;
 }
 
+function listAvailableRealDevices() {
+  const result = run('xcrun', ['xcdevice', 'list', '--timeout', '10'], { timeout: 20000 });
+  if (!result.ok) return [];
+  try {
+    return JSON.parse(result.stdout)
+      .filter((item) => item.simulator === false && item.available === true && item.platform === 'com.apple.platform.iphoneos')
+      .map((item) => ({
+        name: item.name || item.identifier,
+        udid: item.identifier,
+        state: 'Available',
+        deviceType: 'realDevice',
+      }));
+  } catch {
+    return [];
+  }
+}
+
 function inferDeviceType(deviceType, device) {
   if (deviceType) return deviceType;
   if (!device) return 'simulator';
@@ -171,6 +188,7 @@ module.exports = {
   buildTarget,
   commandExists,
   inferDeviceType,
+  listAvailableRealDevices,
   listBootedSimulators,
   parseArgs,
   parseBoolean,

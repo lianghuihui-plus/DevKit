@@ -6,11 +6,15 @@ atoms_dir="$script_dir/atoms"
 
 type=""
 ms=""
+device=""
+app=""
 args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --type) type="${2:-}"; shift 2 ;;
     --ms) ms="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --device) device="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --app) app="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -19,8 +23,10 @@ normalize_action() {
   node -e '
 const event = JSON.parse(process.argv[1]);
 event.action = process.argv[2];
+event.device = { ...(event.device || {}), id: process.argv[3] || null };
+event.app = { ...(event.app || {}), appId: process.argv[4] || null };
 console.log(JSON.stringify(event, null, 2));
-' "$1" "$2"
+' "$1" "$2" "$device" "$app"
 }
 
 run_atom() {

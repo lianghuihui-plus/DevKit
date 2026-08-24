@@ -2,8 +2,12 @@
 'use strict';
 
 const path = require('path');
-const { caseRuntimeDir, readJson } = require('../common');
+const { readJson } = require('../lib/execution-lifecycle');
 const { environmentAdapterArgs, validateExecutionEnvironment } = require('../lib/execution-environment');
+
+function caseRuntimeDir(caseDir, platform) {
+  return path.join(caseDir, 'platforms', platform);
+}
 
 function usage() {
   console.error('Usage: resolve-execution-environment.js <args|validate> --case-dir <dir> --platform <platform> --execution-id <id> [--purpose <action|observe>] [--device <id>] [--app <id>] [--entry <id>]');

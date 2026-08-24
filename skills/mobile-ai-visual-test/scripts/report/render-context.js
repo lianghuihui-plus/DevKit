@@ -5,7 +5,7 @@ const path = require('path');
 const {
   normalizePlatform,
   rebuildCaseDerivedArtifacts,
-} = require('../common');
+} = require('./report-service');
 
 function usage() {
   console.error('Usage: render-context.js <case-dir> [--platform <platform>]');

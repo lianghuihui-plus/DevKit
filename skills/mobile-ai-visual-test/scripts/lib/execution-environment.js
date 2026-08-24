@@ -119,7 +119,7 @@ function environmentAdapterArgs(binding, purpose = 'observe') {
     if (value !== undefined && value !== null && String(value) !== '') args.push(flag, String(value));
   };
   add('--platform', binding.platform);
-  add('--device', binding.device);
+  add('--device', binding.device || binding.deviceId);
   add('--app', binding.appId || binding.bundleName);
   if (purpose === 'action') add('--entry', binding.entry || binding.abilityName);
   if (purpose === 'action' && binding.platform === 'harmony') {

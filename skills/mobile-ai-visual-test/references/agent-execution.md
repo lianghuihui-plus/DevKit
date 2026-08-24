@@ -1,0 +1,80 @@
+# Agent 用例执行
+
+Case Agent 只处理 request 绑定的一个 execution。业务决策由 Agent 完成，协议 bookkeeping 由 Facade 自动完成。
+
+## 启动
+
+1. 读取 `agent/request.json`、其 `agentContractPath` 指向的 `agent/contract.json`，以及冻结的 `source.snapshot.md`。
+2. 执行 `understand`，提交完整业务理解和至少一个检查点。原文格式不受限制，但理解产物必须能映射到冻结原文。
+3. 后续只使用 contract 暴露的 `inspect/step/mark-start/request-recovery/investigate/conclude`；不要调用实现中的底层模块。
+
+## 语义入口
+
+### understand
+
+提交 `understanding` 和 `checkpoints`。Agent 提供 sourceRefs、startConditions、requirements、uncertainties、检查点目标及 requirementRefs；框架生成 revision、turnId、planSha 和状态。
+
+只有业务理解、检查点目标/顺序、requirement 覆盖或整体策略发生实质变化时才再次调用。普通点击、观察和进度不产生新计划版本。
+
+### inspect
+
+采集一次现场并返回 `observationView`：原始截图尺寸、证据引用和控件树精简元素。PREPARE 用于理解和建立起点，BUSINESS 用于主动补充当前业务现场。
+
+观察成功不等于起点已确认，也不等于 requirement 满足。
+
+### step
+
+提交一个 Agent 决定的语义动作：
+
+- 有控件元素时优先使用最新 `observationView.elements[].ref` 作为 `targetRef`。
+- 视觉定位使用 `normalizedPoint`；滑动使用 `normalizedFrom/normalizedTo`，数值均相对原始截图处于 0..1。
+- 仍可在必要时使用 contract 允许的原始坐标字段作为兜底。
+
+框架自动解析原图坐标、生成 authorization/operationId/basisObservationRef、执行动作，并在默认 500ms 的页面缓冲后采集动作后观察。缓冲由 `MAVT_POST_ACTION_SETTLE_MS=0..5000` 调整，`wait` 动作不重复等待。一次成功 step 返回动作事实、新 `observationView` 和 `runtimeState`；Agent 直接基于新现场继续判断。
+
+实际路径与计划不同不是失败。需要多一步、少一步或不同路径时，继续选择动作；只有检查点语义变化时才修订计划。
+
+BUSINESS 操作和观察默认继承当前活动检查点。只有切换到另一个检查点时才显式提供 `checkpointRef`；该引用只建立证据归属，不限制动作数量或路径。
+
+### mark-start
+
+最新 PREPARE 现场确实满足当前理解的起点时显式调用。框架记录 `startEstablished` 并进入 BUSINESS；只做过观察但未调用 mark-start 时，业务 step 会被拒绝。
+
+若建立起点前进行了知识调查，mark-start 自动回到起点阶段完成确认。understanding 修订或受控 recovery 后，旧确认失效，必须重新 PREPARE 并 mark-start。
+
+### investigate
+
+查询模式提交 `query`；评估模式提交返回的 queryId、entryId、assessment 和 reason。知识库返回候选而非裁决，Agent 必须结合 App/平台/版本/页面/现象判断 `APPLICABLE | NOT_APPLICABLE | CONFLICTING | INSUFFICIENT`。
+
+当前直接证据支持 PASS 且没有异常时可不查询。FAIL、INCONCLUSIVE 和业务 BLOCKED 必须至少完成一次查询；零命中仍是有效调查。
+
+### request-recovery
+
+原文明示冷启动、App 意外退出、自动化会话失效或 Agent 判断必须受控重启时，只提交 `reason` 和可选 `triggerType`。原文明示场景使用 `SOURCE_REQUIRED_COLD_START`；框架自动绑定当前 execution、检查点及 sourceRef 或 observation，生成控制请求后停止当前 Agent；协调器恢复 App 后创建新的隔离 Agent继续同一 execution。
+
+### conclude
+
+提交 `verdict/summary/findings`，每个当前 requirement 恰好一个 finding。Agent 不提交 revision、planSha、verdictReview 结构、result identity、metrics 或 AgentResult；框架从当前 execution 自动绑定和生成。
+
+PASS 和 FAIL 前必须已经 `mark-start`。PASS 要求当前计划全部检查点都有执行证据；观察型检查点可复用已确认起点的观察，`requiredAction=true` 的检查点必须有动作和动作后观察。FAIL 已有充分当前负向证据时可以停止，未执行检查点如实保留，不要求为了形式完整继续操作。
+
+技术 BLOCKED 使用 `technicalFailureCode`。首次观察前发生的纯技术阻塞允许无当前 observation；其他需要复核的结论必须使用最后一次现场变化或 recovery 之后的当前观察。
+
+## 状态与恢复
+
+每个成功响应携带最新 `runtimeState`。不要在连续成功入口之间重复调用 `status`；只在重连、响应丢失、响应不确定或恢复时读取。
+
+- step、operation、turn 和知识查询草稿全部属于框架内部事务，由协调器在 `reconcile` 中恢复，Case Agent 不提交内部 ID 或恢复结构。
+- 动作结果不确定时框架不会重放动作；恢复器只提交冻结结果或补充观察，Agent 再根据恢复后的现场决定下一步。
+- `controlRequestPending=true` 时结束当前 Agent，不继续写入 execution。
+- Recovery 后 warm session generation 变化，旧现场不能授权新动作或支撑当前结论。
+
+入口返回结构化错误时，按 `fieldPath/expected/allowed` 修正同一语义请求。协议错误、恢复守卫和动作调用失败都不是产品 FAIL。
+
+## 执行边界
+
+- Agent 可为建立起点或完成用例自主退出登录、切换账号、返回、输入、发布或执行其他业务操作；框架不按动作关键词限制副作用。
+- App 冷启动只由批次 bootstrap 或受控 recovery 执行，Case Agent 不直接调用 restart。
+- 单用例 30 分钟后禁止新设备调用；框架将未发送动作取消，将缺少后置观察的 step 标记为未完整，并关闭全部草稿后允许知识调查和 conclude 收口。
+- 执行期间不向用户提问。歧义形成 INCONCLUSIVE，外部条件不足形成 BLOCKED；当前 case finalize 后批次继续。
+- 报告展示语义意图、动作、观察、检查点、知识和恢复事实，不记录隐藏思维链。

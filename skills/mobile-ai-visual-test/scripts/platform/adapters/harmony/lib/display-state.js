@@ -6,7 +6,7 @@ function parseDeviceList(text) {
   const devices = [];
   for (const line of String(text || '').split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (!trimmed || /^-+$/.test(trimmed) || /^Name\s+/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:-+\s*)+$/.test(trimmed) || /^Name\s+/i.test(trimmed)) continue;
     const parts = trimmed.split(/\s{2,}/).map((item) => item.trim()).filter(Boolean);
     if (parts.length < 4) continue;
     const deviceFormFactor = normalizeDeviceFormFactor(parts.slice(3).join(' '));

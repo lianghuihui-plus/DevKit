@@ -105,7 +105,7 @@ if (hasTarget && !logs) {
 }
 const ime = dependencies.find((item) => item && item.id === "mavtInputIme");
 if (hasTarget && ime && !ime.ok) {
-  diag("androidImeNotReady", "INFO", "MAVT Input IME 尚未准备", "执行 scripts/prepare-env.sh --case-dir <case-dir> --platform android 自动构建、安装并启用输入法", "scripts/prepare-env.sh --case-dir <case-dir> --platform android");
+  diag("androidImeNotReady", "INFO", "MAVT Input IME 尚未准备", "执行 scripts/prepare-env.sh --platform android 自动构建、安装并启用输入法", "scripts/prepare-env.sh --platform android");
 }
 console.log(JSON.stringify({
   schemaVersion: 1,

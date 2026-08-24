@@ -1,147 +1,76 @@
 # 执行流程
 
-> 本文件负责：端到端阶段顺序、阶段输入输出和批量闭环。
-> 事件 schema、动作参数和失败码分别见 `interfaces.md`、`action-schema.md`、`failure-policy.md`。
-
-## 目标
-
-每个 case 都必须完整重跑，并在当前 execution 内形成：
+## 批次流程
 
 ```text
-resolve -> parse -> environment -> preflight plan -> prepare -> start
-        -> Runtime Core -> isolated case Agent -> preconditions (optional Flow)
-        -> case steps (observe -> global rules -> business decision)
-        -> finalize -> validate result -> release Agent -> batch commit
+workspace -> import non-empty sources -> probe and confirm binding
+-> ENV_CONFIRMED -> stop and wait for an explicit execution instruction
+-> create SINGLE/BATCH execution request with ordered targets
+-> freeze target snapshots + role protocols + implementation
+-> batch init -> bootstrap App once
+-> reconcile -> start case -> isolated Agent session
+-> conclude -> commit -> next case on warm App state
+-> render reports
 ```
 
-Flow 只属于前置条件阶段，业务步骤阶段没有 Flow。
+环境确认和执行授权是两个独立人工动作。`environment.js confirm` 只写 `environment-confirmation.json`，不得创建 `runs/<batch>/batch.json`、bootstrap App 或推断用户想执行哪些用例。用户随后明确给出单用例或有序批量范围后，协调器才创建不可变的 `execution-request.json` 并进入执行。
 
-## 工作空间和输入
+## 无人值守规则
 
-- 当前目录就是工作空间根目录；只检查当前目录，不向上查找或自动切换。
-- 空目录可初始化 `workspace.json`、`cases/`、`flows/`、`index.html`。
-- 非空且不是合法工作空间时停止。
+执行请求固定 `interactionPolicy=UNATTENDED`。从创建请求到批次结束，协调器和 case Agent 都不得主动向用户提问、请求确认或进入等待用户状态：
 
-先解析目标，再刷新 Markdown 用例：
+- 用例表达不足或断言无法可靠判断：当前 case 输出 `INCONCLUSIVE`，提交后继续下一 case。
+- 缺少账号、验证码、权限或其他外部条件：当前 case 输出 `BLOCKED`，提交后继续下一 case。
+- App crash 或进程退出：按受控恢复策略自动处理；不能重放结果不确定的原动作。
+- 共享设备、绑定或暖会话不可恢复：自动停止整个批次，保留现场并输出停止原因，不询问用户如何处理。
+- 用户可从宿主侧主动终止任务；这不构成 Agent 请求交互，后续按磁盘状态 reconcile。
 
-```bash
-scripts/resolve-execution-targets.js <输入...> --cwd <workspace-cwd>
-scripts/parse-case.js <markdown-file> --cwd <workspace-cwd> [--refresh-from-input]
-```
+协调器按 `scripts/batch.js reconcile` 的客观动作推进：
 
-## 环境探测和确认
+- `BOOTSTRAP`：调用 `bootstrap`。
+- `START_CASE`：调用 `start`，使用返回的 request 创建独立 case Agent session。
+- `RESUME_CASE_START`：以 `case-start.draft.json` 幂等补齐同一 execution、Runtime、Agent request、batch 状态和稳定事件。
+- `RESUME_EXECUTION`：从 execution 磁盘产物恢复一个独立 session；不注入上一 session 的对话。
+- `RESUME_PHASE`：按 `phase.draft.json` 中冻结的 from/to/reason 补齐阶段事件，不能重新决定阶段迁移。
+- `CONCLUDE_TIME_LIMIT`：冻结新的设备调用，确定性取消或关闭 Agent 草稿，再记录时限与可能存在的操作后观察缺口并进入 CONCLUDE。
+- `RECOVER_APP`：消费 Case Agent 已冻结的控制请求，将返回的 `recoveryRequest` 原样交给 `batch.js recover`，成功后重新创建隔离 Agent继续同一 execution。
+- `RESUME_RECOVERY`：以冻结 request 重入 `recover`，不能重放未确认结果的普通动作。
+- `RESUME_FINALIZE`：以冻结 finalization draft 幂等完成收尾。
+- `CREATE_AGENT_RESULT`：execution 已 finalized 但 AgentResult 缺失时，由 framework 从冻结产物补齐交接结果。
+- `COMMIT_CASE`：调用 `commit`；先校验 AgentResult，再释放 Runtime，completion 和 batch state 写入成功后才进入下一 case。
+- `DEGRADED`、`BATCH_BLOCKED`、`BLOCKED`、`CORRUPTED`：自动停止批次，保留现场和产物并报告原因，不询问用户。
+- `BATCH_COMPLETE`：结束批次并刷新报告。
 
-```bash
-scripts/probe-env.sh --platform <harmony|android|ios>
-scripts/update-env.js <case-dir> --platform <platform> --device <device> --app <appId> --entry <entry> [--device-form-factor <form>] [--startup-orientation <portrait|preserve>] [--startup-orientation-enforcement <required|none>] [--startup-orientation-applies-to <forms>]
-```
+同一批次固定平台、设备、App 和入口。绑定变化必须结束当前批次并新建 batch。普通 case 间不重启 App；当前页面只是下一 case 的现场输入，不能继承上一 case 的业务结论。
 
-- 一个执行请求只做一次环境确认。
-- 用户确认可复用于本批次，但必须对每个 case 分别调用 `update-env.js`。
-- 用户确认和未命中 Flow 的业务前置条件，必须在无人值守执行开始前一次性收敛。
+Bootstrap、Case 启动、Recovery 和 Case 发布都优先收口已有草稿。Bootstrap 的适配器结果只获取一次，成功或失败都按稳定事件 ID 补齐审计事件。execution 已 finalized 后，Runtime release、completion 和 batch commit 只依赖本地冻结产物，不再因设备离线阻止发布；只有启动新 case 或恢复未完成 execution 前才探测设备暖会话。
 
-## 前置条件预检
+暖会话探测失败通过统一停批入口持久化 failureCode、reason、stoppedAt、当前 case/execution、暖会话代次和探测摘要，并写入稳定 `batchStopped` 事件。后续 reconcile 只返回已落盘的 `BATCH_BLOCKED`，不依赖首次探测响应恢复原因。
 
-```bash
-scripts/preflight-preconditions.js <case-dir...> --cwd <workspace-cwd> --platform <platform>
-```
+## 单用例流程
 
-预检不写 execution，而是为每个 case 生成带哈希的确定计划：
+1. `understand`：读取原文，提交 sourceRefs、requirements、uncertainties 和检查点；框架生成 understanding/plan revision 与 `planSha`。
+2. `inspect PREPARE`：取得当前截图、控件树精简元素和诊断资料，但不自动确认起点。
+3. `step PREPARE`：按需执行建立起点所需的状态调整；每个 step 自动采集动作后现场，不存在业务副作用门禁。
+4. `mark-start`：显式确认最新 PREPARE observation 满足当前 understanding，然后进入业务执行；理解修订或 recovery 后重新确认。
+5. `step BUSINESS`：围绕检查点选择一个语义动作，消费自动返回的新现场，再继续、修订 understanding/plan 或形成判断。
+6. `investigate`：疑似异常时复核原文与现场，查询知识并由 Agent 评估候选适用性。
+7. `conclude`：为全部 requirement 提交语义 finding；框架自动绑定 revision/planSha/当前现场，生成必要 verdictReview、result、metrics 和 AgentResult。
 
-| resolution | 来源 | 执行方式 |
-| --- | --- | --- |
-| `flow` | 前置条件文本严格等于 Flow `name` | execution 中自动判断并执行 Flow |
-| `framework` | 框架可直接判断 | execution 中写实际判断事实 |
-| `confirm` | 需要人工确认 | 无人值守开始前确认，execution 中固化事实 |
-| `external_setup` | 需要外部业务准备 | 执行前准备，未完成则剔除、跳过或阻塞 |
-| `unsupported` | 当前不支持 | 剔除、跳过或阻塞 |
+阶段用于时间线和耗时统计，不作为业务授权。Agent 可在建立起点、执行、调查和结论复核间往返；旧计划中的一步错误不会自动导致用例失败，Agent 应根据新证据修订计划，并保持原文 requirement 可追溯。
 
-展示给用户时分成两组：自动命中的 Flow 仅供知晓；其余前置条件汇总后一次确认。Flow 严格匹配规则和资产格式见 `flow-format.md`。
+## 受控恢复
 
-## 单 case 执行
+允许恢复的触发包括原文明示冷启动、Agent 基于当前现场决定的受控重启、App crash、系统杀进程、未知退出、App 无响应和自动化会话丢失。Agent 决定的重启必须记录 `decisionReason` 并引用当前 execution、当前暖会话代次的 observation；技术触发必须引用客观 evidence；原文明示触发必须引用 sourceRef。同一 checkpoint 可以在单用例时限内再次恢复，每次使用新的 recoveryId 和恢复前当前证据。
 
-### 1. 准备和 start
+恢复会递增 warm session generation。恢复前后仍属于同一 execution 和 Agent 业务上下文；协调器同步重绑定 Runtime 与当前 Agent request，并归档恢复前 request。恢复前 observation 只保留审计价值，不能再建立起点、授权动作或支撑当前结论；必须先重新观察。
 
-```bash
-scripts/prepare-env.sh --case-dir <case-dir> --platform <platform>
-scripts/batch-runtime.js reconcile-current --workspace-cwd <workspace> --batch-id <id>
-scripts/run-case.js <case-dir> --platform <platform> --start --precondition-plan-sha <sha> --precondition-inputs-json '<json>' --batch-id <id>
-```
+App crash、系统退出等事故恢复必须记录 `runtimeIncident`，包含 `PRODUCT | TECHNICAL` 分类、原因和当前 execution 证据；Agent 主动决定的重启不是事故，只记录决策理由和 `recoveryStarted/recoveryCompleted`。状态已提交但时间线事件缺失时，使用同一 recoveryId 重入会定位该 recovery 绑定的原 execution 并补写事件，不重复重启 App。原 execution 已封存时只允许校验和返回已有结果；恢复事务不完整则停批，禁止写入后续 case。
 
-批次先调用 `reconcile-current`，由脚本返回 `START_NEW`、`RESUME_START`、`INIT_RUNTIME`、`BIND_RUNTIME`、`RESUME_RUNTIME`、`COMMIT_START_RESULT`、`COMMIT_FINALIZED`、`RECOVER_FINALIZING`、`RECOVER_RUNTIME_TERMINAL`、`CLOSE_EXPIRED`、`CLOSE_ORPHANED`、`BLOCK_CONCURRENT`、`BLOCK_RUNTIME_RELEASE`、`BATCH_BLOCKED`、`BATCH_COMPLETE` 或 `CORRUPTED`，协调器不得自行推断恢复路径。
+## 中断恢复
 
-- `RESUME_START`：调用 `run-case --resume-start` 幂等补齐冷启动；成功后初始化 Runtime，失败后提交框架启动结果。
-- `INIT_RUNTIME`：对返回的 executionId 调用 Runtime init，然后 bind。
-- `BIND_RUNTIME`：Runtime 已创建但 batch 尚未绑定，先调用 batch `bind`，再继续 Runtime。
-- `RESUME_RUNTIME`：继续该 Runtime 的 `next -> Host Adapter -> apply`。
-- `COMMIT_FINALIZED`：调用 batch `commit-current`。
-- `COMMIT_START_RESULT`：调用 batch `commit-start-result` 发布无 Runtime 的框架启动失败。
-- `RECOVER_FINALIZING`：对返回的 executionId 重入 `run-case --finalize`，再继续 Runtime 或提交。
-- `RECOVER_RUNTIME_TERMINAL`：对返回的 execution 调用一次 `agent-runtime.js next`，由 Core 幂等补齐失败事实、`result.json` 和 `metrics.json`，再重新调用 `reconcile-current`。
-- `CLOSE_EXPIRED`：由 Runtime interrupt/timeout 状态机完成中断、释放和收尾。
-- `CLOSE_ORPHANED`：调用 `run-case --recover-orphaned --execution-id <id> --batch-id <current>`。
-- `BLOCK_CONCURRENT` 或 `CORRUPTED`：停止批次，不接管设备和 execution。
-- `BATCH_BLOCKED` 或 `BATCH_COMPLETE`：批次已经是终态，重复恢复不得再次提交。
-- `BLOCK_RUNTIME_RELEASE`：Host 连续三次未确认 session 释放，使用 batch `fail` 固化阻塞，禁止开始下一 case。
+用例导入、执行请求、Batch 初始化、Bootstrap、Case 启动、Agent Turn、设备 Operation、知识查询、Phase 迁移、Recovery、Finalize 和 Case 发布都以磁盘草稿作为提交日志。草稿先冻结绑定和稳定 ID，权威状态原子写入后再补审计事件并删除草稿。`reconcile` 或 Agent status 只根据草稿与权威状态暴露恢复项；恢复不得分配新的 execution/session，不得重新读取实时用例或实时知识，也不得重放结果不确定的设备动作。
 
-`--start` 必须带 `--batch-id`，会校验非空用例契约，创建 execution、固化 batch、写 `case.snapshot.json`，并冻结环境、前置输入、用例与计划哈希。所有平台都必须验证冷启动成功；HarmonyOS 手机额外在启动前归一竖屏并在启动后验证，其他设备形态或平台保留显示方向。启动中断由 `--resume-start` 根据冻结环境和已有 bootstrap fact 幂等恢复。失败输出 `blockedOnStart=true`，且不创建子 Agent。
+`reconcile` 自动恢复 step、operation、turn、知识查询和 phase 草稿，不要求 Case Agent 读取或重新组装内部请求。动作已完成时不重放；知识查询继续使用首次冻结候选。任一内部恢复项存在期间禁止 Agent 写入，恢复完成后再创建或继续 Case Agent。
 
-### 1.1 创建独立 Agent 会话
-
-批次协调器先创建 batch 产物。`--start` 可继续时，调用 `agent-runtime.js init` 生成 case-executor SkillContract、带 requestSha 的请求和 Runtime 状态。此后反复执行 `next -> Host Adapter -> apply`；`BOUND` 由 Core 在会话创建成功后写入。
-
-BOUND 前只允许 `executionStart`、`environmentProbe` 和 `scope=execution-bootstrap` 的启动级 `restartApp actionResult`。这些事实由框架完成 execution 隔离，不属于子 Agent 业务事实；任何前置条件、Flow、业务 observation/actionResult、perception、decision 或 assertion 都必须晚于 BOUND。
-
-Codex 主 Agent 只机械映射 Runtime operation，不直接写运行态。完整约束见 `agent-runtime.md` 和 `agent-runtimes/codex.md`。
-
-### 2. 前置条件
-
-严格按 `case.json.preconditions` 顺序处理：
-
-- `flow`：执行 `entry-check -> already satisfied / start check -> step loop -> end-check`，成功写 `PASS` 或 `PREPARED`。
-- `framework`：使用计划中的确定性 checker，根据环境探测或启动事实写实际结果和 evidenceRefs。
-- `confirm`：只写入 execution 开始时冻结的 `PASS` 输入。
-- `external_setup`：只写入 execution 开始时冻结的 `PREPARED` 输入；缺失时写 `BLOCKED`。
-- `unsupported`：写 `BLOCKED/PRECONDITION_UNSUPPORTED`。
-
-只有全部前置条件为 `PASS` 或 `PREPARED` 才能进入业务步骤。Flow 的具体事件顺序见 `flow-format.md`。
-
-### 3. 业务步骤
-
-从 `case.json.steps[0]` 开始：
-
-1. 用 `observe.sh ... --step-id <step-id>` 采集当前证据。
-2. Case Engine 按 priority 依次产生 `DECIDE_RULE`。Agent 对当前截图返回 `MATCHED`、`NOT_MATCHED` 或 `UNHANDLED_POPUP`；命中后引擎使用冻结规则动作和独立 `global-rule` 授权执行、再次观察并写 `HANDLED`，随后对新画面重新判断规则。规则超过 `maxAttempts` 按 `onFailure` 和 `GLOBAL_RULE_FAILED` 收尾。
-3. 全部适用规则对当前 observation 都已跳过后，agent 才进行业务判断；证据足以判断时写引用该截图、包含 `reason` 的 `perception status=USABLE`。若预览疑似存在黑屏、黑块、花屏或解码异常，写带异常类型和归一化区域的 `qualityClaim`；`run-case.js` 会绑定采集时 SHA-256、复核原始 PNG 并生成 `evidenceCheck`。复核完成前不得请求 PASS，也不得仅凭预览异常以 `TOOL_ERROR` 收尾。
-4. 需要业务动作时，Agent 按 DecisionRequest 的 `actionConstraints` 返回 ACT 并原样回传 `stepIntent.intentSha`；输入步骤还必须使用冻结的 `inputMode` 和目标文本。Case Engine 先归一常见动作别名、校验完整执行契约，再调用带 `case-step` 授权的 `action.sh ... --step-id <step-id>`。
-5. 动作后再次 observe，从规则判断重新开始。
-6. 每个步骤的目标满足时立即写引用当前步骤最新截图的 `assertion PASS`；明确不满足时写失败断言或按失败策略收尾。成功 actionResult 和动作后的 observation 不能单独完成步骤，observation `label` 只用于定位和展示，不能作为业务证据。
-
-步骤阶段禁止 Flow 扫描、匹配和执行。前置条件 Flow 的 observation、action 和完成事件也不能充当业务步骤证据。
-
-子 Agent 调用 `execute-next-work.js next`。Case Engine 在一次脚本调用中连续推进 observation、规则动作、冻结业务动作、Flow 事实配对和 finalize 等确定性工作，只在需要看图时返回带 workToken 和当前作用域约束的 DecisionRequest。子 Agent 查看指定截图后调用 `decide`；业务 ACT 必须回传对应 intentSha，规则 MATCHED 不得改变冻结规则动作。脚本重新归约当前 execution、校验 workToken 和授权并继续推进，过期决定不能写入。业务步骤或 Flow 的非法动作提案都不会提交该轮业务事实或触发设备，而是写入框架 `actionRejected` 后返回相同类型、带 `lastActionRejection` 的新 DecisionRequest；同一观察连续两次非法提案确定性阻塞。视觉重试由 `visualRetryContext` 固定尝试次数和 retryOf；同一 turn 的 perception 与 decision/assertion 使用恢复 draft 幂等补齐。
-
-冻结业务步骤中明确写出的删除、支付、发布、资料修改等操作视为用户已授权，框架不按敏感语义拦截；授权不向其他步骤、前置 Flow 或 Agent 自行发起的副作用扩散。
-
-### 4. finalize
-
-```bash
-scripts/run-case.js <case-dir> --platform <platform> --finalize \
-  --status <PASS|FAIL|BLOCKED|UNKNOWN> --reason "<reason>" --execution-id <id>
-```
-
-case-executor 通过 `execute-next-work.js` 间接 finalize。finalize 经 `FINALIZING` draft 原子写 `result.json`、`metrics.json` 并锁定 `execution.json`。随后 `build-case-agent-result.js` 构造摘要，Runtime Core 校验并写 `agent/validation.json`、释放 session，最后由 batch commit 生成 `completion.json` 并刷新状态与报告。finalize 可重入；finalized 后不得追加 timeline。无 batch 的历史兼容执行仍在 finalize 后直接刷新报告。
-
-finalize 前会校验前置条件事实形成连续闭环、没有活动 Flow，并且每个 Flow 终态都有对应的前置条件终态；不满足时拒绝生成结果产物。execution start 阶段的冷启动硬失败是唯一允许在前置条件开始前直接收尾的内部路径。
-
-## 批量和无人值守规则
-
-- 批量执行必须逐 case 闭环，一个 case finalized 后才能开始下一个。
-- `<workspace>/runs/<batchId>/batch.json` 通过 `commit-current` 自行读取 runtime、validation、execution、result 和 metrics；只有 session 已释放且 validation 有效时才能推进。
-- start 阶段未创建子 Agent、但框架已经 finalized 的 execution 通过 `commit-start-result` 提交。
-- 遗留 execution 只在批次开始或恢复时归约一次；同批次继续 Runtime，未过期的其他批次禁止抢占，过期 Runtime 走中断释放，过期且只有启动事实的孤立 execution 用 `run-case.js --recover-orphaned` 留下框架恢复事实后收尾。
-- 每个 case 使用独立 Agent 会话；关闭后不得把其截图、工具输出或推理历史传给下一 case。
-- 不复用上一 case 页面状态，不从中间步骤继续。
-- 无人值守开始后不再询问业务状态，不安装或修复依赖，不修改 skill 代码。
-- 底层命令失败按 `TOOL_ERROR`，已执行输入但可读最终值与 `replace` 目标不一致时按 `ACTION_EFFECT_MISMATCH`，未实现能力按 `PLATFORM_UNIMPLEMENTED` 收尾；原始截图有效但 Agent 图片输入经过一次复核重试仍无法可靠判断时使用 `VISUAL_INPUT_UNVERIFIABLE`。
-- 当前 observation 足以判断时立即写事实，不反复追加无新证据的解释事件。
+批次进入 `BATCH_COMPLETE` 后只调用一次工作区级 `render-index`。详情与首页都先生成 `report-publication.draft.json`，逐文件原子替换内容，最后发布带文件 SHA 的 `report-metadata.json` 并清理草稿；任一文件不一致时可从 execution 重新渲染。

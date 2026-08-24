@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 驱动的移动端 AI 视觉测试实施执行计划</title>
+<style>
+  :root { --ink:#17211d; --muted:#5d6862; --line:#d8dfdb; --paper:#fff; --canvas:#eef2f0; --green:#176c4c; --green-soft:#e6f3ed; --blue:#245b88; --blue-soft:#eaf2f8; --gold:#916514; --gold-soft:#fff7dd; --red:#9b3d36; }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; color:var(--ink); background:var(--canvas); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; font-size:16px; line-height:1.72; letter-spacing:0; }
+  .layout { display:grid; grid-template-columns:232px minmax(0,1040px); gap:28px; justify-content:center; align-items:start; padding:28px; }
+  .toc { position:sticky; top:24px; max-height:calc(100vh - 48px); overflow:auto; padding:18px 16px; border-left:3px solid var(--green); background:rgba(255,255,255,.88); }
+  .toc-title { margin:0 0 10px; color:var(--muted); font-size:12px; font-weight:700; }
+  .toc a { display:block; padding:5px 0; color:#39443e; font-size:13px; line-height:1.4; text-decoration:none; }
+  .toc a:hover { color:var(--green); }
+  main { width:100%; padding:56px 70px 74px; background:var(--paper); border-top:6px solid var(--green); box-shadow:0 10px 32px rgba(23,33,29,.08); }
+  h1 { margin:0; max-width:850px; color:#102a20; font-size:38px; line-height:1.25; font-weight:760; }
+  h2 { margin:54px 0 18px; padding-bottom:10px; border-bottom:1px solid var(--line); color:#17392c; font-size:25px; line-height:1.35; }
+  h3 { margin:31px 0 10px; color:#243c33; font-size:19px; line-height:1.45; }
+  h4 { margin:24px 0 8px; color:#2e463d; font-size:16px; line-height:1.45; }
+  p { margin:11px 0; }
+  ul,ol { padding-left:24px; }
+  li { margin:6px 0; }
+  strong { color:#102f23; }
+  blockquote { margin:18px 0 32px; padding:10px 0 10px 18px; color:var(--muted); border-left:3px solid #aeb9b3; }
+  main > h2:first-of-type + p + ol { margin:20px 0 30px; padding:22px 26px 22px 48px; border:1px solid #eadba7; border-left:5px solid var(--gold); background:var(--gold-soft); }
+  code { padding:2px 5px; color:#154b37; background:#eef4f1; border-radius:3px; font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; font-size:.91em; overflow-wrap:anywhere; }
+  pre { margin:18px 0 24px; padding:16px 18px; overflow:auto; color:#e8f0eb; background:#1d2924; border-left:4px solid var(--green); font-size:13px; line-height:1.55; }
+  pre code { padding:0; color:inherit; background:transparent; border-radius:0; overflow-wrap:normal; }
+  .table-wrap { margin:19px 0 27px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; line-height:1.55; }
+  th,td { padding:10px 11px; border:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { color:#183b2e; background:#eef5f1; font-weight:700; }
+  tr:nth-child(even) td { background:#fafcfb; }
+  .diagram { margin:23px 0 29px; padding:16px; overflow-x:auto; border:1px solid var(--line); background:#fbfcfb; }
+  .diagram svg { display:block; width:100%; min-width:740px; height:auto; }
+  .diagram figcaption { margin-top:10px; color:var(--muted); font-size:13px; text-align:center; }
+  .diagram .box { fill:#fff; stroke:#9eaaa4; stroke-width:1.5; }
+  .diagram .green { fill:var(--green-soft); stroke:var(--green); stroke-width:1.8; }
+  .diagram .blue { fill:var(--blue-soft); stroke:var(--blue); stroke-width:1.8; }
+  .diagram .gold { fill:var(--gold-soft); stroke:var(--gold); stroke-width:1.8; }
+  .diagram .lane { fill:#f5f7f6; stroke:#bcc8c2; stroke-width:1.3; }
+  .diagram .case-area { fill:#fff; stroke:#b7c5bd; stroke-width:1.5; stroke-dasharray:7 5; }
+  .diagram .arrow { fill:none; stroke:#65726b; stroke-width:1.7; }
+  .diagram .loop { stroke:var(--green); }
+  .diagram text { fill:#203029; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; font-size:14px; text-anchor:middle; }
+  .diagram .small { fill:var(--muted); font-size:12px; }
+  .diagram .diagram-title { fill:#17392c; font-size:18px; font-weight:700; }
+  .diagram .lane-title { fill:#355247; font-size:13px; font-weight:700; text-anchor:start; }
+  .doc-footer { margin-top:60px; padding-top:18px; color:var(--muted); border-top:1px solid var(--line); font-size:13px; }
+  @media (max-width:1100px) { .layout{display:block;padding:0}.toc{display:none}main{padding:42px 28px 60px;box-shadow:none}h1{font-size:32px} }
+  @media print {
+    @page { size:A4; margin:15mm 14mm; }
+    body { background:#fff; font-size:9.6pt; line-height:1.58; }
+    .layout { display:block; padding:0; }
+    .toc { display:none; }
+    main { padding:0; border:0; box-shadow:none; }
+    h1 { font-size:24pt; }
+    h2 { margin-top:24px; font-size:16pt; break-after:avoid; }
+    h3 { margin-top:19px; font-size:12.5pt; break-after:avoid; }
+    h4 { margin-top:14px; font-size:10.5pt; break-after:avoid; }
+    h2 + p, h3 + p { break-after:avoid; }
+    p,blockquote { break-inside:avoid; }
+    .table-wrap,figure,pre { break-inside:avoid; }
+    table { font-size:8.5pt; }
+    th,td { padding:6px 7px; }
+    .diagram { padding:8px; }
+    .diagram svg { min-width:0; }
+    code { font-size:.88em; }
+    pre { overflow:visible; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
+    pre code { white-space:inherit; overflow-wrap:inherit; word-break:inherit; }
+    a { color:inherit; text-decoration:none; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="toc" aria-label="目录"><div class="toc-title">开发执行稿</div><a href="#执行原则">执行原则</a>
+<a href="#1-交付目标与边界">1. 交付目标与边界</a>
+<a href="#2-总体阶段与关键路径">2. 总体阶段与关键路径</a>
+<a href="#3-实施前决策门禁">3. 实施前决策门禁</a>
+<a href="#4-任务拆分">4. 任务拆分</a>
+<a href="#5-依赖与并行策略">5. 依赖与并行策略</a>
+<a href="#6-建议合并单元">6. 建议合并单元</a>
+<a href="#7-测试矩阵">7. 测试矩阵</a>
+<a href="#8-阶段完成定义">8. 阶段完成定义</a>
+<a href="#9-切换验收清单">9. 切换验收清单</a>
+<a href="#10-风险控制">10. 风险控制</a>
+<a href="#11-进度跟踪模板">11. 进度跟踪模板</a>
+<a href="#12-开始实施时的首批任务">12. 开始实施时的首批任务</a>
+<a href="#结论">结论</a></nav>
+  <main><p style="padding:12px;border:1px solid #d97706;background:#fffbeb;color:#92400e"><strong>历史归档：</strong>本计划已于 2026-08-18 完成，仅用于实施追溯。当前状态以 <code>../architecture.md</code> 为准。</p><h1 id="agent-驱动的移动端-ai-视觉测试实施执行计划">Agent 驱动的移动端 AI 视觉测试实施执行计划</h1>
+<blockquote>开发执行稿 · 2026-08-12 · 更新于 2026-08-18  <br>本文承接《技术实现方案》，用于拆分开发任务、安排依赖顺序、定义阶段门禁和跟踪交付。本文不替代架构设计，也不表示相关代码已经完成。</blockquote>
+<h2 id="执行原则">执行原则</h2>
+<p>以下原则约束整个重构过程：</p>
+<ol><li><strong>按分层重构实施，不全量推倒重写。</strong> 三端 adapter、环境绑定、Agent Runtime、证据存储和可信发布机制优先复用；固定用例契约、业务归约器和逐用例冷启动链路重点替换。</li><li><strong>契约先于生产者，历史读取先于当前产物。</strong> 先定义并测试 schema，再让报告支持按 schema 读取历史产物，最后才允许目标运行时写入当前产物。</li><li><strong>每个交付单元都必须可独立合并。</strong> 每完成一个任务，仓库都应保持可运行、现有回归测试通过，并能明确回滚到上一个稳定点。</li><li><strong>正式执行只有一条主链路。</strong> 开发期的新模块不接入用户可选入口；正式切换后不保留现有业务执行核心，历史 execution 仅只读兼容。</li><li><strong>暖会话和 Agent 执行链只分开开发，不分开对外启用。</strong> 现有固定步骤引擎不得在生产路径中运行于跨用例暖状态。</li><li><strong>先抽离客观能力，再移除旧业务状态机。</strong> <code>run-case.js</code> 中的生命周期、证据、执行计时和发布逻辑先模块化，旧 reducer 和断言归约最后下线。</li><li><strong>Agent 自由度通过 eval 验证，脚本边界通过确定性测试验证。</strong> 不用固定点击路径评估 Agent，也不用 Agent 行为测试替代参数、安全、执行时限和证据单测。</li><li><strong>不为迁移引入新的强制依赖。</strong> 测试继续使用 Node.js 内置模块和现有 Shell 能力；本地知识使用 Markdown 和文件检索。</li><li><strong>切换与删除是同一发布动作。</strong> 正式切换必须同时接管入口、更新 Skill 指令并删除现有业务执行核心；回退通过完整代码版本回退完成。</li><li><strong>所有任务以完成条件收口。</strong> “代码已写”不算完成；契约、测试、文档、兼容和回滚条件必须同时满足。</li></ol>
+<h2 id="1-交付目标与边界">1. 交付目标与边界</h2>
+<h3 id="1-1-最终交付状态">1.1 最终交付状态</h3>
+<p>完成本计划后，主链路应具备以下能力：</p>
+<ul><li>任意非空可读取文本都能创建 case 和 execution，不做格式或内容质量门禁；空文件和纯空白输入在前置环节报错。</li><li>Case Agent 读取完整原文，生成可修订的 understanding 和 plan。</li><li>同批次默认只启动一次 App，每个新用例重新观察并建立起点。</li><li>Agent 自主决定观察、动作、计划调整、知识调查和最终 verdict。</li><li>脚本只校验环境、动作契约、授权引用、单用例执行时限、证据和产物绑定。</li><li>本地知识无需外部服务即可查询，并保留适用性判断和版本摘要。</li><li>当前报告展示原文、起点、计划修订、知识、证据和结论依据。</li><li>历史结果继续可读；正式切换后不提供旧执行入口，必要时整体回退代码版本。</li><li>当前目录为空时自动初始化测试工作空间；非空时必须具有有效 <code>workspace.json</code>，普通项目目录不会被自动接管。</li></ul>
+<h3 id="1-2-不在本计划中的工作">1.2 不在本计划中的工作</h3>
+<ul><li>不重写 HarmonyOS、Android、iOS 平台 adapter 和 atoms。</li><li>不建设服务端、数据库、向量检索或模型调用服务。</li><li>不建设知识录入后台或 Flow 可视化编辑器。</li><li>不追求同一用例每次选择完全相同的物理操作路径。</li><li>不在重构中顺带解决与目标架构无关的历史代码风格问题。</li></ul>
+<h2 id="2-总体阶段与关键路径">2. 总体阶段与关键路径</h2>
+<figure class="diagram architecture">
+  <svg viewBox="0 0 1040 410" role="img" aria-label="实施阶段与关键依赖">
+    <defs>
+      <marker id="arrow-a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#65726b"/></marker>
+    </defs>
+    <text class="diagram-title" x="520" y="28">实施阶段与关键依赖</text>
+    <rect class="box green" x="30" y="72" width="150" height="58" rx="6"/><text x="105" y="96">P0 决策与基线</text><text class="small" x="105" y="117">测试和回滚样本</text>
+    <rect class="box blue" x="220" y="72" width="150" height="58" rx="6"/><text x="295" y="96">P1 目标契约</text><text class="small" x="295" y="117">纯合约，不改行为</text>
+    <rect class="box blue" x="410" y="52" width="170" height="58" rx="6"/><text x="495" y="76">P2 历史读取</text><text class="small" x="495" y="97">reader 先于 writer</text>
+    <rect class="box blue" x="410" y="142" width="170" height="58" rx="6"/><text x="495" y="166">P3 execution Core</text><text class="small" x="495" y="187">客观内核</text>
+    <rect class="box gold" x="630" y="72" width="170" height="58" rx="6"/><text x="715" y="96">P4 批次暖会话</text><text class="small" x="715" y="117">起点与受控恢复</text>
+    <rect class="box gold" x="630" y="182" width="170" height="58" rx="6"/><text x="715" y="206">P5 Agent 执行</text><text class="small" x="715" y="227">动态执行链</text>
+    <rect class="box green" x="850" y="127" width="160" height="58" rx="6"/><text x="930" y="151">P6 知识与报告</text><text class="small" x="930" y="172">可审计结论</text>
+    <rect class="box green" x="850" y="260" width="160" height="58" rx="6"/><text x="930" y="284">P7 切换与清理</text><text class="small" x="930" y="305">HarmonyOS 门禁后切换</text>
+    <path class="arrow" d="M180 101 H210" marker-end="url(#arrow-a)"/><path class="arrow" d="M370 101 H400" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M370 101 C390 101 390 171 400 171" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M580 81 H620" marker-end="url(#arrow-a)"/><path class="arrow" d="M580 171 C610 171 610 101 620 101" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M580 171 C610 171 610 211 620 211" marker-end="url(#arrow-a)"/><path class="arrow" d="M715 130 V172" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M370 101 C520 350 800 156 840 156" marker-end="url(#arrow-a)"/><path class="arrow" d="M800 211 C825 211 825 156 840 156" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M930 185 V250" marker-end="url(#arrow-a)"/>
+    <text class="small" x="520" y="374">P1-P6 可分阶段开发；完整闭环通过门禁后，P7 才执行原子切换与现有核心删除。</text>
+  </svg>
+  <figcaption>图 1：关键路径先建立基线、目标契约与历史读取，再接通暖会话和 Agent 动态执行。</figcaption>
+</figure>
+<div class="table-wrap"><table><thead><tr><th>阶段</th><th>目标</th><th>主要产物</th><th>阶段门禁</th></tr></thead><tbody><tr><td>P0</td><td>固定决策、测试基线和回滚样本</td><td>决策记录、现有实现特征测试、样例产物</td><td>当前主链路行为可复现</td></tr><tr><td>P1</td><td>建立不依赖运行时的目标纯契约</td><td>case、sourceRef、understanding、plan、event、result 合约</td><td>所有正反例单测通过</td></tr><tr><td>P2</td><td>报告先支持历史读取，再建立开发隔离</td><td>schema reader、目标 fixture 和测试入口门禁</td><td>目标产物不会误入现有正式执行链，历史报告不回归</td></tr><tr><td>P3</td><td>从 <code>run-case.js</code> 抽出客观内核</td><td>execution、证据、执行计时、finalize 模块</td><td>目标核心不依赖固定 step/Flow 归约</td></tr><tr><td>P4</td><td>建立批次暖会话和受控恢复</td><td>warmSession、generation、batch bootstrap/recovery</td><td>多用例仅启动一次 App</td></tr><tr><td>P5</td><td>接通 Agent 动态执行</td><td>Agent contract、事实提交、计划授权、Skill 指令</td><td>目标链路不调用唯一 NextWork</td></tr><tr><td>P6</td><td>增加知识调查和当前报告</td><td>query、assessment、metrics、CONTEXT/index</td><td>知识支持结论可审计</td></tr><tr><td>P7</td><td>当前平台验证、原子切换和现有核心删除</td><td>eval 结果、切换发布、清理提交</td><td>HarmonyOS 切换门禁通过；其他平台保留待验证状态</td></tr></tbody></table></div>
+<h3 id="2-1-对外切换约束">2.1 对外切换约束</h3>
+<p>P1-P6 可以逐步开发和合并，但目标模块只能由单元测试、fixture、模拟 adapter 和内部测试入口调用，正式行为保持不变。只有以下条件同时满足，才允许在 P7 原子切换正式主链路：</p>
+<ol><li>暖会话、独立 Agent session、动态计划、当前结果和报告已形成完整闭环。</li><li>当前交付范围内 HarmonyOS 基础动作回归通过；Android、iOS 不作已验证声明。</li><li>行为 eval 覆盖计划错误、路径变化、暖状态切换、知识适用与真实 FAIL。</li><li>历史与当前 schema 的报告读取通过。</li><li>活动批次处理、原子发布和完整代码版本回退完成演练。</li></ol>
+<h2 id="3-实施前决策门禁">3. 实施前决策门禁</h2>
+<p>D-01 至 D-07 已全部确认，均作为后续任务的固定验收输入；实施中如需改变结论，必须重新发起设计评审，不能以局部实现便利替代已确认决策。</p>
+<div class="table-wrap"><table><thead><tr><th>决策 ID</th><th>决策项</th><th>确认结论</th><th>影响范围</th></tr></thead><tbody><tr><td>D-01</td><td>批次首次启动策略</td><td><strong>已确认：每个新批次固定冷启动一次；批次内保持暖会话；意外退出按客观证据执行一次受控恢复</strong></td><td>batch bootstrap、recovery、指标</td></tr><tr><td>D-02</td><td>正式切换策略</td><td><strong>已确认：选择方案 A；正式切换时同步删除现有业务执行核心，不保留用户可选并行协议；新文件使用中性命名</strong></td><td>manifest、切换发布、清理与回退</td></tr><tr><td>D-03</td><td>知识库可信语义</td><td><strong>已确认：准入即可信；框架不做可信度分级，只判断场景适用性；来源仅用于追溯</strong></td><td>knowledge、assessment、<code>KNOWLEDGE_SUPPORTED</code></td></tr><tr><td>D-04</td><td>单用例执行时限</td><td><strong>已确认：只保留 30 分钟硬时限；其他次数不限制；到时停止新设备操作但允许完成结论</strong></td><td>elapsed-time guard、eval</td></tr><tr><td>D-05</td><td>空文本处理</td><td><strong>已确认：空文件或纯空白输入前置返回 <code>CASE_INPUT_EMPTY</code>，不创建 case、execution、Agent session 或报告</strong></td><td>parser、preflight</td></tr><tr><td>D-06</td><td>导航 Flow 处理</td><td><strong>已确认：不保留 Flow 机制；有效导航信息按需迁入知识库；实际观察确认目标状态；正式切换时删除全部 Flow 执行能力</strong></td><td>knowledge、清理</td></tr><tr><td>D-07</td><td>工作空间入口</td><td><strong>已确认：当前目录只允许为空目录或有效既有工作空间；不向上查找、不按目录形状认领；外部用例通过显式路径导入</strong></td><td>workspace、input、Codex 操作流程</td></tr></tbody></table></div>
+<h2 id="4-任务拆分">4. 任务拆分</h2>
+<p>任务编号同时表示推荐实施顺序。标记“可并行”的任务仍需满足列出的前置依赖。</p>
+<h3 id="p0-决策-基线与测试骨架">P0：决策、基线与测试骨架</h3>
+<h4 id="t-001-固化实施决策">T-001 固化实施决策</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>记录已确认的 D-01 至 D-07，并写入实现任务的验收输入</td></tr><tr><td>涉及文件</td><td>本执行计划、技术实现方案；不修改运行时代码</td></tr><tr><td>前置依赖</td><td>无</td></tr><tr><td>具体动作</td><td>固化 D-01 的批次冷启动和意外退出规则、D-02 的原子切换与完整版本回退规则、D-03 的准入即可信规则、D-04 的单一时间硬约束、D-05 的空文本前置错误、D-06 的 Flow 退出和导航知识迁移规则、D-07 的工作空间入口边界</td></tr><tr><td>测试</td><td>不适用</td></tr><tr><td>完成条件</td><td>D-01 至 D-07 的确认结论均已准确写入技术实现方案、执行计划和对应任务验收条件</td></tr><tr><td>回滚点</td><td>不适用</td></tr></tbody></table></div>
+<h4 id="t-002-冻结现有实现特征基线">T-002 冻结现有实现特征基线</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>在重构前固定当前输入、启动、NextWork、finalize、completion 和报告行为</td></tr><tr><td>涉及文件</td><td><code>scripts/self-test.js</code>，必要时增加 <code>scripts/tests/fixtures/historical/</code></td></tr><tr><td>前置依赖</td><td>T-001</td></tr><tr><td>具体动作</td><td>补齐零步骤拒绝、逐 case restart、固定步骤 PASS、Runtime 绑定、批次恢复、可信 completion 和历史报告样例</td></tr><tr><td>测试</td><td><code>node scripts/self-test.js</code></td></tr><tr><td>完成条件</td><td>当前代码完整跑通；现有关键行为均有正反例断言；失败输出可定位到具体场景</td></tr><tr><td>回滚点</td><td>仅增加测试和 fixture，可单独回退</td></tr></tbody></table></div>
+<h4 id="t-003-拆分自测结构">T-003 拆分自测结构</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>降低单个 <code>self-test.js</code> 对后续并行开发的冲突</td></tr><tr><td>涉及文件</td><td><code>scripts/self-test.js</code>、新增 <code>scripts/tests/helpers.js</code>、<code>scripts/tests/*.test.js</code></td></tr><tr><td>前置依赖</td><td>T-002</td></tr><tr><td>具体动作</td><td>抽出公共临时工作空间、命令执行、PNG、timeline 和 fixture helper；按 contract、execution、runtime、batch、report、platform 分组</td></tr><tr><td>测试</td><td><code>node scripts/self-test.js</code> 仍作为唯一总入口并顺序执行全部 suite</td></tr><tr><td>完成条件</td><td>测试语义不变；单 suite 可独立执行；不引入测试框架依赖</td></tr><tr><td>回滚点</td><td>保留原总入口，拆分可整体回退</td></tr></tbody></table></div>
+<h4 id="t-004-建立三端能力基准">T-004 建立三端能力基准</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>保护不在本次重写范围内的平台能力</td></tr><tr><td>涉及文件</td><td><code>scripts/tests/platform-contract.test.js</code>、现有 adapter 自测 fixture</td></tr><tr><td>前置依赖</td><td>T-003</td></tr><tr><td>具体动作</td><td>固定 probe/action/observe 统一字段、输入模式、坐标证据、restart 返回和未知参数拒绝</td></tr><tr><td>测试</td><td>使用 adapter 模拟命令；真机项留到 T-703</td></tr><tr><td>完成条件</td><td>HarmonyOS、Android、iOS 的公共动作契约均有基准测试</td></tr><tr><td>回滚点</td><td>仅测试变更</td></tr></tbody></table></div>
+<p><strong>P0 出口：</strong> <code>node scripts/self-test.js</code> 全绿；现有行为和平台边界都有可复现基线；D-01 至 D-07 已确认。</p>
+<h3 id="p1-目标纯契约基础">P1：目标纯契约基础</h3>
+<h4 id="t-101-定义-case-contract">T-101 定义 case contract</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>将 case 从固定业务步骤契约收缩为原始输入身份契约</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/execution/contracts/case-contract.js</code>、<code>references/case-format.md</code>；开发期不接入正式入口</td></tr><tr><td>前置依赖</td><td>P0</td></tr><tr><td>具体动作</td><td>定义明确的 <code>schemaVersion</code>、identity、sourceSha 和 importSource；当前产物不写入现有 parser 的步骤字段</td></tr><tr><td>测试</td><td>正常文本、模糊非空文本、空文件、纯空白、BOM 后空白、历史 case、非法 identity、未知 schema</td></tr><tr><td>完成条件</td><td>当前合约与历史 schema 可明确分派；当前合约不要求 steps/preconditions/globalRules</td></tr><tr><td>回滚点</td><td>模块尚无正式生产者，可单独删除</td></tr></tbody></table></div>
+<h4 id="t-102-实现-source-reference-合约">T-102 实现 source reference 合约</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>让 Agent 的原文依据可被机器验证但不被脚本解释语义</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/source-reference.js</code></td></tr><tr><td>前置依赖</td><td>T-101</td></tr><tr><td>具体动作</td><td>校验 <code>sourceSha + lineStart + lineEnd + quote</code>；处理换行、空行、越界和摘要不一致</td></tr><tr><td>测试</td><td>精确引用、多行引用、错误行号、错误摘录、错误 sourceSha</td></tr><tr><td>完成条件</td><td>所有引用能绑定 <code>source.snapshot.md</code>；错误引用不写入事实</td></tr><tr><td>回滚点</td><td>独立纯模块</td></tr></tbody></table></div>
+<h4 id="t-103-定义-understanding-合约">T-103 定义 understanding 合约</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>保存 Agent 对目标、起点和 requirements 的版本化理解</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/understanding-contract.js</code></td></tr><tr><td>前置依赖</td><td>T-102</td></tr><tr><td>具体动作</td><td>定义 revision、basis、sourceRefs、uncertainties；校验 revision 单调递增和 requirement 去向说明</td></tr><tr><td>测试</td><td>首版、修订、重复 ID、悬空 sourceRef、静默删除 requirement</td></tr><tr><td>完成条件</td><td>脚本只检查结构与来源，不评价理解是否正确</td></tr><tr><td>回滚点</td><td>独立纯模块</td></tr></tbody></table></div>
+<h4 id="t-104-定义动态计划合约">T-104 定义动态计划合约</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>支持检查点增加、删除、合并、拆分和重排</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/plan-contract.js</code></td></tr><tr><td>前置依赖</td><td>T-103</td></tr><tr><td>具体动作</td><td>定义 revision、reason、checkpoints、requirementRefs、requiredAction 和状态；生成稳定 planSha</td></tr><tr><td>测试</td><td>合法修订、旧 revision、重复 checkpoint、悬空 requirement、空计划</td></tr><tr><td>完成条件</td><td>计划变化不触发业务失败；非法引用和过期 revision 被拒绝</td></tr><tr><td>回滚点</td><td>独立纯模块</td></tr></tbody></table></div>
+<h4 id="t-105-定义-timeline-事件合约">T-105 定义 timeline 事件合约</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>明确目标生命周期、Agent、知识和客观事实事件边界</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/execution/contracts/execution-event-contract.js</code>、<code>references/interfaces.md</code></td></tr><tr><td>前置依赖</td><td>T-103、T-104</td></tr><tr><td>具体动作</td><td>定义 <code>phaseChanged</code>、<code>caseUnderstood</code>、<code>planRevised</code>、<code>checkpointFinding</code>、<code>knowledgeQuery</code>、<code>knowledgeAssessment</code>、<code>verdictReview</code>、<code>result</code></td></tr><tr><td>测试</td><td>每类事件正反例、写入方、execution 绑定、阶段作用域</td></tr><tr><td>完成条件</td><td>当前事件不要求 stepId 顺序；历史事件保持只读兼容</td></tr><tr><td>回滚点</td><td>模块尚未接入正式主链路</td></tr></tbody></table></div>
+<h4 id="t-106-定义-result-与-metrics-合约">T-106 定义 result 与 metrics 合约</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>分离业务 verdict 和技术 executionStatus</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/execution/contracts/result-contract.js</code>、<code>references/result-contract.md</code></td></tr><tr><td>前置依赖</td><td>T-103、T-105</td></tr><tr><td>具体动作</td><td>定义 verdict、executionStatus、verdictBasis、requirementFindings、uncertainties、technicalFailureCode 和引用规则</td></tr><tr><td>测试</td><td>DIRECT_EVIDENCE、KNOWLEDGE_SUPPORTED、FAIL、INCONCLUSIVE、BLOCKED、跨 execution 引用</td></tr><tr><td>完成条件</td><td>脚本只校验证据与引用完整性，不按 checkpoint 数量重算 verdict</td></tr><tr><td>回滚点</td><td>独立纯模块</td></tr></tbody></table></div>
+<h4 id="t-107-定义-completion-兼容合约">T-107 定义 completion 兼容合约</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>让可信发布按 schema 支持历史 status 和当前 verdict/executionStatus</td></tr><tr><td>涉及文件</td><td><code>scripts/lib/completion-contract.js</code>、<code>scripts/lib/execution-completion.js</code></td></tr><tr><td>前置依赖</td><td>T-106</td></tr><tr><td>具体动作</td><td>completion 增加 schema 分派；继续绑定 result、metrics、validation 和实现摘要</td></tr><tr><td>测试</td><td>历史 completion 不变；当前产物正常发布、哈希漂移、schema 错配、Runtime 未释放</td></tr><tr><td>完成条件</td><td>completion reader 能根据 schema 明确选择校验器，禁止猜测</td></tr><tr><td>回滚点</td><td>历史 reader 保持原实现</td></tr></tbody></table></div>
+<p><strong>P1 出口：</strong> 所有目标合约都是纯模块且具备正反例；尚未改变正式行为；现有自测保持全绿。</p>
+<h3 id="p2-历史读取与开发隔离">P2：历史读取与开发隔离</h3>
+<h4 id="t-201-抽出-execution-reader">T-201 抽出 execution reader</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>在写入当前产物前，让报告和 index 具备明确的 schema reader 入口</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/execution-reader.js</code>，调整 <code>scripts/lib/common.js</code>、<code>scripts/report/</code></td></tr><tr><td>前置依赖</td><td>P1</td></tr><tr><td>具体动作</td><td>按 execution/result schema 分派；统一返回展示模型；保留 completion 可信校验</td></tr><tr><td>测试</td><td>历史 fixture、当前 fixture、混合工作空间、未知 schema、损坏 completion</td></tr><tr><td>完成条件</td><td>renderer 不直接散落读取 <code>steps/status/failedStep</code> 等版本字段</td></tr><tr><td>回滚点</td><td>原 reader 保留到新 reader 完成替换</td></tr></tbody></table></div>
+<h4 id="t-202-建立当前报告最小视图">T-202 建立当前报告最小视图</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>在完整当前报告前，先保证目标产物可安全展示</td></tr><tr><td>涉及文件</td><td><code>scripts/lib/common.js</code>、<code>scripts/report/render-context.js</code>、<code>scripts/report/render-index.js</code></td></tr><tr><td>前置依赖</td><td>T-201</td></tr><tr><td>具体动作</td><td>展示原文、verdict、executionStatus、summary 和 uncertainties；未知字段安全转义</td></tr><tr><td>测试</td><td>当前 PASS/FAIL/INCONCLUSIVE/BLOCKED；中文、长文本、HTML 注入字符</td></tr><tr><td>完成条件</td><td>当前 fixture 可生成 CONTEXT 和 index；历史 golden 不变化</td></tr><tr><td>回滚点</td><td>reader 分派可临时关闭当前展示</td></tr></tbody></table></div>
+<h4 id="t-203-改造-case-导入为宽松模式">T-203 改造 case 导入为宽松模式</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>任意非空可读取文本都能生成当前 case contract 和 <code>source.md</code>，空文本在写入前结束</td></tr><tr><td>涉及文件</td><td><code>scripts/case/parse-case.js</code>、<code>scripts/lib/common.js</code> 中 parser 边界、<code>scripts/parse-case.js</code></td></tr><tr><td>前置依赖</td><td>T-101、T-201</td></tr><tr><td>具体动作</td><td>在测试专用入口中只做路径、读取、非空检查和身份处理，标题提供文件名回退；空文件或去除 BOM 后仅含空白时返回 <code>CASE_INPUT_EMPTY</code>，不写 case 目录；不将步骤解析字段写入当前 case 文件，正式入口暂不改变</td></tr><tr><td>测试</td><td>无标题、无步骤、表格、自由文本、模糊非空文本、空文件、纯空白、BOM 后空白、刷新、重复导入、不可读文件</td></tr><tr><td>完成条件</td><td>当前导入只因客观不可执行输入失败，不再因 <code>CASE_STEPS_REQUIRED</code>、输入值缺失或规则表格式拒绝；空文本无残留 case/execution 目录；正式入口行为暂不改变</td></tr><tr><td>回滚点</td><td>测试专用入口与模块可单独移除</td></tr></tbody></table></div>
+<h4 id="t-204-建立当前报告-fixture">T-204 建立当前报告 fixture</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>在运行时写入当前产物前，为 schema reader 提供稳定测试样本</td></tr><tr><td>涉及文件</td><td><code>scripts/tests/fixtures/current/</code>、report reader 测试</td></tr><tr><td>前置依赖</td><td>T-102、T-106、T-107、T-202</td></tr><tr><td>具体动作</td><td>手工构造经过合约校验的 source snapshot、understanding、plan、timeline、result、metrics 和 completion fixture</td></tr><tr><td>测试</td><td>PASS、FAIL、INCONCLUSIVE、BLOCKED、损坏引用、未知 schema、与历史产物混合工作空间</td></tr><tr><td>完成条件</td><td>fixture 只服务 reader/renderer 测试，不作为临时运行时 writer</td></tr><tr><td>回滚点</td><td>仅测试资产</td></tr></tbody></table></div>
+<h4 id="t-205-建立目标模块测试入口">T-205 建立目标模块测试入口</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>让目标模块可被自动化验证，同时不形成用户可选的第二条执行路径</td></tr><tr><td>涉及文件</td><td><code>scripts/tests/helpers.js</code>、测试专用 runner、模拟 adapter</td></tr><tr><td>前置依赖</td><td>T-101、T-203</td></tr><tr><td>具体动作</td><td>测试 runner 直接调用纯模块并写入临时工作空间；禁止修改正式 CLI 参数和 manifest，禁止目标半成品处理真实批次</td></tr><tr><td>测试</td><td>测试 root 隔离、真实 workspace 拒绝、未完成 writer、未知 schema</td></tr><tr><td>完成条件</td><td>目标输入和报告可在测试环境验证，但正式运行仍只有现有入口</td></tr><tr><td>回滚点</td><td>仅测试基础设施</td></tr></tbody></table></div>
+<h4 id="t-206-收紧工作空间入口">T-206 收紧工作空间入口</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>将当前目录稳定定义为测试工作空间根目录，避免误写普通项目或猜测输出位置</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/workspace.js</code>，调整 <code>scripts/lib/common.js</code>、<code>resolve-execution-targets.js</code>、初始化和报告入口</td></tr><tr><td>前置依赖</td><td>T-203、D-07</td></tr><tr><td>具体动作</td><td>空目录原子创建 <code>workspace.json</code>、<code>cases/</code>、<code>knowledge/</code>、<code>runs/</code> 和 <code>index.html</code>；非空目录只接受合法 marker；删除 <code>hasWorkspaceShape()</code> 自动认领和 <code>flows/</code> 初始化；输入路径与工作空间根目录分离</td></tr><tr><td>测试</td><td>空目录、仅 <code>.DS_Store</code>、合法 marker、损坏 JSON、错误 type、未知 schema、无 marker 普通目录、伪造目录形状、父目录存在 marker、绝对/相对外部用例路径、初始化中断重入</td></tr><tr><td>完成条件</td><td>不会向上查找、切换目录或自动认领非空目录；<code>WORKSPACE_INVALID</code> 前无文件变更；外部用例可导入且产物只写工作空间</td></tr><tr><td>回滚点</td><td>正式入口切换前保留现有 workspace helper，由目标测试入口验证新模块</td></tr></tbody></table></div>
+<p><strong>P2 出口：</strong> 报告按 schema 支持历史与当前 fixture；任意非空文本可在测试环境导入和展示，空文本稳定返回前置错误；工作空间入口只接受空目录或有效 marker；没有新增用户可选执行协议，也不创建半成品正式运行时。</p>
+<h3 id="p3-execution-客观内核">P3：execution 客观内核</h3>
+<h4 id="t-301-抽出-execution-生命周期模块">T-301 抽出 execution 生命周期模块</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>从近三千行 <code>run-case.js</code> 中分离版本无关的 execution 创建、读取、锁定和恢复</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/execution-lifecycle.js</code>，调整 <code>scripts/execution/run-case.js</code></td></tr><tr><td>前置依赖</td><td>P1、T-003</td></tr><tr><td>具体动作</td><td>抽出 ID 分配、目录创建、execution state、原文快照、finalization draft 和原子锁定；保持 CLI 不变</td></tr><tr><td>测试</td><td>start 中断、原文执行中变化、快照摘要漂移、finalize 中断、重复 finalize、孤立 execution、活动 execution 冲突</td></tr><tr><td>完成条件</td><td>现有行为逐项等价；新模块不包含 step、assertion 或 Flow 语义</td></tr><tr><td>回滚点</td><td>一次纯重构提交，出问题整体回退</td></tr></tbody></table></div>
+<h4 id="t-302-抽出证据与产物校验模块">T-302 抽出证据与产物校验模块</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>复用 observation 来源、artifact path、PNG/SHA 和跨 execution 引用守卫</td></tr><tr><td>涉及文件</td><td>新增/整合 <code>scripts/lib/execution-evidence.js</code>、现有 <code>image-evidence.js</code></td></tr><tr><td>前置依赖</td><td>T-301</td></tr><tr><td>具体动作</td><td>移出 artifact、截图绑定、证据存在性和 source 写入方检查；开发期保留现有 assertion adapter</td></tr><tr><td>测试</td><td>文件缺失、路径穿越、截图损坏、SHA 漂移、跨 execution 引用</td></tr><tr><td>完成条件</td><td>当前 result 可以直接复用证据校验，不依赖 step assertion</td></tr><tr><td>回滚点</td><td>纯抽取提交</td></tr></tbody></table></div>
+<h4 id="t-303-抽出执行计时与客观指标模块">T-303 抽出执行计时与客观指标模块</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>将单用例计时约束和非限制性指标从业务归约中分离</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/execution-time-limit.js</code>、调整 metrics 构建</td></tr><tr><td>前置依赖</td><td>T-301</td></tr><tr><td>具体动作</td><td>从 execution 创建成功开始计算 30 分钟；到时拒绝新的 observe/action，但继续允许读取已有产物、提交 Agent 事实和 CONCLUDE；动作、观察、准备、知识查询和主动反思只计数</td></tr><tr><td>测试</td><td>起止时间、临界时刻设备操作、到时后 CONCLUDE、已有充分证据的 PASS/FAIL、各类次数不触发拒绝</td></tr><tr><td>完成条件</td><td>只有时间能停止新设备操作；次数指标不形成阈值；时限触发不自动生成或改写 verdict</td></tr><tr><td>回滚点</td><td>开发期保留现有 budget adapter</td></tr></tbody></table></div>
+<h4 id="t-304-实现目标阶段与事实提交">T-304 实现目标阶段与事实提交</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>支持 UNDERSTAND、ESTABLISH_START、EXECUTE、INVESTIGATE、CONCLUDE、FINALIZED</td></tr><tr><td>涉及文件</td><td><code>scripts/execution/run-case.js</code>、<code>scripts/commit-agent-turn.js</code>、T-105 合约模块</td></tr><tr><td>前置依赖</td><td>T-301、T-302、T-303</td></tr><tr><td>具体动作</td><td>在目标核心增加 record/commit 能力；校验阶段、写入方、execution 绑定和 revision；不生成 NextWork</td></tr><tr><td>测试</td><td>合法转换、非法跳转、过期 revision、finalized 后写入、Runtime BOUND 前写入</td></tr><tr><td>完成条件</td><td>Agent 可以提交理解、计划和 finding；脚本不决定下一个业务动作</td></tr><tr><td>回滚点</td><td>仅测试入口开放目标能力</td></tr></tbody></table></div>
+<h4 id="t-305-实现目标-finalize">T-305 实现目标 finalize</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>用当前 result 契约替代逐步骤 assertion PASS 归约</td></tr><tr><td>涉及文件</td><td><code>scripts/execution/run-case.js</code>、<code>scripts/execution/contracts/result-contract.js</code>、completion 模块</td></tr><tr><td>前置依赖</td><td>T-304、T-106、T-107</td></tr><tr><td>具体动作</td><td>校验 requirement findings、证据、knowledge assessment、verdictReview 和未关闭操作；构建当前 metrics</td></tr><tr><td>测试</td><td>四种 verdict、知识支持 PASS、FAIL 缺原文依据、PASS 缺业务证据、达到 30 分钟时限后 CONCLUDE</td></tr><tr><td>完成条件</td><td>目标 finalize 不调用 <code>passReadiness</code>、<code>stepOrderReadiness</code> 或 <code>normalizeResultStatus</code></td></tr><tr><td>回滚点</td><td>正式切换前现有 finalize 保持原样</td></tr></tbody></table></div>
+<h4 id="t-306-收敛-execution-core-边界">T-306 收敛 execution Core 边界</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>让顶层入口只负责参数解析，并将目标业务能力收敛到可原子接管的 Core</td></tr><tr><td>涉及文件</td><td><code>scripts/run-case.js</code>、<code>scripts/execution/run-case.js</code>、新增目标 Core 文件</td></tr><tr><td>前置依赖</td><td>T-305</td></tr><tr><td>具体动作</td><td>目标 Core 通过测试 runner 调用；正式 CLI 在切换前仍调用现有核心，切换提交中直接改接目标 Core</td></tr><tr><td>测试</td><td>目标命令矩阵、未知参数、错误 schema、跨实现继续执行</td></tr><tr><td>完成条件</td><td>目标 Core 不依赖协议选择参数；CLI 接管点清晰且可在单个提交中切换</td></tr><tr><td>回滚点</td><td>正式入口尚未切换</td></tr></tbody></table></div>
+<p><strong>P3 出口：</strong> 目标 execution 可在测试环境独立创建、提交事实、受执行时限约束、校验证据并 finalize；业务路径不由 reducer 决定；现有全量回归通过。</p>
+<h3 id="p4-批次暖会话与用例边界">P4：批次暖会话与用例边界</h3>
+<h4 id="t-401-建立-batch-实现绑定">T-401 建立 batch 实现绑定</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>批次初始化时冻结当前合约与实现摘要，禁止跨代码版本续写</td></tr><tr><td>涉及文件</td><td><code>scripts/batch-runtime.js</code>、<code>build-agent-contract.js</code>、batch contract</td></tr><tr><td>前置依赖</td><td>P2、P3</td></tr><tr><td>具体动作</td><td>contract、batch、operation 和 completion 全链路绑定 <code>contractSha</code> 与 <code>implementationSha</code></td></tr><tr><td>测试</td><td>缺摘要、未知 schema、执行中实现变化、completion 摘要错配</td></tr><tr><td>完成条件</td><td>reconcile 和 commit 不允许不同实现继续写入同一批次</td></tr><tr><td>回滚点</td><td>目标 batch 尚未接入正式入口</td></tr></tbody></table></div>
+<h4 id="t-402-实现-warm-session-合约">T-402 实现 warm-session 合约</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>保存批次级 App 会话状态而不保存用例业务上下文</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/warm-session-contract.js</code>、<code>batch-runtime.js</code></td></tr><tr><td>前置依赖</td><td>T-401</td></tr><tr><td>具体动作</td><td>定义 INITIALIZING、READY、DEGRADED、CLOSED、generation、binding、appStartCount、recoveryCount</td></tr><tr><td>测试</td><td>合法状态转换、设备/App 绑定变化、generation 回退、关闭后复用</td></tr><tr><td>完成条件</td><td>warmSession 只包含客观环境信息，不包含上一用例 plan、timeline 或 verdict</td></tr><tr><td>回滚点</td><td>目标 batch 专用字段</td></tr></tbody></table></div>
+<h4 id="t-403-实现批次-bootstrap">T-403 实现批次 bootstrap</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>将 App 启动从每个 execution 移到批次级一次执行</td></tr><tr><td>涉及文件</td><td><code>batch-runtime.js</code>、<code>action.sh</code> 新 scope、平台 restart 复用</td></tr><tr><td>前置依赖</td><td>T-402、D-01</td></tr><tr><td>具体动作</td><td>无论 App 当前是否在前台，每个新批次都执行一次 restartApp；记录 batchBootstrap 和 generation=1；冷启动不清除应用数据</td></tr><tr><td>测试</td><td>App 已在前台、未启动、启动失败、方向策略失败、重复 bootstrap、同批次恢复不重复 bootstrap</td></tr><tr><td>完成条件</td><td>目标 <code>run-case --start</code> 不调用 <code>restartAppForExecution</code></td></tr><tr><td>回滚点</td><td>仅测试批次启用；正式行为尚未改变</td></tr></tbody></table></div>
+<h4 id="t-404-实现用例准备作用域">T-404 实现用例准备作用域</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>分隔起点建立事实和业务执行证据</td></tr><tr><td>涉及文件</td><td><code>observe.sh</code>、<code>action.sh</code>、<code>action-contract.js</code>、timeline/report reader</td></tr><tr><td>前置依赖</td><td>T-403、T-304</td></tr><tr><td>具体动作</td><td>增加 <code>case-prepare</code> 与 <code>case-business</code> scope；准备动作绑定 startConditionId 和 understanding revision</td></tr><tr><td>测试</td><td>准备证据不能支撑 business finding；跨阶段 scope、悬空 startCondition、准备副作用拒绝</td></tr><tr><td>完成条件</td><td>每个新 execution 的第一条 observation 属于自己；不会读取上一用例证据</td></tr><tr><td>回滚点</td><td>目标 scope 尚未正式启用</td></tr></tbody></table></div>
+<h4 id="t-405-实现受控-app-recovery">T-405 实现受控 App recovery</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>仅在原文明确要求或 App 意外退出、无响应、会话失效等客观技术故障时允许批次内重启</td></tr><tr><td>涉及文件</td><td><code>batch-runtime.js recover-app</code>、warm-session contract、action scope</td></tr><tr><td>前置依赖</td><td>T-403、T-404</td></tr><tr><td>具体动作</td><td>采集进程、前台应用、日志、最后动作和退出时间；分类产品崩溃、外部杀进程和原因未知；校验 triggerType、sourceRefs/evidenceRefs、当前 execution 和 D-01 恢复次数；成功后 generation+1</td></tr><tr><td>测试</td><td>原文冷启动、明确产品崩溃、系统杀进程、原因未知、无依据找页面、超过允许恢复次数、恢复失败、同一检查点再次退出、幂等重入</td></tr><tr><td>完成条件</td><td>Agent 不能直接提交 <code>restartApp</code>；每次恢复有客观审计链；恢复后不自动重放输入、提交、发布、删除、支付等结果不确定动作</td></tr><tr><td>回滚点</td><td>recovery 命令尚未接入正式入口</td></tr></tbody></table></div>
+<h4 id="t-406-改造批次-reconcile">T-406 改造批次 reconcile</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>同时恢复 execution、Agent Runtime 和 warmSession</td></tr><tr><td>涉及文件</td><td><code>batch-runtime.js reconcile-current</code>、agent-runtime 绑定检查</td></tr><tr><td>前置依赖</td><td>T-405</td></tr><tr><td>具体动作</td><td>探测遗留 execution；释放旧 Agent session；复核 App/设备绑定；明确 START/RESUME/DEGRADED/BLOCKED 结果</td></tr><tr><td>测试</td><td>中断于 bootstrap、用例中、finalize、release、recovery；多活动 execution 损坏</td></tr><tr><td>完成条件</td><td>不把旧 Agent 对话交给下一用例；无法证明暖会话有效时不盲目继续</td></tr><tr><td>回滚点</td><td>正式 reconcile 保持原行为</td></tr></tbody></table></div>
+<h4 id="t-407-验证多用例暖会话">T-407 验证多用例暖会话</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>用模拟 adapter 证明 App 只启动一次且用例证据隔离</td></tr><tr><td>涉及文件</td><td><code>scripts/tests/warm-session.test.js</code></td></tr><tr><td>前置依赖</td><td>T-406</td></tr><tr><td>具体动作</td><td>构造三个串行 case；第二个直接复用，第三个少量转换；验证 session、execution、generation 和证据路径</td></tr><tr><td>测试</td><td>正常批次、用例 BLOCKED 后继续/终止、受控 recovery</td></tr><tr><td>完成条件</td><td><code>appStartCount=1</code>，每 case 独立 execution 和 Agent request，零跨用例 evidenceRef</td></tr><tr><td>回滚点</td><td>仅测试</td></tr></tbody></table></div>
+<p><strong>P4 出口：</strong> 目标模拟批次具备暖会话、用例准备分区和受控恢复；正式入口仍未切换。</p>
+<h3 id="p5-agent-动态执行链">P5：Agent 动态执行链</h3>
+<h4 id="t-501-更新-skillcontract-manifest">T-501 更新 SkillContract manifest</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>为目标 case Agent 提供正确 resources 和入口白名单</td></tr><tr><td>涉及文件</td><td><code>scripts/lib/agent-contract-manifest.js</code>、<code>build-agent-contract.js</code></td></tr><tr><td>前置依赖</td><td>P3、P4</td></tr><tr><td>具体动作</td><td>构建一份目标 manifest；移除 <code>execute-next-work.js</code>，加入 observe/action/commit/query/result 入口；正式切换前只供测试 runner 使用</td></tr><tr><td>测试</td><td>contractSha、implementationSha、资源缺失、正式 manifest 未提前改变</td></tr><tr><td>完成条件</td><td>目标 Agent 无法调用 batch、restart 或内部 adapter 入口</td></tr><tr><td>回滚点</td><td>目标 manifest 尚未正式发布</td></tr></tbody></table></div>
+<h4 id="t-502-升级-caseagentrequest-result">T-502 升级 CaseAgentRequest/Result</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>将原文、计划目录、知识根和暖会话 generation 绑定到独立 Agent session</td></tr><tr><td>涉及文件</td><td><code>agent-runtime-contract.js</code>、<code>build-case-agent-request.js</code>、<code>build-case-agent-result.js</code>、validator</td></tr><tr><td>前置依赖</td><td>T-501、T-106、T-402</td></tr><tr><td>具体动作</td><td>定义当前 schema；移除 preconditionPlan/preconditionInputs；增加 sourcePath/sourceSha、contractSha、knowledgeRoots、warmGeneration、开始时间与截止时间</td></tr><tr><td>测试</td><td>requestSha、跨 batch/case/execution、generation 漂移、禁止嵌入历史对话/timeline/screenshots</td></tr><tr><td>完成条件</td><td>新 Agent 只获得本 case 原文和允许资源，不包含上一用例业务内容</td></tr><tr><td>回滚点</td><td>正式 request/result validator 尚未切换</td></tr></tbody></table></div>
+<h4 id="t-503-实现-plan-authorization">T-503 实现 plan authorization</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>替换固定 <code>stepId + intentSha</code> 授权</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/plan-authorization.js</code>，调整 <code>action.sh</code>、<code>action-contract.js</code></td></tr><tr><td>前置依赖</td><td>T-104、T-404、T-502</td></tr><tr><td>具体动作</td><td>绑定 executionId、phase、understandingRevision、planRevision、checkpointId/startConditionId、purpose 和 requirementRefs</td></tr><tr><td>测试</td><td>合法业务动作、过期 plan、跨 checkpoint、跨 execution、准备阶段副作用、业务敏感动作原文引用</td></tr><tr><td>完成条件</td><td>脚本验证引用存在和版本有效，不用关键词决定业务授权充分性</td></tr><tr><td>回滚点</td><td>现有 step-intent 保留到原子切换阶段</td></tr></tbody></table></div>
+<h4 id="t-504-扩展-agent-turn-提交入口">T-504 扩展 Agent turn 提交入口</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>支持 Agent 原子提交理解、计划、finding、知识评估和 verdictReview</td></tr><tr><td>涉及文件</td><td><code>commit-agent-turn.js</code>、当前 event contract、execution Core</td></tr><tr><td>前置依赖</td><td>T-304、T-503</td></tr><tr><td>具体动作</td><td>设计单事实或关联事实的幂等 turnId；失败不留下半个 plan revision</td></tr><tr><td>测试</td><td>重放、并发旧 revision、写入中断、非法引用、finalized 后提交</td></tr><tr><td>完成条件</td><td>每轮提交可重入且 append-only；正式 observation/action 仍只能由专用脚本写入</td></tr><tr><td>回滚点</td><td>目标测试入口专用</td></tr></tbody></table></div>
+<h4 id="t-505-接通-agent-自主行动循环">T-505 接通 Agent 自主行动循环</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>让 case Agent 自主选择下一次观察、动作、修订、调查或结论</td></tr><tr><td>涉及文件</td><td>Agent execution reference、SkillContract 入口、Runtime request/result</td></tr><tr><td>前置依赖</td><td>T-502、T-503、T-504、T-305</td></tr><tr><td>具体动作</td><td>移除目标链路对 NextWork token 的依赖；每次正式调用后读取客观结果和剩余时间；脚本只返回拒绝/事实/信号</td></tr><tr><td>测试</td><td>多一步、少一步、零操作检查点、计划错误、动作参数修正、执行时限收口</td></tr><tr><td>完成条件</td><td>目标全流程不调用 <code>execution-reducer.js</code> 或 <code>execute-next-work.js</code></td></tr><tr><td>回滚点</td><td>正式入口尚未切换</td></tr></tbody></table></div>
+<h4 id="t-506-编写-agent-指令资料">T-506 编写 Agent 指令资料</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>将已评审职责转成简洁、无冲突、可按需加载的 Skill 指令</td></tr><tr><td>涉及文件</td><td>新增 <code>references/agent-execution.md</code>，修改 <code>workflow.md</code>、<code>interfaces.md</code>、<code>action-schema.md</code>、<code>failure-policy.md</code></td></tr><tr><td>前置依赖</td><td>T-505 的接口稳定</td></tr><tr><td>具体动作</td><td>写理解、起点、动态计划、异常调查、结论流程；删除目标路径中的固定 step/Flow/NextWork 描述</td></tr><tr><td>测试</td><td>build-agent-contract contractSha；静态扫描冲突术语；行为 eval 使用测试 runner 的目标 contract</td></tr><tr><td>完成条件</td><td>每项详细规则只有一个权威 reference；SKILL.md 尚不默认切换</td></tr><tr><td>回滚点</td><td>正式 resources 继续由现有 manifest 读取</td></tr></tbody></table></div>
+<p><strong>P5 出口：</strong> 目标 Case Agent 能在模拟设备上完整理解、建立起点、动态执行、修订计划并形成结果；无固定 NextWork 和逐步骤 PASS 依赖。</p>
+<h3 id="p6-本地知识-报告与指标">P6：本地知识、报告与指标</h3>
+<h4 id="t-601-定义知识目录和条目规则">T-601 定义知识目录和条目规则</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>建立 Skill/Workspace 两级 Markdown 知识源</td></tr><tr><td>涉及文件</td><td>新增 <code>references/knowledge.md</code>、可选 <code>knowledge/</code> 示例条目</td></tr><tr><td>前置依赖</td><td>D-03、P1</td></tr><tr><td>具体动作</td><td>定义条目 ID、适用范围、现象、结论、追溯信息、有效期和冲突处理；明确准入即可信，Markdown 为唯一事实源</td></tr><tr><td>测试</td><td>条目缺字段、重复 ID、过期、路径逃逸、同 ID 内容变化</td></tr><tr><td>完成条件</td><td>框架不存在可信度等级、来源白名单或可信评分；追溯信息和适用范围可审计；不依赖 YAML/数据库/向量服务</td></tr><tr><td>回滚点</td><td>独立资料能力</td></tr></tbody></table></div>
+<h4 id="t-602-实现知识候选检索">T-602 实现知识候选检索</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>用 Node.js 标准库返回候选条目和内容摘要</td></tr><tr><td>涉及文件</td><td>新增 <code>scripts/lib/knowledge-query.js</code>、<code>scripts/query-knowledge.js</code></td></tr><tr><td>前置依赖</td><td>T-601</td></tr><tr><td>具体动作</td><td>扫描两个 root；按 App、平台、版本、页面、操作、现象、关键词排序；返回条目 ID、摘要和片段</td></tr><tr><td>测试</td><td>无命中、多命中、中文、版本范围、过期、冲突、非法 root、大文件上限</td></tr><tr><td>完成条件</td><td>分数只用于排序；查询结果不自动声明适用或改变 verdict</td></tr><tr><td>回滚点</td><td>新入口可从 manifest 移除</td></tr></tbody></table></div>
+<h4 id="t-603-接通知识审计事件">T-603 接通知识审计事件</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>保存每次查询、候选版本和 Agent 适用性判断</td></tr><tr><td>涉及文件</td><td><code>commit-agent-turn.js</code>、当前 event/result contract</td></tr><tr><td>前置依赖</td><td>T-602、T-504</td></tr><tr><td>具体动作</td><td>写 knowledgeQuery 和 assessment；绑定条目 ID/contentSha；支持 APPLICABLE、NOT_APPLICABLE、CONFLICTING、INSUFFICIENT</td></tr><tr><td>测试</td><td>零命中、过期条目、内容更新、冲突条目、伪造 assessment</td></tr><tr><td>完成条件</td><td>历史结果不因知识文件后来变化而改变依据</td></tr><tr><td>回滚点</td><td>无知识时 Agent 仍可输出非知识支持结果</td></tr></tbody></table></div>
+<h4 id="t-604-强制疑似失败调查门禁">T-604 强制疑似失败调查门禁</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>确保 FAIL、INCONCLUSIVE 和业务相关 BLOCKED 前执行复核与知识查询</td></tr><tr><td>涉及文件</td><td>当前 result validator、Agent execution reference</td></tr><tr><td>前置依赖</td><td>T-603</td></tr><tr><td>具体动作</td><td>verdictReview 引用原文核对、恢复尝试、knowledgeQuery 和剩余不确定性；零命中为有效结果</td></tr><tr><td>测试</td><td>FAIL 无 review、无查询、无恢复说明；技术性环境 BLOCKED 例外</td></tr><tr><td>完成条件</td><td>计划错误或 assumed requirement 无法单独形成 FAIL</td></tr><tr><td>回滚点</td><td>门禁为当前 result contract 的一部分</td></tr></tbody></table></div>
+<h4 id="t-605-完成单平台当前报告">T-605 完成单平台当前报告</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>完整展示执行依据和动态过程</td></tr><tr><td>涉及文件</td><td><code>scripts/lib/common.js</code> 或新 renderer、<code>scripts/report/render-context.js</code></td></tr><tr><td>前置依赖</td><td>T-202、T-603、T-604</td></tr><tr><td>具体动作</td><td>展示原文、understanding、起点策略、计划 revision、findings、动作证据、知识评估、verdictReview、warm generation</td></tr><tr><td>测试</td><td>四种 verdict、长计划、多次修订、知识冲突、无截图、历史 execution</td></tr><tr><td>完成条件</td><td>报告不以固定步骤表作为当前主视图；所有引用可点击且属于当前 execution</td></tr><tr><td>回滚点</td><td>历史 renderer 保留</td></tr></tbody></table></div>
+<h4 id="t-606-完成-index-和当前-metrics">T-606 完成 index 和当前 metrics</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>用新指标替代固定步骤通过率</td></tr><tr><td>涉及文件</td><td>metrics builder、<code>render-index.js</code>、completion state aggregation</td></tr><tr><td>前置依赖</td><td>T-605</td></tr><tr><td>具体动作</td><td>统计 verdict、verdictBasis、准备策略、计划修订、知识查询、暖会话复用、恢复和执行时限停止</td></tr><tr><td>测试</td><td>历史与当前产物混合、多平台聚合、损坏 completion、重复 commit 幂等</td></tr><tr><td>完成条件</td><td>index 能区分 DIRECT_EVIDENCE 和 KNOWLEDGE_SUPPORTED；不把 INCONCLUSIVE 当 FAIL</td></tr><tr><td>回滚点</td><td>历史聚合字段保持只读兼容</td></tr></tbody></table></div>
+<h4 id="t-607-迁移-flow-有效导航信息">T-607 迁移 Flow 有效导航信息</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>将已有 Flow 中有价值的导航信息转换为 Agent 可查询的知识，而不保留固定动作执行语义</td></tr><tr><td>涉及文件</td><td>各测试工作空间的 <code>&lt;workspace&gt;/flows/preconditions/</code>、目标 <code>knowledge/</code> 条目；Skill 仓库当前没有内置 Flow 数据</td></tr><tr><td>前置依赖</td><td>T-601、D-06</td></tr><tr><td>具体动作</td><td>逐条提取页面特征、适用范围、导航入口、可行路径和恢复建议；不迁移固定点击序列、动作预算、状态机和专用失败码</td></tr><tr><td>测试</td><td>知识条目格式、追溯信息、平台/版本范围、冲突检查；知识命中后仍要求当前 observation 验证目标页面</td></tr><tr><td>完成条件</td><td>有价值信息已迁移；知识不能直接证明页面已到达；目标实现不加载、匹配或执行 Flow</td></tr><tr><td>回滚点</td><td>正式原子切换前保留原 Flow 文件只用于迁移核对，不接入目标执行链</td></tr></tbody></table></div>
+<p><strong>P6 出口：</strong> 疑似失败能够查询并审计知识；当前报告和 index 完整；历史报告仍可读取。</p>
+<h3 id="p7-集成-切换与清理">P7：集成、切换与清理</h3>
+<blockquote>截至 2026-08-18，T-701 至 T-708 已完成，Agent 主链已完成原子切换、HarmonyOS 切换后正式入口验证和最终文档收口。Android 因无在线设备、iOS 因 WDA 在 Xcode 26.6 / iPadOS 15.4.1 上以 <code>xcodebuild code 70</code> 启动失败，均延后验证，不得表述为已通过。</blockquote>
+<h4 id="t-701-建立-agent-行为-eval-集">T-701 建立 Agent 行为 eval 集</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>验证 Agent 是否真正具备动态理解和调整能力</td></tr><tr><td>涉及文件</td><td><code>scripts/tests/evals/</code> 下的输入、预期约束和运行说明；不固定点击序列</td></tr><tr><td>前置依赖</td><td>P5、P6</td></tr><tr><td>具体动作</td><td>覆盖目标页直达、多一步、少一步、错误计划、暖状态深页、知识适用/不适用、模糊输入、真实缺陷、执行时限停止</td></tr><tr><td>测试</td><td>离线 fixture + 可用平台真机运行</td></tr><tr><td>完成条件</td><td>每个场景定义必须行为、禁止行为和结论依据，不要求完全相同路径</td></tr><tr><td>回滚点</td><td>eval 资产独立</td></tr></tbody></table></div>
+<h4 id="t-702-执行模拟批次集成测试">T-702 执行模拟批次集成测试</h4>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>在无真机情况下覆盖完整批次、Runtime、execution、knowledge 和 report 闭环</td></tr><tr><td>涉及文件</td><td><code>scripts/tests/agent-integration.test.js</code>、模拟 adapter</td></tr><tr><td>前置依赖</td><td>T-701</td></tr><tr><td>具体动作</td><td>多 case 串行、进程中断恢复、Runtime 超时、非法动作修正、completion 幂等、历史与当前产物混合读取</td></tr><tr><td>测试</td><td>纳入 <code>node scripts/self-test.js</code></td></tr><tr><td>完成条件</td><td>全部自动化集成场景稳定通过，无悬空 execution/session</td></tr><tr><td>回滚点</td><td>不影响正式入口</td></tr></tbody></table></div>
+<h4 id="t-703-执行当前交付平台真机回归">T-703 执行当前交付平台真机回归</h4>
+<p><strong>状态：当前阶段已完成。</strong> HarmonyOS 已通过真实 Agent 入口；Android 因无在线设备延后，iOS 因 WDA 构建失败延后。</p>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>当前阶段验证目标执行核心未破坏 HarmonyOS 实际能力；Android、iOS 保留实现状态但不作已验证声明</td></tr><tr><td>涉及文件</td><td>测试工作空间和验收记录，不在 adapter 中做无关改造</td></tr><tr><td>前置依赖</td><td>T-702、T-004</td></tr><tr><td>具体动作</td><td>HarmonyOS 执行真实 Agent 入口冒烟；完整动态执行和恢复在 T-704 覆盖</td></tr><tr><td>测试</td><td>HarmonyOS 真机目标入口，检查截图、layout、foreground 和目标绑定</td></tr><tr><td>完成条件</td><td>HarmonyOS 真实目标链路通过；Android、iOS 延后项和未验证口径记录清楚</td></tr><tr><td>回滚点</td><td>发现平台缺口时不执行正式切换，不扩大 adapter 修改面</td></tr></tbody></table></div>
+<h4 id="t-704-执行切换前前向验证">T-704 执行切换前前向验证</h4>
+<p><strong>状态：已完成。</strong> 2026-08-18 已使用隔离测试工作空间和 HarmonyOS 真机完成 4-case 暖批次及自动化失败路径回归，门禁结论为通过。<a href="harmony-forward-validation-2026-08-18.md">查看验收记录</a>。该结果属于切换前代表性场景验证，不替代 T-707 的切换后正式入口验证。</p>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>在隔离测试工作空间中使用代表性场景和真实设备观察目标核心的稳定性与成本；正式业务用例验证不在本次门禁结论内</td></tr><tr><td>涉及文件</td><td>测试 runner、独立测试工作空间和验收记录；不新增正式 CLI 参数</td></tr><tr><td>前置依赖</td><td>T-703 当前 HarmonyOS 交付范围通过；Android、iOS 延后验证不阻塞本阶段</td></tr><tr><td>具体动作</td><td>运行代表性批次；审查计划修订、起点动作、知识命中、verdictBasis、单用例耗时和冷启动例外</td></tr><tr><td>测试</td><td>与人工预期和原用例对照，不以点击路径一致率作为指标</td></tr><tr><td>完成条件</td><td>HarmonyOS 范围内无安全越界、无结果丢失、无跨用例证据污染；结论不得外推为 Android、iOS 已验证</td></tr><tr><td>回滚点</td><td>停止测试 runner，不影响正式批次</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>场景</th><th>结果</th><th>关键验证</th></tr></thead><tbody><tr><td>直接证据</td><td>PASS</td><td>已满足时 0 次业务动作</td></tr><tr><td>暖状态转换</td><td>PASS</td><td>plan revision 2，1 次导航动作，无重启</td></tr><tr><td>知识边界</td><td>PASS</td><td>候选命中后评估为 NOT_APPLICABLE，未进入结论引用</td></tr><tr><td>显式冷启动</td><td>PASS</td><td>原文授权 recovery，进程变化并重新绑定 generation</td></tr></tbody></table></div>
+<p>验收发现并修复了“前台状态未知仍标记证据可用”和“Core 测试依赖系统日期”两项问题；修复后重新创建 execution 并通过全量自测。</p>
+<h4 id="t-705-准备原子切换发布">T-705 准备原子切换发布</h4>
+<p><strong>状态：已完成。</strong> 已冻结机器可读切换清单和可重复执行的准备门禁；该清单随后由 T-706 执行并通过 switched 门禁。</p>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>把入口接管、Skill 指令更新和现有业务核心删除组织为一个不可拆分的发布单元</td></tr><tr><td>涉及文件</td><td><code>scripts/release/cutover-plan.json</code>、<code>scripts/release/verify-cutover.js</code>、<code>scripts/tests/cutover-readiness.test.js</code>、<code>scripts/self-test.js</code>，以及待在 T-706 原子修改的 <code>SKILL.md</code>、manifest 和 references</td></tr><tr><td>前置依赖</td><td>T-704 通过切换门禁</td></tr><tr><td>具体动作</td><td>冻结目标资源和白名单入口、9 个改写项、40 个删除项、9 组保留能力；固定停止新批次、活动 execution 清零、切换后验证和完整版本回退顺序</td></tr><tr><td>测试</td><td>切换前准备门禁和 <code>node scripts/self-test.js cutover</code>；三平台候选 contract 的资源、入口和摘要均现场生成并核对</td></tr><tr><td>完成条件</td><td>候选 contract 不暴露 NextWork、preflight 或 Flow；发布单元没有用户可选并行模式；删除与入口接管被同一清单约束；新路径使用中性命名</td></tr><tr><td>回滚点</td><td>当前只增加准备清单和门禁，丢弃该发布单元不会改变正式执行行为</td></tr></tbody></table></div>
+<p>T-706 必须按固定顺序执行：冻结新批次；确认活动 execution、Agent session 和设备 operation 清零；在同一次代码变更中接管入口并删除旧核心；运行 switched 门禁、全量自测、Skill 静态检查、死引用扫描和 HarmonyOS 正式入口冒烟；全部通过后才允许新批次。任何门禁失败都整体回退代码和 Skill 资料，回退后创建新 batch，不跨 implementation 续写。</p>
+<p><code>scripts/release/cutover-plan.json</code> 是 T-705/T-706 的机器可读边界。删除项、保留项或正式白名单如需变化，必须先更新该清单和准备门禁，不能在 T-706 中临时扩大范围。</p>
+<h4 id="t-706-执行原子切换与现有核心删除">T-706 执行原子切换与现有核心删除</h4>
+<p><strong>状态：已完成。</strong> <code>SKILL.md</code>、默认 manifest、正式 workspace/case/batch/Agent CLI 已同时接管；固定 NextWork、逐步骤执行核心、旧 Runtime/Batch CLI 和 Flow 加载/匹配/执行能力已删除。正式 contract 不接受 profile 参数。</p>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>在同一正式发布中让目标核心成为唯一入口并删除现有业务执行核心</td></tr><tr><td>涉及文件</td><td><code>SKILL.md</code>、manifest、正式入口、<code>execute-next-work.js</code>、<code>execution-reducer.js</code>、<code>preflight-preconditions.js</code>、<code>scripts/lib/precondition-flow.js</code>、<code>scripts/flow/</code>、Flow 作用域/事件/失败码、<code>step-intent</code>、<code>references/flow-format.md</code> 及冲突 references</td></tr><tr><td>前置依赖</td><td>T-705、D-02</td></tr><tr><td>具体动作</td><td>停止新批次；等待或明确终止活动 execution；接管正式入口；删除现有执行入口、状态机、Flow 加载/匹配/执行能力和 manifest 资源；仅为历史报告保留只读 display formatter 与 failureCode 展示</td></tr><tr><td>测试</td><td><code>node scripts/release/verify-cutover.js --state switched</code>、13 组全量 self-test、Skill 静态检查、历史/当前报告、正式 workspace/import/batch init 冒烟和死引用扫描；切换后 HarmonyOS 真机运行归入 T-707</td></tr><tr><td>完成条件</td><td>新 execution 只有一条目标主链路；历史 execution 只能读取；仓库不存在旧业务执行入口、Flow 新执行能力或用户可选协议参数</td></tr><tr><td>回滚点</td><td>回退整个代码版本、<code>SKILL.md</code> 和 manifest；不得在当前版本中临时恢复旧入口</td></tr></tbody></table></div>
+<h4 id="t-707-执行切换后验证与回退判定">T-707 执行切换后验证与回退判定</h4>
+<p><strong>状态：当前 HarmonyOS 范围已完成。</strong> 正式空工作空间初始化、非结构化输入导入、batch init、设备离线时的客观 <code>BLOCKED/BATCH_BOOTSTRAP_FAILED</code>，以及 HarmonyOS 模拟器上的切换后正式暖批次均已验证。最终 2-case 批次使用两个独立 session，普通 case 不重启，原文明示恢复时 generation <code>1 -&gt; 2</code>、PID <code>26455 -&gt; 3172</code>，结果均为 <code>PASS / DIRECT_EVIDENCE</code>。<a href="harmony-post-cutover-validation-2026-08-18.md">查看验收记录</a>。</p>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>在唯一主链路上线后快速验证关键能力，并按客观门槛决定继续或完整版本回退</td></tr><tr><td>涉及文件</td><td>metrics、执行记录、问题清单和发布记录</td></tr><tr><td>前置依赖</td><td>T-706 完成</td></tr><tr><td>具体动作</td><td>执行代表性批次并观察 Runtime、单用例耗时、起点成本、知识支持结论、恢复和人工复核；出现数据损坏、安全越界或主链路不可用时立即整体回退</td></tr><tr><td>测试</td><td>正式入口冒烟、HarmonyOS 2-case 暖批次、显式 recovery、历史/当前报告读取和回退门槛复核；Android、iOS 延后</td></tr><tr><td>完成条件</td><td>关键场景无阻断问题；问题均有明确修复或接受结论；无需恢复并行旧入口</td></tr><tr><td>回滚点</td><td>完整代码版本回退；回退后新建批次，不跨版本续写 execution</td></tr></tbody></table></div>
+<h4 id="t-708-最终文档与架构收口">T-708 最终文档与架构收口</h4>
+<p><strong>状态：已完成。</strong> <code>docs/architecture.md</code> 已按当前唯一主链重写，安装说明已移除旧入口，旧 Flow 资产交付指南已删除；正式 references 与 manifest resources 不再引用已删除执行模块。</p>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>目标</td><td>让仓库文档与最终实现一致</td></tr><tr><td>涉及文件</td><td><code>docs/architecture.md</code>、最终 references、技术实现方案状态说明</td></tr><tr><td>前置依赖</td><td>T-707</td></tr><tr><td>具体动作</td><td>更新最终架构图、入口、产物和边界；删除短跳转之外的冲突说明</td></tr><tr><td>测试</td><td>manifest resources 全部存在；无 reference 死链；关键词扫描无旧主流程描述</td></tr><tr><td>完成条件</td><td><code>SKILL.md</code> 简洁，详细规则按需加载且没有双重权威来源</td></tr><tr><td>回滚点</td><td>文档随最终代码版本回退</td></tr></tbody></table></div>
+<p><strong>P7 出口：</strong> Agent 驱动核心是唯一正式执行链；当前阶段 HarmonyOS 和行为 eval 通过，Android、iOS 保持明确待验证状态；历史产物只读兼容；架构与代码一致。</p>
+<h2 id="5-依赖与并行策略">5. 依赖与并行策略</h2>
+<h3 id="5-1-关键路径">5.1 关键路径</h3>
+<p>不可跳过的主路径是：</p>
+<pre><code>T-001 → T-002 → T-101 → T-102/T-103/T-104
+      → T-105/T-106 → T-201/T-206/T-301
+      → T-305 → T-401/T-403/T-404
+      → T-502/T-503/T-505
+      → T-603/T-604/T-605
+      → T-702/T-703/T-704 → T-705</code></pre>
+<h3 id="5-2-可并行工作流">5.2 可并行工作流</h3>
+<div class="table-wrap"><table><thead><tr><th>工作流</th><th>可并行任务</th><th>合流点</th></tr></thead><tbody><tr><td>测试基础</td><td>T-003、T-004</td><td>P0 出口</td></tr><tr><td>契约</td><td>T-102、T-103、T-104；T-106 可在 T-103 后并行</td><td>T-105/T-107</td></tr><tr><td>Reader 与 Core</td><td>T-201/T-202 和 T-301/T-302/T-303</td><td>T-305、T-401</td></tr><tr><td>暖会话与 Agent contract</td><td>T-402/T-403 和 T-501/T-502 的纯合约部分</td><td>T-503/T-505</td></tr><tr><td>知识与报告</td><td>T-601/T-602 和当前报告骨架</td><td>T-603/T-605</td></tr><tr><td>Eval 资产</td><td>T-701 可在 P5 接口稳定后提前准备</td><td>T-702</td></tr></tbody></table></div>
+<p>并行任务不得同时大范围修改 <code>scripts/lib/common.js</code>、<code>run-case.js</code> 或 <code>batch-runtime.js</code>。这些高冲突文件应由对应阶段的集成人统一收口，其他任务优先新增纯模块和测试。</p>
+<h2 id="6-建议合并单元">6. 建议合并单元</h2>
+<p>任务可以按以下合并单元组织。一个单元完成后再进入下一个，不要求一个任务对应一个提交。</p>
+<div class="table-wrap"><table><thead><tr><th>合并单元</th><th>包含任务</th><th>合并要求</th></tr></thead><tbody><tr><td>M-01 基线</td><td>T-001 至 T-004</td><td>仅测试和决策，不改行为</td></tr><tr><td>M-02 目标合约</td><td>T-101 至 T-107</td><td>纯模块，现有回归全绿</td></tr><tr><td>M-03 schema reader</td><td>T-201、T-202</td><td>历史与当前 fixture 报告通过</td></tr><tr><td>M-04 输入与工作空间</td><td>T-203 至 T-206</td><td>测试环境可导入和展示；工作空间边界通过测试；正式 writer 尚不启用</td></tr><tr><td>M-05 execution 抽取</td><td>T-301 至 T-303</td><td>纯重构，现有行为等价</td></tr><tr><td>M-06 目标 Core</td><td>T-304 至 T-306</td><td>测试环境可独立 finalize</td></tr><tr><td>M-07 暖会话</td><td>T-401 至 T-407</td><td>模拟多 case 通过</td></tr><tr><td>M-08 Agent contract</td><td>T-501 至 T-504</td><td>测试 manifest 与正式入口隔离</td></tr><tr><td>M-09 Agent loop</td><td>T-505、T-506</td><td>无 NextWork 依赖</td></tr><tr><td>M-10 知识</td><td>T-601 至 T-604</td><td>查询与 assessment 可审计</td></tr><tr><td>M-11 报告</td><td>T-605 至 T-607</td><td>历史与当前展示完整</td></tr><tr><td>M-12 集成</td><td>T-701 至 T-704</td><td>自动化、HarmonyOS 真机和前向试运行通过；Android、iOS 待验证</td></tr><tr><td>M-13 原子切换</td><td>T-705、T-706</td><td>入口接管与现有执行核心删除同步完成</td></tr><tr><td>M-14 验证收口</td><td>T-707、T-708</td><td>线上验证、整体回退门槛和最终文档收口</td></tr></tbody></table></div>
+<h2 id="7-测试矩阵">7. 测试矩阵</h2>
+<h3 id="7-1-每次合并必跑">7.1 每次合并必跑</h3>
+<pre><code>node scripts/self-test.js</code></pre>
+<p>测试拆分后仍保留这一个稳定总入口。任何合并单元不得要求开发者记忆多组基础命令。</p>
+<h3 id="7-2-阶段测试">7.2 阶段测试</h3>
+<div class="table-wrap"><table><thead><tr><th>测试层</th><th>覆盖内容</th><th>主要阶段</th></tr></thead><tbody><tr><td>合约单测</td><td>schema、revision、引用、授权、result、completion</td><td>P1-P3</td></tr><tr><td>Characterization</td><td>现有输入、冷启动、NextWork、finalize、报告</td><td>P0-P6</td></tr><tr><td>模拟集成</td><td>batch、Runtime、execution、knowledge、report</td><td>P4-P7</td></tr><tr><td>历史兼容</td><td>历史 completion、CONTEXT、index、failureCode</td><td>P2-P7</td></tr><tr><td>行为 eval</td><td>动态计划、错误计划修正、知识适用、结论依据</td><td>P5-P7</td></tr><tr><td>平台真机回归</td><td>当前阶段覆盖 HarmonyOS；Android、iOS 后续补验</td><td>P0、P7</td></tr></tbody></table></div>
+<h3 id="7-3-必测失败路径">7.3 必测失败路径</h3>
+<ul><li>输入文件不存在、不可读、空文件、纯空白、BOM 后空白，以及执行中原文变化。</li><li>普通非空目录被误认成工作空间、marker 损坏或 schema 不支持、向上查找或初始化失败残留半成品。</li><li>understanding/plan revision 过期或引用错误。</li><li>动作参数非法、授权过期、跨 execution 引用。</li><li>准备证据被错误用于业务 PASS。</li><li>knowledge 条目过期、冲突或内容摘要变化。</li><li>FAIL 缺少原文依据、verdictReview 或 knowledgeQuery。</li><li>达到 30 分钟时限后仍尝试新的设备操作。</li><li>App recovery 无客观触发依据或超过 D-01 允许次数。</li><li>Agent Runtime 超时、中断、释放失败。</li><li>batch、execution、completion 的合约或实现摘要绑定不一致。</li><li>历史产物损坏和历史/当前混合工作空间。</li></ul>
+<h2 id="8-阶段完成定义">8. 阶段完成定义</h2>
+<p>每个阶段同时满足以下条件才算完成：</p>
+<ol><li>阶段内任务的代码、契约和 reference 已完成。</li><li>新增正向、边界和失败测试，并纳入稳定总入口。</li><li>正式入口仍可运行，除非本阶段就是原子切换。</li><li>新产物有 reader，新 reader 有未知 schema 和损坏产物处理。</li><li>没有新增第三方强制依赖或直接设备命令旁路。</li><li>没有把 Agent 业务判断重新固化进脚本。</li><li>回滚点经过至少一次实际演练或自动化模拟。</li><li><code>git diff --check</code> 和全量自测通过。</li></ol>
+<h2 id="9-切换验收清单">9. 切换验收清单</h2>
+<p>T-705 执行前必须逐项确认：</p>
+<ul><li>[ ] 任意非空文本和无步骤文本均可产生可信结果；空文件和纯空白输入前置返回 <code>CASE_INPUT_EMPTY</code>，且不创建执行产物。</li><li>[ ] 当前目录只接受空目录或有效工作空间；普通非空目录返回 <code>WORKSPACE_INVALID</code> 且不产生文件变更。</li><li>[ ] 外部用例路径可以导入，但所有 case、execution、知识和报告产物只写当前工作空间。</li><li>[ ] 当前 execution 不包含 preconditionPlanSha 和固定 steps 业务契约。</li><li>[ ] 当前 Agent manifest 不包含 <code>execute-next-work.js</code>。</li><li>[ ] 当前 finalize 不调用逐步骤 PASS 归约。</li><li>[ ] 同批次多用例默认仅一次 App 启动。</li><li>[ ] 每个用例拥有独立 execution、Agent session 和第一条 observation。</li><li>[ ] 准备 scope 与业务 scope 的证据不能混用。</li><li>[ ] 无依据 <code>restartApp</code> 被确定性拒绝。</li><li>[ ] FAIL 可追溯 sourceRef、业务证据、verdictReview 和 knowledgeQuery。</li><li>[ ] KNOWLEDGE_SUPPORTED 绑定适用 assessment 和知识内容摘要。</li><li>[ ] 30 分钟时限停止新设备操作后仍能生成结果，且不自动改写 verdict。</li><li>[ ] 历史与当前产物混合工作空间可以正确渲染。</li><li>[ ] 当前阶段 HarmonyOS 关键场景通过；Android、iOS 明确标记为待验证。</li><li>[ ] 完整代码版本回退已演练。</li><li>[ ] execution 不会被不同实现版本继续混写。</li><li>[ ] 正式切换发布同步删除现有业务执行入口，且不存在用户可选并行协议。</li><li>[ ] 新文件名、模块名和对外文档均使用中性命名。</li></ul>
+<h2 id="10-风险控制">10. 风险控制</h2>
+<div class="table-wrap"><table><thead><tr><th>风险</th><th>高风险阶段</th><th>控制措施</th></tr></thead><tbody><tr><td><code>run-case.js</code> 改动面过大</td><td>P3</td><td>先做纯抽取，再接目标 Core；一次只改变一个职责</td></tr><tr><td>schema 判断混乱</td><td>P1-P2</td><td>按产物 <code>schemaVersion</code> 显式分派，未知 schema 直接拒绝</td></tr><tr><td>暖会话导致状态污染</td><td>P4</td><td>独立 Agent、首条观察、准备 scope、零跨 case evidenceRef</td></tr><tr><td>Agent 重新被规则束缚</td><td>P5</td><td>目标链路无唯一 NextWork；脚本只返回客观事实和约束结果</td></tr><tr><td>Agent 无边界探索</td><td>P3-P5</td><td>单用例 30 分钟时限；到时停止新设备操作但保留 CONCLUDE</td></tr><tr><td>知识被错误套用</td><td>P6</td><td>候选与 assessment 分离，绑定适用范围、有效期、追溯信息和 contentSha，不做可信度评分</td></tr><tr><td>报告在切换后不可读</td><td>P2、P6</td><td>reader 和最小视图先于新 writer 合并</td></tr><tr><td>长期维护双主链路</td><td>P7</td><td>开发期不增加用户可选协议；正式切换与现有核心删除同步发布</td></tr><tr><td>平台回归</td><td>P0、P7</td><td>三端 adapter 基准；当前切换前完成 HarmonyOS 真机回归，其他平台后续补验</td></tr></tbody></table></div>
+<h2 id="11-进度跟踪模板">11. 进度跟踪模板</h2>
+<p>实施时可按任务维护以下状态，不需要在代码中增加项目管理文件：</p>
+<div class="table-wrap"><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody><tr><td>状态</td><td><code>TODO</code>、<code>IN_PROGRESS</code>、<code>REVIEW</code>、<code>BLOCKED</code>、<code>DONE</code></td></tr><tr><td>任务 ID</td><td>例如 <code>T-304</code></td></tr><tr><td>依赖</td><td>尚未完成的前置任务</td></tr><tr><td>变更范围</td><td>本次实际修改的文件</td></tr><tr><td>测试结果</td><td>命令、场景和结果摘要</td></tr><tr><td>剩余风险</td><td>尚未覆盖的问题</td></tr><tr><td>回滚点</td><td>可回退的提交；正式切换后只能使用完整代码版本回退</td></tr></tbody></table></div>
+<h2 id="12-开始实施时的首批任务">12. 开始实施时的首批任务</h2>
+<p>评审通过后，第一批只执行以下内容，不立即修改业务主链路：</p>
+<ol><li>T-001：记录已确认的 D-01 至 D-07。</li><li>T-002：补齐现有实现关键特征测试。</li><li>T-003：拆分自测结构，保持 <code>node scripts/self-test.js</code> 总入口。</li><li>T-004：固定三端统一动作基准。</li><li>T-101 至 T-107：实现目标纯契约，不让正式代码提前写入当前产物。</li></ol>
+<p>首批完成并评审通过后，再开始 schema reader 和 execution Core 抽取。这样即使重构暂停，仓库也只增加测试和未启用契约，不会留下半切换的运行时。</p>
+<h2 id="结论">结论</h2>
+<p>本计划将重构拆为 8 个阶段、51 个文件级任务和 14 个建议合并单元。执行顺序遵循“基线与决策、纯契约、历史读取与工作空间、客观内核、暖会话、Agent 动态执行、知识与报告、原子切换与收口”。</p>
+<p>实施的关键是把“渐进开发”和“正式双主链路”区分开：先保护现有平台 adapter 和历史结果，再以纯模块、fixture 和测试 runner 建立目标闭环；当前阶段以 HarmonyOS 完成切换门禁，Android、iOS 保留实现但延后真机验证，不能据此宣称三端均已验证。门禁通过后，在同一发布中完成入口接管、Skill 更新和现有状态机删除。最终保留的是设备与可信执行基础设施，退出的是固定业务路径和脚本业务裁决；回退依靠完整代码版本，不依靠长期兼容入口。</p><footer class="doc-footer">Agent 驱动的移动端 AI 视觉测试实施执行计划 · 开发执行稿 · 更新于 2026-08-18</footer></main>
+</div>
+</body>
+</html>

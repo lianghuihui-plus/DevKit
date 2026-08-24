@@ -5,9 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const {
   renderIndexForRoot,
-  workspaceRoot,
-} = require('../common');
+} = require('./report-service');
 const { parseCliArgsOrExit } = require('../lib/cli-args');
+const { assertWorkspace } = require('../lib/workspace');
 
 function usage() {
   console.error('Usage: render-index.js [workspace-cwd]');
@@ -19,7 +19,7 @@ const parsedArgs = parseCliArgsOrExit(process.argv.slice(2), {
   maxPositionals: 1,
 });
 const input = parsedArgs.positionals[0] ? path.resolve(parsedArgs.positionals[0]) : process.cwd();
-const rootDir = workspaceRoot(input);
+const rootDir = assertWorkspace(input).root;
 const casesRoot = path.join(rootDir, 'cases');
 
 if (!fs.existsSync(casesRoot)) {

@@ -24,6 +24,8 @@ const STATUS_LABELS = {
   NOT_RUN: '未执行',
   PENDING: '待执行',
   PREPARED: '已准备',
+  PENDING_PUBLICATION: '待发布',
+  FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复',
 };
 
 const EVENT_LABELS = {
@@ -44,6 +46,7 @@ const EVENT_LABELS = {
   popup: '弹窗处理',
   appForeground: '前台状态',
   budgetExceeded: '预算超限',
+  timeLimitReached: '达到用例时限',
   result: '执行结果',
 };
 
@@ -139,24 +142,30 @@ function displayFailureCode(value) {
 function formatDuration(ms) {
   const value = Number(ms);
   if (!Number.isFinite(value) || value < 0) return '-';
-  if (value < 1000) return `${Math.round(value)}ms`;
+  if (value < 1000) return `${Math.round(value)} 毫秒`;
   const totalSeconds = Math.round(value / 1000);
   if (totalSeconds < 60) {
-    return value < 10000 ? `${(value / 1000).toFixed(1).replace(/\.0$/, '')}s` : `${totalSeconds}s`;
+    return value < 10000 ? `${(value / 1000).toFixed(1).replace(/\.0$/, '')} 秒` : `${totalSeconds} 秒`;
   }
   const totalMinutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  if (totalMinutes < 60) return seconds ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+  if (totalMinutes < 60) return seconds ? `${totalMinutes} 分钟 ${seconds} 秒` : `${totalMinutes} 分钟`;
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+  return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
 }
 
 function formatDisplayTime(value) {
   if (!value) return '-';
   const text = String(value);
-  const match = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/);
-  return match ? `${match[1]} ${match[2]}` : text;
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})?$/);
+  if (!match && !(value instanceof Date)) return text;
+  const parsed = value instanceof Date
+    ? value
+    : new Date(match[4] ? text.replace(' ', 'T') : `${match[1]}T${match[2]}${match[3] || ''}`);
+  if (Number.isNaN(parsed.getTime())) return text;
+  const pad = (part) => String(part).padStart(2, '0');
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())}`;
 }
 
 function formatCell(value) {

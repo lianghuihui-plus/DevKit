@@ -15,39 +15,35 @@ const INPUT_TEXT_MODE_ALIASES = Object.freeze({
 const ACTION_FIELDS = Object.freeze({
   launchApp: ['reason'],
   restartApp: ['reason'],
-  tap: ['target', 'x', 'y', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'reason'],
-  toggle: ['target', 'x', 'y', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'reason'],
-  longPress: ['target', 'x', 'y', 'durationMs', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'reason'],
-  inputText: ['target', 'x', 'y', 'text', 'mode', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'reason'],
-  swipe: ['fromX', 'fromY', 'toX', 'toY', 'velocity', 'reason'],
+  tap: ['target', 'x', 'y', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
+  toggle: ['target', 'x', 'y', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
+  longPress: ['target', 'x', 'y', 'durationMs', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
+  inputText: ['target', 'x', 'y', 'text', 'mode', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
+  swipe: ['fromX', 'fromY', 'toX', 'toY', 'velocity', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
   back: ['reason'],
   home: ['reason'],
   wait: ['ms', 'reason'],
 });
 
 const SCOPE_ACTION_TYPES = Object.freeze({
-  'case-step': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']),
-  'global-rule': Object.freeze(['tap', 'toggle', 'longPress', 'back', 'home', 'wait']),
-  'precondition-flow': Object.freeze(['launchApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']),
-  'execution-bootstrap': Object.freeze(['restartApp']),
+  'case-business': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']),
+  'case-prepare': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']),
   'formal-execution': Object.freeze(Object.keys(ACTION_FIELDS)),
 });
 
-const COORDINATE_SOURCES = Object.freeze(['layout', 'visual', 'pixel', 'flow', 'manual']);
+const COORDINATE_SOURCES = Object.freeze(['layout', 'visual', 'pixel']);
 const COORDINATE_SOURCE_ALIASES = Object.freeze({
   screenshot: 'visual',
   image: 'visual',
   uitree: 'layout',
 });
 const SCOPE_COORDINATE_SOURCES = Object.freeze({
-  'case-step': Object.freeze(['layout', 'visual', 'pixel']),
-  'global-rule': Object.freeze(['layout', 'visual', 'pixel']),
-  'precondition-flow': Object.freeze(['layout', 'visual', 'pixel', 'flow']),
-  'execution-bootstrap': Object.freeze([]),
-  'formal-execution': Object.freeze(['layout', 'visual', 'pixel', 'flow']),
+  'case-business': Object.freeze(['layout', 'visual', 'pixel']),
+  'case-prepare': Object.freeze(['layout', 'visual', 'pixel']),
+  'formal-execution': Object.freeze(['layout', 'visual', 'pixel']),
 });
-const COORDINATE_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText']);
-const BOUNDS_REQUIRED_SOURCES = new Set(['visual', 'pixel', 'flow']);
+const COORDINATE_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe']);
+const BOUNDS_REQUIRED_SOURCES = new Set(['visual', 'pixel']);
 
 function fail(context, message, details = {}) {
   const error = new Error(`ACTION_CONTRACT_INVALID: ${context}: ${message}`);
@@ -105,7 +101,7 @@ function normalizeActionProposal(action, options = {}) {
   return { action: normalized, normalizations };
 }
 
-function describeActionConstraints(platform, scope = 'case-step') {
+function describeActionConstraints(platform, scope = 'case-business') {
   const normalizedPlatform = String(platform || '').trim().toLowerCase();
   const normalizedScope = executionScope(scope);
   return {
@@ -215,7 +211,9 @@ function validateActionExecution(action, options = {}) {
       fail(context, `${platform} inputText targets the focused field and does not accept x or y`, { field: 'x,y', received: [action.x, action.y] });
     }
   }
-  const hasCoordinates = finiteNumber(action.x) || finiteNumber(action.y);
+  const hasCoordinates = action.type === 'swipe'
+    ? ['fromX', 'fromY', 'toX', 'toY'].every((field) => finiteNumber(action[field]))
+    : finiteNumber(action.x) || finiteNumber(action.y);
   if (COORDINATE_ACTIONS.has(action.type) && hasCoordinates) {
     const allowed = SCOPE_COORDINATE_SOURCES[scope];
     if (!action.coordinateSource || !allowed.includes(action.coordinateSource)) {
@@ -227,12 +225,15 @@ function validateActionExecution(action, options = {}) {
     if (typeof action.coordinateEvidence !== 'string' || !action.coordinateEvidence.trim()) {
       fail(context, 'coordinateEvidence is required with x/y', { field: 'coordinateEvidence', received: action.coordinateEvidence });
     }
+    if (typeof action.coordinateArtifactRef !== 'string' || !action.coordinateArtifactRef.trim()) {
+      fail(context, 'coordinateArtifactRef is required with x/y', { field: 'coordinateArtifactRef', received: action.coordinateArtifactRef });
+    }
     if (BOUNDS_REQUIRED_SOURCES.has(action.coordinateSource) && !Array.isArray(action.targetBounds)) {
       fail(context, `${action.coordinateSource} coordinate action requires targetBounds`, {
         field: 'targetBounds', received: action.targetBounds, allowed: ['[x1,y1,x2,y2]'],
       });
     }
-  } else if (action.coordinateSource !== undefined || action.coordinateEvidence !== undefined || action.targetBounds !== undefined) {
+  } else if (action.coordinateSource !== undefined || action.coordinateEvidence !== undefined || action.coordinateArtifactRef !== undefined || action.targetBounds !== undefined) {
     fail(context, 'coordinate metadata is only valid when the action has x/y coordinates', { field: 'coordinateSource' });
   }
   return action;

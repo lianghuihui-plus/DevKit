@@ -348,9 +348,7 @@ function enrichObservationScreenshot(event, execDir) {
     event.ok = false;
     observation.ok = false;
     event.causeFailureCode = 'OBSERVATION_ARTIFACT_INVALID';
-    event.failureCode = event.scope === 'precondition-flow'
-      ? 'PRECONDITION_FLOW_OBSERVATION_FAILED'
-      : 'OBSERVATION_ARTIFACT_INVALID';
+    event.failureCode = 'OBSERVATION_ARTIFACT_INVALID';
     event.reason = event.reason || `截图产物无效: ${metadata.error}`;
   }
   return event;

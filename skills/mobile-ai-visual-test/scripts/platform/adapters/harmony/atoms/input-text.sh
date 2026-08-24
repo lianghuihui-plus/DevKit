@@ -61,7 +61,7 @@ while [[ $attempts -lt $max_attempts ]]; do
   if "$script_dir/dump-tree.sh" "${dump_args[@]}" >/dev/null 2>&1; then
     effect="$(node "$script_dir/../lib/input-effect.js" --layout "$tmp_dir/layout.json" --x "$x" --y "$y" --text "$text" --mode "$mode")"
     effect_status="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).status)' "$effect")"
-    [[ "$effect_status" == "VERIFIED" || "$mode" == "append" ]] && break
+    [[ "$effect_status" == "VERIFIED" || "$effect_status" == "MASKED" || "$mode" == "append" ]] && break
   fi
   [[ $attempts -lt $max_attempts ]] && sleep 0.15
 done

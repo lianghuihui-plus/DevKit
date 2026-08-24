@@ -1,13 +1,13 @@
 # 安装教程
 
-> 本文档面向人工环境准备。执行流程仍以 `probe-env -> update-env -> prepare-env -> run-case` 为准。
+> 本文档面向人工环境准备。正式执行以 `workspace -> import-case -> probe/prepare -> 环境确认 -> 显式执行请求 -> batch -> isolated case Agent -> batch commit` 为唯一主链。
 
 ## 通用要求
 
 - macOS 或具备 Bash/Node.js 的本地环境。
 - Node.js 可用：`node -v`。
 - 基础命令可用：`perl`、`mktemp`、`sed`、`awk`。
-- 在测试工作空间根目录执行 skill 入口。
+- 当前目录必须为空目录或已有有效 `workspace.json` 的测试工作空间。
 
 验证：
 
@@ -46,7 +46,7 @@ scripts/probe-env.sh --platform android
 说明：
 
 - Android 中文输入依赖 MAVT Input IME。
-- `scripts/prepare-env.sh --case-dir <case-dir> --platform android` 会自动构建、安装、启用 MAVT Input IME。
+- `scripts/prepare-env.sh --platform android [--device <serial>]` 会自动构建、安装、启用 MAVT Input IME。
 - 如果 IME 构建失败，通常是 SDK Platform、Build Tools、JDK 或 `ANDROID_HOME` 缺失。
 
 ## HarmonyOS
@@ -55,20 +55,19 @@ scripts/probe-env.sh --platform android
 
 - DevEco Studio 或 HarmonyOS Command Line Tools。
 - `devecocli`，用于确定性枚举设备形态。
-- `hdc` 命令。
+- 可被 `devecocli` 识别的 DevEco/HarmonyOS 工具链。
 
 设备准备：
 
 - 连接真机或启动模拟器。
-- `hdc list targets` 能看到目标设备。
+- `devecocli device list` 能看到目标设备。
 - 设备支持 `uitest`、`screenCap`、`dumpLayout`、`aa dump`、`hilog`。
 
 验证：
 
 ```bash
-hdc list targets
-hdc shell uitest --version
 devecocli device list
+devecocli device view -t <device-name-or-serial>
 scripts/probe-env.sh --platform harmony
 ```
 
@@ -146,5 +145,5 @@ scripts/platform/adapters/ios/prepare-real-device.sh \
 说明：
 
 - `prepare-real-device.sh` 只用于人工预热和诊断，不是正式 case 执行入口。
-- 正式执行时，通过 `scripts/update-env.js` 把真机参数写入每个 case 的平台 state。
+- 正式执行时，把真机参数写入环境确认 binding；同一批次不得隐式切换设备或签名参数。
 - iOS 真机日志当前不作为可用能力；截图、控件树、前台 App 和动作能力由 Appium/WDA 提供。

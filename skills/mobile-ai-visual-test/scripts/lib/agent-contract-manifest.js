@@ -7,59 +7,61 @@ const path = require('path');
 const ROLE_ENTRYPOINTS = Object.freeze({
   'case-executor': Object.freeze([
     'scripts/build-agent-contract.js',
-    'scripts/execute-next-work.js',
-    'scripts/build-case-agent-result.js',
+    'scripts/agent/status.js',
+    'scripts/agent/understand.js',
+    'scripts/agent/inspect.js',
+    'scripts/agent/step.js',
+    'scripts/agent/mark-start.js',
+    'scripts/agent/request-recovery.js',
+    'scripts/agent/investigate.js',
+    'scripts/agent/conclude.js',
   ]),
   'batch-coordinator': Object.freeze([
+    'scripts/workspace.js',
+    'scripts/import-case.js',
     'scripts/build-agent-contract.js',
-    'scripts/resolve-execution-targets.js',
-    'scripts/parse-case.js',
     'scripts/probe-env.sh',
-    'scripts/update-env.js',
-    'scripts/preflight-preconditions.js',
     'scripts/prepare-env.sh',
-    'scripts/run-case.js',
-    'scripts/agent-runtime.js',
-    'scripts/batch-runtime.js',
+    'scripts/environment.js',
+    'scripts/execution-request.js',
+    'scripts/knowledge.js',
+    'scripts/batch.js',
+    'scripts/render-context.js',
+    'scripts/render-index.js',
   ]),
 });
 
-const CASE_EXECUTOR_RESOURCES = Object.freeze([
-  'SKILL.md',
-  'references/case-executor-contract.md',
-  'references/action-schema.md',
-]);
-
-const BATCH_COORDINATOR_RESOURCES = Object.freeze([
-  'SKILL.md',
-  'references/agent-runtime.md',
-  'references/workflow.md',
-  'references/interfaces.md',
-  'references/environment-probing.md',
-  'references/failure-policy.md',
-  'references/flow-format.md',
-  'references/case-executor-contract.md',
-  'references/context-format.md',
-]);
-
-const PROVIDER_RESOURCES = Object.freeze({
-  codex: 'references/agent-runtimes/codex.md',
+const ROLE_RESOURCES = Object.freeze({
+  'case-executor': Object.freeze([
+    'SKILL.md',
+    'references/agent-execution.md',
+    'references/knowledge.md',
+  ]),
+  'batch-coordinator': Object.freeze([
+    'SKILL.md',
+    'references/workflow.md',
+    'references/interfaces.md',
+    'references/environment-probing.md',
+    'references/failure-policy.md',
+    'references/case-format.md',
+    'references/agent-runtime.md',
+    'references/agent-runtimes/codex.md',
+  ]),
 });
 
-const CASE_EXECUTOR_CORE = new Set([
+const SHARED_IMPLEMENTATION_FILES = new Set([
   'scripts/build-agent-contract.js',
-  'scripts/build-case-agent-result.js',
-  'scripts/commit-agent-turn.js',
-  'scripts/execute-next-work.js',
-  'scripts/common.js',
-  'scripts/run-case.js',
-  'scripts/action.sh',
-  'scripts/action-observe.sh',
-  'scripts/observe.sh',
-  'scripts/platform/action.sh',
-  'scripts/platform/observe.sh',
-  'scripts/execution/resolve-execution-environment.js',
-  'scripts/execution/run-case.js',
+  'scripts/lib/agent-contract-manifest.js',
+]);
+
+const REPORT_ONLY_LIB_FILES = new Set([
+  'scripts/lib/agent-eval.js',
+  'scripts/lib/cli-args.js',
+  'scripts/lib/display-format.js',
+  'scripts/lib/execution-reader.js',
+  'scripts/lib/failure-catalog.js',
+  'scripts/lib/historical-case-contract.js',
+  'scripts/lib/historical-failure-catalog.js',
 ]);
 
 function walkFiles(root, relative) {
@@ -74,14 +76,9 @@ function walkFiles(root, relative) {
   return values;
 }
 
-function roleResources(role, provider) {
-  if (role === 'case-executor') return [...CASE_EXECUTOR_RESOURCES];
-  if (role === 'batch-coordinator') {
-    const values = [...BATCH_COORDINATOR_RESOURCES];
-    if (PROVIDER_RESOURCES[provider]) values.splice(2, 0, PROVIDER_RESOURCES[provider]);
-    return values;
-  }
-  throw new Error(`Unsupported Agent role: ${role}`);
+function roleResources(role) {
+  if (!ROLE_RESOURCES[role]) throw new Error(`Unsupported Agent role: ${role}`);
+  return [...ROLE_RESOURCES[role]];
 }
 
 function roleEntrypoints(role) {
@@ -90,19 +87,35 @@ function roleEntrypoints(role) {
 }
 
 function implementationFiles(skillRoot, role, platform) {
-  const allScripts = walkFiles(skillRoot, 'scripts')
-    .filter((relative) => !/(^|[-.])self-test\.js$/.test(path.basename(relative)));
-  const selectedAdapterPrefix = `scripts/platform/adapters/${platform}/`;
-  const withoutOtherAdapters = allScripts.filter((relative) =>
-    !relative.startsWith('scripts/platform/adapters/') || relative.startsWith(selectedAdapterPrefix));
-  if (role === 'batch-coordinator') return withoutOtherAdapters;
-  if (role !== 'case-executor') throw new Error(`Unsupported Agent role: ${role}`);
-  return withoutOtherAdapters.filter((relative) => CASE_EXECUTOR_CORE.has(relative)
-    || relative.startsWith('scripts/lib/')
-    || relative.startsWith(selectedAdapterPrefix));
+  if (!ROLE_ENTRYPOINTS[role]) throw new Error(`Unsupported Agent role: ${role}`);
+  const files = new Set(SHARED_IMPLEMENTATION_FILES);
+  for (const relative of walkFiles(skillRoot, 'scripts/agent')) files.add(relative);
+  for (const relative of walkFiles(skillRoot, 'scripts/batch')) files.add(relative);
+  for (const relative of walkFiles(skillRoot, 'scripts/case')) files.add(relative);
+  for (const relative of walkFiles(skillRoot, 'scripts/execution')) files.add(relative);
+  for (const relative of walkFiles(skillRoot, 'scripts/lib')) {
+    if (!REPORT_ONLY_LIB_FILES.has(relative)) files.add(relative);
+  }
+  for (const relative of [
+    'scripts/batch.js',
+    'scripts/environment.js',
+    'scripts/execution-request.js',
+    'scripts/import-case.js',
+    'scripts/knowledge.js',
+    'scripts/workspace.js',
+    'scripts/probe-env.sh',
+    'scripts/prepare-env.sh',
+    'scripts/platform/action.sh',
+    'scripts/platform/observe.sh',
+    'scripts/platform/probe-env.sh',
+    'scripts/platform/prepare-env.sh',
+  ]) files.add(relative);
+  for (const relative of walkFiles(skillRoot, `scripts/platform/adapters/${platform}`)) files.add(relative);
+  return [...files].sort();
 }
 
 module.exports = {
+  REPORT_ONLY_LIB_FILES,
   implementationFiles,
   roleEntrypoints,
   roleResources,

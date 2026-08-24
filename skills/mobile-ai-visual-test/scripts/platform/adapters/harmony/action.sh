@@ -78,8 +78,10 @@ normalize_action() {
   node -e '
 const event = JSON.parse(process.argv[1]);
 event.action = process.argv[2];
+event.device = { ...(event.device || {}), id: process.argv[3] || null };
+event.app = { ...(event.app || {}), appId: process.argv[4] || null };
 console.log(JSON.stringify(event, null, 2));
-' "$1" "$2"
+' "$1" "$2" "$device" "$bundle"
 }
 
 run_atom() {

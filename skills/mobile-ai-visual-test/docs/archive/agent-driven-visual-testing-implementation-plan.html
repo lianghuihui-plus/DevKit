@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 驱动的移动端 AI 视觉测试技术实现方案</title>
+<style>
+  :root { --ink:#17211d; --muted:#5d6862; --line:#d8dfdb; --paper:#fff; --canvas:#eef2f0; --green:#176c4c; --green-soft:#e6f3ed; --blue:#245b88; --blue-soft:#eaf2f8; --gold:#916514; --gold-soft:#fff7dd; --red:#9b3d36; }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; color:var(--ink); background:var(--canvas); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; font-size:16px; line-height:1.72; letter-spacing:0; }
+  .layout { display:grid; grid-template-columns:232px minmax(0,1040px); gap:28px; justify-content:center; align-items:start; padding:28px; }
+  .toc { position:sticky; top:24px; max-height:calc(100vh - 48px); overflow:auto; padding:18px 16px; border-left:3px solid var(--green); background:rgba(255,255,255,.88); }
+  .toc-title { margin:0 0 10px; color:var(--muted); font-size:12px; font-weight:700; }
+  .toc a { display:block; padding:5px 0; color:#39443e; font-size:13px; line-height:1.4; text-decoration:none; }
+  .toc a:hover { color:var(--green); }
+  main { width:100%; padding:56px 70px 74px; background:var(--paper); border-top:6px solid var(--green); box-shadow:0 10px 32px rgba(23,33,29,.08); }
+  h1 { margin:0; max-width:850px; color:#102a20; font-size:38px; line-height:1.25; font-weight:760; }
+  h2 { margin:54px 0 18px; padding-bottom:10px; border-bottom:1px solid var(--line); color:#17392c; font-size:25px; line-height:1.35; }
+  h3 { margin:31px 0 10px; color:#243c33; font-size:19px; line-height:1.45; }
+  h4 { margin:24px 0 8px; color:#2e463d; font-size:16px; line-height:1.45; }
+  p { margin:11px 0; }
+  ul,ol { padding-left:24px; }
+  li { margin:6px 0; }
+  strong { color:#102f23; }
+  blockquote { margin:18px 0 32px; padding:10px 0 10px 18px; color:var(--muted); border-left:3px solid #aeb9b3; }
+  main > h2:first-of-type + p + ol { margin:20px 0 30px; padding:22px 26px 22px 48px; border:1px solid #eadba7; border-left:5px solid var(--gold); background:var(--gold-soft); }
+  code { padding:2px 5px; color:#154b37; background:#eef4f1; border-radius:3px; font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; font-size:.91em; overflow-wrap:anywhere; }
+  pre { margin:18px 0 24px; padding:16px 18px; overflow:auto; color:#e8f0eb; background:#1d2924; border-left:4px solid var(--green); font-size:13px; line-height:1.55; }
+  pre code { padding:0; color:inherit; background:transparent; border-radius:0; overflow-wrap:normal; }
+  .table-wrap { margin:19px 0 27px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; line-height:1.55; }
+  th,td { padding:10px 11px; border:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { color:#183b2e; background:#eef5f1; font-weight:700; }
+  tr:nth-child(even) td { background:#fafcfb; }
+  .diagram { margin:23px 0 29px; padding:16px; overflow-x:auto; border:1px solid var(--line); background:#fbfcfb; }
+  .diagram svg { display:block; width:100%; min-width:740px; height:auto; }
+  .diagram figcaption { margin-top:10px; color:var(--muted); font-size:13px; text-align:center; }
+  .diagram .box { fill:#fff; stroke:#9eaaa4; stroke-width:1.5; }
+  .diagram .green { fill:var(--green-soft); stroke:var(--green); stroke-width:1.8; }
+  .diagram .blue { fill:var(--blue-soft); stroke:var(--blue); stroke-width:1.8; }
+  .diagram .gold { fill:var(--gold-soft); stroke:var(--gold); stroke-width:1.8; }
+  .diagram .lane { fill:#f5f7f6; stroke:#bcc8c2; stroke-width:1.3; }
+  .diagram .case-area { fill:#fff; stroke:#b7c5bd; stroke-width:1.5; stroke-dasharray:7 5; }
+  .diagram .arrow { fill:none; stroke:#65726b; stroke-width:1.7; }
+  .diagram .loop { stroke:var(--green); }
+  .diagram text { fill:#203029; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; font-size:14px; text-anchor:middle; }
+  .diagram .small { fill:var(--muted); font-size:12px; }
+  .diagram .diagram-title { fill:#17392c; font-size:18px; font-weight:700; }
+  .diagram .lane-title { fill:#355247; font-size:13px; font-weight:700; text-anchor:start; }
+  .doc-footer { margin-top:60px; padding-top:18px; color:var(--muted); border-top:1px solid var(--line); font-size:13px; }
+  @media (max-width:1100px) { .layout{display:block;padding:0}.toc{display:none}main{padding:42px 28px 60px;box-shadow:none}h1{font-size:32px} }
+  @media print {
+    @page { size:A4; margin:15mm 14mm; }
+    body { background:#fff; font-size:9.6pt; line-height:1.58; }
+    .layout { display:block; padding:0; }
+    .toc { display:none; }
+    main { padding:0; border:0; box-shadow:none; }
+    h1 { font-size:24pt; }
+    h2 { margin-top:24px; font-size:16pt; break-after:avoid; }
+    h3 { margin-top:19px; font-size:12.5pt; break-after:avoid; }
+    h4 { margin-top:14px; font-size:10.5pt; break-after:avoid; }
+    h2 + p, h3 + p { break-after:avoid; }
+    p,blockquote { break-inside:avoid; }
+    .table-wrap,figure,pre { break-inside:avoid; }
+    table { font-size:8.5pt; }
+    th,td { padding:6px 7px; }
+    .diagram { padding:8px; }
+    .diagram svg { min-width:0; }
+    code { font-size:.88em; }
+    pre { overflow:visible; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
+    pre code { white-space:inherit; overflow-wrap:inherit; word-break:inherit; }
+    a { color:inherit; text-decoration:none; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="toc" aria-label="目录"><div class="toc-title">技术实现评审稿</div><a href="#实现原则与硬性不变量">实现原则与硬性不变量</a>
+<a href="#1-实现范围与现状差距">1. 实现范围与现状差距</a>
+<a href="#2-目标-skill-结构">2. 目标 Skill 结构</a>
+<a href="#3-运行时主链路">3. 运行时主链路</a>
+<a href="#4-输入-理解与动态计划">4. 输入、理解与动态计划</a>
+<a href="#5-起点建立与暖会话">5. 起点建立与暖会话</a>
+<a href="#6-agent-行动循环与客观守卫">6. Agent 行动循环与客观守卫</a>
+<a href="#7-本地知识实现">7. 本地知识实现</a>
+<a href="#适用范围">适用范围</a>
+<a href="#可观察现象">可观察现象</a>
+<a href="#结论与处理建议">结论与处理建议</a>
+<a href="#追溯信息">追溯信息</a>
+<a href="#8-事实-结果与报告契约">8. 事实、结果与报告契约</a>
+<a href="#9-文件级改造方案">9. 文件级改造方案</a>
+<a href="#10-兼容-开发隔离与正式切换">10. 兼容、开发隔离与正式切换</a>
+<a href="#11-测试与评估">11. 测试与评估</a>
+<a href="#12-可观测性与指标">12. 可观测性与指标</a>
+<a href="#13-风险与回滚">13. 风险与回滚</a>
+<a href="#14-实现验收标准">14. 实现验收标准</a>
+<a href="#15-实现决策">15. 实现决策</a>
+<a href="#结论">结论</a></nav>
+  <main><p style="padding:12px;border:1px solid #d97706;background:#fffbeb;color:#92400e"><strong>历史归档：</strong>本文记录切换前的实现设计，所述目标文件和迁移状态可能已失效。当前架构以 <code>../architecture.md</code> 为准。</p><h1 id="agent-驱动的移动端-ai-视觉测试技术实现方案">Agent 驱动的移动端 AI 视觉测试技术实现方案</h1>
+<blockquote>技术实现评审稿 · 2026-08-12  <br>本文承接《Agent 驱动的移动端 AI 视觉测试方案》，用于确认重构落地方式、文件职责、运行时契约、迁移顺序和验收方法；本文不包含具体代码实现。</blockquote>
+<h2 id="实现原则与硬性不变量">实现原则与硬性不变量</h2>
+<p>以下内容是实现阶段不得偏离的约束，优先级高于局部兼容和历史代码复用：</p>
+<ol><li><strong>仍然是一个本地 Codex Skill，并保留明确的测试工作空间。</strong> 由 <code>SKILL.md</code>、按需加载的 <code>references/</code>、本地脚本和工作空间产物组成；当前目录只允许是空目录或带有效标记的既有工作空间，不建设独立服务，不引入数据库、向量服务、模型 SDK 或新的强制运行时依赖。</li><li><strong>原始输入是最高业务依据。</strong> 任意非空、可读取的文本输入都先原样保存；解析结果、检查点和执行计划只是 Agent 的工作草稿，不是拒绝输入或裁决业务结果的固定契约。空文件或仅含空白字符的输入在前置环节直接报错。</li><li><strong>Agent 持有业务决策权。</strong> 用例理解、起点条件、检查点、动作策略、计划修订、知识适用性、断言和最终结论由 Agent 负责；脚本不生成固定业务路径，也不按固定步骤状态机归约 PASS/FAIL。</li><li><strong>计划可修订，测试目标不可静默改变。</strong> 检查点可以增加、删除、合并、拆分或重排，辅助操作可多可少；每次修订必须记录原因及其与原始输入的映射。</li><li><strong>复用 App 状态，不复用用例上下文。</strong> 同一批次保持设备和 App 暖会话；每个用例仍建立独立 execution、Agent 会话、执行时限、计划、证据和结果，不继承上一用例对话或业务证据。</li><li><strong>新用例先重新建立起点。</strong> 当前页面只作为现场输入；Agent 必须重新观察，并选择直接复用、少量转换或导航锚点恢复。准备阶段事实不能替代业务检查点证据。</li><li><strong>疑似失败先调查。</strong> Agent 在 FAIL、INCONCLUSIVE 或业务相关 BLOCKED 前，必须核对原文、重新观察、尝试合理恢复并查询本地知识；计划错误或低置信度假设不能直接形成产品 FAIL。</li><li><strong>脚本只执行精准的客观约束。</strong> 环境绑定、能力白名单、参数合法性、副作用授权绑定、单用例 30 分钟时限、产物来源和证据完整性由脚本确定性检查；页面语义、业务进展和知识结论不由脚本判断。</li><li><strong>任何非空可读取输入都产生可解释结果。</strong> 即使无法提取明确目标或无法可靠断言，也应输出 <code>INCONCLUSIVE</code> 或 <code>BLOCKED</code> 报告，而不是因格式或内容质量失败；空文本没有测试目标，不进入执行链。</li><li><strong>历史结果可读，正式执行只有一条主链路。</strong> 已完成产物继续兼容展示；正式切换时由目标执行核心一次性接管，并同步删除现有业务执行核心。开发期隔离不形成用户可选的并行执行模式。</li></ol>
+<h2 id="1-实现范围与现状差距">1. 实现范围与现状差距</h2>
+<h3 id="1-1-本次实现范围">1.1 本次实现范围</h3>
+<p>本次重构覆盖 Skill 的指令、输入、执行、批次、知识、结果和报告主链路：</p>
+<ul><li>重写 <code>SKILL.md</code> 的 Agent 职责和最小执行流程。</li><li>将原始用例导入改为“原样保存 + 最小身份信息”，取消步骤数量和格式质量门槛。</li><li>将固定步骤归约器替换为 Agent 驱动的计划与行动循环。</li><li>将逐用例冷启动改为批次暖会话，并增加用例起点建立阶段。</li><li>增加无外部依赖的本地知识检索与引用审计。</li><li>调整动作授权、执行时限、证据、结果和报告契约。</li><li>提供历史产物兼容读取和分阶段迁移能力。</li></ul>
+<p>平台 adapter 和 atoms 已经提供稳定的观察与操作能力，不在本次重构中推倒重写。除非新契约暴露出真实缺口，HarmonyOS、Android、iOS 的截图、控件树、前台识别、点击、输入、滑动和启动实现保持不变。</p>
+<h3 id="1-2-当前实现与目标实现">1.2 当前实现与目标实现</h3>
+<div class="table-wrap"><table><thead><tr><th>领域</th><th>当前实现</th><th>目标实现</th><th>主要影响</th></tr></thead><tbody><tr><td>输入</td><td>Markdown 必须解析出至少一个固定步骤</td><td>保存任意非空可读取文本；零步骤可执行，空文本前置报错</td><td><code>parse-case.js</code>、<code>case-contract.js</code></td></tr><tr><td>计划</td><td>parser 和 preflight 生成固定步骤、前置条件计划及哈希</td><td>Agent 在 execution 内生成并修订计划</td><td><code>preflight-preconditions.js</code>、<code>execution-reducer.js</code></td></tr><tr><td>Agent</td><td>只回答 Case Engine 发出的单次视觉决策</td><td>主导理解、规划、操作、调查和裁决</td><td><code>SKILL.md</code>、执行参考资料</td></tr><tr><td>执行推进</td><td><code>execute-next-work.js</code> 决定唯一 NextWork</td><td>Agent 决定下一步，脚本返回客观事实与约束结果</td><td><code>execute-next-work.js</code>、<code>run-case.js</code></td></tr><tr><td>动作授权</td><td>固定 <code>stepId + intentSha</code></td><td>当前计划修订 + 阶段 + 检查点/起点条件绑定</td><td><code>step-intent.js</code>、<code>action.sh</code></td></tr><tr><td>通过条件</td><td>每个 parser 步骤必须存在 assertion PASS</td><td>总体结论由 Agent形成，脚本只校验证据引用</td><td>finalize、result、metrics</td></tr><tr><td>App 生命周期</td><td>每个 execution 自动 <code>restartApp</code></td><td>批次启动一次；用例间保持暖状态</td><td><code>run-case.js</code>、<code>batch-runtime.js</code></td></tr><tr><td>用例边界</td><td>冷启动建立固定起点</td><td>新用例重新观察并动态建立起点</td><td>新执行阶段与事件</td></tr><tr><td>知识</td><td>无正式本地知识链路</td><td>Markdown 知识候选检索 + Agent 适用性判断</td><td>新 <code>knowledge/</code> 与查询入口</td></tr><tr><td>报告</td><td>围绕固定步骤、Flow 和失败码展示</td><td>展示原文、计划修订、起点、知识和结论依据</td><td><code>context-format.md</code>、render</td></tr></tbody></table></div>
+<h3 id="1-3-工作空间入口边界">1.3 工作空间入口边界</h3>
+<p>当前目录是唯一工作空间根目录，只接受两种状态：</p>
+<ol><li><strong>空目录：</strong> 忽略 <code>.DS_Store</code> 后没有其他内容，由 Skill 原子初始化。</li><li><strong>既有工作空间：</strong> 非空目录必须包含可读取且 schema 受支持的 <code>workspace.json</code>，其中 <code>type</code> 固定为 <code>mobile-ai-visual-test-workspace</code>。</li></ol>
+<p>其他非空目录统一返回 <code>WORKSPACE_INVALID</code>，不写入任何文件。实现不得向父目录递归查找，不自动切换当前目录，不根据 <code>cases/</code>、<code>knowledge/</code>、<code>runs/</code> 或 <code>index.html</code> 等目录形状猜测工作空间，也不自动为无标记的历史目录补写 marker。marker 存在但损坏、类型不符或 schema 不支持时同样停止，不静默覆盖。</p>
+<p>空目录初始化后至少包含：</p>
+<pre><code>workspace.json
+cases/
+knowledge/
+runs/
+index.html</code></pre>
+<p>不再创建 <code>flows/</code>。原始用例文件或目录可以通过显式路径位于工作空间外；导入后，原文快照、case 身份、执行产物、知识、证据和报告都以当前工作空间为存储边界。这样用户只需要在 Codex 中进入空目录或已有工作空间，不需要额外指定输出根目录。</p>
+<h2 id="2-目标-skill-结构">2. 目标 Skill 结构</h2>
+<p>“模块”在本文中只表示 Skill 内的职责区域，不代表独立服务、进程或新增依赖。</p>
+<figure class="diagram architecture">
+  <svg viewBox="0 0 1040 410" role="img" aria-label="实施阶段与关键依赖">
+    <defs>
+      <marker id="arrow-a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#65726b"/></marker>
+    </defs>
+    <text class="diagram-title" x="520" y="28">实施阶段与关键依赖</text>
+    <rect class="box green" x="30" y="72" width="150" height="58" rx="6"/><text x="105" y="96">P0 决策与基线</text><text class="small" x="105" y="117">测试和回滚样本</text>
+    <rect class="box blue" x="220" y="72" width="150" height="58" rx="6"/><text x="295" y="96">P1 目标契约</text><text class="small" x="295" y="117">纯合约，不改行为</text>
+    <rect class="box blue" x="410" y="52" width="170" height="58" rx="6"/><text x="495" y="76">P2 历史读取</text><text class="small" x="495" y="97">reader 先于 writer</text>
+    <rect class="box blue" x="410" y="142" width="170" height="58" rx="6"/><text x="495" y="166">P3 execution Core</text><text class="small" x="495" y="187">客观内核</text>
+    <rect class="box gold" x="630" y="72" width="170" height="58" rx="6"/><text x="715" y="96">P4 批次暖会话</text><text class="small" x="715" y="117">起点与受控恢复</text>
+    <rect class="box gold" x="630" y="182" width="170" height="58" rx="6"/><text x="715" y="206">P5 Agent 执行</text><text class="small" x="715" y="227">动态执行链</text>
+    <rect class="box green" x="850" y="127" width="160" height="58" rx="6"/><text x="930" y="151">P6 知识与报告</text><text class="small" x="930" y="172">可审计结论</text>
+    <rect class="box green" x="850" y="260" width="160" height="58" rx="6"/><text x="930" y="284">P7 切换与清理</text><text class="small" x="930" y="305">三端验证后切换</text>
+    <path class="arrow" d="M180 101 H210" marker-end="url(#arrow-a)"/><path class="arrow" d="M370 101 H400" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M370 101 C390 101 390 171 400 171" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M580 81 H620" marker-end="url(#arrow-a)"/><path class="arrow" d="M580 171 C610 171 610 101 620 101" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M580 171 C610 171 610 211 620 211" marker-end="url(#arrow-a)"/><path class="arrow" d="M715 130 V172" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M370 101 C520 350 800 156 840 156" marker-end="url(#arrow-a)"/><path class="arrow" d="M800 211 C825 211 825 156 840 156" marker-end="url(#arrow-a)"/>
+    <path class="arrow" d="M930 185 V250" marker-end="url(#arrow-a)"/>
+    <text class="small" x="520" y="374">P1-P6 可分阶段开发；完整闭环通过门禁后，P7 才执行原子切换与现有核心删除。</text>
+  </svg>
+  <figcaption>图 1：关键路径先建立基线、目标契约与历史读取，再接通暖会话和 Agent 动态执行。</figcaption>
+</figure>
+<h3 id="2-1-职责模块">2.1 职责模块</h3>
+<div class="table-wrap"><table><thead><tr><th>模块</th><th>载体</th><th>职责</th></tr></thead><tbody><tr><td>核心指令</td><td><code>SKILL.md</code></td><td>定义 Agent 身份、不可偏离原则、最小工作流、何时读取哪些 reference</td></tr><tr><td>工作空间入口</td><td><code>scripts/lib/workspace.js</code>、<code>references/workflow.md</code></td><td>校验当前目录、初始化空目录、维护 marker 和统一存储边界，不猜测或切换目录</td></tr><tr><td>输入与用例身份</td><td><code>scripts/case/</code>、<code>references/case-format.md</code></td><td>保存原文、生成稳定 case 身份、管理用户补充，不评价用例质量</td></tr><tr><td>批次暖会话</td><td><code>batch-runtime.js</code></td><td>绑定设备/App/平台、批次级启动、串行推进、恢复与实现摘要</td></tr><tr><td>用例 execution</td><td><code>run-case.js</code> 及 <code>scripts/execution/</code></td><td>创建逻辑边界、记录事实、执行时限与 finalize，不决定业务下一步</td></tr><tr><td>Agent 执行协议</td><td><code>references/agent-execution.md</code></td><td>规定理解、计划、起点、执行、修订、异常调查和结论流程</td></tr><tr><td>客观能力与守卫</td><td><code>observe.sh</code>、<code>action.sh</code>、<code>scripts/lib/</code></td><td>观察、单动作、参数校验、环境绑定、授权绑定、证据和执行时限</td></tr><tr><td>本地知识</td><td><code>knowledge/</code>、工作空间 <code>knowledge/</code>、查询脚本</td><td>返回已准入的可信资料；由 Agent 只判断范围和现象是否适用于当前场景</td></tr><tr><td>结果与报告</td><td><code>scripts/report/</code>、<code>references/result-contract.md</code></td><td>验证结果结构和证据存在性，渲染执行过程与最终依据</td></tr></tbody></table></div>
+<h3 id="2-2-skill-md-与-references-的拆分">2.2 <code>SKILL.md</code> 与 references 的拆分</h3>
+<p>目标 <code>SKILL.md</code> 保持短小，只保留：</p>
+<ol><li>Skill 触发范围和 Agent 职责。</li><li>十条实现不变量的精简版本。</li><li>批次级与单用例级最小执行流程。</li><li>稳定入口白名单和禁止直接调用底层命令。</li><li>references 的按需读取导航。</li></ol>
+<p>详细内容只在一个 reference 中维护，避免重复：</p>
+<div class="table-wrap"><table><thead><tr><th>目标 reference</th><th>内容</th><th>读取时机</th></tr></thead><tbody><tr><td><code>references/workflow.md</code></td><td>批次初始化、恢复、串行提交和结束</td><td>批次协调器启动时</td></tr><tr><td><code>references/agent-execution.md</code></td><td>用例理解、计划、起点、动态执行和失败复核</td><td>case Agent 启动时</td></tr><tr><td><code>references/interfaces.md</code></td><td>稳定 CLI、事件和 JSON 契约</td><td>需要写正式事实或诊断契约时</td></tr><tr><td><code>references/action-schema.md</code></td><td>三端动作参数、坐标证据和作用域</td><td>提交动作前</td></tr><tr><td><code>references/knowledge.md</code></td><td>知识目录、查询、适用性和冲突规则</td><td>疑似异常或起点恢复困难时</td></tr><tr><td><code>references/result-contract.md</code></td><td>verdict、证据、知识引用和 finalize</td><td>准备形成结论时</td></tr><tr><td><code>references/failure-policy.md</code></td><td>技术阻塞、执行时限、安全和结果状态语义</td><td>异常或停止时</td></tr><tr><td><code>references/case-format.md</code></td><td>原始输入、case 身份和兼容字段</td><td>导入或刷新输入时</td></tr></tbody></table></div>
+<p>现有 <code>case-executor-contract.md</code>、<code>context-format.md</code> 和 <code>agent-runtime.md</code> 中仍有效的内容并入上表对应文件；确认无引用后删除或改为短跳转说明，避免 Agent 同时读取新旧冲突协议。</p>
+<h2 id="3-运行时主链路">3. 运行时主链路</h2>
+<h3 id="3-1-批次与用例双层生命周期">3.1 批次与用例双层生命周期</h3>
+<figure class="diagram lifecycle">
+  <svg viewBox="0 0 980 590" role="img" aria-label="批次与用例双层生命周期">
+    <defs>
+      <marker id="arrow-b" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#65726b"/></marker>
+    </defs>
+    <text class="diagram-title" x="490" y="28">批次与用例双层生命周期</text>
+    <rect class="lane" x="28" y="48" width="924" height="504" rx="6"/>
+    <text class="lane-title" x="73" y="78">批次</text>
+    <rect class="box green" x="85" y="96" width="220" height="58" rx="6"/><text x="195" y="121">绑定设备 / App / 协议</text><text class="small" x="195" y="142">启动或确认 App 一次</text>
+    <rect class="case-area" x="85" y="182" width="810" height="278" rx="6"/><text class="lane-title" x="145" y="210">每个用例：独立 execution + 独立 Agent session</text>
+    <rect class="box blue" x="116" y="234" width="142" height="64" rx="6"/><text x="187" y="260">创建 execution</text><text class="small" x="187" y="281">不重启 App</text>
+    <rect class="box blue" x="294" y="234" width="142" height="64" rx="6"/><text x="365" y="260">重新观察</text><text class="small" x="365" y="281">建立当前起点</text>
+    <rect class="box gold" x="472" y="234" width="142" height="64" rx="6"/><text x="543" y="260">动态执行</text><text class="small" x="543" y="281">计划可修订</text>
+    <rect class="box gold" x="650" y="234" width="142" height="64" rx="6"/><text x="721" y="260">调查与结论</text><text class="small" x="721" y="281">知识 + 证据</text>
+    <path class="arrow" d="M258 266 H284" marker-end="url(#arrow-b)"/><path class="arrow" d="M436 266 H462" marker-end="url(#arrow-b)"/><path class="arrow" d="M614 266 H640" marker-end="url(#arrow-b)"/>
+    <rect class="box" x="208" y="346" width="210" height="64" rx="6"/><text x="313" y="372">提交结果并释放 Agent</text><text class="small" x="313" y="393">证据和结果保持隔离</text>
+    <rect class="box green" x="540" y="346" width="210" height="64" rx="6"/><text x="645" y="372">保留 App 当前状态</text><text class="small" x="645" y="393">进入下一个用例</text>
+    <path class="arrow" d="M721 298 V323 H418 V336" marker-end="url(#arrow-b)"/><path class="arrow" d="M418 378 H530" marker-end="url(#arrow-b)"/>
+    <path class="arrow loop" d="M645 346 V322 H365 V308" marker-end="url(#arrow-b)"/>
+    <rect class="box green" x="355" y="486" width="270" height="48" rx="6"/><text x="490" y="516">最后一个用例完成后结束批次</text>
+    <path class="arrow" d="M645 410 V474 H625" marker-end="url(#arrow-b)"/>
+  </svg>
+  <figcaption>图 2：复用的是 App 暖状态，不复用上一用例的 Agent 上下文和业务证据。</figcaption>
+</figure>
+<p>批次暖会话指目标 App 和设备现场连续存在，不等于复用同一个 Agent 对话。继续保留每用例独立 Agent Runtime，可以阻止上一用例的推理、截图和结论污染下一用例，同时不损失暖 App 带来的效率。</p>
+<h3 id="3-2-批次初始化">3.2 批次初始化</h3>
+<p><code>batch-runtime.js init</code> 在 <code>runs/&lt;batchId&gt;/</code> 固化：</p>
+<ul><li>当前 Skill 合约摘要与实现摘要。</li><li>平台、设备、App、入口和环境摘要。</li><li>case 顺序和每个输入的稳定身份。</li><li>单用例 30 分钟执行时限。</li><li>暖会话状态 <code>INITIALIZING | READY | DEGRADED | CLOSED</code>。</li></ul>
+<p>每个新批次固定冷启动 App 一次并写 <code>batchBootstrap</code> 事实。冷启动只重启 App 进程，不清除应用数据、登录态或业务数据。后续 <code>run-case --start</code> 只创建 execution 和快照，不再自动调用 <code>restartApp</code>。</p>
+<p>恢复同一个批次不视为新批次，优先复核并继续现有 App 现场，不重复执行批次冷启动。只有 App 意外退出、无响应或自动化会话失效等客观技术事实，才进入受控恢复。</p>
+<h3 id="3-3-单用例阶段">3.3 单用例阶段</h3>
+<p>每个 execution 使用以下阶段，但阶段只限制事实归属，不限制 Agent 的业务策略：</p>
+<div class="table-wrap"><table><thead><tr><th>阶段</th><th>Agent 工作</th><th>脚本工作</th></tr></thead><tbody><tr><td><code>UNDERSTAND</code></td><td>阅读完整原文，提取目标、起点条件和初始检查点</td><td>保存原文快照和 Agent 产物</td></tr><tr><td><code>ESTABLISH_START</code></td><td>观察现场，直接复用、少量转换或导航锚点恢复</td><td>记录准备动作、耗时和证据，禁止混入业务证据</td></tr><tr><td><code>EXECUTE</code></td><td>自主选择观察、动作、断言和计划修订</td><td>校验单动作、授权绑定、环境和剩余时间</td></tr><tr><td><code>INVESTIGATE</code></td><td>核对原文、复观、恢复、查询知识和判断适用性</td><td>返回知识候选并记录查询审计</td></tr><tr><td><code>CONCLUDE</code></td><td>形成总体 verdict 和逐要求依据</td><td>校验结构、证据文件、引用与执行绑定</td></tr><tr><td><code>FINALIZED</code></td><td>不再写业务事实</td><td>锁定结果、生成 metrics 和报告</td></tr></tbody></table></div>
+<p>Agent 可以在 <code>EXECUTE</code> 与 <code>INVESTIGATE</code> 间多次切换，也可以在新证据推翻理解时提交计划修订；脚本不得用阶段状态推导唯一业务 NextWork。</p>
+<h2 id="4-输入-理解与动态计划">4. 输入、理解与动态计划</h2>
+<h3 id="4-1-宽松输入契约">4.1 宽松输入契约</h3>
+<p>导入阶段只执行技术性检查：路径存在、文件可读取、内容可保存，并且去除 BOM 后至少包含一个非空白字符。标题、前置条件、步骤、预期结果、表格格式和表达完整性都不是门槛。</p>
+<p>目标 case 资产：</p>
+<pre><code>cases/&lt;case&gt;/
+  source.md                 # 原始输入，最高业务依据
+  case.json                 # 稳定身份和源文件摘要，不保存权威执行步骤
+  notes.jsonl               # 用户补充，不直接改写 source.md
+  platforms/&lt;platform&gt;/
+    executions/&lt;executionId&gt;/
+      source.snapshot.md    # 本次执行使用的原文快照
+      execution.json
+      understanding.json
+      plan.json
+      timeline.jsonl
+      result.json
+      metrics.json
+      screenshots/
+      layouts/
+      logs/
+      agent/</code></pre>
+<p><code>case.json</code> 只要求 <code>identity.caseKey</code>、标题回退值、源摘要和导入来源。现有 <code>preconditions</code>、<code>steps</code>、<code>globalRules</code> 在开发迁移期仅作为测试基线读取，不写入正式切换后的新 case 文件，也不再成为 execution 的冻结业务契约。</p>
+<p>空文件或仅含空白字符的文本返回前置错误 <code>CASE_INPUT_EMPTY</code>，不创建 case、execution、Agent session 或执行报告，也不操作设备。这是输入存在性的最低要求，不属于格式或内容质量校验。</p>
+<p>非空但无法提取明确目标的文本仍能创建 execution。Agent 在 <code>UNDERSTAND</code> 阶段说明无法形成可靠测试目标，最终可输出 <code>INCONCLUSIVE</code>。文件不可读等问题同样在创建 execution 前返回输入错误；只有 execution 创建后的环境或工具问题才可能形成技术 <code>BLOCKED</code>。</p>
+<h3 id="4-2-agent-理解产物">4.2 Agent 理解产物</h3>
+<p><code>understanding.json</code> 是 Agent 对本次原文的可审计理解，不是 parser 输出：</p>
+<pre><code>{
+  &quot;schemaVersion&quot;: 1,
+  &quot;revision&quot;: 1,
+  &quot;summary&quot;: &quot;验证最新 AI 回复是否展示单条语音播放按钮&quot;,
+  &quot;startConditions&quot;: [
+    {&quot;id&quot;: &quot;start-001&quot;, &quot;text&quot;: &quot;已进入包含 AI 回复的会话&quot;, &quot;basis&quot;: &quot;implied&quot;, &quot;sourceRefs&quot;: [&quot;src-001&quot;]}
+  ],
+  &quot;requirements&quot;: [
+    {&quot;id&quot;: &quot;req-001&quot;, &quot;text&quot;: &quot;最新回复展示单条语音播放按钮&quot;, &quot;basis&quot;: &quot;explicit&quot;, &quot;sourceRefs&quot;: [&quot;src-002&quot;]}
+  ],
+  &quot;sourceRefs&quot;: [
+    {&quot;id&quot;: &quot;src-001&quot;, &quot;sourceSha&quot;: &quot;source-...&quot;, &quot;lineStart&quot;: 2, &quot;lineEnd&quot;: 2, &quot;quote&quot;: &quot;进入包含 AI 回复的会话&quot;},
+    {&quot;id&quot;: &quot;src-002&quot;, &quot;sourceSha&quot;: &quot;source-...&quot;, &quot;lineStart&quot;: 3, &quot;lineEnd&quot;: 3, &quot;quote&quot;: &quot;最新回复展示单条语音播放按钮&quot;}
+  ],
+  &quot;uncertainties&quot;: []
+}</code></pre>
+<p><code>basis</code> 只允许 <code>explicit | implied | assumed</code>。<code>sourceRefs</code> 绑定本次 <code>source.snapshot.md</code> 的摘要、行号和原文摘录，脚本校验摘录与快照一致，但不判断 Agent 的语义解释。<code>assumed</code> 可以帮助导航，不能单独支撑 FAIL；<code>implied</code> 只有在 Agent 能说明其为完成原目标的必要条件时才可支撑 FAIL。</p>
+<p>理解也允许被现场证据修正，但不能静默覆盖。修改 <code>summary</code>、起点条件或 requirements 时递增 revision，并在 timeline 记录修改前后内容、原因和 sourceRefs。原文中的明确要求要么映射为当前 requirement，要么作为歧义或不适用项保留解释，不能通过修改 understanding 使其消失。</p>
+<h3 id="4-3-计划版本">4.3 计划版本</h3>
+<p><code>plan.json</code> 保存最新快照，完整修订历史写入 <code>timeline.jsonl</code>：</p>
+<pre><code>{
+  &quot;schemaVersion&quot;: 1,
+  &quot;revision&quot;: 3,
+  &quot;reason&quot;: &quot;当前已位于目标会话，删除原导航检查点&quot;,
+  &quot;checkpoints&quot;: [
+    {
+      &quot;id&quot;: &quot;cp-002&quot;,
+      &quot;goal&quot;: &quot;确认最新回复区域的播放按钮状态&quot;,
+      &quot;requirementRefs&quot;: [&quot;req-001&quot;],
+      &quot;requiredAction&quot;: false,
+      &quot;status&quot;: &quot;ACTIVE&quot;
+    }
+  ]
+}</code></pre>
+<p>实现规则：</p>
+<ul><li>检查点描述“要达到或验证什么”，不冻结点击次数和页面路径。</li><li><code>requiredAction=true</code> 只用于原文明确要求动作必须实际发生的场景。</li><li>Agent 可增删改检查点，但修订必须保留 <code>reason</code>、旧新 revision 和 <code>requirementRefs</code>。</li><li>脚本只检查 revision 单调递增、引用目标存在和 JSON 结构，不评价计划是否正确。</li><li>finalize 不要求每个历史检查点 PASS；Agent 必须对当前 understanding 中的全部 requirement 给出 finding，并说明被修订理解的去向。</li></ul>
+<h2 id="5-起点建立与暖会话">5. 起点建立与暖会话</h2>
+<h3 id="5-1-用例切换">5.1 用例切换</h3>
+<p>上一用例完成后，批次仅记录它的 executionId 和 App 暖会话仍可用。新 Agent 不读取上一用例 timeline、计划、截图或推理摘要，而是为新 execution 采集自己的第一条 observation。</p>
+<p>起点建立采用三档策略：</p>
+<ol><li><strong>直接复用：</strong> 当前状态已满足起点，记录零操作确认。</li><li><strong>少量转换：</strong> 关闭弹窗、返回、切换主 Tab 等有限操作后复核。</li><li><strong>导航锚点恢复：</strong> 当前页面过深或无进展时，先返回本地知识描述的稳定锚点，再进入目标区域。</li></ol>
+<p>准备动作使用 <code>scope=case-prepare</code>，业务动作使用 <code>scope=case-business</code>。两类事实可出现在同一个 timeline，但报告和证据校验必须分区；<code>case-prepare</code> observation 不能直接作为业务 requirement 的通过证据。</p>
+<h3 id="5-2-冷启动例外">5.2 冷启动例外</h3>
+<p>逐用例冷启动从默认动作改为受控例外，只允许：</p>
+<ul><li>原始用例明确要求冷启动，并能引用原文。</li><li>App 崩溃、无响应、自动化会话失效或平台能力要求重建会话，并存在客观事实。</li></ul>
+<p>实现上由 <code>batch-runtime.js recover-app</code> 统一发起，Agent 不直接调用 <code>restartApp</code>。请求包含 <code>triggerType</code>、<code>sourceRefs/evidenceRefs</code> 和当前 execution，并按 5.3 节校验同一退出事故的恢复次数。成功后暖会话 generation 加一，新用例继续重新观察；恢复失败或超过 D-01 允许次数时当前用例 <code>BLOCKED</code>，并根据环境是否仍可靠决定是否结束批次。</p>
+<p>不允许因为“找不到页面”“计划不确定”或“希望起点更干净”而冷启动。这些情况应先使用导航锚点或输出不确定性。</p>
+<h3 id="5-3-app-意外退出处理">5.3 App 意外退出处理</h3>
+<p>观察或动作发现 App 不在前台时，先采集进程、前台应用、平台日志、最后成功动作和退出时间，不把“页面不可见”直接等同于进程被杀。随后按客观证据分类：</p>
+<div class="table-wrap"><table><thead><tr><th>退出类型</th><th>处理方式</th></tr></thead><tbody><tr><td>用例明确要求打开系统页或第三方 App</td><td>作为正常业务路径继续，不触发恢复</td></tr><tr><td>有证据表明当前被测操作导致 App 崩溃</td><td>当前用例记录产品异常；可恢复 App 以保存现场或继续后续用例，但不能把当前用例恢复成 PASS</td></tr><tr><td>有证据表明由系统资源回收、人工操作或外部环境导致</td><td>执行一次受控恢复，重新建立当前用例现场后继续</td></tr><tr><td>原因未知</td><td>允许一次调查性恢复；无法确认关键动作效果时输出 <code>INCONCLUSIVE</code></td></tr><tr><td>App 无法重新启动或自动化连接无法恢复</td><td>当前用例 <code>BLOCKED</code>，结束批次</td></tr></tbody></table></div>
+<p>恢复后不得自动重放最后动作。导航、返回等幂等动作由 Agent 根据新现场重新决定；输入、提交、发布、删除、支付等结果可能已经生效的动作，在无法确认效果时不得重放。同一次退出事故只允许一次自动恢复；恢复后在同一检查点再次意外退出时停止当前用例：有明确崩溃证据则 <code>FAIL</code>，环境或原因仍不明确则 <code>BLOCKED</code> 并结束批次。</p>
+<h3 id="5-4-批次恢复">5.4 批次恢复</h3>
+<p>保留现有 <code>reconcile-current</code> 的确定性恢复思想，但恢复对象改为双层状态：</p>
+<ul><li>execution 遗留：恢复或收尾当前逻辑用例，不能新建第二个活动 execution。</li><li>暖会话遗留：重新探测设备、App 前台和自动化连接；无法证明仍可用时标记 <code>DEGRADED</code>。</li><li>Runtime 遗留：中断或释放旧 case Agent session，不把旧对话交给下一用例。</li><li>实现摘要不一致：结束或只读收尾已有批次，不使用另一代码版本继续写入。</li></ul>
+<h2 id="6-agent-行动循环与客观守卫">6. Agent 行动循环与客观守卫</h2>
+<h3 id="6-1-稳定入口">6.1 稳定入口</h3>
+<p>目标主链路收敛为以下入口：</p>
+<div class="table-wrap"><table><thead><tr><th>入口</th><th>目标职责</th></tr></thead><tbody><tr><td><code>resolve-execution-targets.js</code></td><td>解析输入引用，不评价用例内容</td></tr><tr><td><code>parse-case.js</code></td><td>原样导入或刷新 source，建立最小 case 身份</td></tr><tr><td><code>probe-env.sh</code> / <code>prepare-env.sh</code> / <code>update-env.js</code></td><td>现有环境探测、准备和绑定</td></tr><tr><td><code>batch-runtime.js</code></td><td>批次初始化、暖会话、串行推进、恢复和提交</td></tr><tr><td><code>agent-runtime.js</code></td><td>独立 case Agent 会话、deadline、结果验证和释放</td></tr><tr><td><code>run-case.js</code></td><td>execution 创建、事实提交、执行时限检查和 finalize</td></tr><tr><td><code>observe.sh</code></td><td>采集当前 screenshot、layout、foreground、logs</td></tr><tr><td><code>action.sh</code> / <code>action-observe.sh</code></td><td>执行一个已授权动作并记录客观结果</td></tr><tr><td><code>commit-agent-turn.js</code></td><td>提交理解、计划修订、判断、知识适用性和 verdict 草稿</td></tr><tr><td><code>query-knowledge.js</code></td><td>从本地 Markdown 返回候选知识及命中片段</td></tr><tr><td><code>render-context.js</code> / <code>render-index.js</code></td><td>渲染历史与当前 execution 报告</td></tr></tbody></table></div>
+<p><code>execute-next-work.js</code> 不再生成唯一业务 NextWork。开发期仅由现有回归测试覆盖，不接入目标执行链；正式切换时删除该业务入口，case Agent 直接调用观察、动作、知识和事实提交入口。</p>
+<h3 id="6-2-动作授权">6.2 动作授权</h3>
+<p>现有 <code>stepId + intentSha</code> 依赖固定 parser 步骤，应改为 execution 内计划授权：</p>
+<pre><code>{
+  &quot;source&quot;: &quot;agent-plan&quot;,
+  &quot;executionId&quot;: &quot;execution-id&quot;,
+  &quot;phase&quot;: &quot;case-business&quot;,
+  &quot;planRevision&quot;: 3,
+  &quot;checkpointId&quot;: &quot;cp-002&quot;,
+  &quot;purpose&quot;: &quot;进入最新回复的操作菜单&quot;,
+  &quot;requirementRefs&quot;: [&quot;req-001&quot;]
+}</code></pre>
+<p>准备阶段改用 <code>startConditionId</code>；恢复阶段绑定 recovery request。脚本确定性校验：</p>
+<ul><li>execution、阶段、计划 revision 和目标 id 与当前产物一致。</li><li>动作类型、字段、坐标证据和平台能力合法。</li><li>设备、App 和平台仍与批次绑定一致。</li><li>当前作用域有效且单用例执行未达到 30 分钟。</li><li>原始用例明确要求的高风险副作用包含可回溯的 requirement/source 引用。</li></ul>
+<p>脚本验证“引用存在且未过期”，不判断引用语义是否足以授权；语义责任保留给 Agent。准备阶段不得执行业务副作用，业务阶段不得把一个检查点的授权扩散到无关操作。</p>
+<h3 id="6-3-精准约束的实现位置">6.3 精准约束的实现位置</h3>
+<div class="table-wrap"><table><thead><tr><th>风险</th><th>客观信号</th><th>实现位置</th><th>触发结果</th></tr></thead><tbody><tr><td>操作错误设备或 App</td><td>execution 与 batch 绑定不一致</td><td><code>action.sh</code>、<code>observe.sh</code></td><td>拒绝调用 adapter</td></tr><tr><td>使用未开放能力</td><td>action type/参数不合法</td><td><code>action-contract.js</code></td><td>返回可修正拒绝，不直接业务 FAIL</td></tr><tr><td>越权副作用</td><td>缺少当前 requirement/source 绑定</td><td>action authorization</td><td>拒绝动作并要求 Agent 重评估</td></tr><tr><td>无边界探索</td><td>单用例执行达到 30 分钟</td><td><code>run-case.js</code> elapsed-time guard</td><td>停止新的设备操作，进入 <code>CONCLUDE</code></td></tr><tr><td>重复无新信号</td><td>连续相同动作、截图/控件树无变化</td><td>metrics/turn response</td><td>提醒 Agent 反思，不自动判失败</td></tr><tr><td>证据伪造或漂移</td><td>文件缺失、SHA/PNG 解码不一致</td><td>evidence validator</td><td>拒绝相应结论引用</td></tr><tr><td>静默冷启动</td><td>非 batch bootstrap/recovery 作用域</td><td><code>action.sh</code>、<code>batch-runtime.js</code></td><td>拒绝 <code>restartApp</code></td></tr><tr><td>计划静默改题</td><td>revision 或 requirement 映射缺失</td><td>plan contract</td><td>拒绝计划写入，要求补齐留痕</td></tr></tbody></table></div>
+<p>执行预算只保留单 case 30 分钟硬时限，从 execution 创建成功开始计时，覆盖起点建立、业务执行和异常调查。到时后停止新的设备操作，但仍允许 Agent 使用已经取得的观察、证据和知识完成结论；不得因为时间到达而覆盖已有充分依据的 <code>PASS</code> 或 <code>FAIL</code>。</p>
+<p>动作数、观察数、准备动作数和知识查询次数只记录为指标，不设置硬上限或脚本软阈值。Agent 发现重复操作或长期没有新信息时，应自行反思和调整策略；该提示不裁决业务结果，也不阻止 Agent 继续执行。App 意外退出的恢复次数由 D-01 单独控制，不重复纳入执行预算。</p>
+<h2 id="7-本地知识实现">7. 本地知识实现</h2>
+<h3 id="7-1-存储与准入语义">7.1 存储与准入语义</h3>
+<p>知识源采用普通 Markdown：</p>
+<pre><code>&lt;skill-root&gt;/knowledge/       # 跨项目可复用的平台/框架知识
+&lt;workspace&gt;/knowledge/        # 当前产品、版本和业务知识</code></pre>
+<p>知识库采用“准入即可信”：能进入任一知识目录的内容，均视为准确且能够作为结论依据，框架不再按来源类型、维护者或其他条件进行可信度分级。知识内容的准确性由知识库维护方在准入和维护环节负责。</p>
+<p>工作空间知识通常更贴近当前产品，但不自动覆盖 Skill 知识，也不代表可信度更高。候选出现表面冲突时，Agent 不比较可信等级，而是检查 App、平台、版本、页面状态、触发条件和有效期是否存在适用范围差异；无法消除冲突时不得套用任一结论。知识正文使用固定标题帮助检索和审阅：</p>
+<pre><code># K-00123 Android 端该入口在灰度关闭时不展示
+
+## 适用范围
+- App: com.example.app
+- Platform: android
+- Version: 5.2.x
+- Page: AI 助手会话页
+- Valid until: 2026-12-31
+
+## 可观察现象
+...
+
+## 结论与处理建议
+...
+
+## 追溯信息
+- 原始资料链接或维护记录</code></pre>
+<p>首期不引入 YAML parser、数据库或向量索引。Markdown 是唯一知识源，可选的 <code>knowledge-index.json</code> 只是脚本生成的可删除缓存，不能成为第二事实源。</p>
+<h3 id="7-2-查询链路">7.2 查询链路</h3>
+<p><code>query-knowledge.js</code> 接收平台、App、版本、页面、操作、现象和关键词，使用 Node.js 文件遍历及文本匹配返回候选文件、条目 ID、内容摘要、命中片段和候选分数。分数只用于排序，不能表示知识适用；后续 assessment 和 result 必须绑定条目 ID 与当次内容摘要，知识文件更新不能静默改变历史结论依据。</p>
+<p>Agent 对候选只进行适用性判断：</p>
+<ol><li>App、平台和版本范围是否一致。</li><li>页面、前置状态、操作和可观察现象是否一致。</li><li>条目是否仍在有效期内。</li><li>是否与其他候选存在无法用适用范围解释的冲突。</li><li>条目描述的是正常差异、恢复路径还是调查方向，其用途是否匹配当前判断。</li></ol>
+<p>每次查询写 <code>knowledgeQuery</code> 事件；被采用的条目再写 <code>knowledgeAssessment</code>，包含 <code>APPLICABLE | NOT_APPLICABLE | CONFLICTING | INSUFFICIENT</code>、理由和对计划/结论的影响。</p>
+<h3 id="7-3-知识对结论的影响">7.3 知识对结论的影响</h3>
+<ul><li>直接视觉证据满足原始要求：<code>verdictBasis=DIRECT_EVIDENCE</code>。</li><li>当前表现与字面预期不同，但适用知识证明其为正常：<code>verdictBasis=KNOWLEDGE_SUPPORTED</code>。</li><li>知识仅提供恢复方式：修订策略继续执行，不直接改变 verdict。</li><li>知识范围不匹配、已过期或存在无法消除的适用性冲突：不能用于改变 verdict。</li></ul>
+<h2 id="8-事实-结果与报告契约">8. 事实、结果与报告契约</h2>
+<h3 id="8-1-timeline-事件">8.1 timeline 事件</h3>
+<p>保留 append-only <code>timeline.jsonl</code>，事件按职责分为：</p>
+<div class="table-wrap"><table><thead><tr><th>类别</th><th>事件示例</th><th>写入方</th></tr></thead><tbody><tr><td>生命周期</td><td><code>executionStart</code>、<code>phaseChanged</code>、<code>executionRecovery</code></td><td>Runtime Core</td></tr><tr><td>Agent 理解</td><td><code>caseUnderstood</code>、<code>planRevised</code>、<code>checkpointFinding</code></td><td>受保护 Agent 提交入口</td></tr><tr><td>设备事实</td><td><code>observation</code>、<code>actionResult</code>、<code>actionRejected</code></td><td>正式脚本</td></tr><tr><td>调查知识</td><td><code>knowledgeQuery</code>、<code>knowledgeAssessment</code></td><td>查询脚本与 Agent 提交入口</td></tr><tr><td>结论复核</td><td><code>verdictReview</code>、<code>result</code></td><td>Agent + finalize</td></tr><tr><td>客观约束</td><td><code>timeLimitWarning</code>、<code>timeLimitReached</code>、<code>agentRuntime</code></td><td>Runtime Core</td></tr></tbody></table></div>
+<p><code>perception</code>、<code>decision</code>、<code>assertion</code> 等旧事件继续只读兼容。新事件不要求按照 parser stepId 顺序出现，也不由 reducer 推断业务终态。</p>
+<h3 id="8-2-最终结果">8.2 最终结果</h3>
+<p>结果同时表达业务结论和执行完整性：</p>
+<pre><code>{
+  &quot;schemaVersion&quot;: 2,
+  &quot;executionId&quot;: &quot;execution-id&quot;,
+  &quot;verdict&quot;: &quot;PASS&quot;,
+  &quot;executionStatus&quot;: &quot;COMPLETED&quot;,
+  &quot;verdictBasis&quot;: &quot;KNOWLEDGE_SUPPORTED&quot;,
+  &quot;summary&quot;: &quot;当前版本灰度关闭时入口不展示，符合适用产品规则。&quot;,
+  &quot;requirementFindings&quot;: [
+    {
+      &quot;requirementId&quot;: &quot;req-001&quot;,
+      &quot;status&quot;: &quot;SATISFIED&quot;,
+      &quot;evidenceRefs&quot;: [&quot;screenshots/observe-008.png&quot;],
+      &quot;knowledgeRefs&quot;: [&quot;workspace:K-00123&quot;]
+    }
+  ],
+  &quot;uncertainties&quot;: [],
+  &quot;technicalFailureCode&quot;: null
+}</code></pre>
+<p><code>verdict</code> 使用 <code>PASS | FAIL | INCONCLUSIVE | BLOCKED</code>；<code>executionStatus</code> 使用 <code>COMPLETED | STOPPED_BY_BUDGET | TECHNICALLY_BLOCKED | INTERRUPTED</code>。脚本不根据 checkpoint 数量重算 verdict，只检查：</p>
+<ul><li>所有引用文件存在且属于当前 execution。</li><li>FAIL finding 能回溯到 <code>explicit</code> 或有必要性说明的 <code>implied</code> requirement。</li><li><code>KNOWLEDGE_SUPPORTED</code> 必须引用 <code>APPLICABLE</code> 的知识评估。</li><li>PASS/FAIL 至少包含当前用例业务阶段的可用证据。</li><li>FAIL、INCONCLUSIVE 和业务相关 BLOCKED 必须有 <code>verdictReview</code>，并引用本次 knowledgeQuery；零命中也是有效查询结果。</li><li>finalize 前不存在未关闭的设备动作或运行时写入。</li></ul>
+<p>不满足结构或证据契约时，不把业务结论改写为 FAIL，而是拒绝 finalize，要求 Agent 修正；达到执行时限后仍无法修正时输出 <code>INCONCLUSIVE</code> 或技术 <code>BLOCKED</code>，并保留请求的原结论用于审计。</p>
+<h3 id="8-3-报告调整">8.3 报告调整</h3>
+<p>单平台报告按以下顺序展示：</p>
+<ol><li>原始用例与最终 verdict。</li><li>Agent 对目标、起点和 requirement 的理解。</li><li>起点建立策略、准备动作和新用例第一条观察。</li><li>初始计划、修订历史和检查点 findings。</li><li>业务动作、观察和截图证据。</li><li>知识查询、适用性判断及其对结论的影响。</li><li>FAIL 前复核或不确定性说明。</li><li>批次暖会话 generation、冷启动例外和单用例耗时。</li></ol>
+<p>总览统计从“固定步骤通过率”调整为 verdict 数量、直接证据/知识支持 PASS、INCONCLUSIVE、技术阻塞、平均准备动作、暖会话复用率和冷启动例外次数。</p>
+<h2 id="9-文件级改造方案">9. 文件级改造方案</h2>
+<div class="table-wrap"><table><thead><tr><th>当前文件/区域</th><th>处理方式</th><th>目标变化</th></tr></thead><tbody><tr><td><code>SKILL.md</code></td><td>重写</td><td>从状态机操作手册改为 Agent 角色、最小流程、精准约束和 references 导航</td></tr><tr><td><code>references/workflow.md</code></td><td>重写</td><td>批次暖会话与逐用例逻辑闭环</td></tr><tr><td><code>references/case-format.md</code></td><td>重写</td><td>非空文本输入、空文本前置错误、原文快照、最小 case 身份和历史字段读取</td></tr><tr><td><code>references/interfaces.md</code></td><td>精简并升级</td><td>当前稳定入口、阶段、事件、授权和 result</td></tr><tr><td><code>references/action-schema.md</code></td><td>修改</td><td><code>case-prepare</code>、<code>case-business</code>、<code>batch-bootstrap/recovery</code> 作用域</td></tr><tr><td><code>references/failure-policy.md</code></td><td>修改</td><td>区分业务 verdict、技术状态和执行时限停止</td></tr><tr><td><code>references/context-format.md</code></td><td>合并/替换</td><td>并入新的 result/report 契约</td></tr><tr><td><code>references/case-executor-contract.md</code></td><td>合并/退出</td><td>并入 <code>agent-execution.md</code>，避免冲突职责</td></tr><tr><td><code>references/agent-runtime.md</code></td><td>修改</td><td>保留独立 case Agent，会话不继承；移除逐 case 冷启动前提</td></tr><tr><td><code>scripts/case/parse-case.js</code></td><td>重构</td><td>只保存原文和最小身份；旧 parser 作为非权威兼容提取器</td></tr><tr><td><code>scripts/lib/common.js</code> 中工作空间逻辑</td><td>抽出并收紧</td><td>移入 <code>scripts/lib/workspace.js</code>；删除目录形状自动认领；空目录初始化不再创建 <code>flows/</code></td></tr><tr><td><code>scripts/lib/case-contract.js</code></td><td>正式切换时删除</td><td>只服务现有固定步骤执行核心，不在目标链路继续复用</td></tr><tr><td><code>scripts/execution/contracts/case-contract.js</code></td><td>新增</td><td>非空文本输入身份契约，只拒绝空文本，不包含格式或内容质量校验</td></tr><tr><td><code>scripts/execution/contracts/execution-event-contract.js</code></td><td>新增</td><td>当前阶段、Agent、知识与客观事实事件契约</td></tr><tr><td><code>scripts/execution/contracts/result-contract.js</code></td><td>新增</td><td>当前 verdict、技术状态、证据和知识引用契约</td></tr><tr><td><code>scripts/preflight-preconditions.js</code></td><td>删除</td><td>正式切换时退出主链路并删除，不再冻结业务前置计划</td></tr><tr><td><code>&lt;workspace&gt;/flows/preconditions/</code></td><td>按需迁移</td><td>可转换为导航/恢复知识；不再由状态机自动执行。Skill 仓库当前没有内置 Flow 数据</td></tr><tr><td><code>scripts/lib/execution-reducer.js</code></td><td>删除</td><td>正式切换时删除，不再按前置条件和固定步骤生成唯一 NextWork</td></tr><tr><td><code>scripts/execute-next-work.js</code></td><td>删除</td><td>正式切换时与目标执行核心接管同步删除</td></tr><tr><td><code>scripts/execution/run-case.js</code></td><td>拆分重构</td><td>保留生命周期、事实、执行时限、证据和 finalize；移除业务归约</td></tr><tr><td><code>scripts/lib/step-intent.js</code></td><td>替换</td><td>改为 execution plan authorization</td></tr><tr><td><code>scripts/action.sh</code></td><td>修改</td><td>校验新作用域、计划 revision 与批次暖会话绑定</td></tr><tr><td><code>scripts/batch-runtime.js</code></td><td>扩展</td><td>批次 bootstrap、warmSession、generation、受控恢复和实现摘要</td></tr><tr><td><code>scripts/agent-runtime.js</code></td><td>调整</td><td>请求包含 source/knowledge roots/开始时间和截止时间；继续每 case 独立 session</td></tr><tr><td><code>build/validate-case-agent-*</code></td><td>更新 schema</td><td>绑定 source、plan、result 和 warmSession generation</td></tr><tr><td><code>scripts/report/</code>、<code>scripts/lib/common.js</code></td><td>重构</td><td>渲染新事件与指标，同时兼容读取旧结果</td></tr><tr><td><code>scripts/platform/</code></td><td>原则上保留</td><td>仅补充新作用域透传和确有必要的能力</td></tr><tr><td><code>scripts/self-test.js</code></td><td>拆分扩展</td><td>增加 contract、runtime、knowledge、report 与迁移测试组</td></tr></tbody></table></div>
+<p>为控制 <code>run-case.js</code> 当前过大的职责，实施时按现有 <code>scripts/lib/</code> 风格抽出纯模块，例如 plan contract、result contract、knowledge query 和 warm-session contract；顶层 CLI 保持稳定，不新增服务层或依赖注入框架。</p>
+<h2 id="10-兼容-开发隔离与正式切换">10. 兼容、开发隔离与正式切换</h2>
+<h3 id="阶段-0-冻结现有基线">阶段 0：冻结现有基线</h3>
+<ul><li>为现有主链路补齐关键 characterization tests。</li><li>保存三端动作、环境、证据和历史报告的基准样例。</li><li>明确哪些 failureCode 只用于历史产物读取。</li></ul>
+<h3 id="阶段-1-建立目标契约与历史-reader">阶段 1：建立目标契约与历史 reader</h3>
+<ul><li>引入 <code>source.snapshot.md</code>、<code>understanding.json</code>、<code>plan.json</code>、当前 result 契约和对应 schema。</li><li>报告按产物自身的 <code>schemaVersion</code> 分派历史与当前 reader，未知 schema 明确拒绝。</li><li>此阶段的目标模块只由单元测试和 fixture 调用，不增加用户可选协议，也不提前改变正式输入与执行行为。</li></ul>
+<h3 id="阶段-2-抽取客观内核并完成目标闭环">阶段 2：抽取客观内核并完成目标闭环</h3>
+<ul><li>从现有实现中抽出生命周期、证据、执行计时和发布等可复用能力。</li><li>在测试入口中完成宽松输入、暖会话、动态执行、本地知识和当前报告闭环。</li><li>开发隔离使用未接入正式入口的模块、模拟 adapter 和测试 fixture；不使用对外 CLI 参数维持两条生产执行路径。</li></ul>
+<h3 id="阶段-3-切换前验证">阶段 3：切换前验证</h3>
+<ul><li>通过行为 eval、模拟批次和三端真机完成前向验证。</li><li>验证期间继续由现有正式入口服务用户；目标执行核心只通过开发测试入口运行。</li><li>切换门禁未全部通过时不发布部分能力，尤其不单独发布跨用例暖会话。</li></ul>
+<h3 id="阶段-4-原子切换与删除">阶段 4：原子切换与删除</h3>
+<p>同一个正式发布中一次完成：</p>
+<ol><li>停止接收新批次，并等待或明确终止活动 execution。</li><li>更新 <code>SKILL.md</code>、manifest 和稳定入口，使目标执行核心成为唯一正式主链路。</li><li>同步删除 <code>execute-next-work.js</code>、固定 preflight、业务 reducer、自动 Flow 状态机和冲突 references。</li><li>保留历史 schema reader、展示 formatter 和历史 failureCode 映射，但它们不能创建或续写 execution。</li><li>新建文件与对外文档统一使用中性名称，不保留代际命名。</li></ol>
+<p>批次 <code>contract.json</code> 固定 <code>contractSha</code> 和 <code>implementationSha</code>。已由旧代码开始的批次不得交给切换后的代码续写；正式切换失败时回退整个代码版本和对应 Skill 资料，不在当前版本中保留旧执行开关。</p>
+<h2 id="11-测试与评估">11. 测试与评估</h2>
+<h3 id="11-1-确定性测试">11.1 确定性测试</h3>
+<ul><li>输入：自由文本、表格、无标题、无步骤、只有预期、模糊非空文本、空文件/纯空白拒绝、历史 case 读取。</li><li>契约：计划 revision、引用存在性、作用域、授权、当前结果和历史 schema 读取。</li><li>暖会话：批次只启动一次、用例间不 restart、generation 变化和 D-01 恢复次数。</li><li>隔离：新 Agent request 不包含上一用例 timeline、截图或对话；新证据只属于当前 execution。</li><li>知识：候选排序、范围过滤辅助信息、过期/冲突记录和路径安全。</li><li>证据：文件缺失、SHA 漂移、截图损坏、跨 execution 引用拒绝。</li><li>报告：历史与当前 execution 混合工作空间、可信 completion、HTML 转义和无步骤输入展示。</li></ul>
+<h3 id="11-2-agent-行为评估">11.2 Agent 行为评估</h3>
+<p>确定性单测无法证明 Agent 是否发挥了推理能力，需要建立小规模离线/真机 eval 集：</p>
+<div class="table-wrap"><table><thead><tr><th>场景</th><th>期望行为</th></tr></thead><tbody><tr><td>当前已在目标页</td><td>删除导航型辅助检查点，保留原文要求的核心动作</td></tr><tr><td>实际路径比计划多一步</td><td>修订策略继续，不因路径变化 FAIL</td></tr><tr><td>初始计划包含错误页面假设</td><td>记录修订并回到原始 requirement</td></tr><tr><td>上一用例停留深层页面</td><td>新用例重新观察并建立起点，不复用旧证据</td></tr><tr><td>已知版本差异</td><td>查询知识、校验范围并输出 <code>KNOWLEDGE_SUPPORTED</code></td></tr><tr><td>相似但不适用知识</td><td>拒绝套用，继续调查或输出不确定性</td></tr><tr><td>原文模糊</td><td>执行合理部分并输出 <code>INCONCLUSIVE</code>，不在导入阶段拒绝</td></tr><tr><td>达到 30 分钟时限</td><td>停止新的设备操作，仍生成带尝试轨迹的结果</td></tr><tr><td>明确产品缺陷</td><td>FAIL 可回溯原文、当前证据和失败前复核</td></tr></tbody></table></div>
+<p>评估关注结论依据、计划调整能力和边界遵守，不要求每次点击路径完全一致。</p>
+<h3 id="11-3-三端验收">11.3 三端验收</h3>
+<p>每个平台至少执行：直接复用起点、少量转换、导航锚点、知识命中、真实 FAIL、INCONCLUSIVE、工具 BLOCKED、执行时限停止和受控冷启动恢复。验证截图/控件树、输入、前台识别、报告链接及批次串行闭环。</p>
+<h2 id="12-可观测性与指标">12. 可观测性与指标</h2>
+<p>建议在 <code>metrics.json</code> 和 batch 汇总增加：</p>
+<ul><li><code>warmSession.appStartCount</code>、<code>reuseCaseCount</code>、<code>recoveryRestartCount</code>。</li><li><code>startEstablishment.strategy</code>、准备动作数和耗时。</li><li><code>plan.initialCheckpointCount</code>、<code>revisionCount</code>、增加/删除/合并数量。</li><li><code>knowledge.queryCount</code>、候选数、采用数、冲突数。</li><li><code>verdictBasis</code> 分布和 FAIL 前复核完成情况。</li><li>动作/观察/知识查询总数、Agent 主动反思次数和 30 分钟时限触发次数。</li><li>Agent Runtime 用时、合约错误和释放失败。</li></ul>
+<p>这些指标用于发现执行成本和设计偏差，不用于用固定阈值判断产品业务失败。</p>
+<h2 id="13-风险与回滚">13. 风险与回滚</h2>
+<div class="table-wrap"><table><thead><tr><th>风险</th><th>实现控制</th></tr></thead><tbody><tr><td>Agent 自由度提高后行为漂移</td><td>原文快照、understanding、计划 revision、逐 requirement finding 和 eval 回归</td></tr><tr><td>暖状态导致顺序依赖</td><td>新用例独立观察、准备/业务分区、批次顺序和 warm generation 审计</td></tr><tr><td>起点恢复消耗过大</td><td>导航锚点、单用例 30 分钟时限和完整结果输出</td></tr><tr><td>知识被错误套用</td><td>候选与适用性分离，核对 App、平台、版本、页面状态、触发条件和有效期，知识支持 PASS 显式标识</td></tr><tr><td>切换时执行状态相互污染</td><td>切换前停止新批次，活动 execution 不跨实现续写，历史 reader 只读</td></tr><tr><td><code>run-case.js</code> 重构回归面过大</td><td>先抽纯契约模块，再切主链路；平台 adapter 保持稳定</td></tr><tr><td>Agent 结果无法确定性复算</td><td>接受业务结论由 Agent负责，脚本验证来源、引用、执行时限和证据完整性</td></tr></tbody></table></div>
+<p>回滚单位是完整代码版本：停止目标版本创建的新批次，回退代码、<code>SKILL.md</code> 和 manifest，再按回退版本重新创建批次。任何已开始的 execution 都不得跨实现版本继续写入。</p>
+<h2 id="14-实现验收标准">14. 实现验收标准</h2>
+<ul><li>任意非空可读取文本都能创建 case 和 execution；零解析步骤不会触发 <code>CASE_STEPS_REQUIRED</code>。空文件或纯空白输入以 <code>CASE_INPUT_EMPTY</code> 在前置环节结束，且不创建设备执行产物。</li><li>case Agent 能读取完整 <code>source.snapshot.md</code>，生成 understanding 和可修订计划。</li><li>正式执行不调用固定 preflight 业务计划和 <code>execution-reducer</code> 唯一 NextWork。</li><li>计划增删、合并、重排或实际操作数变化不会被脚本直接判为业务失败。</li><li>FAIL 必须有原始 requirement、当前 execution 证据和失败前复核记录。</li><li>understanding 的修订必须保留前后版本和 sourceRefs，不能通过删除 requirement 规避原文要求。</li><li>同一批次默认只有一次 App 启动；用例间无隐式 <code>restartApp</code>。</li><li>每个新用例使用独立 Agent session 和 execution，并重新采集起始 observation。</li><li>起点准备事实与业务 evidence 在契约和报告中明确分区。</li><li>冷启动例外只能通过 batch recovery，并有原文或客观技术事实、恢复次数和耗时记录。</li><li>本地知识无需外部服务即可查询；采用知识时有范围判断和引用。</li><li><code>KNOWLEDGE_SUPPORTED</code> PASS 与 <code>DIRECT_EVIDENCE</code> PASS 可在结果和总览中区分。</li><li>30 分钟时限只停止新的设备操作，不阻止形成完整结果，也不自动改写 verdict。</li><li>三端现有观察和动作能力通过回归，历史 execution 仍可展示。</li><li>正式切换后只有目标执行核心可以创建新 execution；现有业务执行核心已删除。</li></ul>
+<h2 id="15-实现决策">15. 实现决策</h2>
+<h3 id="已确认">已确认</h3>
+<ol><li><strong>D-01 批次首次启动策略：</strong> 每个新批次固定冷启动 App 一次；批次内用例保持暖会话。同一批次恢复不重复冷启动，App 意外退出时按 5.3 节执行一次受控恢复。</li><li><strong>D-02 正式切换策略：</strong> 选择方案 A。正式切换与现有业务执行核心删除在同一发布完成；不保留用户可选的并行协议。新文件、模块名和对外口径统一使用中性命名；回退只能回退完整代码版本。</li><li><strong>D-03 知识库可信语义：</strong> 知识库准入即代表内容准确、可信且具有说服力；框架不进行可信度分级。Agent 只判断知识对当前 App、平台、版本、页面状态和触发条件是否适用；来源信息仅用于追溯，内容准确性由知识库维护方负责。</li><li><strong>D-04 单用例执行时限：</strong> 只保留单用例 30 分钟硬时限。动作、观察、准备和知识查询次数不设限制；到时停止新的设备操作，但允许基于已有材料完成结论，且不因超时自动改判结果。</li><li><strong>D-05 空文本处理：</strong> 空文件或仅含空白字符的输入无法生成测试目标和检查点，在导入/前置环节返回 <code>CASE_INPUT_EMPTY</code>；不创建 case、execution、Agent session 或报告。非空文本仍不做格式和质量校验。</li><li><strong>D-06 导航 Flow 处理：</strong> 不保留导航 Flow 机制。已有 Flow 中的页面特征、适用范围、导航入口、可行路径和恢复建议按需迁入知识库；Agent 结合当前现场自主导航，目标状态必须由当前 execution 的实际观察确认。正式切换时删除 Flow 加载、匹配、执行、状态机和专用失败处理。</li><li><strong>D-07 工作空间入口：</strong> 当前目录只允许为空目录或带有效 <code>workspace.json</code> 的既有测试工作空间。空目录自动初始化；其他非空目录返回 <code>WORKSPACE_INVALID</code>。不向上查找、不按目录形状自动认领、不自动升级无标记目录；用例可从工作空间外显式导入。</li></ol>
+<h2 id="结论">结论</h2>
+<p>本方案不是在旧状态机上增加更多分支，而是重新划分职责：Agent 负责业务理解和动态执行，本地脚本负责设备能力、客观边界和可信记录。App 状态在批次内保持暖态，用例在 execution 和 Agent 会话层保持隔离；原始输入不设质量门槛，计划可以随现场修订，异常必须经过知识与证据调查后再形成结论。</p>
+<p>实现上最大化复用现有三端 adapter、环境绑定、事实存储、证据校验、Runtime 和报告基础设施，重点替换固定用例契约、逐 case 冷启动、NextWork reducer 和逐步骤 PASS 归约。这样既能释放 Agent 的推理能力，也能保留测试执行必须具备的安全、执行时限和审计边界。</p><footer class="doc-footer">Agent 驱动的移动端 AI 视觉测试技术实现方案 · 技术实现评审稿 · 2026-08-12</footer></main>
+</div>
+</body>
+</html>
