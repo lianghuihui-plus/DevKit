@@ -8,7 +8,7 @@ const VERDICTS = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const VERDICT_BASES = new Set(['DIRECT_EVIDENCE', 'KNOWLEDGE_SUPPORTED', 'INSUFFICIENT_EVIDENCE', 'TECHNICAL_CONSTRAINT']);
 const TRACE_TYPES = new Set([
   'understanding', 'planRevision', 'preparationObservation', 'businessObservation', 'businessAction',
-  'knowledgeQuery', 'knowledgeAssessment', 'verdictReview', 'timeLimitStop', 'result',
+  'knowledgeQuery', 'knowledgeAssessment', 'knowledgeReview', 'verdictReview', 'timeLimitStop', 'result',
 ]);
 
 function validateCondition(value, label) {
@@ -91,6 +91,7 @@ function traceFromExecution(report) {
       planRevised: 'planRevision',
       knowledgeQuery: 'knowledgeQuery',
       knowledgeAssessment: 'knowledgeAssessment',
+      knowledgeReview: 'knowledgeReview',
       verdictReview: 'verdictReview',
     }[event.type];
     if (mapped) trace.push({ ...event, type: mapped });

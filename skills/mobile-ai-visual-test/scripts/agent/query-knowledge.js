@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 'use strict';
 
 const fs = require('fs');
@@ -9,21 +8,6 @@ const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
 const { atomicWrite, readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { assertNoOperationRecovery, assertNoTurnRecovery, knowledgeQueryDraftIds, recordKnowledgeQuery, timelineEvents } = require('../execution/core');
 const { validateKnowledgeCandidateSnapshot } = require('../lib/knowledge-snapshot');
-
-function parseArgs(argv) {
-  const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    switch (argv[index]) {
-      case '--exec-dir': options.execDir = path.resolve(argv[++index]); break;
-      case '--query-id': options.queryId = argv[++index]; break;
-      case '--query-json': options.query = JSON.parse(argv[++index]); break;
-      case '--reason': options.reason = argv[++index]; break;
-      default: throw new Error(`KNOWLEDGE_QUERY_CLI_INVALID: unknown option ${argv[index]}`);
-    }
-  }
-  if (!options.execDir || !options.queryId || !options.query) throw new Error('KNOWLEDGE_QUERY_CLI_INVALID: --exec-dir, --query-id, and --query-json are required');
-  return options;
-}
 
 function frozenCandidates(draft) {
   if (!Array.isArray(draft?.candidates) || draft.matchCount !== draft.candidates.length) {
@@ -118,14 +102,4 @@ function executeKnowledgeQuery(options) {
   return { schemaVersion: 1, queryId: options.queryId, query: draft.query, candidates, matchCount: candidates.length, idempotent: event.idempotent === true };
 }
 
-function main(argv = process.argv.slice(2)) {
-  return executeKnowledgeQuery(parseArgs(argv));
-}
-
-if (require.main === module) {
-  require('./cli-support').runAgentCli('query-knowledge', process.argv.slice(2), {
-    command: "node scripts/agent/query-knowledge.js --exec-dir <execution> --query-id <id> --query-json '<json>' [--reason <text>]",
-  }, main);
-}
-
-module.exports = { executeKnowledgeQuery, main, parseArgs };
+module.exports = { executeKnowledgeQuery };

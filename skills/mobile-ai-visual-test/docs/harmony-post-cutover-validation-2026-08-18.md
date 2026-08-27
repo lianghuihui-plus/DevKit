@@ -48,7 +48,7 @@ Android 和 iOS 不在本次结论范围内，仍为待验证。
 
 ## 验收后清理
 
-2026-08-18 在不改变正式行为的前提下，删除无调用方的 Agent request CLI、旧 case ref helper 和一次性切换前验收 runner，并将阶段性方案与切换前记录移入 `docs/archive/`。清理后协议摘要保持 `agent-protocol-d99d3635e08576e9`，HarmonyOS implementation 摘要更新为 `agent-implementation-cc3ee83a462b5794`。
+2026-08-18 在不改变正式行为的前提下，删除无调用方的 Agent request CLI、旧 case ref helper 和一次性切换前验收 runner；阶段性方案与切换前记录现由 Git 历史保留。清理后协议摘要保持 `agent-protocol-d99d3635e08576e9`，HarmonyOS implementation 摘要更新为 `agent-implementation-cc3ee83a462b5794`。
 
 清理后重新执行 13 组 `self-test`、switched cutover 门禁、Skill 静态校验、活跃文档引用扫描和 `git diff --check`，结果均通过。该清理不改变上述真机批次的设备事实和业务结论。
 

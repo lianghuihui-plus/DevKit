@@ -44,17 +44,20 @@ for (const value of ['', ' \n\t ', '\ufeff \r\n\t']) expectCode(() => validateSo
 
 const currentCase = createCaseContract({
   caseKey: 'ck-0123456789ab',
+  caseNo: '004',
   title: '',
   sourceText,
   importPath: '/external/cases/audio.md',
 });
 assert.strictEqual(currentCase.schemaVersion, 2);
 assert.strictEqual(currentCase.identity.title, 'Untitled case');
+assert.strictEqual(currentCase.identity.caseNo, '004');
 assert.strictEqual(currentCase.identity.sourceSha, sourceDigest);
 assert.strictEqual(currentCase.contractSha, caseContractSha(currentCase));
 assert.strictEqual(validateCaseContract(currentCase), currentCase);
 expectCode(() => validateCaseContract({ ...currentCase, schemaVersion: 1 }), 'CASE_SCHEMA_UNSUPPORTED');
 expectCode(() => validateCaseContract({ ...currentCase, steps: [] }), 'CASE_CONTRACT_INVALID');
+expectCode(() => validateCaseContract({ ...currentCase, identity: { ...currentCase.identity, caseNo: '4' } }), 'CASE_CONTRACT_INVALID');
 expectCode(() => validateCaseContract({ ...currentCase, contractSha: 'case-contract-deadbeef' }), 'CASE_CONTRACT_INVALID');
 
 const sourceRefs = [
@@ -200,6 +203,11 @@ const events = [
   { ...eventBase, type: 'result', writer: 'runtime-core', phase: 'FINALIZED', resultSha: 'result-0123456789abcdef', verdict: 'PASS' },
 ];
 events.forEach((event) => assert.strictEqual(validateExecutionEvent(event, { executionId }), event));
+const knowledgeReviewEvent = {
+  ...eventBase, type: 'knowledgeReview', writer: 'agent', phase: 'INVESTIGATE', queryId: 'query-001',
+  conclusion: 'APPLICABLE_FOUND', assessmentRefs: ['assessment-001'], reason: '候选适用于当前现场',
+};
+assert.strictEqual(validateExecutionEvent(knowledgeReviewEvent, { executionId }), knowledgeReviewEvent);
 const incompleteReview = { ...events[7] };
 delete incompleteReview.queryRefs;
 assert.throws(() => validateExecutionEvent(incompleteReview, { executionId }), (error) => error?.code === 'EXECUTION_EVENT_INVALID'

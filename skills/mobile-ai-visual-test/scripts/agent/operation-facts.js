@@ -29,6 +29,7 @@ function factFromResult(execDir, validated, kind, result, options = {}) {
       warmSessionGeneration: validated.context.execution.warmSessionGeneration,
       ...(adapterResult.app ? { app: adapterResult.app } : {}),
       ...(adapterResult.device ? { device: adapterResult.device } : {}),
+      ...(adapterResult.technicalSignals ? { technicalSignals: adapterResult.technicalSignals } : {}),
       authorization: request.authorization,
       ...(request.authorization.phase === 'case-prepare' ? {
         ...(request.authorization.startConditionId ? { startConditionId: request.authorization.startConditionId } : {}),

@@ -17,6 +17,7 @@ const { assertWorkspace } = require('./workspace');
 const { atomicWrite, readJson, writeJsonAtomic } = require('./execution-lifecycle');
 const { buildContract } = require('../build-agent-contract');
 const { validateKnowledgeRoots } = require('./knowledge-query');
+const { ensureWorkspaceCaseNumbers, resolveCaseNo } = require('./case-numbering');
 
 const ENVIRONMENT_CONFIRMATION_SCHEMA_VERSION = 1;
 const EXECUTION_REQUEST_SCHEMA_VERSION = 2;
@@ -111,13 +112,34 @@ function loadEnvironmentConfirmation(workspaceRoot) {
   return validateEnvironmentConfirmation(value);
 }
 
-function resolveLiveExecutionTargets(workspaceRoot, inputTargets) {
+function normalizeExecutionTargetSelectors(workspaceRoot, inputTargets) {
   if (!Array.isArray(inputTargets) || !inputTargets.length) {
     throw contractError('EXECUTION_REQUEST_INVALID', 'targets must not be empty');
   }
+  return inputTargets.map((target, index) => {
+    if (!target || typeof target !== 'object' || Array.isArray(target)) {
+      throw contractError('EXECUTION_REQUEST_TARGET_INVALID', `targets[${index}] must be an object`);
+    }
+    if (target.caseNo === undefined) return target;
+    const resolved = resolveCaseNo(workspaceRoot, target.caseNo);
+    if (!resolved) {
+      throw contractError('EXECUTION_REQUEST_TARGET_NOT_FOUND', `targets[${index}].caseNo does not identify a workspace case: ${target.caseNo}`);
+    }
+    if (target.caseKey && target.caseKey !== resolved.caseKey) {
+      throw contractError('EXECUTION_REQUEST_TARGET_MISMATCH', `targets[${index}].caseNo does not match caseKey`);
+    }
+    if (target.caseDir && path.resolve(target.caseDir) !== path.resolve(resolved.caseDir)) {
+      throw contractError('EXECUTION_REQUEST_TARGET_MISMATCH', `targets[${index}].caseNo does not match caseDir`);
+    }
+    return { caseKey: resolved.caseKey, caseDir: resolved.caseDir };
+  });
+}
+
+function resolveLiveExecutionTargets(workspaceRoot, inputTargets) {
+  const normalizedTargets = normalizeExecutionTargetSelectors(workspaceRoot, inputTargets);
   const casesRoot = fs.realpathSync(path.join(workspaceRoot, 'cases'));
   const keys = new Set();
-  return inputTargets.map((target, index) => {
+  return normalizedTargets.map((target, index) => {
     if (!target || typeof target.caseDir !== 'string' || !target.caseDir.trim()) {
       throw contractError('EXECUTION_REQUEST_TARGET_INVALID', `targets[${index}].caseDir is required`);
     }
@@ -150,7 +172,7 @@ function resolveLiveExecutionTargets(workspaceRoot, inputTargets) {
     if (sourceSha(sourceText) !== caseJson.identity.sourceSha) {
       throw contractError('EXECUTION_REQUEST_TARGET_INVALID', `targets[${index}] source.md does not match case.json`);
     }
-    return { caseKey: target.caseKey, caseDir, caseJson, sourceText };
+    return { caseNo: caseJson.identity.caseNo, caseKey: target.caseKey, caseDir, caseJson, sourceText };
   });
 }
 
@@ -159,6 +181,7 @@ function snapshotTargetDescriptor(workspaceRoot, batchId, target, index) {
   const snapshotPath = path.join(executionRequestTargetsRoot(workspaceRoot, batchId), `${String(order).padStart(4, '0')}-${target.caseKey}`);
   return {
     order,
+    caseNo: target.caseJson.identity.caseNo,
     caseKey: target.caseKey,
     caseDir: target.caseDir,
     snapshotPath,
@@ -197,6 +220,7 @@ function snapshotTarget(workspaceRoot, batchId, target, descriptor) {
 function validateSnapshotTarget(workspaceRoot, batchId, target, index) {
   ensureObject(target, `targets[${index}]`, 'EXECUTION_REQUEST_INVALID');
   if (target.order !== index + 1) throw contractError('EXECUTION_REQUEST_INVALID', `targets[${index}].order is invalid`);
+  if (target.caseNo !== undefined) ensureString(target.caseNo, `targets[${index}].caseNo`, 'EXECUTION_REQUEST_INVALID');
   ensureId(target.caseKey, `targets[${index}].caseKey`, 'EXECUTION_REQUEST_INVALID');
   ensureString(target.caseDir, `targets[${index}].caseDir`, 'EXECUTION_REQUEST_INVALID');
   ensureString(target.snapshotPath, `targets[${index}].snapshotPath`, 'EXECUTION_REQUEST_INVALID');
@@ -224,6 +248,9 @@ function validateSnapshotTarget(workspaceRoot, batchId, target, index) {
   if (sourceSha(sourceText) !== target.sourceSha || caseJson.identity.sourceSha !== target.sourceSha
     || caseJson.contractSha !== target.caseContractSha || caseJson.identity.caseKey !== target.caseKey) {
     throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] frozen snapshot binding changed`);
+  }
+  if (target.caseNo !== undefined && caseJson.identity.caseNo !== target.caseNo) {
+    throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] caseNo changed`);
   }
   return { ...target, snapshotPath: resolved };
 }
@@ -274,6 +301,8 @@ function validateExecutionRequest(value, options = {}) {
 
 function createExecutionRequest(options) {
   const workspace = assertWorkspace(options.workspaceRoot, { allowTest: true });
+  ensureWorkspaceCaseNumbers(workspace.root);
+  const selectedTargets = normalizeExecutionTargetSelectors(workspace.root, options.targets);
   const environment = loadEnvironmentConfirmation(workspace.root);
   const batchId = ensureId(options.batchId, 'batchId', 'EXECUTION_REQUEST_INVALID');
   const mode = String(options.mode || '').trim().toUpperCase();
@@ -283,7 +312,7 @@ function createExecutionRequest(options) {
   const existing = readJson(requestFile, null);
   if (existing) {
     const validated = validateExecutionRequest(existing, { workspaceRoot: workspace.root });
-    const requestedKeys = (options.targets || []).map((target) => target?.caseKey);
+    const requestedKeys = selectedTargets.map((target) => target.caseKey);
     if (validated.mode !== mode || validated.userInstruction !== options.userInstruction
       || canonicalJson(validated.targets.map((target) => target.caseKey)) !== canonicalJson(requestedKeys)) {
       throw contractError('EXECUTION_REQUEST_EXISTS', `batch ${batchId} already has a different execution request`);
@@ -298,7 +327,7 @@ function createExecutionRequest(options) {
   const userInstruction = ensureString(options.userInstruction, 'userInstruction', 'EXECUTION_REQUEST_INVALID');
   let draft = readJson(draftFile, null);
   if (draft) {
-    const requestedKeys = (options.targets || []).map((target) => target?.caseKey);
+    const requestedKeys = selectedTargets.map((target) => target.caseKey);
     const frozenKeys = (draft.request?.targets || []).map((target) => target.caseKey);
     if (draft.schemaVersion !== 1 || !['STARTED', 'SNAPSHOTS_READY'].includes(draft.status)
       || draft.request?.batchId !== batchId || draft.request?.mode !== mode
@@ -308,7 +337,7 @@ function createExecutionRequest(options) {
       throw contractError('EXECUTION_REQUEST_DRAFT_INVALID', 'active execution request draft does not match this request');
     }
   } else {
-    const liveTargets = resolveLiveExecutionTargets(workspace.root, options.targets);
+    const liveTargets = resolveLiveExecutionTargets(workspace.root, selectedTargets);
     if (mode === 'SINGLE' && liveTargets.length !== 1) throw contractError('EXECUTION_REQUEST_INVALID', 'SINGLE mode requires exactly one target');
     validateKnowledgeRoots([
       path.join(options.skillRoot || path.join(__dirname, '..', '..'), 'knowledge'),
@@ -335,7 +364,7 @@ function createExecutionRequest(options) {
       caseExecutorProtocolSha: caseExecutorContract.protocolSha,
       coordinatorProtocolSha: coordinatorContract.protocolSha,
       implementationSha: caseExecutorContract.implementationSha,
-      binding: { ...environment.binding },
+      binding: validateBinding({ ...environment.binding }),
       targets,
       userInstruction,
       userInstructionSha: sha256(userInstruction, 'user-instruction', 24),
@@ -369,7 +398,7 @@ function loadExecutionRequest(workspaceRoot, batchId, options = {}) {
   if (options.requireCurrentEnvironment !== false) {
     const environment = loadEnvironmentConfirmation(workspace.root);
     if (environment.confirmationId !== request.environmentConfirmationId || environment.confirmationSha !== request.environmentConfirmationSha
-      || canonicalJson(environment.binding) !== canonicalJson(request.binding)) {
+      || canonicalJson(validateBinding(environment.binding)) !== canonicalJson(validateBinding(request.binding))) {
       throw contractError('EXECUTION_REQUEST_ENVIRONMENT_CHANGED', 'environment confirmation changed after the execution request');
     }
   }
@@ -394,6 +423,7 @@ module.exports = {
   loadExecutionRequest,
   resolveExecutionTargets,
   resolveLiveExecutionTargets,
+  normalizeExecutionTargetSelectors,
   validateEnvironmentConfirmation,
   validateExecutionRequest,
 };

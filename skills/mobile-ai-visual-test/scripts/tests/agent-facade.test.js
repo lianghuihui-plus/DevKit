@@ -20,7 +20,7 @@ const {
   understand,
 } = require('../agent/facade-core');
 const { readAgentStatus } = require('../agent/status');
-const { requestRecovery } = require('../agent/control-request');
+const { activeCheckpoint, requestRecovery } = require('../agent/control-request');
 const { recoverInternalTransactions } = require('../batch/internal-recovery');
 const { bootstrapBatch, initializeBatch, recoverApp, startCurrentCase } = require('../batch/core');
 const { createCaseContract, sourceSha } = require('../execution/contracts/case-contract');
@@ -30,6 +30,11 @@ const { createTestExecutionRequest, createTestWorkspace } = require('./current-f
 
 const T0 = '2026-08-13T10:00:00.000Z';
 const BINDING = Object.freeze({ platform: 'harmony', deviceId: 'facade-device', appId: 'com.example.facade', entry: 'EntryAbility' });
+
+const revisedCheckpointPlan = { revision: 2, checkpoints: [{ id: 'cp-001' }, { id: 'cp-002' }] };
+const priorCheckpointActivity = [{ warmSessionGeneration: 1, authorization: { checkpointId: 'cp-002', planRevision: 1 } }];
+assert.strictEqual(activeCheckpoint(revisedCheckpointPlan, priorCheckpointActivity, 1), 'cp-002');
+assert.strictEqual(activeCheckpoint(revisedCheckpointPlan, priorCheckpointActivity, 2), 'cp-001');
 
 function crc32(buffer) {
   let crc = 0xffffffff;
@@ -77,15 +82,19 @@ function createRunner() {
     const kind = command.endsWith('/action.sh') ? 'ACTION' : 'OBSERVE';
     calls.push({ kind, args: [...args], options: { ...options } });
     if (kind === 'ACTION') {
-      return { status: 0, stderr: '', stdout: JSON.stringify({
+      const actionType = valueAfter(args, '--type');
+      const baseResult = {
         schemaVersion: 1,
         type: 'actionResult',
         platform: 'harmony',
-        action: valueAfter(args, '--type'),
+        action: actionType,
         ok: true,
         device: { id: BINDING.deviceId },
         app: { appId: BINDING.appId },
-      }) };
+      };
+      return { status: 0, stderr: '', stdout: JSON.stringify(runner.actionResultFactory
+        ? { ...baseResult, ...runner.actionResultFactory({ actionType, args }) }
+        : baseResult) };
     }
     if (runner.failNextObservation) {
       runner.failNextObservation = false;
@@ -98,7 +107,7 @@ function createRunner() {
     fs.mkdirSync(path.join(out, 'screenshots'), { recursive: true });
     fs.mkdirSync(path.join(out, 'layouts'), { recursive: true });
     fs.writeFileSync(path.join(out, screenshot), createPng(100, 200));
-    writeJsonAtomic(path.join(out, layout), {
+    const defaultLayout = {
       attributes: { type: 'Root', bounds: '[0,0][100,200]', visible: 'true' },
       children: [{
         attributes: {
@@ -106,7 +115,11 @@ function createRunner() {
         },
         children: [],
       }],
-    });
+    };
+    runner.observationCount += 1;
+    writeJsonAtomic(path.join(out, layout), runner.layoutFactory
+      ? runner.layoutFactory({ label, observationCount: runner.observationCount, defaultLayout })
+      : defaultLayout);
     return { status: 0, stderr: '', stdout: JSON.stringify({
       schemaVersion: 1,
       type: 'observation',
@@ -118,6 +131,9 @@ function createRunner() {
   };
   runner.calls = calls;
   runner.failNextObservation = false;
+  runner.observationCount = 0;
+  runner.layoutFactory = null;
+  runner.actionResultFactory = null;
   return runner;
 }
 
@@ -232,7 +248,7 @@ const actionsBeforeRecovery = runner.calls.filter((entry) => entry.kind === 'ACT
 expectCode(() => executeStep(happy.execDir, {
   stage: 'BUSINESS', checkpointRef: 'cp-001', intent: '再次点击并验证恢复',
   action: { type: 'tap', targetRef: stepped.observationView.elements[0].ref },
-}, { runner, now: T0 }), 'DEVICE_ADAPTER_OUTPUT_INVALID');
+}, { runner, now: T0 }), 'DEVICE_ADAPTER_FAILED');
 const recovery = readAgentStatus(happy.execDir, T0).stepRecoveries[0];
 assert.strictEqual(recovery.recoveryMode, 'RESUME_SEMANTIC_STEP');
 const resumed = executeStep(happy.execDir, {}, { resumeStepId: recovery.stepId, runner, now: T0 });
@@ -260,6 +276,82 @@ const repeatedConclusion = conclude(happy.execDir, {
 }, { now: T0 });
 assert.strictEqual(repeatedConclusion.idempotent, true);
 
+const evidenceConflict = setup('evidence-conflict');
+const conflictRunner = createRunner();
+conflictRunner.layoutFactory = ({ observationCount, defaultLayout }) => ({
+  ...defaultLayout,
+  children: [
+    ...defaultLayout.children,
+    {
+      attributes: {
+        type: 'SecureTextField', hint: '密码', value: observationCount === 1 ? '••••••' : '•••••••',
+        bounds: '[10,80][80,110]', enabled: 'true', visible: 'true', secure: 'true',
+      },
+      children: [],
+    },
+  ],
+});
+understand(evidenceConflict.execDir, understandInput(evidenceConflict), { now: T0 });
+const conflictStart = inspectCurrent(evidenceConflict.execDir, { stage: 'PREPARE', intent: '观察安全输入现场' }, { runner: conflictRunner, now: T0 });
+markStart(evidenceConflict.execDir, { reason: '当前页面满足起点' }, { now: T0 });
+const conflictTarget = conflictStart.observationView.elements.find((entry) => entry.text === '目标按钮');
+const conflictStep = executeStep(evidenceConflict.execDir, {
+  stage: 'BUSINESS', intent: '点击与输入无关的目标按钮',
+  action: { type: 'tap', targetRef: conflictTarget.ref },
+}, { runner: conflictRunner, now: T0 });
+assert.ok(conflictStep.observationView.conflicts.some((entry) => entry.code === 'UNEXPECTED_SECURE_INPUT_MUTATION'));
+expectCode(() => conclude(evidenceConflict.execDir, {
+  verdict: 'PASS', summary: '目标状态符合要求',
+  findings: [{ requirementRef: 'req-001', status: 'SATISFIED', reason: '最新现场展示目标状态' }],
+}, { now: T0 }), 'EVIDENCE_CONFLICT_UNRESOLVED');
+const conflictInvestigation = investigate(evidenceConflict.execDir, {
+  query: { platform: 'harmony', page: '证据冲突测试页', symptom: '安全字段被非输入动作改变', keywords: ['不存在的证据冲突知识条目'] },
+  reason: '确定性结论被现场证据冲突阻止后完成调查',
+}, { now: T0 });
+assert.strictEqual(conflictInvestigation.matchCount, 0);
+const conflictConclusion = conclude(evidenceConflict.execDir, {
+  verdict: 'INCONCLUSIVE', summary: '关键现场证据冲突尚未恢复，无法可靠判断',
+  uncertainties: ['非输入动作改变了安全输入字段，当前证据受到污染'],
+  findings: [{ requirementRef: 'req-001', status: 'UNRESOLVED', reason: '现场证据冲突未闭合' }],
+}, { now: T0 });
+assert.strictEqual(conflictConclusion.runtimeState.finalized, true);
+
+const repairedConflict = setup('evidence-conflict-repaired');
+const repairRunner = createRunner();
+repairRunner.layoutFactory = ({ observationCount, defaultLayout }) => ({
+  ...defaultLayout,
+  children: [
+    ...defaultLayout.children,
+    {
+      attributes: {
+        type: 'SecureTextField', hint: '密码', value: observationCount === 2 ? '•••••••' : '••••••',
+        bounds: '[10,80][80,110]', enabled: 'true', visible: 'true', secure: 'true',
+      },
+      children: [],
+    },
+  ],
+});
+repairRunner.actionResultFactory = ({ actionType }) => actionType === 'inputText'
+  ? { inputEffect: { status: 'MASKED', expectedLength: 6, observedLength: 6 } }
+  : {};
+understand(repairedConflict.execDir, understandInput(repairedConflict), { now: T0 });
+const repairStart = inspectCurrent(repairedConflict.execDir, { stage: 'PREPARE', intent: '观察待修复现场' }, { runner: repairRunner, now: T0 });
+markStart(repairedConflict.execDir, { reason: '当前页面满足起点' }, { now: T0 });
+const pollutedStep = executeStep(repairedConflict.execDir, {
+  stage: 'BUSINESS', intent: '执行无关点击并模拟输入污染',
+  action: { type: 'tap', targetRef: repairStart.observationView.elements.find((entry) => entry.text === '目标按钮').ref },
+}, { runner: repairRunner, now: T0 });
+const repairedStep = executeStep(repairedConflict.execDir, {
+  stage: 'BUSINESS', intent: '使用整串输入恢复安全字段',
+  action: { type: 'inputText', targetRef: pollutedStep.observationView.elements.find((entry) => entry.secure).ref, text: '123456' },
+}, { runner: repairRunner, now: T0 });
+assert.deepStrictEqual(repairedStep.observationView.stateChanges.map((entry) => [entry.before, entry.after, entry.unexpected]), [[7, 6, false]]);
+const repairedConclusion = conclude(repairedConflict.execDir, {
+  verdict: 'PASS', summary: '安全字段已经通过整串输入恢复并核验',
+  findings: [{ requirementRef: 'req-001', status: 'SATISFIED', reason: '最新现场证据可靠' }],
+}, { now: T0 });
+assert.strictEqual(repairedConclusion.runtimeState.finalized, true);
+
 const control = setup('control-request');
 understand(control.execDir, understandInput(control), { now: T0 });
 const controlObservation = inspectCurrent(control.execDir, { stage: 'PREPARE', intent: '观察恢复前现场' }, { runner, now: T0 });
@@ -273,7 +365,7 @@ expectCode(() => inspectCurrent(control.execDir, { stage: 'BUSINESS' }, { runner
 const firstObservationFailure = setup('first-observation-recovery');
 understand(firstObservationFailure.execDir, understandInput(firstObservationFailure), { now: T0 });
 runner.failNextObservation = true;
-expectCode(() => inspectCurrent(firstObservationFailure.execDir, { stage: 'PREPARE' }, { runner, now: T0 }), 'DEVICE_ADAPTER_OUTPUT_INVALID');
+expectCode(() => inspectCurrent(firstObservationFailure.execDir, { stage: 'PREPARE' }, { runner, now: T0 }), 'DEVICE_ADAPTER_FAILED');
 const firstFailureRequest = requestRecovery(firstObservationFailure.execDir, {
   reason: '首次观察时自动化会话失效', triggerType: 'AUTOMATION_SESSION_LOST',
 }, { now: T0 }).controlRequest;
@@ -295,7 +387,7 @@ markStart(deadline.execDir, { reason: '时限测试起点' }, { now: T0 });
 runner.failNextObservation = true;
 expectCode(() => executeStep(deadline.execDir, {
   stage: 'BUSINESS', intent: '执行后模拟观察中断', action: { type: 'tap', targetRef: deadlineObservation.observationView.elements[0].ref },
-}, { runner, now: T0 }), 'DEVICE_ADAPTER_OUTPUT_INVALID');
+}, { runner, now: T0 }), 'DEVICE_ADAPTER_FAILED');
 const deadlineActions = runner.calls.filter((entry) => entry.kind === 'ACTION').length;
 recoverInternalTransactions(deadline.execDir, { runner, now: '2026-08-13T10:30:00.000Z' });
 assert.strictEqual(readAgentStatus(deadline.execDir, '2026-08-13T10:30:00.000Z').stepRecoveries.length, 0);
@@ -356,6 +448,42 @@ expectCode(() => conclude(actionRequired.execDir, {
   findings: [{ requirementRef: 'req-001', status: 'SATISFIED', reason: '只有起点观察' }],
 }, { now: T0 }), 'CHECKPOINT_EXECUTION_INCOMPLETE');
 
+const carriedCheckpoint = setup('checkpoint-evidence-carry-forward');
+understand(carriedCheckpoint.execDir, understandInput(carriedCheckpoint), { now: T0 });
+const carriedStart = inspectCurrent(carriedCheckpoint.execDir, { stage: 'PREPARE', intent: '建立计划修订测试起点' }, { runner, now: T0 });
+markStart(carriedCheckpoint.execDir, { reason: '当前现场满足计划修订测试起点' }, { now: T0 });
+executeStep(carriedCheckpoint.execDir, {
+  stage: 'BUSINESS', checkpointRef: 'cp-001', intent: '完成原计划中的目标操作',
+  action: { type: 'tap', targetRef: carriedStart.observationView.elements[0].ref },
+}, { runner, now: T0 });
+understand(carriedCheckpoint.execDir, {
+  checkpoints: [{ id: 'cp-001', goal: '按现场信息调整后的检查目标', requirementRefs: ['req-001'], requiredAction: true }],
+  reason: '保留稳定检查点身份并修订计划描述',
+}, { now: T0 });
+const carriedResult = conclude(carriedCheckpoint.execDir, {
+  verdict: 'PASS', summary: '计划修订前的有效操作继续支撑稳定检查点',
+  findings: [{ requirementRef: 'req-001', status: 'SATISFIED', reason: '当前现场满足修订后的检查目标' }],
+}, { now: T0 });
+assert.strictEqual(carriedResult.runtimeState.finalized, true);
+assert.strictEqual(readJson(path.join(carriedCheckpoint.execDir, 'plan.json')).revision, 2);
+
+const replacedCheckpoint = setup('checkpoint-evidence-not-carried-to-new-id');
+understand(replacedCheckpoint.execDir, understandInput(replacedCheckpoint), { now: T0 });
+const replacedStart = inspectCurrent(replacedCheckpoint.execDir, { stage: 'PREPARE', intent: '建立检查点替换测试起点' }, { runner, now: T0 });
+markStart(replacedCheckpoint.execDir, { reason: '当前现场满足检查点替换测试起点' }, { now: T0 });
+executeStep(replacedCheckpoint.execDir, {
+  stage: 'BUSINESS', checkpointRef: 'cp-001', intent: '完成旧检查点操作',
+  action: { type: 'tap', targetRef: replacedStart.observationView.elements[0].ref },
+}, { runner, now: T0 });
+understand(replacedCheckpoint.execDir, {
+  checkpoints: [{ id: 'cp-002', goal: '语义变化后的新检查点', requirementRefs: ['req-001'], requiredAction: true }],
+  reason: '检查点语义变化后使用新身份',
+}, { now: T0 });
+expectCode(() => conclude(replacedCheckpoint.execDir, {
+  verdict: 'PASS', summary: '新检查点不能继承旧检查点操作',
+  findings: [{ requirementRef: 'req-001', status: 'SATISFIED', reason: '当前现场满足要求' }],
+}, { now: T0 }), 'CHECKPOINT_EXECUTION_INCOMPLETE');
+
 const staleFailure = setup('stale-failure-observation');
 const staleInput = understandInput(staleFailure);
 staleInput.checkpoints[0].requiredAction = false;
@@ -374,6 +502,42 @@ expectCode(() => conclude(staleFailure.execDir, {
     requirementRef: 'req-001', status: 'NOT_SATISFIED', reason: '引用的是旧现场', evidenceRefs: [oldObservation.ref],
   }],
 }, { now: T0 }), 'CURRENT_OBSERVATION_REQUIRED');
+
+const matchedKnowledge = setup('matched-knowledge-review');
+const matchedInput = understandInput(matchedKnowledge);
+matchedInput.checkpoints[0].requiredAction = false;
+understand(matchedKnowledge.execDir, matchedInput, { now: T0 });
+inspectCurrent(matchedKnowledge.execDir, { stage: 'PREPARE', intent: '建立知识调查测试起点' }, { runner, now: T0 });
+markStart(matchedKnowledge.execDir, { reason: '当前现场满足知识调查测试起点' }, { now: T0 });
+fs.mkdirSync(path.join(matchedKnowledge.root, 'knowledge'), { recursive: true });
+fs.writeFileSync(path.join(matchedKnowledge.root, 'knowledge', 'known-normal.md'), [
+  '# K-known-normal 当前现象可能属于正常状态', '',
+  '## 适用范围', '- Platform: harmony', '- Page: 目标页面', '',
+  '## 可观察现象', '目标状态暂未展示。', '',
+  '## 结论与处理建议', '结合当前现场判断是否适用。', '',
+  '## 追溯信息', '知识调查闭环测试。', '',
+].join('\n'));
+const matchedQuery = investigate(matchedKnowledge.execDir, {
+  query: { platform: 'harmony', page: '目标页面', symptom: '目标状态暂未展示', keywords: ['目标状态'] },
+  reason: '失败结论前调查已知现象',
+}, { now: T0 });
+assert.strictEqual(matchedQuery.matchCount, 1);
+expectCode(() => conclude(matchedKnowledge.execDir, {
+  verdict: 'FAIL', summary: '未完成知识候选判断时不能失败',
+  findings: [{ requirementRef: 'req-001', status: 'NOT_SATISFIED', reason: '当前现场未展示目标状态' }],
+}, { now: T0 }), 'KNOWLEDGE_REVIEW_REQUIRED');
+investigate(matchedKnowledge.execDir, {
+  queryId: matchedQuery.queryId,
+  conclusion: 'NO_APPLICABLE',
+  reason: '候选描述不足以解释当前稳定现场',
+  assessments: [{ entryId: matchedQuery.candidates[0].entryId, assessment: 'NOT_APPLICABLE', reason: '候选适用现象与当前稳定现场不一致' }],
+}, { now: T0 });
+const matchedFailure = conclude(matchedKnowledge.execDir, {
+  verdict: 'FAIL', summary: '知识调查完成后当前证据仍明确不满足要求',
+  findings: [{ requirementRef: 'req-001', status: 'NOT_SATISFIED', reason: '当前稳定现场未展示目标状态' }],
+}, { now: T0 });
+assert.strictEqual(matchedFailure.runtimeState.finalized, true);
+assert.strictEqual(timelineEvents(matchedKnowledge.execDir).filter((event) => event.type === 'knowledgeReview').length, 1);
 
 const sourceColdStart = setup('source-cold-start');
 understand(sourceColdStart.execDir, understandInput(sourceColdStart), { now: T0 });
@@ -410,6 +574,8 @@ childProcess.execFileSync(process.execPath, [
 ], { cwd: repo, encoding: 'utf8', env: process.env });
 const cliMetrics = readJson(path.join(cliConclusion.execDir, 'metrics.json'));
 assert.strictEqual(cliMetrics.timing.protocolAttempts, 1);
+assert.strictEqual(fs.readFileSync(path.join(cliConclusion.execDir, 'agent', 'attempts.jsonl'), 'utf8').trim().split(/\r?\n/).length, 1);
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(cliConclusion.execDir, 'agent', 'attempts.jsonl'), 'utf8')).entrypoint, 'conclude');
 assert.strictEqual(fs.existsSync(path.join(cliConclusion.execDir, 'agent', 'attempt.current.json')), false);
 
 console.log('agent-facade passed');

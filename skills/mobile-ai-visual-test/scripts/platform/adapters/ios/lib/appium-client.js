@@ -53,13 +53,14 @@ async function status(server, timeoutMs = 5000) {
   return request(server, 'GET', '/status', undefined, timeoutMs);
 }
 
-async function createSession(target, options = {}) {
+function sessionCapabilities(target, options = {}) {
   const alwaysMatch = {
     platformName: 'iOS',
     'appium:automationName': 'XCUITest',
     'appium:noReset': true,
     'appium:newCommandTimeout': Number(options.newCommandTimeout || 120),
   };
+  if (options.autoLaunch !== undefined) alwaysMatch['appium:autoLaunch'] = options.autoLaunch === true;
   if (target.device) alwaysMatch['appium:udid'] = target.device;
   if (target.appId) alwaysMatch['appium:bundleId'] = target.appId;
   if (target.wdaLocalPort) alwaysMatch['appium:wdaLocalPort'] = Number(target.wdaLocalPort);
@@ -75,6 +76,11 @@ async function createSession(target, options = {}) {
   }
   if (target.wdaLaunchTimeout !== undefined) alwaysMatch['appium:wdaLaunchTimeout'] = Number(target.wdaLaunchTimeout);
   if (target.derivedDataPath) alwaysMatch['appium:derivedDataPath'] = target.derivedDataPath;
+  return alwaysMatch;
+}
+
+async function createSession(target, options = {}) {
+  const alwaysMatch = sessionCapabilities(target, options);
   const response = await request(target.appiumServer, 'POST', '/session', { capabilities: { alwaysMatch } }, options.timeoutMs || 180000);
   const sessionId = response.value?.sessionId || response.sessionId;
   if (!sessionId) throw new Error(`Appium did not return a session id: ${JSON.stringify(response).slice(0, 500)}`);
@@ -104,6 +110,7 @@ module.exports = {
   deleteSession,
   normalizeServer,
   request,
+  sessionCapabilities,
   status,
   withSession,
 };

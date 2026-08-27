@@ -111,6 +111,7 @@ console.log(JSON.stringify({
   schemaVersion: 1,
   type: "environmentProbe",
   platform: "android",
+  deviceId: device,
   device,
   devices: targets.map((id) => ({ id, serial: id })),
   targets,

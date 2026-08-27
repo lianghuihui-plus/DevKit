@@ -69,12 +69,20 @@ function schemas(platform) {
         modes: ['replace', 'append'],
         platform: platform === 'harmony' ? 'targetRef or coordinates focus and input the field' : 'focus with a prior tap step, then input without coordinates',
       },
+      ...(platform === 'ios' ? {
+        dismissKeyboard: {
+          required: [], optional: [],
+          useWhen: 'observationView reports a visible keyboard with KEYBOARD_COORDINATE_SPACE_MISMATCH',
+        },
+      } : {}),
     },
     observationView: {
-      required: ['observationRef', 'scope', 'usable', 'screenshot', 'elements'],
+      required: ['observationRef', 'scope', 'usable', 'screenshot', 'layout', 'signals', 'stateChanges', 'conflicts', 'elements'],
       screenshotRequired: ['ref', 'width', 'height'],
-      elementRequired: ['ref', 'text', 'role', 'bounds', 'clickable', 'checkable', 'editable', 'enabled'],
-      note: 'elements are a compact deterministic projection of the current layout, not a business decision',
+      layoutRequired: ['usable', 'format', 'diagnostics'],
+      elementRequired: ['ref', 'text', 'role', 'bounds', 'clickable', 'checkable', 'editable', 'enabled', 'visible', 'focused', 'secure', 'maskedLength', 'stateKey'],
+      signals: ['keyboard', 'focusedElement', 'layoutViewport', 'adapterWindowRect', 'coordinateConsistency'],
+      note: 'elements and technical signals are a compact deterministic projection of the current layout; stateChanges/conflicts are framework-derived and are not business decisions',
     },
     markStart: {
       optional: ['reason'],
@@ -91,10 +99,11 @@ function schemas(platform) {
     investigate: {
       queryMode: { required: ['query'], optional: ['reason'], generated: ['queryId', 'candidates'] },
       assessmentMode: {
-        required: ['queryId', 'assessments'],
+        required: ['queryId', 'assessments', 'conclusion', 'reason'],
         assessmentRequired: ['entryId', 'assessment', 'reason'],
         assessments: sorted(KNOWLEDGE_ASSESSMENTS),
-        generated: ['knowledgeRef', 'sourceNamespace', 'relativePath', 'contentSha'],
+        conclusions: ['APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT'],
+        generated: ['knowledgeRef', 'sourceNamespace', 'relativePath', 'contentSha', 'knowledgeReview'],
       },
     },
     conclude: {
@@ -106,7 +115,7 @@ function schemas(platform) {
       findingOptional: ['evidenceRefs', 'knowledgeRefs', 'incidentRefs', 'necessityReason'],
       findingStatuses: sorted(FINDING_STATUSES),
       coverage: 'exactly one finding for every current requirement',
-      knowledgeRule: 'direct-evidence PASS may use no query; FAIL, INCONCLUSIVE, and business BLOCKED require a completed investigation',
+      knowledgeRule: 'direct-evidence PASS may use no query; FAIL, INCONCLUSIVE, and business BLOCKED require a query-level knowledgeReview; zero matches close automatically',
       generated: ['checkpointFinding', 'verdictReview', 'result identity', 'metrics', 'agentResult'],
     },
     runtimeState: {
@@ -143,6 +152,10 @@ function examples() {
       action: { type: 'swipe', normalizedFrom: [0.85, 0.5], normalizedTo: [0.2, 0.5], normalizedBounds: [0.05, 0.3, 0.95, 0.7], velocity: 800 },
     },
     investigate: { query: { platform: 'harmony', page: '目标页面', symptom: '当前现场与预期不一致', keywords: ['目标状态'] } },
+    assessKnowledge: {
+      queryId: '<query-id>', conclusion: 'NO_APPLICABLE', reason: '候选与当前平台或页面状态不一致',
+      assessments: [{ entryId: '<candidate-entry-id>', assessment: 'NOT_APPLICABLE', reason: '适用范围与当前现场不一致' }],
+    },
     concludePass: {
       verdict: 'PASS', summary: '当前直接证据满足原文要求',
       findings: [{ requirementRef: 'req-001', status: 'SATISFIED', reason: '最新现场展示目标状态' }],

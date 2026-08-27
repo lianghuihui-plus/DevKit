@@ -113,6 +113,7 @@ function loadBatch(workspaceRoot, batchId, implementationSha, protocols = {}) {
   const stateTargets = Array.isArray(state.cases)
     ? state.cases.map((entry) => ({
       order: entry.order,
+      ...(entry.caseNo ? { caseNo: entry.caseNo } : {}),
       caseKey: entry.caseKey,
       caseDir: entry.caseDir,
       snapshotPath: entry.snapshotPath,
@@ -351,12 +352,21 @@ function assertAdapterResult(result, kind) {
   return result;
 }
 
+function platformRuntimeAcquisition(value) {
+  if (value === undefined) return { ok: true, status: 'NOT_REQUIRED', ownership: 'NONE' };
+  if (!value || typeof value !== 'object' || typeof value.ok !== 'boolean') {
+    throw contractError('PLATFORM_RUNTIME_RESULT_INVALID', 'platform runtime acquisition is invalid');
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
 function bootstrapBatch(options) {
   const loaded = loadBatch(options.workspaceRoot, options.batchId, options.implementationSha, protocolBindings(options));
   return withFileLock(loaded.paths.lock, () => {
     const { paths, contract } = loaded;
     const state = readJson(paths.state);
     const requestId = 'batch-bootstrap-001';
+    const runtimeAcquisition = platformRuntimeAcquisition(options.platformRuntime);
     let draft = readJson(paths.bootstrapDraft, null);
     if (!draft && state.warmSession.status === 'READY') return { state, alreadyBootstrapped: true };
     if (!draft && state.warmSession.status !== 'INITIALIZING') throw contractError('BATCH_BOOTSTRAP_INVALID', `cannot bootstrap ${state.warmSession.status} warm session`);
@@ -367,25 +377,37 @@ function bootstrapBatch(options) {
         eventId: `batch-bootstrap-${state.batchId}`,
         status: 'STARTED',
         binding: contract.binding,
+        platformRuntime: runtimeAcquisition,
         createdAt: options.now || new Date().toISOString(),
       };
       writeJsonAtomic(paths.bootstrapDraft, draft);
     }
     if (draft.schemaVersion !== 1 || draft.requestId !== requestId || draft.eventId !== `batch-bootstrap-${state.batchId}`
-      || canonicalJson(draft.binding) !== canonicalJson(contract.binding)) {
+      || canonicalJson(draft.binding) !== canonicalJson(contract.binding)
+      || canonicalJson(draft.platformRuntime) !== canonicalJson(runtimeAcquisition)) {
       throw contractError('BATCH_BOOTSTRAP_BINDING_MISMATCH', 'bootstrap draft does not match the current batch');
     }
     if (!draft.result) {
-      try {
-        draft.result = options.adapter.restartApp({ requestId, scope: 'batch-bootstrap', binding: contract.binding });
-      } catch (error) {
+      if (draft.platformRuntime.ok !== true) {
         draft.result = {
           ok: false,
           coldStartVerified: false,
           startupDisplayVerified: false,
-          failureCode: error.code || 'ADAPTER_ERROR',
-          reason: error.message,
+          failureCode: draft.platformRuntime.failureCode || 'PLATFORM_RUNTIME_ACQUIRE_FAILED',
+          reason: draft.platformRuntime.reason || 'platform runtime acquisition failed',
         };
+      } else {
+        try {
+          draft.result = options.adapter.restartApp({ requestId, scope: 'batch-bootstrap', binding: contract.binding });
+        } catch (error) {
+          draft.result = {
+            ok: false,
+            coldStartVerified: false,
+            startupDisplayVerified: false,
+            failureCode: error.code || 'ADAPTER_ERROR',
+            reason: error.message,
+          };
+        }
       }
       draft.status = 'ACTION_RECORDED';
       draft.recordedAt = options.now || new Date().toISOString();
@@ -428,6 +450,11 @@ function bootstrapBatch(options) {
         requestId,
         generation: failure ? 0 : 1,
         outcome: failure ? 'FAILED' : 'SUCCEEDED',
+        platformRuntime: {
+          status: draft.platformRuntime.status,
+          ownership: draft.platformRuntime.ownership,
+          ...(draft.platformRuntime.failureCode ? { failureCode: draft.platformRuntime.failureCode } : {}),
+        },
         result: draft.result,
       });
     }
@@ -552,7 +579,7 @@ function releaseRuntime(execDir, options = {}) {
   return released;
 }
 
-function prepareCurrentCompletion(execDir, state, item) {
+function prepareCurrentCompletion(execDir) {
   const execution = readJson(path.join(execDir, 'execution.json'));
   const snapshot = readJson(path.join(execDir, 'case.snapshot.json'));
   const result = readJson(path.join(execDir, 'result.json'));
@@ -563,6 +590,14 @@ function prepareCurrentCompletion(execDir, state, item) {
   if (agentResult.verdict !== result.verdict || agentResult.executionStatus !== result.executionStatus
     || agentResult.warmSessionGeneration !== execution.warmSessionGeneration) {
     throw contractError('AGENT_RESULT_BINDING_MISMATCH', 'AgentResult does not match finalized execution artifacts');
+  }
+  return { execution, snapshot, result, metrics };
+}
+
+function buildCurrentCompletion(execDir, state, item, prepared, runtime) {
+  const { execution, snapshot, result, metrics } = prepared;
+  if (runtime?.status !== 'RELEASED' || runtime.executionId !== execution.executionId) {
+    throw contractError('AGENT_RUNTIME_STATE_INVALID', 'completion requires the current Agent Runtime to be released');
   }
   const paths = completionPaths(execDir);
   buildExecutionArtifactManifest(execDir);
@@ -642,7 +677,7 @@ function commitCurrentCase(options) {
       throw contractError('BATCH_BINDING_MISMATCH', 'execution does not match current batch implementation and contract');
     }
     assertRecoveriesCommitted(loaded.paths, state, execDir, item.executionId);
-    const prepared = prepareCurrentCompletion(execDir, state, item);
+    const prepared = prepareCurrentCompletion(execDir);
     if (draft.stage === 'STARTED') {
       draft.stage = 'VALIDATED';
       writeJsonAtomic(loaded.paths.caseCommitDraft, draft);
@@ -654,7 +689,7 @@ function commitCurrentCase(options) {
       writeJsonAtomic(loaded.paths.caseCommitDraft, draft);
     }
     if (options.interruptAfter === 'runtime') throw new Error('MAVT_BATCH_COMMIT_INTERRUPTED: runtime');
-    const completion = publishCurrentCompletion(execDir, prepared);
+    const completion = publishCurrentCompletion(execDir, buildCurrentCompletion(execDir, state, item, prepared, runtime));
     if (draft.stage === 'RUNTIME_RELEASED') {
       draft.stage = 'COMPLETION_WRITTEN';
       writeJsonAtomic(loaded.paths.caseCommitDraft, draft);

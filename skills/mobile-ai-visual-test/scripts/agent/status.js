@@ -108,8 +108,10 @@ function readAgentStatus(execDir, now = new Date().toISOString()) {
     understandingRevision: understanding?.revision || null,
     planRevision: plan?.revision || null,
     checkpointIds: (plan?.checkpoints || []).map((entry) => entry.id),
-    activeCheckpointRef: activeCheckpoint(plan, events),
-    checkpointProgress: deriveCheckpointProgress(plan, events),
+    activeCheckpointRef: activeCheckpoint(plan, events, execution.warmSessionGeneration),
+    checkpointProgress: deriveCheckpointProgress(plan, events, null, {
+      warmSessionGeneration: execution.warmSessionGeneration,
+    }),
     evidence: evidence.map((entry) => ({
       ref: entry.ref,
       scope: entry.phase,

@@ -50,14 +50,16 @@
 
 查询可包含 `platform`、`app`、`version`、`page`、`operation`、`symptom` 和 `keywords`。本地脚本按结构化字段和正文相关度排序，分数只用于候选排序。
 
-每次查询冻结候选条目的 ID、来源 namespace、相对路径、完整适用范围元数据、追溯信息、内容 SHA、有效期、冲突声明和摘要片段。每个命中内容同时按 SHA 保存到当前 execution 的 `knowledge/<contentSha>.md`，候选通过 `snapshotRef` 引用它。相同内容只保存一份；查询提交、评估写入、finalize、completion 和报告读取都校验安全路径、文件存在性和 SHA。Agent 对候选逐条记录：
+每次查询冻结候选条目的 ID、来源 namespace、相对路径、完整适用范围元数据、追溯信息、内容 SHA、有效期、冲突声明和摘要片段。每个命中内容同时按 SHA 保存到当前 execution 的 `knowledge/<contentSha>.md`，候选通过 `snapshotRef` 引用它。相同内容只保存一份；查询提交、评估写入、finalize、completion 和报告读取都校验安全路径、文件存在性和 SHA。Agent 只需评估与总体判断相关的候选：
 
 - `APPLICABLE`：适用于当前现场，可作为知识支持依据。
 - `NOT_APPLICABLE`：内容可信，但不适用于当前版本、页面或现象。
 - `CONFLICTING`：候选之间或候选与当前现场存在冲突。
 - `INSUFFICIENT`：候选相关，但不足以支持当前结论。
 
-零命中是有效查询结果。历史报告只使用 execution 中冻结的候选、内容快照和评估，不重新读取当前知识文件；实时知识条目后续修改或删除不会改变既有 execution 的依据。
+有候选时，同一次评估调用还要提交查询级 `conclusion/reason`；框架据此生成 `knowledgeReview`，标记这次调查已经闭合。结论可为 `APPLICABLE_FOUND`、`NO_APPLICABLE`、`CONFLICTING` 或 `INSUFFICIENT`，并与已提交评估保持一致。零命中是有效查询结果，框架自动生成 `NO_MATCH knowledgeReview`，Agent 不需要再提交空评估。
+
+FAIL、INCONCLUSIVE 和业务 BLOCKED 引用的查询必须已经闭合。历史报告只使用 execution 中冻结的候选、内容快照、评估和查询级复核，不重新读取当前知识文件；实时知识条目后续修改或删除不会改变既有 execution 的依据。
 
 知识查询由现场需要触发，不作为每个结果的固定步骤。FAIL、INCONCLUSIVE 和业务相关 BLOCKED 必须查询；前置条件异常、路径变化或现场无法独立解释时可以随时查询。当前直接证据已经充分支持 PASS 且没有异常时不要求查询；PASS 需要依赖已知正常现象、平台差异或版本行为时，必须查询并把适用候选评估为 `APPLICABLE` 后才能作为依据。
 

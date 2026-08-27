@@ -14,11 +14,11 @@ Case Agent 只处理 request 绑定的一个 execution。业务决策由 Agent �
 
 提交 `understanding` 和 `checkpoints`。Agent 提供 sourceRefs、startConditions、requirements、uncertainties、检查点目标及 requirementRefs；框架生成 revision、turnId、planSha 和状态。
 
-只有业务理解、检查点目标/顺序、requirement 覆盖或整体策略发生实质变化时才再次调用。普通点击、观察和进度不产生新计划版本。
+只有业务理解、检查点目标/顺序、requirement 覆盖或整体策略发生实质变化时才再次调用。普通点击、观察和进度不产生新计划版本。同一 ID 表示跨计划版本仍是同一语义检查点，可继承当前暖会话代次的动作与观察；语义完全变化时使用新 ID，避免把旧证据归给新目标。Recovery 后代次变化，任何 ID 都不能继承旧代次证据。
 
 ### inspect
 
-采集一次现场并返回 `observationView`：原始截图尺寸、证据引用和控件树精简元素。PREPARE 用于理解和建立起点，BUSINESS 用于主动补充当前业务现场。
+采集一次现场并返回 `observationView`：原始截图尺寸、证据引用、布局解析状态、控件树精简元素、键盘/焦点/坐标一致性技术信号，以及可用时的动作前后状态变化和冲突。HarmonyOS JSON、Android XML 和 iOS XML 由框架归一化；解析失败会显式出现在 `layout.diagnostics`，不会伪装成“页面没有元素”。PREPARE 用于理解和建立起点，BUSINESS 用于主动补充当前业务现场。
 
 观察成功不等于起点已确认，也不等于 requirement 满足。
 
@@ -32,6 +32,10 @@ Case Agent 只处理 request 绑定的一个 execution。业务决策由 Agent �
 
 框架自动解析原图坐标、生成 authorization/operationId/basisObservationRef、执行动作，并在默认 500ms 的页面缓冲后采集动作后观察。缓冲由 `MAVT_POST_ACTION_SETTLE_MS=0..5000` 调整，`wait` 动作不重复等待。一次成功 step 返回动作事实、新 `observationView` 和 `runtimeState`；Agent 直接基于新现场继续判断。
 
+`inputText` 始终表示一次整串文本输入。平台适配器负责在同一个 step 内完成焦点定位、有界的整串输入备选方案和输入效果核对；适配器已经失败时，不要用逐字符点击键盘来模拟基础输入能力。普通输入返回 `VERIFIED/MISMATCH`，安全输入返回 `MASKED/UNVERIFIABLE`，并由框架照常取得动作后现场。
+
+iOS `observationView.conflicts` 出现 `KEYBOARD_COORDINATE_SPACE_MISMATCH` 时，坐标型 tap/toggle/longPress/swipe 会在发送前被拒绝。使用 `dismissKeyboard` 让 adapter 语义化收起键盘并自动取得新观察，再基于新现场继续；不要猜测横竖屏键盘坐标。
+
 实际路径与计划不同不是失败。需要多一步、少一步或不同路径时，继续选择动作；只有检查点语义变化时才修订计划。
 
 BUSINESS 操作和观察默认继承当前活动检查点。只有切换到另一个检查点时才显式提供 `checkpointRef`；该引用只建立证据归属，不限制动作数量或路径。
@@ -44,9 +48,9 @@ BUSINESS 操作和观察默认继承当前活动检查点。只有切换到另�
 
 ### investigate
 
-查询模式提交 `query`；评估模式提交返回的 queryId、entryId、assessment 和 reason。知识库返回候选而非裁决，Agent 必须结合 App/平台/版本/页面/现象判断 `APPLICABLE | NOT_APPLICABLE | CONFLICTING | INSUFFICIENT`。
+查询模式提交 `query`。零命中时框架自动生成 `NO_MATCH` 查询级复核并闭合调查；有候选时，评估模式一次提交 `queryId`、`assessments`、`conclusion` 和 `reason`。每项 assessment 包含候选 `entryId`、`assessment` 和原因，查询级 conclusion 使用 `APPLICABLE_FOUND | NO_APPLICABLE | CONFLICTING | INSUFFICIENT`。知识库返回候选而非裁决，Agent 必须结合 App、平台、版本、页面和现象判断适用性。
 
-当前直接证据支持 PASS 且没有异常时可不查询。FAIL、INCONCLUSIVE 和业务 BLOCKED 必须至少完成一次查询；零命中仍是有效调查。
+当前直接证据支持 PASS 且没有异常时可不查询。FAIL、INCONCLUSIVE 和业务 BLOCKED 必须至少完成一次已闭合查询；有命中但尚未提交查询级复核时不能形成负向结论。
 
 ### request-recovery
 
@@ -59,6 +63,8 @@ BUSINESS 操作和观察默认继承当前活动检查点。只有切换到另�
 PASS 和 FAIL 前必须已经 `mark-start`。PASS 要求当前计划全部检查点都有执行证据；观察型检查点可复用已确认起点的观察，`requiredAction=true` 的检查点必须有动作和动作后观察。FAIL 已有充分当前负向证据时可以停止，未执行检查点如实保留，不要求为了形式完整继续操作。
 
 技术 BLOCKED 使用 `technicalFailureCode`。首次观察前发生的纯技术阻塞允许无当前 observation；其他需要复核的结论必须使用最后一次现场变化或 recovery 之后的当前观察。
+
+框架会阻止未解决关键证据冲突上的确定性 PASS/FAIL，例如非 `inputText` 动作导致已识别安全输入框掩码长度变化。后续经适配器核验成功的整串 `inputText` 和动作后观察可闭合该污染；无法恢复时应形成带明确不确定性的 INCONCLUSIVE 或技术 BLOCKED。
 
 ## 状态与恢复
 
@@ -75,6 +81,6 @@ PASS 和 FAIL 前必须已经 `mark-start`。PASS 要求当前计划全部检查
 
 - Agent 可为建立起点或完成用例自主退出登录、切换账号、返回、输入、发布或执行其他业务操作；框架不按动作关键词限制副作用。
 - App 冷启动只由批次 bootstrap 或受控 recovery 执行，Case Agent 不直接调用 restart。
-- 单用例 30 分钟后禁止新设备调用；框架将未发送动作取消，将缺少后置观察的 step 标记为未完整，并关闭全部草稿后允许知识调查和 conclude 收口。
+- 单用例 30 分钟后禁止新设备调用；动作发送前框架还会检查动作声明时长、页面缓冲和一次后置观察所需的最低时间，剩余时间不足时直接拒绝未发送动作。框架将缺少后置观察的 step 标记为未完整，并关闭全部草稿后允许知识调查和 conclude 收口。
 - 执行期间不向用户提问。歧义形成 INCONCLUSIVE，外部条件不足形成 BLOCKED；当前 case finalize 后批次继续。
 - 报告展示语义意图、动作、观察、检查点、知识和恢复事实，不记录隐藏思维链。

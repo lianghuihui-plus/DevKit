@@ -7,6 +7,7 @@ const { contractError } = require('../lib/contract-utils');
 const { createCaseContract, validateSourceText } = require('../execution/contracts/case-contract');
 const { assertWorkspace } = require('../lib/workspace');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { ensureWorkspaceCaseNumbers, nextCaseNo, withCaseNo } = require('../lib/case-numbering');
 const { rebuildCaseDerivedArtifacts } = require('../report/report-service');
 
 function stableCaseKey(inputPath) {
@@ -29,6 +30,7 @@ function importSource(workspaceRoot, inputPath, options = {}) {
   const caseKey = stableCaseKey(absoluteInput);
   const title = fallbackTitle(absoluteInput);
   const caseDir = path.join(workspace.root, 'cases', caseDirectoryName(title, caseKey));
+  ensureWorkspaceCaseNumbers(workspace.root);
   const draftPath = path.join(caseDir, 'case-import.draft.json');
   let draft = readJson(draftPath, null);
   if (!draft) {
@@ -44,7 +46,9 @@ function importSource(workspaceRoot, inputPath, options = {}) {
       throw wrapped;
     }
     const normalized = validateSourceText(sourceText);
-    const caseJson = createCaseContract({ caseKey, title, sourceText: normalized, importPath: absoluteInput });
+    const existing = readJson(path.join(caseDir, 'case.json'), null);
+    const caseNo = existing?.identity?.caseNo || nextCaseNo(workspace.root, title);
+    const caseJson = createCaseContract({ caseKey, caseNo, title, sourceText: normalized, importPath: absoluteInput });
     draft = { schemaVersion: 1, inputPath: absoluteInput, caseKey, sourceText: normalized, caseJson };
     fs.mkdirSync(caseDir, { recursive: true });
     writeJsonAtomic(draftPath, draft);
@@ -52,6 +56,14 @@ function importSource(workspaceRoot, inputPath, options = {}) {
   if (draft.schemaVersion !== 1 || draft.inputPath !== absoluteInput || draft.caseKey !== caseKey
     || draft.caseJson?.identity?.caseKey !== caseKey) {
     throw contractError('CASE_IMPORT_DRAFT_INVALID', 'import draft does not match the requested source');
+  }
+  if (!draft.caseJson.identity.caseNo) {
+    const current = readJson(path.join(caseDir, 'case.json'), null);
+    const caseNo = current?.identity?.caseKey === caseKey && current.identity.caseNo
+      ? current.identity.caseNo
+      : nextCaseNo(workspace.root, title);
+    draft.caseJson = withCaseNo(draft.caseJson, caseNo);
+    writeJsonAtomic(draftPath, draft);
   }
   if (options.interruptAfter === 'draft') throw new Error('MAVT_CASE_IMPORT_INTERRUPTED: draft');
   const sourcePath = path.join(caseDir, 'source.md');

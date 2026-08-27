@@ -6,7 +6,7 @@ const { displayAction } = require('../lib/display-format');
 const { inputEffectMetrics, readAgentAttempts } = require('../lib/execution-time-limit');
 const { deriveCheckpointProgress } = require('../lib/checkpoint-progress');
 
-const STATE_CHANGING_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home']);
+const STATE_CHANGING_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard']);
 const PHASE_LABELS = Object.freeze({ UNDERSTAND: '理解用例', ESTABLISH_START: '建立起点', EXECUTE: '执行与检查', INVESTIGATE: '调查异常', RECOVERY: '恢复现场', CONCLUDE: '形成结论', FINALIZED: '执行完成', UNKNOWN: '未归类' });
 const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断' });
 const KNOWLEDGE_ASSESSMENT_LABELS = Object.freeze({ APPLICABLE: '适用', NOT_APPLICABLE: '不适用', CONFLICTING: '存在冲突', INSUFFICIENT: '依据不足' });
@@ -195,7 +195,9 @@ function buildExecutionNarrative(report, entries) {
     if (entry.phase === 'INVESTIGATE' || ['KNOWLEDGE', 'REVIEW', 'RECOVERY'].includes(entry.category)) investigation.push(entry);
   }
 
-  const progress = new Map(deriveCheckpointProgress(plan, report.events, report.result)
+  const progress = new Map(deriveCheckpointProgress(plan, report.events, report.result, {
+    warmSessionGeneration: report.execution?.warmSessionGeneration,
+  })
     .map((entry) => [entry.checkpointId, entry]));
   for (const checkpoint of checkpoints) {
     const currentProgress = checkpoint.current ? progress.get(checkpoint.id) : null;
@@ -229,6 +231,7 @@ function plainEntry(event, index) {
     case 'reflection': return { ...base, category: 'DECISION', title: 'Agent 决策记录', summary: event.reason };
     case 'knowledgeQuery': return { ...base, category: 'KNOWLEDGE', title: `知识查询 ${event.queryId}`, summary: `${event.matchCount} 个候选`, query: event.query, candidates: event.candidates || [] };
     case 'knowledgeAssessment': return { ...base, category: 'KNOWLEDGE', title: `知识评估：${KNOWLEDGE_ASSESSMENT_LABELS[event.assessment] || '未知评估'}`, summary: event.reason, knowledgeRef: event.knowledgeRef, entryId: event.entryId };
+    case 'knowledgeReview': return { ...base, category: 'KNOWLEDGE', title: '知识调查已收口', summary: event.reason, queryId: event.queryId, conclusion: event.conclusion };
     case 'verdictReview': return { ...base, category: 'REVIEW', title: `结论复核：${VERDICT_LABELS[event.requestedVerdict] || '未知结论'}`, summary: event.reason, review: sanitizeOperationValue(event) };
     case 'result': return { ...base, category: 'RESULT', title: `最终结论：${VERDICT_LABELS[event.verdict] || '未知结论'}`, summary: '' };
     default: return null;

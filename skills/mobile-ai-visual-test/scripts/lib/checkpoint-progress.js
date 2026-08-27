@@ -8,16 +8,21 @@ const FINDING_PROGRESS = Object.freeze({
   NOT_EXECUTED: 'NOT_EXECUTED',
 });
 
-function bindingMatches(event, checkpointId, planRevision) {
+function bindingMatches(event, checkpointId, warmSessionGeneration) {
   const authorization = event.authorization || {};
-  return authorization.checkpointId === checkpointId && authorization.planRevision === planRevision;
+  return authorization.checkpointId === checkpointId
+    && (warmSessionGeneration === undefined || event.warmSessionGeneration === warmSessionGeneration);
 }
 
-function deriveCheckpointProgress(plan, events = [], result = null) {
+function checkpointActivity(events, checkpointId, warmSessionGeneration) {
+  return events.filter((event) => bindingMatches(event, checkpointId, warmSessionGeneration));
+}
+
+function deriveCheckpointProgress(plan, events = [], result = null, options = {}) {
   if (!plan?.checkpoints?.length) return [];
   const requirementFindings = new Map((result?.requirementFindings || []).map((entry) => [entry.requirementId, entry]));
   return plan.checkpoints.map((checkpoint) => {
-    const activity = events.filter((event) => bindingMatches(event, checkpoint.id, plan.revision));
+    const activity = checkpointActivity(events, checkpoint.id, options.warmSessionGeneration);
     const actions = activity.filter((event) => event.type === 'actionResult');
     const observations = activity.filter((event) => event.type === 'observation' && event.usable === true);
     const finding = [...events].reverse().find((event) => event.type === 'checkpointFinding'
@@ -46,4 +51,4 @@ function deriveCheckpointProgress(plan, events = [], result = null) {
   });
 }
 
-module.exports = { deriveCheckpointProgress };
+module.exports = { checkpointActivity, deriveCheckpointProgress };

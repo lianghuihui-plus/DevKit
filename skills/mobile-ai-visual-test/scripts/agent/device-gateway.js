@@ -22,6 +22,7 @@ const ACTION_ARGUMENTS = Object.freeze({
   durationMs: '--duration-ms',
   ms: '--ms',
   velocity: '--velocity',
+  coordinateSource: '--coordinate-source',
 });
 
 function workspaceRootFromExecutionDir(execDir) {
@@ -52,6 +53,8 @@ function resolveTargetBinding(execDir, execution) {
 function actionAdapterArgs(binding, action) {
   const args = environmentAdapterArgs(binding, 'action');
   for (const [field, flag] of Object.entries(ACTION_ARGUMENTS)) {
+    // Only iOS uses the source to translate screenshot pixels into its Appium viewport.
+    if (field === 'coordinateSource' && binding.platform !== 'ios') continue;
     if (action[field] !== undefined && action[field] !== null) args.push(flag, String(action[field]));
   }
   return args;
@@ -88,12 +91,28 @@ function operationTimeoutMs(execution, now = new Date()) {
 
 function parseAdapterOutput(result, kind) {
   if (result?.error) {
-    throw contractError('DEVICE_ADAPTER_FAILED', `${kind} adapter could not run: ${result.error.message || result.error}`);
+    throw contractError('DEVICE_ADAPTER_FAILED', `${kind} adapter could not run: ${result.error.message || result.error}`, {
+      adapterDiagnostics: {
+        status: result.status ?? null,
+        signal: result.signal || null,
+        stderr: String(result.stderr || '').trim().slice(0, 4000),
+      },
+    });
   }
   let value;
   try {
     value = JSON.parse(String(result?.stdout || '').trim());
   } catch (error) {
+    if (result?.status !== 0) {
+      const stderr = String(result?.stderr || '').trim();
+      throw contractError('DEVICE_ADAPTER_FAILED', `${kind} adapter exited with ${result.status}${stderr ? `: ${stderr.slice(0, 1000)}` : ''}`, {
+        adapterDiagnostics: {
+          status: result.status ?? null,
+          signal: result.signal || null,
+          stderr: stderr.slice(0, 4000),
+        },
+      });
+    }
     throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', `${kind} adapter did not return one JSON result`);
   }
   if (result.status !== 0 && value?.type !== (kind === 'ACTION' ? 'actionResult' : 'observation')) {
@@ -108,7 +127,7 @@ function assertResultBinding(result, binding, kind) {
     throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', `${kind} adapter result identity is invalid`);
   }
   const label = kind === 'ACTION' ? 'action result' : 'observation';
-  const expectedDevice = binding.deviceId || binding.device;
+  const expectedDevice = binding.deviceId;
   if (result.device?.id !== expectedDevice) throw contractError('DEVICE_RESULT_BINDING_MISMATCH', `${label} does not confirm the frozen device`);
   if (result.app?.appId !== binding.appId) throw contractError('DEVICE_RESULT_BINDING_MISMATCH', `${label} does not confirm the frozen App`);
   return result;

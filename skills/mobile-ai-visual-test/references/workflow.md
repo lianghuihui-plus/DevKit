@@ -7,10 +7,10 @@ workspace -> import non-empty sources -> probe and confirm binding
 -> ENV_CONFIRMED -> stop and wait for an explicit execution instruction
 -> create SINGLE/BATCH execution request with ordered targets
 -> freeze target snapshots + role protocols + implementation
--> batch init -> bootstrap App once
+-> batch init -> acquire platform runtime -> bootstrap App once
 -> reconcile -> start case -> isolated Agent session
 -> conclude -> commit -> next case on warm App state
--> render reports
+-> release framework-managed platform runtime -> render reports
 ```
 
 环境确认和执行授权是两个独立人工动作。`environment.js confirm` 只写 `environment-confirmation.json`，不得创建 `runs/<batch>/batch.json`、bootstrap App 或推断用户想执行哪些用例。用户随后明确给出单用例或有序批量范围后，协调器才创建不可变的 `execution-request.json` 并进入执行。
@@ -37,13 +37,15 @@ workspace -> import non-empty sources -> probe and confirm binding
 - `RESUME_RECOVERY`：以冻结 request 重入 `recover`，不能重放未确认结果的普通动作。
 - `RESUME_FINALIZE`：以冻结 finalization draft 幂等完成收尾。
 - `CREATE_AGENT_RESULT`：execution 已 finalized 但 AgentResult 缺失时，由 framework 从冻结产物补齐交接结果。
-- `COMMIT_CASE`：调用 `commit`；先校验 AgentResult，再释放 Runtime，completion 和 batch state 写入成功后才进入下一 case。
-- `DEGRADED`、`BATCH_BLOCKED`、`BLOCKED`、`CORRUPTED`：自动停止批次，保留现场和产物并报告原因，不询问用户。
-- `BATCH_COMPLETE`：结束批次并刷新报告。
+- `COMMIT_CASE`：调用 `commit`；先校验 AgentResult，再释放 Runtime，completion 和 batch state 写入成功后，由协调器增量刷新当前用例详情与首页，再进入下一 case。刷新耗时不计入 execution metrics，刷新失败只在 commit 响应中返回报告异常，不回滚结果或阻塞后续用例。
+- `DEGRADED`、`BATCH_BLOCKED`、`BLOCKED`、`CORRUPTED`：自动停止批次，保留现场和产物，释放框架托管的平台运行资源并报告原因，不询问用户。
+- `BATCH_COMPLETE`：释放框架托管的平台运行资源，结束批次并执行一次全量报告重建，校验最终一致性。
 
 同一批次固定平台、设备、App 和入口。绑定变化必须结束当前批次并新建 batch。普通 case 间不重启 App；当前页面只是下一 case 的现场输入，不能继承上一 case 的业务结论。
 
 Bootstrap、Case 启动、Recovery 和 Case 发布都优先收口已有草稿。Bootstrap 的适配器结果只获取一次，成功或失败都按稳定事件 ID 补齐审计事件。execution 已 finalized 后，Runtime release、completion 和 batch commit 只依赖本地冻结产物，不再因设备离线阻止发布；只有启动新 case 或恢复未完成 execution 前才探测设备暖会话。
+
+平台运行资源属于批次协调器，不属于 Case Agent。iOS adapter 将 Appium、WDA 和本地端口转发作为一个复合资源返回，但各自保存独立状态和所有权。Appium 按服务地址登记；WDA 按设备 ID 与 bundle id 登记，并冻结批次开始前的匹配进程基线。终态先处理 WDA、再处理 Appium，最后核对 WDA 进程和 8100/9100 端口；只有命令、设备、bundle、PID、独立进程组和所有权记录全部匹配的框架进程才能终止。外部资源保留并形成 `RETAINED`，任一框架资源残留形成 `RELEASE_FAILED`。清理在结果提交之后执行，失败不改写用例结果，后续 `reconcile` 或终态 `teardown` 使用冻结资源记录重试。
 
 暖会话探测失败通过统一停批入口持久化 failureCode、reason、stoppedAt、当前 case/execution、暖会话代次和探测摘要，并写入稳定 `batchStopped` 事件。后续 reconcile 只返回已落盘的 `BATCH_BLOCKED`，不依赖首次探测响应恢复原因。
 
@@ -73,4 +75,4 @@ App crash、系统退出等事故恢复必须记录 `runtimeIncident`，包含 `
 
 `reconcile` 自动恢复 step、operation、turn、知识查询和 phase 草稿，不要求 Case Agent 读取或重新组装内部请求。动作已完成时不重放；知识查询继续使用首次冻结候选。任一内部恢复项存在期间禁止 Agent 写入，恢复完成后再创建或继续 Case Agent。
 
-批次进入 `BATCH_COMPLETE` 后只调用一次工作区级 `render-index`。详情与首页都先生成 `report-publication.draft.json`，逐文件原子替换内容，最后发布带文件 SHA 的 `report-metadata.json` 并清理草稿；任一文件不一致时可从 execution 重新渲染。
+每个 case commit 后，协调器只重渲染该 case 的平台详情和用例详情，再读取全部 case 摘要重建首页；不会重写其他 case 详情。详情与首页都先生成 `report-publication.draft.json`，逐文件原子替换内容，最后发布带文件 SHA 的 `report-metadata.json` 并清理草稿。批次进入 `BATCH_COMPLETE` 后再调用一次工作区级 `render-index` 全量重建；任一文件不一致时可从 execution 重新渲染。

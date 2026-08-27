@@ -9,6 +9,7 @@ const {
   ensureString,
   sha256,
 } = require('./contract-utils');
+const { normalizeDeviceBinding } = require('./target-binding');
 
 const BATCH_CONTRACT_SCHEMA_VERSION = 3;
 const PLATFORMS = new Set(['harmony', 'android', 'ios']);
@@ -26,11 +27,17 @@ function batchContractSha(value) {
 
 function validateBinding(binding) {
   ensureObject(binding, 'binding', 'BATCH_CONTRACT_INVALID');
-  ensureString(binding.deviceId, 'binding.deviceId', 'BATCH_CONTRACT_INVALID');
-  ensureString(binding.appId, 'binding.appId', 'BATCH_CONTRACT_INVALID');
-  if (!PLATFORMS.has(binding.platform)) throw contractError('BATCH_CONTRACT_INVALID', 'binding.platform is invalid');
-  if (binding.platform !== 'ios') ensureString(binding.entry, 'binding.entry', 'BATCH_CONTRACT_INVALID');
-  return binding;
+  let normalized;
+  try {
+    normalized = normalizeDeviceBinding(binding);
+  } catch (error) {
+    throw contractError('BATCH_CONTRACT_INVALID', error.message);
+  }
+  ensureString(normalized.deviceId, 'binding.deviceId', 'BATCH_CONTRACT_INVALID');
+  ensureString(normalized.appId, 'binding.appId', 'BATCH_CONTRACT_INVALID');
+  if (!PLATFORMS.has(normalized.platform)) throw contractError('BATCH_CONTRACT_INVALID', 'binding.platform is invalid');
+  if (normalized.platform !== 'ios') ensureString(normalized.entry, 'binding.entry', 'BATCH_CONTRACT_INVALID');
+  return normalized;
 }
 
 function validateBatchContract(value) {
@@ -52,6 +59,7 @@ function validateBatchContract(value) {
   const keys = new Set();
   for (const [index, target] of targets.entries()) {
     ensureObject(target, `targets[${index}]`, 'BATCH_CONTRACT_INVALID');
+    if (target.caseNo !== undefined) ensureString(target.caseNo, `targets[${index}].caseNo`, 'BATCH_CONTRACT_INVALID');
     ensureId(target.caseKey, `targets[${index}].caseKey`, 'BATCH_CONTRACT_INVALID');
     ensureString(target.caseDir, `targets[${index}].caseDir`, 'BATCH_CONTRACT_INVALID');
     ensureString(target.snapshotPath, `targets[${index}].snapshotPath`, 'BATCH_CONTRACT_INVALID');
@@ -77,7 +85,7 @@ function createBatchContract({ batchId, implementationSha, executionRequest }) {
     executionRequestSha: executionRequest.requestSha,
     mode: executionRequest.mode,
     interactionPolicy: executionRequest.interactionPolicy,
-    binding: { ...executionRequest.binding },
+    binding: validateBinding({ ...executionRequest.binding }),
     targets: executionRequest.targets.map((target) => ({ ...target })),
   };
   value.contractSha = batchContractSha(value);

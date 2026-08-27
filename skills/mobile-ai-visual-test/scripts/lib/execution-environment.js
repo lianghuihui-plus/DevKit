@@ -3,6 +3,7 @@
 
 const crypto = require('crypto');
 const { normalizeStartupDisplayPolicy, normalizeDeviceFormFactor } = require('./startup-display');
+const { normalizeDeviceBinding } = require('./target-binding');
 
 const IOS_ONLY_FIELDS = new Set([
   'deviceType',
@@ -34,12 +35,17 @@ function cloneJson(value, fallback) {
 }
 
 function requiredEnvironmentFields(platform) {
-  return platform === 'ios' ? ['platform', 'device', 'appId'] : ['platform', 'device', 'appId', 'entry'];
+  return platform === 'ios' ? ['platform', 'deviceId', 'appId'] : ['platform', 'deviceId', 'appId', 'entry'];
 }
 
 function normalizeEnvironmentBinding(value, platform) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('ENV_UNCONFIRMED: environment must be an object');
-  const binding = cloneJson(value, {});
+  let binding;
+  try {
+    binding = normalizeDeviceBinding(cloneJson(value, {}));
+  } catch (error) {
+    throw new Error(`ENVIRONMENT_BINDING_MISMATCH: ${error.message}`);
+  }
   binding.platform = String(binding.platform || platform || '').trim().toLowerCase();
   if (!['harmony', 'android', 'ios'].includes(binding.platform) || binding.platform !== platform) {
     throw new Error('ENVIRONMENT_BINDING_MISMATCH: environment platform does not match execution platform');
@@ -90,9 +96,11 @@ function validateExecutionEnvironment(execution, platform) {
   if (!execution?.environmentSnapshot || !/^environment-[0-9a-f]{16}$/.test(execution.environmentSha || '')) {
     throw new Error('EXECUTION_ENVIRONMENT_UNBOUND: execution does not contain a frozen environment');
   }
-  const binding = normalizeEnvironmentBinding(execution.environmentSnapshot.binding, platform);
-  const snapshot = { ...execution.environmentSnapshot, binding };
-  if (executionEnvironmentSha(snapshot) !== execution.environmentSha) {
+  const frozenSnapshot = cloneJson(execution.environmentSnapshot, {});
+  const frozenShaMatches = executionEnvironmentSha(frozenSnapshot) === execution.environmentSha;
+  const binding = normalizeEnvironmentBinding(frozenSnapshot.binding, platform);
+  const snapshot = { ...frozenSnapshot, binding };
+  if (!frozenShaMatches && executionEnvironmentSha(snapshot) !== execution.environmentSha) {
     throw new Error('EXECUTION_ENVIRONMENT_CHANGED: environment snapshot hash mismatch');
   }
   return snapshot;
@@ -102,7 +110,7 @@ function safeEnvironmentSummary(snapshot) {
   const binding = snapshot?.binding || {};
   return {
     platform: binding.platform || null,
-    device: binding.device || null,
+    deviceId: binding.deviceId || null,
     appId: binding.appId || null,
     entry: binding.entry || null,
     deviceFormFactor: binding.deviceFormFactor || null,
@@ -119,11 +127,13 @@ function environmentAdapterArgs(binding, purpose = 'observe') {
     if (value !== undefined && value !== null && String(value) !== '') args.push(flag, String(value));
   };
   add('--platform', binding.platform);
-  add('--device', binding.device || binding.deviceId);
-  add('--app', binding.appId || binding.bundleName);
+  add('--device', binding.deviceId);
+  if (purpose !== 'probe') add('--app', binding.appId || binding.bundleName);
   if (purpose === 'action') add('--entry', binding.entry || binding.abilityName);
-  if (purpose === 'action' && binding.platform === 'harmony') {
+  if (['action', 'probe'].includes(purpose) && binding.platform === 'harmony') {
     add('--device-form-factor', binding.deviceFormFactor);
+  }
+  if (purpose === 'action' && binding.platform === 'harmony') {
     const policy = binding.startupDisplayPolicy || {};
     add('--startup-orientation', policy.orientation);
     add('--startup-orientation-enforcement', policy.enforcement);

@@ -31,7 +31,7 @@ function sameStringSet(values, expected) {
   return Array.isArray(values) && values.length === expected.size && values.every((value) => expected.has(value));
 }
 
-function hasBoundVerdictReview(reviews, queries, evidence, understanding, plan, executionId, verdict) {
+function hasBoundVerdictReview(reviews, queries, knowledgeReviews, evidence, understanding, plan, executionId, verdict) {
   const sourceRefs = new Set(understanding.sourceRefs?.map((item) => item.id) || []);
   const requirementRefs = new Set(understanding.requirements?.map((item) => item.id) || []);
   return reviews.some((review) => review.executionId === executionId
@@ -43,6 +43,8 @@ function hasBoundVerdictReview(reviews, queries, evidence, understanding, plan, 
     && Array.isArray(review.queryRefs)
     && (verdict === 'PASS' || review.queryRefs.length > 0)
     && review.queryRefs.every((ref) => queries.get(ref)?.executionId === executionId)
+    && review.queryRefs.every((ref) => queries.get(ref)?.matchCount === 0
+      || knowledgeReviews.get(ref)?.executionId === executionId)
     && Array.isArray(review.sourceRecheck?.sourceRefs) && review.sourceRecheck.sourceRefs.length > 0
     && typeof review.sourceRecheck?.conclusion === 'string' && review.sourceRecheck.conclusion.trim()
     && Array.isArray(review.currentObservationRefs) && (review.currentObservationRefs.length > 0 || review.observationUnavailable === true)
@@ -188,7 +190,8 @@ function validateResult(value, options = {}) {
   }
   const reviews = options.verdictReviews || [];
   const queries = refIndex(options.knowledgeQueries);
-  const reviewed = hasBoundVerdictReview(reviews, queries, context.evidence, understanding, plan, value.executionId, value.verdict);
+  const knowledgeReviews = new Map((options.knowledgeReviews || []).map((entry) => [entry.queryId, entry]));
+  const reviewed = hasBoundVerdictReview(reviews, queries, knowledgeReviews, context.evidence, understanding, plan, value.executionId, value.verdict);
   const reviewRequired = ['FAIL', 'INCONCLUSIVE'].includes(value.verdict)
     || (value.verdict === 'BLOCKED' && value.verdictBasis !== 'TECHNICAL_CONSTRAINT');
   if (reviewRequired && !reviewed) {

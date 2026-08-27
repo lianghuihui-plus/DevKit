@@ -3,8 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 const { contractError } = require('./contract-utils');
+const { swipeDurationMs } = require('./action-contract');
 
 const CASE_TIME_LIMIT_MS = 30 * 60 * 1000;
+const POST_ACTION_OBSERVATION_RESERVE_MS = 5000;
 const DEVICE_OPERATION_TYPES = new Set(['observe', 'action']);
 
 function elapsedMs(startedAt, now = new Date()) {
@@ -30,6 +32,32 @@ function assertOperationAllowed(execution, operationType, now = new Date()) {
     throw contractError('CASE_TIME_LIMIT_REACHED', 'new device operations are not allowed after the case time limit');
   }
   return state;
+}
+
+function declaredActionDurationMs(action = {}) {
+  if (action.type === 'wait') return Math.max(0, action.ms === undefined ? 1000 : Number(action.ms) || 0);
+  if (action.type === 'longPress') return Math.max(0, action.durationMs === undefined ? 800 : Number(action.durationMs) || 0);
+  if (action.type === 'swipe') return swipeDurationMs(action);
+  return 0;
+}
+
+function requiredActionBudgetMs(action, postActionSettleMs = 0) {
+  return declaredActionDurationMs(action)
+    + Math.max(0, Number(postActionSettleMs) || 0)
+    + POST_ACTION_OBSERVATION_RESERVE_MS;
+}
+
+function assertActionBudget(execution, action, postActionSettleMs = 0, now = new Date()) {
+  const state = assertOperationAllowed(execution, 'action', now);
+  const requiredMs = requiredActionBudgetMs(action, postActionSettleMs);
+  if (state.remainingMs < requiredMs) {
+    throw contractError('CASE_TIME_LIMIT_INSUFFICIENT', 'remaining case time cannot complete the action and its post-action observation', {
+      remainingMs: state.remainingMs,
+      requiredMs,
+      actionType: action?.type || null,
+    });
+  }
+  return { ...state, requiredMs };
 }
 
 function buildCounts(events = []) {
@@ -140,13 +168,17 @@ function buildMetrics(execution, result, events = [], now = new Date(), options 
 
 module.exports = {
   CASE_TIME_LIMIT_MS,
+  POST_ACTION_OBSERVATION_RESERVE_MS,
   DEVICE_OPERATION_TYPES,
+  assertActionBudget,
   assertOperationAllowed,
   buildCounts,
   buildMetrics,
   elapsedMs,
+  declaredActionDurationMs,
   inputEffectMetrics,
   readAgentAttempts,
   timeLimitState,
+  requiredActionBudgetMs,
   timingMetrics,
 };

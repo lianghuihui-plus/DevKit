@@ -119,7 +119,29 @@ function localIso(date = new Date()) {
   const pad = (value, size = 2) => String(value).padStart(size, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
-const event = {schemaVersion:1,type:"actionResult",platform:"android",time:localIso(),action:"restartApp",ok:true,restart:true,coldStartVerified:true,oldPid,newPid,stopMethod:"am-force-stop",launchMethod:method};
+const event = {
+  schemaVersion: 1,
+  type: "actionResult",
+  platform: "android",
+  time: localIso(),
+  action: "restartApp",
+  ok: true,
+  restart: true,
+  coldStartVerified: true,
+  oldPid,
+  newPid,
+  stopMethod: "am-force-stop",
+  launchMethod: method,
+  startupDisplay: {
+    status: "SKIPPED",
+    verified: false,
+    requestedOrientation: "preserve",
+    enforcement: "none",
+    appliesTo: [],
+    required: false,
+    skippedReason: "POLICY_PRESERVE"
+  }
+};
 if (fallbackReason) event.fallbackReason = fallbackReason;
 console.log(JSON.stringify(event, null, 2));
 ' "$launch_method" "$fallback_reason" "$old_pid" "$new_pid"

@@ -6,6 +6,9 @@ const path = require('path');
 const { canonicalJson, contractError, ensureArray, ensureObject, ensureString, sha256 } = require('../lib/contract-utils');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { withAuthorizationSha } = require('../lib/plan-authorization');
+const { checkpointActivity } = require('../lib/checkpoint-progress');
+const { coordinateActionConflict } = require('../lib/observation-consistency');
+const { KNOWLEDGE_REVIEW_CONCLUSIONS } = require('../execution/contracts/execution-event-contract');
 const {
   STATE_CHANGING_ACTIONS,
   assertAgentWriteReady,
@@ -125,7 +128,7 @@ function authorizationFor(execDir, input, stage) {
   if (!current.understanding || !current.plan) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'understanding and plan are required before device work');
   const scope = stageScope(stage);
   const checkpointRef = stage === 'BUSINESS'
-    ? input.checkpointRef || activeCheckpoint(current.plan, current.events)
+    ? input.checkpointRef || activeCheckpoint(current.plan, current.events, current.execution.warmSessionGeneration)
     : input.checkpointRef;
   const checkpoint = checkpointRef
     ? current.plan.checkpoints.find((entry) => entry.id === checkpointRef)
@@ -222,6 +225,13 @@ function resolveSemanticAction(execDir, proposal) {
   const current = context(execDir);
   if (!current.observation) throw contractError('CURRENT_OBSERVATION_REQUIRED', 'step requires a current usable observation');
   const view = buildObservationView(execDir, current.observation);
+  const coordinateConflict = coordinateActionConflict(view, current.execution.platform, proposal.type);
+  if (coordinateConflict) {
+    throw contractError('ACTION_COORDINATE_CONFLICT', '当前 iOS 键盘坐标空间与截图不一致，坐标动作未发送', {
+      conflict: coordinateConflict,
+      suggestion: '先执行 dismissKeyboard 并基于新的 observationView 继续',
+    });
+  }
   const reason = proposal.reason || proposal.intent || '根据当前现场执行 Agent 选择的动作';
   const clean = { ...proposal };
   delete clean.targetRef;
@@ -350,18 +360,31 @@ function executeFrozenStep(execDir, draft, options = {}) {
   const paths = stepPaths(execDir, draft.stepId);
   let actionValue;
   let actionUncertain = false;
+  const postActionSettleMs = draft.postActionSettleMs
+    ?? resolvePostActionSettleMs(draft.actionRequest.action, options.env || process.env);
   try {
-    actionValue = executeDeviceOperation(execDir, draft.actionRequest, options);
+    actionValue = executeDeviceOperation(execDir, draft.actionRequest, {
+      ...options,
+      postActionSettleMs,
+    });
   } catch (error) {
     if (error.code !== 'DEVICE_ACTION_OUTCOME_UNCERTAIN') {
-      completeStep(paths, { ...draft, status: 'FAILED', error: { code: error.code || 'AGENT_STEP_FAILED', message: error.message } });
+      completeStep(paths, {
+        ...draft,
+        status: 'FAILED',
+        error: {
+          code: error.code || 'AGENT_STEP_FAILED',
+          message: error.message,
+          ...(Number.isFinite(error.remainingMs) ? { remainingMs: error.remainingMs } : {}),
+          ...(Number.isFinite(error.requiredMs) ? { requiredMs: error.requiredMs } : {}),
+          ...(error.adapterDiagnostics ? { adapterDiagnostics: error.adapterDiagnostics } : {}),
+        },
+      });
       throw error;
     }
     actionUncertain = true;
     actionValue = { accepted: false, uncertain: true, error: { code: error.code, message: error.message } };
   }
-  const postActionSettleMs = draft.postActionSettleMs
-    ?? resolvePostActionSettleMs(draft.actionRequest.action, options.env || process.env);
   draft = { ...draft, status: 'ACTION_COMPLETED', actionValue, actionUncertain, postActionSettleMs };
   writeJsonAtomic(paths.draft, draft);
   const observationRequest = draft.observationRequest || {
@@ -565,10 +588,24 @@ function investigate(execDir, input, options = {}) {
   ensureObject(input, 'investigate request', 'AGENT_FACADE_INVALID');
   assertNoFacadeRecovery(execDir);
   if (input.query) {
-    return withRuntimeState(execDir, executeKnowledgeQuery({ execDir, queryId: generatedId('query'), query: input.query, reason: input.reason, now: options.now }), options);
+    const query = executeKnowledgeQuery({ execDir, queryId: generatedId('query'), query: input.query, reason: input.reason, now: options.now });
+    if (query.matchCount > 0) return withRuntimeState(execDir, query, options);
+    const review = {
+      factId: generatedId('knowledge-review'), type: 'knowledgeReview', queryId: query.queryId,
+      conclusion: 'NO_MATCH', assessmentRefs: [], reason: input.reason || '本次知识查询未命中候选，调查已完成',
+    };
+    const reviewTurn = commitAgentTurn(execDir, { schemaVersion: 1, turnId: generatedId('turn-review'), facts: [review] }, options);
+    return withRuntimeState(execDir, { ...query, knowledgeReview: review, reviewTurn }, options);
   }
   const assessments = ensureArray(input.assessments, 'assessments', 'AGENT_FACADE_INVALID');
   requireText(input.queryId, 'queryId');
+  if (assessments.length === 0) throw contractError('KNOWLEDGE_REVIEW_REQUIRED', 'matched knowledge query requires at least one candidate assessment');
+  const conclusion = requireText(input.conclusion, 'conclusion');
+  if (conclusion === 'NO_MATCH' || !KNOWLEDGE_REVIEW_CONCLUSIONS.has(conclusion)) {
+    throw contractError('AGENT_FACADE_INVALID', 'knowledge review conclusion is invalid', {
+      fieldPath: 'conclusion', allowed: [...KNOWLEDGE_REVIEW_CONCLUSIONS].filter((value) => value !== 'NO_MATCH'),
+    });
+  }
   const query = timelineEvents(execDir).find((event) => event.type === 'knowledgeQuery' && event.queryId === input.queryId);
   if (!query) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', `unknown queryId: ${input.queryId}`);
   const facts = assessments.map((assessment) => {
@@ -587,6 +624,10 @@ function investigate(execDir, input, options = {}) {
       reason: requireText(assessment.reason, 'assessment.reason'),
     };
   });
+  facts.push({
+    factId: generatedId('knowledge-review'), type: 'knowledgeReview', queryId: query.queryId,
+    conclusion, assessmentRefs: facts.map((fact) => fact.knowledgeRef), reason: requireText(input.reason, 'reason'),
+  });
   return withRuntimeState(execDir, commitAgentTurn(execDir, { schemaVersion: 1, turnId: generatedId('turn-assess'), facts }, options), options);
 }
 
@@ -603,8 +644,7 @@ function checkpointFacts(current, findings) {
   const byRequirement = new Map(findings.map((finding) => [finding.requirementId, finding]));
   return current.plan.checkpoints.map((checkpoint) => {
     const related = checkpoint.requirementRefs.map((ref) => byRequirement.get(ref)).filter(Boolean);
-    const activity = current.events.filter((event) => event.authorization?.checkpointId === checkpoint.id
-      && event.authorization?.planRevision === current.plan.revision);
+    const activity = checkpointActivity(current.events, checkpoint.id, current.execution.warmSessionGeneration);
     const actions = activity.filter((event) => event.type === 'actionResult');
     const observations = activity.filter((event) => event.type === 'observation' && event.usable === true);
     const statuses = new Set(related.map((finding) => finding.status));
@@ -706,13 +746,21 @@ function conclude(execDir, input, options = {}) {
       fieldPath: 'findings', expected: [...expectedRequirements], received: [...receivedRequirements], missing, unknown,
     });
   }
-  const queryRefs = input.queryRefs || current.events.filter((event) => event.type === 'knowledgeQuery').map((event) => event.queryId);
+  const allKnowledgeQueryRefs = current.events.filter((event) => event.type === 'knowledgeQuery').map((event) => event.queryId);
+  const completedKnowledgeReviews = new Set(current.events.filter((event) => event.type === 'knowledgeReview').map((event) => event.queryId));
+  const queryRefs = input.queryRefs || (completedKnowledgeReviews.size ? [...completedKnowledgeReviews] : allKnowledgeQueryRefs);
   const defaults = defaultResultFields(input, current.events);
   const businessNegative = ['FAIL', 'INCONCLUSIVE'].includes(input.verdict)
     || (input.verdict === 'BLOCKED' && defaults.verdictBasis !== 'TECHNICAL_CONSTRAINT');
   if (businessNegative && queryRefs.length === 0) {
     throw contractError('KNOWLEDGE_QUERY_REQUIRED', `${input.verdict} requires a completed knowledge investigation`, {
       fieldPath: 'queryRefs', expected: 'at least one query from investigate', received: [],
+    });
+  }
+  const unreviewedQueryRefs = queryRefs.filter((ref) => !completedKnowledgeReviews.has(ref));
+  if (unreviewedQueryRefs.length) {
+    throw contractError('KNOWLEDGE_REVIEW_REQUIRED', `${input.verdict} requires reviewed knowledge queries`, {
+      fieldPath: 'queryRefs', expected: 'queryRefs with completed knowledgeReview', received: unreviewedQueryRefs,
     });
   }
   const proposedResult = {

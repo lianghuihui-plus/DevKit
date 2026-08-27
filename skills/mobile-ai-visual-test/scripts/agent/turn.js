@@ -18,7 +18,7 @@ const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
 const { appendEvent, assertAgentWriteReady, assertConclusionObservationRefs, requireBoundRuntime, timelineEvents } = require('../execution/core');
 const { validateKnowledgeCandidateSnapshot } = require('../lib/knowledge-snapshot');
 
-const FACT_TYPES = new Set(['checkpointFinding', 'reflection', 'knowledgeAssessment', 'verdictReview']);
+const FACT_TYPES = new Set(['checkpointFinding', 'reflection', 'knowledgeAssessment', 'knowledgeReview', 'verdictReview']);
 
 function assertInitialTurnReady(turn, previousUnderstanding, previousPlan) {
   if (previousUnderstanding || previousPlan) return;
@@ -90,6 +90,9 @@ function prevalidateTurn(execDir, input, options = {}) {
   const events = timelineEvents(execDir);
   const eventCandidates = [];
   const knowledgeRefs = new Set(events.filter((entry) => entry.type === 'knowledgeAssessment').map((entry) => entry.knowledgeRef));
+  const assessmentsByRef = new Map(events.filter((entry) => entry.type === 'knowledgeAssessment')
+    .map((entry) => [entry.knowledgeRef, entry]));
+  const reviewedQueries = new Set(events.filter((entry) => entry.type === 'knowledgeReview').map((entry) => entry.queryId));
   if (turn.understanding) {
     eventCandidates.push({
       type: 'caseUnderstood', writer: 'agent', phase: execution.phase,
@@ -131,6 +134,30 @@ function prevalidateTurn(execDir, input, options = {}) {
       if (!candidate) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'knowledge assessment does not match a frozen query candidate');
       validateKnowledgeCandidateSnapshot(execDir, candidate);
       if (fact.assessment === 'APPLICABLE' && candidate.expired) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'expired knowledge cannot be assessed as APPLICABLE');
+      assessmentsByRef.set(fact.knowledgeRef, candidateEvent);
+    }
+    if (fact.type === 'knowledgeReview') {
+      if (reviewedQueries.has(fact.queryId)) throw contractError('KNOWLEDGE_REVIEW_ALREADY_COMPLETED', `knowledge query is already reviewed: ${fact.queryId}`);
+      const query = events.find((entry) => entry.type === 'knowledgeQuery' && entry.queryId === fact.queryId);
+      if (!query) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'knowledge review references an unknown query');
+      const refs = new Set(fact.assessmentRefs);
+      if (refs.size !== fact.assessmentRefs.length) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'knowledge review assessmentRefs must be unique');
+      const assessments = fact.assessmentRefs.map((ref) => assessmentsByRef.get(ref));
+      if (assessments.some((assessment) => !assessment || assessment.queryId !== fact.queryId)) {
+        throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'knowledge review assessments must belong to its query');
+      }
+      if (query.matchCount === 0 && (fact.conclusion !== 'NO_MATCH' || assessments.length !== 0)) {
+        throw contractError('KNOWLEDGE_REVIEW_INVALID', 'a zero-match query requires an empty NO_MATCH review');
+      }
+      if (query.matchCount > 0 && (fact.conclusion === 'NO_MATCH' || assessments.length === 0)) {
+        throw contractError('KNOWLEDGE_REVIEW_INVALID', 'a matched query requires assessed candidates and a non-NO_MATCH conclusion');
+      }
+      const values = new Set(assessments.map((assessment) => assessment.assessment));
+      if (fact.conclusion === 'APPLICABLE_FOUND' && !values.has('APPLICABLE')) throw contractError('KNOWLEDGE_REVIEW_INVALID', 'APPLICABLE_FOUND requires an APPLICABLE assessment');
+      if (fact.conclusion === 'NO_APPLICABLE' && values.has('APPLICABLE')) throw contractError('KNOWLEDGE_REVIEW_INVALID', 'NO_APPLICABLE cannot include an APPLICABLE assessment');
+      if (fact.conclusion === 'CONFLICTING' && !values.has('CONFLICTING')) throw contractError('KNOWLEDGE_REVIEW_INVALID', 'CONFLICTING requires a CONFLICTING assessment');
+      if (fact.conclusion === 'INSUFFICIENT' && !values.has('INSUFFICIENT')) throw contractError('KNOWLEDGE_REVIEW_INVALID', 'INSUFFICIENT requires an INSUFFICIENT assessment');
+      reviewedQueries.add(fact.queryId);
     }
     if (fact.type === 'verdictReview') {
       if (!understanding || fact.understandingRevision !== understanding.revision) {

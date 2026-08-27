@@ -14,10 +14,16 @@ const {
   startCurrentCase,
 } = require('./batch/core');
 const { createDeviceSessionAdapter } = require('./batch/device-session');
+const {
+  acquireBatchPlatformRuntime,
+  loadBatchPlatformRuntime,
+  releaseBatchPlatformRuntime,
+} = require('./batch/platform-runtime');
 const { loadExecutionRequest } = require('./lib/run-control');
+const { refreshCommittedCaseReports } = require('./report/report-service');
 
 const SKILL_ROOT = path.resolve(__dirname, '..');
-const COMMANDS = new Set(['init', 'bootstrap', 'reconcile', 'start', 'commit', 'recover', 'status']);
+const COMMANDS = new Set(['init', 'bootstrap', 'reconcile', 'start', 'commit', 'recover', 'status', 'teardown']);
 
 function fail(message) {
   const error = new Error(`BATCH_CLI_INVALID: ${message}`);
@@ -72,6 +78,46 @@ function context(options) {
   };
 }
 
+function refreshCommittedDashboard(committed, refresh = refreshCommittedCaseReports) {
+  const startedAt = Date.now();
+  try {
+    const report = refresh(committed.item.caseDir, committed.completion.platform);
+    return { ...report, durationMs: Date.now() - startedAt };
+  } catch (error) {
+    return {
+      status: 'FAILED',
+      errorCode: error?.code || String(error?.message || error).match(/^([A-Z][A-Z0-9_]+)/)?.[1] || 'REPORT_REFRESH_FAILED',
+      reason: error?.message || String(error),
+      durationMs: Date.now() - startedAt,
+    };
+  }
+}
+
+function commitWithDashboard(common, refresh, commit = commitCurrentCase) {
+  const committed = commit(common);
+  return { ...committed, dashboardRefresh: refreshCommittedDashboard(committed, refresh) };
+}
+
+function cleanupTerminalPlatformRuntime(common, current, result) {
+  if (!['COMPLETED', 'BLOCKED'].includes(result?.state?.status)) return result;
+  try {
+    return {
+      ...result,
+      platformRuntimeCleanup: releaseBatchPlatformRuntime({ ...common, adapter: current.adapter }),
+    };
+  } catch (error) {
+    return {
+      ...result,
+      platformRuntimeCleanup: {
+        ok: false,
+        status: 'RELEASE_FAILED',
+        failureCode: error.code || 'PLATFORM_RUNTIME_RELEASE_FAILED',
+        reason: error.message || String(error),
+      },
+    };
+  }
+}
+
 function execute(options) {
   if (options.command === 'init') {
     if (options.bindingJson !== undefined || options.targetsJson !== undefined) {
@@ -96,14 +142,40 @@ function execute(options) {
     coordinatorProtocolSha: current.coordinatorProtocolSha,
   };
   switch (options.command) {
-    case 'bootstrap': return bootstrapBatch({ ...common, adapter: current.adapter });
-    case 'reconcile': return reconcileBatch({ ...common, adapter: current.adapter });
+    case 'bootstrap': {
+      const platformRuntime = acquireBatchPlatformRuntime({ ...common, adapter: current.adapter });
+      try {
+        return cleanupTerminalPlatformRuntime(common, current, bootstrapBatch({
+          ...common,
+          adapter: current.adapter,
+          platformRuntime,
+        }));
+      } catch (error) {
+        try {
+          cleanupTerminalPlatformRuntime(common, current, loadBatch(options.workspace, options.batchId, current.implementationSha));
+        } catch {
+          // Preserve the bootstrap error; cleanup state records its own failure when possible.
+        }
+        throw error;
+      }
+    }
+    case 'reconcile': return cleanupTerminalPlatformRuntime(common, current, reconcileBatch({ ...common, adapter: current.adapter }));
     case 'start': {
       return startCurrentCase({ ...common, skillContract: current.skillContract });
     }
-    case 'commit': return commitCurrentCase(common);
+    case 'commit': return cleanupTerminalPlatformRuntime(common, current, commitWithDashboard(common));
     case 'recover': return recoverApp({ ...common, adapter: current.adapter, request: json(options.requestJson, '--request-json') });
-    case 'status': return loadBatch(options.workspace, options.batchId, current.implementationSha);
+    case 'status': {
+      const loaded = loadBatch(options.workspace, options.batchId, current.implementationSha);
+      return { ...loaded, platformRuntime: loadBatchPlatformRuntime(common) };
+    }
+    case 'teardown': {
+      const loaded = loadBatch(options.workspace, options.batchId, current.implementationSha);
+      return {
+        ...loaded,
+        platformRuntimeCleanup: releaseBatchPlatformRuntime({ ...common, adapter: current.adapter }),
+      };
+    }
     default: fail('unsupported command');
   }
 }
@@ -116,4 +188,13 @@ if (require.main === module) {
   try { main(); } catch (error) { process.stderr.write(`${error.message || error}\n`); process.exit(error.exitCode || 2); }
 }
 
-module.exports = { buildContract: (platform) => buildRoleContract('case-executor', platform), buildRoleContract, execute, main, parseArgs };
+module.exports = {
+  buildContract: (platform) => buildRoleContract('case-executor', platform),
+  buildRoleContract,
+  commitWithDashboard,
+  cleanupTerminalPlatformRuntime,
+  execute,
+  main,
+  parseArgs,
+  refreshCommittedDashboard,
+};

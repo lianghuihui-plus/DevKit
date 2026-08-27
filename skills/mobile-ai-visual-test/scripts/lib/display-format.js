@@ -69,6 +69,7 @@ const ACTION_LABELS = {
   swipe: '滑动',
   back: '返回',
   home: '回到桌面',
+  dismissKeyboard: '收起键盘',
   wait: '等待',
 };
 
@@ -118,6 +119,7 @@ function formatActionSummary(actions) {
     ['输入', actions.inputText],
     ['滑动', actions.swipe],
     ['返回', actions.back],
+    ['收起键盘', actions.dismissKeyboard],
     ['启动', actions.launchApp],
     ['冷启动', actions.restartApp],
     ['等待', actions.wait],

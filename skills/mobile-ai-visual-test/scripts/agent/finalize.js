@@ -1,7 +1,5 @@
-#!/usr/bin/env node
 'use strict';
 
-const path = require('path');
 const { changePhase, finalizeExecution, validateFinalizationProposal } = require('../execution/core');
 const { contractError } = require('../lib/contract-utils');
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
@@ -55,25 +53,4 @@ function finalizeWithReview(execDir, result, review, options = {}) {
   return { ...finalized, agentResult, ...(reviewTurn ? { reviewTurn } : {}) };
 }
 
-function main(argv = process.argv.slice(2)) {
-  const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] === '--exec-dir') options.execDir = path.resolve(argv[++index]);
-    else if (argv[index] === '--result-json') options.result = JSON.parse(argv[++index]);
-    else if (argv[index] === '--review-json') options.review = JSON.parse(argv[++index]);
-    else if (argv[index] === '--reason') options.reason = argv[++index];
-    else throw new Error(`AGENT_FINALIZE_CLI_INVALID: unknown option ${argv[index]}`);
-  }
-  if (!options.execDir || !options.result) {
-    throw new Error('AGENT_FINALIZE_CLI_INVALID: --exec-dir and --result-json are required');
-  }
-  return finalizeWithReview(options.execDir, options.result, options.review, { reason: options.reason });
-}
-
-if (require.main === module) {
-  require('./cli-support').runAgentCli('finalize', process.argv.slice(2), {
-    command: "node scripts/agent/finalize.js --exec-dir <execution> [--review-json '<json>'] --result-json '<json>' [--reason <text>]",
-  }, main);
-}
-
-module.exports = { finalizeWithReview, main };
+module.exports = { finalizeWithReview };

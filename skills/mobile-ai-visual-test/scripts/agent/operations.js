@@ -9,7 +9,7 @@ const { validatePlanAuthorization, withAuthorizationSha } = require('../lib/plan
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
 const { resolveArtifact } = require('../lib/execution-evidence');
 const { inspectPng } = require('../lib/image-evidence');
-const { assertOperationAllowed } = require('../lib/execution-time-limit');
+const { assertActionBudget, assertOperationAllowed } = require('../lib/execution-time-limit');
 const {
   STATE_CHANGING_ACTIONS,
   beginOperation,
@@ -171,6 +171,16 @@ function frozenOperationError(record) {
   return contractError(record.error.code, record.error.message);
 }
 
+function operationError(error, fallbackCode) {
+  return {
+    code: error.code || fallbackCode,
+    message: error.message,
+    ...(error.adapterDiagnostics ? { adapterDiagnostics: error.adapterDiagnostics } : {}),
+    ...(Number.isFinite(error.remainingMs) ? { remainingMs: error.remainingMs } : {}),
+    ...(Number.isFinite(error.requiredMs) ? { requiredMs: error.requiredMs } : {}),
+  };
+}
+
 function executeDeviceOperation(execDir, request, options = {}) {
   request = freezeOperationRequest(request);
   ensureObject(request, 'operation request', 'AGENT_OPERATION_INVALID');
@@ -214,7 +224,11 @@ function executeDeviceOperation(execDir, request, options = {}) {
   assertPostActionObservation(execDir, validated, kind, options);
   const frozenRequest = { schemaVersion: 2, kind, request };
   if (!draft) {
-    assertOperationAllowed(validated.context.execution, kind.toLowerCase(), options.now || new Date());
+    if (kind === 'ACTION') {
+      assertActionBudget(validated.context.execution, validated.action, options.postActionSettleMs || 0, options.now || new Date());
+    } else {
+      assertOperationAllowed(validated.context.execution, kind.toLowerCase(), options.now || new Date());
+    }
     draft = { ...frozenRequest, status: 'REQUEST_FROZEN' };
     writeJsonAtomic(paths.draft, draft);
   }
@@ -233,8 +247,11 @@ function executeDeviceOperation(execDir, request, options = {}) {
   if (options.interruptAfter === 'begin') throw new Error('MAVT_AGENT_OPERATION_INTERRUPTED: begin');
 
   if (draft.status === 'ADAPTER_CALLING' && kind === 'ACTION') {
-    failOperation(execDir, request.operationId, { failureCode: 'DEVICE_ACTION_OUTCOME_UNCERTAIN', reason: 'process stopped while the device action was in flight', actionType: validated.action.type, stateChanging: STATE_CHANGING_ACTIONS.has(validated.action.type), now: options.now });
-    const error = { code: 'DEVICE_ACTION_OUTCOME_UNCERTAIN', message: 'action may have reached the device; observe current state before deciding the next action' };
+    const stateChanging = STATE_CHANGING_ACTIONS.has(validated.action.type);
+    const error = stateChanging
+      ? { code: 'DEVICE_ACTION_OUTCOME_UNCERTAIN', message: 'action may have reached the device; observe current state before deciding the next action' }
+      : { code: 'DEVICE_ACTION_FAILED', message: 'non-state-changing action was interrupted before returning a result' };
+    failOperation(execDir, request.operationId, { failureCode: error.code, reason: error.message, actionType: validated.action.type, stateChanging, now: options.now });
     completeRecord(paths, { schemaVersion: 2, kind, request, error });
     throw contractError(error.code, error.message);
   }
@@ -266,14 +283,22 @@ function executeDeviceOperation(execDir, request, options = {}) {
     try {
       gatewayResult = invokeDeviceOperation(execDir, validated, kind, options);
     } catch (error) {
-      if (kind === 'ACTION') {
-        const frozenError = { code: 'DEVICE_ACTION_OUTCOME_UNCERTAIN', message: `action may have reached the device: ${error.message}` };
-        failOperation(execDir, request.operationId, { failureCode: frozenError.code, reason: frozenError.message, actionType: validated.action.type, stateChanging: STATE_CHANGING_ACTIONS.has(validated.action.type), now: options.now });
+      const stateChanging = kind === 'ACTION' && STATE_CHANGING_ACTIONS.has(validated.action.type);
+      if (stateChanging) {
+        const frozenError = operationError(error, 'DEVICE_ADAPTER_FAILED');
+        frozenError.code = 'DEVICE_ACTION_OUTCOME_UNCERTAIN';
+        frozenError.message = `action may have reached the device: ${error.message}`;
+        failOperation(execDir, request.operationId, { failureCode: frozenError.code, reason: frozenError.message, actionType: validated.action.type, stateChanging: true, now: options.now });
         completeRecord(paths, { schemaVersion: 2, kind, request, error: frozenError });
         throw contractError(frozenError.code, frozenError.message);
       }
-      const frozenError = { code: error.code || 'DEVICE_ADAPTER_FAILED', message: error.message };
-      failOperation(execDir, request.operationId, { failureCode: frozenError.code, reason: frozenError.message, now: options.now });
+      const frozenError = operationError(error, kind === 'ACTION' ? 'DEVICE_ACTION_FAILED' : 'DEVICE_ADAPTER_FAILED');
+      failOperation(execDir, request.operationId, {
+        failureCode: frozenError.code,
+        reason: frozenError.message,
+        ...(kind === 'ACTION' ? { actionType: validated.action.type, stateChanging: false } : {}),
+        now: options.now,
+      });
       completeRecord(paths, { schemaVersion: 2, kind, request, error: frozenError });
       throw contractError(frozenError.code, frozenError.message);
     }

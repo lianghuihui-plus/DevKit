@@ -22,12 +22,13 @@ const ACTION_FIELDS = Object.freeze({
   swipe: ['fromX', 'fromY', 'toX', 'toY', 'velocity', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
   back: ['reason'],
   home: ['reason'],
+  dismissKeyboard: ['reason'],
   wait: ['ms', 'reason'],
 });
 
 const SCOPE_ACTION_TYPES = Object.freeze({
-  'case-business': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']),
-  'case-prepare': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait']),
+  'case-business': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait']),
+  'case-prepare': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait']),
   'formal-execution': Object.freeze(Object.keys(ACTION_FIELDS)),
 });
 
@@ -76,6 +77,13 @@ function canonicalCoordinateSource(value) {
   return canonical || raw;
 }
 
+function platformActionTypes(platform, scope) {
+  const values = SCOPE_ACTION_TYPES[scope];
+  return String(platform || '').trim().toLowerCase() === 'ios'
+    ? [...values]
+    : values.filter((type) => type !== 'dismissKeyboard');
+}
+
 function normalizeActionProposal(action, options = {}) {
   const context = options.context || 'action proposal';
   if (!action || typeof action !== 'object' || Array.isArray(action)) fail(context, 'must be an object');
@@ -108,7 +116,7 @@ function describeActionConstraints(platform, scope = 'case-business') {
     schemaVersion: 1,
     scope: normalizedScope,
     platform: normalizedPlatform,
-    actionTypes: [...SCOPE_ACTION_TYPES[normalizedScope]],
+    actionTypes: platformActionTypes(normalizedPlatform, normalizedScope),
     coordinateSources: [...SCOPE_COORDINATE_SOURCES[normalizedScope]],
     coordinateSourceAliases: { screenshot: 'visual', image: 'visual', uiTree: 'layout' },
     coordinateActions: [...COORDINATE_ACTIONS],
@@ -193,7 +201,7 @@ function validateActionExecution(action, options = {}) {
   if (!['harmony', 'android', 'ios'].includes(platform)) {
     fail(context, `unsupported platform: ${platform || 'unknown'}`, { field: 'platform', received: platform, allowed: ['harmony', 'android', 'ios'] });
   }
-  const allowedActionTypes = SCOPE_ACTION_TYPES[scope];
+  const allowedActionTypes = platformActionTypes(platform, scope);
   if (!allowedActionTypes.includes(action.type)) {
     fail(context, `${action.type} is not allowed for ${scope}`, {
       field: 'type', received: action.type, allowed: [...allowedActionTypes],

@@ -26,6 +26,7 @@ const EVENT_WRITERS = Object.freeze({
   reflection: 'agent',
   knowledgeQuery: 'knowledge-query',
   knowledgeAssessment: 'agent',
+  knowledgeReview: 'agent',
   verdictReview: 'agent',
   result: 'runtime-core',
   runtimeIncident: 'runtime-core',
@@ -33,6 +34,7 @@ const EVENT_WRITERS = Object.freeze({
   recoveryCompleted: 'runtime-core',
 });
 const KNOWLEDGE_ASSESSMENTS = new Set(['APPLICABLE', 'NOT_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT']);
+const KNOWLEDGE_REVIEW_CONCLUSIONS = new Set(['NO_MATCH', 'APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT']);
 const VERDICTS = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const OPERATION_KINDS = new Set(['OBSERVE', 'ACTION']);
 const OPERATION_OUTCOMES = new Set(['SUCCEEDED', 'FAILED', 'REJECTED']);
@@ -52,6 +54,7 @@ const EVENT_PHASES = Object.freeze({
   reflection: new Set(['EXECUTE', 'INVESTIGATE']),
   knowledgeQuery: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   knowledgeAssessment: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
+  knowledgeReview: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   verdictReview: new Set(['CONCLUDE']),
   result: new Set(['FINALIZED']),
   runtimeIncident: new Set(['ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
@@ -151,6 +154,7 @@ function validateExecutionEvent(value, options = {}) {
         if (value.artifacts.layout !== undefined && value.artifacts.layout !== null) ensureString(value.artifacts.layout, 'artifacts.layout', 'EXECUTION_EVENT_INVALID');
         if (value.artifacts.logs !== undefined) validateStringArray(value.artifacts.logs, 'artifacts.logs');
       }
+      if (value.technicalSignals !== undefined) ensureObject(value.technicalSignals, 'technicalSignals', 'EXECUTION_EVENT_INVALID');
       if (value.scope === 'case-prepare') {
         if (value.startConditionId !== undefined) ensureId(value.startConditionId, 'startConditionId', 'EXECUTION_EVENT_INVALID');
         ensureInteger(value.understandingRevision, 'understandingRevision', 'EXECUTION_EVENT_INVALID', 1);
@@ -212,6 +216,12 @@ function validateExecutionEvent(value, options = {}) {
       if (!KNOWLEDGE_ASSESSMENTS.has(value.assessment)) throw contractError('EXECUTION_EVENT_INVALID', 'knowledge assessment is invalid');
       ensureString(value.reason, 'reason', 'EXECUTION_EVENT_INVALID');
       break;
+    case 'knowledgeReview':
+      ensureId(value.queryId, 'queryId', 'EXECUTION_EVENT_INVALID');
+      if (!KNOWLEDGE_REVIEW_CONCLUSIONS.has(value.conclusion)) throw contractError('EXECUTION_EVENT_INVALID', 'knowledge review conclusion is invalid');
+      validateStringArray(value.assessmentRefs, 'assessmentRefs');
+      ensureString(value.reason, 'reason', 'EXECUTION_EVENT_INVALID');
+      break;
     case 'verdictReview':
       ensureInteger(value.understandingRevision, 'understandingRevision', 'EXECUTION_EVENT_INVALID', 1);
       ensureInteger(value.planRevision, 'planRevision', 'EXECUTION_EVENT_INVALID', 1);
@@ -270,6 +280,7 @@ module.exports = {
   EVENT_WRITERS,
   EVIDENCE_SCOPES,
   KNOWLEDGE_ASSESSMENTS,
+  KNOWLEDGE_REVIEW_CONCLUSIONS,
   OPERATION_KINDS,
   OPERATION_OUTCOMES,
   PHASES,

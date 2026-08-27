@@ -8,6 +8,9 @@ const path = require('path');
 const suites = Object.freeze({
   contract: 'tests/contract.test.js',
   platform: 'tests/platform-contract.test.js',
+  platformRuntime: 'tests/platform-runtime.test.js',
+  iosInput: 'tests/ios-input.test.js',
+  layout: 'tests/layout-observation.test.js',
   harmonyInput: 'tests/harmony-input-effect.test.js',
   metrics: 'tests/execution-metrics.test.js',
   report: 'tests/report-reader.test.js',

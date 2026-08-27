@@ -6,7 +6,6 @@ const { contractError } = require('../lib/contract-utils');
 const { sourceSha } = require('../execution/contracts/case-contract');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { sha256File } = require('../lib/completion-contract');
-const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
 const { validateResultKnowledgeSnapshots } = require('../lib/knowledge-snapshot');
 const { timelineEvents } = require('../execution/core');
 const { canonicalJson } = require('../lib/contract-utils');
@@ -142,7 +141,6 @@ function createAgentResult(options) {
     throw contractError('AGENT_RESULT_BINDING_MISMATCH', 'Agent Runtime does not match request');
   }
   validateResultKnowledgeSnapshots(execDir, result, timelineEvents(execDir));
-  buildExecutionArtifactManifest(execDir, { now: options.now });
   const value = {
     schemaVersion: 2,
     executionId: execution.executionId,

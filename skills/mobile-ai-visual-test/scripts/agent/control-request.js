@@ -22,10 +22,10 @@ function controlRequestPath(execDir) {
   return path.join(execDir, 'agent', CONTROL_REQUEST_FILE);
 }
 
-function activeCheckpoint(plan, events) {
+function activeCheckpoint(plan, events, warmSessionGeneration) {
   const ids = new Set((plan?.checkpoints || []).map((entry) => entry.id));
   const recent = [...events].reverse().find((event) => ids.has(event.authorization?.checkpointId)
-    && event.authorization?.planRevision === plan.revision);
+    && (warmSessionGeneration === undefined || event.warmSessionGeneration === warmSessionGeneration));
   return recent?.authorization?.checkpointId || plan?.checkpoints?.[0]?.id || null;
 }
 
@@ -66,7 +66,7 @@ function requestRecovery(execDir, input = {}, options = {}) {
     && (triggerType === 'AGENT_DECIDED_RESTART' || !failedOperation)) {
     throw contractError('RECOVERY_EVIDENCE_REQUIRED', 'recovery requires a current execution observation');
   }
-  const checkpointId = activeCheckpoint(plan, events);
+  const checkpointId = activeCheckpoint(plan, events, binding.execution.warmSessionGeneration);
   const checkpoint = plan.checkpoints.find((entry) => entry.id === checkpointId);
   const requirementIds = new Set(checkpoint?.requirementRefs || []);
   const sourceRefs = triggerType === 'SOURCE_REQUIRED_COLD_START'

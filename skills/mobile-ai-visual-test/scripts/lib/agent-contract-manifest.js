@@ -109,6 +109,7 @@ function implementationFiles(skillRoot, role, platform) {
     'scripts/platform/observe.sh',
     'scripts/platform/probe-env.sh',
     'scripts/platform/prepare-env.sh',
+    'scripts/platform/runtime.sh',
   ]) files.add(relative);
   for (const relative of walkFiles(skillRoot, `scripts/platform/adapters/${platform}`)) files.add(relative);
   return [...files].sort();

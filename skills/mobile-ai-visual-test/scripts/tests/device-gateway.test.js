@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createAgentRequest } = require('../agent/core');
-const { actionAdapterArgs, assertResultBinding, observationAdapterArgs, resolveTargetBinding } = require('../agent/device-gateway');
+const { actionAdapterArgs, assertResultBinding, observationAdapterArgs, parseAdapterOutput, resolveTargetBinding } = require('../agent/device-gateway');
 const { executeDeviceOperation } = require('../agent/operations');
 const { readAgentStatus } = require('../agent/status');
 const { bootstrapBatch, initializeBatch, startCurrentCase } = require('../batch/core');
@@ -109,10 +109,17 @@ assert.deepStrictEqual(harmonyArgs.slice(-6), ['--type', 'tap', '--x', '10', '--
 const androidArgs = actionAdapterArgs({ platform: 'android', deviceId: 'emulator-5554', appId: 'com.example.android', entry: 'MainActivity' }, { type: 'inputText', text: 'hello', mode: 'replace' });
 assert.ok(androidArgs.includes('emulator-5554'));
 assert.deepStrictEqual(androidArgs.slice(-6), ['--type', 'inputText', '--text', 'hello', '--mode', 'replace']);
+const androidVisualArgs = actionAdapterArgs({ platform: 'android', deviceId: 'emulator-5554', appId: 'com.example.android', entry: 'MainActivity' }, { type: 'tap', x: 200, y: 400, coordinateSource: 'visual' });
+assert.deepStrictEqual(androidVisualArgs.slice(-6), ['--type', 'tap', '--x', '200', '--y', '400']);
+assert.strictEqual(androidVisualArgs.includes('--coordinate-source'), false);
+const harmonyVisualArgs = actionAdapterArgs(BINDING, { type: 'tap', x: 200, y: 400, coordinateSource: 'visual' });
+assert.strictEqual(harmonyVisualArgs.includes('--coordinate-source'), false);
 const iosArgs = observationAdapterArgs({ platform: 'ios', deviceId: 'ios-udid', appId: 'com.example.ios', deviceType: 'simulator', appiumServer: 'http://127.0.0.1:4723' }, '/tmp/execution', 'observe-001');
 assert.ok(iosArgs.includes('--device-type'));
 assert.ok(iosArgs.includes('--appium-server'));
 assert.deepStrictEqual(iosArgs.slice(-4), ['--out', '/tmp/execution', '--label', 'observe-001']);
+const iosVisualArgs = actionAdapterArgs({ platform: 'ios', deviceId: 'ios-udid', appId: 'com.example.ios', deviceType: 'simulator' }, { type: 'tap', x: 200, y: 400, coordinateSource: 'visual' });
+assert.deepStrictEqual(iosVisualArgs.slice(-8), ['--type', 'tap', '--x', '200', '--y', '400', '--coordinate-source', 'visual']);
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-device-gateway-'));
 const workspacePath = path.join(temp, 'workspace');
@@ -238,10 +245,41 @@ const malformed = runnerFactory(() => ({ status: 0, stdout: 'not-json', stderr: 
 expectCode(() => executeDeviceOperation(started.execDir, { operationId: 'observe-malformed', authorization: authorization(started, 'case-business') }, { runner: malformed, now: T0 }), 'DEVICE_ADAPTER_OUTPUT_INVALID');
 expectCode(() => executeDeviceOperation(started.execDir, { operationId: 'observe-malformed', authorization: authorization(started, 'case-business') }, { runner: malformed, now: T0 }), 'DEVICE_ADAPTER_OUTPUT_INVALID');
 assert.strictEqual(malformed.calls.length, 1);
+expectCode(() => parseAdapterOutput({ status: 2, stdout: '', stderr: 'focused field unavailable' }, 'ACTION'), 'DEVICE_ADAPTER_FAILED');
+try {
+  parseAdapterOutput({ status: 2, stdout: '', stderr: 'focused field unavailable' }, 'ACTION');
+} catch (error) {
+  assert.strictEqual(error.adapterDiagnostics.stderr, 'focused field unavailable');
+}
 const invalidPng = okObservationRunner({ png: Buffer.from('not a png') });
 expectCode(() => executeDeviceOperation(started.execDir, { operationId: 'observe-invalid-png', authorization: authorization(started, 'case-business') }, { runner: invalidPng, now: T0 }), 'OBSERVATION_SCREENSHOT_INVALID');
 const wrongTarget = okObservationRunner({ result: { device: { id: 'other-device' } } });
 expectCode(() => executeDeviceOperation(started.execDir, { operationId: 'observe-wrong-target', authorization: authorization(started, 'case-business') }, { runner: wrongTarget, now: T0 }), 'DEVICE_RESULT_BINDING_MISMATCH');
+
+// An action that cannot leave enough time for its post-action observation is rejected before dispatch.
+const insufficientRunner = okActionRunner();
+const insufficientRequest = {
+  operationId: 'action-insufficient-budget', authorization: authorization(started, 'case-business'),
+  action: { type: 'wait', ms: 3000, reason: '验证预算准入' },
+};
+expectCode(() => executeDeviceOperation(started.execDir, insufficientRequest, {
+  runner: insufficientRunner, now: '2026-08-13T10:29:57.500Z', postActionSettleMs: 0,
+}), 'CASE_TIME_LIMIT_INSUFFICIENT');
+assert.strictEqual(insufficientRunner.calls.length, 0);
+assert.strictEqual(fs.existsSync(path.join(started.execDir, 'agent', 'operation-action-insufficient-budget.draft.json')), false);
+
+// A failed wait cannot leave device state uncertain because wait has no device side effect.
+const failedWaitRunner = runnerFactory(() => ({
+  status: null, stdout: '', stderr: '', error: new Error('wait process timed out'),
+}));
+expectCode(() => executeDeviceOperation(started.execDir, {
+  operationId: 'action-wait-failed', authorization: authorization(started, 'case-business'),
+  action: { type: 'wait', ms: 0, reason: '验证无副作用失败分类' },
+}, { runner: failedWaitRunner, now: T0 }), 'DEVICE_ADAPTER_FAILED');
+const failedWaitCompletion = timelineEvents(started.execDir)
+  .find((event) => event.type === 'operationCompleted' && event.operationId === 'action-wait-failed');
+assert.strictEqual(failedWaitCompletion.failureCode, 'DEVICE_ADAPTER_FAILED');
+assert.strictEqual(failedWaitCompletion.stateChanging, false);
 
 // Low-level action execution is not exposed as a formal CLI.
 assert.strictEqual(fs.existsSync(path.join(repo, 'scripts/agent/action.js')), false);

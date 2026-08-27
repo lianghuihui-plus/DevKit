@@ -3,9 +3,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const childProcess = require('child_process');
 const { actionResult, atomResult, dependency, localIso } = require('./output');
 const appium = require('./appium-client');
+const {
+  prepareAppium,
+} = require('./service-lifecycle');
+const { acquireIosRuntime, releaseIosRuntime } = require('./runtime-lifecycle');
+const { acquireWda, releaseWda } = require('./wda-lifecycle');
 const {
   buildTarget,
   commandExists,
@@ -16,6 +20,7 @@ const {
   validateRestArgs,
 } = require('./device-target');
 const { swipeDurationMs } = require('../../../../lib/action-contract');
+const { pngSizeFromBase64, scaleVisualPoint, sourceViewport } = require('./screen-space');
 
 const ATOM_OPTIONS = Object.freeze({
   'screenshot': ['--out'],
@@ -24,10 +29,11 @@ const ATOM_OPTIONS = Object.freeze({
   'logs': ['--out-dir', '--label'],
   'launch-app': [],
   'restart-app': [],
-  'tap': ['--x', '--y'],
-  'long-press': ['--x', '--y', '--duration-ms'],
-  'swipe': ['--from-x', '--from-y', '--to-x', '--to-y', '--velocity'],
+  'tap': ['--x', '--y', '--coordinate-source'],
+  'long-press': ['--x', '--y', '--duration-ms', '--coordinate-source'],
+  'swipe': ['--from-x', '--from-y', '--to-x', '--to-y', '--velocity', '--coordinate-source'],
   'input-text': ['--x', '--y', '--text', '--mode'],
+  'dismiss-keyboard': [],
   'keyevent': ['--key'],
 });
 
@@ -62,6 +68,18 @@ function decodeBase64Png(value, out) {
 
 function fakeEnabled() {
   return process.env.MAVT_IOS_FAKE === '1';
+}
+
+function skippedStartupDisplay() {
+  return {
+    status: 'SKIPPED',
+    verified: false,
+    requestedOrientation: 'preserve',
+    enforcement: 'none',
+    appliesTo: [],
+    required: false,
+    skippedReason: 'POLICY_PRESERVE',
+  };
 }
 
 async function runProbe(argv) {
@@ -180,39 +198,12 @@ async function runProbe(argv) {
       foregroundApp: implemented,
       logs: logsImplemented,
       launchApp: implemented,
-      actions: implemented ? ['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait'] : [],
+      actions: implemented ? ['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait'] : [],
       screenCap: implemented,
       dumpLayout: implemented,
       implemented,
     },
   });
-}
-
-function spawnAppium(target) {
-  const url = new URL(target.appiumServer);
-  const port = url.port || '4723';
-  const address = url.hostname || '127.0.0.1';
-  const child = childProcess.spawn('appium', ['--address', address, '--port', port], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  child.unref();
-  return child.pid;
-}
-
-async function waitForAppium(target, timeoutMs = 20000) {
-  const started = Date.now();
-  let lastError = null;
-  while (Date.now() - started < timeoutMs) {
-    try {
-      await appium.status(target.appiumServer, 2000);
-      return { ok: true };
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  }
-  return { ok: false, error: lastError?.message || 'Appium server is not available' };
 }
 
 async function runPrepare(argv) {
@@ -243,35 +234,41 @@ async function runPrepare(argv) {
   }
   deps.push(dependency('xcuitestDriver', xcuitestOk, { name: 'Appium XCUITest Driver', version: xcuitestVersion }));
 
-  let appiumPid = null;
   let serverReady = false;
+  let appiumRuntime = null;
   if (fakeEnabled()) {
     serverReady = true;
   } else if (appiumAvailable) {
-    const existing = await waitForAppium(target, 2000);
-    if (existing.ok) {
-      serverReady = true;
-    } else {
-      try {
-        appiumPid = spawnAppium(target);
-        serverReady = (await waitForAppium(target, 20000)).ok;
-      } catch {
-        serverReady = false;
-      }
-    }
+    appiumRuntime = await prepareAppium(target);
+    serverReady = appiumRuntime.ok === true;
   }
-  deps.push(dependency('appiumServer', serverReady, { name: 'Appium Server', server: target.appiumServer, pid: appiumPid || undefined }));
+  deps.push(dependency('appiumServer', serverReady, {
+    name: 'Appium Server',
+    server: target.appiumServer,
+    ownership: appiumRuntime?.ownership,
+    pid: appiumRuntime?.resource?.pid,
+    logPath: appiumRuntime?.resource?.logPath,
+    error: appiumRuntime?.reason,
+  }));
 
   let wdaOk = false;
   let wdaError = '';
   if (fakeEnabled()) {
     wdaOk = true;
   } else if (serverReady && target.device && target.appId) {
+    const prepareOwnerKey = `environment-prepare-${process.pid}-${Date.now()}`;
+    const preparedWda = acquireWda(target, prepareOwnerKey);
     try {
       await appium.withSession(target, async () => {}, { timeoutMs: 180000 });
       wdaOk = true;
     } catch (error) {
       wdaError = error.message;
+    } finally {
+      const releasedWda = await releaseWda(preparedWda.resource, prepareOwnerKey);
+      if (!releasedWda.ok) {
+        wdaOk = false;
+        wdaError = [wdaError, releasedWda.reason].filter(Boolean).join('; ');
+      }
     }
   } else {
     wdaError = 'missing device or appId';
@@ -285,6 +282,39 @@ async function runPrepare(argv) {
     time: localIso(),
     ok: deps.every((item) => item.ok),
     dependencies: deps,
+  });
+}
+
+async function runRuntime(argv) {
+  const parsed = parseArgs(argv);
+  validateRestArgs(parsed.rest, ['--operation', '--owner-key', '--runtime-json'], 'iOS runtime');
+  const operation = optionValue(parsed.rest, '--operation');
+  const target = buildTarget(parsed);
+  let result;
+  if (operation === 'acquire') {
+    const ownerKey = optionValue(parsed.rest, '--owner-key');
+    if (!ownerKey) throw new Error('iOS runtime acquire 需要 --owner-key');
+    result = await acquireIosRuntime(target, ownerKey);
+  } else if (operation === 'release') {
+    const raw = optionValue(parsed.rest, '--runtime-json');
+    if (!raw) throw new Error('iOS runtime release 需要 --runtime-json');
+    let runtime;
+    try {
+      runtime = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`iOS runtime release 的 --runtime-json 无效: ${error.message}`);
+    }
+    result = await releaseIosRuntime(runtime);
+  } else {
+    throw new Error(`iOS runtime 不支持的 operation: ${operation || 'missing'}`);
+  }
+  writeJson({
+    schemaVersion: 1,
+    type: 'platformRuntimeResult',
+    platform: 'ios',
+    operation,
+    time: localIso(),
+    ...result,
   });
 }
 
@@ -305,6 +335,8 @@ async function runObserve(argv) {
   const errors = [];
   let foreground = null;
   let screen = null;
+  let keyboardShown;
+  let windowRect = null;
 
   if (fakeEnabled()) {
     if (process.env.MAVT_TEST_PNG && fs.existsSync(process.env.MAVT_TEST_PNG)) fs.copyFileSync(process.env.MAVT_TEST_PNG, screenshotPath);
@@ -313,6 +345,8 @@ async function runObserve(argv) {
     fs.writeFileSync(logPath, 'fake ios log\n');
     foreground = { bundleId: target.appId || 'com.example.demo', pid: 1234, name: 'Demo' };
     screen = '393x852';
+    keyboardShown = process.env.MAVT_IOS_FAKE_KEYBOARD_SHOWN === '1';
+    windowRect = { x: 0, y: 0, width: 393, height: 852 };
   } else {
     await appium.withSession(target, async ({ sessionId }) => {
       try {
@@ -326,8 +360,8 @@ async function runObserve(argv) {
         fs.writeFileSync(sourcePath, source.value || '');
         const appMatch = String(source.value || '').match(/<XCUIElementTypeApplication[^>]*bundleId="([^"]+)"/);
         if (appMatch && !foreground) foreground = { bundleId: appMatch[1] };
-        const sizeMatch = String(source.value || '').match(/<XCUIElementTypeApplication[^>]*width="([^"]+)"[^>]*height="([^"]+)"/);
-        if (sizeMatch) screen = `${sizeMatch[1]}x${sizeMatch[2]}`;
+        const viewport = sourceViewport(source.value);
+        if (viewport) screen = `${viewport.width}x${viewport.height}`;
       } catch (error) {
         errors.push(`[layout] ${error.message}`);
       }
@@ -337,7 +371,19 @@ async function runObserve(argv) {
       } catch (error) {
         errors.push(`[foreground] ${error.message}`);
       }
-    });
+      try {
+        const keyboard = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/execute/sync`, { script: 'mobile: isKeyboardShown', args: [] });
+        keyboardShown = keyboard.value === true;
+      } catch (error) {
+        errors.push(`[keyboard] ${error.message}`);
+      }
+      try {
+        const rect = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/window/rect`);
+        windowRect = rect.value || null;
+      } catch (error) {
+        errors.push(`[windowRect] ${error.message}`);
+      }
+    }, { autoLaunch: false });
     if (target.deviceType === 'simulator' && target.device) {
       const logs = run('xcrun', ['simctl', 'spawn', target.device, 'log', 'show', '--last', '30s', '--style', 'compact'], { timeout: 15000 });
       fs.writeFileSync(logPath, logs.ok ? logs.stdout : logs.stderr);
@@ -377,6 +423,10 @@ async function runObserve(argv) {
       layout: !!layoutRel,
       foregroundApp: !!foregroundApp,
       logs: logs.length > 0,
+    },
+    technicalSignals: {
+      ...(keyboardShown !== undefined ? { keyboardShown } : {}),
+      ...(windowRect ? { windowRect } : {}),
     },
     raw: {
       foreground,
@@ -428,6 +478,10 @@ function falseyAttribute(value) {
   return value === false || String(value).toLowerCase() === 'false' || String(value) === '0';
 }
 
+function appiumElementId(value) {
+  return value?.['element-6066-11e4-a52e-4f735466cecf'] || value?.ELEMENT || null;
+}
+
 async function getElementAttribute(target, sessionId, elementId, name) {
   try {
     const response = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/element/${elementId}/attribute/${name}`);
@@ -438,12 +492,19 @@ async function getElementAttribute(target, sessionId, elementId, name) {
 }
 
 async function findEditableElement(target, sessionId) {
+  let activeElementId = null;
+  try {
+    const active = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/element/active`);
+    activeElementId = appiumElementId(active.value);
+  } catch {
+    activeElementId = null;
+  }
   const candidates = [];
   for (const cls of ['XCUIElementTypeTextField', 'XCUIElementTypeSearchField', 'XCUIElementTypeSecureTextField', 'XCUIElementTypeTextView']) {
     const response = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/elements`, { using: 'class name', value: cls });
     const elements = response.value || [];
     for (const element of elements) {
-      const elementId = element['element-6066-11e4-a52e-4f735466cecf'] || element.ELEMENT;
+      const elementId = appiumElementId(element);
       if (!elementId) continue;
       candidates.push({
         elementId,
@@ -457,12 +518,148 @@ async function findEditableElement(target, sessionId) {
   if (!candidates.length) {
     throw new Error('No editable XCUI element found. Tap/focus an input field before inputText.');
   }
+  const active = candidates.filter((item) => item.elementId === activeElementId && !falseyAttribute(item.enabled));
+  if (active.length === 1) return { elementId: active[0].elementId, className: active[0].className, selection: 'active-element' };
   const focused = candidates.filter((item) => truthyAttribute(item.focused) && !falseyAttribute(item.enabled));
   if (focused.length === 1) return { elementId: focused[0].elementId, className: focused[0].className, selection: 'focused' };
   const visible = candidates.filter((item) => !falseyAttribute(item.visible) && !falseyAttribute(item.enabled));
   if (visible.length === 1) return { elementId: visible[0].elementId, className: visible[0].className, selection: 'single-visible-editable' };
   if (candidates.length === 1) return { elementId: candidates[0].elementId, className: candidates[0].className, selection: 'single-editable' };
   throw new Error(`Multiple editable XCUI elements found (${candidates.length}). Tap/focus the target input before inputText.`);
+}
+
+function conciseError(error) {
+  return String(error?.message || error || 'unknown input error').replace(/\s+/g, ' ').trim().slice(0, 1000);
+}
+
+function normalizedInputValue(value, placeholder) {
+  if (value === null || value === undefined) return null;
+  return placeholder !== null && placeholder !== undefined && String(value) === String(placeholder) ? '' : String(value);
+}
+
+function inputEffectFor(editable, expectedText, actualValue, placeholder) {
+  const actualText = normalizedInputValue(actualValue, placeholder);
+  if (editable.className === 'XCUIElementTypeSecureTextField') {
+    if (actualText === null) {
+      return { status: 'UNVERIFIABLE', expectedLength: expectedText.length, reason: 'secure field value is unavailable' };
+    }
+    if (actualText.length === 0) {
+      return { status: 'MISMATCH', expectedLength: expectedText.length, observedLength: 0, reason: 'secure field is still empty' };
+    }
+    if (actualText.length !== expectedText.length) {
+      return {
+        status: 'MISMATCH', expectedLength: expectedText.length, observedLength: actualText.length,
+        reason: 'secure field mask length does not match the requested text length',
+      };
+    }
+    return { status: 'MASKED', expectedLength: expectedText.length, observedLength: actualText.length };
+  }
+  if (actualText === null) {
+    return { status: 'UNVERIFIABLE', expectedText, reason: 'field value is unavailable' };
+  }
+  return {
+    status: actualText === expectedText ? 'VERIFIED' : 'MISMATCH',
+    expectedText,
+    actualText,
+  };
+}
+
+async function readInputEffect(target, sessionId, editable, expectedText, placeholder) {
+  const actualValue = await getElementAttribute(target, sessionId, editable.elementId, 'value');
+  return inputEffectFor(editable, expectedText, actualValue, placeholder);
+}
+
+function inputEffectSucceeded(effect) {
+  return ['VERIFIED', 'MASKED', 'UNVERIFIABLE'].includes(effect?.status);
+}
+
+async function inputTextWithFallback(target, sessionId, editable, text, mode) {
+  const startedAt = Date.now();
+  const placeholder = await getElementAttribute(target, sessionId, editable.elementId, 'placeholderValue');
+  const beforeValue = await getElementAttribute(target, sessionId, editable.elementId, 'value');
+  const beforeText = normalizedInputValue(beforeValue, placeholder);
+  const expectedText = mode === 'append' && beforeText !== null ? `${beforeText}${text}` : text;
+  const writeText = expectedText;
+  const attempts = [];
+  const methods = [
+    {
+      name: 'wda-element-value',
+      send: () => appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${editable.elementId}/value`, {
+        text: writeText,
+        value: Array.from(writeText),
+      }),
+    },
+    {
+      name: 'wda-session-keys',
+      send: () => appium.request(target.appiumServer, 'POST', `/session/${sessionId}/keys`, {
+        text: writeText,
+        value: Array.from(writeText),
+      }),
+    },
+  ];
+  let lastEffect = null;
+  for (const method of methods) {
+    const attempt = { method: method.name, ok: false };
+    try {
+      if (mode === 'replace' || beforeText !== null) {
+        try {
+          await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${editable.elementId}/clear`, {});
+        } catch (error) {
+          attempt.clearError = conciseError(error);
+        }
+      }
+      await method.send();
+      lastEffect = await readInputEffect(target, sessionId, editable, expectedText, placeholder);
+      attempt.effectStatus = lastEffect.status;
+      attempt.ok = inputEffectSucceeded(lastEffect);
+      attempts.push(attempt);
+      if (attempt.ok) {
+        return {
+          ok: true,
+          inputMethod: method.name,
+          inputMode: mode,
+          inputTarget: editable.selection,
+          inputAttempts: attempts,
+          inputEffect: { ...lastEffect, attempts: attempts.length, settledMs: Date.now() - startedAt },
+        };
+      }
+    } catch (error) {
+      attempt.error = conciseError(error);
+      try {
+        lastEffect = await readInputEffect(target, sessionId, editable, expectedText, placeholder);
+        attempt.effectStatus = lastEffect.status;
+        if (['VERIFIED', 'MASKED'].includes(lastEffect.status)) {
+          attempt.ok = true;
+          attempts.push(attempt);
+          return {
+            ok: true,
+            inputMethod: method.name,
+            inputMode: mode,
+            inputTarget: editable.selection,
+            inputAttempts: attempts,
+            inputEffect: { ...lastEffect, attempts: attempts.length, settledMs: Date.now() - startedAt },
+          };
+        }
+      } catch (verificationError) {
+        attempt.verificationError = conciseError(verificationError);
+      }
+      attempts.push(attempt);
+    }
+  }
+  return {
+    ok: false,
+    failureCode: 'IOS_INPUT_TEXT_FAILED',
+    message: 'iOS whole-string input failed after bounded adapter fallback',
+    inputMethod: 'bounded-fallback-exhausted',
+    inputMode: mode,
+    inputTarget: editable.selection,
+    inputAttempts: attempts,
+    inputEffect: {
+      ...(lastEffect || { status: 'UNVERIFIABLE', reason: 'input effect could not be read' }),
+      attempts: attempts.length,
+      settledMs: Date.now() - startedAt,
+    },
+  };
 }
 
 async function queryAppState(target, sessionId) {
@@ -505,6 +702,17 @@ function resolveSwipeExecution(rest) {
   };
 }
 
+async function executablePoint(target, sessionId, point, coordinateSource) {
+  const raw = { x: Number(point.x), y: Number(point.y) };
+  if (coordinateSource !== 'visual') return raw;
+  const [shot, rect] = await Promise.all([
+    appium.request(target.appiumServer, 'GET', `/session/${sessionId}/screenshot`),
+    appium.request(target.appiumServer, 'GET', `/session/${sessionId}/window/rect`),
+  ]);
+  const transformed = scaleVisualPoint(raw, pngSizeFromBase64(shot.value), rect.value);
+  return { ...transformed, coordinateSource };
+}
+
 async function runAtom(atom, argv) {
   const parsed = parseArgs(argv);
   if (!Object.prototype.hasOwnProperty.call(ATOM_OPTIONS, atom)) {
@@ -513,6 +721,7 @@ async function runAtom(atom, argv) {
   validateRestArgs(parsed.rest, ATOM_OPTIONS[atom], `iOS ${atom}`);
   const target = buildTarget(parsed);
   const rest = parsed.rest;
+  const sessionOptions = { autoLaunch: false };
   const swipeExecution = atom === 'swipe' ? resolveSwipeExecution(rest) : null;
   if (atom === 'input-text' && (optionValue(rest, '--x') || optionValue(rest, '--y'))) {
     throw new Error('iOS inputText 只向已聚焦输入框输入文本，不接受 --x/--y；请先调用 tap 聚焦目标输入框。');
@@ -543,12 +752,13 @@ async function runAtom(atom, argv) {
     const fakeInputMode = atom === 'input-text' ? optionValue(rest, '--mode', 'replace') : undefined;
     const fakeInputText = atom === 'input-text' ? optionValue(rest, '--text') : undefined;
     const fakeInputExpected = fakeInputMode === 'append' ? `${process.env.MAVT_IOS_FAKE_INPUT_VALUE || ''}${fakeInputText}` : fakeInputText;
-    writeJson(actionResult(atom === 'launch-app' ? 'launchApp' : atom === 'restart-app' ? 'restartApp' : atom === 'long-press' ? 'longPress' : atom === 'input-text' ? 'inputText' : atom === 'keyevent' ? optionValue(rest, '--key', 'keyevent') : atom, {
+    writeJson(actionResult(atom === 'launch-app' ? 'launchApp' : atom === 'restart-app' ? 'restartApp' : atom === 'long-press' ? 'longPress' : atom === 'input-text' ? 'inputText' : atom === 'dismiss-keyboard' ? 'dismissKeyboard' : atom === 'keyevent' ? optionValue(rest, '--key', 'keyevent') : atom, {
       inputMethod: atom === 'input-text' ? (fakeInputMode === 'replace' ? 'wda-clear-set-value' : 'wda-read-compose-set-value') : undefined,
       inputMode: fakeInputMode,
       inputEffect: atom === 'input-text' ? { status: 'VERIFIED', expectedText: fakeInputExpected, actualText: fakeInputExpected } : undefined,
       restart: atom === 'restart-app' ? true : undefined,
       coldStartVerified: atom === 'restart-app' ? true : undefined,
+      startupDisplay: atom === 'restart-app' ? skippedStartupDisplay() : undefined,
       verification: atom === 'restart-app' ? 'fake-appium-app-state' : undefined,
       stateAfterTerminate: atom === 'restart-app' ? 1 : undefined,
       stateAfterActivate: atom === 'restart-app' ? 4 : undefined,
@@ -566,7 +776,7 @@ async function runAtom(atom, argv) {
     await appium.withSession(target, async ({ sessionId }) => {
       const shot = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/screenshot`);
       decodeBase64Png(shot.value, out);
-    });
+    }, sessionOptions);
     writeJson(atomResult('screenshot', { path: path.resolve(out) }));
     return;
   }
@@ -577,7 +787,7 @@ async function runAtom(atom, argv) {
     await appium.withSession(target, async ({ sessionId }) => {
       const source = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/source`);
       fs.writeFileSync(out, source.value || '');
-    });
+    }, sessionOptions);
     writeJson(atomResult('dump-tree', { path: path.resolve(out) }));
     return;
   }
@@ -585,7 +795,7 @@ async function runAtom(atom, argv) {
     await appium.withSession(target, async ({ sessionId }) => {
       const active = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/execute/sync`, { script: 'mobile: activeAppInfo', args: [] });
       writeJson(atomResult('foreground', { foreground: active.value || null }));
-    });
+    }, sessionOptions);
     return;
   }
   if (atom === 'logs') {
@@ -606,7 +816,7 @@ async function runAtom(atom, argv) {
   if (atom === 'launch-app') {
     await appium.withSession(target, async ({ sessionId }) => {
       await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/activate_app`, { bundleId: target.appId });
-    });
+    }, sessionOptions);
     writeJson(actionResult('launchApp', { launchMethod: 'appium-activate-app' }));
     return;
   }
@@ -620,52 +830,68 @@ async function runAtom(atom, argv) {
       writeJson(actionResult('restartApp', {
         restart: true,
         coldStartVerified: true,
+        startupDisplay: skippedStartupDisplay(),
         verification: 'appium-app-state',
         stateAfterTerminate: stopped.state,
         stateAfterActivate: foreground.state,
         stopMethod: 'appium-terminate-app',
         launchMethod: 'appium-terminate-activate',
       }));
-    });
+    }, sessionOptions);
     return;
   }
   if (atom === 'tap') {
     const x = optionValue(rest, '--x');
     const y = optionValue(rest, '--y');
-    if (!x || !y) throw new Error('tap 需要 --x 和 --y');
+    const coordinateSource = optionValue(rest, '--coordinate-source', 'layout');
+    if (x === '' || y === '') throw new Error('tap 需要 --x 和 --y');
+    let executed;
     await appium.withSession(target, async ({ sessionId }) => {
-      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerAction(x, y));
+      executed = await executablePoint(target, sessionId, { x, y }, coordinateSource);
+      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerAction(executed.x, executed.y));
       await appium.request(target.appiumServer, 'DELETE', `/session/${sessionId}/actions`, {});
-    });
-    writeJson(actionResult('tap'));
+    }, sessionOptions);
+    writeJson(actionResult('tap', { executedPoint: executed }));
     return;
   }
   if (atom === 'long-press') {
     const x = optionValue(rest, '--x');
     const y = optionValue(rest, '--y');
     const durationMs = Number(optionValue(rest, '--duration-ms', '800'));
-    if (!x || !y) throw new Error('longPress 需要 --x 和 --y');
+    const coordinateSource = optionValue(rest, '--coordinate-source', 'layout');
+    if (x === '' || y === '') throw new Error('longPress 需要 --x 和 --y');
+    let executed;
     await appium.withSession(target, async ({ sessionId }) => {
-      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerAction(x, y, durationMs));
+      executed = await executablePoint(target, sessionId, { x, y }, coordinateSource);
+      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerAction(executed.x, executed.y, durationMs));
       await appium.request(target.appiumServer, 'DELETE', `/session/${sessionId}/actions`, {});
-    });
-    writeJson(actionResult('longPress', { durationMs }));
+    }, sessionOptions);
+    writeJson(actionResult('longPress', { durationMs, executedPoint: executed }));
     return;
   }
   if (atom === 'swipe') {
+    const coordinateSource = optionValue(rest, '--coordinate-source', 'layout');
+    let executedFrom;
+    let executedTo;
     await appium.withSession(target, async ({ sessionId }) => {
+      executedFrom = await executablePoint(target, sessionId, { x: swipeExecution.fromX, y: swipeExecution.fromY }, coordinateSource);
+      executedTo = coordinateSource === 'visual'
+        ? scaleVisualPoint({ x: swipeExecution.toX, y: swipeExecution.toY }, executedFrom.screenshot, executedFrom.viewport)
+        : { x: swipeExecution.toX, y: swipeExecution.toY };
       await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, swipeAction(
-        swipeExecution.fromX,
-        swipeExecution.fromY,
-        swipeExecution.toX,
-        swipeExecution.toY,
+        executedFrom.x,
+        executedFrom.y,
+        executedTo.x,
+        executedTo.y,
         swipeExecution.durationMs,
       ));
       await appium.request(target.appiumServer, 'DELETE', `/session/${sessionId}/actions`, {});
-    });
+    }, sessionOptions);
     writeJson(actionResult('swipe', {
       velocity: swipeExecution.velocity,
       durationMs: swipeExecution.durationMs,
+      executedFrom,
+      executedTo,
     }));
     return;
   }
@@ -674,35 +900,29 @@ async function runAtom(atom, argv) {
     const mode = optionValue(rest, '--mode', 'replace');
     if (!text) throw new Error('inputText 需要 --text');
     if (!['replace', 'append'].includes(mode)) throw new Error('inputText --mode 仅支持 replace/append');
+    let event;
+    try {
+      await appium.withSession(target, async ({ sessionId }) => {
+        const editable = await findEditableElement(target, sessionId);
+        event = actionResult('inputText', await inputTextWithFallback(target, sessionId, editable, text, mode));
+      }, sessionOptions);
+    } catch (error) {
+      event = actionResult('inputText', {
+        ok: false,
+        failureCode: 'IOS_INPUT_TEXT_FAILED',
+        message: conciseError(error),
+        adapterError: { stage: 'inputText', message: conciseError(error) },
+        inputEffect: { status: 'UNVERIFIABLE', attempts: 0, settledMs: 0, reason: 'input adapter did not reach effect verification' },
+      });
+    }
+    writeJson(event);
+    return;
+  }
+  if (atom === 'dismiss-keyboard') {
     await appium.withSession(target, async ({ sessionId }) => {
-      const editable = await findEditableElement(target, sessionId);
-      const elementId = editable.elementId;
-      const secure = editable.className === 'XCUIElementTypeSecureTextField';
-      const placeholder = secure ? null : await getElementAttribute(target, sessionId, elementId, 'placeholderValue');
-      const beforeValue = secure ? null : await getElementAttribute(target, sessionId, elementId, 'value');
-      const beforeText = beforeValue !== null && placeholder !== null && String(beforeValue) === String(placeholder) ? '' : beforeValue;
-      let expectedText = text;
-      if (mode === 'replace') {
-        await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${elementId}/clear`, {});
-      } else if (beforeText !== null) {
-        expectedText = `${String(beforeText)}${text}`;
-        await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${elementId}/clear`, {});
-      }
-      const writeText = mode === 'append' && beforeText !== null ? expectedText : text;
-      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/element/${elementId}/value`, { text: writeText, value: Array.from(writeText) });
-      const actualText = secure ? null : await getElementAttribute(target, sessionId, elementId, 'value');
-      const inputEffect = actualText !== null
-        ? { status: String(actualText) === expectedText ? 'VERIFIED' : 'MISMATCH', expectedText, actualText: String(actualText) }
-        : { status: 'UNVERIFIABLE', expectedText: mode === 'replace' ? text : undefined, reason: 'secure field masks its value' };
-      const inputMethod = mode === 'replace' ? 'wda-clear-set-value' : beforeText !== null ? 'wda-read-compose-set-value' : 'wda-set-value';
-      const event = actionResult('inputText', { inputMethod, inputMode: mode, inputTarget: editable.selection, inputEffect });
-      if (inputEffect.status === 'MISMATCH') {
-        event.ok = false;
-        event.failureCode = 'ACTION_EFFECT_MISMATCH';
-        process.exitCode = 1;
-      }
-      writeJson(event);
-    });
+      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/execute/sync`, { script: 'mobile: hideKeyboard', args: [] });
+    }, sessionOptions);
+    writeJson(actionResult('dismissKeyboard', { method: 'appium-mobile-hideKeyboard' }));
     return;
   }
   if (atom === 'keyevent') {
@@ -716,7 +936,7 @@ async function runAtom(atom, argv) {
       } else {
         throw new Error(`unsupported iOS keyevent: ${key}`);
       }
-    });
+    }, sessionOptions);
     writeJson(actionResult(key));
     return;
   }
@@ -727,12 +947,24 @@ async function main() {
   const [command, ...argv] = process.argv.slice(2);
   if (command === 'probe') return runProbe(argv);
   if (command === 'prepare') return runPrepare(argv);
+  if (command === 'runtime') return runRuntime(argv);
   if (command === 'observe') return runObserve(argv);
   if (command === 'atom') return runAtom(argv[0], argv.slice(1));
   throw new Error(`unknown ios command: ${command || ''}`);
 }
 
-main().catch((error) => {
-  console.error(error.message || String(error));
-  process.exit(error.exitCode || 1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message || String(error));
+    process.exit(error.exitCode || 1);
+  });
+}
+
+module.exports = {
+  appiumElementId,
+  findEditableElement,
+  inputEffectFor,
+  inputTextWithFallback,
+  normalizedInputValue,
+  runRuntime,
+};

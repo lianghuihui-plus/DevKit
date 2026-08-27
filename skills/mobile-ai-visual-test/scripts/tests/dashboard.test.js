@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const { initializeBatch } = require('../batch/core');
 const { formatDisplayTime } = require('../lib/display-format');
-const { renderIndexForRoot } = require('../report/report-service');
+const { refreshCommittedCaseReports, renderIndexForRoot } = require('../report/report-service');
 const { renderCurrentIndexHtml } = require('../report/current-index');
 const {
   createCurrentFixture,
@@ -89,7 +89,7 @@ for (const text of [
   '直接证据',
   '计划修订',
   '知识查询',
-  '搜索用例名称或用例标识',
+  '搜索用例编号、名称或标识',
 ]) assert.ok(html.includes(text), text);
 for (const text of ['Unattended agent execution', '>UNATTENDED<', '以最终 verdict 统计', '搜索用例名称或 caseKey']) assert.strictEqual(html.includes(text), false, text);
 assert.ok(html.includes('显示 4 / 4'));
@@ -101,12 +101,41 @@ for (let index = 1; index < indexCases.length; index += 1) {
 assert.strictEqual(html.includes('全部步骤通过'), false);
 assert.strictEqual(html.includes('按状态筛选'), false);
 assert.ok(html.includes('查看详情'));
+for (const item of indexCases) assert.ok(html.includes(`用例 ${item.caseNo}`));
 assert.ok(html.includes('查看报告'));
 assert.strictEqual(html.includes('>报告</a>'), false);
 for (const text of ['>执行平台</span>', '>结论依据</span>', '>Agent 轨迹</span>', '>耗时</span>', '>执行报告</span>']) assert.ok(html.includes(text), text);
 assert.strictEqual((html.match(/class="case-facts"/g) || []).length, fixtures.length);
 for (const verdict of ['pass', 'fail', 'blocked', 'inconclusive']) assert.strictEqual((html.match(new RegExp(`class="verdict ${verdict}"`, 'g')) || []).length, 1, verdict);
 for (const removed of ['class="platform-run"', 'class="case-outcome"', 'class="case-basis"', '暂无平台执行记录']) assert.strictEqual(html.includes(removed), false, removed);
+
+const unrelatedContext = path.join(fixtures[1].caseDir, 'CONTEXT.html');
+const metricsPath = path.join(fixtures[0].execDir, 'metrics.json');
+const metricsBeforeRefresh = fs.readFileSync(metricsPath);
+const fixedTime = new Date('2026-08-01T00:00:00.000Z');
+fs.utimesSync(unrelatedContext, fixedTime, fixedTime);
+const incremental = refreshCommittedCaseReports(fixtures[0].caseDir, 'harmony');
+const metricsAfterRefresh = fs.readFileSync(metricsPath);
+assert.strictEqual(incremental.status, 'UPDATED');
+assert.strictEqual(fs.existsSync(incremental.indexHtml), true);
+assert.strictEqual(fs.existsSync(incremental.platformContextHtml), true);
+assert.strictEqual(fs.statSync(unrelatedContext).mtimeMs, fixedTime.getTime());
+assert.deepStrictEqual(metricsAfterRefresh, metricsBeforeRefresh);
+
+const isolationRoot = path.join(temp, 'incremental-isolation');
+createTestWorkspace(isolationRoot);
+const activeFixture = createCurrentFixture(isolationRoot, { verdict: 'PASS', suffix: 'active-refresh' });
+const brokenFixture = createCurrentFixture(isolationRoot, { verdict: 'FAIL', suffix: 'broken-refresh' });
+renderIndexForRoot(isolationRoot);
+const brokenExecutionDir = path.join(brokenFixture.runtimeDir, 'executions', 'execution-corrupt-json');
+fs.mkdirSync(brokenExecutionDir, { recursive: true });
+fs.writeFileSync(path.join(brokenExecutionDir, 'execution.json'), '{ invalid json');
+const brokenContext = path.join(brokenFixture.caseDir, 'CONTEXT.html');
+fs.utimesSync(brokenContext, fixedTime, fixedTime);
+const isolatedIncremental = refreshCommittedCaseReports(activeFixture.caseDir, 'harmony');
+assert.strictEqual(isolatedIncremental.status, 'UPDATED');
+assert.strictEqual(fs.statSync(brokenContext).mtimeMs, fixedTime.getTime());
+assert.ok(fs.readFileSync(isolatedIncremental.indexHtml, 'utf8').includes('报告数据异常'));
 
 const multiPlatformHtml = renderCurrentIndexHtml(root, [{
   caseNo: '99', title: '多平台结果用例', caseKey: 'ck-multi-platform', status: 'FAIL', verdict: 'FAIL',
@@ -124,6 +153,19 @@ assert.ok(multiPlatformHtml.includes('2 个平台'));
 assert.ok(multiPlatformHtml.includes('平台明细'));
 for (const text of ['平台结果', '结论依据', 'Agent 轨迹', '耗时', '>报告</span>']) assert.ok(multiPlatformHtml.includes(text), text);
 for (const text of ['计划 1 · 知识 2 · 恢复 0', '计划 3 · 知识 4 · 恢复 1', '直接证据', '技术约束', '1 秒', '2 秒']) assert.ok(multiPlatformHtml.includes(text), text);
+
+const corruptFixture = createCurrentFixture(root, { verdict: 'PASS', suffix: 'corrupt-dashboard' });
+const corruptExecutionDir = path.join(corruptFixture.runtimeDir, 'executions', 'execution-corrupt-json');
+fs.mkdirSync(corruptExecutionDir, { recursive: true });
+fs.writeFileSync(path.join(corruptExecutionDir, 'execution.json'), '{ invalid json');
+const isolatedIndexPath = renderIndexForRoot(root);
+const isolatedHtml = fs.readFileSync(isolatedIndexPath, 'utf8');
+const isolatedMetadata = JSON.parse(fs.readFileSync(path.join(root, 'report-metadata.json'), 'utf8'));
+assert.ok(isolatedHtml.includes('报告数据异常'));
+assert.ok(isolatedHtml.includes(corruptFixture.caseJson.identity.title));
+assert.ok(fs.readFileSync(path.join(corruptFixture.caseDir, 'CONTEXT.html'), 'utf8').includes('报告数据异常'));
+assert.strictEqual(isolatedMetadata.reportErrors.length, 1);
+for (const fixture of fixtures) assert.strictEqual(fs.existsSync(path.join(fixture.runtimeDir, 'CONTEXT.html')), true);
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('dashboard passed');

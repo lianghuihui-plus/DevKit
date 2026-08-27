@@ -11,6 +11,8 @@ executionStatus 表达 `COMPLETED`、`STOPPED_BY_BUDGET`、`TECHNICALLY_BLOCKED`
 
 动作参数错误、授权过期、目标绑定变化和证据校验失败由脚本拒绝，返回可修正错误，不直接裁决产品 FAIL。App crash 作为产品事实保留；是否与当前 requirement 相关以及最终 verdict 由 Agent 根据恢复后的当前证据判断。
 
+控件树解析失败必须显式报告诊断，不能等同于“没有控件”。键盘、焦点、坐标空间和安全输入状态由框架作为技术现场信号处理：存在键盘坐标冲突时坐标动作发送前拒绝；非输入动作导致安全输入状态变化时记录关键证据冲突。未解决的关键冲突禁止确定性 PASS/FAIL，但不自动裁决产品失败。
+
 PASS 和 FAIL 都必须先用当前 understanding、当前 warmSessionGeneration 的观察显式建立起点。PASS 必须完成当前计划的全部检查点：观察型检查点可直接复用 `mark-start` 的当前观察，`requiredAction=true` 的检查点必须同时存在动作和动作后观察。FAIL 不要求机械执行后续检查点；当当前观察或相关 PRODUCT incident 已形成充分负向证据，并完成知识调查与 verdictReview 后可以提前结束。
 
 FAIL、INCONCLUSIVE 或业务相关 BLOCKED 前必须存在 verdictReview，至少包含：原文 sourceRef 复核、当前可用 observation、恢复尝试或不恢复理由、knowledgeQuery 引用、剩余不确定性和结论理由。知识查询可以在任意活动阶段执行，零命中是有效调查结果。纯环境初始化失败可使用技术性 BLOCKED 例外。

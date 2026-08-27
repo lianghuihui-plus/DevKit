@@ -11,6 +11,7 @@ const {
 const CASE_SCHEMA_VERSION = 2;
 const SOURCE_SHA_PATTERN = /^source-[0-9a-f]{64}$/;
 const CASE_KEY_PATTERN = /^ck-[0-9a-f]{12,64}$/;
+const CASE_NO_PATTERN = /^\d{3,}$/;
 const FORBIDDEN_BUSINESS_FIELDS = ['preconditions', 'steps', 'globalRules'];
 
 function normalizeSourceText(value) {
@@ -42,6 +43,9 @@ function validateCaseContract(value) {
   }
   const identity = ensureObject(value.identity, 'identity', 'CASE_CONTRACT_INVALID');
   if (!CASE_KEY_PATTERN.test(identity.caseKey || '')) throw contractError('CASE_CONTRACT_INVALID', 'identity.caseKey is invalid');
+  if (identity.caseNo !== undefined && !CASE_NO_PATTERN.test(identity.caseNo)) {
+    throw contractError('CASE_CONTRACT_INVALID', 'identity.caseNo must contain at least three digits');
+  }
   ensureString(identity.title, 'identity.title', 'CASE_CONTRACT_INVALID');
   if (!SOURCE_SHA_PATTERN.test(identity.sourceSha || '')) throw contractError('CASE_CONTRACT_INVALID', 'identity.sourceSha is invalid');
   const importSource = ensureObject(identity.importSource, 'identity.importSource', 'CASE_CONTRACT_INVALID');
@@ -53,11 +57,12 @@ function validateCaseContract(value) {
   return value;
 }
 
-function createCaseContract({ caseKey, title, sourceText, importPath }) {
+function createCaseContract({ caseKey, caseNo, title, sourceText, importPath }) {
   const value = {
     schemaVersion: CASE_SCHEMA_VERSION,
     identity: {
       caseKey,
+      ...(caseNo ? { caseNo } : {}),
       title: String(title || '').trim() || 'Untitled case',
       sourceSha: sourceSha(sourceText),
       importSource: { kind: 'file', path: importPath },
@@ -69,6 +74,7 @@ function createCaseContract({ caseKey, title, sourceText, importPath }) {
 
 module.exports = {
   CASE_SCHEMA_VERSION,
+  CASE_NO_PATTERN,
   SOURCE_SHA_PATTERN,
   caseContractSha,
   createCaseContract,

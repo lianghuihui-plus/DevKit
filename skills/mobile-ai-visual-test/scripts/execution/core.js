@@ -19,6 +19,8 @@ const { validateExecutionEvent } = require('./contracts/execution-event-contract
 const { validateMetrics, validateResult, withResultSha } = require('./contracts/result-contract');
 const { assertWorkspace } = require('../lib/workspace');
 const { validateKnowledgeCandidateSnapshot, validateResultKnowledgeSnapshots } = require('../lib/knowledge-snapshot');
+const { unresolvedEvidenceConflicts } = require('../lib/observation-consistency');
+const { buildObservationView } = require('../lib/observation-model');
 
 const PHASE_TRANSITIONS = Object.freeze({
   UNDERSTAND: new Set(['ESTABLISH_START', 'CONCLUDE']),
@@ -28,7 +30,7 @@ const PHASE_TRANSITIONS = Object.freeze({
   CONCLUDE: new Set(['ESTABLISH_START', 'EXECUTE', 'INVESTIGATE']),
   FINALIZED: new Set(),
 });
-const STATE_CHANGING_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home']);
+const STATE_CHANGING_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard']);
 
 function timelineEvents(execDir) {
   const file = path.join(execDir, 'timeline.jsonl');
@@ -648,6 +650,7 @@ function buildFinalizationDraft(execDir, proposedResult, execution, options = {}
     .filter((item) => item.warmSessionGeneration === execution.warmSessionGeneration);
   const knowledgeQueries = events.filter((event) => event.type === 'knowledgeQuery').map((event) => ({ ...event, ref: event.queryId }));
   const knowledgeAssessments = events.filter((event) => event.type === 'knowledgeAssessment').map((event) => ({ ...event, ref: event.knowledgeRef }));
+  const knowledgeReviews = events.filter((event) => event.type === 'knowledgeReview');
   const incidents = events.filter((event) => event.type === 'runtimeIncident').map((event) => ({ ...event, ref: event.incidentId }));
   const verdictReviews = [
     ...events.filter((event) => event.type === 'verdictReview'),
@@ -672,6 +675,15 @@ function buildFinalizationDraft(execDir, proposedResult, execution, options = {}
       warmSessionGeneration: execution.warmSessionGeneration,
     }));
   const latestObservation = currentObservation(events, execution.warmSessionGeneration);
+  const evidenceConflicts = unresolvedEvidenceConflicts(execDir, events, buildObservationView, {
+    warmSessionGeneration: execution.warmSessionGeneration,
+  });
+  if (['PASS', 'FAIL'].includes(result.verdict) && evidenceConflicts.length > 0) {
+    throw contractError('EVIDENCE_CONFLICT_UNRESOLVED', `${result.verdict} 不能建立在尚未解决的关键现场证据冲突上`, {
+      conflicts: evidenceConflicts,
+      suggestion: '恢复可靠现场并重新观察，或使用 INCONCLUSIVE/技术 BLOCKED 收口',
+    });
+  }
   validateResult(result, {
     executionId: execution.executionId,
     understanding,
@@ -679,6 +691,7 @@ function buildFinalizationDraft(execDir, proposedResult, execution, options = {}
     evidence,
     knowledgeQueries,
     knowledgeAssessments,
+    knowledgeReviews,
     verdictReviews,
     incidents,
     currentObservationRef: latestObservation?.ref || null,

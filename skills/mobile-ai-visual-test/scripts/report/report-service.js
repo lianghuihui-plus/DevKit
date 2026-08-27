@@ -31,6 +31,7 @@ const {
 const { assertWorkspace } = require('../lib/workspace');
 const { classifyPrecondition, displayPreconditionStatus, normalizePreconditionText } = require('./historical-report');
 const { atomicWrite, publishReportBundle } = require('./report-publisher');
+const { ensureWorkspaceCaseNumbers } = require('../lib/case-numbering');
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -110,7 +111,7 @@ function normalizeCaseNo(value) {
 }
 
 function caseNoNumber(value) {
-  const match = normalizeCaseNo(value).match(/^C(\d+)$/);
+  const match = String(value || '').trim().match(/^(?:C)?(\d+)$/i);
   return match ? Number(match[1]) : 0;
 }
 
@@ -176,13 +177,45 @@ function collectCasePlatforms(caseDir, caseJson) {
   return platformItems.sort((a, b) => platformSortIndex(a.platform) - platformSortIndex(b.platform));
 }
 
-function collectIndexCases(rootDir) {
+function reportErrorModel(rootDir, caseDir, error) {
+  let caseJson = {};
+  try { caseJson = readJson(path.join(caseDir, 'case.json'), {}); } catch { caseJson = {}; }
+  const code = error?.code || String(error?.message || error || 'REPORT_DATA_INVALID').match(/^([A-Z][A-Z0-9_]+)/)?.[1] || 'REPORT_DATA_INVALID';
+  return {
+    caseDir,
+    caseNo: caseJson.identity?.caseNo || '',
+    title: caseJson.identity?.title || path.basename(caseDir).split('__')[0] || path.basename(caseDir),
+    caseKey: caseJson.identity?.caseKey || path.basename(caseDir).match(/__(ck-[A-Za-z0-9_-]+)$/)?.[1] || '',
+    preconditions: [],
+    platforms: [],
+    status: 'REPORT_ERROR',
+    verdict: null,
+    executionStatus: null,
+    reason: `报告数据读取失败（${code}），该状态不代表用例执行结论。`,
+    reportErrorCode: code,
+    contextHref: path.relative(rootDir, path.join(caseDir, 'CONTEXT.html')).replace(/\\/g, '/'),
+  };
+}
+
+function publishReportError(caseDir, item) {
+  const markdown = `# ${item.title}\n\n状态：报告数据异常\n\n${item.reason}\n`;
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(item.title)} · 报告数据异常</title><style>body{margin:0;background:#f5f7f9;color:#20262d;font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(760px,calc(100% - 32px));margin:48px auto;padding:24px;border:1px solid #dfe4e9;border-left:4px solid #b7791f;background:#fff}h1{margin:0 0 18px;font-size:22px;letter-spacing:0}.status{color:#9c640c;font-weight:800}code{display:inline-block;margin-top:10px;padding:3px 6px;background:#f1f3f5}</style></head><body><main><h1>${escapeHtml(item.title)}</h1><p class="status">报告数据异常</p><p>${escapeHtml(item.reason)}</p><code>${escapeHtml(item.reportErrorCode)}</code></main></body></html>`;
+  publishReportBundle(caseDir, { 'CONTEXT.md': markdown, 'CONTEXT.html': html }, {
+    schemaVersion: 1, scope: 'case', platform: null, executionId: null,
+    reportErrorCode: item.reportErrorCode, ...reportRendererInfo(),
+  });
+}
+
+function collectIndexCases(rootDir, options = {}) {
   const casesRoot = path.join(rootDir, 'cases');
   if (!fs.existsSync(casesRoot)) return [];
   return fs.readdirSync(casesRoot)
     .map((name) => path.join(casesRoot, name))
     .filter((caseDir) => fs.statSync(caseDir).isDirectory())
     .map((caseDir) => {
+      const frozenError = options.errors?.get(caseDir);
+      if (frozenError) return frozenError;
+      try {
       const caseJson = readJson(path.join(caseDir, 'case.json'), {});
       const platformItems = collectCasePlatforms(caseDir, caseJson);
       const legacy = readCaseRuntimeSummary(caseDir, caseJson, '');
@@ -214,6 +247,11 @@ function collectIndexCases(rootDir) {
         updatedAt: primary.updatedAt,
         contextHref: path.relative(rootDir, path.join(caseDir, 'CONTEXT.html')).replace(/\\/g, '/'),
       };
+      } catch (error) {
+        const item = reportErrorModel(rootDir, caseDir, error);
+        if (options.publishErrors) publishReportError(caseDir, item);
+        return item;
+      }
     })
     .sort((a, b) => {
       const noA = caseNoNumber(a.caseNo);
@@ -314,25 +352,67 @@ function assertIndexReportLinks(rootDir, cases) {
 }
 
 function renderIndexForRoot(rootDir) {
+  ensureWorkspaceCaseNumbers(rootDir);
   const casesRoot = path.join(rootDir, 'cases');
+  const errors = new Map();
   if (fs.existsSync(casesRoot)) {
     for (const name of fs.readdirSync(casesRoot)) {
       const caseDir = path.join(casesRoot, name);
       if (!fs.statSync(caseDir).isDirectory()) continue;
-      const caseJson = readJson(path.join(caseDir, 'case.json'));
-      if (!caseJson) continue;
-      const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
-      writePlatformCaseReports(caseDir, caseJson, notes);
-      writeCaseReports(caseDir, caseJson, {}, notes);
+      try {
+        const caseJson = readJson(path.join(caseDir, 'case.json'));
+        if (!caseJson) continue;
+        const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
+        writePlatformCaseReports(caseDir, caseJson, notes);
+        writeCaseReports(caseDir, caseJson, {}, notes);
+      } catch (error) {
+        const item = reportErrorModel(rootDir, caseDir, error);
+        publishReportError(caseDir, item);
+        errors.set(caseDir, item);
+      }
     }
   }
-  const cases = collectIndexCases(rootDir);
+  const cases = collectIndexCases(rootDir, { errors, publishErrors: true });
   assertIndexReportLinks(rootDir, cases);
   return renderIndexArtifacts(rootDir, cases);
 }
 
 function refreshIndexForCase(caseDir) {
   return renderIndexForRoot(caseRootFromCaseDir(caseDir));
+}
+
+function refreshCommittedCaseReports(caseDir, platform) {
+  const rootDir = caseRootFromCaseDir(caseDir);
+  ensureWorkspaceCaseNumbers(rootDir);
+  const errors = new Map();
+  let itemError = null;
+  try {
+    const caseJson = readJson(path.join(caseDir, 'case.json'));
+    if (!caseJson) throw new Error(`REPORT_CASE_MISSING: ${caseDir}`);
+    const notes = readJsonl(path.join(caseDir, 'notes.jsonl'));
+    writeCaseReports(caseDir, caseJson, readJson(path.join(caseRuntimeDir(caseDir, platform), 'state.json'), {}), notes, null, {
+      platform,
+      skipRootOverview: true,
+    });
+    writeCaseReports(caseDir, caseJson, {}, notes);
+  } catch (error) {
+    itemError = reportErrorModel(rootDir, caseDir, error);
+    publishReportError(caseDir, itemError);
+    errors.set(caseDir, itemError);
+  }
+  const cases = collectIndexCases(rootDir, { errors, publishErrors: false });
+  assertIndexReportLinks(rootDir, cases);
+  const indexHtml = renderIndexArtifacts(rootDir, cases);
+  return {
+    status: itemError ? 'REPORT_ERROR' : 'UPDATED',
+    caseNo: itemError?.caseNo || cases.find((item) => item.caseDir === caseDir)?.caseNo || null,
+    caseKey: itemError?.caseKey || cases.find((item) => item.caseDir === caseDir)?.caseKey || null,
+    platform,
+    indexHtml,
+    caseContextHtml: path.join(caseDir, 'CONTEXT.html'),
+    platformContextHtml: path.join(caseRuntimeDir(caseDir, platform), 'CONTEXT.html'),
+    ...(itemError ? { errorCode: itemError.reportErrorCode, reason: itemError.reason } : {}),
+  };
 }
 
 function readLatestExecutionReport(caseDir, options = {}) {
@@ -347,7 +427,13 @@ function writeCaseReports(caseDir, caseJson, state = {}, notes = [], report = nu
   const runtimeDir = caseRuntimeDir(caseDir, options.platform);
   const latestReport = report || readLatestExecutionReport(caseDir, options);
   const currentReport = options.platform && latestReport.schemaFamily === 'current';
-  const reportCaseJson = options.platform && latestReport.snapshot ? latestReport.snapshot : caseJson;
+  const reportCaseJson = options.platform && latestReport.snapshot ? {
+    ...latestReport.snapshot,
+    identity: {
+      ...latestReport.snapshot.identity,
+      ...(caseJson.identity?.caseNo ? { caseNo: caseJson.identity.caseNo } : {}),
+    },
+  } : caseJson;
   const reportState = latestReport.completionError ? {
     ...state,
     latestStatus: 'BLOCKED',
@@ -1944,6 +2030,7 @@ module.exports = {
   displayFailureCode,
   readLatestExecutionReport,
   rebuildCaseDerivedArtifacts,
+  refreshCommittedCaseReports,
   summarizeTimeline,
   normalizeCaseNo,
   normalizePlatform,

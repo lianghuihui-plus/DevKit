@@ -12,6 +12,9 @@ function renderIndexArtifacts(rootDir, cases = [], options = {}) {
   publishReportBundle(rootDir, { 'index.html': html }, {
     schemaVersion: 1,
     scope: 'index',
+    reportErrors: cases.filter((item) => item.status === 'REPORT_ERROR').map((item) => ({
+      caseKey: item.caseKey || null, title: item.title, code: item.reportErrorCode || 'REPORT_DATA_INVALID',
+    })),
     ...reportRendererInfo(),
   }, { generatedAt });
   return indexPath;

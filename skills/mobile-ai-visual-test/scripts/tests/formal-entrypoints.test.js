@@ -6,6 +6,7 @@ const childProcess = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { commitWithDashboard } = require('../batch');
 
 const repo = path.resolve(__dirname, '../..');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-formal-entrypoints-'));
@@ -21,6 +22,20 @@ function run(args) {
     env: { ...process.env, MAVT_SELF_TEST: '' },
   }));
 }
+
+const committedFixture = {
+  state: { status: 'RUNNING' },
+  item: { caseDir: '/tmp/case' },
+  completion: { platform: 'harmony' },
+};
+const isolatedRefresh = commitWithDashboard({}, () => {
+  const error = new Error('REPORT_REFRESH_TEST_FAILED: simulated');
+  error.code = 'REPORT_REFRESH_TEST_FAILED';
+  throw error;
+}, () => committedFixture);
+assert.strictEqual(isolatedRefresh.state.status, 'RUNNING');
+assert.strictEqual(isolatedRefresh.dashboardRefresh.status, 'FAILED');
+assert.strictEqual(isolatedRefresh.dashboardRefresh.errorCode, 'REPORT_REFRESH_TEST_FAILED');
 
 const initialized = run(['scripts/workspace.js', '--cwd', workspace]);
 assert.strictEqual(initialized.marker.type, 'mobile-ai-visual-test-workspace');
@@ -40,6 +55,19 @@ assert.strictEqual(contract.schemaVersion, 2);
 assert.strictEqual(contract.profile, undefined);
 assert.strictEqual(contract.requiredResources[0], 'SKILL.md');
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/execute-next-work.js'), false);
+assert.strictEqual(contract.allowedEntrypoints.includes('scripts/agent/finalize.js'), false);
+assert.strictEqual(contract.allowedEntrypoints.includes('scripts/agent/query-knowledge.js'), false);
+
+for (const internalModule of ['scripts/agent/finalize.js', 'scripts/agent/query-knowledge.js']) {
+  const direct = childProcess.spawnSync(process.execPath, [internalModule, '--help'], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { ...process.env, MAVT_SELF_TEST: '' },
+  });
+  assert.strictEqual(direct.status, 0);
+  assert.strictEqual(direct.stdout, '');
+  assert.strictEqual(direct.stderr, '');
+}
 
 const batchId = 'batch-formal-entrypoints';
 const binding = { platform: 'harmony', deviceId: 'offline-device', appId: 'com.example.app', entry: 'EntryAbility' };

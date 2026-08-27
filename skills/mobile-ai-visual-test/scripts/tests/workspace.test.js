@@ -145,12 +145,13 @@ const inputs = [
   ['ambiguous.case', '可能检查一下当前页面'],
   ['input-value.md', '输入文字，但没有使用引号，也应接受。'],
 ];
-for (const [name, content] of inputs) {
+for (const [inputIndex, [name, content]] of inputs.entries()) {
   const file = path.join(external, name);
   write(file, content);
   const imported = importSource(importWorkspace, file);
   assert.strictEqual(fs.readFileSync(imported.sourcePath, 'utf8'), content);
   assert.strictEqual(imported.caseJson.identity.title, path.basename(file, path.extname(file)));
+  assert.strictEqual(imported.caseJson.identity.caseNo, String(inputIndex + 1).padStart(3, '0'));
   assert.strictEqual('steps' in imported.caseJson, false);
   assert.strictEqual('preconditions' in imported.caseJson, false);
   assert.strictEqual('globalRules' in imported.caseJson, false);
@@ -169,6 +170,7 @@ const first = importSource(importWorkspace, refreshFile);
 write(refreshFile, '第二次内容');
 const second = importSource(importWorkspace, refreshFile);
 assert.strictEqual(first.caseDir, second.caseDir);
+assert.strictEqual(first.caseJson.identity.caseNo, second.caseJson.identity.caseNo);
 assert.notStrictEqual(first.caseJson.identity.sourceSha, second.caseJson.identity.sourceSha);
 assert.strictEqual(fs.readFileSync(second.sourcePath, 'utf8'), '第二次内容');
 assert.ok(fs.readFileSync(path.join(second.caseDir, 'CONTEXT.html'), 'utf8').includes('第二次内容'));

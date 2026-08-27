@@ -15,6 +15,7 @@ const {
   validateExecutionRequest,
 } = require('../lib/run-control');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { validateBinding } = require('../lib/batch-contract');
 const { createTestWorkspace } = require('./current-fixture');
 
 const T0 = '2026-08-18T10:00:00.000Z';
@@ -43,7 +44,7 @@ function makeCase(root, name) {
 }
 
 function probe(binding = BINDING, ready = true) {
-  return { schemaVersion: 1, platform: binding.platform, ready, devices: [{ id: binding.deviceId }] };
+  return { schemaVersion: 1, platform: binding.platform, ready, devices: [{ id: binding.deviceId || binding.device }] };
 }
 
 process.env.MAVT_SELF_TEST = '1';
@@ -84,7 +85,61 @@ const environment = confirmEnvironment({
   now: T0,
 });
 assert.strictEqual(environment.status, 'CONFIRMED');
+assert.strictEqual(environment.binding.deviceId, BINDING.deviceId);
+assert.strictEqual(Object.hasOwn(environment.binding, 'device'), false);
 assert.strictEqual(fs.existsSync(path.join(root, 'runs')), false);
+
+assert.deepStrictEqual(validateBinding({
+  platform: 'android', device: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity',
+}), {
+  platform: 'android', deviceId: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity',
+});
+expectCode(() => validateBinding({
+  platform: 'android', device: 'legacy-device', deviceId: 'different-device', appId: 'com.example.android', entry: '.MainActivity',
+}), 'BATCH_CONTRACT_INVALID');
+const legacyRoot = path.join(temp, 'legacy-device-workspace');
+createTestWorkspace(legacyRoot);
+const legacyEnvironment = confirmEnvironment({
+  workspaceRoot: legacyRoot,
+  binding: { platform: 'android', device: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity' },
+  probe: { schemaVersion: 1, platform: 'android', ready: true, devices: [{ serial: 'legacy-android-device' }] },
+  userConfirmation: '确认旧设备字段输入',
+  now: T0,
+});
+assert.deepStrictEqual(legacyEnvironment.binding, {
+  platform: 'android', deviceId: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity',
+});
+const numberedFirst = JSON.parse(fs.readFileSync(path.join(first.caseDir, 'case.json'), 'utf8'));
+const numberedSecond = JSON.parse(fs.readFileSync(path.join(second.caseDir, 'case.json'), 'utf8'));
+assert.strictEqual(numberedFirst.identity.caseNo, '001');
+assert.strictEqual(numberedSecond.identity.caseNo, '002');
+
+const numberedRequest = createExecutionRequest({
+  workspaceRoot: root,
+  batchId: 'batch-by-case-no',
+  mode: 'SINGLE',
+  targets: [{ caseNo: '002' }],
+  userInstruction: '单独执行用例 002',
+  now: T0,
+});
+assert.strictEqual(numberedRequest.targets[0].caseKey, second.caseKey);
+assert.strictEqual(numberedRequest.targets[0].caseNo, '002');
+assert.strictEqual(createExecutionRequest({
+  workspaceRoot: root,
+  batchId: 'batch-by-case-no',
+  mode: 'SINGLE',
+  targets: [{ caseNo: 2 }],
+  userInstruction: '单独执行用例 002',
+  now: T1,
+}).requestSha, numberedRequest.requestSha);
+expectCode(() => createExecutionRequest({
+  workspaceRoot: root,
+  batchId: 'batch-missing-case-no',
+  mode: 'SINGLE',
+  targets: [{ caseNo: '999' }],
+  userInstruction: '单独执行不存在的用例',
+  now: T0,
+}), 'EXECUTION_REQUEST_TARGET_NOT_FOUND');
 
 expectCode(() => createExecutionRequest({
   workspaceRoot: root,

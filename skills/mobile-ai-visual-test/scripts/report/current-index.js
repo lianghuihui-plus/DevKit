@@ -10,7 +10,7 @@ const {
 } = require('../lib/display-format');
 
 const PLATFORM_LABELS = Object.freeze({ harmony: 'HarmonyOS', android: 'Android', ios: 'iOS' });
-const VERDICT_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', UNKNOWN: '无法判断', NOT_RUN: '未执行' });
+const VERDICT_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', UNKNOWN: '无法判断', NOT_RUN: '未执行', REPORT_ERROR: '报告数据异常' });
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', KNOWLEDGE_SUPPORTED: '知识支持', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
 const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', TECHNICALLY_BLOCKED: '技术阻塞', STOPPED_BY_BUDGET: '达到时限', INTERRUPTED: '执行中断' });
 const BATCH_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', RUNNING: '执行中', COMPLETED: '已完成', BLOCKED: '已停止', DEGRADED: '已停止' });
@@ -110,6 +110,7 @@ function summarize(cases) {
     inconclusive: verdicts.filter((value) => value === 'INCONCLUSIVE').length,
     pendingPublication: verdicts.filter((value) => value === 'PENDING_PUBLICATION').length,
     notRun: verdicts.filter((value) => value === 'NOT_RUN').length,
+    reportError: verdicts.filter((value) => value === 'REPORT_ERROR').length,
     directEvidence: currentRuns.filter((item) => item.verdictBasis === 'DIRECT_EVIDENCE').length,
     knowledgeSupported: currentRuns.filter((item) => item.verdictBasis === 'KNOWLEDGE_SUPPORTED').length,
     preparationActions: currentRuns.reduce((sum, item) => sum + (item.currentMetrics?.counts?.preparationActions || 0), 0),
@@ -188,7 +189,7 @@ function renderCase(item, index) {
   </div>` : '';
   return `<article class="case-row ${escapeHtml(className(verdict))}${hasExecution ? ' executed' : ' not-executed'}" data-case-status="${escapeHtml(verdict)}" data-case-search="${escapeHtml(`${item.caseNo || ''} ${item.title} ${item.caseKey || ''}`.toLowerCase())}">
     <div class="case-primary">
-      <div class="case-heading"><span>${escapeHtml(item.caseNo || String(index + 1).padStart(2, '0'))}</span><h3>${escapeHtml(item.title)}</h3></div>
+      <div class="case-heading"><span>用例 ${escapeHtml(item.caseNo || String(index + 1).padStart(3, '0'))}</span><h3>${escapeHtml(item.title)}</h3></div>
       <div class="case-actions"><div class="case-status"><span class="verdict ${escapeHtml(className(verdict))}">${escapeHtml(verdictLabel(verdict))}</span>${hasMultiplePlatforms ? `<small>${executedPlatforms.length} 个平台</small>` : hasExecution && executionState !== '-' ? `<small>${escapeHtml(executionState)}</small>` : ''}</div><a class="case-detail" href="${escapeHtml(item.contextHref)}" aria-label="查看 ${escapeHtml(item.title)} 用例详情">查看详情</a></div>
       ${hasExecution ? `<p class="case-conclusion">${escapeHtml(summary)}</p>` : ''}
       <small class="case-identity">${escapeHtml(item.caseKey || '-')} · ${escapeHtml(formatDisplayTime(item.endedAt || item.updatedAt))}</small>
@@ -212,6 +213,7 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
     ['INCONCLUSIVE', '无法判断', summary.inconclusive],
     ['PENDING_PUBLICATION', '待发布', summary.pendingPublication],
     ['NOT_RUN', '未执行', summary.notRun],
+    ['REPORT_ERROR', '报告异常', summary.reportError],
   ];
   const batchName = control.latest?.batchId || '暂无批次';
   const runCountText = control.runCount ? `累计 ${control.runCount} 个批次` : '尚无执行批次';
@@ -239,9 +241,9 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
 <body><main>
   <header class="topbar"><div class="brand"><span>Agent 无人值守执行</span><h1>移动端 AI 视觉测试</h1></div><div class="workspace-meta"><b>${escapeHtml(path.basename(rootDir))}</b><span>${escapeHtml(rootDir)} · ${escapeHtml(generatedAt)}</span></div></header>
   <section class="section run-control-section"><div class="section-head"><div><h2>当前运行</h2><p>仅展示最近一次执行批次的环境、授权和进度</p></div><p>${escapeHtml(batchName)} · ${escapeHtml(runCountText)}</p></div><div class="control-band" aria-label="运行控制状态">${stages.map((stage) => `<div class="stage ${escapeHtml(stage.state)}"><div class="stage-head"><span class="stage-number">${stage.number}</span><span>${escapeHtml(stage.label)}</span></div><strong>${escapeHtml(stage.value)}</strong><p>${escapeHtml(stage.detail)}</p></div>`).join('')}</div></section>
-  <section class="section"><div class="section-head"><div><h2>结果概览</h2><p>按最终结论统计，不按固定步骤归约</p></div><p>${escapeHtml(batchName)}</p></div><div class="outcome-band"><div class="outcome-main"><span>用例总数</span><strong>${summary.total}</strong><small>${summary.total - summary.notRun} 个已有执行结论</small></div><div class="outcome-metric pass"><span>通过</span><b>${summary.pass}</b></div><div class="outcome-metric fail"><span>失败</span><b>${summary.fail}</b></div><div class="outcome-metric blocked"><span>阻塞</span><b>${summary.blocked}</b></div><div class="outcome-metric inconclusive"><span>无法判断</span><b>${summary.inconclusive}</b></div><div class="outcome-metric"><span>未执行</span><b>${summary.notRun}</b></div></div></section>
+  <section class="section"><div class="section-head"><div><h2>结果概览</h2><p>按最终结论统计，不按固定步骤归约</p></div><p>${escapeHtml(batchName)}</p></div><div class="outcome-band"><div class="outcome-main"><span>用例总数</span><strong>${summary.total}</strong><small>${summary.total - summary.notRun - summary.reportError} 个已有执行结论</small></div><div class="outcome-metric pass"><span>通过</span><b>${summary.pass}</b></div><div class="outcome-metric fail"><span>失败</span><b>${summary.fail}</b></div><div class="outcome-metric blocked"><span>阻塞</span><b>${summary.blocked}</b></div><div class="outcome-metric inconclusive"><span>无法判断</span><b>${summary.inconclusive}</b></div><div class="outcome-metric"><span>未执行</span><b>${summary.notRun}</b></div></div></section>
   <section class="section"><div class="section-head"><div><h2>Agent 执行信号</h2><p>结论依据、动态计划、知识调查与暖会话</p></div></div><div class="signal-band"><div class="signals"><div class="signal"><span>直接证据</span><b>${summary.directEvidence}</b></div><div class="signal"><span>知识支持</span><b>${summary.knowledgeSupported}</b></div><div class="signal"><span>计划修订</span><b>${summary.planRevisions}</b></div><div class="signal"><span>知识查询</span><b>${summary.knowledgeQueries}</b></div><div class="signal"><span>准备动作</span><b>${summary.preparationActions}</b></div><div class="signal"><span>暖状态复用</span><b>${summary.warmReuse}</b></div><div class="signal"><span>受控恢复</span><b>${summary.recoveries}</b></div><div class="signal"><span>时限停止</span><b>${summary.timeLimitStops}</b></div></div><div class="platform-table"><div class="platform-table-head"><span>平台</span><span>执行</span><span>通过</span><span>失败</span><span>阻塞</span><span>待定</span></div>${platforms.map((item) => `<div class="platform-table-row"><b>${escapeHtml(displayPlatform(item.platform))}</b><span>${item.total}</span><span>${item.pass}</span><span>${item.fail}</span><span>${item.blocked}</span><span>${item.inconclusive}</span></div>`).join('')}</div></div></section>
-  <section class="section"><div class="section-head"><div><h2>用例结果</h2><p class="filter-result" aria-live="polite">显示 ${summary.total} / ${summary.total}</p></div></div><div class="toolbar"><div class="filter-group" role="group" aria-label="筛选最终结果">${filters.map(([value,label,count],index) => `<button type="button" class="filter-button${index === 0 ? ' active' : ''}" data-case-filter="${value}" aria-pressed="${index === 0 ? 'true' : 'false'}">${label}<b>${count}</b></button>`).join('')}</div><input class="search" type="search" aria-label="搜索用例" placeholder="搜索用例名称或用例标识"></div><div class="case-list">${cards}</div>${cases.length ? '<p class="filter-empty" hidden>没有符合条件的用例。</p>' : ''}</section>
+  <section class="section"><div class="section-head"><div><h2>用例结果</h2><p class="filter-result" aria-live="polite">显示 ${summary.total} / ${summary.total}</p></div></div><div class="toolbar"><div class="filter-group" role="group" aria-label="筛选最终结果">${filters.map(([value,label,count],index) => `<button type="button" class="filter-button${index === 0 ? ' active' : ''}" data-case-filter="${value}" aria-pressed="${index === 0 ? 'true' : 'false'}">${label}<b>${count}</b></button>`).join('')}</div><input class="search" type="search" aria-label="搜索用例" placeholder="搜索用例编号、名称或标识"></div><div class="case-list">${cards}</div>${cases.length ? '<p class="filter-empty" hidden>没有符合条件的用例。</p>' : ''}</section>
 </main><script>
 (() => {
   const buttons = Array.from(document.querySelectorAll('[data-case-filter]'));

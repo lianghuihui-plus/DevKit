@@ -33,16 +33,38 @@ run_atom() {
   local action="$1"
   shift
   local output
+  local error_output
   local status
+  local error_file
+  error_file="$(mktemp -t mavt-ios-action.XXXXXX)"
   set +e
-  output="$("$@" 2> >(cat >&2))"
+  output="$("$@" 2>"$error_file")"
   status=$?
   set -e
+  error_output="$(cat "$error_file")"
+  rm -f "$error_file"
   if [[ $status -ne 0 ]]; then
     if node -e 'JSON.parse(process.argv[1])' "$output" 2>/dev/null; then
       normalize_action "$output" "$action"
+    else
+      node -e '
+const { actionResult } = require(process.argv[1]);
+const message = String(process.argv[6] || `iOS ${process.argv[2]} atom exited with ${process.argv[5]}`).trim().slice(0, 4000);
+const event = actionResult(process.argv[2], {
+  ok: false,
+  failureCode: "IOS_ACTION_FAILED",
+  message,
+  adapterError: { stage: "atom", exitCode: Number(process.argv[5]), message },
+  device: { id: process.argv[3] || null },
+  app: { appId: process.argv[4] || null },
+});
+console.log(JSON.stringify(event, null, 2));
+' "$script_dir/lib/output.js" "$action" "$device" "$app" "$status" "$error_output"
     fi
     return "$status"
+  fi
+  if [[ -n "$error_output" ]]; then
+    printf '%s\n' "$error_output" >&2
   fi
   normalize_action "$output" "$action"
 }
@@ -65,6 +87,9 @@ case "$type" in
     ;;
   inputText)
     run_atom "$type" "$atoms_dir/input-text.sh" "${args[@]}"
+    ;;
+  dismissKeyboard)
+    run_atom "$type" "$atoms_dir/dismiss-keyboard.sh" "${args[@]}"
     ;;
   swipe)
     run_atom "$type" "$atoms_dir/swipe.sh" "${args[@]}"
