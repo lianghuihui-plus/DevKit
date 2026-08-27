@@ -34,8 +34,10 @@ const {
 } = require('../lib/warm-session-contract');
 const {
   bindAgentRuntime,
+  currentObservation,
   createExecution,
   knowledgeQueryDraftIds,
+  latestStateChangeIndex,
   operationDraftIds,
   recordRuntimeEvent,
   sealTimeLimit,
@@ -730,8 +732,30 @@ function validateRecoveryRequest(request, state, item, execDir) {
   if (!item || item.status !== 'RUNNING' || request.executionId !== item.executionId) throw contractError('RECOVERY_BINDING_MISMATCH', 'recovery must bind the current running execution');
   const sourceRefs = Array.isArray(request.sourceRefs) ? request.sourceRefs : [];
   const evidenceRefs = Array.isArray(request.evidenceRefs) ? request.evidenceRefs : [];
+  const events = timelineEvents(execDir);
+  const liveExecution = readJson(path.join(execDir, 'execution.json'), null);
+  const observations = new Map(events.map((event, index) => [event.ref, { event, index }])
+    .filter(([ref, entry]) => ref && entry.event.type === 'observation'));
+  const evidenceObservations = evidenceRefs.map((ref) => observations.get(ref));
+  if (evidenceObservations.some((entry) => !entry
+    || entry.event.executionId !== request.executionId
+    || entry.event.warmSessionGeneration !== liveExecution?.warmSessionGeneration)) {
+    throw contractError('RECOVERY_REFERENCE_INVALID', 'recovery evidence must be an observation from the current execution generation');
+  }
+  if (request.triggerType === 'AGENT_DECIDED_RESTART' && evidenceRefs.length) {
+    const current = currentObservation(events, liveExecution.warmSessionGeneration);
+    if (!current || evidenceRefs.length !== 1 || evidenceRefs[0] !== current.ref) {
+      throw contractError('RECOVERY_REFERENCE_INVALID', 'agent-decided restart requires the current usable observation');
+    }
+  }
+  if (isIncidentRecovery(request.triggerType) && evidenceObservations.length) {
+    const boundary = latestStateChangeIndex(events);
+    if (evidenceObservations.some((entry) => entry.index <= boundary)) {
+      throw contractError('RECOVERY_REFERENCE_INVALID', 'incident recovery evidence must follow the latest state change');
+    }
+  }
   const failedOperation = request.generatedBy === 'agent-facade' && request.failedOperationId
-    ? timelineEvents(execDir).find((event) => event.type === 'operationCompleted'
+    ? events.find((event) => event.type === 'operationCompleted'
       && event.operationId === request.failedOperationId && event.outcome === 'FAILED' && event.failureCode)
     : null;
   if (request.triggerType === 'SOURCE_REQUIRED_COLD_START' && !sourceRefs.length) throw contractError('RECOVERY_EVIDENCE_REQUIRED', 'source-required cold start needs sourceRefs');

@@ -573,25 +573,10 @@ function assertConclusionObservationRefs(events, refs, options = {}) {
   const stopped = timeLimitEvent(events);
   if (stopped?.observationUnavailable !== true) return assertCurrentObservationRefs(events, refs, options);
   const requested = Array.isArray(refs) ? refs : [];
-  const observations = events.map((event, index) => ({ event, index }))
-    .filter(({ event }) => event.type === 'observation' && event.usable === true);
-  const latest = observations.at(-1);
-  const byRef = new Map(observations.map((entry) => [entry.event.ref, entry]));
-  const selected = requested.map((ref) => byRef.get(ref));
-  if (!latest && requested.length === 0) {
-    return { boundary: latestStateChangeIndex(events), latest: null, observations: [], observationGap: true };
+  if (requested.length > 0) {
+    throw contractError('CURRENT_OBSERVATION_STALE', 'time-limit observation gaps must not cite observations from before the latest state change');
   }
-  if (!latest || requested.length === 0 || selected.some((entry) => !entry)) {
-    throw contractError('CURRENT_OBSERVATION_REQUIRED', 'time-limit review requires the latest available usable observation');
-  }
-  if (options.warmSessionGeneration !== undefined
-    && selected.some((entry) => entry.event.warmSessionGeneration !== options.warmSessionGeneration)) {
-    throw contractError('CURRENT_OBSERVATION_STALE', 'time-limit review observations must belong to the current warm session generation');
-  }
-  if (!selected.some((entry) => entry.index === latest.index)) {
-    throw contractError('CURRENT_OBSERVATION_STALE', 'time-limit review must include the latest available usable observation');
-  }
-  return { boundary: latestStateChangeIndex(events), latest: latest.event, observations: selected.map((entry) => entry.event), observationGap: true };
+  return { boundary: latestStateChangeIndex(events), latest: null, observations: [], observationGap: true };
 }
 
 function assertCurrentPlan(events) {
@@ -627,7 +612,8 @@ function completeFinalization(execDir, draft, options = {}) {
 }
 
 function buildFinalizationDraft(execDir, proposedResult, execution, options = {}) {
-  if (execution.phase !== 'CONCLUDE') throw contractError('EXECUTION_PHASE_INVALID', 'finalize requires CONCLUDE phase');
+  const validationPhase = options.phaseOverride || execution.phase;
+  if (validationPhase !== 'CONCLUDE') throw contractError('EXECUTION_PHASE_INVALID', 'finalize requires CONCLUDE phase');
   const events = timelineEvents(execDir);
   if (openOperations(events).length) throw contractError('EXECUTION_OPERATION_OPEN', 'all device operations must be closed before finalize');
   const pendingObservation = pendingPostActionObservation(events);

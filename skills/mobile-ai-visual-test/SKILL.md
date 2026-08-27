@@ -79,7 +79,7 @@ understand
 - 框架自动报告布局是否可用、键盘/焦点/坐标一致性、动作前后状态变化及关键冲突；iOS 键盘坐标冲突时先用 `dismissKeyboard` 取得新现场，坐标动作不会冒险发送。
 - `inputText` 是平台级整串输入能力；平台适配器在同一次 step 内完成有界降级和效果核对，Case Agent 不通过逐字符点击模拟底层文本输入。
 - `mark-start` 显式确认最新 PREPARE 现场满足本用例起点，然后进入业务执行。
-- `request-recovery` 只在原文明示冷启动、App 意外退出或 Agent 主动判断必须重启时提交原因和触发类型；框架自动补齐 execution、检查点、sourceRef 或现场证据，随后交回协调器恢复。
+- `request-recovery` 只在原文明示冷启动、App 意外退出或 Agent 主动判断必须重启时提交原因和触发类型；框架自动补齐 execution、检查点、sourceRef 或现场证据。事故恢复可以引用状态变化后的不可用技术观察，Agent 主动重启仍要求当前可用观察。
 - `investigate` 查询知识或评估候选适用性；零命中由框架自动闭合调查，有候选时 Agent 提交相关候选评估和查询级结论，候选本身不能改变结论。
 - `conclude` 提交 verdict、summary 和逐 requirement finding；框架自动生成 checkpointFinding、verdictReview、result、metrics 和 AgentResult。
 
@@ -96,7 +96,7 @@ understand
 - `ok=true` 只表示动作调用完成，不表示断言成立。断言由 Agent 根据动作后真实现场形成。
 - PASS 和 FAIL 必须已经显式确认当前起点；观察型检查点可以复用该起点观察，要求实际动作的检查点必须存在动作及动作后观察。FAIL 取得充分负向证据后不强制继续无关检查点。
 - 未解决的关键现场证据冲突不能形成确定性 PASS/FAIL；恢复可靠现场后继续，或如实收口为 INCONCLUSIVE/技术 BLOCKED。
-- 达到 30 分钟后停止新设备调用，但继续恢复冻结事务、知识调查和结论收口；时限本身不自动改写业务 verdict。
+- 达到 30 分钟后停止新设备调用，但继续恢复冻结事务、知识调查和结论收口；若最后一次状态变化后没有可用观察，唯一结果为 `INCONCLUSIVE + STOPPED_BY_BUDGET`，不引用变化前旧现场冒充当前证据。
 - 动作发送前由框架为动作声明时长、页面缓冲和一次后置观察预留时间；不足时直接拒绝未发送动作，不形成结果不确定或在途恢复。
 
 ## 禁止事项

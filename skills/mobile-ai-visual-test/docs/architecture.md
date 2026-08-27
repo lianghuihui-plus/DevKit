@@ -52,7 +52,7 @@ flowchart TD
 | 批次协调 | `scripts/batch.js`、`scripts/batch/core.js`、`scripts/batch/platform-runtime.js` | 消费显式执行请求；绑定和释放平台运行资源；一次 bootstrap；串行 case；自动恢复内部事务；消费控制请求；completion 发布；每个 case commit 后触发报告增量刷新 |
 | 内部恢复 | `scripts/batch/internal-recovery.js` | 从冻结草稿恢复 step、operation、turn 和知识查询；不要求 Case Agent维护事务 ID |
 | Execution Core | `scripts/execution/core.js` | 生命周期、阶段、30 分钟时限、事实事件、证据和 finalize |
-| Agent Facade | `scripts/agent/understand.js`、`inspect.js`、`step.js`、`mark-start.js`、`request-recovery.js`、`investigate.js`、`conclude.js` | 接收语义决策；自动展开 revision、活动检查点、授权、事务、动作后观察、控制请求、复核和结果 |
+| Agent Facade | `scripts/agent/understand.js`、`inspect.js`、`step.js`、`mark-start.js`、`request-recovery.js`、`investigate.js`、`conclude.js` | 接收语义决策；区分业务断言证据与事故恢复技术证据；自动展开 revision、授权、恢复和结论事务，并在写入前预校验完整候选结果 |
 | 现场证据模型 | `scripts/lib/layout-observation.js`、`scripts/lib/observation-model.js`、`scripts/lib/observation-consistency.js` | 无外部依赖解析 HarmonyOS JSON、Android XML 和 iOS XML；归一化元素与技术信号；计算动作前后状态变化和未解决证据冲突；Agent 与 Execution Core 只依赖该框架层模型 |
 | 产物完整性 | `scripts/lib/execution-artifact-manifest.js`、`completion-contract.js` | 冻结报告依赖产物的路径、大小和 SHA；completion 绑定清单，报告读取前验真 |
 | 动态契约 | `scripts/lib/*-contract.js` | 从实现常量生成 execution 级 Agent 契约快照；确定性校验 revision、引用、授权、结果和实现摘要 |
@@ -158,7 +158,7 @@ sequenceDiagram
 - environment confirmation、execution request、batch contract 和 execution snapshot 均使用 `deviceId`；旧 `device` 只允许在输入兼容和历史读取边界出现，不能继续传播到新产物。
 - observation/actionResult 只能由专用设备入口生成，均须确认冻结 platform、`deviceId` 和 App；Agent turn 不能伪造设备事实。
 - 平台 adapter 采集原始截图、布局和平台技术信号；现场证据模型统一解析键盘、焦点、安全输入和坐标空间，不读取用例业务；布局解析失败显式诊断，不再静默投影为空元素。
-- Case Agent 只提交语义对象；Facade 是 understanding、plan、checkpointFinding、knowledgeAssessment、knowledgeReview 和 verdictReview 的唯一转换边界，自动生成 revision、摘要和事实 ID。零命中查询自动以 `NO_MATCH` 闭合；有候选时由 Agent 提交相关候选评估和查询级结论。
+- Case Agent 只提交语义对象；Facade 是 understanding、plan、checkpointFinding、knowledgeAssessment、knowledgeReview 和 verdictReview 的唯一转换边界，自动生成 revision、摘要和事实 ID。结论中的 checkpointFinding 与 verdictReview 组成同一 turn，完整预校验通过后再幂等提交；契约拒绝不会改变 phase 或 timeline。零命中查询自动以 `NO_MATCH` 闭合；有候选时由 Agent 提交相关候选评估和查询级结论。
 - 动作由 Facade 自动绑定当前 execution、understanding/plan revision、checkpoint/start condition 和 observation；这些字段不由 Agent 手工维护，也不构成业务副作用门禁。
 - 改变现场的动作必须引用当前暖会话代次的可用 observation；坐标动作还必须引用该 observation 同次采集的 layout、visual 或 pixel 产物。框架不判断业务副作用，Agent 可自主执行必要的起点恢复与调查动作。
 - 状态变更动作完成后，设备网关默认缓冲 500ms 再启动 POST_ACTION observation；`MAVT_POST_ACTION_SETTLE_MS=0..5000` 可调整，配置值冻结在 step 草稿并写入操作 timing，恢复不会重放动作或改变等待值。
@@ -167,7 +167,8 @@ sequenceDiagram
 - iOS observe 在同一 Appium session 采集 `isKeyboardShown` 和窗口矩形。键盘存在且坐标空间不一致时，Facade 在发送坐标动作前返回 `ACTION_COORDINATE_CONFLICT`；平台专属 `dismissKeyboard` 调用 `mobile: hideKeyboard` 并沿用统一动作后观察链路。
 - 平台 adapter 的可控失败仍必须返回一个合法 JSON；网关仅在真正无法解析成功进程输出时使用 `DEVICE_ADAPTER_OUTPUT_INVALID`，非零退出优先保留退出码、signal 和脱敏 stderr。后台 Appium 日志默认追加到本机临时目录，可由 `MAVT_IOS_APPIUM_LOG` 指定。
 - 平台运行资源采用批次级 `acquire/release` 接口，批次层只保存复合资源，不感知平台进程细节。HarmonyOS、Android 当前无需批次托管资源；iOS adapter 内部由 Appium 生命周期、WDA 生命周期和端口核验三个模块组成。Appium 按服务地址登记；WDA 按设备 ID 与 bundle id 登记，并以批次开始前进程为外部基线。终态按 WDA、Appium、最终进程与端口核验的顺序收口；命令、设备、bundle、PID、独立进程组或所有权任一不匹配都不得终止。全部框架资源消失为 `RELEASED`，仅剩外部资源为 `RETAINED`，框架资源残留为 `RELEASE_FAILED` 并允许补偿重试。Session 删除仍由每次设备调用负责，不能替代批次级服务关闭。
-- 动作后的守卫通常只能由与该动作关联且可用的新 observation 清除；达到时限且禁止新设备调用时，由 `timeLimitReached` 如实记录当前观察不可得并解除流程死锁，verdictReview 通过 `observationUnavailable` 显式承认缺口，结论被限制为证据不足。其他最终复核仍必须引用最后一次动作、结果不确定或 recovery 之后的最新可用观察。
+- 可用 observation 才能支撑业务断言；状态变化后的不可用 observation 可以作为事故恢复的客观技术证据，但不能进入 requirement finding。Agent 主动决定重启仍必须引用当前可用 observation，Batch 会复核证据的 execution、暖会话代次和状态变化边界。
+- 动作后的守卫通常只能由与该动作关联且可用的新 observation 清除；达到时限且禁止新设备调用时，由 `timeLimitReached` 如实记录当前观察不可得并解除流程死锁，verdictReview 以空 `currentObservationRefs + observationUnavailable` 显式承认缺口，不引用状态变化前旧现场，结论固定为 `INCONCLUSIVE + STOPPED_BY_BUDGET`。知识调查闭合前 `mayConclude=false`，其他最终复核仍必须引用最后一次动作、结果不确定或 recovery 之后的最新可用观察。
 - 每个 requirement 独立闭合 evidence、适用 knowledge 或未决/阻塞原因，用例级结论不能替代逐 requirement 依据。
 - Finalize 复算 execution 内未解决的关键现场冲突；非输入动作污染安全输入且未被后续成功整串输入及观察修复时，以 `EVIDENCE_CONFLICT_UNRESOLVED` 拒绝 PASS/FAIL，允许 Agent 如实转为 INCONCLUSIVE 或技术 BLOCKED。
 - PASS/FAIL 必须先以当前 understanding 和暖会话代次显式建立起点。PASS 必须完成当前计划全部检查点；观察型检查点可复用建立起点的当前观察，要求动作的检查点必须具备动作及动作后观察。FAIL 可在当前观察或相关产品事故形成充分负向证据后提前结束，不要求执行后续检查点；技术事故只能支持 BLOCKED。产品事故是否与 requirement 相关由 Agent 判断，脚本不全局否决 PASS。准备/业务 scope 只用于报告归类。

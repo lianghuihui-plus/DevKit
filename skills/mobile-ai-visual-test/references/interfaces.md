@@ -34,7 +34,7 @@ node scripts/batch.js teardown --workspace <workspace> --batch-id <id>
 
 bootstrap/recovery 不直接按某个平台返回字段是否存在来判断成功。Adapter 先返回冷启动客观事实和可选 `startupDisplay`；`device-session` 再结合冻结的 `startupDisplayPolicy` 统一计算 `coldStartVerified`、`startupDisplayVerified` 和校验诊断；Batch 只消费这两个标准结果。Android、iOS 默认 `preserve + none`，显示方向不是启动成功的必要条件；HarmonyOS 命中 `required` 策略时仍必须获得 `VERIFIED` 显示证据。
 
-`batch.js recover` 接受原文明示冷启动、`AGENT_DECIDED_RESTART` 和客观技术/产品事故恢复。原文明示冷启动由 Case Agent 只提交 `SOURCE_REQUIRED_COLD_START` 和原因，Facade 从活动检查点关联 requirement 自动生成 sourceRefs；Agent 主动决定重启时由 Facade 自动生成 `recoveryId/executionId/checkpointId/triggerType/evidenceRefs/decisionReason`。事故恢复仍必须包含 `incidentId/incidentCategory/incidentReason`。同一 recoveryId 重入按已冻结记录中的 executionId 定位原 execution，不使用当前 case 推断目录。
+`batch.js recover` 接受原文明示冷启动、`AGENT_DECIDED_RESTART` 和客观技术/产品事故恢复。原文明示冷启动由 Case Agent 只提交 `SOURCE_REQUIRED_COLD_START` 和原因，Facade 从活动检查点关联 requirement 自动生成 sourceRefs；Agent 主动决定重启时必须绑定当前可用 observation；事故恢复在没有当前可用现场时可以绑定最新状态变化后的不可用 observation。Facade 自动生成 `recoveryId/executionId/checkpointId/triggerType/evidenceRefs` 和决策/事故字段，Batch 再校验证据属于当前 execution 与暖会话代次。同一 recoveryId 重入按已冻结记录中的 executionId 定位原 execution，不使用当前 case 推断目录。
 
 ## case Agent 入口
 
@@ -49,7 +49,7 @@ node scripts/agent/investigate.js --exec-dir <execution> --request-json '<json>'
 node scripts/agent/conclude.js --exec-dir <execution> --request-json '<json>'
 ```
 
-每个语义入口成功后都返回最新 `runtimeState`；`status` 只用于重连、响应不确定和恢复，不返回业务 NextWork。`understand` 自动维护 understanding/plan revision、turnId、planSha 和检查点状态。`inspect` 返回截图原始尺寸、布局可用性、控件树精简元素和技术信号。`step` 自动生成 operationId/authorization/证据绑定，执行一个动作并采集动作后现场，同时计算状态差异和证据冲突。`mark-start` 显式确认最新 PREPARE observation。`investigate` 负责知识查询与候选评估。`conclude` 自动生成 checkpointFinding、verdictReview、result、metrics 和 AgentResult。
+每个语义入口成功后都返回最新 `runtimeState`；`status` 只用于重连、响应不确定和恢复，不返回业务 NextWork。`runtimeState.conclusionConstraint` 只表达框架收口边界；超时观察缺口时固定允许 `INCONCLUSIVE`，并在知识调查闭合前令 `mayConclude=false`。`understand` 自动维护 understanding/plan revision、turnId、planSha 和检查点状态。`inspect` 返回截图原始尺寸、布局可用性、控件树精简元素和技术信号。`step` 自动生成 operationId/authorization/证据绑定，执行一个动作并采集动作后现场，同时计算状态差异和证据冲突。`mark-start` 显式确认最新 PREPARE observation。`investigate` 负责知识查询与候选评估。`conclude` 先预校验完整候选结论，再以同一 turn 幂等生成 checkpointFinding、verdictReview、result、metrics 和 AgentResult；契约拒绝不会写入半成品事实或切换阶段。
 
 内部 step、turn、operation、知识查询和 phase 草稿由协调器在 `reconcile` 中自动收口，不再交给 Case Agent。`request-recovery` 只接收 Agent 的原因和可选触发类型，其余绑定由框架生成；协调器收到 `RECOVER_APP` 后将返回的 `recoveryRequest` 原样传给 `batch.js recover`。
 

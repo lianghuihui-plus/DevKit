@@ -63,7 +63,7 @@ Bootstrap、Case 启动、Recovery 和 Case 发布都优先收口已有草稿。
 
 ## 受控恢复
 
-允许恢复的触发包括原文明示冷启动、Agent 基于当前现场决定的受控重启、App crash、系统杀进程、未知退出、App 无响应和自动化会话丢失。Agent 决定的重启必须记录 `decisionReason` 并引用当前 execution、当前暖会话代次的 observation；技术触发必须引用客观 evidence；原文明示触发必须引用 sourceRef。同一 checkpoint 可以在单用例时限内再次恢复，每次使用新的 recoveryId 和恢复前当前证据。
+允许恢复的触发包括原文明示冷启动、Agent 基于当前现场决定的受控重启、App crash、系统杀进程、未知退出、App 无响应和自动化会话丢失。Agent 决定的重启必须记录 `decisionReason` 并引用当前 execution、当前暖会话代次的可用 observation；事故触发可以引用状态变化后的不可用 observation 作为客观技术证据；原文明示触发必须引用 sourceRef。同一 checkpoint 可以在单用例时限内再次恢复，每次使用新的 recoveryId 和恢复前当前证据。
 
 恢复会递增 warm session generation。恢复前后仍属于同一 execution 和 Agent 业务上下文；协调器同步重绑定 Runtime 与当前 Agent request，并归档恢复前 request。恢复前 observation 只保留审计价值，不能再建立起点、授权动作或支撑当前结论；必须先重新观察。
 

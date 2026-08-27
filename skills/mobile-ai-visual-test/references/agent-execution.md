@@ -54,7 +54,7 @@ BUSINESS 操作和观察默认继承当前活动检查点。只有切换到另�
 
 ### request-recovery
 
-原文明示冷启动、App 意外退出、自动化会话失效或 Agent 判断必须受控重启时，只提交 `reason` 和可选 `triggerType`。原文明示场景使用 `SOURCE_REQUIRED_COLD_START`；框架自动绑定当前 execution、检查点及 sourceRef 或 observation，生成控制请求后停止当前 Agent；协调器恢复 App 后创建新的隔离 Agent继续同一 execution。
+原文明示冷启动、App 意外退出、自动化会话失效或 Agent 判断必须受控重启时，只提交 `reason` 和可选 `triggerType`。原文明示场景使用 `SOURCE_REQUIRED_COLD_START`；框架自动绑定当前 execution、检查点及 sourceRef 或 observation。事故触发可以使用状态变化后的不可用观察作为技术证据，主动决定重启仍必须有当前可用观察。生成控制请求后停止当前 Agent；协调器恢复 App 后创建新的隔离 Agent继续同一 execution。
 
 ### conclude
 
@@ -81,6 +81,6 @@ PASS 和 FAIL 前必须已经 `mark-start`。PASS 要求当前计划全部检查
 
 - Agent 可为建立起点或完成用例自主退出登录、切换账号、返回、输入、发布或执行其他业务操作；框架不按动作关键词限制副作用。
 - App 冷启动只由批次 bootstrap 或受控 recovery 执行，Case Agent 不直接调用 restart。
-- 单用例 30 分钟后禁止新设备调用；动作发送前框架还会检查动作声明时长、页面缓冲和一次后置观察所需的最低时间，剩余时间不足时直接拒绝未发送动作。框架将缺少后置观察的 step 标记为未完整，并关闭全部草稿后允许知识调查和 conclude 收口。
+- 单用例 30 分钟后禁止新设备调用；动作发送前框架还会检查动作声明时长、页面缓冲和一次后置观察所需的最低时间，剩余时间不足时直接拒绝未发送动作。框架将缺少后置观察的 step 标记为未完整，并关闭全部草稿。若最新状态变化后没有可用观察，`runtimeState.conclusionConstraint` 固定为 `TIME_LIMIT_OBSERVATION_GAP`；知识调查完成后只允许 `INCONCLUSIVE + STOPPED_BY_BUDGET` 收口。
 - 执行期间不向用户提问。歧义形成 INCONCLUSIVE，外部条件不足形成 BLOCKED；当前 case finalize 后批次继续。
 - 报告展示语义意图、动作、观察、检查点、知识和恢复事实，不记录隐藏思维链。

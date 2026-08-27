@@ -16,6 +16,7 @@ const {
   completeOperation,
   confirmStartObservation,
   createExecution,
+  assertConclusionObservationRefs,
   finalizeExecution,
   recordKnowledgeQuery,
   sealTimeLimit,
@@ -454,6 +455,12 @@ completeOperation(limitCase.execDir, {
 sealTimeLimit(limitCase.execDir, { now: '2026-08-13T10:30:00.000Z' });
 assert.strictEqual(readExecution(limitCase.execDir).execution.phase, 'CONCLUDE');
 assert.strictEqual(timelineEvents(limitCase.execDir).filter((event) => event.type === 'timeLimitReached').length, 1);
+expectCode(() => assertConclusionObservationRefs(timelineEvents(limitCase.execDir), [limitEvidence], {
+  warmSessionGeneration: 1,
+}), 'CURRENT_OBSERVATION_STALE');
+assert.deepStrictEqual(assertConclusionObservationRefs(timelineEvents(limitCase.execDir), [], {
+  warmSessionGeneration: 1,
+}).observations, []);
 expectCode(() => finalizeExecution(limitCase.execDir, resultFor('PASS', limitEvidence), { now: '2026-08-13T10:30:00.000Z' }), 'RESULT_SEMANTICS_INVALID');
 recordKnowledgeQuery(limitCase.execDir, { queryId: 'query-time-limit', query: { symptom: '时限后现场未知', keywords: [] }, candidates: [], matchCount: 0 });
 recordFact(limitCase, {
@@ -461,13 +468,13 @@ recordFact(limitCase, {
   planSha: readJson(path.join(limitCase.execDir, 'plan.json')).planSha,
   requirementRefs: ['req-001'], queryRefs: ['query-time-limit'], requestedVerdict: 'INCONCLUSIVE',
   sourceRecheck: { sourceRefs: ['src-001'], conclusion: '已复核原始目标' },
-  currentObservationRefs: [limitEvidence],
+  currentObservationRefs: [],
   observationUnavailable: true,
   recoveryAttempt: { performed: false, explanation: '达到时限后不能发起新的设备操作', evidenceRefs: [] },
   remainingUncertainties: ['最后一次动作后的页面状态未观察'],
   reason: '缺少最后一次状态变化后的现场证据',
 });
-assert.strictEqual(finalizeExecution(limitCase.execDir, resultFor('INCONCLUSIVE', limitEvidence, {
+assert.strictEqual(finalizeExecution(limitCase.execDir, resultFor('INCONCLUSIVE', null, {
   executionStatus: 'STOPPED_BY_BUDGET',
 }), { now: '2026-08-13T10:30:00.000Z' }).result.executionStatus, 'STOPPED_BY_BUDGET');
 

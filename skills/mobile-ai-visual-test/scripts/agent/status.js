@@ -98,6 +98,24 @@ function readAgentStatus(execDir, now = new Date().toISOString()) {
   const executionReady = missingArtifacts.length === 0;
   const latestObservation = currentObservation(events, execution.warmSessionGeneration);
   const postRecoveryObservationRequired = latestRecoveryIndex(events) >= 0 && !latestObservation;
+  const timeLimitObservationGap = events.some((event) => event.type === 'timeLimitReached'
+    && event.observationUnavailable === true);
+  const completedKnowledgeReview = events.some((event) => event.type === 'knowledgeReview');
+  const conclusionConstraint = timeLimitObservationGap ? {
+    mode: 'TIME_LIMIT_OBSERVATION_GAP',
+    allowedVerdicts: ['INCONCLUSIVE'],
+    findingStatus: 'UNRESOLVED',
+    knowledgeRequired: true,
+  } : {
+    mode: 'NORMAL',
+    allowedVerdicts: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'],
+    findingStatus: null,
+    knowledgeRequired: false,
+  };
+  const conclusionTransactionsReady = !execution.finalized && Boolean(understanding && plan) && !pendingObservation
+    && pendingRecoveries.length === 0 && knowledgeQueryRecoveries.length === 0 && pendingTurnRecoveries.length === 0
+    && pendingStepRecoveries.length === 0 && !controlRequest
+    && ['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE'].includes(execution.phase);
   return {
     schemaVersion: 1,
     executionId: execution.executionId,
@@ -135,6 +153,7 @@ function readAgentStatus(execDir, now = new Date().toISOString()) {
     counts: buildCounts(events),
     timeLimitReached: limit.reached,
     remainingMs: limit.remainingMs,
+    conclusionConstraint,
     readiness: {
       missingArtifacts,
       executionReady,
@@ -145,10 +164,7 @@ function readAgentStatus(execDir, now = new Date().toISOString()) {
       mayOperate: operationSlotAvailable && executionReady && !controlRequest,
       mayObserve: operationSlotAvailable && executionReady && !controlRequest,
       mayAct: operationSlotAvailable && executionReady && Boolean(latestObservation) && !pendingObservation && !controlRequest,
-      mayConclude: !execution.finalized && Boolean(understanding && plan) && !pendingObservation
-        && pendingRecoveries.length === 0 && knowledgeQueryRecoveries.length === 0 && pendingTurnRecoveries.length === 0
-        && pendingStepRecoveries.length === 0 && !controlRequest
-        && ['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE'].includes(execution.phase),
+      mayConclude: conclusionTransactionsReady && (!timeLimitObservationGap || completedKnowledgeReview),
       startEstablished,
       currentObservationAvailable: Boolean(latestObservation),
       hasCheckpoints,

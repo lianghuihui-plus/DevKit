@@ -120,20 +120,24 @@ function createRunner() {
     writeJsonAtomic(path.join(out, layout), runner.layoutFactory
       ? runner.layoutFactory({ label, observationCount: runner.observationCount, defaultLayout })
       : defaultLayout);
-    return { status: 0, stderr: '', stdout: JSON.stringify({
+    const baseObservation = {
       schemaVersion: 1,
       type: 'observation',
       platform: 'harmony',
       artifacts: { screenshot, layout, logs: [] },
       device: { id: BINDING.deviceId },
       app: { appId: BINDING.appId, foregroundApp: BINDING.appId, inTargetApp: true },
-    }) };
+    };
+    return { status: 0, stderr: '', stdout: JSON.stringify(runner.observationResultFactory
+      ? { ...baseObservation, ...runner.observationResultFactory({ label, observationCount: runner.observationCount }) }
+      : baseObservation) };
   };
   runner.calls = calls;
   runner.failNextObservation = false;
   runner.observationCount = 0;
   runner.layoutFactory = null;
   runner.actionResultFactory = null;
+  runner.observationResultFactory = null;
   return runner;
 }
 
@@ -372,6 +376,44 @@ const firstFailureRequest = requestRecovery(firstObservationFailure.execDir, {
 assert.deepStrictEqual(firstFailureRequest.evidenceRefs, []);
 assert.ok(firstFailureRequest.failedOperationId);
 
+const unavailableObservationRecovery = setup('unavailable-observation-recovery');
+const unavailableRunner = createRunner();
+understand(unavailableObservationRecovery.execDir, understandInput(unavailableObservationRecovery), { now: T0 });
+const unavailableStart = inspectCurrent(unavailableObservationRecovery.execDir, {
+  stage: 'PREPARE', intent: '观察事故恢复测试起点',
+}, { runner: unavailableRunner, now: T0 });
+markStart(unavailableObservationRecovery.execDir, { reason: '当前页面满足事故恢复测试起点' }, { now: T0 });
+unavailableRunner.observationResultFactory = () => ({
+  usable: false,
+  app: { appId: BINDING.appId, foregroundApp: 'com.example.other', inTargetApp: false },
+});
+const unavailableStep = executeStep(unavailableObservationRecovery.execDir, {
+  stage: 'BUSINESS', intent: '点击后模拟目标 App 离开前台',
+  action: { type: 'tap', targetRef: unavailableStart.observationView.elements[0].ref },
+}, { runner: unavailableRunner, now: T0 });
+assert.strictEqual(unavailableStep.observation.usable, false);
+assert.strictEqual(unavailableStep.runtimeState.currentObservationRef, null);
+expectCode(() => requestRecovery(unavailableObservationRecovery.execDir, {
+  reason: '没有当前可用现场时不能主动决定重启', triggerType: 'AGENT_DECIDED_RESTART',
+}, { now: T0 }), 'RECOVERY_EVIDENCE_REQUIRED');
+const unavailableRecoveryRequest = requestRecovery(unavailableObservationRecovery.execDir, {
+  reason: '目标 App 已离开前台', triggerType: 'UNKNOWN_EXIT',
+}, { now: T0 }).controlRequest;
+assert.deepStrictEqual(unavailableRecoveryRequest.evidenceRefs, [unavailableStep.observation.ref]);
+assert.strictEqual(unavailableRecoveryRequest.failedOperationId, undefined);
+const unavailableRecovered = recoverApp({
+  workspaceRoot: unavailableObservationRecovery.root,
+  batchId: unavailableObservationRecovery.execution.batchId,
+  implementationSha: contract.implementationSha,
+  adapter: { restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }) },
+  request: unavailableRecoveryRequest,
+  now: T0,
+});
+assert.strictEqual(unavailableRecovered.recovery.status, 'SUCCEEDED');
+const unavailableIncident = timelineEvents(unavailableObservationRecovery.execDir)
+  .find((event) => event.type === 'runtimeIncident');
+assert.deepStrictEqual(unavailableIncident.evidenceRefs, [unavailableStep.observation.ref]);
+
 const facadeTurnRecovery = setup('facade-turn-recovery');
 assert.throws(() => understand(facadeTurnRecovery.execDir, understandInput(facadeTurnRecovery), {
   now: T0, interruptAfter: 'understanding',
@@ -393,7 +435,36 @@ recoverInternalTransactions(deadline.execDir, { runner, now: '2026-08-13T10:30:0
 assert.strictEqual(readAgentStatus(deadline.execDir, '2026-08-13T10:30:00.000Z').stepRecoveries.length, 0);
 assert.strictEqual(runner.calls.filter((entry) => entry.kind === 'ACTION').length, deadlineActions);
 sealTimeLimit(deadline.execDir, { implementationSha: contract.implementationSha, now: '2026-08-13T10:30:00.000Z' });
-assert.strictEqual(readAgentStatus(deadline.execDir, '2026-08-13T10:30:00.000Z').signals.mayConclude, true);
+assert.strictEqual(readAgentStatus(deadline.execDir, '2026-08-13T10:30:00.000Z').signals.mayConclude, false);
+
+const deadlineTimelineBeforeRejectedConclusion = fs.readFileSync(path.join(deadline.execDir, 'timeline.jsonl'), 'utf8');
+expectCode(() => conclude(deadline.execDir, {
+  verdict: 'BLOCKED', summary: '超时后的观察缺口不能收口为技术阻塞', technicalFailureCode: 'OBSERVATION_UNAVAILABLE',
+  findings: [{ requirementRef: 'req-001', status: 'BLOCKED', reason: '动作后没有取得可用观察' }],
+}, { now: '2026-08-13T10:30:00.000Z' }), 'RESULT_SEMANTICS_INVALID');
+assert.strictEqual(fs.readFileSync(path.join(deadline.execDir, 'timeline.jsonl'), 'utf8'), deadlineTimelineBeforeRejectedConclusion);
+const deadlineQuery = investigate(deadline.execDir, {
+  query: { platform: 'harmony', page: '目标页面', symptom: '动作后无法取得可用观察', keywords: ['动作后观察'] },
+  reason: '超时证据不足结论前完成知识调查',
+}, { now: '2026-08-13T10:30:00.000Z' });
+assert.strictEqual(deadlineQuery.matchCount, 0);
+const deadlineStatus = readAgentStatus(deadline.execDir, '2026-08-13T10:30:00.000Z');
+assert.strictEqual(deadlineStatus.signals.mayConclude, true);
+assert.deepStrictEqual(deadlineStatus.conclusionConstraint, {
+  mode: 'TIME_LIMIT_OBSERVATION_GAP',
+  allowedVerdicts: ['INCONCLUSIVE'],
+  findingStatus: 'UNRESOLVED',
+  knowledgeRequired: true,
+});
+const deadlineConclusion = conclude(deadline.execDir, {
+  verdict: 'INCONCLUSIVE', summary: '达到时限后仍未取得动作后的可用观察',
+  findings: [{ requirementRef: 'req-001', status: 'UNRESOLVED', reason: '最新状态变化后的页面状态不可得' }],
+}, { now: '2026-08-13T10:30:00.000Z' });
+assert.strictEqual(deadlineConclusion.result.executionStatus, 'STOPPED_BY_BUDGET');
+assert.deepStrictEqual(deadlineConclusion.result.uncertainties, ['最新状态变更后未取得可用观察']);
+const deadlineReview = timelineEvents(deadline.execDir).find((event) => event.type === 'verdictReview');
+assert.deepStrictEqual(deadlineReview.currentObservationRefs, []);
+assert.strictEqual(deadlineReview.observationUnavailable, true);
 
 const blocked = setup('blocked-before-observation');
 understand(blocked.execDir, understandInput(blocked), { now: T0 });
@@ -425,6 +496,24 @@ expectCode(() => conclude(noStartPass.execDir, {
   verdict: 'PASS', summary: '不能在未确认起点时通过',
   findings: [{ requirementRef: 'req-001', status: 'SATISFIED', reason: '当前现场看似满足' }],
 }, { now: T0 }), 'START_NOT_ESTABLISHED');
+
+const atomicConclusion = setup('atomic-conclusion-validation');
+const atomicRunner = createRunner();
+understand(atomicConclusion.execDir, understandInput(atomicConclusion), { now: T0 });
+const atomicStart = inspectCurrent(atomicConclusion.execDir, { stage: 'PREPARE', intent: '观察原子结论起点' }, { runner: atomicRunner, now: T0 });
+markStart(atomicConclusion.execDir, { reason: '当前页面满足原子结论起点' }, { now: T0 });
+executeStep(atomicConclusion.execDir, {
+  stage: 'BUSINESS', intent: '执行原子结论测试动作', action: { type: 'tap', targetRef: atomicStart.observationView.elements[0].ref },
+}, { runner: atomicRunner, now: T0 });
+const atomicTimelineBefore = fs.readFileSync(path.join(atomicConclusion.execDir, 'timeline.jsonl'), 'utf8');
+const atomicPhaseBefore = readJson(path.join(atomicConclusion.execDir, 'execution.json')).phase;
+expectCode(() => conclude(atomicConclusion.execDir, {
+  verdict: 'PASS', summary: '无效复核结构不得污染时间线', sourceRecheck: ' ',
+  findings: [{ requirementRef: 'req-001', status: 'SATISFIED', reason: '最新现场展示目标状态' }],
+}, { now: T0 }), 'EXECUTION_EVENT_INVALID');
+assert.strictEqual(fs.readFileSync(path.join(atomicConclusion.execDir, 'timeline.jsonl'), 'utf8'), atomicTimelineBefore);
+assert.strictEqual(readJson(path.join(atomicConclusion.execDir, 'execution.json')).phase, atomicPhaseBefore);
+assert.strictEqual(timelineEvents(atomicConclusion.execDir).some((event) => event.type === 'checkpointFinding'), false);
 
 const observationOnly = setup('observation-only-pass');
 const observationOnlyInput = understandInput(observationOnly);

@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { canonicalJson, contractError, ensureObject, ensureString, sha256 } = require('../lib/contract-utils');
-const { currentObservation, timelineEvents } = require('../execution/core');
+const { currentObservation, latestStateChangeIndex, timelineEvents } = require('../execution/core');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
 
@@ -17,6 +17,22 @@ const RECOVERY_TRIGGERS = new Set([
   'APP_UNRESPONSIVE',
   'AUTOMATION_SESSION_LOST',
 ]);
+const INCIDENT_RECOVERY_TRIGGERS = new Set([
+  'APP_CRASH',
+  'SYSTEM_KILLED',
+  'UNKNOWN_EXIT',
+  'APP_UNRESPONSIVE',
+  'AUTOMATION_SESSION_LOST',
+]);
+
+function latestTechnicalObservation(events, warmSessionGeneration) {
+  const boundary = latestStateChangeIndex(events);
+  return events.map((event, index) => ({ event, index }))
+    .filter(({ event, index }) => event.type === 'observation'
+      && index > boundary
+      && event.warmSessionGeneration === warmSessionGeneration)
+    .at(-1)?.event || null;
+}
 
 function controlRequestPath(execDir) {
   return path.join(execDir, 'agent', CONTROL_REQUEST_FILE);
@@ -60,9 +76,13 @@ function requestRecovery(execDir, input = {}, options = {}) {
   const understanding = readJson(path.join(execDir, 'understanding.json'), null);
   const events = timelineEvents(execDir);
   const observation = currentObservation(events, binding.execution.warmSessionGeneration);
+  const technicalObservation = INCIDENT_RECOVERY_TRIGGERS.has(triggerType)
+    ? latestTechnicalObservation(events, binding.execution.warmSessionGeneration)
+    : null;
+  const evidenceObservation = observation || technicalObservation;
   const failedOperation = [...events].reverse().find((event) => event.type === 'operationCompleted'
     && event.outcome === 'FAILED' && event.failureCode);
-  if (!observation && triggerType !== 'SOURCE_REQUIRED_COLD_START'
+  if (!evidenceObservation && triggerType !== 'SOURCE_REQUIRED_COLD_START'
     && (triggerType === 'AGENT_DECIDED_RESTART' || !failedOperation)) {
     throw contractError('RECOVERY_EVIDENCE_REQUIRED', 'recovery requires a current execution observation');
   }
@@ -81,7 +101,7 @@ function requestRecovery(execDir, input = {}, options = {}) {
     executionId: binding.execution.executionId,
     checkpointId,
     triggerType,
-    observationRef: observation?.ref || null,
+    observationRef: evidenceObservation?.ref || null,
     failedOperationId: failedOperation?.operationId || null,
     sourceRefs,
     reason: input.reason.trim(),
@@ -98,9 +118,9 @@ function requestRecovery(execDir, input = {}, options = {}) {
     executionId: binding.execution.executionId,
     checkpointId,
     triggerType,
-    evidenceRefs: observation ? [observation.ref] : [],
+    evidenceRefs: evidenceObservation ? [evidenceObservation.ref] : [],
     ...(triggerType === 'SOURCE_REQUIRED_COLD_START' ? { sourceRefs } : {}),
-    ...(!observation && triggerType !== 'SOURCE_REQUIRED_COLD_START' ? { failedOperationId: failedOperation.operationId } : {}),
+    ...(!evidenceObservation && triggerType !== 'SOURCE_REQUIRED_COLD_START' ? { failedOperationId: failedOperation.operationId } : {}),
     generatedBy: 'agent-facade',
     ...(triggerType === 'AGENT_DECIDED_RESTART' ? { decisionReason: input.reason.trim() } : incident),
     requestedAt: options.now || new Date().toISOString(),
@@ -133,5 +153,6 @@ module.exports = {
   activeCheckpoint,
   clearControlRequest,
   controlRequestPath,
+  latestTechnicalObservation,
   requestRecovery,
 };

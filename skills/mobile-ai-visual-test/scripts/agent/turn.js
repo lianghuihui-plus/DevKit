@@ -70,6 +70,7 @@ function prevalidateTurn(execDir, input, options = {}) {
   const loaded = readExecution(execDir);
   validateLiveAgentBinding(execDir);
   const { execution, sourceText } = loaded;
+  const eventPhase = options.phaseOverride || execution.phase;
   requireBoundRuntime(execDir, execution.executionId);
   if (execution.finalized) throw contractError('EXECUTION_FINALIZED', 'finalized execution is read-only');
   assertAgentWriteReady(execDir, { allowedTurnId: turn.turnId });
@@ -95,7 +96,7 @@ function prevalidateTurn(execDir, input, options = {}) {
   const reviewedQueries = new Set(events.filter((entry) => entry.type === 'knowledgeReview').map((entry) => entry.queryId));
   if (turn.understanding) {
     eventCandidates.push({
-      type: 'caseUnderstood', writer: 'agent', phase: execution.phase,
+      type: 'caseUnderstood', writer: 'agent', phase: eventPhase,
       understandingRevision: turn.understanding.revision,
       sourceRefs: turn.understanding.sourceRefs.map((entry) => entry.id),
       turnId: turn.turnId, factId: 'understanding',
@@ -103,16 +104,16 @@ function prevalidateTurn(execDir, input, options = {}) {
   }
   if (turn.plan) {
     eventCandidates.push({
-      type: 'planRevised', writer: 'agent', phase: execution.phase,
+      type: 'planRevised', writer: 'agent', phase: eventPhase,
       planRevision: turn.plan.revision, planSha: turn.plan.planSha, reason: turn.plan.reason,
       turnId: turn.turnId, factId: 'plan',
     });
   }
   for (const fact of turn.facts) {
-    const candidateEvent = { ...fact, writer: 'agent', phase: execution.phase, turnId: turn.turnId };
+    const candidateEvent = { ...fact, writer: 'agent', phase: eventPhase, turnId: turn.turnId };
     validateExecutionEvent({ schemaVersion: 1, executionId: execution.executionId, time: execution.startedAt, ...candidateEvent }, {
       executionId: execution.executionId,
-      phase: execution.phase,
+      phase: eventPhase,
     });
     if (fact.type === 'checkpointFinding') {
       if (!plan || fact.planRevision !== plan.revision || !plan.checkpoints.some((entry) => entry.id === fact.checkpointId)) {
@@ -197,7 +198,7 @@ function prevalidateTurn(execDir, input, options = {}) {
     eventCandidates.push(candidateEvent);
   }
   for (const event of eventCandidates) {
-    validateExecutionEvent({ schemaVersion: 1, executionId: execution.executionId, time: execution.startedAt, ...event }, { executionId: execution.executionId, phase: execution.phase });
+    validateExecutionEvent({ schemaVersion: 1, executionId: execution.executionId, time: execution.startedAt, ...event }, { executionId: execution.executionId, phase: eventPhase });
   }
   return {
     execution,

@@ -50,7 +50,7 @@ const EVENT_PHASES = Object.freeze({
   startEstablished: new Set(['ESTABLISH_START']),
   caseUnderstood: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   planRevised: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
-  checkpointFinding: new Set(['ESTABLISH_START', 'EXECUTE', 'INVESTIGATE']),
+  checkpointFinding: new Set(['ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   reflection: new Set(['EXECUTE', 'INVESTIGATE']),
   knowledgeQuery: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   knowledgeAssessment: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),

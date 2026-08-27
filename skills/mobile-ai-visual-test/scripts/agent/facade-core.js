@@ -678,6 +678,13 @@ function checkpointFacts(current, findings) {
 
 function assertConclusionEligibility(current, input, findings, checkpointFindings, defaults) {
   const technicalBlocked = input.verdict === 'BLOCKED' && defaults.verdictBasis === 'TECHNICAL_CONSTRAINT';
+  const timeLimitObservationGap = current.events.some((event) => event.type === 'timeLimitReached'
+    && event.observationUnavailable === true);
+  if (timeLimitObservationGap && input.verdict !== 'INCONCLUSIVE') {
+    throw contractError('RESULT_SEMANTICS_INVALID', 'a time-limit observation gap can only conclude as INCONCLUSIVE', {
+      fieldPath: 'verdict', allowed: ['INCONCLUSIVE'], received: input.verdict,
+    });
+  }
   const startEstablished = hasCurrentStartObservation(
     current.events,
     current.understanding.revision,
@@ -688,7 +695,7 @@ function assertConclusionEligibility(current, input, findings, checkpointFinding
       fieldPath: 'verdict', expected: 'current startEstablished evidence before PASS or FAIL', received: input.verdict,
     });
   }
-  if (!technicalBlocked && !current.observation) {
+  if (!technicalBlocked && !current.observation && !(timeLimitObservationGap && input.verdict === 'INCONCLUSIVE')) {
     throw contractError('CURRENT_OBSERVATION_REQUIRED', `${input.verdict} requires a current usable observation`);
   }
   if (input.verdict === 'PASS') {
@@ -750,6 +757,8 @@ function conclude(execDir, input, options = {}) {
   const completedKnowledgeReviews = new Set(current.events.filter((event) => event.type === 'knowledgeReview').map((event) => event.queryId));
   const queryRefs = input.queryRefs || (completedKnowledgeReviews.size ? [...completedKnowledgeReviews] : allKnowledgeQueryRefs);
   const defaults = defaultResultFields(input, current.events);
+  const stoppedWithoutObservation = current.events.some((event) => event.type === 'timeLimitReached'
+    && event.observationUnavailable === true);
   const businessNegative = ['FAIL', 'INCONCLUSIVE'].includes(input.verdict)
     || (input.verdict === 'BLOCKED' && defaults.verdictBasis !== 'TECHNICAL_CONSTRAINT');
   if (businessNegative && queryRefs.length === 0) {
@@ -763,16 +772,21 @@ function conclude(execDir, input, options = {}) {
       fieldPath: 'queryRefs', expected: 'queryRefs with completed knowledgeReview', received: unreviewedQueryRefs,
     });
   }
+  const uncertainties = [...new Set([
+    ...(input.uncertainties || []),
+    ...(stoppedWithoutObservation && !(input.uncertainties || []).length
+      ? ['最新状态变更后未取得可用观察'] : []),
+  ])];
   const proposedResult = {
     verdict: input.verdict,
     ...defaults,
     summary: input.summary,
     requirementFindings: findings,
-    uncertainties: input.uncertainties || [],
+    uncertainties,
   };
   const conclusionFacts = checkpointFacts(current, findings);
   assertConclusionEligibility(current, input, findings, conclusionFacts, defaults);
-  let execution = readJson(path.join(execDir, 'execution.json'), null);
+  const execution = readJson(path.join(execDir, 'execution.json'), null);
   if (execution.finalized === true) {
     const existing = readJson(path.join(execDir, 'result.json'), null);
     const fields = ['verdict', 'executionStatus', 'verdictBasis', 'summary', 'requirementFindings', 'uncertainties', 'technicalFailureCode'];
@@ -788,39 +802,21 @@ function conclude(execDir, input, options = {}) {
       idempotent: true,
     }, options);
   }
-  if (execution.phase === 'UNDERSTAND' || (execution.phase === 'CONCLUDE'
-    && !hasCurrentStartObservation(current.events, current.understanding.revision, execution.warmSessionGeneration))) {
-    changePhase(execDir, 'ESTABLISH_START', '进入可记录检查点结论的执行阶段', {
-      implementationSha: execution.implementationSha,
-      now: options.now,
-    });
-    execution = readJson(path.join(execDir, 'execution.json'), null);
-  } else if (execution.phase === 'CONCLUDE') {
-    changePhase(execDir, 'EXECUTE', '继续提交语义化检查点结论', { implementationSha: execution.implementationSha, now: options.now });
-  }
-  const turn = {
-    schemaVersion: 1,
-    turnId: sha256(canonicalJson({ planSha: current.plan.planSha, findings }), 'turn-conclusion', 16),
-    facts: conclusionFacts,
-  };
-  const findingTurn = commitAgentTurn(execDir, turn, options);
-  const refreshed = context(execDir);
-  const stoppedWithoutObservation = refreshed.events.some((event) => event.type === 'timeLimitReached' && event.observationUnavailable === true);
-  const recoveryEvents = refreshed.events.filter((event) => event.type === 'recoveryCompleted');
-  const review = defaults.verdictBasis === 'TECHNICAL_CONSTRAINT' && !refreshed.observation && !stoppedWithoutObservation ? null : {
-    factId: sha256(canonicalJson({ verdict: input.verdict, planSha: refreshed.plan.planSha, findings }), 'review', 16),
+  const recoveryEvents = current.events.filter((event) => event.type === 'recoveryCompleted');
+  const review = defaults.verdictBasis === 'TECHNICAL_CONSTRAINT' && !current.observation && !stoppedWithoutObservation ? null : {
+    factId: sha256(canonicalJson({ verdict: input.verdict, planSha: current.plan.planSha, findings }), 'review', 16),
     type: 'verdictReview',
-    understandingRevision: refreshed.understanding.revision,
-    planRevision: refreshed.plan.revision,
-    planSha: refreshed.plan.planSha,
-    requirementRefs: refreshed.understanding.requirements.map((entry) => entry.id),
+    understandingRevision: current.understanding.revision,
+    planRevision: current.plan.revision,
+    planSha: current.plan.planSha,
+    requirementRefs: current.understanding.requirements.map((entry) => entry.id),
     queryRefs,
     requestedVerdict: input.verdict,
     sourceRecheck: {
-      sourceRefs: refreshed.understanding.sourceRefs.map((entry) => entry.id),
-      conclusion: input.sourceRecheck || `已按冻结原文复核全部 ${refreshed.understanding.requirements.length} 项要求`,
+      sourceRefs: current.understanding.sourceRefs.map((entry) => entry.id),
+      conclusion: input.sourceRecheck || `已按冻结原文复核全部 ${current.understanding.requirements.length} 项要求`,
     },
-    currentObservationRefs: refreshed.observation ? [refreshed.observation.ref] : [],
+    currentObservationRefs: current.observation ? [current.observation.ref] : [],
     ...(stoppedWithoutObservation ? { observationUnavailable: true } : {}),
     recoveryAttempt: {
       performed: recoveryEvents.length > 0,
@@ -829,11 +825,19 @@ function conclude(execDir, input, options = {}) {
         : '未发现需要额外执行受控恢复的技术异常'),
       evidenceRefs: input.recoveryEvidenceRefs || [],
     },
-    remainingUncertainties: input.uncertainties || [],
+    remainingUncertainties: uncertainties,
     reason: input.reason || input.summary,
   };
-  const finalized = finalizeWithReview(execDir, proposedResult, review, { reason: input.summary, now: options.now });
-  return withRuntimeState(execDir, { ...finalized, findingTurn }, options);
+  const turn = {
+    schemaVersion: 1,
+    turnId: sha256(canonicalJson({ verdict: input.verdict, planSha: current.plan.planSha, findings }), 'turn-conclusion', 16),
+    facts: [...conclusionFacts, ...(review ? [review] : [])],
+  };
+  const finalized = finalizeWithReview(execDir, proposedResult, turn, { reason: input.summary, now: options.now });
+  return withRuntimeState(execDir, {
+    ...finalized,
+    ...(finalized.conclusionTurn ? { findingTurn: finalized.conclusionTurn } : {}),
+  }, options);
 }
 
 module.exports = {

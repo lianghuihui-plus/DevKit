@@ -119,7 +119,8 @@ function schemas(platform) {
       generated: ['checkpointFinding', 'verdictReview', 'result identity', 'metrics', 'agentResult'],
     },
     runtimeState: {
-      required: ['phase', 'finalized', 'currentObservationRef', 'activeCheckpointRef', 'frameworkRecoveryPending', 'controlRequestPending', 'timeLimitReached', 'remainingMs', 'signals'],
+      required: ['phase', 'finalized', 'currentObservationRef', 'activeCheckpointRef', 'frameworkRecoveryPending', 'controlRequestPending', 'timeLimitReached', 'remainingMs', 'conclusionConstraint', 'signals'],
+      conclusionConstraint: 'TIME_LIMIT_OBSERVATION_GAP exposes only INCONCLUSIVE after the required knowledge review; NORMAL keeps verdict-specific guards',
       recoveryRule: 'internal transaction recovery belongs to the coordinator; Agent only waits for controlRequestPending to clear',
       timingNote: 'agentOrchestrationGapMs is residual Agent/tool orchestration time, not pure model thinking time',
     },
