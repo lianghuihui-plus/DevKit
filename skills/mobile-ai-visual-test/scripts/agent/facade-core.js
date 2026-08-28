@@ -22,6 +22,8 @@ const {
   turnDraftIds,
 } = require('../execution/core');
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
+const { sourceSha } = require('../execution/contracts/case-contract');
+const { sourceLines } = require('../lib/source-reference');
 const { commitAgentTurn } = require('./turn');
 const {
   alignOperationPhase,
@@ -103,7 +105,7 @@ function context(execDir) {
 
 function withRuntimeState(execDir, value, options = {}) {
   const { readAgentStatus } = require('./status');
-  return { ...value, runtimeState: readAgentStatus(execDir, options.now) };
+  return { ...value, runtimeState: readAgentStatus(execDir, options.now, { includeEvidence: false }) };
 }
 
 function stageScope(stage) {
@@ -484,8 +486,25 @@ function normalizeUnderstandingInput(execDir, input) {
   const previousUnderstanding = current.understanding;
   const previousPlan = current.plan;
   if (!input.understanding && !previousUnderstanding) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'initial understand request requires understanding');
+  const sourceText = fs.readFileSync(path.join(execDir, 'source.snapshot.md'), 'utf8');
+  const rootSourceRef = {
+    id: 'source-case',
+    sourceSha: sourceSha(sourceText),
+    lineStart: 1,
+    lineEnd: sourceLines(sourceText).length,
+    quote: sourceText,
+  };
+  const freezeStatement = (statement) => ({
+    id: statement.id,
+    text: statement.text,
+    basis: statement.basis,
+    sourceRefs: statement.basis === 'assumed' ? [] : [rootSourceRef.id],
+  });
   const understanding = input.understanding ? {
-    ...input.understanding,
+    summary: input.understanding.summary,
+    sourceRefs: [rootSourceRef],
+    startConditions: ensureArray(input.understanding.startConditions, 'understanding.startConditions', 'AGENT_FACADE_INVALID').map(freezeStatement),
+    requirements: ensureArray(input.understanding.requirements, 'understanding.requirements', 'AGENT_FACADE_INVALID').map(freezeStatement),
     schemaVersion: 1,
     revision: (previousUnderstanding?.revision || 0) + 1,
     uncertainties: input.understanding.uncertainties || [],
@@ -516,9 +535,8 @@ function semanticUnderstanding(value) {
   if (!value) return null;
   return {
     summary: value.summary,
-    sourceRefs: value.sourceRefs,
-    startConditions: value.startConditions,
-    requirements: value.requirements,
+    startConditions: value.startConditions.map(({ id, text, basis }) => ({ id, text, basis })),
+    requirements: value.requirements.map(({ id, text, basis }) => ({ id, text, basis })),
     uncertainties: value.uncertainties || [],
     requirementDispositions: value.requirementDispositions || [],
   };

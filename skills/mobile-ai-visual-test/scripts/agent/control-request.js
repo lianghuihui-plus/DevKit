@@ -6,24 +6,14 @@ const { canonicalJson, contractError, ensureObject, ensureString, sha256 } = req
 const { currentObservation, latestStateChangeIndex, timelineEvents } = require('../execution/core');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
+const {
+  INCIDENT_RECOVERY_TRIGGERS,
+  RECOVERY_TRIGGERS,
+  incidentCategory,
+  isIncidentRecovery,
+} = require('../lib/recovery-contract');
 
 const CONTROL_REQUEST_FILE = 'control-request.json';
-const RECOVERY_TRIGGERS = new Set([
-  'SOURCE_REQUIRED_COLD_START',
-  'AGENT_DECIDED_RESTART',
-  'APP_CRASH',
-  'SYSTEM_KILLED',
-  'UNKNOWN_EXIT',
-  'APP_UNRESPONSIVE',
-  'AUTOMATION_SESSION_LOST',
-]);
-const INCIDENT_RECOVERY_TRIGGERS = new Set([
-  'APP_CRASH',
-  'SYSTEM_KILLED',
-  'UNKNOWN_EXIT',
-  'APP_UNRESPONSIVE',
-  'AUTOMATION_SESSION_LOST',
-]);
 
 function latestTechnicalObservation(events, warmSessionGeneration) {
   const boundary = latestStateChangeIndex(events);
@@ -70,6 +60,9 @@ function requestRecovery(execDir, input = {}, options = {}) {
       fieldPath: 'triggerType', allowed: [...RECOVERY_TRIGGERS],
     });
   }
+  const category = isIncidentRecovery(triggerType)
+    ? incidentCategory(input.incidentCategory, { errorCode: 'AGENT_CONTROL_REQUEST_INVALID' })
+    : null;
   const binding = validateLiveAgentBinding(execDir);
   const plan = readJson(path.join(execDir, 'plan.json'), null);
   if (!plan?.checkpoints?.length) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'recovery requires the current plan');
@@ -80,7 +73,8 @@ function requestRecovery(execDir, input = {}, options = {}) {
     ? latestTechnicalObservation(events, binding.execution.warmSessionGeneration)
     : null;
   const evidenceObservation = observation || technicalObservation;
-  const failedOperation = [...events].reverse().find((event) => event.type === 'operationCompleted'
+  const recoveryBoundary = events.map((event) => event.type).lastIndexOf('recoveryCompleted');
+  const failedOperation = events.slice(recoveryBoundary + 1).reverse().find((event) => event.type === 'operationCompleted'
     && event.outcome === 'FAILED' && event.failureCode);
   if (!evidenceObservation && triggerType !== 'SOURCE_REQUIRED_COLD_START'
     && (triggerType === 'AGENT_DECIDED_RESTART' || !failedOperation)) {
@@ -109,7 +103,7 @@ function requestRecovery(execDir, input = {}, options = {}) {
   const suffix = sha256(seed, '', 16);
   const incident = ['SOURCE_REQUIRED_COLD_START', 'AGENT_DECIDED_RESTART'].includes(triggerType) ? {} : {
     incidentId: `incident-${suffix}`,
-    incidentCategory: input.incidentCategory || 'TECHNICAL',
+    incidentCategory: category,
     incidentReason: input.reason.trim(),
   };
   const request = {

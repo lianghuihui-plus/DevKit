@@ -26,18 +26,6 @@ function completionPaths(execDir) {
   };
 }
 
-function validateHistoricalCompletionBinding(value, expected) {
-  for (const field of ['executionId', 'batchId', 'caseKey', 'platform', 'completionSource', 'environmentSha', 'preconditionInputsSha']) {
-    if ((value[field] || null) !== (expected[field] || null)) throw new Error(`Execution completion ${field} mismatch`);
-  }
-  if (!/^environment-[0-9a-f]{16}$/.test(value.environmentSha || '') || !/^precondition-inputs-[0-9a-f]{16}$/.test(value.preconditionInputsSha || '')) throw new Error('Execution completion frozen binding is invalid');
-  if (!['PASS', 'FAIL', 'BLOCKED', 'UNKNOWN'].includes(value.status) || !['PASS', 'FAIL', 'BLOCKED', 'UNKNOWN'].includes(value.businessStatus)) throw new Error('Execution completion status is invalid');
-  if (value.completionSource === 'framework' && (value.controlStatus !== 'NOT_REQUIRED' || value.status !== value.businessStatus || value.validationSha256)) throw new Error('Framework execution completion control state is invalid');
-  if (value.completionSource === 'agent' && (!['VALIDATED', 'BLOCKED'].includes(value.controlStatus) || !value.validationSha256)) throw new Error('Agent execution completion control state is invalid');
-  if (value.controlStatus === 'BLOCKED' && value.status !== 'BLOCKED') throw new Error('Blocked execution completion must publish BLOCKED');
-  return value;
-}
-
 function validateCurrentCompletionBinding(value, expected) {
   for (const field of ['executionId', 'batchId', 'caseKey', 'platform', 'completionSource', 'implementationSha', 'contractSha', 'batchContractSha']) {
     if ((value[field] || null) !== (expected[field] || null)) throw new Error(`Execution completion ${field} mismatch`);
@@ -57,41 +45,14 @@ function validateCurrentCompletionBinding(value, expected) {
   return value;
 }
 
-const COMPLETION_BINDING_VALIDATORS = Object.freeze({
-  1: validateHistoricalCompletionBinding,
-  2: validateCurrentCompletionBinding,
-});
-
 function validateCompletionBinding(value, expected) {
-  const validator = value && COMPLETION_BINDING_VALIDATORS[value.schemaVersion];
-  if (!validator) throw new Error(`Unsupported execution completion schema: ${value?.schemaVersion ?? 'missing'}`);
-  return validator(value, expected);
+  if (value?.schemaVersion !== 2) throw new Error(`Unsupported execution completion schema: ${value?.schemaVersion ?? 'missing'}`);
+  return validateCurrentCompletionBinding(value, expected);
 }
 
 function validatePublishedCompletion(execDir, completion, artifacts) {
-  if (completion?.schemaVersion === 2) return validateCurrentPublishedCompletion(execDir, completion, artifacts);
-  if (completion?.schemaVersion !== 1) throw new Error(`Unsupported execution completion schema: ${completion?.schemaVersion ?? 'missing'}`);
-  const paths = completionPaths(execDir);
-  const execution = artifacts.execution;
-  const result = artifacts.result;
-  const metrics = artifacts.metrics;
-  const snapshot = artifacts.snapshot;
-  if (!execution?.finalized || !result || !metrics || !snapshot) throw new Error('Execution completion artifacts are incomplete');
-  validateCompletionBinding(completion, {
-    executionId: execution.executionId,
-    batchId: execution.batchId,
-    caseKey: snapshot.identity?.caseKey,
-    platform: execution.environmentSnapshot?.binding?.platform || result.environment?.platform || null,
-    completionSource: completion.completionSource,
-    environmentSha: execution.environmentSha,
-    preconditionInputsSha: execution.preconditionInputsSha,
-  });
-  if (result.executionId !== execution.executionId || metrics.executionId !== execution.executionId || result.caseKey !== snapshot.identity?.caseKey) throw new Error('Execution completion artifact binding mismatch');
-  if (result.status !== metrics.status || (result.failureCode || null) !== (metrics.failureCode || null)) throw new Error('Execution completion business result mismatch');
-  if (result.environmentSha !== execution.environmentSha || metrics.environmentSha !== execution.environmentSha || result.preconditionInputsSha !== execution.preconditionInputsSha || metrics.preconditionInputsSha !== execution.preconditionInputsSha) throw new Error('Execution completion frozen artifact binding mismatch');
-  if (sha256File(paths.result) !== completion.resultSha256 || sha256File(paths.metrics) !== completion.metricsSha256) throw new Error('Execution completion artifact hash mismatch');
-  if (completion.validationSha256 && sha256File(path.join(execDir, 'agent', 'validation.json')) !== completion.validationSha256) throw new Error('Execution completion validation hash mismatch');
-  return completion;
+  if (completion?.schemaVersion !== 2) throw new Error(`Unsupported execution completion schema: ${completion?.schemaVersion ?? 'missing'}`);
+  return validateCurrentPublishedCompletion(execDir, completion, artifacts);
 }
 
 function validateCurrentPublishedCompletion(execDir, completion, artifacts) {
@@ -125,10 +86,7 @@ function validateCurrentPublishedCompletion(execDir, completion, artifacts) {
 
 function completionDisplayResult(result, completion) {
   if (!completion) return result;
-  if (completion.schemaVersion === 2) {
-    return { ...result, verdict: completion.verdict, executionStatus: completion.executionStatus, completionSource: completion.completionSource };
-  }
-  return { ...result, status: completion.status, failureCode: completion.failureCode || null, reason: completion.reason || result.reason || '', businessStatus: completion.businessStatus, businessFailureCode: completion.businessFailureCode || null, businessReason: result.reason || '', controlStatus: completion.controlStatus, completionSource: completion.completionSource };
+  return { ...result, verdict: completion.verdict, executionStatus: completion.executionStatus, completionSource: completion.completionSource };
 }
 
 module.exports = {
@@ -137,6 +95,5 @@ module.exports = {
   sha256File,
   validateCompletionBinding,
   validateCurrentCompletionBinding,
-  validateHistoricalCompletionBinding,
   validatePublishedCompletion,
 };

@@ -270,14 +270,12 @@ assert.strictEqual(device.calls.filter((request) => request.scope === 'batch-boo
 assert.strictEqual(device.calls.filter((request) => request.scope === 'batch-recovery').length, 1);
 assert.strictEqual(timelineEvents(defect.execDir).some((event) => event.operationId === 'invalid-tap'), false);
 
-// Historical result remains readable beside current executions.
+// Retired execution schemas are rejected instead of entering a compatibility path.
 const historicalDir = path.join(temp, 'historical-execution');
 fs.mkdirSync(historicalDir);
 writeJsonAtomic(path.join(historicalDir, 'execution.json'), { schemaVersion: 2, executionId: 'execution-historical' });
-writeJsonAtomic(path.join(historicalDir, 'case.snapshot.json'), { identity: { caseKey: 'ck-historical' }, steps: [] });
 writeJsonAtomic(path.join(historicalDir, 'result.json'), { executionId: 'execution-historical', status: 'PASS', reason: '历史结果' });
-writeJsonAtomic(path.join(historicalDir, 'metrics.json'), { executionId: 'execution-historical', durationMs: 100, steps: { passed: 1, total: 1 } });
-assert.strictEqual(readExecutionReport(historicalDir).schemaFamily, 'historical');
+expectCode(() => readExecutionReport(historicalDir), 'EXECUTION_SCHEMA_UNSUPPORTED');
 
 fs.rmSync(temp, { recursive: true, force: true });
 delete process.env.MAVT_SELF_TEST;

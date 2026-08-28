@@ -12,8 +12,6 @@ const SUPPORT_FILES = Object.freeze([
   'scripts/lib/display-format.js',
   'scripts/lib/execution-reader.js',
   'scripts/lib/failure-catalog.js',
-  'scripts/lib/historical-case-contract.js',
-  'scripts/lib/historical-failure-catalog.js',
   'scripts/lib/knowledge-snapshot.js',
   'scripts/lib/execution-evidence.js',
   'scripts/lib/image-evidence.js',

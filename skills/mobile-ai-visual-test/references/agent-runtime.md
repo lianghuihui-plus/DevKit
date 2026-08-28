@@ -8,7 +8,7 @@ Runtime 使用 execution 内的逻辑 sessionId、batchId、implementationSha �
 
 同一 case 发生受控 App recovery 时不更换逻辑 session。协调器推进 warmSessionGeneration，同步重绑定 execution、Runtime 和当前 Agent request，按原 generation 归档旧 request，并生成新的 requestSha；恢复前 observation 不能再建立起点、授权动作或支撑当前结论，Agent 随后通过同一白名单重新观察现场。
 
-需要恢复 App 时，Case Agent 通过 `request-recovery` 只提交原因。Facade 自动冻结当前 execution、活动检查点和证据：Agent 主动重启使用当前可用 observation，事故恢复可以使用状态变化后的不可用 observation，首次观察前发生技术故障时使用失败 operation。原文明示必须冷启动时提交 `SOURCE_REQUIRED_COLD_START`，Facade 从活动检查点关联 requirement 自动绑定 sourceRef，因此可在首次观察前完成恢复且不生成事故。协调器收到 `RECOVER_APP` 后执行受控恢复，并在新隔离 session 中继续同一 execution。
+需要恢复 App 时，Case Agent 通过 `request-recovery` 提交原因，并可为事故选择 `PRODUCT/TECHNICAL`；省略分类时 Facade 使用 `TECHNICAL`，原因文本冻结为 `incidentReason`。Facade 自动冻结当前 execution、活动检查点和证据：Agent 主动重启使用当前可用 observation，事故恢复可以使用状态变化后的不可用 observation，首次观察前发生技术故障时使用失败 operation。原文明示必须冷启动时提交 `SOURCE_REQUIRED_COLD_START`，Facade 从活动检查点关联 requirement 自动绑定 sourceRef，因此可在首次观察前完成恢复且不生成事故。协调器收到 `RECOVER_APP` 后执行受控恢复，并在新隔离 session 中继续同一 execution。
 
 Case Agent 调用 `conclude` 后由 Facade 生成并输出 AgentResult，同时落盘为 `agent/result.json`；CLI 在返回前记录成功 conclude attempt。协调器核对 request、协议、实现、代次、result/metrics 和知识快照，再调用 batch commit 释放逻辑 session，随后冻结报告依赖的 `artifact-manifest.json`、发布 completion 并推进下一个 case。若 conclude 已完成 finalize 但 AgentResult 尚未落盘，协调器只从冻结产物做确定性修复，不重新执行用例。
 

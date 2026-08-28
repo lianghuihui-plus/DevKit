@@ -101,7 +101,7 @@ function controlStage(value) {
 
 function summarize(cases) {
   const verdicts = cases.map(effectiveVerdict);
-  const currentRuns = cases.flatMap((item) => item.platforms || []).filter((item) => item.schemaFamily === 'current');
+  const currentRuns = cases.flatMap((item) => item.platforms || []);
   return {
     total: cases.length,
     pass: verdicts.filter((value) => value === 'PASS').length,
@@ -142,18 +142,14 @@ function platformSummary(cases) {
 function platformActivity(platform) {
   const metrics = platform.currentMetrics || {};
   const counts = metrics.counts || {};
-  const historical = platform.schemaFamily === 'historical';
-  return historical
-    ? `步骤 ${platform.stepsSummary || '-'}`
-    : `计划 ${counts.planRevisions || 0} · 知识 ${counts.knowledgeQueries || 0} · 恢复 ${metrics.recoveryCount || 0}`;
+  return `计划 ${counts.planRevisions || 0} · 知识 ${counts.knowledgeQueries || 0} · 恢复 ${metrics.recoveryCount || 0}`;
 }
 
 function renderPlatformBreakdown(platforms) {
   if (platforms.length <= 1) return '';
   const rows = platforms.map((platform) => {
     const verdict = effectiveVerdict(platform);
-    const historical = platform.schemaFamily === 'historical';
-    const basis = historical ? (platform.stepsSummary || '-') : basisLabel(platform.verdictBasis);
+    const basis = basisLabel(platform.verdictBasis);
     const executionState = executionStatusLabel(platform.executionStatus);
     return `<div class="platform-breakdown-row">
       <div class="platform-cell"><span>平台</span><b>${escapeHtml(displayPlatform(platform.platform))}</b></div>
@@ -178,8 +174,8 @@ function renderCase(item, index) {
   const executionState = executionStatusLabel(item.executionStatus);
   const platformValue = executedPlatforms.length > 1
     ? `${executedPlatforms.length} 个平台`
-    : primary ? displayPlatform(primary.platform) : item.schemaFamily === 'historical' ? '历史执行' : '-';
-  const basis = item.schemaFamily === 'historical' ? (item.stepsSummary || '-') : basisLabel(item.verdictBasis);
+    : primary ? displayPlatform(primary.platform) : '-';
+  const basis = basisLabel(item.verdictBasis);
   const facts = hasExecution && !hasMultiplePlatforms ? `<div class="case-facts">
     <div class="case-fact"><span>执行平台</span><b>${escapeHtml(platformValue)}</b></div>
     <div class="case-fact"><span>结论依据</span><b>${escapeHtml(basis)}</b></div>

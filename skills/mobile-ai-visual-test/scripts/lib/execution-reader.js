@@ -16,27 +16,10 @@ function readJsonl(file) {
 }
 
 function executionSchemaFamily(execution, result) {
-  if (result?.schemaVersion === 1 || (result?.schemaVersion === undefined && [1, 2].includes(execution?.schemaVersion))) return 'historical';
   if (execution?.schemaVersion === 3 && result?.schemaVersion === 2) return 'current';
   const error = new Error(`Unsupported execution/result schema combination: execution=${execution?.schemaVersion ?? 'missing'}, result=${result?.schemaVersion ?? 'missing'}`);
   error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
   throw error;
-}
-
-function historicalDisplayModel(result, metrics, execution) {
-  return {
-    status: result?.status || 'NOT_RUN',
-    verdict: result?.status || null,
-    executionStatus: result ? 'COMPLETED' : null,
-    summary: result?.reason || result?.status || '',
-    uncertainties: [],
-    failureCode: result?.failureCode || null,
-    failedStep: result?.failedStep || null,
-    startedAt: result?.startedAt || execution?.startedAt || '',
-    endedAt: result?.endedAt || execution?.endedAt || '',
-    durationMs: metrics?.durationMs,
-    stepsSummary: metrics?.steps ? `${metrics.steps.passed || 0}/${metrics.steps.total || 0}` : null,
-  };
 }
 
 function currentDisplayModel(result, metrics, execution) {
@@ -95,27 +78,15 @@ function finalizationRecoveryDisplayModel(execution, metrics) {
   };
 }
 
-function invalidCompletionResult(family, result, message) {
-  if (family === 'current') {
-    return {
-      ...result,
-      requestedVerdict: result?.verdict || null,
-      verdict: 'BLOCKED',
-      executionStatus: 'TECHNICALLY_BLOCKED',
-      verdictBasis: 'TECHNICAL_CONSTRAINT',
-      summary: `完成态校验失败，业务结果未发布：${message}`,
-      technicalFailureCode: 'EXECUTION_COMPLETION_INVALID',
-    };
-  }
+function invalidCompletionResult(result, message) {
   return {
     ...result,
-    schemaVersion: 1,
-    executionId: result?.executionId,
-    caseKey: result?.caseKey,
-    status: 'BLOCKED',
-    failureCode: 'EXECUTION_COMPLETION_INVALID',
-    reason: `完成态校验失败，业务结果未发布：${message}`,
-    controlStatus: 'BLOCKED',
+    requestedVerdict: result?.verdict || null,
+    verdict: 'BLOCKED',
+    executionStatus: 'TECHNICALLY_BLOCKED',
+    verdictBasis: 'TECHNICAL_CONSTRAINT',
+    summary: `完成态校验失败，业务结果未发布：${message}`,
+    technicalFailureCode: 'EXECUTION_COMPLETION_INVALID',
   };
 }
 
@@ -140,17 +111,17 @@ function emptyExecutionReport(execDir = null) {
 
 function executionSelection(execDir) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
+  if (execution?.schemaVersion !== 3) return null;
   const result = readJson(path.join(execDir, 'result.json'), null);
   const completion = readJson(path.join(execDir, 'completion.json'), null);
-  const current = execution?.schemaVersion === 3;
   let priority = 1;
-  let state = 'HISTORICAL';
-  if (current && execution.finalized !== true) {
+  let state = 'ACTIVE';
+  if (execution.finalized !== true) {
     priority = 4;
     state = execution.lifecycle === 'FINALIZING' || fs.existsSync(path.join(execDir, 'finalization.draft.json'))
       ? 'FINALIZATION_RECOVERY_REQUIRED' : 'ACTIVE';
   }
-  else if (current && execution.finalized === true && result && !completion) { priority = 3; state = 'FINALIZED_PENDING_COMPLETION'; }
+  else if (execution.finalized === true && result && !completion) { priority = 3; state = 'FINALIZED_PENDING_COMPLETION'; }
   else if (completion) { priority = 2; state = 'PUBLISHED'; }
   const time = Date.parse(execution?.endedAt || execution?.startedAt || 0) || fs.statSync(execDir).mtimeMs;
   return { execDir, execution, result, completion, priority, state, time };
@@ -161,7 +132,7 @@ function selectExecutionDir(runtimeDir) {
   if (!fs.existsSync(root)) return null;
   return fs.readdirSync(root).filter((name) => !name.startsWith('.')).map((name) => path.join(root, name))
     .filter((execDir) => fs.statSync(execDir).isDirectory() && fs.existsSync(path.join(execDir, 'execution.json')))
-    .map(executionSelection)
+    .map(executionSelection).filter(Boolean)
     .sort((left, right) => right.priority - left.priority || right.time - left.time || right.execDir.localeCompare(left.execDir))[0] || null;
 }
 
@@ -203,18 +174,16 @@ function readExecutionReport(execDir) {
     return report;
   }
   report.schemaFamily = executionSchemaFamily(report.execution, report.rawResult);
-  if (report.schemaFamily === 'current') {
-    const sourcePath = path.join(execDir, 'source.snapshot.md');
-    report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
-    report.understanding = readJson(path.join(execDir, 'understanding.json'), null);
-    report.plan = readJson(path.join(execDir, 'plan.json'), null);
-  }
+  const sourcePath = path.join(execDir, 'source.snapshot.md');
+  report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
+  report.understanding = readJson(path.join(execDir, 'understanding.json'), null);
+  report.plan = readJson(path.join(execDir, 'plan.json'), null);
   if (report.execution?.batchId && report.execution.finalized === true && report.metrics && !report.completion) {
     try {
       validateResultKnowledgeSnapshots(execDir, report.rawResult, report.events);
     } catch (error) {
       report.completionError = error.message || String(error);
-      report.result = invalidCompletionResult(report.schemaFamily, report.rawResult, report.completionError);
+      report.result = invalidCompletionResult(report.rawResult, report.completionError);
       report.display = currentDisplayModel(report.result, report.metrics, report.execution);
       return report;
     }
@@ -234,7 +203,7 @@ function readExecutionReport(execDir) {
       report.result = completionDisplayResult(report.rawResult, report.completion);
     } catch (error) {
       report.completionError = error.message || String(error);
-      report.result = invalidCompletionResult(report.schemaFamily, report.rawResult, report.completionError);
+      report.result = invalidCompletionResult(report.rawResult, report.completionError);
       report.completion = null;
       if (/EXECUTION_ARTIFACT_/.test(report.completionError)) {
         report.sourceText = '';
@@ -244,9 +213,7 @@ function readExecutionReport(execDir) {
       }
     }
   }
-  report.display = report.schemaFamily === 'current'
-    ? currentDisplayModel(report.result, report.metrics, report.execution)
-    : historicalDisplayModel(report.result, report.metrics, report.execution);
+  report.display = currentDisplayModel(report.result, report.metrics, report.execution);
   return report;
 }
 
@@ -255,7 +222,6 @@ module.exports = {
   emptyExecutionReport,
   executionSchemaFamily,
   finalizationRecoveryDisplayModel,
-  historicalDisplayModel,
   pendingCompletionDisplayModel,
   readExecutionReport,
   selectExecutionDir,

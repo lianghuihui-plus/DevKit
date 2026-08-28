@@ -27,7 +27,6 @@ const suites = Object.freeze({
   integration: 'tests/agent-integration.test.js',
   gateway: 'tests/device-gateway.test.js',
   entrypoints: 'tests/formal-entrypoints.test.js',
-  cutover: 'tests/cutover-readiness.test.js',
 });
 
 const requested = process.argv.slice(2);

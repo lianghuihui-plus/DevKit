@@ -32,6 +32,7 @@ const EVENT_WRITERS = Object.freeze({
   runtimeIncident: 'runtime-core',
   recoveryStarted: 'runtime-core',
   recoveryCompleted: 'runtime-core',
+  controlRequestClosed: 'runtime-core',
 });
 const KNOWLEDGE_ASSESSMENTS = new Set(['APPLICABLE', 'NOT_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT']);
 const KNOWLEDGE_REVIEW_CONCLUSIONS = new Set(['NO_MATCH', 'APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT']);
@@ -60,6 +61,7 @@ const EVENT_PHASES = Object.freeze({
   runtimeIncident: new Set(['ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   recoveryStarted: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   recoveryCompleted: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
+  controlRequestClosed: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
 });
 
 function validateStringArray(value, label) {
@@ -256,6 +258,7 @@ function validateExecutionEvent(value, options = {}) {
       ensureString(value.triggerType, 'triggerType', 'EXECUTION_EVENT_INVALID');
       if (!['PRODUCT', 'TECHNICAL'].includes(value.category)) throw contractError('EXECUTION_EVENT_INVALID', 'incident category is invalid');
       validateStringArray(value.evidenceRefs, 'evidenceRefs');
+      if (value.failedOperationId !== null) ensureId(value.failedOperationId, 'failedOperationId', 'EXECUTION_EVENT_INVALID');
       ensureString(value.reason, 'reason', 'EXECUTION_EVENT_INVALID');
       break;
     case 'recoveryStarted':
@@ -267,6 +270,17 @@ function validateExecutionEvent(value, options = {}) {
       if (value.incidentId !== null) ensureId(value.incidentId, 'incidentId', 'EXECUTION_EVENT_INVALID');
       if (!['SUCCEEDED', 'FAILED'].includes(value.status)) throw contractError('EXECUTION_EVENT_INVALID', 'recovery status is invalid');
       ensureInteger(value.warmSessionGeneration, 'warmSessionGeneration', 'EXECUTION_EVENT_INVALID', 1);
+      ensureString(value.requestSha, 'requestSha', 'EXECUTION_EVENT_INVALID');
+      break;
+    case 'controlRequestClosed':
+      ensureId(value.recoveryId, 'recoveryId', 'EXECUTION_EVENT_INVALID');
+      ensureString(value.triggerType, 'triggerType', 'EXECUTION_EVENT_INVALID');
+      ensureId(value.checkpointId, 'checkpointId', 'EXECUTION_EVENT_INVALID');
+      validateStringArray(value.evidenceRefs, 'evidenceRefs');
+      validateStringArray(value.sourceRefs, 'sourceRefs');
+      if (value.failedOperationId !== null) ensureId(value.failedOperationId, 'failedOperationId', 'EXECUTION_EVENT_INVALID');
+      ensureString(value.requestSha, 'requestSha', 'EXECUTION_EVENT_INVALID');
+      if (value.closureReason !== 'TIME_LIMIT_REACHED') throw contractError('EXECUTION_EVENT_INVALID', 'control request closure reason is invalid');
       break;
     default:
       break;

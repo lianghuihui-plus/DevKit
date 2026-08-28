@@ -43,6 +43,7 @@ const {
 const { validateBatchContract } = require('../lib/batch-contract');
 const { buildContract } = require('../build-agent-contract');
 const { createAgentResult } = require('../agent/core');
+const { controlRequestPath } = require('../agent/control-request');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -464,6 +465,30 @@ assert.strictEqual(agentRecovery.recovery.status, 'SUCCEEDED');
 assert.strictEqual(agentRecovery.recovery.decisionReason.includes('Agent 判断'), true);
 assert.strictEqual(timelineEvents(agentRecoveryCase.execDir).some((event) => event.type === 'runtimeIncident'), false);
 
+// Invalid incident categories are rejected by the current consumer contract.
+const invalidCategoryFixture = initializeAndBootstrap('invalid-incident-category');
+const invalidCategoryCase = startPrepared(invalidCategoryFixture, 0, { checkpoints: ['cp-invalid-category'] });
+enterBusiness(invalidCategoryCase);
+const invalidCategoryEvidence = addObservation(invalidCategoryCase, 'invalid-category-evidence');
+const invalidCategoryRequest = {
+  ...incidentRequest({
+    recoveryId: 'recovery-invalid-category',
+    executionId: invalidCategoryCase.execution.executionId,
+    checkpointId: 'cp-invalid-category',
+    triggerType: 'UNKNOWN_EXIT',
+    evidenceRefs: [invalidCategoryEvidence],
+  }, 'TARGET_APP_LEFT_FOREGROUND'),
+  generatedBy: 'agent-facade',
+};
+expectCode(() => recoverApp({
+  workspaceRoot: invalidCategoryFixture.root,
+  batchId: invalidCategoryFixture.batchId,
+  implementationSha: IMPLEMENTATION_SHA,
+  adapter: invalidCategoryFixture.adapter,
+  request: invalidCategoryRequest,
+  now: T0,
+}), 'RECOVERY_INVALID');
+
 // Recovery validates trigger evidence, is idempotent, and updates both warm and Agent generations.
 const recoveryFixture = initializeAndBootstrap('recovery', ['recovery-case']);
 const recoveryCase = startPrepared(recoveryFixture, 0, { checkpoints: ['cp-source', 'cp-crash', 'cp-system', 'cp-unknown', 'cp-failure'] });
@@ -746,6 +771,26 @@ const deadlineReconcile = initializeAndBootstrap('reconcile-deadline');
 startPrepared(deadlineReconcile);
 assert.strictEqual(reconcileBatch({ workspaceRoot: deadlineReconcile.root, batchId: deadlineReconcile.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: deadlineReconcile.adapter, now: '2026-08-13T10:29:59.999Z' }).action, 'RESUME_EXECUTION');
 assert.strictEqual(reconcileBatch({ workspaceRoot: deadlineReconcile.root, batchId: deadlineReconcile.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: deadlineReconcile.adapter, now: '2026-08-13T10:30:00.000Z' }).action, 'CONCLUDE_TIME_LIMIT');
+
+const deadlineControlFixture = initializeAndBootstrap('reconcile-deadline-control');
+const deadlineControlCase = startPrepared(deadlineControlFixture, 0, { checkpoints: ['cp-deadline-control'] });
+enterBusiness(deadlineControlCase);
+const deadlineControlEvidence = addObservation(deadlineControlCase, 'deadline-control-evidence');
+const deadlineControlRequest = incidentRequest({
+  recoveryId: 'recovery-deadline-control', executionId: deadlineControlCase.execution.executionId,
+  checkpointId: 'cp-deadline-control', triggerType: 'UNKNOWN_EXIT', evidenceRefs: [deadlineControlEvidence],
+});
+writeJsonAtomic(controlRequestPath(deadlineControlCase.execDir), deadlineControlRequest);
+const deadlineControlResult = reconcileBatch({
+  workspaceRoot: deadlineControlFixture.root, batchId: deadlineControlFixture.batchId,
+  implementationSha: IMPLEMENTATION_SHA, adapter: deadlineControlFixture.adapter, now: '2026-08-13T10:30:00.000Z',
+});
+assert.strictEqual(deadlineControlResult.action, 'CONCLUDE_TIME_LIMIT');
+assert.strictEqual(fs.existsSync(controlRequestPath(deadlineControlCase.execDir)), false);
+const closedControl = timelineEvents(deadlineControlCase.execDir).find((event) => event.type === 'controlRequestClosed');
+assert.strictEqual(closedControl.recoveryId, deadlineControlRequest.recoveryId);
+assert.strictEqual(closedControl.closureReason, 'TIME_LIMIT_REACHED');
+assert.match(closedControl.requestSha, /^recovery-request-/);
 
 const degradedReconcile = initializeAndBootstrap('reconcile-degraded');
 const degradedAdapter = makeAdapter({ probe: { ok: false, binding: BINDING } });

@@ -15,6 +15,7 @@ description: 当需要基于任意非空文本人工用例，对移动端应用�
 6. 只保留设备/App 绑定、真实证据、单用例 30 分钟时限、事务恢复和产物完整性等精确约束，不限制业务动作副作用。
 7. 同批次只在 bootstrap 冷启动一次 App；用例间复用暖状态，但每个用例使用独立 execution、Agent session，并重新建立自己的起点；批次终态由协调器逐项释放框架托管的 iOS Appium、WDA 和端口转发资源。
 8. 环境确认与执行授权分离；批量执行开始后全程无人值守，不向用户提问或等待回复。
+9. 只接受当前协议和当前实现；`implementationSha` 不一致时结束原批次并新建 batch，不转换、改写或兼容旧产物。
 
 ## 角色资料
 
@@ -73,17 +74,17 @@ understand
 -> conclude
 ```
 
-- `understand` 提交业务理解和检查点；框架自动生成 understanding/plan revision、turnId、planSha 和检查点状态。同一语义检查点跨计划修订保持稳定 ID，可继承当前暖会话代次的既有证据；检查点语义完全变化时使用新 ID。
+- `understand` 只提交业务理解和检查点；框架从冻结的 `source.snapshot.md` 生成原文引用，并自动生成 understanding/plan revision、turnId、planSha 和检查点状态。同一语义检查点跨计划修订保持稳定 ID，可继承当前暖会话代次的既有证据；检查点语义完全变化时使用新 ID。
 - `inspect` 取得当前截图、控件树精简元素和诊断资料；它不自动确认起点。
 - `step` 只提交意图、检查点和语义动作；优先使用 `targetRef`，视觉坐标使用原图 0..1 归一化值。框架自动执行一个动作并采集动作后观察。
 - 框架自动报告布局是否可用、键盘/焦点/坐标一致性、动作前后状态变化及关键冲突；iOS 键盘坐标冲突时先用 `dismissKeyboard` 取得新现场，坐标动作不会冒险发送。
 - `inputText` 是平台级整串输入能力；平台适配器在同一次 step 内完成有界降级和效果核对，Case Agent 不通过逐字符点击模拟底层文本输入。
 - `mark-start` 显式确认最新 PREPARE 现场满足本用例起点，然后进入业务执行。
-- `request-recovery` 只在原文明示冷启动、App 意外退出或 Agent 主动判断必须重启时提交原因和触发类型；框架自动补齐 execution、检查点、sourceRef 或现场证据。事故恢复可以引用状态变化后的不可用技术观察，Agent 主动重启仍要求当前可用观察。
+- `request-recovery` 只在原文明示冷启动、App 意外退出或 Agent 主动判断必须重启时提交原因和触发类型；事故分类只允许 `PRODUCT` 或 `TECHNICAL`，具体故障描述写入 `reason`。框架自动补齐 execution、检查点、sourceRef 或现场证据。事故恢复可以引用状态变化后的不可用技术观察，Agent 主动重启仍要求当前可用观察。
 - `investigate` 查询知识或评估候选适用性；零命中由框架自动闭合调查，有候选时 Agent 提交相关候选评估和查询级结论，候选本身不能改变结论。
 - `conclude` 提交 verdict、summary 和逐 requirement finding；框架自动生成 checkpointFinding、verdictReview、result、metrics 和 AgentResult。
 
-每个成功响应都带最新 `runtimeState`。正常执行直接使用它；只有重连或响应不确定时调用 `status`。内部 step、operation、turn 和知识查询草稿全部由协调器恢复，Case Agent 不组装恢复请求；`controlRequestPending=true` 时结束当前任务，等待协调器恢复后创建新的隔离 Agent。
+每个成功语义响应都带不含完整证据清单的轻量 `runtimeState`，正常执行直接使用它；只有重连或响应不确定时调用 `status` 读取完整状态和证据清单。内部 step、operation、turn 和知识查询草稿全部由协调器恢复，Case Agent 不组装恢复请求；`controlRequestPending=true` 时结束当前任务，等待协调器恢复后创建新的隔离 Agent。
 
 `conclude` 成功后，协调器先记录入口 attempt 并释放 Agent Runtime，再生成 `artifact-manifest.json` 和发布 completion；Case Agent 不直接封存或发布产物。
 

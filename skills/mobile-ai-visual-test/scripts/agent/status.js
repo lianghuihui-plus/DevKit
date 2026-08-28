@@ -64,7 +64,7 @@ function stepRecoveries(execDir) {
   });
 }
 
-function readAgentStatus(execDir, now = new Date().toISOString()) {
+function readAgentStatus(execDir, now = new Date().toISOString(), options = {}) {
   const binding = validateLiveAgentBinding(execDir);
   const execution = readJson(path.join(execDir, 'execution.json'), null);
   const runtime = readJson(path.join(execDir, 'agent', 'runtime.json'), null);
@@ -116,7 +116,7 @@ function readAgentStatus(execDir, now = new Date().toISOString()) {
     && pendingRecoveries.length === 0 && knowledgeQueryRecoveries.length === 0 && pendingTurnRecoveries.length === 0
     && pendingStepRecoveries.length === 0 && !controlRequest
     && ['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE'].includes(execution.phase);
-  return {
+  const status = {
     schemaVersion: 1,
     executionId: execution.executionId,
     sessionId: runtime.sessionId,
@@ -130,12 +130,6 @@ function readAgentStatus(execDir, now = new Date().toISOString()) {
     checkpointProgress: deriveCheckpointProgress(plan, events, null, {
       warmSessionGeneration: execution.warmSessionGeneration,
     }),
-    evidence: evidence.map((entry) => ({
-      ref: entry.ref,
-      scope: entry.phase,
-      usable: entry.usable,
-      warmSessionGeneration: entry.warmSessionGeneration || null,
-    })),
     currentObservationRef: latestObservation?.ref || null,
     openOperationIds: openOperations(events).map((entry) => entry.operationId),
     operationRecoveries: pendingRecoveries,
@@ -171,6 +165,15 @@ function readAgentStatus(execDir, now = new Date().toISOString()) {
       knowledgeAvailable: Array.isArray(binding.request.knowledgeRoots) && binding.request.knowledgeRoots.length === 2,
     },
   };
+  if (options.includeEvidence !== false) {
+    status.evidence = evidence.map((entry) => ({
+      ref: entry.ref,
+      scope: entry.phase,
+      usable: entry.usable,
+      warmSessionGeneration: entry.warmSessionGeneration || null,
+    }));
+  }
+  return status;
 }
 
 function main(argv = process.argv.slice(2)) {

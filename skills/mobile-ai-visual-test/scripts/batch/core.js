@@ -48,25 +48,19 @@ const {
 const { createAgentRequest, rebindAgentRequestGeneration } = require('../agent/core');
 const { clearControlRequest, controlRequestPath } = require('../agent/control-request');
 const { recoverInternalTransactions } = require('./internal-recovery');
+const { decideRunningExecution } = require('./reconcile-policy');
 const { validateAgentRequest, validateAgentResult } = require('../lib/agent-driven-contract');
 const { assertWorkspace } = require('../lib/workspace');
 const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
 const { buildContract } = require('../build-agent-contract');
+const {
+  RECOVERY_TRIGGERS,
+  incidentCategory,
+  isIncidentRecovery,
+  recoveryRequestSha,
+} = require('../lib/recovery-contract');
 
 const BATCH_SCHEMA_VERSION = 3;
-const RECOVERY_TRIGGERS = new Set([
-  'SOURCE_REQUIRED_COLD_START',
-  'AGENT_DECIDED_RESTART',
-  'APP_CRASH',
-  'SYSTEM_KILLED',
-  'UNKNOWN_EXIT',
-  'APP_UNRESPONSIVE',
-  'AUTOMATION_SESSION_LOST',
-]);
-
-function isIncidentRecovery(triggerType) {
-  return !['SOURCE_REQUIRED_COLD_START', 'AGENT_DECIDED_RESTART'].includes(triggerType);
-}
 
 function assertBatchWorkspace(root) {
   try {
@@ -198,6 +192,7 @@ function completeRecoveryTimeline(execDir, recovery, implementationSha, now) {
       triggerType: recovery.triggerType,
       category: recovery.incidentCategory,
       evidenceRefs: recovery.evidenceRefs,
+      failedOperationId: recovery.failedOperationId || null,
       reason: recovery.incidentReason,
     }, { implementationSha, now });
   }
@@ -210,6 +205,8 @@ function completeRecoveryTimeline(execDir, recovery, implementationSha, now) {
     triggerType: recovery.triggerType,
     checkpointId: recovery.checkpointId,
     evidenceRefs: recovery.evidenceRefs || [],
+    failedOperationId: recovery.failedOperationId || null,
+    requestSha: recovery.requestSha,
     decisionReason: recovery.decisionReason || null,
     reason: recovery.reason || recovery.incidentReason || null,
     failureCode: recovery.failureCode || null,
@@ -754,8 +751,9 @@ function validateRecoveryRequest(request, state, item, execDir) {
       throw contractError('RECOVERY_REFERENCE_INVALID', 'incident recovery evidence must follow the latest state change');
     }
   }
+  const recoveryBoundary = events.map((event) => event.type).lastIndexOf('recoveryCompleted');
   const failedOperation = request.generatedBy === 'agent-facade' && request.failedOperationId
-    ? events.find((event) => event.type === 'operationCompleted'
+    ? events.slice(recoveryBoundary + 1).find((event) => event.type === 'operationCompleted'
       && event.operationId === request.failedOperationId && event.outcome === 'FAILED' && event.failureCode)
     : null;
   if (request.triggerType === 'SOURCE_REQUIRED_COLD_START' && !sourceRefs.length) throw contractError('RECOVERY_EVIDENCE_REQUIRED', 'source-required cold start needs sourceRefs');
@@ -767,7 +765,7 @@ function validateRecoveryRequest(request, state, item, execDir) {
   }
   if (isIncidentRecovery(request.triggerType)) {
     ensureId(request.incidentId, 'incidentId', 'RECOVERY_INVALID');
-    if (!['PRODUCT', 'TECHNICAL'].includes(request.incidentCategory)) throw contractError('RECOVERY_INVALID', 'incidentCategory must be PRODUCT or TECHNICAL');
+    incidentCategory(request.incidentCategory);
     if (typeof request.incidentReason !== 'string' || !request.incidentReason.trim()) throw contractError('RECOVERY_INVALID', 'incidentReason is required');
   }
   if (!request.checkpointId) throw contractError('RECOVERY_INVALID', 'checkpointId is required');
@@ -809,6 +807,7 @@ function recoverApp(options) {
     const request = options.request;
     ensureObject(request, 'recovery request', 'RECOVERY_INVALID');
     ensureId(request.recoveryId, 'recoveryId', 'RECOVERY_INVALID');
+    const requestExecution = recoveryExecutionDir(state, loaded.contract, request.executionId);
     const existing = state.recoveries.find((entry) => entry.recoveryId === request.recoveryId);
     if (existing) {
       const requestedBinding = {
@@ -818,6 +817,7 @@ function recoverApp(options) {
         triggerType: request.triggerType,
         sourceRefs: request.sourceRefs || [],
         evidenceRefs: request.evidenceRefs || [],
+        failedOperationId: request.failedOperationId || null,
         incidentId: request.incidentId || null,
         incidentCategory: request.incidentCategory || null,
         incidentReason: request.incidentReason || null,
@@ -830,6 +830,7 @@ function recoverApp(options) {
         triggerType: existing.triggerType,
         sourceRefs: existing.sourceRefs,
         evidenceRefs: existing.evidenceRefs,
+        failedOperationId: existing.failedOperationId || null,
         incidentId: existing.incidentId || null,
         incidentCategory: existing.incidentCategory || null,
         incidentReason: existing.incidentReason || null,
@@ -853,9 +854,7 @@ function recoverApp(options) {
       clearControlRequest(resolved.execDir, existing.recoveryId);
       return { state, recovery: existing, idempotent: true };
     }
-    const execDir = item?.executionId
-      ? path.join(caseRuntimeDir(item.caseDir, loaded.contract.binding.platform), 'executions', item.executionId)
-      : null;
+    const execDir = requestExecution.execDir;
     validateRecoveryRequest(request, state, item, execDir);
     if (isIncidentRecovery(request.triggerType)) {
       recordRuntimeEvent(execDir, {
@@ -864,6 +863,7 @@ function recoverApp(options) {
         triggerType: request.triggerType,
         category: request.incidentCategory,
         evidenceRefs: request.evidenceRefs || [],
+        failedOperationId: request.failedOperationId || null,
         reason: request.incidentReason,
       }, { implementationSha: state.implementationSha, now: options.now });
     }
@@ -909,10 +909,14 @@ function recoverApp(options) {
       triggerType: request.triggerType,
       sourceRefs: request.sourceRefs || [],
       evidenceRefs: request.evidenceRefs || [],
+      failedOperationId: request.failedOperationId || null,
       incidentId: request.incidentId || null,
       incidentCategory: request.incidentCategory || null,
       incidentReason: request.incidentReason || null,
       decisionReason: request.decisionReason || null,
+      generatedBy: request.generatedBy || null,
+      requestedAt: request.requestedAt || null,
+      requestSha: recoveryRequestSha(request),
       requestId: draft.requestId,
       noAutomaticReplay: true,
       time: options.now || new Date().toISOString(),
@@ -1040,7 +1044,27 @@ function reconcileBatch(options) {
       ? recoverInternalTransactions(entry.execDir, { now: options.now, runner: options.runner })
       : { recovered: [] };
     entry.execution = readJson(path.join(entry.execDir, 'execution.json'), entry.execution);
-    if (runtime.status === 'BOUND' && caseDeadlineReached(entry.execDir, entry.execution, options.now)) {
+    const deadlineReached = runtime.status === 'BOUND'
+      && caseDeadlineReached(entry.execDir, entry.execution, options.now);
+    const controlRequest = readJson(controlRequestPath(entry.execDir), null);
+    const decision = runtime.status === 'BOUND'
+      ? decideRunningExecution({ deadlineReached, controlRequest })
+      : null;
+    if (decision === 'CLOSE_CONTROL_AND_CONCLUDE_TIME_LIMIT') {
+      recordRuntimeEvent(entry.execDir, {
+        type: 'controlRequestClosed',
+        recoveryId: controlRequest.recoveryId,
+        triggerType: controlRequest.triggerType,
+        checkpointId: controlRequest.checkpointId,
+        evidenceRefs: controlRequest.evidenceRefs || [],
+        sourceRefs: controlRequest.sourceRefs || [],
+        failedOperationId: controlRequest.failedOperationId || null,
+        requestSha: recoveryRequestSha(controlRequest),
+        closureReason: 'TIME_LIMIT_REACHED',
+      }, { implementationSha: state.implementationSha, now: options.now });
+      clearControlRequest(entry.execDir, controlRequest.recoveryId);
+    }
+    if (decision === 'CLOSE_CONTROL_AND_CONCLUDE_TIME_LIMIT' || decision === 'CONCLUDE_TIME_LIMIT') {
       const pendingAgentRecovery = operationDraftIds(entry.execDir).length > 0
         || knowledgeQueryDraftIds(entry.execDir).length > 0
         || turnDraftIds(entry.execDir).length > 0
@@ -1048,11 +1072,10 @@ function reconcileBatch(options) {
       if (!pendingAgentRecovery) sealTimeLimit(entry.execDir, { implementationSha: state.implementationSha, now: options.now });
       return { action: 'CONCLUDE_TIME_LIMIT', state, execDir: entry.execDir, sessionId: runtime.sessionId, internalRecovery: internalRecovery.recovered };
     }
-    const controlRequest = readJson(controlRequestPath(entry.execDir), null);
-    if (runtime.status === 'BOUND' && controlRequest) {
+    if (decision === 'RECOVER_APP') {
       return { action: 'RECOVER_APP', state, execDir: entry.execDir, sessionId: runtime.sessionId, recoveryRequest: controlRequest, internalRecovery: internalRecovery.recovered };
     }
-    if (runtime.status === 'BOUND') return requireDeviceSession() || {
+    if (decision === 'RESUME_EXECUTION') return requireDeviceSession() || {
       action: 'RESUME_EXECUTION', state, execDir: entry.execDir, sessionId: runtime.sessionId, internalRecovery: internalRecovery.recovered,
     };
     if (runtime.status === 'RELEASED') return stopBatch(loaded.paths, state, 'BLOCKED', 'AGENT_RUNTIME_RELEASED_EARLY', 'unfinalized execution has a released Agent session', { now: options.now });

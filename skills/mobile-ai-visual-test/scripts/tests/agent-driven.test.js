@@ -245,7 +245,6 @@ for (const relative of [
   'scripts/prepare-env.sh',
 ]) assert.strictEqual(targetContract.implementationFiles.includes(relative), true, `${relative} must affect implementationSha`);
 for (const relative of [
-  'scripts/lib/historical-case-contract.js',
   'scripts/lib/execution-reader.js',
   'scripts/report/report-service.js',
   'scripts/report/renderer-manifest.js',
@@ -309,7 +308,7 @@ assert.match(runtimeContract.behavior.planRevision, /do not create plan revision
 assert.match(runtimeContract.schemas.conclude.knowledgeRule, /direct-evidence PASS/);
 assert.deepStrictEqual(request.skillContract.requiredResources, ['SKILL.md', 'references/agent-execution.md', 'references/knowledge.md']);
 assert.deepStrictEqual(runtimeContract.schemas.understand.generated, [
-  'schemaVersion', 'turnId', 'understanding.revision', 'plan.revision', 'plan.planSha',
+  'schemaVersion', 'turnId', 'understanding.revision', 'understanding.sourceRefs', 'statement.sourceRefs', 'plan.revision', 'plan.planSha',
 ]);
 assert.ok(runtimeContract.schemas.step.generated.includes('operationId'));
 assert.ok(runtimeContract.schemas.step.generated.includes('authorization'));
@@ -553,6 +552,7 @@ expectCode(() => assertCurrentObservationRefs(timelineEvents(observationTiming.e
 assert.strictEqual(assertCurrentObservationRefs(timelineEvents(observationTiming.execDir), [latestObservation]).latest.ref, latestObservation);
 recordRuntimeEvent(observationTiming.execDir, {
   type: 'recoveryCompleted', recoveryId: 'recovery-timing', incidentId: null, status: 'SUCCEEDED', warmSessionGeneration: 1,
+  requestSha: 'recovery-request-test',
 }, { implementationSha: observationTiming.contract.implementationSha, now: T0 });
 expectCode(() => assertCurrentObservationRefs(timelineEvents(observationTiming.execDir), [latestObservation]), 'CURRENT_OBSERVATION_STALE');
 assert.deepStrictEqual([

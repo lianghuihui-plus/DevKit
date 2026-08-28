@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 'use strict';
 
-const { HISTORICAL_FAILURE_CATALOG } = require('./historical-failure-catalog');
-
 const FAILURE_CATALOG = Object.freeze({
   ACTION_CONTRACT_INVALID: { status: 'BLOCKED', label: '动作参数不符合执行契约' },
   ACTION_EFFECT_MISMATCH: { status: 'BLOCKED', label: '动作执行结果与请求不一致' },
@@ -62,14 +60,14 @@ const FAILURE_CATALOG = Object.freeze({
 });
 
 function failureStatus(code, fallbackStatus) {
-  const configured = (FAILURE_CATALOG[code] || HISTORICAL_FAILURE_CATALOG[code])?.status;
+  const configured = FAILURE_CATALOG[code]?.status;
   if (!configured) return fallbackStatus;
   if (configured === 'CONTEXTUAL') return ['FAIL', 'BLOCKED', 'UNKNOWN'].includes(fallbackStatus) ? fallbackStatus : 'FAIL';
   return configured;
 }
 
 function failureLabel(code) {
-  return FAILURE_CATALOG[code]?.label || HISTORICAL_FAILURE_CATALOG[code]?.label || code || '';
+  return FAILURE_CATALOG[code]?.label || code || '';
 }
 
 module.exports = { FAILURE_CATALOG, failureLabel, failureStatus };

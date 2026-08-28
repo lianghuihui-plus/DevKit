@@ -50,8 +50,9 @@ function normalizeEnvironmentBinding(value, platform) {
   if (!['harmony', 'android', 'ios'].includes(binding.platform) || binding.platform !== platform) {
     throw new Error('ENVIRONMENT_BINDING_MISMATCH: environment platform does not match execution platform');
   }
-  if (binding.bundleName && !binding.appId) binding.appId = binding.bundleName;
-  if (binding.abilityName && !binding.entry) binding.entry = binding.abilityName;
+  if (binding.bundleName !== undefined || binding.abilityName !== undefined) {
+    throw new Error('ENVIRONMENT_BINDING_MISMATCH: use appId and entry in the current environment contract');
+  }
   const missing = requiredEnvironmentFields(platform).filter((field) => !String(binding[field] || '').trim());
   if (missing.length) throw new Error(`ENV_UNCONFIRMED: missing environment fields: ${missing.join(', ')}`);
   if (platform !== 'ios') {
@@ -128,8 +129,8 @@ function environmentAdapterArgs(binding, purpose = 'observe') {
   };
   add('--platform', binding.platform);
   add('--device', binding.deviceId);
-  if (purpose !== 'probe') add('--app', binding.appId || binding.bundleName);
-  if (purpose === 'action') add('--entry', binding.entry || binding.abilityName);
+  if (purpose !== 'probe') add('--app', binding.appId);
+  if (purpose === 'action') add('--entry', binding.entry);
   if (['action', 'probe'].includes(purpose) && binding.platform === 'harmony') {
     add('--device-form-factor', binding.deviceFormFactor);
   }

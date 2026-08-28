@@ -41,6 +41,8 @@ workspace -> import non-empty sources -> probe and confirm binding
 - `DEGRADED`、`BATCH_BLOCKED`、`BLOCKED`、`CORRUPTED`：自动停止批次，保留现场和产物，释放框架托管的平台运行资源并报告原因，不询问用户。
 - `BATCH_COMPLETE`：释放框架托管的平台运行资源，结束批次并执行一次全量报告重建，校验最终一致性。
 
+当前 execution 的决策优先级固定为：时限已到且存在控制请求时，先记录 `controlRequestClosed` 并删除待处理请求，再进入 `CONCLUDE_TIME_LIMIT`；仅时限已到时直接进入超时收口；仅有控制请求时进入 `RECOVER_APP`；其余状态才恢复普通 execution。时限后不再为恢复 App 发起新设备调用。
+
 同一批次固定平台、设备、App 和入口。绑定变化必须结束当前批次并新建 batch。普通 case 间不重启 App；当前页面只是下一 case 的现场输入，不能继承上一 case 的业务结论。
 
 Bootstrap、Case 启动、Recovery 和 Case 发布都优先收口已有草稿。Bootstrap 的适配器结果只获取一次，成功或失败都按稳定事件 ID 补齐审计事件。execution 已 finalized 后，Runtime release、completion 和 batch commit 只依赖本地冻结产物，不再因设备离线阻止发布；只有启动新 case 或恢复未完成 execution 前才探测设备暖会话。
@@ -51,7 +53,7 @@ Bootstrap、Case 启动、Recovery 和 Case 发布都优先收口已有草稿。
 
 ## 单用例流程
 
-1. `understand`：读取原文，提交 sourceRefs、requirements、uncertainties 和检查点；框架生成 understanding/plan revision 与 `planSha`。
+1. `understand`：读取原文，提交起点、requirements、uncertainties 和检查点；框架从冻结原文生成 sourceRefs，并生成 understanding/plan revision 与 `planSha`。
 2. `inspect PREPARE`：取得当前截图、控件树精简元素和诊断资料，但不自动确认起点。
 3. `step PREPARE`：按需执行建立起点所需的状态调整；每个 step 自动采集动作后现场，不存在业务副作用门禁。
 4. `mark-start`：显式确认最新 PREPARE observation 满足当前 understanding，然后进入业务执行；理解修订或 recovery 后重新确认。
@@ -63,7 +65,7 @@ Bootstrap、Case 启动、Recovery 和 Case 发布都优先收口已有草稿。
 
 ## 受控恢复
 
-允许恢复的触发包括原文明示冷启动、Agent 基于当前现场决定的受控重启、App crash、系统杀进程、未知退出、App 无响应和自动化会话丢失。Agent 决定的重启必须记录 `decisionReason` 并引用当前 execution、当前暖会话代次的可用 observation；事故触发可以引用状态变化后的不可用 observation 作为客观技术证据；原文明示触发必须引用 sourceRef。同一 checkpoint 可以在单用例时限内再次恢复，每次使用新的 recoveryId 和恢复前当前证据。
+允许恢复的触发包括原文明示冷启动、Agent 基于当前现场决定的受控重启、App crash、系统杀进程、未知退出、App 无响应和自动化会话丢失。Agent 决定的重启必须记录 `decisionReason` 并引用当前 execution、当前暖会话代次的可用 observation；事故触发可以引用状态变化后的不可用 observation 作为客观技术证据，分类只能是 `PRODUCT` 或 `TECHNICAL`，具体现场描述进入 `incidentReason`；原文明示触发必须引用 sourceRef。同一 checkpoint 可以在单用例时限内再次恢复，每次使用新的 recoveryId 和恢复前当前证据。
 
 恢复会递增 warm session generation。恢复前后仍属于同一 execution 和 Agent 业务上下文；协调器同步重绑定 Runtime 与当前 Agent request，并归档恢复前 request。恢复前 observation 只保留审计价值，不能再建立起点、授权动作或支撑当前结论；必须先重新观察。
 
@@ -76,3 +78,5 @@ App crash、系统退出等事故恢复必须记录 `runtimeIncident`，包含 `
 `reconcile` 自动恢复 step、operation、turn、知识查询和 phase 草稿，不要求 Case Agent 读取或重新组装内部请求。动作已完成时不重放；知识查询继续使用首次冻结候选。任一内部恢复项存在期间禁止 Agent 写入，恢复完成后再创建或继续 Case Agent。
 
 每个 case commit 后，协调器只重渲染该 case 的平台详情和用例详情，再读取全部 case 摘要重建首页；不会重写其他 case 详情。详情与首页都先生成 `report-publication.draft.json`，逐文件原子替换内容，最后发布带文件 SHA 的 `report-metadata.json` 并清理草稿。批次进入 `BATCH_COMPLETE` 后再调用一次工作区级 `render-index` 全量重建；任一文件不一致时可从 execution 重新渲染。
+
+所有恢复和重渲染只面向当前协议。冻结的 `implementationSha` 与当前实现不一致时拒绝续写，由协调器使用新 batch 和新 execution 重新执行；不转换或修改旧冻结产物。

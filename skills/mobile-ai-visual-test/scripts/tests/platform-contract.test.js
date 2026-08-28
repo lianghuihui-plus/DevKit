@@ -98,39 +98,34 @@ assert.strictEqual(normalizeRestartResult({
   ok: true, coldStartVerified: true, platform: 'harmony',
 }, { platform: 'harmony', deviceFormFactor: 'phone' }).startupDisplayVerified, false);
 
-assert.deepStrictEqual(normalizeEnvironmentBinding({
+assert.throws(() => normalizeEnvironmentBinding({
   platform: 'android', device: 'legacy-device', appId: 'com.example.android', entry: '.MainActivity',
-}, 'android'), {
-  platform: 'android', deviceId: 'legacy-device', appId: 'com.example.android', entry: '.MainActivity',
-  startupDisplayPolicy: { orientation: 'preserve', enforcement: 'none', appliesTo: [] },
-});
+}, 'android'), /use binding.deviceId/);
 const legacyEnvironmentSnapshot = {
   binding: { platform: 'android', device: 'legacy-device', appId: 'com.example.android', entry: '.MainActivity' },
   probe: null,
   dependencies: {},
   confirmedAt: '2026-08-27T10:00:00.000+08:00',
 };
-const normalizedLegacySnapshot = validateExecutionEnvironment({
+assert.throws(() => validateExecutionEnvironment({
   environmentSnapshot: legacyEnvironmentSnapshot,
   environmentSha: executionEnvironmentSha(legacyEnvironmentSnapshot),
-}, 'android');
-assert.strictEqual(normalizedLegacySnapshot.binding.deviceId, 'legacy-device');
-assert.strictEqual(Object.hasOwn(normalizedLegacySnapshot.binding, 'device'), false);
+}, 'android'), /use binding.deviceId/);
 
 const originalSpawnSync = childProcess.spawnSync;
 try {
   childProcess.spawnSync = (command, args) => {
     assert.ok(command.endsWith('/scripts/platform/probe-env.sh'));
-    assert.deepStrictEqual(args, ['--platform', 'android', '--device', 'legacy-batch-device']);
+    assert.deepStrictEqual(args, ['--platform', 'android', '--device', 'android-device']);
     return {
       status: 0,
       stderr: '',
-      stdout: JSON.stringify({ ready: true, devices: [{ id: 'legacy-batch-device' }] }),
+      stdout: JSON.stringify({ ready: true, devices: [{ id: 'android-device' }] }),
     };
   };
-  const legacyBatchProbe = probeSession({ binding: { platform: 'android', device: 'legacy-batch-device' } });
-  assert.strictEqual(legacyBatchProbe.ok, true);
-  assert.deepStrictEqual(legacyBatchProbe.binding, { platform: 'android', device: 'legacy-batch-device' });
+  const androidBatchProbe = probeSession({ binding: { platform: 'android', deviceId: 'android-device' } });
+  assert.strictEqual(androidBatchProbe.ok, true);
+  assert.deepStrictEqual(androidBatchProbe.binding, { platform: 'android', deviceId: 'android-device' });
 } finally {
   childProcess.spawnSync = originalSpawnSync;
 }

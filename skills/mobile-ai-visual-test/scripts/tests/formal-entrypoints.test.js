@@ -54,6 +54,7 @@ const contract = run(['scripts/build-agent-contract.js', '--role', 'case-executo
 assert.strictEqual(contract.schemaVersion, 2);
 assert.strictEqual(contract.profile, undefined);
 assert.strictEqual(contract.requiredResources[0], 'SKILL.md');
+assert.strictEqual(contract.allowedEntrypoints.includes('scripts/build-agent-contract.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/execute-next-work.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/agent/finalize.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/agent/query-knowledge.js'), false);

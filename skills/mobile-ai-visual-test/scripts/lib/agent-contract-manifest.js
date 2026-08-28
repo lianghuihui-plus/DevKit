@@ -6,7 +6,6 @@ const path = require('path');
 
 const ROLE_ENTRYPOINTS = Object.freeze({
   'case-executor': Object.freeze([
-    'scripts/build-agent-contract.js',
     'scripts/agent/status.js',
     'scripts/agent/understand.js',
     'scripts/agent/inspect.js',
@@ -60,8 +59,6 @@ const REPORT_ONLY_LIB_FILES = new Set([
   'scripts/lib/display-format.js',
   'scripts/lib/execution-reader.js',
   'scripts/lib/failure-catalog.js',
-  'scripts/lib/historical-case-contract.js',
-  'scripts/lib/historical-failure-catalog.js',
 ]);
 
 function walkFiles(root, relative) {

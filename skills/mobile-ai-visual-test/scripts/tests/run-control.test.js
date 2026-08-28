@@ -44,7 +44,7 @@ function makeCase(root, name) {
 }
 
 function probe(binding = BINDING, ready = true) {
-  return { schemaVersion: 1, platform: binding.platform, ready, devices: [{ id: binding.deviceId || binding.device }] };
+  return { schemaVersion: 1, platform: binding.platform, ready, devices: [{ id: binding.deviceId }] };
 }
 
 process.env.MAVT_SELF_TEST = '1';
@@ -89,26 +89,9 @@ assert.strictEqual(environment.binding.deviceId, BINDING.deviceId);
 assert.strictEqual(Object.hasOwn(environment.binding, 'device'), false);
 assert.strictEqual(fs.existsSync(path.join(root, 'runs')), false);
 
-assert.deepStrictEqual(validateBinding({
-  platform: 'android', device: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity',
-}), {
-  platform: 'android', deviceId: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity',
-});
 expectCode(() => validateBinding({
-  platform: 'android', device: 'legacy-device', deviceId: 'different-device', appId: 'com.example.android', entry: '.MainActivity',
+  platform: 'android', device: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity',
 }), 'BATCH_CONTRACT_INVALID');
-const legacyRoot = path.join(temp, 'legacy-device-workspace');
-createTestWorkspace(legacyRoot);
-const legacyEnvironment = confirmEnvironment({
-  workspaceRoot: legacyRoot,
-  binding: { platform: 'android', device: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity' },
-  probe: { schemaVersion: 1, platform: 'android', ready: true, devices: [{ serial: 'legacy-android-device' }] },
-  userConfirmation: '确认旧设备字段输入',
-  now: T0,
-});
-assert.deepStrictEqual(legacyEnvironment.binding, {
-  platform: 'android', deviceId: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity',
-});
 const numberedFirst = JSON.parse(fs.readFileSync(path.join(first.caseDir, 'case.json'), 'utf8'));
 const numberedSecond = JSON.parse(fs.readFileSync(path.join(second.caseDir, 'case.json'), 'utf8'));
 assert.strictEqual(numberedFirst.identity.caseNo, '001');

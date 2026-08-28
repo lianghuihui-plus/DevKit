@@ -152,13 +152,8 @@ assert.throws(() => readExecutionReport(unknownDir), (error) => error?.code === 
 const historicalDir = path.join(temp, 'historical-execution');
 fs.mkdirSync(historicalDir);
 fs.writeFileSync(path.join(historicalDir, 'execution.json'), JSON.stringify({ schemaVersion: 2, executionId: 'execution-historical' }));
-fs.writeFileSync(path.join(historicalDir, 'case.snapshot.json'), JSON.stringify({ identity: { caseKey: 'ck-historical' }, steps: [] }));
 fs.writeFileSync(path.join(historicalDir, 'result.json'), JSON.stringify({ executionId: 'execution-historical', status: 'PASS', reason: '历史结果' }));
-fs.writeFileSync(path.join(historicalDir, 'metrics.json'), JSON.stringify({ executionId: 'execution-historical', durationMs: 100, steps: { passed: 1, total: 1 } }));
-const historical = readExecutionReport(historicalDir);
-assert.strictEqual(historical.schemaFamily, 'historical');
-assert.strictEqual(historical.display.status, 'PASS');
-assert.strictEqual(historical.display.stepsSummary, '1/1');
+assert.throws(() => readExecutionReport(historicalDir), (error) => error?.code === 'EXECUTION_SCHEMA_UNSUPPORTED');
 
 const pendingWorkspace = path.join(temp, 'pending-workspace');
 createTestWorkspace(pendingWorkspace);

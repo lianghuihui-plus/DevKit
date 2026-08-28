@@ -12,7 +12,7 @@ Case Agent 只处理 request 绑定的一个 execution。业务决策由 Agent �
 
 ### understand
 
-提交 `understanding` 和 `checkpoints`。Agent 提供 sourceRefs、startConditions、requirements、uncertainties、检查点目标及 requirementRefs；框架生成 revision、turnId、planSha 和状态。
+提交 `understanding` 和 `checkpoints`。Agent 提供 summary、startConditions、requirements、uncertainties、检查点目标及 requirementRefs；框架从冻结的 `source.snapshot.md` 生成统一原文引用，并生成 revision、turnId、planSha 和状态。Agent 不提交原文 SHA、行号、摘录或 sourceRefs。
 
 只有业务理解、检查点目标/顺序、requirement 覆盖或整体策略发生实质变化时才再次调用。普通点击、观察和进度不产生新计划版本。同一 ID 表示跨计划版本仍是同一语义检查点，可继承当前暖会话代次的动作与观察；语义完全变化时使用新 ID，避免把旧证据归给新目标。Recovery 后代次变化，任何 ID 都不能继承旧代次证据。
 
@@ -54,7 +54,7 @@ BUSINESS 操作和观察默认继承当前活动检查点。只有切换到另�
 
 ### request-recovery
 
-原文明示冷启动、App 意外退出、自动化会话失效或 Agent 判断必须受控重启时，只提交 `reason` 和可选 `triggerType`。原文明示场景使用 `SOURCE_REQUIRED_COLD_START`；框架自动绑定当前 execution、检查点及 sourceRef 或 observation。事故触发可以使用状态变化后的不可用观察作为技术证据，主动决定重启仍必须有当前可用观察。生成控制请求后停止当前 Agent；协调器恢复 App 后创建新的隔离 Agent继续同一 execution。
+原文明示冷启动、App 意外退出、自动化会话失效或 Agent 判断必须受控重启时，只提交 `reason`、可选 `triggerType` 和可选事故分类。事故分类只允许 `PRODUCT` 或 `TECHNICAL`，省略时默认 `TECHNICAL`；页面、权限流或前后台变化等具体描述全部写在 `reason`，不能自造分类值。原文明示场景使用 `SOURCE_REQUIRED_COLD_START`；框架自动绑定当前 execution、检查点及 sourceRef 或 observation。事故触发可以使用状态变化后的不可用观察作为技术证据，主动决定重启仍必须有当前可用观察。生成控制请求后停止当前 Agent；协调器恢复 App 后创建新的隔离 Agent继续同一 execution。
 
 ### conclude
 
@@ -68,7 +68,7 @@ PASS 和 FAIL 前必须已经 `mark-start`。PASS 要求当前计划全部检查
 
 ## 状态与恢复
 
-每个成功响应携带最新 `runtimeState`。不要在连续成功入口之间重复调用 `status`；只在重连、响应丢失、响应不确定或恢复时读取。
+每个成功语义响应携带不含完整证据清单的轻量 `runtimeState`。不要在连续成功入口之间重复调用 `status`；只在重连、响应丢失或响应不确定时读取完整状态和证据清单。
 
 - step、operation、turn 和知识查询草稿全部属于框架内部事务，由协调器在 `reconcile` 中恢复，Case Agent 不提交内部 ID 或恢复结构。
 - 动作结果不确定时框架不会重放动作；恢复器只提交冻结结果或补充观察，Agent 再根据恢复后的现场决定下一步。

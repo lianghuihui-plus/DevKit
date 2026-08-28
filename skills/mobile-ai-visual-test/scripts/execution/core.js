@@ -274,7 +274,7 @@ function recordRuntimeEvent(execDir, event, options = {}) {
   return withFileLock(paths.lock, () => {
     const { execution } = requireWritable(execDir, options);
     requireBoundRuntime(execDir, execution.executionId);
-    if (!['runtimeIncident', 'recoveryStarted', 'recoveryCompleted'].includes(event.type)) {
+    if (!['runtimeIncident', 'recoveryStarted', 'recoveryCompleted', 'controlRequestClosed'].includes(event.type)) {
       throw contractError('EXECUTION_EVENT_WRITER_INVALID', `unsupported runtime event: ${event.type}`);
     }
     const idField = event.type === 'runtimeIncident' ? 'incidentId' : 'recoveryId';
@@ -285,11 +285,17 @@ function recordRuntimeEvent(execDir, event, options = {}) {
       return { ...existing, idempotent: true };
     }
     if (event.type === 'runtimeIncident') {
-      const evidence = new Set(collectEvidence(timelineEvents(execDir), { execDir, executionId: execution.executionId }).map((item) => item.ref));
-      if (!event.evidenceRefs.length || !event.evidenceRefs.every((ref) => evidence.has(ref))) {
-        throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'runtime incident must reference current execution observations');
+      const events = timelineEvents(execDir);
+      const evidence = new Set(collectEvidence(events, { execDir, executionId: execution.executionId }).map((item) => item.ref));
+      const observationEvidenceValid = event.evidenceRefs.length > 0 && event.evidenceRefs.every((ref) => evidence.has(ref));
+      const recoveryBoundary = latestRecoveryIndex(events);
+      const failedOperationValid = event.failedOperationId !== null && events.slice(recoveryBoundary + 1).some((entry) => entry.type === 'operationCompleted'
+        && entry.operationId === event.failedOperationId && entry.outcome === 'FAILED' && entry.failureCode);
+      if (!observationEvidenceValid && !failedOperationValid) {
+        throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'runtime incident must reference current observations or a failed operation');
       }
-    } else if (event.incidentId !== null && !timelineEvents(execDir).some((entry) => entry.type === 'runtimeIncident' && entry.incidentId === event.incidentId)) {
+    } else if (['recoveryStarted', 'recoveryCompleted'].includes(event.type) && event.incidentId !== null
+      && !timelineEvents(execDir).some((entry) => entry.type === 'runtimeIncident' && entry.incidentId === event.incidentId)) {
       throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'recovery event references an unknown incident');
     }
     return appendEvent(execDir, { ...event, writer: 'runtime-core', phase: execution.phase }, { now: options.now });

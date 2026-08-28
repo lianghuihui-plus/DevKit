@@ -20,10 +20,10 @@ const {
   understand,
 } = require('../agent/facade-core');
 const { readAgentStatus } = require('../agent/status');
-const { activeCheckpoint, requestRecovery } = require('../agent/control-request');
+const { activeCheckpoint, controlRequestPath, requestRecovery } = require('../agent/control-request');
 const { recoverInternalTransactions } = require('../batch/internal-recovery');
 const { bootstrapBatch, initializeBatch, recoverApp, startCurrentCase } = require('../batch/core');
-const { createCaseContract, sourceSha } = require('../execution/contracts/case-contract');
+const { createCaseContract } = require('../execution/contracts/case-contract');
 const { sealTimeLimit, timelineEvents } = require('../execution/core');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
@@ -190,9 +190,8 @@ function understandInput(item) {
   return {
     understanding: {
       summary: '验证原文中的目标状态',
-      sourceRefs: [{ id: 'src-001', sourceSha: sourceSha(item.sourceText), lineStart: 1, lineEnd: 1, quote: item.sourceText }],
-      startConditions: [{ id: 'start-001', text: '目标页面可用', basis: 'implied', sourceRefs: ['src-001'] }],
-      requirements: [{ id: 'req-001', text: item.sourceText, basis: 'explicit', sourceRefs: ['src-001'] }],
+      startConditions: [{ id: 'start-001', text: '目标页面可用', basis: 'implied' }],
+      requirements: [{ id: 'req-001', text: item.sourceText, basis: 'explicit' }],
       uncertainties: [],
     },
     checkpoints: [{ id: 'cp-001', goal: '检查目标按钮状态', requirementRefs: ['req-001'], requiredAction: true }],
@@ -204,6 +203,8 @@ const happy = setup('happy');
 const runner = createRunner();
 const understood = understand(happy.execDir, understandInput(happy), { now: T0 });
 assert.strictEqual(understood.runtimeState.understandingRevision, 1);
+assert.strictEqual(understood.runtimeState.evidence, undefined);
+assert.deepStrictEqual(readJson(path.join(happy.execDir, 'understanding.json')).sourceRefs.map((entry) => entry.id), ['source-case']);
 assert.strictEqual(readJson(path.join(happy.execDir, 'plan.json')).revision, 1);
 assert.match(readJson(path.join(happy.execDir, 'plan.json')).planSha, /^plan-/);
 const repeatedUnderstanding = understand(happy.execDir, understandInput(happy), { now: T0 });
@@ -363,8 +364,19 @@ markStart(control.execDir, { reason: '恢复请求测试起点' }, { now: T0 });
 const requested = requestRecovery(control.execDir, { reason: '目标 App 意外退出', triggerType: 'UNKNOWN_EXIT' }, { now: T0 });
 assert.deepStrictEqual(requested.controlRequest.evidenceRefs, [controlObservation.observation.ref]);
 assert.strictEqual(requested.controlRequest.checkpointId, 'cp-001');
+assert.strictEqual(requested.controlRequest.incidentCategory, 'TECHNICAL');
 assert.strictEqual(readAgentStatus(control.execDir, T0).controlRequestPending, true);
 expectCode(() => inspectCurrent(control.execDir, { stage: 'BUSINESS' }, { runner, now: T0 }), 'AGENT_CONTROL_REQUEST_PENDING');
+
+const invalidIncidentCategory = setup('invalid-incident-category');
+understand(invalidIncidentCategory.execDir, understandInput(invalidIncidentCategory), { now: T0 });
+inspectCurrent(invalidIncidentCategory.execDir, { stage: 'PREPARE', intent: '观察非法事故分类测试现场' }, { runner, now: T0 });
+expectCode(() => requestRecovery(invalidIncidentCategory.execDir, {
+  reason: '目标 App 离开前台',
+  triggerType: 'UNKNOWN_EXIT',
+  incidentCategory: 'TARGET_APP_LEFT_FOREGROUND',
+}, { now: T0 }), 'AGENT_CONTROL_REQUEST_INVALID');
+assert.strictEqual(fs.existsSync(controlRequestPath(invalidIncidentCategory.execDir)), false);
 
 const firstObservationFailure = setup('first-observation-recovery');
 understand(firstObservationFailure.execDir, understandInput(firstObservationFailure), { now: T0 });
@@ -375,6 +387,22 @@ const firstFailureRequest = requestRecovery(firstObservationFailure.execDir, {
 }, { now: T0 }).controlRequest;
 assert.deepStrictEqual(firstFailureRequest.evidenceRefs, []);
 assert.ok(firstFailureRequest.failedOperationId);
+const firstFailureRecovery = recoverApp({
+  workspaceRoot: firstObservationFailure.root,
+  batchId: firstObservationFailure.execution.batchId,
+  implementationSha: contract.implementationSha,
+  adapter: { restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }) },
+  request: firstFailureRequest,
+  now: T0,
+});
+assert.strictEqual(firstFailureRecovery.recovery.failedOperationId, firstFailureRequest.failedOperationId);
+const firstFailureRecoveryEvent = timelineEvents(firstObservationFailure.execDir)
+  .find((event) => event.type === 'recoveryCompleted');
+assert.strictEqual(firstFailureRecoveryEvent.failedOperationId, firstFailureRequest.failedOperationId);
+assert.match(firstFailureRecoveryEvent.requestSha, /^recovery-request-/);
+expectCode(() => requestRecovery(firstObservationFailure.execDir, {
+  reason: '新暖会话不得复用恢复前的失败操作', triggerType: 'AUTOMATION_SESSION_LOST',
+}, { now: T0 }), 'RECOVERY_EVIDENCE_REQUIRED');
 
 const unavailableObservationRecovery = setup('unavailable-observation-recovery');
 const unavailableRunner = createRunner();
@@ -633,7 +661,7 @@ understand(sourceColdStart.execDir, understandInput(sourceColdStart), { now: T0 
 const sourceColdRequest = requestRecovery(sourceColdStart.execDir, {
   reason: '冻结原文明示必须冷启动', triggerType: 'SOURCE_REQUIRED_COLD_START',
 }, { now: T0 }).controlRequest;
-assert.deepStrictEqual(sourceColdRequest.sourceRefs, ['src-001']);
+assert.deepStrictEqual(sourceColdRequest.sourceRefs, ['source-case']);
 assert.strictEqual(sourceColdRequest.incidentId, undefined);
 assert.deepStrictEqual(sourceColdRequest.evidenceRefs, []);
 const generationBeforeRecovery = readJson(path.join(sourceColdStart.execDir, 'execution.json')).warmSessionGeneration;
