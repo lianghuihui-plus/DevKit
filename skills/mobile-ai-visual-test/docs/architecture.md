@@ -49,14 +49,15 @@ flowchart TD
 | 工作空间与输入 | `scripts/workspace.js`、`scripts/import-case.js` | 校验空目录或既有工作空间；初始化时用正式 renderer 生成零数据看板；保存原文、工作空间唯一 `caseNo` 和稳定 `caseKey`；仅拒绝空文本 |
 | 环境探测 | `scripts/probe-env.sh`、`scripts/prepare-env.sh` | 探测平台能力并准备客观依赖；不读取业务用例 |
 | 运行控制 | `scripts/environment.js`、`scripts/execution-request.js` | 分离环境确认与执行授权；只接受 `deviceId`；将人工 `caseNo` 解析为内部 case 身份，冻结确认、执行模式、有序 target 快照、双角色协议、实现摘要和无人值守策略 |
-| 批次协调 | `scripts/batch.js`、`scripts/batch/core.js`、`scripts/batch/platform-runtime.js` | 消费显式执行请求；绑定和释放平台运行资源；一次 bootstrap；串行 case；自动恢复内部事务；消费控制请求；completion 发布；每个 case commit 后触发报告增量刷新 |
-| 内部恢复 | `scripts/batch/internal-recovery.js` | 从冻结草稿恢复 step、operation、turn 和知识查询；不要求 Case Agent维护事务 ID |
+| 批次协调 | `scripts/batch.js`、`scripts/batch/core.js`、`scripts/batch/platform-runtime.js`、`scripts/batch/completion.js` | 消费显式执行请求；绑定和释放平台运行资源；一次 bootstrap；串行 case；自动恢复内部事务；封存中断 attempt；消费控制请求；独立校验并发布 completion；每个 case commit 后触发报告增量刷新 |
+| 内部恢复 | `scripts/batch/internal-recovery.js`、`recovery-validation.js` | 从冻结草稿恢复 step、operation、turn 和知识查询；独立校验 App 恢复请求的证据、代次、检查点和事故分类；不要求 Case Agent维护事务 ID |
 | Execution Core | `scripts/execution/core.js` | 生命周期、阶段、30 分钟时限、事实事件、证据和 finalize |
-| Agent Facade | `scripts/agent/understand.js`、`inspect.js`、`step.js`、`mark-start.js`、`request-recovery.js`、`investigate.js`、`conclude.js` | 接收语义决策；区分业务断言证据与事故恢复技术证据；按共享恢复契约校验事故分类；自动展开 revision、授权、恢复和结论事务，并在写入前预校验完整候选结果 |
+| Agent Facade | 9 个 `scripts/agent/` 公开入口、`facade-core.js` | 接收语义决策并编排当前入口；公开入口保持稳定，不向 Agent 暴露内部事务模块 |
+| Agent 语义服务 | `scripts/agent/semantic-service.js`、`conclusion-policy.js`、`query-knowledge.js` | 将 Agent 输入转换为冻结 understanding/plan；校验 finding 证据归属与结论边界；执行有界知识召回和内容快照，不替 Agent 生成业务语义 |
 | 现场证据模型 | `scripts/lib/layout-observation.js`、`scripts/lib/observation-model.js`、`scripts/lib/observation-consistency.js` | 无外部依赖解析 HarmonyOS JSON、Android XML 和 iOS XML；归一化元素与技术信号；计算动作前后状态变化和未解决证据冲突；Agent 与 Execution Core 只依赖该框架层模型 |
-| 产物完整性 | `scripts/lib/execution-artifact-manifest.js`、`completion-contract.js` | 冻结报告依赖产物的路径、大小和 SHA；completion 绑定清单，报告读取前验真 |
-| 动态契约 | `scripts/lib/*-contract.js` | 从实现常量生成 execution 级 Agent 契约快照；确定性校验 revision、引用、授权、结果和实现摘要 |
-| 知识查询 | `scripts/knowledge.js`、Agent Facade 内部查询模块 | 请求前校验知识库；执行中返回 Skill/Workspace Markdown 候选并冻结内容摘要；生成查询级 `knowledgeReview` 闭合调查，不自动改变 verdict |
+| 产物完整性 | `scripts/lib/agent-attempt-lifecycle.js`、`execution-artifact-manifest.js`、`completion-contract.js` | 在发布前封存入口 attempt；冻结报告依赖产物的路径、大小和 SHA；completion 绑定清单，报告读取前验真 |
+| 动态契约 | `scripts/lib/agent-input-contract.js`、`scripts/lib/*-contract.js` | 从同一结构定义生成 Agent 可见输入契约并执行语法归一化与校验；领域契约继续确定性校验 revision、引用、授权、结果和实现摘要 |
+| 知识查询 | `scripts/knowledge.js`、`scripts/lib/knowledge-query.js`、`knowledge-context.js`、`scripts/agent/query-knowledge.js` | 请求前校验知识库；执行中排除明确不兼容条目并最多冻结 5 个候选；词面零命中时允许元数据发现召回；绑定当前理解与现场代次；不自动改变 verdict |
 | 平台适配 | `scripts/platform/adapters/` | 平台运行资源生命周期、截图、控件树、前台检测和原子动作；iOS 内部按 Appium、WDA、端口转发分项管理，不形成业务判断 |
 | 报告读取 | `scripts/lib/execution-reader.js`、`scripts/report/report-service.js`、`scripts/report/current-*.js` | 只读取当前 schema 的产物并独立渲染；每次 commit 只重建当前 case 详情和首页，批次结束再全量重建；单个 case 损坏时隔离为报告数据异常 |
 
@@ -66,7 +67,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  U["understand<br/>业务理解 + 检查点"] --> I["inspect PREPARE<br/>取得当前现场"]
+  U["understand<br/>建立可修订业务理解"] --> L["plan<br/>组织可修订检查点"]
+  L --> I["inspect PREPARE<br/>取得当前现场"]
   I --> P{"起点是否满足"}
   P -- "否" --> S0["step PREPARE<br/>自主调整状态"]
   S0 --> P
@@ -74,7 +76,7 @@ flowchart TD
   M --> S1["step BUSINESS<br/>动作 + 自动后置观察"]
   S1 --> D{"Agent 判断"}
   D -- "继续操作" --> S1
-  D -- "理解或检查点变化" --> U
+  D -- "检查点策略变化" --> L
   D -- "需要调查" --> K["investigate<br/>查询并评估知识"]
   D -- "App 需要恢复" --> R["request-recovery<br/>只提交原因"]
   R --> RR["协调器 recover<br/>新隔离 Agent继续"]
@@ -83,7 +85,7 @@ flowchart TD
   C --> F["框架生成 review / result / metrics / AgentResult"]
 ```
 
-计划是可修订检查点集合，不是固定点击序列。Agent 可以增删、合并、拆分或重排检查点，实际动作可以多于或少于计划；脚本只要求修订可追溯且不静默改变原文目标。同一 ID 表示跨 revision 仍是同一语义检查点，可继承当前暖会话代次的动作和观察；语义完全变化必须使用新 ID。受控 recovery 推进代次后，旧代次证据不再继承。
+计划是可修订检查点集合，不是固定点击序列。检查点是能在连续业务阶段内独立执行、取证和判断的业务验证单元；每项 requirement 在当前计划中恰好归属一个检查点。Agent 可以增删、合并、拆分或重排检查点，实际动作可以多于或少于计划；脚本只校验唯一归属、修订可追溯与原文目标不被静默改变，不决定检查点数量或业务分组。同一 ID 表示跨 revision 仍是同一语义检查点，可继承当前暖会话代次的动作和观察；语义完全变化必须使用新 ID。受控 recovery 推进代次后，旧代次证据不再继承。
 
 ## 暖会话与恢复
 
@@ -120,7 +122,7 @@ sequenceDiagram
   C->>C: rebuild all reports for consistency
 ```
 
-普通 case 切换不重启 App。新 case 必须重新观察当前现场并建立自己的起点；首次 `case-business` 操作要求绑定当前 understanding revision 的可用 `case-prepare` observation，understanding 修订后重新建立。`case-prepare` 只是生命周期标记，不限制 Agent 为建立起点而执行的动作。受控 recovery 递增 generation，同步重绑定 execution、Runtime 和当前 Agent request，旧 request 按 generation 归档；恢复前证据仅用于审计，不能授权动作或支撑当前结论。同一 case 的逻辑 session 不变。执行开始后不存在 `WAITING_FOR_USER`：case 级歧义或外部条件缺失分别收敛为 INCONCLUSIVE/BLOCKED 并继续，设备或批次状态不可恢复时自动停批并报告。
+普通 case 切换不重启 App。新 case 必须建立自己的 understanding 和 plan，再重新观察当前现场并建立起点；首次 `case-business` 操作要求绑定当前 understanding revision 的可用 `case-prepare` observation。发现理解遗漏或误解时可以提交完整的新 revision，框架随即使旧 plan 和起点确认失效，要求重新计划并重新建立起点。仅现场路径或检查点策略变化时只修订 plan。`case-prepare` 只是生命周期标记，不限制 Agent 为建立起点而执行的动作。受控 recovery 递增 generation，同步重绑定 execution、Runtime 和当前 Agent request，旧 request 按 generation 归档；恢复前证据仅用于审计，不能授权动作或支撑当前结论。同一 case 的逻辑 session 不变。执行开始后不存在 `WAITING_FOR_USER`：case 级歧义或外部条件缺失分别收敛为 INCONCLUSIVE/BLOCKED 并继续，设备或批次状态不可恢复时自动停批并报告。
 
 暖会话探测失败会通过统一停批入口写入 failureCode、reason、stoppedAt、当前 case/execution、generation、探测摘要和稳定事件；进程重启后不需要依赖上一次 CLI 响应恢复失败原因。bootstrap 与 recovery 复用同一冷启动验证链：Adapter 只报告 `ok/coldStartVerified/startupDisplay` 客观事实，`device-session` 按冻结策略计算标准验证结果，Batch 不解释平台专属字段。Android、iOS 默认不强制启动方向；HarmonyOS 的 required 策略保持严格验证。
 
@@ -145,20 +147,25 @@ sequenceDiagram
 | 时限停止 | timeline `timeLimitReached` | 禁止新设备调用，确定性关闭全部草稿并记录操作后观察缺口，再进入 CONCLUDE |
 | Finalize | `finalization.draft.json` | 幂等生成 result、metrics 与最终事件；入口可先收口 verdictReview 和阶段，不重复形成业务结论 |
 | Case 发布 | `case-commit.draft.json` | 补齐 completion、batch state 和稳定 `caseCommitted` 事件；finalized 后不再依赖在线设备探测 |
-| 产物封存 | `artifact-manifest.json` | conclude attempt 写入且 Runtime 释放后生成，绑定原文、理解、计划、timeline、操作记录、知识和设备证据；报告读取时逐项验真 |
+| 产物封存 | `artifact-manifest.json` | 当前 attempt 已写入或确定性封存且 Runtime 释放后生成，绑定原文、理解、计划、timeline、操作记录、知识和设备证据；报告读取时逐项验真 |
 | 报告发布 | `report-publication.draft.json` | 内容文件逐个原子替换，最后提交带 SHA 的 metadata；不一致时从 execution 重渲染 |
+
+实现升级不会续写其他 `implementationSha` 的未完成 execution，也不会修改其目录。新 batch 初始化时只在 Workspace 根目录写入带摘要的 `execution-closures/<executionId>.json`，将旧 execution 标记为 `IMPLEMENTATION_REPLACED`；同实现的活动 execution 仍按并发守卫阻止新批次。报告读取闭合记录后把该执行展示为“执行已废弃”，但已发布结果仍优先于废弃的未完成执行。
 
 `batch reconcile` 优先处理批次与发布草稿，然后自动收口 Agent 内部事务；Case Agent 只看到 `frameworkRecoveryPending`，不读取内部恢复 ID。对当前 execution，状态决策优先级为：“时限 + 控制请求”先闭合控制请求再超时收口，“仅时限”直接超时收口，“仅控制请求”进入 `RECOVER_APP`，其余状态才恢复 execution。时限后框架写入 `controlRequestClosed`、删除待处理文件，不发起新设备调用。未超时时，恢复沿用同一 execution 和冻结请求，不重新决策业务路径。Facade 与 Batch 共同消费 `recovery-contract` 中的触发类型和事故分类枚举；非法分类在 Facade 写文件前拒绝，Batch 不转换或改写冻结请求。
 
 ## 事实与守卫
 
 - 执行请求先在 `request-targets/` 冻结每个 target 的 source/case；execution 再复制自己的 snapshot，并绑定 target、batch、双角色协议、implementationSha 和 contractSha。
-- Case Agent request 绑定 `agent/contract.json` 的路径与摘要；契约包含准确命令、完整字段、枚举、条件规则和可运行示例，Agent 无需读取实现代码。
+- Case Agent request 绑定 `agent/contract.json` 的路径与摘要；`references/agent-execution.md` 与 `references/knowledge.md` 都参与 Case Agent `protocolSha`。契约从统一 guidance 模块冻结公共原则和全部语义决策阶段任务卡，并包含准确命令、完整字段、枚举和条件规则，Agent 无需读取实现代码。
 - environment confirmation 与 execution request 分别冻结；batch、execution 和 Agent request 必须绑定同一 `executionRequestSha` 及 `UNATTENDED` 策略。
 - environment confirmation、execution request、batch contract 和 execution snapshot 均只使用 `deviceId`；`device` 在框架领域契约中直接拒绝。
 - observation/actionResult 只能由专用设备入口生成，均须确认冻结 platform、`deviceId` 和 App；Agent turn 不能伪造设备事实。
 - 平台 adapter 采集原始截图、布局和平台技术信号；现场证据模型统一解析键盘、焦点、安全输入和坐标空间，不读取用例业务；布局解析失败显式诊断，不再静默投影为空元素。
-- Case Agent 只提交语义对象；Facade 从 `source.snapshot.md` 生成原文引用，是 understanding、plan、checkpointFinding、knowledgeAssessment、knowledgeReview 和 verdictReview 的唯一转换边界，自动生成 revision、摘要和事实 ID。Agent 不提交 source SHA、行号或摘录。结论中的 checkpointFinding 与 verdictReview 组成同一 turn，完整预校验通过后再幂等提交；契约拒绝不会改变 phase 或 timeline。零命中查询自动以 `NO_MATCH` 闭合；有候选时由 Agent 提交相关候选评估和查询级结论。
+- Case Agent 只提交语义对象；Facade 从 `source.snapshot.md` 生成原文引用，是 understanding、plan、checkpointFinding、knowledgeAssessment、knowledgeReview 和 verdictReview 的唯一转换边界，自动生成 revision、引用和事实 ID。Agent 不提交 source SHA、行号或摘录，但必须提交结论阶段的原文复核与恢复必要性判断，框架不代写业务语义。结论中的 checkpointFinding 与 verdictReview 组成同一 turn，完整预校验通过后再幂等提交；契约拒绝不会改变 phase 或 timeline。零命中查询自动以 `NO_MATCH` 闭合；有候选时由 Agent 提交相关候选评估和查询级结论。
+- Agent 输入字段、类型、非空规则、数组项、坐标元组和阶段条件由 `agent-input-contract.js` 单点定义，冻结契约与 Facade 使用同一来源。纯空白列表项可做无语义归一化，框架不补写业务内容。
+- `stage`、默认活动检查点、revision、observation 和授权绑定由 Facade 推导。起点建立前 runtimeState 不暴露活动检查点；Recovery 后完整 `status` 返回精简语义上下文，新隔离 Agent 保留既有理解与计划并从当前阶段续接。
+- 零 requirement 与空计划只允许理解、计划、知识和结论入口；设备观察、动作、起点确认与恢复请求统一返回 `NO_EXECUTABLE_REQUIREMENTS`。
 - 动作由 Facade 自动绑定当前 execution、understanding/plan revision、checkpoint/start condition 和 observation；这些字段不由 Agent 手工维护，也不构成业务副作用门禁。
 - 改变现场的动作必须引用当前暖会话代次的可用 observation；坐标动作还必须引用该 observation 同次采集的 layout、visual 或 pixel 产物。框架不判断业务副作用，Agent 可自主执行必要的起点恢复与调查动作。
 - 状态变更动作完成后，设备网关默认缓冲 500ms 再启动 POST_ACTION observation；`MAVT_POST_ACTION_SETTLE_MS=0..5000` 可调整，配置值冻结在 step 草稿并写入操作 timing，恢复不会重放动作或改变等待值。
@@ -169,13 +176,14 @@ sequenceDiagram
 - 平台运行资源采用批次级 `acquire/release` 接口，批次层只保存复合资源，不感知平台进程细节。HarmonyOS、Android 当前无需批次托管资源；iOS adapter 内部由 Appium 生命周期、WDA 生命周期和端口核验三个模块组成。Appium 按服务地址登记；WDA 按设备 ID 与 bundle id 登记，并以批次开始前进程为外部基线。终态按 WDA、Appium、最终进程与端口核验的顺序收口；命令、设备、bundle、PID、独立进程组或所有权任一不匹配都不得终止。全部框架资源消失为 `RELEASED`，仅剩外部资源为 `RETAINED`，框架资源残留为 `RELEASE_FAILED` 并允许补偿重试。Session 删除仍由每次设备调用负责，不能替代批次级服务关闭。
 - 可用 observation 才能支撑业务断言；状态变化后的不可用 observation 可以作为事故恢复的客观技术证据，但不能进入 requirement finding。Agent 主动决定重启仍必须引用当前可用 observation，Batch 会复核证据的 execution、暖会话代次和状态变化边界。
 - 动作后的守卫通常只能由与该动作关联且可用的新 observation 清除；达到时限且禁止新设备调用时，由 `timeLimitReached` 如实记录当前观察不可得并解除流程死锁，verdictReview 以空 `currentObservationRefs + observationUnavailable` 显式承认缺口，不引用状态变化前旧现场，结论固定为 `INCONCLUSIVE + STOPPED_BY_BUDGET`。知识调查闭合前 `mayConclude=false`，其他最终复核仍必须引用最后一次动作、结果不确定或 recovery 之后的最新可用观察。
-- 每个 requirement 独立闭合 evidence、适用 knowledge 或未决/阻塞原因，用例级结论不能替代逐 requirement 依据。
+- 每个 requirement 独立闭合 evidence、适用 knowledge 或未决/阻塞原因，用例级结论不能替代逐 requirement 依据。Agent 必须显式选择 finding 的 `evidenceRefs`；框架只校验证据可用性、暖会话代次和检查点归属，不自动把最新观察分配给 finding。
 - Finalize 复算 execution 内未解决的关键现场冲突；非输入动作污染安全输入且未被后续成功整串输入及观察修复时，以 `EVIDENCE_CONFLICT_UNRESOLVED` 拒绝 PASS/FAIL，允许 Agent 如实转为 INCONCLUSIVE 或技术 BLOCKED。
 - PASS/FAIL 必须先以当前 understanding 和暖会话代次显式建立起点。PASS 必须完成当前计划全部检查点；观察型检查点可复用建立起点的当前观察，要求动作的检查点必须具备动作及动作后观察。FAIL 可在当前观察或相关产品事故形成充分负向证据后提前结束，不要求执行后续检查点；技术事故只能支持 BLOCKED。产品事故是否与 requirement 相关由 Agent 判断，脚本不全局否决 PASS。准备/业务 scope 只用于报告归类。
-- FAIL、INCONCLUSIVE 和业务 BLOCKED 前必须完成原文复核、重新观察、已闭合的知识查询和剩余不确定性记录；有命中但缺少 knowledgeReview 的查询不能支撑负向结论。直接证据 PASS 和纯技术 BLOCKED 不强制查询。
+- FAIL、INCONCLUSIVE 和业务 BLOCKED 前必须完成原文复核、已闭合的知识查询和剩余不确定性记录；知识查询冻结 understanding revision、warm session generation、状态变化边界、当前 observation 和活动检查点，任一语义或现场代次变化后旧调查不能支撑当前结论。整体 verdictReview 使用最后一次状态变化后的当前观察，逐 requirement finding 可使用当前暖会话代次内对应检查点执行时取得的有效证据。有命中但缺少 knowledgeReview 的查询不能支撑负向结论。直接证据 PASS 和纯技术 BLOCKED 不强制查询。
 - verdictReview 必须绑定当前 understanding revision、当前 plan revision 与 `planSha`，并精确覆盖当前全部 requirement；任一绑定过期都必须重新复核。
 - 达到 30 分钟后停止新的设备操作，但仍允许基于已有事实进入 CONCLUDE。
-- AgentResult 校验 request、双角色协议、实现、session、result、metrics 和哈希；成功 conclude 入口先写入 `agent/attempts.jsonl`，batch commit 再释放 Runtime、生成产物清单并发布 completion。报告区分活动执行、收尾待恢复、待发布和已发布 execution；当前 case 读取失败只生成该 case 的报告数据异常状态，不阻断其他 case，也不回退其他 execution 掩盖错误。
+- AgentResult 校验 request、双角色协议、实现、session、result、metrics 和哈希；成功入口写入 `agent/attempts.jsonl`。finalize 后若入口输出中断，`reconcile` 或 commit 将 `attempt.current.json` 封存为 `AGENT_ENTRYPOINT_OUTPUT_INTERRUPTED`，再释放 Runtime、生成产物清单并发布 completion。报告区分活动执行、收尾待恢复、待发布和已发布 execution；当前 case 读取失败只生成该 case 的报告数据异常状态，不阻断其他 case，也不回退其他 execution 掩盖错误。
+- Case Agent 角色边界由 Skill 白名单和宿主工具权限共同组成；宿主未按 `allowedEntrypoints/requiredResources` 限制工具时只能视为协议隔离，不视为强权限隔离。
 - `implementationSha` 覆盖 Agent、Batch、Case、Execution、运行时 lib、平台公共入口及当前平台 adapter；纯报告读取和展示模块不参与执行实现摘要。续写 execution 前必须匹配该摘要，不匹配时拒绝并新建 batch。
 - 报告使用独立 `rendererSha`，覆盖报告 service、renderer manifest、报告入口及其只读依赖，并写入 `report-metadata.json`；重渲染不会改变 execution 的 `implementationSha`。
 - Agent 入口调用与结构化错误写入 `agent/attempts.jsonl`；metrics 区分 Agent 决策间隔、协议活动时间、设备适配器工作时间和阶段耗时，这些诊断事实不参与业务 verdict。
@@ -186,6 +194,7 @@ sequenceDiagram
 <workspace>/
   workspace.json
   environment-confirmation.json
+  execution-closures/<executionId>.json
   knowledge/
   cases/<case>/
     case-import.draft.json

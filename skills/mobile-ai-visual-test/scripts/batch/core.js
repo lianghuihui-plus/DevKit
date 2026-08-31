@@ -16,9 +16,6 @@ const {
   withFileLock,
   writeJsonAtomic,
 } = require('../lib/execution-lifecycle');
-const { completionPaths, sha256File, validatePublishedCompletion } = require('../lib/completion-contract');
-const { collectEvidence } = require('../lib/execution-evidence');
-const { validateResultKnowledgeSnapshots } = require('../lib/knowledge-snapshot');
 const {
   loadExecutionRequest,
   resolveExecutionTargets,
@@ -34,10 +31,8 @@ const {
 } = require('../lib/warm-session-contract');
 const {
   bindAgentRuntime,
-  currentObservation,
   createExecution,
   knowledgeQueryDraftIds,
-  latestStateChangeIndex,
   operationDraftIds,
   recordRuntimeEvent,
   sealTimeLimit,
@@ -49,13 +44,19 @@ const { createAgentRequest, rebindAgentRequestGeneration } = require('../agent/c
 const { clearControlRequest, controlRequestPath } = require('../agent/control-request');
 const { recoverInternalTransactions } = require('./internal-recovery');
 const { decideRunningExecution } = require('./reconcile-policy');
-const { validateAgentRequest, validateAgentResult } = require('../lib/agent-driven-contract');
 const { assertWorkspace } = require('../lib/workspace');
-const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
+const { settleCurrentAttempt } = require('../lib/agent-attempt-lifecycle');
+const { closeIncompatibleExecutions } = require('../lib/execution-closure');
+const { validateRecoveryRequest } = require('./recovery-validation');
+const {
+  buildCurrentCompletion,
+  prepareCurrentCompletion,
+  publishCurrentCompletion,
+  releaseRuntime,
+} = require('./completion');
 const { buildContract } = require('../build-agent-contract');
 const {
   RECOVERY_TRIGGERS,
-  incidentCategory,
   isIncidentRecovery,
   recoveryRequestSha,
 } = require('../lib/recovery-contract');
@@ -263,6 +264,11 @@ function initializeBatch(options) {
     || (options.coordinatorProtocolSha && executionRequest.coordinatorProtocolSha !== options.coordinatorProtocolSha)) {
     throw contractError('BATCH_PROTOCOL_MISMATCH', 'execution request belongs to a different Agent protocol');
   }
+  const closedExecutions = closeIncompatibleExecutions(options.workspaceRoot, options.implementationSha, {
+    replacementBatchId: options.batchId,
+    reason: '新批次使用当前实现，旧实现的未完成 execution 不再续写',
+    now: options.now,
+  });
   let draft = readJson(paths.initDraft, null);
   const existingState = readJson(paths.state, null);
   const existingContract = readJson(paths.contract, null);
@@ -281,7 +287,7 @@ function initializeBatch(options) {
         interactionPolicy: loaded.state.interactionPolicy,
       });
     }
-    return loaded;
+    return { ...loaded, closedExecutions };
   }
   if (!draft) {
     const contract = createBatchContract({
@@ -337,7 +343,7 @@ function initializeBatch(options) {
   });
   if (options.interruptAfter === 'event') throw new Error('MAVT_BATCH_INIT_INTERRUPTED: event');
   fs.unlinkSync(paths.initDraft);
-  return { paths, state: draft.state, contract: draft.contract };
+  return { paths, state: draft.state, contract: draft.contract, closedExecutions };
 }
 
 function currentCase(state) {
@@ -568,77 +574,6 @@ function startCurrentCase(options) {
   }, { now: options.now });
 }
 
-function releaseRuntime(execDir, options = {}) {
-  const runtimePath = path.join(execDir, 'agent', 'runtime.json');
-  const runtime = readJson(runtimePath, null);
-  if (!runtime) throw contractError('AGENT_RUNTIME_MISSING', 'Agent Runtime is missing');
-  if (runtime.status === 'RELEASED') return runtime;
-  const released = { ...runtime, status: 'RELEASED', releasedAt: options.now || new Date().toISOString() };
-  writeJsonAtomic(runtimePath, released);
-  return released;
-}
-
-function prepareCurrentCompletion(execDir) {
-  const execution = readJson(path.join(execDir, 'execution.json'));
-  const snapshot = readJson(path.join(execDir, 'case.snapshot.json'));
-  const result = readJson(path.join(execDir, 'result.json'));
-  const metrics = readJson(path.join(execDir, 'metrics.json'));
-  const request = validateAgentRequest(readJson(path.join(execDir, 'agent', 'request.json'), null));
-  const agentResult = validateAgentResult(readJson(path.join(execDir, 'agent', 'result.json'), null), { request });
-  validateResultKnowledgeSnapshots(execDir, result, timelineEvents(execDir));
-  if (agentResult.verdict !== result.verdict || agentResult.executionStatus !== result.executionStatus
-    || agentResult.warmSessionGeneration !== execution.warmSessionGeneration) {
-    throw contractError('AGENT_RESULT_BINDING_MISMATCH', 'AgentResult does not match finalized execution artifacts');
-  }
-  return { execution, snapshot, result, metrics };
-}
-
-function buildCurrentCompletion(execDir, state, item, prepared, runtime) {
-  const { execution, snapshot, result, metrics } = prepared;
-  if (runtime?.status !== 'RELEASED' || runtime.executionId !== execution.executionId) {
-    throw contractError('AGENT_RUNTIME_STATE_INVALID', 'completion requires the current Agent Runtime to be released');
-  }
-  const paths = completionPaths(execDir);
-  buildExecutionArtifactManifest(execDir);
-  const completion = {
-    schemaVersion: 2,
-    executionId: execution.executionId,
-    batchId: state.batchId,
-    caseKey: item.caseKey,
-    platform: execution.platform,
-    completionSource: 'framework',
-    implementationSha: execution.implementationSha,
-    contractSha: execution.contractSha,
-    batchContractSha: state.contractSha,
-    resultSchemaVersion: 2,
-    metricsSchemaVersion: 2,
-    verdict: result.verdict,
-    executionStatus: result.executionStatus,
-    sessionReleased: true,
-    resultSha256: sha256File(paths.result),
-    metricsSha256: sha256File(paths.metrics),
-    agentResultSha256: sha256File(paths.agentResult),
-    artifactManifestSha256: sha256File(paths.artifactManifest),
-    validationSha256: null,
-  };
-  return { completion, execution, snapshot, result, metrics };
-}
-
-function publishCurrentCompletion(execDir, prepared) {
-  const { completion, execution, snapshot, result, metrics } = prepared;
-  const paths = completionPaths(execDir);
-  validatePublishedCompletion(execDir, completion, { execution, snapshot, result, metrics });
-  const existing = readJson(paths.completion, null);
-  if (existing) {
-    if (canonicalJson(existing) !== canonicalJson(completion)) {
-      throw contractError('EXECUTION_COMPLETION_MISMATCH', 'completion.json is already bound to different artifacts');
-    }
-    return existing;
-  }
-  writeJsonAtomic(paths.completion, completion);
-  return completion;
-}
-
 function commitCurrentCase(options) {
   const loaded = loadBatch(options.workspaceRoot, options.batchId, options.implementationSha, protocolBindings(options));
   return withFileLock(loaded.paths.lock, () => {
@@ -676,6 +611,7 @@ function commitCurrentCase(options) {
       throw contractError('BATCH_BINDING_MISMATCH', 'execution does not match current batch implementation and contract');
     }
     assertRecoveriesCommitted(loaded.paths, state, execDir, item.executionId);
+    settleCurrentAttempt(execDir, { now: options.now });
     const prepared = prepareCurrentCompletion(execDir);
     if (draft.stage === 'STARTED') {
       draft.stage = 'VALIDATED';
@@ -720,83 +656,6 @@ function commitCurrentCase(options) {
     if (fs.existsSync(loaded.paths.caseCommitDraft)) fs.unlinkSync(loaded.paths.caseCommitDraft);
     return { state, item, completion, runtime };
   }, { now: options.now });
-}
-
-function validateRecoveryRequest(request, state, item, execDir) {
-  ensureObject(request, 'recovery request', 'RECOVERY_INVALID');
-  ensureId(request.recoveryId, 'recoveryId', 'RECOVERY_INVALID');
-  if (!RECOVERY_TRIGGERS.has(request.triggerType)) throw contractError('RECOVERY_TRIGGER_INVALID', `unsupported recovery trigger: ${request.triggerType || 'missing'}`);
-  if (!item || item.status !== 'RUNNING' || request.executionId !== item.executionId) throw contractError('RECOVERY_BINDING_MISMATCH', 'recovery must bind the current running execution');
-  const sourceRefs = Array.isArray(request.sourceRefs) ? request.sourceRefs : [];
-  const evidenceRefs = Array.isArray(request.evidenceRefs) ? request.evidenceRefs : [];
-  const events = timelineEvents(execDir);
-  const liveExecution = readJson(path.join(execDir, 'execution.json'), null);
-  const observations = new Map(events.map((event, index) => [event.ref, { event, index }])
-    .filter(([ref, entry]) => ref && entry.event.type === 'observation'));
-  const evidenceObservations = evidenceRefs.map((ref) => observations.get(ref));
-  if (evidenceObservations.some((entry) => !entry
-    || entry.event.executionId !== request.executionId
-    || entry.event.warmSessionGeneration !== liveExecution?.warmSessionGeneration)) {
-    throw contractError('RECOVERY_REFERENCE_INVALID', 'recovery evidence must be an observation from the current execution generation');
-  }
-  if (request.triggerType === 'AGENT_DECIDED_RESTART' && evidenceRefs.length) {
-    const current = currentObservation(events, liveExecution.warmSessionGeneration);
-    if (!current || evidenceRefs.length !== 1 || evidenceRefs[0] !== current.ref) {
-      throw contractError('RECOVERY_REFERENCE_INVALID', 'agent-decided restart requires the current usable observation');
-    }
-  }
-  if (isIncidentRecovery(request.triggerType) && evidenceObservations.length) {
-    const boundary = latestStateChangeIndex(events);
-    if (evidenceObservations.some((entry) => entry.index <= boundary)) {
-      throw contractError('RECOVERY_REFERENCE_INVALID', 'incident recovery evidence must follow the latest state change');
-    }
-  }
-  const recoveryBoundary = events.map((event) => event.type).lastIndexOf('recoveryCompleted');
-  const failedOperation = request.generatedBy === 'agent-facade' && request.failedOperationId
-    ? events.slice(recoveryBoundary + 1).find((event) => event.type === 'operationCompleted'
-      && event.operationId === request.failedOperationId && event.outcome === 'FAILED' && event.failureCode)
-    : null;
-  if (request.triggerType === 'SOURCE_REQUIRED_COLD_START' && !sourceRefs.length) throw contractError('RECOVERY_EVIDENCE_REQUIRED', 'source-required cold start needs sourceRefs');
-  if (request.triggerType !== 'SOURCE_REQUIRED_COLD_START' && !evidenceRefs.length && !failedOperation) {
-    throw contractError('RECOVERY_EVIDENCE_REQUIRED', 'recovery needs current execution evidenceRefs or a frozen failed operation');
-  }
-  if (request.triggerType === 'AGENT_DECIDED_RESTART' && (typeof request.decisionReason !== 'string' || !request.decisionReason.trim())) {
-    throw contractError('RECOVERY_INVALID', 'agent-decided restart requires decisionReason');
-  }
-  if (isIncidentRecovery(request.triggerType)) {
-    ensureId(request.incidentId, 'incidentId', 'RECOVERY_INVALID');
-    incidentCategory(request.incidentCategory);
-    if (typeof request.incidentReason !== 'string' || !request.incidentReason.trim()) throw contractError('RECOVERY_INVALID', 'incidentReason is required');
-  }
-  if (!request.checkpointId) throw contractError('RECOVERY_INVALID', 'checkpointId is required');
-  if (state.status !== 'RUNNING' || state.warmSession.status !== 'READY') {
-    throw contractError('RECOVERY_STATE_INVALID', 'recovery requires a running batch and ready warm session');
-  }
-  const plan = readJson(path.join(execDir, 'plan.json'), null);
-  if (!plan?.checkpoints?.some((entry) => entry.id === request.checkpointId)) {
-    throw contractError('RECOVERY_REFERENCE_INVALID', 'checkpointId must belong to the current plan');
-  }
-  const execution = readJson(path.join(execDir, 'execution.json'), null);
-  const runtime = readJson(path.join(execDir, 'agent', 'runtime.json'), null);
-  if (!execution || !runtime || runtime.status !== 'BOUND' || runtime.executionId !== execution.executionId) {
-    throw contractError('AGENT_RUNTIME_NOT_BOUND', 'App recovery requires the current bound Agent Runtime');
-  }
-  if (request.triggerType === 'SOURCE_REQUIRED_COLD_START') {
-    const knownRefs = new Set((readJson(path.join(execDir, 'understanding.json'), null)?.sourceRefs || []).map((entry) => entry.id));
-    if (!sourceRefs.every((ref) => knownRefs.has(ref))) {
-      throw contractError('RECOVERY_REFERENCE_INVALID', 'sourceRefs must belong to the current understanding');
-    }
-  } else if (evidenceRefs.length) {
-    const execution = readJson(path.join(execDir, 'execution.json'));
-    const knownRefs = new Set(collectEvidence(timelineEvents(execDir), {
-      execDir,
-      executionId: execution.executionId,
-    }).filter((entry) => entry.warmSessionGeneration === execution.warmSessionGeneration)
-      .map((entry) => entry.ref));
-    if (!evidenceRefs.every((ref) => knownRefs.has(ref))) {
-      throw contractError('RECOVERY_REFERENCE_INVALID', 'evidenceRefs must be current execution observations');
-    }
-  }
 }
 
 function recoverApp(options) {
@@ -921,6 +780,7 @@ function recoverApp(options) {
       noAutomaticReplay: true,
       time: options.now || new Date().toISOString(),
     };
+    let recoveryFailure = null;
     try {
       assertAdapterResult(draft.result, 'APP_RECOVERY');
       recovery.status = 'SUCCEEDED';
@@ -939,17 +799,41 @@ function recoverApp(options) {
       recovery.status = 'FAILED';
       recovery.failureCode = error.code || 'APP_RECOVERY_FAILED';
       recovery.reason = error.message;
-      state.warmSession = markDegraded(state.warmSession, recovery.time);
-      state.status = 'BLOCKED';
+      state.warmSession = markDegraded(state.warmSession, recovery.time, {
+        failureCode: recovery.failureCode,
+        reason: recovery.reason,
+      });
+      recoveryFailure = error;
     }
     state.recoveries.push(recovery);
     recovery.warmSessionGeneration = state.warmSession.generation;
-    saveBatch(loaded.paths, state, options.now);
+    let stopped = null;
+    if (recoveryFailure) {
+      stopped = stopBatch(loaded.paths, state, 'BLOCKED', recovery.failureCode, recovery.reason, {
+        now: options.now,
+        stopContext: {
+          source: 'app-recovery',
+          recoveryId: recovery.recoveryId,
+          executionId: recovery.executionId,
+          caseKey: item.caseKey,
+          triggerType: recovery.triggerType,
+          adapter: {
+            ok: draft.result?.ok === true,
+            coldStartVerified: draft.result?.coldStartVerified === true,
+            startupDisplayVerified: draft.result?.startupDisplayVerified === true,
+            failureCode: draft.result?.failureCode || recovery.failureCode,
+            reason: draft.result?.reason || recovery.reason,
+          },
+        },
+      });
+    } else {
+      saveBatch(loaded.paths, state, options.now);
+    }
     if (options.interruptAfter === 'state') throw new Error('MAVT_BATCH_RECOVERY_INTERRUPTED: state');
     completeRecoveryTimeline(execDir, recovery, state.implementationSha, options.now);
     completeRecoveryCommit(loaded.paths, recovery);
     clearControlRequest(execDir, recovery.recoveryId);
-    return { state, recovery };
+    return stopped ? { ...stopped, recovery } : { state, recovery };
   }, { now: options.now });
 }
 
@@ -1030,6 +914,7 @@ function reconcileBatch(options) {
     if (recovery.status === 'RESUME_PHASE') return { action: 'RESUME_PHASE', state, execDir: entry.execDir, draft: recovery.draft };
     if (recovery.status === 'RESUME_FINALIZE') return { action: 'RESUME_FINALIZE', state, execDir: entry.execDir };
     if (entry.execution.finalized) {
+      settleCurrentAttempt(entry.execDir, { now: options.now });
       if (!runtime) return stopBatch(loaded.paths, state, 'CORRUPTED', 'AGENT_RUNTIME_MISSING', 'finalized execution has no Agent Runtime', { now: options.now });
       const agentResult = readJson(path.join(entry.execDir, 'agent', 'result.json'), null);
       if (!agentResult && runtime.status === 'BOUND') return { action: 'CREATE_AGENT_RESULT', state, execDir: entry.execDir };

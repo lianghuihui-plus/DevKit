@@ -17,7 +17,7 @@ const ROOT_FILES = new Set([
   'result.json',
   'metrics.json',
 ]);
-const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge']);
+const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge', 'coordinate-audits']);
 
 function manifestPath(execDir) {
   return path.join(execDir, MANIFEST_FILE);
@@ -56,6 +56,9 @@ function executionArtifactFiles(execDir) {
 function buildExecutionArtifactManifest(execDir, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
   if (!execution?.finalized) throw contractError('EXECUTION_NOT_FINALIZED', 'artifact manifest requires a finalized execution');
+  if (fs.existsSync(path.join(execDir, 'agent', 'attempt.current.json'))) {
+    throw contractError('EXECUTION_ATTEMPT_UNSETTLED', 'artifact manifest requires every Agent entrypoint attempt to be settled');
+  }
   if (fs.existsSync(manifestPath(execDir))) return validateExecutionArtifactManifest(execDir);
   const files = executionArtifactFiles(execDir).map((relative) => {
     const file = path.join(execDir, relative);

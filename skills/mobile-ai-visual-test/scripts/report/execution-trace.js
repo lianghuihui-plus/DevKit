@@ -5,6 +5,7 @@ const path = require('path');
 const { displayAction } = require('../lib/display-format');
 const { inputEffectMetrics, readAgentAttempts } = require('../lib/execution-time-limit');
 const { deriveCheckpointProgress } = require('../lib/checkpoint-progress');
+const { classifyActionEffect } = require('../lib/observation-consistency');
 
 const STATE_CHANGING_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard']);
 const PHASE_LABELS = Object.freeze({ UNDERSTAND: '理解用例', ESTABLISH_START: '建立起点', EXECUTE: '执行与检查', INVESTIGATE: '调查异常', RECOVERY: '恢复现场', CONCLUDE: '形成结论', FINALIZED: '执行完成', UNKNOWN: '未归类' });
@@ -46,6 +47,8 @@ function sanitizeOperationValue(value) {
   const copy = {};
   for (const [key, item] of Object.entries(value)) copy[key] = sanitizeOperationValue(item);
   if (copy.type === 'inputText' && Object.prototype.hasOwnProperty.call(copy, 'text')) copy.text = '[已脱敏]';
+  if (Object.prototype.hasOwnProperty.call(copy, 'expectedText')) copy.expectedText = '[已脱敏]';
+  if (Object.prototype.hasOwnProperty.call(copy, 'actualText')) copy.actualText = '[已脱敏]';
   return copy;
 }
 
@@ -59,6 +62,22 @@ function operationRecords(execDir) {
     if (operationId) records.set(operationId, record);
   }
   return records;
+}
+
+function semanticStepRecords(execDir) {
+  const stepsDir = path.join(execDir || '', 'agent', 'steps');
+  const byActionOperation = new Map();
+  const byObservationOperation = new Map();
+  if (!execDir || !fs.existsSync(stepsDir)) return { byActionOperation, byObservationOperation };
+  for (const name of fs.readdirSync(stepsDir).filter((item) => item.endsWith('.json') && !item.endsWith('.draft.json'))) {
+    const step = readJson(path.join(stepsDir, name), null);
+    if (!step?.stepId) continue;
+    const actionOperationId = step.expandedActionRequest?.operationId || step.action?.fact?.operationId || null;
+    const observationOperationId = step.observation?.fact?.operationId || null;
+    if (actionOperationId) byActionOperation.set(actionOperationId, step);
+    if (observationOperationId) byObservationOperation.set(observationOperationId, step);
+  }
+  return { byActionOperation, byObservationOperation };
 }
 
 function executionRecoveries(report) {
@@ -145,11 +164,13 @@ function buildExecutionNarrative(report, entries) {
       planRevision,
       current,
       order,
-      goal: checkpoint.goal || '已从当前计划移除的检查点',
+      objective: checkpoint.objective || '已从当前计划移除的检查点',
       status: null,
-      requiredAction: checkpoint.requiredAction ?? null,
       requirementRefs: checkpoint.requirementRefs || [],
       requirements: (checkpoint.requirementRefs || []).map((ref) => requirements.get(ref)).filter(Boolean),
+      requiredInteractions: (checkpoint.requirementRefs || []).flatMap((ref) => requirements.get(ref)?.requiredInteractions || []),
+      expectedOutcomes: (checkpoint.requirementRefs || []).flatMap((ref) => requirements.get(ref)?.expectedOutcomes || []),
+      requiresAction: (checkpoint.requirementRefs || []).some((ref) => (requirements.get(ref)?.requiredInteractions || []).length > 0),
       requirementFindings: (checkpoint.requirementRefs || []).map((ref) => requirementFindings.get(ref)).filter(Boolean),
       entries: [],
       actions: [],
@@ -197,6 +218,7 @@ function buildExecutionNarrative(report, entries) {
 
   const progress = new Map(deriveCheckpointProgress(plan, report.events, report.result, {
     warmSessionGeneration: report.execution?.warmSessionGeneration,
+    understanding: report.understanding,
   })
     .map((entry) => [entry.checkpointId, entry]));
   for (const checkpoint of checkpoints) {
@@ -228,8 +250,7 @@ function plainEntry(event, index) {
     case 'planRevised': return { ...base, category: 'PLAN', title: `计划版本 ${event.planRevision}`, summary: event.reason, planRevision: event.planRevision };
     case 'startEstablished': return { ...base, category: 'DECISION', title: '用例起点已确认', summary: event.reason, evidenceRefs: [event.observationRef] };
     case 'checkpointFinding': return { ...base, category: 'CHECKPOINT', title: `检查点 ${event.checkpointId}`, summary: event.finding, checkpointId: event.checkpointId, planRevision: event.planRevision, evidenceRefs: event.evidenceRefs || [] };
-    case 'reflection': return { ...base, category: 'DECISION', title: 'Agent 决策记录', summary: event.reason };
-    case 'knowledgeQuery': return { ...base, category: 'KNOWLEDGE', title: `知识查询 ${event.queryId}`, summary: `${event.matchCount} 个候选`, query: event.query, candidates: event.candidates || [] };
+    case 'knowledgeQuery': return { ...base, category: 'KNOWLEDGE', title: `知识查询 ${event.queryId}`, summary: `${event.candidateCount} 个候选${event.truncated ? '（已截断）' : ''}`, query: event.query, candidates: event.candidates || [] };
     case 'knowledgeAssessment': return { ...base, category: 'KNOWLEDGE', title: `知识评估：${KNOWLEDGE_ASSESSMENT_LABELS[event.assessment] || '未知评估'}`, summary: event.reason, knowledgeRef: event.knowledgeRef, entryId: event.entryId };
     case 'knowledgeReview': return { ...base, category: 'KNOWLEDGE', title: '知识调查已收口', summary: event.reason, queryId: event.queryId, conclusion: event.conclusion };
     case 'verdictReview': return { ...base, category: 'REVIEW', title: `结论复核：${VERDICT_LABELS[event.requestedVerdict] || '未知结论'}`, summary: event.reason, review: sanitizeOperationValue(event) };
@@ -238,9 +259,76 @@ function plainEntry(event, index) {
   }
 }
 
+function linkedRequirementFindings(report, evidenceRef, requirementRefs = []) {
+  if (!evidenceRef) return [];
+  const allowed = new Set(requirementRefs || []);
+  return (report.result?.requirementFindings || []).filter((finding) => (finding.evidenceRefs || []).includes(evidenceRef)
+    && (!allowed.size || allowed.has(finding.requirementId)));
+}
+
+function assessmentFromFindings(findings) {
+  if (!findings.length) return null;
+  const statuses = new Set(findings.map((finding) => finding.status));
+  const summary = findings.map((finding) => finding.reason).filter(Boolean).join('；');
+  if (statuses.has('NOT_SATISFIED')) return { status: 'NOT_MATCHED', summary: summary || 'Agent 认为当前证据不满足关联要求', basis: 'Agent 检查结果' };
+  if (statuses.has('BLOCKED') || statuses.has('UNRESOLVED')) return { status: 'UNRESOLVED', summary: summary || 'Agent 未能对关联要求形成确定判断', basis: 'Agent 检查结果' };
+  if ([...statuses].every((status) => status === 'SATISFIED')) return { status: 'MATCHED', summary: summary || 'Agent 认为当前证据满足关联要求', basis: 'Agent 检查结果' };
+  return null;
+}
+
+function assessmentFromInputEffect(inputEffect) {
+  if (!inputEffect) return null;
+  if (['VERIFIED', 'MASKED'].includes(inputEffect.status)) {
+    return { status: 'MATCHED', summary: inputEffect.status === 'MASKED' ? '安全输入的掩码长度与预期一致' : '设备适配器已核验整串输入效果', basis: '输入效果核验' };
+  }
+  if (inputEffect.status === 'MISMATCH') return { status: 'NOT_MATCHED', summary: '设备适配器检测到输入效果与预期不一致', basis: '输入效果核验' };
+  return { status: 'UNRESOLVED', summary: '设备适配器未能验证输入效果', basis: '输入效果核验' };
+}
+
+function expectationAssessment(report, entry) {
+  const evidenceRef = entry.category === 'ACTION' ? entry.afterObservation?.ref : entry.observation?.ref;
+  const requirementRefs = entry.authorization?.requirementRefs || [];
+  const findings = linkedRequirementFindings(report, evidenceRef, requirementRefs);
+  const findingAssessment = assessmentFromFindings(findings);
+  if (findingAssessment) return { ...findingAssessment, findingRefs: findings.map((finding) => finding.requirementId) };
+  const inputAssessment = assessmentFromInputEffect(entry.inputEffect);
+  if (inputAssessment) return inputAssessment;
+  if (entry.outcome?.status === 'FAILED' || entry.outcome?.status === 'UNCERTAIN' || entry.outcome?.status === 'REJECTED') {
+    return { status: 'UNRESOLVED', summary: '操作未产生可靠的完成结果，无法判断是否符合预期', basis: '操作结果' };
+  }
+  if (entry.category === 'ACTION' && !entry.afterObservation) {
+    return { status: 'UNRESOLVED', summary: '没有取得与该操作绑定的操作后现场', basis: '现场证据' };
+  }
+  if ((entry.category === 'ACTION' && entry.afterObservation?.usable !== true)
+    || (entry.category === 'OBSERVATION' && entry.observation?.usable !== true)) {
+    return { status: 'UNRESOLVED', summary: '当前现场不可用，不能支撑业务预期判断', basis: '现场证据' };
+  }
+  return { status: 'NOT_ASSESSED', summary: 'Agent 未对该单次操作形成独立的预期判断', basis: '无显式单步结论' };
+}
+
+function nextAgentDecision(entries, entry, linkedFinding) {
+  if (linkedFinding) return { status: 'EXPLICIT', summary: linkedFinding.summary, category: linkedFinding.category };
+  const boundary = entry.afterObservationEntry?.sequence || entry.sequence;
+  const next = entries.find((candidate) => candidate.sequence > boundary
+    && ['ACTION', 'PLAN', 'CHECKPOINT', 'KNOWLEDGE', 'REVIEW', 'DECISION', 'RECOVERY', 'GUARD'].includes(candidate.category));
+  if (!next) return { status: 'NOT_RECORDED', summary: 'Agent 没有为该步骤留下独立分析记录', category: null };
+  const prefixes = {
+    ACTION: 'Agent 继续执行', PLAN: 'Agent 调整计划', CHECKPOINT: 'Agent 形成检查点结论',
+    KNOWLEDGE: 'Agent 进入知识调查', REVIEW: 'Agent 进行结论复核', DECISION: 'Agent 形成决策',
+    RECOVERY: 'Agent 进入受控恢复', GUARD: '框架拒绝了后续操作',
+  };
+  return {
+    status: 'CONTINUED',
+    summary: `${prefixes[next.category] || 'Agent 继续执行'}：${next.intent || next.summary || next.title}`,
+    category: next.category,
+    targetSequence: next.sequence,
+  };
+}
+
 function buildExecutionTrace(report) {
   const events = Array.isArray(report.events) ? report.events : [];
   const records = operationRecords(report.latest);
+  const steps = semanticStepRecords(report.latest);
   const attempts = readAgentAttempts(report.latest, report.result?.endedAt || report.execution?.endedAt || new Date().toISOString());
   const started = new Map(events.filter((event) => event.type === 'operationStarted').map((event) => [event.operationId, event]));
   const completed = new Map(events.filter((event) => event.type === 'operationCompleted').map((event) => [event.operationId, event]));
@@ -260,6 +348,7 @@ function buildExecutionTrace(report) {
     }
     if (event.type === 'observation') {
       const record = records.get(event.operationId);
+      const step = steps.byObservationOperation.get(event.operationId) || null;
       const request = record?.request || {};
       const artifacts = operationArtifacts(event, record);
       const begin = started.get(event.operationId);
@@ -274,8 +363,16 @@ function buildExecutionTrace(report) {
         authorization: request.authorization || event.authorization || null,
         observationPurpose: event.observationPurpose || request.purpose || 'AGENT_DECIDED',
         relatedOperationId: event.relatedOperationId || request.relatedOperationId || null,
+        stepId: step?.stepId || null,
         outcome: { status: event.usable ? 'SUCCEEDED' : 'FAILED', code: event.usable ? null : 'OBSERVATION_NOT_USABLE', summary: event.usable ? '截图可用于当前执行' : '截图不可作为业务结论证据' },
-        observation: { ref: event.ref, sha256: event.sha256, usable: event.usable, app: event.app || record?.deviceResult?.app || null, device: event.device || record?.deviceResult?.device || null },
+        observation: {
+          ref: event.ref,
+          sha256: event.sha256,
+          usable: event.usable,
+          app: event.app || record?.deviceResult?.app || null,
+          device: event.device || record?.deviceResult?.device || null,
+          technicalSignals: event.technicalSignals || null,
+        },
         artifacts, raw: sanitizeOperationValue({ event, request, deviceResult: record?.deviceResult || null }),
       };
       entries.push(entry);
@@ -284,6 +381,7 @@ function buildExecutionTrace(report) {
     }
     if (event.type === 'actionResult') {
       const record = records.get(event.operationId);
+      const step = steps.byActionOperation.get(event.operationId) || null;
       const request = record?.request || {};
       const action = redactAction(event.requestedAction || request.action);
       const finish = completed.get(event.operationId);
@@ -296,7 +394,10 @@ function buildExecutionTrace(report) {
         title: request.intent || event.intent || `${actionLabel(action?.type)}${action?.target ? `：${action.target}` : ''}`,
         intent: request.intent || event.intent || authorization?.purpose || null,
         expectedOutcome: request.expectedOutcome || event.expectedOutcome || null,
-        summary: outcome.summary, authorization, action, outcome,
+        summary: outcome.summary, authorization, action, outcome, stepId: step?.stepId || null,
+        semanticRequest: sanitizeOperationValue(step?.semanticRequest || null),
+        inputEffect: sanitizeOperationValue(event.deviceResult?.inputEffect || record?.deviceResult?.inputEffect || null),
+        coordinateAudit: sanitizeOperationValue(event.coordinateAudit || record?.fact?.coordinateAudit || null),
         retrySafety: retrySafety(action, authorization, outcome),
         raw: sanitizeOperationValue({ event, request, deviceResult: record?.deviceResult || event.deviceResult || null }),
       };
@@ -313,12 +414,16 @@ function buildExecutionTrace(report) {
     const begin = started.get(operationId);
     const finish = completed.get(operationId);
     const action = redactAction(record.request?.action);
+    const step = steps.byActionOperation.get(operationId) || steps.byObservationOperation.get(operationId) || null;
     const outcome = actionOutcome(null, finish, record);
     entries.push({
       sequence: events.indexOf(begin) + 1, time: begin?.time || '', durationMs: durationMs(begin?.time, finish?.time), phase: begin?.phase || 'UNKNOWN',
       category: record.kind === 'ACTION' ? 'ACTION' : 'OBSERVATION', operationId,
       title: record.request?.intent || (action ? actionLabel(action.type) : '观察现场'), intent: record.request?.intent || record.request?.authorization?.purpose || null,
       expectedOutcome: record.request?.expectedOutcome || null, action, authorization: record.request?.authorization || null, outcome,
+      stepId: step?.stepId || null, semanticRequest: sanitizeOperationValue(step?.semanticRequest || null),
+      inputEffect: sanitizeOperationValue(record.deviceResult?.inputEffect || null),
+      coordinateAudit: sanitizeOperationValue(record.fact?.coordinateAudit || null),
       retrySafety: action ? retrySafety(action, record.request?.authorization, outcome) : null,
       raw: sanitizeOperationValue(record),
     });
@@ -357,26 +462,82 @@ function buildExecutionTrace(report) {
 
   const observations = entries.filter((entry) => entry.category === 'OBSERVATION');
   const actions = entries.filter((entry) => entry.category === 'ACTION');
+  const observationByRef = new Map(observations.filter((entry) => entry.observation?.ref).map((entry) => [entry.observation.ref, entry]));
+  const observationByOperation = new Map(observations.filter((entry) => entry.operationId).map((entry) => [entry.operationId, entry]));
   for (const action of actions) {
-    const before = [...observations].reverse().find((entry) => entry.sequence < action.sequence) || null;
-    const after = observations.find((entry) => entry.relatedOperationId === action.operationId)
-      || observations.find((entry) => entry.sequence > action.sequence) || null;
+    const step = steps.byActionOperation.get(action.operationId) || null;
+    const basisRef = step?.expandedActionRequest?.basisObservationRef || action.raw?.event?.basisObservationRef
+      || action.raw?.request?.basisObservationRef || null;
+    const stepObservationOperationId = step?.observation?.fact?.operationId || null;
+    const stepObservationRef = step?.observation?.fact?.ref || null;
+    const before = observationByRef.get(basisRef) || null;
+    const after = observationByOperation.get(stepObservationOperationId)
+      || observationByRef.get(stepObservationRef)
+      || observations.find((entry) => entry.relatedOperationId === action.operationId) || null;
     action.beforeObservation = before?.observation || null;
     action.afterObservation = after?.observation || null;
+    action.beforeObservationEntry = before;
+    action.afterObservationEntry = after;
+    action.observationLinkage = after ? 'EXACT' : 'MISSING';
+    action.postActionArtifacts = after?.artifacts || null;
+    action.actionEffect = classifyActionEffect(
+      before ? { screenshot: { sha256: before.observation?.sha256 } } : null,
+      after ? { screenshot: { sha256: after.observation?.sha256 } } : null,
+      action.operationId,
+    );
   }
 
-  const screenshots = observations.filter((entry) => entry.artifacts?.screenshot).map((entry, index) => ({
-    id: `screenshot-${index + 1}`, index, ref: entry.artifacts.screenshot, operationId: entry.operationId,
+  const screenshots = observations.filter((entry) => entry.artifacts?.screenshot).map((entry) => ({
+    ref: entry.artifacts.screenshot, operationId: entry.operationId,
     time: entry.time, phase: entry.phase, purpose: entry.observationPurpose, title: entry.title,
   }));
+  for (const action of actions) {
+    if (safeRef(action.coordinateAudit?.overlayRef)) {
+      screenshots.push({
+        ref: action.coordinateAudit.overlayRef,
+        operationId: action.operationId,
+        time: action.time,
+        phase: action.phase,
+        purpose: 'COORDINATE_AUDIT',
+        title: '操作前坐标审计',
+      });
+    }
+  }
+  screenshots.forEach((entry, index) => Object.assign(entry, { id: `screenshot-${index + 1}`, index }));
   const screenshotByRef = new Map(screenshots.map((item) => [item.ref, item]));
   for (const entry of entries) {
     if (entry.category === 'OBSERVATION') entry.screenshot = screenshotByRef.get(entry.artifacts?.screenshot) || null;
     if (entry.category === 'ACTION') {
       entry.beforeScreenshot = screenshotByRef.get(entry.beforeObservation?.ref) || null;
       entry.afterScreenshot = screenshotByRef.get(entry.afterObservation?.ref) || null;
+      entry.coordinateOverlayScreenshot = screenshotByRef.get(entry.coordinateAudit?.overlayRef) || null;
     }
   }
+
+  const checkpoints = new Map((report.plan?.checkpoints || []).map((checkpoint, index) => [checkpoint.id, { ...checkpoint, order: index + 1 }]));
+  const startConditions = new Map((report.understanding?.startConditions || []).map((condition, index) => [condition.id, { ...condition, order: index + 1 }]));
+  for (const entry of entries) {
+    const checkpointId = entry.authorization?.checkpointId || entry.checkpointId || null;
+    const checkpoint = checkpoints.get(checkpointId) || null;
+    const startCondition = startConditions.get(entry.authorization?.startConditionId) || null;
+    entry.executionContext = checkpoint ? {
+      type: 'CHECKPOINT', order: checkpoint.order, objective: checkpoint.objective, planRevision: entry.authorization?.planRevision || entry.planRevision || report.plan?.revision || null,
+    } : startCondition ? { type: 'START', order: startCondition.order, goal: startCondition.text, planRevision: null } : null;
+  }
+  for (const entry of entries.filter((item) => ['ACTION', 'OBSERVATION'].includes(item.category))) {
+    if (entry.category === 'OBSERVATION' && entry.relatedOperationId) continue;
+    const evidenceRef = entry.category === 'ACTION' ? entry.afterObservation?.ref : entry.observation?.ref;
+    const linkedFinding = entries.find((candidate) => candidate.category === 'CHECKPOINT'
+      && evidenceRef && (candidate.evidenceRefs || []).includes(evidenceRef)
+      && (!entry.authorization?.checkpointId || candidate.checkpointId === entry.authorization.checkpointId)) || null;
+    entry.expectationAssessment = expectationAssessment(report, entry);
+    entry.agentAnalysis = nextAgentDecision(entries, entry, linkedFinding);
+  }
+
+  const pathEntries = entries.filter((entry) => {
+    if (entry.category === 'OBSERVATION' && entry.relatedOperationId) return false;
+    return !['PHASE', 'UNDERSTANDING', 'RESULT'].includes(entry.category);
+  });
 
   const lastObservation = observations.at(-1) || null;
   const lastTrustedObservation = [...observations].reverse().find((entry) => entry.observation?.usable) || null;
@@ -398,7 +559,7 @@ function buildExecutionTrace(report) {
   };
 
   return {
-    entries, screenshots, recoveryAnchor,
+    entries, pathEntries, screenshots, recoveryAnchor,
     narrative: buildExecutionNarrative(report, entries),
     counts: {
       entries: entries.length,

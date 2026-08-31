@@ -3,8 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { appendJsonl, readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
-
-const CURRENT_ATTEMPT_FILE = 'attempt.current.json';
+const { CURRENT_ATTEMPT_FILE, settleCurrentAttempt } = require('../lib/agent-attempt-lifecycle');
 
 function optionValue(argv, name) {
   const index = argv.indexOf(name);
@@ -50,16 +49,7 @@ function beginAttempt(argv, value) {
   if (!execDir || !fs.existsSync(execDir)) return;
   const resolved = path.resolve(execDir);
   const currentFile = path.join(resolved, 'agent', CURRENT_ATTEMPT_FILE);
-  const previous = readJson(currentFile, null);
-  if (previous) {
-    appendJsonl(path.join(resolved, 'agent', 'attempts.jsonl'), {
-      ...previous,
-      endedAt: value.startedAt,
-      durationMs: Math.max(Date.parse(value.startedAt) - Date.parse(previous.startedAt), 0),
-      ok: false,
-      error: { code: 'AGENT_ENTRYPOINT_INTERRUPTED', message: 'previous Agent entrypoint ended without a recorded response' },
-    });
-  }
+  settleCurrentAttempt(resolved, { endedAt: value.startedAt });
   writeJsonAtomic(currentFile, value);
 }
 

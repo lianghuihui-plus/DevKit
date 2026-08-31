@@ -86,17 +86,19 @@ function createCurrentFixture(root, options = {}) {
     revision: 1,
     summary: `理解 ${verdict} 用例`,
     startConditions: includePreparation ? [{ id: 'start-001', text: '进入用例目标页面', basis: 'implied', sourceRefs: ['src-001'] }] : [],
-    requirements: [{ id: 'req-001', text: '验证当前报告结果', basis: 'explicit', sourceRefs: ['src-001'] }],
+    requirements: [{
+      id: 'req-001', text: '验证当前报告结果', basis: 'explicit', sourceRefs: ['src-001'],
+      requiredInteractions: [], expectedOutcomes: ['当前报告结果符合预期'],
+    }],
     sourceRefs: [sourceRef],
     uncertainties: [],
-    requirementDispositions: [],
   };
   validateUnderstanding(understanding, { sourceText });
   const plan = withPlanSha({
     schemaVersion: 1,
     revision: 1,
     reason: '建立报告 fixture 检查点',
-    checkpoints: [{ id: 'cp-001', goal: '形成可展示结论', requirementRefs: ['req-001'], requiredAction: false }],
+    checkpoints: [{ id: 'cp-001', objective: '形成可展示结论', requirementRefs: ['req-001'] }],
   });
   validatePlan(plan, { understanding });
   writeJson(path.join(execDir, 'understanding.json'), understanding);
@@ -117,7 +119,7 @@ function createCurrentFixture(root, options = {}) {
   fs.writeFileSync(path.join(execDir, beforeEvidenceRef), FIXTURE_PNG);
   fs.writeFileSync(path.join(execDir, evidenceRef), FIXTURE_PNG);
   fs.writeFileSync(path.join(execDir, 'layouts', 'observe-before.json'), '{}\n');
-  fs.writeFileSync(path.join(execDir, 'layouts', 'observe-after.json'), '{}\n');
+  if (options.afterLayoutAvailable !== false) fs.writeFileSync(path.join(execDir, 'layouts', 'observe-after.json'), '{}\n');
   fs.writeFileSync(path.join(execDir, 'logs', 'observe-after-errors.txt'), 'fixture observation diagnostics\n');
   const needsEvidence = ['PASS', 'FAIL'].includes(verdict);
   const needsReview = ['FAIL', 'INCONCLUSIVE'].includes(verdict);
@@ -127,6 +129,15 @@ function createCurrentFixture(root, options = {}) {
   const findingStatus = verdict === 'PASS'
     ? 'SATISFIED'
     : verdict === 'FAIL' ? 'NOT_SATISFIED' : verdict === 'BLOCKED' ? 'BLOCKED' : 'UNRESOLVED';
+  const knowledgeContext = {
+    schemaVersion: 1,
+    understandingRevision: understanding.revision,
+    warmSessionGeneration: 1,
+    stateBoundaryIndex: includePreparation ? 9 : 6,
+    observationRef: evidenceRef,
+    checkpointRef: 'cp-001',
+    requirementRefs: ['req-001'],
+  };
   const result = withResultSha({
     schemaVersion: 2,
     executionId,
@@ -155,8 +166,16 @@ function createCurrentFixture(root, options = {}) {
     recoveryAttempt: { performed: false, explanation: '报告 fixture 无需执行恢复动作', evidenceRefs: [] },
     remainingUncertainties: verdict === 'INCONCLUSIVE' ? ['目标状态仍不确定'] : [],
   }] : [];
-  const knowledgeQueries = needsReview ? [{ ref: 'query-001', executionId, matchCount: 0 }] : [];
-  validateResult(result, { executionId, understanding, plan, evidence, verdictReviews, knowledgeQueries });
+  const knowledgeQueries = needsReview ? [{ ref: 'query-001', executionId, candidateCount: 0, knowledgeContext }] : [];
+  validateResult(result, {
+    executionId,
+    understanding,
+    plan,
+    evidence,
+    verdictReviews,
+    knowledgeQueries,
+    currentKnowledgeContext: knowledgeContext,
+  });
   const metrics = {
     schemaVersion: 2,
     executionId,
@@ -202,6 +221,29 @@ function createCurrentFixture(root, options = {}) {
     sideEffect: false, authorizationSha: `authorization-${'b'.repeat(24)}`,
   };
   const action = options.action || { type: 'tap', x: 120, y: 240, target: '目标按钮', coordinateSource: 'visual', targetBounds: [80, 210, 160, 270], coordinateEvidence: '操作前截图中的目标按钮' };
+  const afterLayoutAvailable = options.afterLayoutAvailable !== false;
+  const afterTechnicalSignals = options.afterTechnicalSignals || null;
+  const coordinateAudit = action.x !== undefined && action.y !== undefined ? {
+    schemaVersion: 1,
+    source: action.coordinateSource,
+    kind: 'POINT',
+    requested: { point: { x: Number(action.x), y: Number(action.y) }, bounds: action.targetBounds },
+    executed: { point: { x: Number(action.x), y: Number(action.y) } },
+    expectedExecuted: { point: { x: Number(action.x), y: Number(action.y) } },
+    screenshot: { ref: beforeEvidenceRef, width: 320, height: 640 },
+    viewport: { width: 320, height: 640 },
+    consistency: 'MATCHED',
+    overlayRef: 'coordinate-audits/action-tap.svg',
+  } : null;
+  if (coordinateAudit) {
+    fs.mkdirSync(path.join(execDir, 'coordinate-audits'), { recursive: true });
+    fs.writeFileSync(path.join(execDir, coordinateAudit.overlayRef), '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="640"><image href="../screenshots/observe-before.png" width="320" height="640"/><circle cx="120" cy="240" r="12" fill="none" stroke="#2563eb" stroke-width="4"/><path d="M108 240h24M120 228v24" stroke="#ef4444" stroke-width="4"/></svg>');
+  }
+  const actionDeviceResult = action.type === 'inputText' ? {
+    ok: true,
+    inputEffect: { status: 'VERIFIED', expectedText: action.text, actualText: action.text, secureInput: false, attempts: 1 },
+    ...(coordinateAudit ? { executedPoint: coordinateAudit.executed.point } : {}),
+  } : { ok: true, ...(coordinateAudit ? { executedPoint: coordinateAudit.executed.point } : {}) };
   const timeline = [
     { schemaVersion: 1, executionId, time: result.startedAt, type: 'caseUnderstood', writer: 'agent', phase: 'UNDERSTAND', understandingRevision: 1, sourceRefs: ['src-001'] },
     { schemaVersion: 1, executionId, time: result.startedAt, type: 'planRevised', writer: 'agent', phase: 'UNDERSTAND', planRevision: 1, planSha: plan.planSha, reason: plan.reason },
@@ -214,21 +256,21 @@ function createCurrentFixture(root, options = {}) {
     { schemaVersion: 1, executionId, time: '2026-08-13T10:00:01.000+08:00', type: 'observation', writer: 'observe.sh', phase: 'EXECUTE', operationId: 'observe-before', scope: 'case-business', ref: beforeEvidenceRef, sha256: 'a'.repeat(64), usable: true, warmSessionGeneration: 1, observationPurpose: 'PRE_ACTION', intent: '确认操作前目标位置', expectedOutcome: '目标按钮可见', artifacts: { screenshot: beforeEvidenceRef, layout: 'layouts/observe-before.json', logs: [] }, authorization },
     { schemaVersion: 1, executionId, time: '2026-08-13T10:00:01.000+08:00', type: 'operationCompleted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'observe-before', outcome: 'SUCCEEDED' },
     { schemaVersion: 1, executionId, time: '2026-08-13T10:00:01.500+08:00', type: 'operationStarted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'action-tap', kind: 'ACTION' },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:02.000+08:00', type: 'actionResult', writer: 'action.sh', phase: 'EXECUTE', operationId: 'action-tap', scope: 'case-business', ok: true, warmSessionGeneration: 1, requestedAction: action, authorization, intent: '打开目标内容', expectedOutcome: '页面展示验证结果', deviceResult: { ok: true } },
+    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:02.000+08:00', type: 'actionResult', writer: 'action.sh', phase: 'EXECUTE', operationId: 'action-tap', scope: 'case-business', ok: true, warmSessionGeneration: 1, requestedAction: action, basisObservationRef: beforeEvidenceRef, authorization, intent: '打开目标内容', expectedOutcome: '页面展示验证结果', deviceResult: actionDeviceResult, ...(coordinateAudit ? { coordinateAudit } : {}) },
     { schemaVersion: 1, executionId, time: '2026-08-13T10:00:02.000+08:00', type: 'operationCompleted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'action-tap', outcome: 'SUCCEEDED' },
     { schemaVersion: 1, executionId, time: '2026-08-13T10:00:02.500+08:00', type: 'operationStarted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'observe-after', kind: 'OBSERVE' },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.000+08:00', type: 'observation', writer: 'observe.sh', phase: 'EXECUTE', operationId: 'observe-after', scope: 'case-business', ref: evidenceRef, sha256: 'b'.repeat(64), usable: true, warmSessionGeneration: 1, observationPurpose: 'POST_ACTION', relatedOperationId: 'action-tap', intent: '确认点击后的现场', expectedOutcome: '页面展示验证结果', artifacts: { screenshot: evidenceRef, layout: 'layouts/observe-after.json', logs: ['logs/observe-after-errors.txt'] }, authorization },
+    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.000+08:00', type: 'observation', writer: 'observe.sh', phase: 'EXECUTE', operationId: 'observe-after', scope: 'case-business', ref: evidenceRef, sha256: 'b'.repeat(64), usable: true, warmSessionGeneration: 1, observationPurpose: 'POST_ACTION', relatedOperationId: 'action-tap', intent: '确认点击后的现场', expectedOutcome: '页面展示验证结果', artifacts: { screenshot: evidenceRef, layout: afterLayoutAvailable ? 'layouts/observe-after.json' : null, logs: ['logs/observe-after-errors.txt'] }, ...(afterTechnicalSignals ? { technicalSignals: afterTechnicalSignals } : {}), authorization },
     { schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.000+08:00', type: 'operationCompleted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'observe-after', outcome: 'SUCCEEDED' },
     { schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.200+08:00', type: 'checkpointFinding', writer: 'agent', phase: 'EXECUTE', checkpointId: 'cp-001', planRevision: 1, requirementRefs: ['req-001'], evidenceRefs: needsEvidence ? [evidenceRef] : [], finding: `检查点已完成，结果为 ${findingStatus}` },
-    ...(needsReview ? [{ schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.500+08:00', type: 'knowledgeQuery', writer: 'knowledge-query', phase: 'INVESTIGATE', queryId: 'query-001', query: { symptom: verdict, keywords: [] }, candidates: [], matchCount: 0 }] : []),
+    ...(needsReview ? [{ schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.500+08:00', type: 'knowledgeQuery', writer: 'knowledge-query', phase: 'INVESTIGATE', queryId: 'query-001', query: { symptom: verdict, keywords: [] }, knowledgeContext, candidates: [], candidateCount: 0, truncated: false }] : []),
     ...(needsReview ? [{ schemaVersion: 1, executionId, time: result.endedAt, type: 'verdictReview', writer: 'agent', phase: 'CONCLUDE', ...verdictReviews[0], reason: '已完成疑似失败复核' }] : []),
     { schemaVersion: 1, executionId, time: result.endedAt, type: 'result', writer: 'runtime-core', phase: 'FINALIZED', resultSha: result.resultSha, verdict },
   ];
   fs.writeFileSync(path.join(execDir, 'timeline.jsonl'), `${timeline.map((event) => JSON.stringify(event)).join('\n')}\n`);
   if (includePreparation) writeJson(path.join(execDir, 'agent', 'operation-prepare-start.json'), { schemaVersion: 2, kind: 'OBSERVE', request: { operationId: 'prepare-start', purpose: 'ESTABLISH_START', intent: '确认用例起点', expectedOutcome: '目标页面已就绪', authorization: preparationAuthorization }, fact: timeline.find((event) => event.operationId === 'prepare-start' && event.type === 'observation') });
-  writeJson(path.join(execDir, 'agent', 'operation-action-tap.json'), { schemaVersion: 2, kind: 'ACTION', request: { operationId: 'action-tap', intent: '打开目标内容', expectedOutcome: '页面展示验证结果', authorization, action }, fact: timeline.find((event) => event.type === 'actionResult') });
+  writeJson(path.join(execDir, 'agent', 'operation-action-tap.json'), { schemaVersion: 2, kind: 'ACTION', request: { operationId: 'action-tap', intent: '打开目标内容', expectedOutcome: '页面展示验证结果', basisObservationRef: beforeEvidenceRef, authorization, action }, fact: timeline.find((event) => event.type === 'actionResult'), deviceResult: actionDeviceResult });
   writeJson(path.join(execDir, 'agent', 'operation-observe-before.json'), { schemaVersion: 2, kind: 'OBSERVE', request: { operationId: 'observe-before', purpose: 'PRE_ACTION', intent: '确认操作前目标位置', expectedOutcome: '目标按钮可见', authorization }, fact: timeline.find((event) => event.operationId === 'observe-before' && event.type === 'observation') });
-  writeJson(path.join(execDir, 'agent', 'operation-observe-after.json'), { schemaVersion: 2, kind: 'OBSERVE', request: { operationId: 'observe-after', purpose: 'POST_ACTION', relatedOperationId: 'action-tap', intent: '确认点击后的现场', expectedOutcome: '页面展示验证结果', authorization }, fact: timeline.find((event) => event.operationId === 'observe-after' && event.type === 'observation'), deviceResult: { artifacts: { screenshot: evidenceRef, layout: 'layouts/observe-after.json', logs: ['logs/observe-after-errors.txt'] }, app: { foregroundApp: 'com.example.fixture', inTargetApp: true } } });
+  writeJson(path.join(execDir, 'agent', 'operation-observe-after.json'), { schemaVersion: 2, kind: 'OBSERVE', request: { operationId: 'observe-after', purpose: 'POST_ACTION', relatedOperationId: 'action-tap', intent: '确认点击后的现场', expectedOutcome: '页面展示验证结果', authorization }, fact: timeline.find((event) => event.operationId === 'observe-after' && event.type === 'observation'), deviceResult: { artifacts: { screenshot: evidenceRef, layout: afterLayoutAvailable ? 'layouts/observe-after.json' : null, logs: ['logs/observe-after-errors.txt'] }, ...(afterTechnicalSignals ? { technicalSignals: afterTechnicalSignals } : {}), app: { foregroundApp: 'com.example.fixture', inTargetApp: true } } });
   if (options.attempts?.length) {
     fs.writeFileSync(path.join(execDir, 'agent', 'attempts.jsonl'), `${options.attempts.map(JSON.stringify).join('\n')}\n`);
   }

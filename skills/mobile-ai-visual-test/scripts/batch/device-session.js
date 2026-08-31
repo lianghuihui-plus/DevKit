@@ -7,6 +7,8 @@ const { startupDisplayVerified } = require('../lib/startup-display');
 const { normalizeDeviceBinding } = require('../lib/target-binding');
 
 const SKILL_ROOT = path.resolve(__dirname, '../..');
+const DEFAULT_ADAPTER_TIMEOUT_MS = 60000;
+const IOS_RESTART_OVERHEAD_MS = 15000;
 
 function run(command, args, timeout) {
   const result = childProcess.spawnSync(command, args, {
@@ -15,13 +17,33 @@ function run(command, args, timeout) {
     maxBuffer: 16 * 1024 * 1024,
     timeout,
   });
+  const stdout = String(result.stdout || '').trim();
+  const stderr = String(result.stderr || '').trim();
+  if (result.error?.code === 'ETIMEDOUT') {
+    return { ok: false, reason: `DEVICE_ADAPTER_TIMEOUT: adapter did not finish within ${timeout}ms${stderr ? `; ${stderr}` : ''}` };
+  }
+  if (result.error) {
+    return { ok: false, reason: `DEVICE_ADAPTER_EXECUTION_FAILED: ${stderr || result.error.message}` };
+  }
+  if (!stdout) {
+    const termination = result.signal ? `; signal=${result.signal}` : '';
+    const status = result.status === null || result.status === undefined ? '' : `; status=${result.status}`;
+    return { ok: false, reason: `DEVICE_ADAPTER_OUTPUT_EMPTY: adapter returned no JSON result${status}${termination}${stderr ? `; ${stderr}` : ''}` };
+  }
   let value;
   try {
-    value = JSON.parse(String(result.stdout || '').trim());
-  } catch (error) {
-    return { ok: false, reason: String(result.stderr || error.message).trim() };
+    value = JSON.parse(stdout);
+  } catch {
+    return { ok: false, reason: `DEVICE_ADAPTER_OUTPUT_INVALID: adapter did not return one JSON result${stderr ? `; ${stderr}` : ''}` };
   }
-  return { status: result.status, stderr: String(result.stderr || '').trim(), value };
+  return { status: result.status, stderr, value };
+}
+
+function restartTimeoutMs(binding) {
+  if (binding?.platform !== 'ios') return DEFAULT_ADAPTER_TIMEOUT_MS;
+  const configured = Number(binding.wdaLaunchTimeout);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_ADAPTER_TIMEOUT_MS;
+  return Math.max(DEFAULT_ADAPTER_TIMEOUT_MS, Math.ceil(configured) + IOS_RESTART_OVERHEAD_MS);
 }
 
 function normalizeRestartResult(value, binding, stderr = '') {
@@ -54,7 +76,7 @@ function restartApp(request) {
   const result = run(path.join(SKILL_ROOT, 'scripts/platform/action.sh'), [
     ...environmentAdapterArgs(binding, 'action'),
     '--type', 'restartApp',
-  ], 60000);
+  ], restartTimeoutMs(binding));
   if (!result.value) return { ok: false, coldStartVerified: false, startupDisplayVerified: false, reason: result.reason };
   return normalizeRestartResult(result.value, binding, result.stderr);
 }
@@ -113,4 +135,6 @@ module.exports = {
   probeSession,
   releasePlatformRuntime,
   restartApp,
+  restartTimeoutMs,
+  run,
 };

@@ -1,19 +1,14 @@
 'use strict';
 
-const { ACTION_FIELDS, describeActionConstraints } = require('./action-contract');
-const { BASIS_VALUES, DISPOSITIONS } = require('./understanding-contract');
-const { FINDING_STATUSES, VERDICTS, VERDICT_BASES } = require('../execution/contracts/result-contract');
-const { KNOWLEDGE_ASSESSMENTS } = require('../execution/contracts/execution-event-contract');
 const { canonicalJson, sha256 } = require('./contract-utils');
-
-function sorted(values) {
-  return [...values].sort();
-}
+const { buildCaseAgentGuidance } = require('./case-agent-guidance');
+const { describeAgentInputSchemas } = require('./agent-input-contract');
 
 function commandTemplates() {
   return {
     status: 'node scripts/agent/status.js --exec-dir <execution>',
     understand: "node scripts/agent/understand.js --exec-dir <execution> --request-json '<json>'",
+    plan: "node scripts/agent/plan.js --exec-dir <execution> --request-json '<json>'",
     inspect: "node scripts/agent/inspect.js --exec-dir <execution> [--request-json '<json>']",
     step: "node scripts/agent/step.js --exec-dir <execution> --request-json '<json>'",
     markStart: "node scripts/agent/mark-start.js --exec-dir <execution> [--request-json '<json>']",
@@ -24,143 +19,25 @@ function commandTemplates() {
 }
 
 function schemas(platform) {
-  const actionConstraints = describeActionConstraints(platform, 'case-business');
+  const inputs = describeAgentInputSchemas(platform);
   return {
-    understand: {
-      required: ['understanding', 'checkpoints'],
-      optional: ['reason'],
-      understandingRequired: ['summary', 'startConditions', 'requirements'],
-      understandingOptional: ['uncertainties', 'requirementDispositions'],
-      statementRequired: ['id', 'text', 'basis'],
-      basis: sorted(BASIS_VALUES),
-      dispositions: sorted(DISPOSITIONS),
-      checkpointRequired: ['id', 'goal', 'requirementRefs'],
-      checkpointOptional: ['requiredAction'],
-      generated: ['schemaVersion', 'turnId', 'understanding.revision', 'understanding.sourceRefs', 'statement.sourceRefs', 'plan.revision', 'plan.planSha'],
-      revision: 'submit only changed understanding or checkpoints; framework increments revisions',
-    },
-    inspect: {
-      optional: ['stage', 'startConditionRef', 'checkpointRef', 'intent', 'expectedOutcome', 'purpose'],
-      stage: ['PREPARE', 'BUSINESS'],
-      generated: ['operationId', 'authorization', 'observationRef', 'observationView'],
-    },
-    step: {
-      required: ['intent', 'action'],
-      optional: ['stage', 'checkpointRef', 'startConditionRef', 'expectedOutcome'],
-      stage: ['PREPARE', 'BUSINESS'],
-      behavior: 'executes one Agent-selected action and automatically captures the post-action observation',
-      generated: ['stepId', 'operationId', 'authorization', 'basisObservationRef', 'postActionObservation'],
-    },
-    semanticAction: {
-      actionTypes: actionConstraints.actionTypes,
-      commonRequired: ['type'],
-      targetModes: {
-        element: ['targetRef'],
-        visual: ['normalizedPoint', 'normalizedBounds'],
-        swipe: ['normalizedFrom', 'normalizedTo', 'normalizedBounds'],
-        rawFallback: Object.fromEntries(actionConstraints.actionTypes.map((type) => [type, ACTION_FIELDS[type]])),
-      },
-      normalizedCoordinateRange: '0..1 relative to the original screenshot; framework converts to executable pixels',
-      elementRef: 'use a ref from the latest observationView.elements whenever available',
-      inputText: {
-        required: ['text'],
-        optional: ['targetRef', 'target', 'mode'],
-        modes: ['replace', 'append'],
-        platform: platform === 'harmony' ? 'targetRef or coordinates focus and input the field' : 'focus with a prior tap step, then input without coordinates',
-      },
-      ...(platform === 'ios' ? {
-        dismissKeyboard: {
-          required: [], optional: [],
-          useWhen: 'observationView reports a visible keyboard with KEYBOARD_COORDINATE_SPACE_MISMATCH',
-        },
-      } : {}),
-    },
+    ...inputs,
     observationView: {
-      required: ['observationRef', 'scope', 'usable', 'screenshot', 'layout', 'signals', 'stateChanges', 'conflicts', 'elements'],
-      screenshotRequired: ['ref', 'width', 'height'],
+      required: ['observationRef', 'scope', 'usable', 'screenshot', 'layout', 'signals', 'actionEffect', 'stateChanges', 'conflicts', 'elements'],
+      screenshotRequired: ['ref', 'sha256', 'width', 'height'],
       layoutRequired: ['usable', 'format', 'diagnostics'],
       elementRequired: ['ref', 'text', 'role', 'bounds', 'clickable', 'checkable', 'editable', 'enabled', 'visible', 'focused', 'secure', 'maskedLength', 'stateKey'],
       signals: ['keyboard', 'focusedElement', 'layoutViewport', 'adapterWindowRect', 'coordinateConsistency'],
-      note: 'elements and technical signals are a compact deterministic projection of the current layout; stateChanges/conflicts are framework-derived and are not business decisions',
-    },
-    markStart: {
-      optional: ['reason'],
-      precondition: 'latest usable PREPARE observation belongs to the current understanding and warm-session generation',
-      effect: 'records explicit startEstablished evidence and enters business execution',
-    },
-    requestRecovery: {
-      required: ['reason'],
-      optional: ['triggerType', 'incidentCategory'],
-      triggerTypes: ['SOURCE_REQUIRED_COLD_START', 'AGENT_DECIDED_RESTART', 'APP_CRASH', 'SYSTEM_KILLED', 'UNKNOWN_EXIT', 'APP_UNRESPONSIVE', 'AUTOMATION_SESSION_LOST'],
-      incidentCategories: ['PRODUCT', 'TECHNICAL'],
-      incidentCategoryRule: 'optional for incident triggers; defaults to TECHNICAL; concrete failure details belong in reason and are frozen as incidentReason',
-      generated: ['recoveryId', 'executionId', 'checkpointId', 'sourceRefs', 'evidenceRefs', 'incident fields'],
-      effect: 'yields execution to the batch coordinator; Agent stops until recovery completes',
-    },
-    investigate: {
-      queryMode: { required: ['query'], optional: ['reason'], generated: ['queryId', 'candidates'] },
-      assessmentMode: {
-        required: ['queryId', 'assessments', 'conclusion', 'reason'],
-        assessmentRequired: ['entryId', 'assessment', 'reason'],
-        assessments: sorted(KNOWLEDGE_ASSESSMENTS),
-        conclusions: ['APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT'],
-        generated: ['knowledgeRef', 'sourceNamespace', 'relativePath', 'contentSha', 'knowledgeReview'],
-      },
-    },
-    conclude: {
-      required: ['verdict', 'summary', 'findings'],
-      optional: ['verdictBasis', 'technicalFailureCode', 'uncertainties', 'queryRefs', 'sourceRecheck', 'recoveryExplanation', 'recoveryEvidenceRefs', 'reason'],
-      verdicts: sorted(VERDICTS),
-      verdictBases: sorted(VERDICT_BASES),
-      findingRequired: ['requirementRef', 'status', 'reason'],
-      findingOptional: ['evidenceRefs', 'knowledgeRefs', 'incidentRefs', 'necessityReason'],
-      findingStatuses: sorted(FINDING_STATUSES),
-      coverage: 'exactly one finding for every current requirement',
-      knowledgeRule: 'direct-evidence PASS may use no query; FAIL, INCONCLUSIVE, and business BLOCKED require a query-level knowledgeReview; zero matches close automatically',
-      generated: ['checkpointFinding', 'verdictReview', 'result identity', 'metrics', 'agentResult'],
+      actionEffect: ['CHANGED', 'NO_VISIBLE_CHANGE', 'UNKNOWN', null],
+      note: 'elements, technical signals, actionEffect, stateChanges and conflicts are framework-derived technical evidence; actionEffect only describes visible change and is not a business assertion',
     },
     runtimeState: {
-      required: ['phase', 'finalized', 'currentObservationRef', 'activeCheckpointRef', 'frameworkRecoveryPending', 'controlRequestPending', 'timeLimitReached', 'remainingMs', 'conclusionConstraint', 'signals'],
+      required: ['phase', 'finalized', 'currentObservationRef', 'activeCheckpointRef', 'activeCheckpoint', 'continuation', 'frameworkRecoveryPending', 'controlRequestPending', 'timeLimitReached', 'remainingMs', 'conclusionConstraint', 'signals'],
+      activeCheckpoint: 'null before start establishment; afterward expands the active checkpoint and linked requirements',
+      continuation: 'INITIAL requires understanding and plan creation; RESUME preserves current semantic artifacts and phase; RECOVERY_RESUME requires status-driven continuation without rebuilding understanding or plan',
       conclusionConstraint: 'TIME_LIMIT_OBSERVATION_GAP exposes only INCONCLUSIVE after the required knowledge review; NORMAL keeps verdict-specific guards',
       recoveryRule: 'internal transaction recovery belongs to the coordinator; Agent only waits for controlRequestPending to clear',
       timingNote: 'agentOrchestrationGapMs is residual Agent/tool orchestration time, not pure model thinking time',
-    },
-  };
-}
-
-function examples() {
-  return {
-    understand: {
-      understanding: {
-        summary: '验证原文描述的目标状态',
-        startConditions: [{ id: 'start-001', text: '可从当前现场建立目标起点', basis: 'implied' }],
-        requirements: [{ id: 'req-001', text: '目标状态符合原文', basis: 'explicit' }],
-        uncertainties: [],
-      },
-      checkpoints: [{ id: 'cp-001', goal: '观察并判断目标状态', requirementRefs: ['req-001'], requiredAction: false }],
-      reason: '根据冻结原文建立初始检查点',
-    },
-    inspect: { stage: 'PREPARE', intent: '观察当前现场并判断起点是否满足' },
-    markStart: { reason: '当前页面满足原文明示的执行起点' },
-    requestRecovery: { reason: '目标 App 已意外退出，继续执行前需要受控恢复', triggerType: 'UNKNOWN_EXIT' },
-    requestSourceColdStart: { reason: '冻结原文明示本用例必须从冷启动状态开始', triggerType: 'SOURCE_REQUIRED_COLD_START' },
-    elementStep: {
-      stage: 'BUSINESS', checkpointRef: 'cp-001', intent: '打开目标入口', expectedOutcome: '展示目标页面',
-      action: { type: 'tap', targetRef: '<element-ref-from-latest-observation>' },
-    },
-    visualSwipeStep: {
-      stage: 'BUSINESS', checkpointRef: 'cp-001', intent: '横向查看后续内容',
-      action: { type: 'swipe', normalizedFrom: [0.85, 0.5], normalizedTo: [0.2, 0.5], normalizedBounds: [0.05, 0.3, 0.95, 0.7], velocity: 800 },
-    },
-    investigate: { query: { platform: 'harmony', page: '目标页面', symptom: '当前现场与预期不一致', keywords: ['目标状态'] } },
-    assessKnowledge: {
-      queryId: '<query-id>', conclusion: 'NO_APPLICABLE', reason: '候选与当前平台或页面状态不一致',
-      assessments: [{ entryId: '<candidate-entry-id>', assessment: 'NOT_APPLICABLE', reason: '适用范围与当前现场不一致' }],
-    },
-    concludePass: {
-      verdict: 'PASS', summary: '当前直接证据满足原文要求',
-      findings: [{ requirementRef: 'req-001', status: 'SATISFIED', reason: '最新现场展示目标状态' }],
-      uncertainties: [],
     },
   };
 }
@@ -173,18 +50,21 @@ function buildCaseAgentRuntimeContract(options = {}) {
     protocolSha: options.protocolSha,
     implementationSha: options.implementationSha,
     commands: commandTemplates(),
+    guidance: buildCaseAgentGuidance(),
     schemas: schemas(options.platform),
-    examples: examples(),
     behavior: {
       responsibility: 'Agent decides business intent, path, assertions, knowledge applicability, and verdict; framework derives protocol bookkeeping',
-      initialTurn: 'understand once before device work; revise only for material understanding or checkpoint changes',
-      executionLoop: 'consume observationView, submit one semantic step, then consume its automatic post-action observation; checkpointRef inherits the active checkpoint unless explicitly switched',
+      initialTurn: 'use runtimeState.continuation; create understanding and plan only when they are missing, otherwise preserve current semantic artifacts and resume the current phase',
+      executionLoop: 'consume observationView, submit one semantic step, then consume its automatic post-action observation; stage and the default active checkpoint are framework-derived',
       start: 'mark-start explicitly confirms the usable start observation before BUSINESS steps',
       state: 'normal successful responses carry compact runtimeState without the full evidence inventory; status returns the full runtime state only for reconnect or uncertain transport',
-      planRevision: 'ordinary actions and progress do not create plan revisions',
+      understandingRevision: 'revise understanding only to correct omission or misinterpretation; a revision invalidates the plan and start confirmation',
+      planRevision: 'revise only checkpoint organization or strategy; ordinary actions and progress do not create plan revisions',
       knowledge: 'query only when the current scene needs investigation or the intended verdict requires it',
       finalize: 'conclude generates checkpoint facts, verdictReview, result, metrics, and AgentResult atomically',
       noNextWork: true,
+      zeroRequirements: 'after an empty requirement set and empty plan, device operations, start confirmation, and recovery requests are disabled; revise understanding or investigate and conclude INCONCLUSIVE',
+      isolation: 'the Agent host must enforce the allowed entrypoint and read-only resource lists as a tool allowlist; without host enforcement this contract provides protocol isolation only',
     },
   };
   return { ...value, contractSha: sha256(canonicalJson(value), 'case-agent-runtime-contract', 24) };
@@ -193,6 +73,5 @@ function buildCaseAgentRuntimeContract(options = {}) {
 module.exports = {
   buildCaseAgentRuntimeContract,
   commandTemplates,
-  examples,
   schemas,
 };

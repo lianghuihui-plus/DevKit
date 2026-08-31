@@ -49,5 +49,5 @@ function localIso(date = new Date()) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 const durationMs = process.argv[1] ? Number(process.argv[1]) : undefined;
-console.log(JSON.stringify({schemaVersion:1,type:"actionResult",platform:"android",time:localIso(),action:"swipe",ok:true,durationMs}, null, 2));
-' "$duration_ms"
+console.log(JSON.stringify({schemaVersion:1,type:"actionResult",platform:"android",time:localIso(),action:"swipe",ok:true,durationMs,executedFrom:{x:Number(process.argv[2]),y:Number(process.argv[3])},executedTo:{x:Number(process.argv[4]),y:Number(process.argv[5])}}, null, 2));
+' "$duration_ms" "$from_x" "$from_y" "$to_x" "$to_y"

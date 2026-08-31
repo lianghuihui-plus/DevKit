@@ -20,7 +20,13 @@ const {
   normalizeEnvironmentBinding,
   validateExecutionEnvironment,
 } = require('../lib/execution-environment');
-const { normalizeRestartResult, probeSession } = require('../batch/device-session');
+const {
+  normalizeRestartResult,
+  probeSession,
+  restartApp,
+  restartTimeoutMs,
+  run: runDeviceAdapter,
+} = require('../batch/device-session');
 
 const platforms = ['harmony', 'android', 'ios'];
 const commonActions = ['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait'];
@@ -130,6 +136,53 @@ try {
   childProcess.spawnSync = originalSpawnSync;
 }
 
+assert.strictEqual(restartTimeoutMs({ platform: 'android' }), 60000);
+assert.strictEqual(restartTimeoutMs({ platform: 'ios' }), 60000);
+assert.strictEqual(restartTimeoutMs({ platform: 'ios', wdaLaunchTimeout: 180000 }), 195000);
+try {
+  childProcess.spawnSync = (command, args, options) => {
+    assert.ok(command.endsWith('/scripts/platform/action.sh'));
+    assert.ok(args.includes('--wda-launch-timeout'));
+    assert.strictEqual(options.timeout, 195000);
+    return {
+      status: 0,
+      stderr: '',
+      stdout: JSON.stringify({ ok: true, coldStartVerified: true, platform: 'ios' }),
+    };
+  };
+  const restart = restartApp({ binding: {
+    platform: 'ios', deviceId: 'ios-device', appId: 'com.example.ios', wdaLaunchTimeout: 180000,
+  } });
+  assert.strictEqual(restart.ok, true);
+  assert.strictEqual(restart.coldStartVerified, true);
+} finally {
+  childProcess.spawnSync = originalSpawnSync;
+}
+try {
+  childProcess.spawnSync = () => ({
+    status: null,
+    signal: 'SIGTERM',
+    stdout: '',
+    stderr: '',
+    error: Object.assign(new Error('spawnSync action.sh ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+  });
+  const timedOut = runDeviceAdapter('/tmp/action.sh', [], 195000);
+  assert.strictEqual(timedOut.ok, false);
+  assert.match(timedOut.reason, /^DEVICE_ADAPTER_TIMEOUT:/);
+  assert.match(timedOut.reason, /195000ms/);
+} finally {
+  childProcess.spawnSync = originalSpawnSync;
+}
+try {
+  childProcess.spawnSync = () => ({ status: 2, signal: null, stdout: '', stderr: 'adapter failed' });
+  const empty = runDeviceAdapter('/tmp/action.sh', [], 60000);
+  assert.strictEqual(empty.ok, false);
+  assert.match(empty.reason, /^DEVICE_ADAPTER_OUTPUT_EMPTY:/);
+  assert.match(empty.reason, /adapter failed/);
+} finally {
+  childProcess.spawnSync = originalSpawnSync;
+}
+
 const landscapeSource = '<AppiumAUT><XCUIElementTypeApplication width="834" height="1194"><XCUIElementTypeWindow visible="true" width="1194" height="834"/></XCUIElementTypeApplication></AppiumAUT>';
 assert.deepStrictEqual(sourceViewport(landscapeSource), { width: 1194, height: 834, source: 'window' });
 const pngHeader = Buffer.alloc(24);
@@ -160,6 +213,17 @@ assert.deepStrictEqual(iosRestart.startupDisplay, {
   appliesTo: [],
   required: false,
   skippedReason: 'POLICY_PRESERVE',
+});
+
+const iosLayoutTap = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
+  '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'tap',
+  '--x', '120', '--y', '240', '--coordinate-source', 'layout',
+], { env: { ...process.env, MAVT_IOS_FAKE: '1' } }));
+assert.deepStrictEqual(iosLayoutTap.executedPoint, {
+  x: 120,
+  y: 240,
+  viewport: { width: 393, height: 852 },
+  coordinateSource: 'layout',
 });
 
 const iosDismissKeyboard = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [

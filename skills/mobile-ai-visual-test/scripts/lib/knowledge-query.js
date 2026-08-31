@@ -6,6 +6,7 @@ const path = require('path');
 const { contractError, ensureArray, ensureId, ensureObject, ensureString } = require('./contract-utils');
 
 const MAX_KNOWLEDGE_FILE_BYTES = 512 * 1024;
+const MAX_KNOWLEDGE_CANDIDATES = 5;
 const ROOT_NAMESPACES = Object.freeze(['skill', 'workspace']);
 const SECTION_NAMES = Object.freeze(['适用范围', '可观察现象', '结论与处理建议', '追溯信息']);
 const QUERY_FIELDS = Object.freeze(['platform', 'app', 'version', 'page', 'operation', 'symptom']);
@@ -199,25 +200,53 @@ function versionMatches(actual, declared) {
 }
 
 function matchScore(entry, query) {
-  let score = 0;
+  let metadataScore = 0;
+  let lexicalScore = 0;
   const matched = [];
-  for (const field of QUERY_FIELDS) {
+  for (const field of ['platform', 'app', 'version', 'page', 'operation']) {
     if (!query[field]) continue;
     const needle = normalizeText(query[field]);
     const haystack = normalizeText(fieldText(entry, field));
     if ((field === 'version' && versionMatches(query[field], fieldText(entry, field))) || haystack.includes(needle) || needle.includes(haystack)) {
-      score += FIELD_WEIGHTS[field];
+      metadataScore += FIELD_WEIGHTS[field];
       matched.push(field);
+    }
+  }
+  if (query.symptom) {
+    const needle = normalizeText(query.symptom);
+    const haystack = normalizeText(entry.sections['可观察现象']);
+    if (haystack.includes(needle) || needle.includes(haystack)) {
+      lexicalScore += FIELD_WEIGHTS.symptom;
+      matched.push('symptom');
     }
   }
   const searchable = normalizeText([entry.title, ...Object.values(entry.sections)].join('\n'));
   for (const keyword of query.keywords) {
     if (searchable.includes(normalizeText(keyword))) {
-      score += 2;
+      lexicalScore += 2;
       matched.push(`keyword:${keyword}`);
     }
   }
-  return { score, matched };
+  return { score: metadataScore + lexicalScore, metadataScore, lexicalScore, matched };
+}
+
+function metadataCompatible(entry, query) {
+  let declaredMatches = 0;
+  for (const field of ['platform', 'app', 'version', 'page', 'operation']) {
+    if (!query[field] || entry.metadata[field] === undefined) continue;
+    const declared = entry.metadata[field];
+    const values = Array.isArray(declared) ? declared : [declared];
+    const matches = field === 'version'
+      ? versionMatches(query[field], declared)
+      : values.some((value) => {
+        const actual = normalizeText(query[field]);
+        const expected = normalizeText(value);
+        return actual === expected || actual.includes(expected) || expected.includes(actual);
+      });
+    if (!matches) return { compatible: false, declaredMatches: 0 };
+    declaredMatches += 1;
+  }
+  return { compatible: true, declaredMatches };
 }
 
 function snippet(text, needles, limit = 180) {
@@ -239,8 +268,9 @@ function queryKnowledge(options) {
   const query = normalizeQuery(options.query || {});
   const now = options.now || new Date();
   const needles = [...QUERY_FIELDS.map((field) => query[field]).filter(Boolean), ...query.keywords];
-  const candidates = loadKnowledgeEntries(options.roots).map((entry) => {
+  const ranked = loadKnowledgeEntries(options.roots).map((entry) => {
     const match = matchScore(entry, query);
+    const compatibility = metadataCompatible(entry, query);
     const candidate = {
       entryId: entry.entryId,
       title: entry.title,
@@ -269,14 +299,26 @@ function queryKnowledge(options) {
       ],
     };
     if (options.includeContent === true) candidate.snapshotContent = entry.content;
-    return candidate;
-  }).filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.entryId.localeCompare(b.entryId));
-  return { schemaVersion: 1, query, candidates };
+    return { candidate, match, compatibility };
+  }).filter((item) => item.compatibility.compatible);
+  const lexicalMatches = ranked.filter((item) => item.match.lexicalScore > 0);
+  const eligible = (lexicalMatches.length > 0
+    ? lexicalMatches
+    : ranked.filter((item) => item.compatibility.declaredMatches > 0))
+    .sort((a, b) => b.match.score - a.match.score || a.candidate.entryId.localeCompare(b.candidate.entryId));
+  const candidates = eligible.slice(0, MAX_KNOWLEDGE_CANDIDATES).map((item) => item.candidate);
+  return {
+    schemaVersion: 1,
+    query,
+    candidates,
+    candidateCount: candidates.length,
+    truncated: eligible.length > candidates.length,
+  };
 }
 
 module.exports = {
   MAX_KNOWLEDGE_FILE_BYTES,
+  MAX_KNOWLEDGE_CANDIDATES,
   QUERY_FIELDS,
   ROOT_NAMESPACES,
   SECTION_NAMES,

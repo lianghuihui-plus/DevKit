@@ -81,9 +81,9 @@ function localIso(date = new Date()) {
 }
 const effect = JSON.parse(process.argv[1]);
 const mode = process.argv[2];
-const event = {schemaVersion:1,type:"actionResult",platform:"harmony",time:localIso(),action:"inputText",ok:effect.status !== "MISMATCH",inputMethod:mode === "replace" ? "uitest-key-replace" : "uitest-uiInput-inputText",inputMode:mode,inputEffect:effect};
+const event = {schemaVersion:1,type:"actionResult",platform:"harmony",time:localIso(),action:"inputText",ok:effect.status !== "MISMATCH",inputMethod:mode === "replace" ? "uitest-key-replace" : "uitest-uiInput-inputText",inputMode:mode,inputEffect:effect,executedPoint:{x:Number(process.argv[3]),y:Number(process.argv[4])}};
 if (!event.ok) event.failureCode = "ACTION_EFFECT_MISMATCH";
 console.log(JSON.stringify(event, null, 2));
-' "$effect" "$mode"
+' "$effect" "$mode" "$x" "$y"
 
 [[ "$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).status)' "$effect")" != "MISMATCH" ]]

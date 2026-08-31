@@ -8,6 +8,7 @@ const ROLE_ENTRYPOINTS = Object.freeze({
   'case-executor': Object.freeze([
     'scripts/agent/status.js',
     'scripts/agent/understand.js',
+    'scripts/agent/plan.js',
     'scripts/agent/inspect.js',
     'scripts/agent/step.js',
     'scripts/agent/mark-start.js',
@@ -32,7 +33,6 @@ const ROLE_ENTRYPOINTS = Object.freeze({
 
 const ROLE_RESOURCES = Object.freeze({
   'case-executor': Object.freeze([
-    'SKILL.md',
     'references/agent-execution.md',
     'references/knowledge.md',
   ]),

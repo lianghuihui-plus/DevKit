@@ -13,7 +13,6 @@ const { validateSourceReferences } = require('./source-reference');
 
 const UNDERSTANDING_SCHEMA_VERSION = 1;
 const BASIS_VALUES = new Set(['explicit', 'implied', 'assumed']);
-const DISPOSITIONS = new Set(['REPLACED', 'AMBIGUOUS', 'NOT_APPLICABLE']);
 
 function validateReferenceIds(values, knownIds, label) {
   ensureArray(values, label, 'UNDERSTANDING_INVALID');
@@ -34,31 +33,25 @@ function validateStatement(value, label, sourceRefIds) {
   }
 }
 
-function validateDispositions(value, previous, requirementIds) {
-  const dispositions = ensureArray(value.requirementDispositions || [], 'requirementDispositions', 'UNDERSTANDING_INVALID');
-  dispositions.forEach((item, index) => ensureObject(item, `requirementDispositions[${index}]`, 'UNDERSTANDING_INVALID'));
-  const dispositionIds = ensureUniqueIds(dispositions.map((item) => ({ id: item.requirementId })), 'requirementDispositions', 'UNDERSTANDING_INVALID');
-  for (const [index, item] of dispositions.entries()) {
-    const label = `requirementDispositions[${index}]`;
-    if (!DISPOSITIONS.has(item.disposition)) throw contractError('UNDERSTANDING_INVALID', `${label}.disposition is invalid`);
-    ensureString(item.reason, `${label}.reason`, 'UNDERSTANDING_INVALID');
-    const replacements = ensureArray(item.replacementRefs || [], `${label}.replacementRefs`, 'UNDERSTANDING_INVALID');
-    for (const id of replacements) {
-      if (!requirementIds.has(id)) throw contractError('UNDERSTANDING_INVALID', `${label} references unknown replacement: ${id}`);
-    }
-    if (item.disposition === 'REPLACED' && replacements.length === 0) {
-      throw contractError('UNDERSTANDING_INVALID', `${label} requires replacementRefs`);
-    }
+function validateRequirement(value, label, sourceRefIds) {
+  validateStatement(value, label, sourceRefIds);
+  const interactions = ensureArray(value.requiredInteractions, `${label}.requiredInteractions`, 'UNDERSTANDING_INVALID');
+  const outcomes = ensureArray(value.expectedOutcomes, `${label}.expectedOutcomes`, 'UNDERSTANDING_INVALID');
+  interactions.forEach((item, index) => ensureString(item, `${label}.requiredInteractions[${index}]`, 'UNDERSTANDING_INVALID'));
+  outcomes.forEach((item, index) => ensureString(item, `${label}.expectedOutcomes[${index}]`, 'UNDERSTANDING_INVALID'));
+  if (interactions.length === 0 && outcomes.length === 0) {
+    throw contractError('UNDERSTANDING_INVALID', `${label} requires at least one required interaction or expected outcome`);
   }
-  if (!previous) {
-    if (dispositions.length) throw contractError('UNDERSTANDING_INVALID', 'initial understanding cannot dispose previous requirements');
-    return;
-  }
-  for (const requirement of previous.requirements || []) {
-    if (!requirementIds.has(requirement.id) && !dispositionIds.has(requirement.id)) {
-      throw contractError('UNDERSTANDING_REQUIREMENT_DROPPED', `removed requirement requires a disposition: ${requirement.id}`);
-    }
-  }
+}
+
+function requirementSemantics(value) {
+  return {
+    text: value.text,
+    basis: value.basis,
+    sourceRefs: value.sourceRefs,
+    requiredInteractions: value.requiredInteractions,
+    expectedOutcomes: value.expectedOutcomes,
+  };
 }
 
 function validateUnderstanding(value, options = {}) {
@@ -74,18 +67,32 @@ function validateUnderstanding(value, options = {}) {
   const startConditions = ensureArray(value.startConditions, 'startConditions', 'UNDERSTANDING_INVALID');
   const requirements = ensureArray(value.requirements, 'requirements', 'UNDERSTANDING_INVALID');
   ensureUniqueIds(startConditions, 'startConditions', 'UNDERSTANDING_INVALID');
-  const requirementIds = ensureUniqueIds(requirements, 'requirements', 'UNDERSTANDING_INVALID');
+  ensureUniqueIds(requirements, 'requirements', 'UNDERSTANDING_INVALID');
   startConditions.forEach((item, index) => validateStatement(item, `startConditions[${index}]`, sourceRefIds));
-  requirements.forEach((item, index) => validateStatement(item, `requirements[${index}]`, sourceRefIds));
-  ensureArray(value.uncertainties, 'uncertainties', 'UNDERSTANDING_INVALID');
-  value.uncertainties.forEach((item, index) => ensureString(item, `uncertainties[${index}]`, 'UNDERSTANDING_INVALID'));
-  validateDispositions(value, previous, requirementIds);
+  requirements.forEach((item, index) => validateRequirement(item, `requirements[${index}]`, sourceRefIds));
+  const uncertainties = ensureArray(value.uncertainties, 'uncertainties', 'UNDERSTANDING_INVALID');
+  uncertainties.forEach((item, index) => ensureString(item, `uncertainties[${index}]`, 'UNDERSTANDING_INVALID'));
+  if (requirements.length === 0 && uncertainties.length === 0) {
+    throw contractError('UNDERSTANDING_INVALID', 'an understanding without executable requirements must record uncertainty');
+  }
+  if (previous) {
+    const previousRequirements = new Map(previous.requirements.map((item) => [item.id, item]));
+    for (const requirement of requirements) {
+      const prior = previousRequirements.get(requirement.id);
+      if (prior && JSON.stringify(requirementSemantics(prior)) !== JSON.stringify(requirementSemantics(requirement))) {
+        throw contractError('UNDERSTANDING_REQUIREMENT_ID_REUSED', `requirement id is already bound to different semantics: ${requirement.id}`, {
+          fieldPath: `requirements.${requirement.id}`,
+          expected: 'use a new requirement id when its semantics change',
+          received: requirement.id,
+        });
+      }
+    }
+  }
   return value;
 }
 
 module.exports = {
   BASIS_VALUES,
-  DISPOSITIONS,
   UNDERSTANDING_SCHEMA_VERSION,
   validateUnderstanding,
 };

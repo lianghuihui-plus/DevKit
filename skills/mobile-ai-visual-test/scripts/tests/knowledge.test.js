@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
+  MAX_KNOWLEDGE_CANDIDATES,
   MAX_KNOWLEDGE_FILE_BYTES,
   loadKnowledgeEntries,
   parseKnowledgeEntry,
@@ -74,6 +75,8 @@ assert.deepStrictEqual(login.candidates[0].metadata.platform, ['harmony', 'andro
 assert.match(login.candidates[0].applicability, /Platform: harmony, android/);
 assert.match(login.candidates[0].traceability, /登录专项验证记录/);
 assert.strictEqual(login.candidates[0].snapshotContent, undefined);
+assert.strictEqual(login.candidateCount, login.candidates.length);
+assert.strictEqual(login.truncated, false);
 const loginWithContent = queryKnowledge({
   roots: [skill, workspace], includeContent: true,
   query: { platform: 'harmony', page: '首页', keywords: ['头像'] },
@@ -89,6 +92,35 @@ assert.strictEqual(voice.candidates[0].expired, true);
 assert.deepStrictEqual(voice.candidates[0].conflictsWith, ['K-voice-009']);
 assert.strictEqual(queryKnowledge({ roots: [skill, workspace], query: { keywords: ['完全不存在的词'] } }).candidates.length, 0);
 assert.strictEqual(validateKnowledgeRoots([skill, workspace], { now: '2026-08-13T00:00:00.000Z' }).entryCount, 3);
+
+const metadataDiscovery = queryKnowledge({
+  roots: [skill, workspace],
+  query: { platform: 'ios', page: '课程页', symptom: '词面完全不一致' },
+});
+assert.strictEqual(metadataDiscovery.candidateCount, 1);
+assert.strictEqual(metadataDiscovery.candidates[0].entryId, 'K-voice-001');
+
+const incompatibleMetadata = queryKnowledge({
+  roots: [skill, workspace],
+  query: { platform: 'android', page: '课程页', keywords: ['语音按钮'] },
+});
+assert.strictEqual(incompatibleMetadata.candidateCount, 0);
+
+for (let index = 0; index < MAX_KNOWLEDGE_CANDIDATES + 2; index += 1) {
+  fs.writeFileSync(path.join(workspace, `bounded-${index}.md`), entry(`K-bounded-${index}`, {
+    title: `候选 ${index}`,
+    platform: 'ios',
+    page: '发现页',
+    symptom: `候选现象 ${index}`,
+  }));
+}
+const bounded = queryKnowledge({
+  roots: [skill, workspace],
+  query: { platform: 'ios', page: '发现页', symptom: '没有词面命中' },
+});
+assert.strictEqual(bounded.candidateCount, MAX_KNOWLEDGE_CANDIDATES);
+assert.strictEqual(bounded.candidates.length, MAX_KNOWLEDGE_CANDIDATES);
+assert.strictEqual(bounded.truncated, true);
 
 const oldSha = loaded[0].contentSha;
 fs.writeFileSync(path.join(skill, 'login.md'), entry('K-login-001', { advice: '更新后的处理建议。' }));

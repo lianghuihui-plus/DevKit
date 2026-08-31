@@ -36,7 +36,7 @@ workspace -> import non-empty sources -> probe and confirm binding
 - `RECOVER_APP`：消费 Case Agent 已冻结的控制请求，将返回的 `recoveryRequest` 原样交给 `batch.js recover`，成功后重新创建隔离 Agent继续同一 execution。
 - `RESUME_RECOVERY`：以冻结 request 重入 `recover`，不能重放未确认结果的普通动作。
 - `RESUME_FINALIZE`：以冻结 finalization draft 幂等完成收尾。
-- `CREATE_AGENT_RESULT`：execution 已 finalized 但 AgentResult 缺失时，由 framework 从冻结产物补齐交接结果。
+- `CREATE_AGENT_RESULT`：execution 已 finalized 但 AgentResult 缺失时，先封存残留入口 attempt，再由 framework 从冻结产物补齐交接结果。
 - `COMMIT_CASE`：调用 `commit`；先校验 AgentResult，再释放 Runtime，completion 和 batch state 写入成功后，由协调器增量刷新当前用例详情与首页，再进入下一 case。刷新耗时不计入 execution metrics，刷新失败只在 commit 响应中返回报告异常，不回滚结果或阻塞后续用例。
 - `DEGRADED`、`BATCH_BLOCKED`、`BLOCKED`、`CORRUPTED`：自动停止批次，保留现场和产物，释放框架托管的平台运行资源并报告原因，不询问用户。
 - `BATCH_COMPLETE`：释放框架托管的平台运行资源，结束批次并执行一次全量报告重建，校验最终一致性。
@@ -53,13 +53,15 @@ Bootstrap、Case 启动、Recovery 和 Case 发布都优先收口已有草稿。
 
 ## 单用例流程
 
-1. `understand`：读取原文，提交起点、requirements、uncertainties 和检查点；框架从冻结原文生成 sourceRefs，并生成 understanding/plan revision 与 `planSha`。
-2. `inspect PREPARE`：取得当前截图、控件树精简元素和诊断资料，但不自动确认起点。
-3. `step PREPARE`：按需执行建立起点所需的状态调整；每个 step 自动采集动作后现场，不存在业务副作用门禁。
-4. `mark-start`：显式确认最新 PREPARE observation 满足当前 understanding，然后进入业务执行；理解修订或 recovery 后重新确认。
-5. `step BUSINESS`：围绕检查点选择一个语义动作，消费自动返回的新现场，再继续、修订 understanding/plan 或形成判断。
-6. `investigate`：疑似异常时复核原文与现场，查询知识并由 Agent 评估候选适用性。
-7. `conclude`：为全部 requirement 提交语义 finding；框架自动绑定 revision/planSha/当前现场，生成必要 verdictReview、result、metrics 和 AgentResult。
+1. `understand`：读取原文，提交起点、requirements 和 uncertainties；每项 requirement 明确 requiredInteractions 与 expectedOutcomes，框架从冻结原文生成 sourceRefs 和 revision。发现遗漏或误解时可提交完整修订，修订后旧 plan 与起点确认失效。无法提取可执行 requirement 时保留空集合和非空 uncertainties。
+2. `plan`：基于冻结 understanding 按独立业务阶段和证据闭环组织检查点，每项 requirement 在当前计划中恰好归属一次；框架生成 plan revision 与 `planSha`。
+   零 requirement 对应空计划，不进入设备观察、动作、起点确认或恢复请求。
+3. `inspect PREPARE`：取得当前截图、控件树精简元素和诊断资料，但不自动确认起点。
+4. `step PREPARE`：按需执行建立起点所需的状态调整；每个 step 自动采集动作后现场，不存在业务副作用门禁。
+5. `mark-start`：显式确认最新 PREPARE observation 满足当前 understanding，然后进入业务执行；recovery 后重新确认。
+6. `step BUSINESS`：围绕检查点选择一个语义动作，消费自动返回的新现场，再继续、修订 plan 或形成判断。
+7. `investigate`：疑似异常时复核原文与现场，查询知识并由 Agent 评估候选适用性。
+8. `conclude`：为全部 requirement 提交语义 finding，并提交原文复核与恢复必要性的语义结论；框架自动绑定 revision、planSha、当前现场和恢复事实，生成必要 verdictReview、result、metrics 和 AgentResult。
 
 阶段用于时间线和耗时统计，不作为业务授权。Agent 可在建立起点、执行、调查和结论复核间往返；旧计划中的一步错误不会自动导致用例失败，Agent 应根据新证据修订计划，并保持原文 requirement 可追溯。
 
@@ -75,7 +77,7 @@ App crash、系统退出等事故恢复必须记录 `runtimeIncident`，包含 `
 
 用例导入、执行请求、Batch 初始化、Bootstrap、Case 启动、Agent Turn、设备 Operation、知识查询、Phase 迁移、Recovery、Finalize 和 Case 发布都以磁盘草稿作为提交日志。草稿先冻结绑定和稳定 ID，权威状态原子写入后再补审计事件并删除草稿。`reconcile` 或 Agent status 只根据草稿与权威状态暴露恢复项；恢复不得分配新的 execution/session，不得重新读取实时用例或实时知识，也不得重放结果不确定的设备动作。
 
-`reconcile` 自动恢复 step、operation、turn、知识查询和 phase 草稿，不要求 Case Agent 读取或重新组装内部请求。动作已完成时不重放；知识查询继续使用首次冻结候选。任一内部恢复项存在期间禁止 Agent 写入，恢复完成后再创建或继续 Case Agent。
+`reconcile` 自动恢复 step、operation、turn、知识查询和 phase 草稿，不要求 Case Agent 读取或重新组装内部请求。动作已完成时不重放；知识查询继续使用首次冻结候选。任一内部恢复项存在期间禁止 Agent 写入，恢复完成后再创建或继续 Case Agent。finalized execution 进入 AgentResult 修复或 commit 前，残留 `attempt.current.json` 必须先转入 `attempts.jsonl` 并删除当前文件。
 
 每个 case commit 后，协调器只重渲染该 case 的平台详情和用例详情，再读取全部 case 摘要重建首页；不会重写其他 case 详情。详情与首页都先生成 `report-publication.draft.json`，逐文件原子替换内容，最后发布带文件 SHA 的 `report-metadata.json` 并清理草稿。批次进入 `BATCH_COMPLETE` 后再调用一次工作区级 `render-index` 全量重建；任一文件不一致时可从 execution 重新渲染。
 

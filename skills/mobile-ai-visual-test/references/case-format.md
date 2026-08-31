@@ -17,6 +17,6 @@ cases/<title>__<caseKey>/
 
 `source.md` 保存原文；`case.json` 只保存工作空间内唯一且稳定的三位起始编号 `caseNo`、机器标识 `caseKey`、标题回退值、sourceSha、导入来源和 contractSha，不包含固定 `preconditions`、`steps` 或 `globalRules`。新用例默认按 `001、002、003...` 分配；源文件名以数字开头且编号未占用时沿用该编号；重复导入同一路径保持原编号。
 
-用户可以直接用编号沟通执行范围，例如“执行用例 004”或“按 004、007、009 的顺序批量执行”。协调器创建执行请求时可提交 `{"caseNo":"004"}`，框架负责解析为稳定的 `caseKey` 和目录；编号不存在或不匹配时在创建请求前明确报错。
+用户通过编号沟通单个或批量执行范围。协调器创建执行请求时提交目标 `caseNo`，框架负责解析为稳定的 `caseKey` 和目录；编号不存在或不匹配时在创建请求前明确报错。
 
 execution 创建时复制 `source.snapshot.md` 和 `case.snapshot.json`。后续修改源文件不会改变进行中的 execution；再次执行应创建新 execution，不续写旧产物。

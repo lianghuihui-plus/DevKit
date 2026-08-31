@@ -22,7 +22,9 @@ const {
   validatePublishedCompletion,
 } = require('../lib/completion-contract');
 const { validatePlan, withPlanSha } = require('../lib/plan-contract');
+const { assertAgentInputFields } = require('../lib/agent-input-contract');
 const { schemas: caseAgentSchemas } = require('../lib/case-agent-runtime-contract');
+const { sameKnowledgeContext, sameKnowledgeDecisionContext } = require('../lib/knowledge-context');
 const { validateSourceReference, validateSourceReferences } = require('../lib/source-reference');
 const { validateUnderstanding } = require('../lib/understanding-contract');
 
@@ -83,10 +85,10 @@ const understanding = {
   }],
   requirements: [{
     id: 'req-001', text: '最新回复展示单条语音播放按钮', basis: 'explicit', sourceRefs: ['src-002'],
+    requiredInteractions: [], expectedOutcomes: ['最新回复展示单条语音播放按钮'],
   }],
   sourceRefs,
   uncertainties: [],
-  requirementDispositions: [],
 };
 assert.strictEqual(validateUnderstanding(understanding, { sourceText }), understanding);
 const ambiguousUnderstanding = {
@@ -97,10 +99,34 @@ const ambiguousUnderstanding = {
   requirements: [],
   sourceRefs: [],
   uncertainties: ['测试目标不明确'],
-  requirementDispositions: [],
 };
 assert.strictEqual(validateUnderstanding(ambiguousUnderstanding, { sourceText: '随便看看' }), ambiguousUnderstanding);
 expectCode(() => validateUnderstanding({ ...understanding, revision: 2 }, { sourceText }), 'UNDERSTANDING_REVISION_INVALID');
+const revisedUnderstanding = {
+  ...understanding,
+  revision: 2,
+  reason: '补充此前遗漏的独立验证要求',
+  requirements: [
+    understanding.requirements[0],
+    {
+      id: 'req-002', text: '播放入口可操作', basis: 'implied', sourceRefs: ['src-002'],
+      requiredInteractions: ['点击播放入口'], expectedOutcomes: ['播放状态可观察'],
+    },
+  ],
+};
+assert.strictEqual(validateUnderstanding(revisedUnderstanding, { sourceText, previous: understanding }), revisedUnderstanding);
+expectCode(() => validateUnderstanding({
+  ...revisedUnderstanding,
+  requirements: [{ ...understanding.requirements[0], expectedOutcomes: ['改变后的语义'] }],
+}, { sourceText, previous: understanding }), 'UNDERSTANDING_REQUIREMENT_ID_REUSED');
+expectCode(() => validateUnderstanding({
+  ...understanding,
+  requirements: [{ ...understanding.requirements[0], requiredInteractions: undefined }],
+}, { sourceText }), 'UNDERSTANDING_INVALID');
+expectCode(() => validateUnderstanding({
+  ...understanding,
+  requirements: [{ ...understanding.requirements[0], requiredInteractions: [], expectedOutcomes: [] }],
+}, { sourceText }), 'UNDERSTANDING_INVALID');
 expectCode(() => validateUnderstanding({
   ...understanding,
   requirements: [{ ...understanding.requirements[0], sourceRefs: ['src-missing'] }],
@@ -110,51 +136,71 @@ expectCode(() => validateUnderstanding({
   requirements: [{ ...understanding.requirements[0], basis: 'explicit', sourceRefs: [] }],
 }, { sourceText }), 'UNDERSTANDING_INVALID');
 
-const revisedUnderstanding = {
-  ...understanding,
-  revision: 2,
-  reason: '现场证据表明原要求实际对应回复操作菜单',
-  requirements: [{
-    id: 'req-002', text: '最新回复操作菜单提供语音播放入口', basis: 'implied', sourceRefs: ['src-002'],
-  }],
-  requirementDispositions: [{
-    requirementId: 'req-001', disposition: 'REPLACED', replacementRefs: ['req-002'], reason: '保留原目标并修正表现形式',
-  }],
-};
-assert.strictEqual(validateUnderstanding(revisedUnderstanding, { sourceText, previous: understanding }), revisedUnderstanding);
-expectCode(() => validateUnderstanding({ ...revisedUnderstanding, revision: 1 }, { sourceText, previous: understanding }), 'UNDERSTANDING_REVISION_STALE');
-expectCode(() => validateUnderstanding({
-  ...revisedUnderstanding, requirements: [], requirementDispositions: [],
-}, { sourceText, previous: understanding }), 'UNDERSTANDING_REQUIREMENT_DROPPED');
-expectCode(() => validateUnderstanding({
-  ...revisedUnderstanding, requirementDispositions: [null],
-}, { sourceText, previous: understanding }), 'UNDERSTANDING_INVALID');
-
 const initialPlan = withPlanSha({
   schemaVersion: 1,
   revision: 1,
   reason: '根据当前理解建立初始检查点',
   checkpoints: [{
     id: 'cp-001',
-    goal: '确认最新回复区域的播放按钮状态',
+    objective: '确认最新回复区域的播放按钮状态',
     requirementRefs: ['req-001'],
-    requiredAction: false,
   }],
 });
 assert.strictEqual(validatePlan(initialPlan, { understanding }), initialPlan);
+expectCode(() => validatePlan(withPlanSha({
+  ...initialPlan,
+  checkpoints: [{ ...initialPlan.checkpoints[0], requirementRefs: [] }],
+}), { understanding }), 'PLAN_INVALID');
+const twoRequirementUnderstanding = {
+  ...understanding,
+  requirements: [
+    understanding.requirements[0],
+    {
+      id: 'req-002', text: '播放按钮可被点击', basis: 'explicit', sourceRefs: ['src-002'],
+      requiredInteractions: ['点击语音播放按钮'], expectedOutcomes: ['开始播放语音'],
+    },
+  ],
+};
+expectCode(() => validatePlan(initialPlan, { understanding: twoRequirementUnderstanding }), 'PLAN_INVALID');
 const revisedPlan = withPlanSha({
   schemaVersion: 1,
   revision: 2,
-  reason: '当前已位于目标会话，拆分观察和操作检查点',
+  reason: '根据当前策略替换检查点',
   checkpoints: [
-    { id: 'cp-002', goal: '观察最新回复区域', requirementRefs: ['req-001'], requiredAction: false },
-    { id: 'cp-003', goal: '必要时打开回复操作菜单', requirementRefs: ['req-001'], requiredAction: true },
+    { id: 'cp-002', objective: '观察最新回复区域', requirementRefs: ['req-001'] },
   ],
 });
 assert.strictEqual(validatePlan(revisedPlan, { understanding, previous: initialPlan }), revisedPlan);
+const partitionedPlan = withPlanSha({
+  schemaVersion: 1,
+  revision: 1,
+  reason: '两项要求分别归属独立检查点',
+  checkpoints: [
+    { id: 'cp-observe', objective: '观察最新回复区域', requirementRefs: ['req-001'] },
+    { id: 'cp-operate', objective: '验证播放按钮交互', requirementRefs: ['req-002'] },
+  ],
+});
+assert.strictEqual(validatePlan(partitionedPlan, { understanding: twoRequirementUnderstanding }), partitionedPlan);
 expectCode(() => validatePlan(withPlanSha({
+  schemaVersion: 1,
+  revision: 1,
+  reason: '错误地重复归属同一要求',
+  checkpoints: [
+    { id: 'cp-duplicate-a', objective: '第一个归属', requirementRefs: ['req-001'] },
+    { id: 'cp-duplicate-b', objective: '第二个归属', requirementRefs: ['req-001'] },
+  ],
+}), { understanding }), 'PLAN_INVALID');
+expectCode(() => validatePlan(withPlanSha({
+  ...initialPlan,
+  revision: 2,
+  reason: '错误复用检查点身份',
+  checkpoints: [{ ...initialPlan.checkpoints[0], objective: '改变后的检查点语义' }],
+}), { understanding, previous: initialPlan }), 'PLAN_CHECKPOINT_ID_REUSED');
+const emptyPlan = withPlanSha({
   schemaVersion: 1, revision: 1, reason: '目标不明确，暂不建立检查点', checkpoints: [],
-}), { understanding: ambiguousUnderstanding }), 'PLAN_INVALID');
+});
+assert.strictEqual(validatePlan(emptyPlan, { understanding: ambiguousUnderstanding }), emptyPlan);
+expectCode(() => validatePlan(emptyPlan, { understanding }), 'PLAN_INVALID');
 expectCode(() => validatePlan({ ...revisedPlan, revision: 1 }, { understanding, previous: initialPlan }), 'PLAN_REVISION_STALE');
 expectCode(() => validatePlan(withPlanSha({
   ...initialPlan,
@@ -172,11 +218,41 @@ expectCode(() => validatePlan(withPlanSha({
 
 const harmonyAgentSchemas = caseAgentSchemas('harmony');
 assert.ok(harmonyAgentSchemas.requestRecovery.triggerTypes.includes('SOURCE_REQUIRED_COLD_START'));
-assert.strictEqual('launchApp' in harmonyAgentSchemas.semanticAction.targetModes.rawFallback, false);
-assert.strictEqual('restartApp' in harmonyAgentSchemas.semanticAction.targetModes.rawFallback, false);
+assert.strictEqual('launchApp' in harmonyAgentSchemas.semanticAction.locatorModes.rawFallback, false);
+assert.strictEqual('restartApp' in harmonyAgentSchemas.semanticAction.locatorModes.rawFallback, false);
+assert.match(harmonyAgentSchemas.conclude.review.requiredWhen, /technical BLOCKED/);
+assert.throws(() => assertAgentInputFields('investigate', {
+  queryId: 'query-001', assessments: [], conclusion: 'NO_APPLICABLE',
+}), (error) => error?.code === 'AGENT_FACADE_INVALID' && error.fieldPath === 'reason');
+expectCode(() => assertAgentInputFields('investigate', {
+  query: { symptom: '当前现象' }, queryId: 'query-001', assessments: [], conclusion: 'NO_APPLICABLE', reason: '模式冲突',
+}), 'AGENT_FACADE_INVALID');
 
 const executionId = 'execution-contract-001';
 const eventBase = { schemaVersion: 1, executionId };
+const knowledgeContext = {
+  schemaVersion: 1,
+  understandingRevision: understanding.revision,
+  warmSessionGeneration: 1,
+  stateBoundaryIndex: 4,
+  observationRef: 'screenshots/observe-001.png',
+  checkpointRef: 'cp-002',
+  requirementRefs: ['req-001'],
+};
+const resultContext = { currentKnowledgeContext: knowledgeContext };
+const reorganizedKnowledgeContext = {
+  ...knowledgeContext,
+  checkpointRef: 'cp-003',
+  requirementRefs: [],
+};
+assert.strictEqual(sameKnowledgeContext(knowledgeContext, reorganizedKnowledgeContext), false);
+assert.strictEqual(sameKnowledgeDecisionContext(knowledgeContext, reorganizedKnowledgeContext), true);
+for (const staleContext of [
+  { ...knowledgeContext, understandingRevision: knowledgeContext.understandingRevision + 1 },
+  { ...knowledgeContext, warmSessionGeneration: knowledgeContext.warmSessionGeneration + 1 },
+  { ...knowledgeContext, stateBoundaryIndex: knowledgeContext.stateBoundaryIndex + 1 },
+  { ...knowledgeContext, observationRef: 'screenshots/observe-002.png' },
+]) assert.strictEqual(sameKnowledgeDecisionContext(knowledgeContext, staleContext), false);
 const frozenCandidate = {
   entryId: 'K-00123', title: '已知现象', sourceNamespace: 'workspace', relativePath: 'known.md',
   contentSha: 'a'.repeat(64), score: 10, expired: false, validUntil: null, conflictsWith: [], snippets: ['现象', '建议'],
@@ -197,7 +273,7 @@ const events = [
   { ...eventBase, type: 'operationRejected', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'action-guarded', kind: 'ACTION', actionType: 'tap', relatedOperationId: 'action-prior', failureCode: 'POST_ACTION_OBSERVATION_REQUIRED', reason: '必须先观察现场' },
   { ...eventBase, type: 'planRevised', writer: 'agent', phase: 'EXECUTE', planRevision: 2, planSha: revisedPlan.planSha, reason: revisedPlan.reason },
   { ...eventBase, type: 'checkpointFinding', writer: 'agent', phase: 'EXECUTE', checkpointId: 'cp-002', planRevision: 2, requirementRefs: ['req-001'], evidenceRefs: ['screenshots/observe-001.png'], finding: '按钮可见' },
-  { ...eventBase, type: 'knowledgeQuery', writer: 'knowledge-query', phase: 'INVESTIGATE', queryId: 'query-001', query: { symptom: '语音按钮', keywords: [] }, candidates: [frozenCandidate], matchCount: 1 },
+  { ...eventBase, type: 'knowledgeQuery', writer: 'knowledge-query', phase: 'INVESTIGATE', queryId: 'query-001', query: { symptom: '语音按钮', keywords: [] }, knowledgeContext, candidates: [frozenCandidate], candidateCount: 1, truncated: false },
   { ...eventBase, type: 'knowledgeAssessment', writer: 'agent', phase: 'INVESTIGATE', queryId: 'query-001', knowledgeRef: 'assessment-001', entryId: 'K-00123', sourceNamespace: 'workspace', relativePath: 'known.md', contentSha: 'a'.repeat(64), assessment: 'APPLICABLE', reason: '版本和页面状态一致' },
   { ...eventBase, type: 'verdictReview', writer: 'agent', phase: 'CONCLUDE', queryRefs: ['query-001'], requestedVerdict: 'PASS', ...reviewFields, reason: '证据与知识一致' },
   { ...eventBase, type: 'result', writer: 'runtime-core', phase: 'FINALIZED', resultSha: 'result-0123456789abcdef', verdict: 'PASS' },
@@ -205,6 +281,7 @@ const events = [
 events.forEach((event) => assert.strictEqual(validateExecutionEvent(event, { executionId }), event));
 const knowledgeReviewEvent = {
   ...eventBase, type: 'knowledgeReview', writer: 'agent', phase: 'INVESTIGATE', queryId: 'query-001',
+  knowledgeContext,
   conclusion: 'APPLICABLE_FOUND', assessmentRefs: ['assessment-001'], reason: '候选适用于当前现场',
 };
 assert.strictEqual(validateExecutionEvent(knowledgeReviewEvent, { executionId }), knowledgeReviewEvent);
@@ -219,9 +296,9 @@ expectCode(() => validateExecutionEvent({ ...events[2], executionId: 'execution-
 expectCode(() => validateExecutionEvent({ ...events[3], phase: 'INVESTIGATE' }, { executionId, phase: 'EXECUTE' }), 'EXECUTION_EVENT_PHASE_INVALID');
 
 const evidence = [{ ref: 'screenshots/observe-001.png', executionId, phase: 'case-business', usable: true }];
-const knowledgeAssessments = [{ ref: 'assessment-001', executionId, assessment: 'APPLICABLE' }];
+const knowledgeAssessments = [{ ref: 'assessment-001', executionId, assessment: 'APPLICABLE', knowledgeContext }];
 const verdictReviews = [{ executionId, queryRefs: ['query-001'], requestedVerdict: 'FAIL', ...reviewFields }];
-const knowledgeQueries = [{ ref: 'query-001', executionId, matchCount: 0 }];
+const knowledgeQueries = [{ ref: 'query-001', executionId, candidateCount: 0, knowledgeContext }];
 const directResult = withResultSha({
   schemaVersion: 2,
   executionId,
@@ -233,38 +310,38 @@ const directResult = withResultSha({
   uncertainties: [],
   technicalFailureCode: null,
 });
-assert.strictEqual(validateResult(directResult, { executionId, understanding, plan: revisedPlan, evidence }), directResult);
+assert.strictEqual(validateResult(directResult, { executionId, understanding, plan: revisedPlan, evidence, ...resultContext }), directResult);
 expectCode(() => validateResult(withResultSha({
   ...directResult,
   requirementFindings: [{ ...directResult.requirementFindings[0], status: 'NOT_SATISFIED' }],
-}), { executionId, understanding, plan: revisedPlan, evidence }), 'RESULT_SEMANTICS_INVALID');
+}), { executionId, understanding, plan: revisedPlan, evidence, ...resultContext }), 'RESULT_SEMANTICS_INVALID');
 expectCode(() => validateResult(withResultSha({
   ...directResult,
   executionStatus: 'TECHNICALLY_BLOCKED',
   verdictBasis: 'TECHNICAL_CONSTRAINT',
   technicalFailureCode: 'DEVICE_OFFLINE',
-}), { executionId, understanding, plan: revisedPlan, evidence }), 'RESULT_SEMANTICS_INVALID');
+}), { executionId, understanding, plan: revisedPlan, evidence, ...resultContext }), 'RESULT_SEMANTICS_INVALID');
 const knowledgeResult = withResultSha({
   ...directResult,
   verdictBasis: 'KNOWLEDGE_SUPPORTED',
   summary: '当前现象符合适用知识',
   requirementFindings: [{ ...directResult.requirementFindings[0], knowledgeRefs: ['assessment-001'] }],
 });
-assert.strictEqual(validateResult(knowledgeResult, { executionId, understanding, evidence, knowledgeAssessments }), knowledgeResult);
+assert.strictEqual(validateResult(knowledgeResult, { executionId, understanding, evidence, knowledgeAssessments, ...resultContext }), knowledgeResult);
 const failResult = withResultSha({
   ...directResult,
   verdict: 'FAIL',
   summary: '播放入口不符合明确要求',
   requirementFindings: [{ requirementId: 'req-001', status: 'NOT_SATISFIED', evidenceRefs: ['screenshots/observe-001.png'], knowledgeRefs: [] }],
 });
-assert.strictEqual(validateResult(failResult, { executionId, understanding, plan: revisedPlan, evidence, verdictReviews, knowledgeQueries }), failResult);
+assert.strictEqual(validateResult(failResult, { executionId, understanding, plan: revisedPlan, evidence, verdictReviews, knowledgeQueries, ...resultContext }), failResult);
 const newerPlan = withPlanSha({ ...revisedPlan, revision: revisedPlan.revision + 1, reason: '复核后再次修订计划' });
 expectCode(() => validateResult(failResult, {
-  executionId, understanding, plan: newerPlan, evidence, verdictReviews, knowledgeQueries,
+  executionId, understanding, plan: newerPlan, evidence, verdictReviews, knowledgeQueries, ...resultContext,
 }), 'RESULT_REVIEW_REQUIRED');
 expectCode(() => validateResult(failResult, {
   executionId, understanding: { ...understanding, revision: understanding.revision + 1 }, plan: revisedPlan,
-  evidence, verdictReviews, knowledgeQueries,
+  evidence, verdictReviews, knowledgeQueries, ...resultContext,
 }), 'RESULT_REVIEW_REQUIRED');
 const inconclusiveResult = withResultSha({
   schemaVersion: 2,
@@ -277,7 +354,7 @@ const inconclusiveResult = withResultSha({
   uncertainties: ['目标状态无法稳定观察'],
   technicalFailureCode: null,
 });
-assert.strictEqual(validateResult(inconclusiveResult, { executionId, understanding, plan: revisedPlan, evidence, verdictReviews: [{ ...verdictReviews[0], requestedVerdict: 'INCONCLUSIVE', remainingUncertainties: ['目标状态无法稳定观察'] }], knowledgeQueries }), inconclusiveResult);
+assert.strictEqual(validateResult(inconclusiveResult, { executionId, understanding, plan: revisedPlan, evidence, verdictReviews: [{ ...verdictReviews[0], requestedVerdict: 'INCONCLUSIVE', remainingUncertainties: ['目标状态无法稳定观察'] }], knowledgeQueries, ...resultContext }), inconclusiveResult);
 const blockedResult = withResultSha({
   ...inconclusiveResult,
   verdict: 'BLOCKED',
@@ -287,25 +364,26 @@ const blockedResult = withResultSha({
   requirementFindings: [{ requirementId: 'req-001', status: 'BLOCKED', evidenceRefs: [], knowledgeRefs: [] }],
   technicalFailureCode: 'AUTOMATION_CONNECTION_LOST',
 });
-assert.strictEqual(validateResult(blockedResult, { executionId, understanding }), blockedResult);
-expectCode(() => validateResult(knowledgeResult, { executionId, understanding, evidence }), 'RESULT_KNOWLEDGE_INVALID');
-expectCode(() => validateResult(failResult, { executionId, understanding, evidence }), 'RESULT_REVIEW_REQUIRED');
+assert.strictEqual(validateResult(blockedResult, { executionId, understanding, ...resultContext }), blockedResult);
+expectCode(() => validateResult(knowledgeResult, { executionId, understanding, evidence, ...resultContext }), 'RESULT_KNOWLEDGE_INVALID');
+expectCode(() => validateResult(failResult, { executionId, understanding, evidence, ...resultContext }), 'RESULT_REVIEW_REQUIRED');
 expectCode(() => validateResult(failResult, {
-  executionId, understanding, plan: revisedPlan, evidence, verdictReviews, knowledgeQueries: [{ ref: 'query-001', executionId: 'execution-other' }],
+  executionId, understanding, plan: revisedPlan, evidence, verdictReviews, knowledgeQueries: [{ ref: 'query-001', executionId: 'execution-other', knowledgeContext }], ...resultContext,
 }), 'RESULT_REVIEW_REQUIRED');
 expectCode(() => validateResult(directResult, {
   executionId,
   understanding,
   evidence: [{ ...evidence[0], executionId: 'execution-other' }],
+  ...resultContext,
 }), 'RESULT_EVIDENCE_INVALID');
 expectCode(() => validateResult(withResultSha({
   ...directResult,
   requirementFindings: [{ ...directResult.requirementFindings[0], requirementId: 'req-missing' }],
-}), { executionId, understanding, evidence }), 'RESULT_REFERENCE_INVALID');
+}), { executionId, understanding, evidence, ...resultContext }), 'RESULT_REFERENCE_INVALID');
 expectCode(() => validateResult(withResultSha({
   ...directResult,
   requirementFindings: [null],
-}), { executionId, understanding, evidence }), 'RESULT_INVALID');
+}), { executionId, understanding, evidence, ...resultContext }), 'RESULT_INVALID');
 const assumedUnderstanding = {
   ...understanding,
   requirements: [{ id: 'req-assumed', text: 'Agent 假设的附加要求', basis: 'assumed', sourceRefs: [] }],
@@ -315,7 +393,7 @@ const assumedFail = withResultSha({
   requirementFindings: [{ requirementId: 'req-assumed', status: 'NOT_SATISFIED', evidenceRefs: ['screenshots/observe-001.png'], knowledgeRefs: [] }],
 });
 expectCode(() => validateResult(assumedFail, {
-  executionId, understanding: assumedUnderstanding, plan: revisedPlan, evidence, verdictReviews, knowledgeQueries,
+  executionId, understanding: assumedUnderstanding, plan: revisedPlan, evidence, verdictReviews, knowledgeQueries, ...resultContext,
 }), 'RESULT_INVALID');
 
 const metrics = {

@@ -6,11 +6,25 @@ const { canonicalJson, contractError, ensureId } = require('../lib/contract-util
 const { contentSha, normalizeQuery, queryKnowledge } = require('../lib/knowledge-query');
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
 const { atomicWrite, readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { assertNoOperationRecovery, assertNoTurnRecovery, knowledgeQueryDraftIds, recordKnowledgeQuery, timelineEvents } = require('../execution/core');
+const {
+  assertNoOperationRecovery,
+  assertNoTurnRecovery,
+  currentObservation,
+  knowledgeQueryDraftIds,
+  latestStateChangeIndex,
+  recordKnowledgeQuery,
+  timelineEvents,
+} = require('../execution/core');
 const { validateKnowledgeCandidateSnapshot } = require('../lib/knowledge-snapshot');
+const {
+  assertCurrentKnowledgeContext,
+  buildCurrentKnowledgeContext,
+  sameKnowledgeContext,
+} = require('../lib/knowledge-context');
 
 function frozenCandidates(draft) {
-  if (!Array.isArray(draft?.candidates) || draft.matchCount !== draft.candidates.length) {
+  if (!Array.isArray(draft?.candidates) || draft.candidateCount !== draft.candidates.length
+    || typeof draft.truncated !== 'boolean') {
     throw contractError('KNOWLEDGE_QUERY_DRAFT_INVALID', 'knowledge query draft candidates are invalid');
   }
   return draft.candidates.map((candidate) => {
@@ -28,6 +42,19 @@ function executeKnowledgeQuery(options) {
   assertNoOperationRecovery(options.execDir);
   assertNoTurnRecovery(options.execDir);
   const normalizedQuery = normalizeQuery(options.query);
+  const events = timelineEvents(options.execDir);
+  const understanding = readJson(path.join(options.execDir, 'understanding.json'), null);
+  const plan = readJson(path.join(options.execDir, 'plan.json'), null);
+  if (!understanding || !plan) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'knowledge investigation requires the current understanding and plan');
+  const knowledgeContext = buildCurrentKnowledgeContext({
+    execution: binding.execution,
+    understanding,
+    plan,
+    events,
+    observation: currentObservation(events, binding.execution.warmSessionGeneration),
+    stateBoundaryIndex: latestStateChangeIndex(events),
+  });
+  if (options.knowledgeContext) assertCurrentKnowledgeContext(options.knowledgeContext, knowledgeContext);
   const agentDir = path.join(options.execDir, 'agent');
   const draftPath = path.join(agentDir, `knowledge-query-${options.queryId}.draft.json`);
   const otherDrafts = knowledgeQueryDraftIds(options.execDir).filter((queryId) => queryId !== options.queryId);
@@ -37,6 +64,9 @@ function executeKnowledgeQuery(options) {
   const existing = timelineEvents(options.execDir).find((event) => event.type === 'knowledgeQuery' && event.queryId === options.queryId);
   if (existing) {
     if (canonicalJson(existing.query) !== canonicalJson(normalizedQuery)) throw contractError('KNOWLEDGE_QUERY_BINDING_MISMATCH', 'queryId is already bound to another query');
+    if (!sameKnowledgeContext(existing.knowledgeContext, knowledgeContext)) {
+      throw contractError('KNOWLEDGE_QUERY_BINDING_MISMATCH', 'queryId is already bound to another decision context');
+    }
     const draft = readJson(draftPath, null);
     if (draft && (draft.queryId !== options.queryId || canonicalJson(draft.query) !== canonicalJson(normalizedQuery))) {
       throw contractError('KNOWLEDGE_QUERY_BINDING_MISMATCH', 'knowledge query draft does not match the committed event');
@@ -47,10 +77,21 @@ function executeKnowledgeQuery(options) {
     }
     existing.candidates.forEach((candidate) => validateKnowledgeCandidateSnapshot(options.execDir, candidate));
     if (draft) fs.unlinkSync(draftPath);
-    return { schemaVersion: 1, queryId: existing.queryId, query: existing.query, candidates: existing.candidates, matchCount: existing.matchCount, idempotent: true };
+    return {
+      schemaVersion: 1,
+      queryId: existing.queryId,
+      query: existing.query,
+      knowledgeContext: existing.knowledgeContext,
+      candidates: existing.candidates,
+      candidateCount: existing.candidateCount,
+      truncated: existing.truncated,
+      idempotent: true,
+    };
   }
   let draft = readJson(draftPath, null);
-  if (draft && (draft.schemaVersion !== 1 || draft.queryId !== options.queryId || canonicalJson(draft.query) !== canonicalJson(normalizedQuery))) {
+  if (draft && (draft.schemaVersion !== 1 || draft.queryId !== options.queryId
+    || canonicalJson(draft.query) !== canonicalJson(normalizedQuery)
+    || !sameKnowledgeContext(draft.knowledgeContext, knowledgeContext))) {
     throw contractError('KNOWLEDGE_QUERY_BINDING_MISMATCH', 'queryId is already bound to another frozen query');
   }
   if (!draft) {
@@ -60,9 +101,11 @@ function executeKnowledgeQuery(options) {
       executionId: binding.execution.executionId,
       queryId: options.queryId,
       query: result.query,
+      knowledgeContext,
       status: 'RESULT_FROZEN',
       candidates: result.candidates,
-      matchCount: result.candidates.length,
+      candidateCount: result.candidateCount,
+      truncated: result.truncated,
       frozenAt: options.now || new Date().toISOString(),
     };
     writeJsonAtomic(draftPath, draft);
@@ -94,12 +137,23 @@ function executeKnowledgeQuery(options) {
   const event = recordKnowledgeQuery(options.execDir, {
     queryId: options.queryId,
     query: draft.query,
+    knowledgeContext: draft.knowledgeContext,
     candidates,
-    matchCount: candidates.length,
+    candidateCount: candidates.length,
+    truncated: draft.truncated,
   }, { implementationSha: binding.execution.implementationSha, now: options.now });
   if (options.interruptAfter === 'event') throw new Error('MAVT_KNOWLEDGE_QUERY_INTERRUPTED: event');
   if (fs.existsSync(draftPath)) fs.unlinkSync(draftPath);
-  return { schemaVersion: 1, queryId: options.queryId, query: draft.query, candidates, matchCount: candidates.length, idempotent: event.idempotent === true };
+  return {
+    schemaVersion: 1,
+    queryId: options.queryId,
+    query: draft.query,
+    knowledgeContext: draft.knowledgeContext,
+    candidates,
+    candidateCount: candidates.length,
+    truncated: draft.truncated,
+    idempotent: event.idempotent === true,
+  };
 }
 
 module.exports = { executeKnowledgeQuery };

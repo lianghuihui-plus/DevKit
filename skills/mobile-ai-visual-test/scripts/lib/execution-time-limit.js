@@ -68,7 +68,6 @@ function buildCounts(events = []) {
     knowledgeQueries: events.filter((event) => event.type === 'knowledgeQuery').length,
     knowledgeAssessments: events.filter((event) => event.type === 'knowledgeAssessment').length,
     planRevisions: events.filter((event) => event.type === 'planRevised').length,
-    reflections: events.filter((event) => event.type === 'reflection').length,
   };
 }
 
@@ -138,7 +137,6 @@ function timingMetrics(execution, events, endedAt, execDir) {
     firstExecutableTurnMs: firstReady ? durationMs(execution.startedAt, firstReady.time) : null,
     adapterActiveMs,
     protocolActiveMs,
-    agentDecisionGapMs: agentOrchestrationGapMs,
     agentOrchestrationGapMs,
     phaseDurationsMs,
     protocolAttempts: attempts.length,

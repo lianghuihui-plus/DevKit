@@ -16,9 +16,9 @@ const CATEGORY_LABELS = Object.freeze({
   ACTION: '操作', OBSERVATION: '观察', GUARD: '守卫', PROTOCOL: '协议', KNOWLEDGE: '知识', RECOVERY: '恢复', REVIEW: '复核', RESULT: '结论',
 });
 const PHASE_LABELS = Object.freeze({
-  UNDERSTAND: '理解用例', ESTABLISH_START: '建立起点', EXECUTE: '执行与检查', INVESTIGATE: '调查异常', RECOVERY: '恢复现场', CONCLUDE: '形成结论', FINALIZED: '执行完成', UNKNOWN: '未归类',
+  UNDERSTAND: '理解用例', ESTABLISH_START: '建立起点', EXECUTE: '执行与检查', INVESTIGATE: '调查异常', RECOVERY: '恢复现场', CONCLUDE: '形成结论', FINALIZED: '执行完成', FRAMEWORK_CHECK: '框架校验', UNKNOWN: '未归类',
 });
-const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '未执行', RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布' });
+const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '未执行', RUNNING: '执行中', ABANDONED: '执行已废弃', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布' });
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', KNOWLEDGE_SUPPORTED: '知识支持', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
 const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', STOPPED_BY_BUDGET: '达到时限后停止', TECHNICALLY_BLOCKED: '技术阻塞', INTERRUPTED: '执行中断' });
 const OUTCOME_LABELS = Object.freeze({ SUCCEEDED: '成功', FAILED: '失败', REJECTED: '已拒绝', UNCERTAIN: '结果待确认', UNKNOWN: '未知' });
@@ -31,6 +31,9 @@ const CHECKPOINT_STATUS_LABELS = Object.freeze({
   PENDING: '待处理', ACTIVE: '执行中', VERIFIED: '已验证', NOT_SATISFIED: '未满足',
   BLOCKED: '阻塞', UNRESOLVED: '未确认', NOT_EXECUTED: '未执行', SUPERSEDED: '已被新计划替代',
 });
+const EXPECTATION_LABELS = Object.freeze({ MATCHED: '符合预期', NOT_MATCHED: '不符合预期', UNRESOLVED: '无法判断', NOT_ASSESSED: '未单独判断' });
+const ANALYSIS_LABELS = Object.freeze({ EXPLICIT: 'Agent 明确结论', CONTINUED: 'Agent 后续决策', NOT_RECORDED: '未记录独立分析' });
+const ACTION_EFFECT_LABELS = Object.freeze({ CHANGED: '页面已变化', NO_VISIBLE_CHANGE: '未检测到可见变化', UNKNOWN: '无法判断' });
 const ACTION_FIELD_LABELS = Object.freeze({
   target: '目标', x: '横坐标', y: '纵坐标', coordinateSource: '定位依据', targetBounds: '目标区域',
   coordinateEvidence: '坐标证据', text: '输入内容', mode: '输入方式', durationMs: '长按时长',
@@ -169,6 +172,7 @@ function renderCurrentContextMarkdown(caseJson, report) {
   const anchor = trace.recoveryAnchor;
   const checkpointProgress = new Map(deriveCheckpointProgress(report.plan, report.events, report.result, {
     warmSessionGeneration: report.execution?.warmSessionGeneration,
+    understanding: report.understanding,
   })
     .map((entry) => [entry.checkpointId, entry]));
   const lines = [
@@ -179,7 +183,7 @@ function renderCurrentContextMarkdown(caseJson, report) {
     `- 执行标识：${report.execution?.executionId || '-'}`,
     `- 耗时：${formatDuration(display.durationMs)}`,
     `- 操作 / 观察：${trace.counts.actions} / ${trace.counts.observations}`,
-    `- Agent 编排间隔：${formatDuration(report.metrics?.timing?.agentOrchestrationGapMs ?? report.metrics?.timing?.agentDecisionGapMs)}`,
+    `- Agent 编排间隔：${formatDuration(report.metrics?.timing?.agentOrchestrationGapMs)}`,
     `- 设备适配器工作：${formatDuration(report.metrics?.timing?.adapterActiveMs)}`,
     `- 协议状态读取：${statusReadCount(report, trace)} 次`,
     `- 输入效果检查：${formatInputEffects(reportInputEffects(report, trace))}`,
@@ -190,26 +194,26 @@ function renderCurrentContextMarkdown(caseJson, report) {
     `- 生成或调整原因：${markdownText(report.plan?.reason || '暂无计划')}`,
     `- 检查点进度：${[...checkpointProgress.values()].filter((item) => ['VERIFIED', 'NOT_SATISFIED', 'BLOCKED', 'UNRESOLVED'].includes(item.status)).length}/${(report.plan?.checkpoints || []).length}`, '',
     ...(report.plan?.checkpoints || []).flatMap((checkpoint, index) => [
-      `${index + 1}. [${label(CHECKPOINT_STATUS_LABELS, checkpointProgress.get(checkpoint.id)?.status, '未知')}] ${markdownText(checkpoint.goal)}`,
+      `${index + 1}. [${label(CHECKPOINT_STATUS_LABELS, checkpointProgress.get(checkpoint.id)?.status, '未知')}] ${markdownText(checkpoint.objective)}`,
       `   - 检查点：${checkpoint.id}`,
-      `   - 操作要求：${checkpoint.requiredAction ? '需要操作' : '不要求操作'}`,
+      `   - 必做操作：${(report.understanding?.requirements || []).filter((item) => checkpoint.requirementRefs.includes(item.id)).flatMap((item) => item.requiredInteractions || []).join('；') || '无'}`,
+      `   - 预期结果：${(report.understanding?.requirements || []).filter((item) => checkpoint.requirementRefs.includes(item.id)).flatMap((item) => item.expectedOutcomes || []).join('；') || '无'}`,
       `   - 关联要求：${checkpoint.requirementRefs?.length ? checkpoint.requirementRefs.join('、') : '无'}`,
     ]),
-    '', '## 完整执行轨迹', '',
+    '', '## 实际执行路径', '',
   ];
-  if (!trace.entries.length) lines.push('- 暂无执行轨迹');
-  for (const entry of trace.entries) {
-    const detail = [
-      entry.operationId ? `操作标识=${entry.operationId}` : null,
-      entry.durationMs !== null ? `耗时=${formatDuration(entry.durationMs)}` : null,
-      entry.outcome?.status ? `结果=${label(OUTCOME_LABELS, entry.outcome.status)}` : null,
-      entry.authorization?.checkpointId ? `检查点=${entry.authorization.checkpointId}` : null,
-      entry.authorization?.planRevision ? `计划版本=${entry.authorization.planRevision}` : null,
-    ].filter(Boolean).join('；');
-    lines.push(`${entry.sequence}. [${label(PHASE_LABELS, entry.phase, '未归类')}] ${CATEGORY_LABELS[entry.category] || '未归类'}：${markdownText(entry.title)}${detail ? `（${detail}）` : ''}`);
-    if (entry.intent) lines.push(`   - 意图：${markdownText(entry.intent)}`);
-    if (entry.expectedOutcome) lines.push(`   - 预期：${markdownText(entry.expectedOutcome)}`);
-    if (entry.summary) lines.push(`   - 结果：${markdownText(entry.summary)}`);
+  if (!trace.pathEntries.length) lines.push('- 暂无执行路径');
+  for (const [index, entry] of trace.pathEntries.entries()) {
+    const isOperation = ['ACTION', 'OBSERVATION'].includes(entry.category);
+    const context = entry.executionContext?.type === 'CHECKPOINT'
+      ? `检查点 ${entry.executionContext.order}：${entry.executionContext.objective}`
+      : entry.executionContext?.type === 'START' ? `起点准备 ${entry.executionContext.order}：${entry.executionContext.goal}` : null;
+    lines.push(`${index + 1}. [${label(PHASE_LABELS, pathPhase(entry), '未归类')}] ${isOperation ? markdownText(entry.intent || entry.title) : markdownText(pathEventTitle(entry))}`);
+    if (context) lines.push(`   - 所属任务：${markdownText(context)}`);
+    if (isOperation) {
+      lines.push(`   - 执行目的：${markdownText(entry.intent || '未记录')}`);
+      lines.push(`   - Agent 预期：${markdownText(entry.expectedOutcome || '未单独声明')}`);
+    }
     for (const candidate of entry.candidates || []) {
       const scope = [candidate.metadata?.platform?.join('/'), candidate.metadata?.version, candidate.metadata?.page].filter(Boolean).join(' · ');
       lines.push(`   - 知识候选：${markdownText(candidate.entryId)} ${markdownText(candidate.title || '')}${scope ? `（${markdownText(scope)}）` : ''}`);
@@ -218,8 +222,22 @@ function renderCurrentContextMarkdown(caseJson, report) {
     if (entry.action) {
       lines.push(`   - 操作：${actionLabel(entry.action.type)}`);
       for (const detail of actionDetails(entry.action)) lines.push(`   - ${detail.label}：${markdownText(detail.value)}`);
+      if (entry.coordinateAudit) {
+        lines.push(`   - 坐标审计：请求 ${coordinateText(entry.coordinateAudit.requested)}；真实执行 ${coordinateText(entry.coordinateAudit.executed)}；传递一致`);
+      }
+      lines.push(`   - 可见变化：${label(ACTION_EFFECT_LABELS, entry.actionEffect?.status, '无法判断')}；${markdownText(entry.actionEffect?.reason || '动作前后现场不可比较')}`);
     }
-    if (entry.screenshot?.ref) lines.push(`   - 截图：${markdownEvidence(report, entry.screenshot.ref)}`);
+    if (isOperation) {
+      const operationKind = entry.category === 'ACTION' ? '设备操作结果' : '现场采集结果';
+      lines.push(`   - ${operationKind}：${label(OUTCOME_LABELS, entry.outcome?.status, '未知')}；${markdownText(entry.outcome?.summary || entry.summary || '未记录')}`);
+      if (entry.category === 'ACTION') {
+        const afterUsable = entry.afterObservation?.usable;
+        lines.push(`   - 操作后现场：${afterUsable === true ? '证据可用' : afterUsable === false ? '证据不可用' : '未取得现场'}`);
+      }
+      lines.push(`   - 预期判断：${label(EXPECTATION_LABELS, entry.expectationAssessment?.status, '未单独判断')}；${markdownText(entry.expectationAssessment?.summary || 'Agent 未对该步骤形成独立判断')}`);
+      lines.push(`   - ${label(ANALYSIS_LABELS, entry.agentAnalysis?.status, 'Agent 分析')}：${markdownText(entry.agentAnalysis?.summary || '未记录')}`);
+    } else if (pathEventSummary(entry)) lines.push(`   - 记录结果：${markdownText(pathEventSummary(entry))}`);
+    if (entry.screenshot?.ref) lines.push(`   - 现场截图：${markdownEvidence(report, entry.screenshot.ref)}`);
     if (entry.beforeScreenshot?.ref) lines.push(`   - 操作前：${markdownEvidence(report, entry.beforeScreenshot.ref)}`);
     if (entry.afterScreenshot?.ref) lines.push(`   - 操作后：${markdownEvidence(report, entry.afterScreenshot.ref)}`);
   }
@@ -289,20 +307,170 @@ function renderKnowledgeCandidates(report, candidates = []) {
   }).join('')}</div>`;
 }
 
-function renderActionSpec(action) {
+function coordinateText(value) {
+  if (!value) return '-';
+  if (value.point) return `(${value.point.x}, ${value.point.y})`;
+  if (value.from && value.to) return `(${value.from.x}, ${value.from.y}) -> (${value.to.x}, ${value.to.y})`;
+  return '-';
+}
+
+function renderCoordinateAudit(audit) {
+  if (!audit) return '';
+  return `<div class="coordinate-audit"><div><span>定位来源</span><b>${escapeHtml(label(ACTION_VALUE_LABELS, audit.source, audit.source))}</b></div><div><span>请求坐标</span><b>${escapeHtml(coordinateText(audit.requested))}</b></div><div><span>真实执行坐标</span><b>${escapeHtml(coordinateText(audit.executed))}</b></div><div><span>传递校验</span><b class="audit-matched">一致</b></div></div>`;
+}
+
+function renderActionSpec(action, coordinateAudit = null) {
   if (!action) return '';
   const fields = actionDetails(action).map((detail) => {
     const wide = ['坐标证据', '操作原因'].includes(detail.label) || String(detail.value).length > 56;
     return `<div class="action-field${wide ? ' wide' : ''}"><dt>${escapeHtml(detail.label)}</dt><dd>${escapeHtml(detail.value)}</dd></div>`;
   }).join('');
-  return `<div class="action-spec"><div class="action-kind"><span>执行操作</span><b>${escapeHtml(actionLabel(action.type))}</b></div><dl>${fields}</dl></div>`;
+  return `<div class="action-spec"><div class="action-kind"><span>执行操作</span><b>${escapeHtml(actionLabel(action.type))}</b></div><dl>${fields}</dl></div>${renderCoordinateAudit(coordinateAudit)}`;
+}
+
+function assessmentTone(status) {
+  if (status === 'MATCHED') return 'pass';
+  if (status === 'NOT_MATCHED') return 'fail';
+  if (status === 'UNRESOLVED') return 'blocked';
+  return 'neutral';
+}
+
+function renderExecutionContext(entry) {
+  const context = entry.executionContext;
+  if (!context) return `<span>${entry.category === 'OBSERVATION' ? '自主观察' : '自主执行'}</span>`;
+  if (context.type === 'START') return `<span>起点准备 ${escapeHtml(context.order)}</span><b>${escapeHtml(context.goal)}</b>`;
+  return `<span>检查点 ${escapeHtml(context.order)}${context.planRevision ? ` · 计划版本 ${escapeHtml(context.planRevision)}` : ''}</span><b>${escapeHtml(context.objective)}</b>`;
+}
+
+function renderExpectation(value) {
+  const assessment = value || { status: 'NOT_ASSESSED', summary: 'Agent 未对该步骤形成独立判断', basis: '无显式单步结论' };
+  const tone = assessmentTone(assessment.status);
+  return `<div class="expectation-panel ${tone}"><span>预期判断</span><b>${escapeHtml(label(EXPECTATION_LABELS, assessment.status, '未单独判断'))}</b><p>${escapeHtml(assessment.summary)}</p><small>判断依据：${escapeHtml(assessment.basis)}</small></div>`;
+}
+
+function renderAgentAnalysis(value) {
+  const analysis = value || { status: 'NOT_RECORDED', summary: 'Agent 没有为该步骤留下独立分析记录' };
+  return `<div class="agent-analysis"><span>${escapeHtml(label(ANALYSIS_LABELS, analysis.status, 'Agent 分析'))}</span><p>${escapeHtml(analysis.summary)}</p></div>`;
+}
+
+function renderLayoutCaptureNotice(entry) {
+  const observation = entry.category === 'ACTION' ? entry.afterObservation : entry.observation;
+  const capture = observation?.technicalSignals?.layoutCapture;
+  if (capture?.status !== 'UNAVAILABLE') return '';
+  const duration = Number.isFinite(Number(capture.durationMs)) ? `，耗时 ${formatDuration(Number(capture.durationMs))}` : '';
+  const message = capture.message || '本次控件树不可用';
+  return `<div class="agent-analysis"><span>控件树降级</span><p>${escapeHtml(`${message}${duration}；已使用截图继续执行`)}</p></div>`;
+}
+
+function pathEventTitle(entry) {
+  const titles = {
+    PLAN: '调整执行计划', CHECKPOINT: '形成检查点结论', KNOWLEDGE: '查询与评估本地知识',
+    REVIEW: '复核最终结论', DECISION: '形成执行决策', GUARD: '框架阻止本次请求',
+    PROTOCOL: '协议请求未通过', RECOVERY: '恢复 App 现场',
+  };
+  return titles[entry.category] || entry.title;
+}
+
+function pathEventSummary(entry) {
+  if (entry.category === 'PROTOCOL') return '本次请求未通过框架校验，原始错误与技术标识可在“技术记录”中查看。';
+  return entry.summary || '';
+}
+
+function pathPhase(entry) {
+  if ((!entry.phase || entry.phase === 'UNKNOWN') && ['GUARD', 'PROTOCOL'].includes(entry.category)) return 'FRAMEWORK_CHECK';
+  return entry.phase || 'UNKNOWN';
+}
+
+function processEntryStatus(entry) {
+  const assessment = entry.expectationAssessment?.status;
+  if (assessment === 'NOT_MATCHED') return { label: '不符合预期', tone: 'fail' };
+  if (assessment === 'UNRESOLVED') return { label: '无法判断', tone: 'blocked' };
+  if (assessment === 'MATCHED') return { label: '符合预期', tone: 'pass' };
+  if (['FAILED', 'UNCERTAIN', 'REJECTED'].includes(entry.outcome?.status)) return { label: label(OUTCOME_LABELS, entry.outcome.status, '需关注'), tone: 'blocked' };
+  if (entry.category === 'GUARD' || entry.category === 'PROTOCOL') return { label: '被拒绝', tone: 'blocked' };
+  if (entry.category === 'RECOVERY') return { label: '恢复', tone: 'blocked' };
+  if (entry.category === 'PLAN') return { label: '已调整', tone: 'neutral' };
+  if (entry.category === 'CHECKPOINT') return { label: '已判断', tone: 'neutral' };
+  if (entry.category === 'KNOWLEDGE') return { label: '已调查', tone: 'neutral' };
+  if (entry.category === 'REVIEW') return { label: '已复核', tone: 'neutral' };
+  return { label: entry.category === 'OBSERVATION' ? '已观察' : '已完成', tone: 'neutral' };
+}
+
+function processEntryRank(entry) {
+  if (entry.expectationAssessment?.status === 'NOT_MATCHED') return 6;
+  if (entry.expectationAssessment?.status === 'UNRESOLVED') return 5;
+  if (['FAILED', 'UNCERTAIN'].includes(entry.outcome?.status)) return 5;
+  if (['GUARD', 'RECOVERY'].includes(entry.category)) return 4;
+  if (entry.category === 'PROTOCOL') return 3;
+  if (entry.expectationAssessment?.status === 'MATCHED') return 1;
+  return 0;
+}
+
+function defaultProcessIndex(entries) {
+  let selected = 0;
+  let rank = -1;
+  entries.forEach((entry, index) => {
+    const candidate = processEntryRank(entry);
+    if (candidate > rank) { selected = index; rank = candidate; }
+  });
+  return selected;
+}
+
+function processEntryTitle(entry) {
+  return ['ACTION', 'OBSERVATION'].includes(entry.category) ? (entry.intent || entry.title) : pathEventTitle(entry);
+}
+
+function renderDetailScreenshots(report, entry) {
+  if (entry.category !== 'ACTION') return `<div class="detail-single-shot">${renderScreenshot(report, entry.screenshot, '观察现场')}</div>`;
+  const before = entry.coordinateOverlayScreenshot || entry.beforeScreenshot;
+  const beforeLabel = entry.coordinateOverlayScreenshot ? '操作前现场与坐标落点' : '操作前现场';
+  return `<div class="detail-shot-pair"><div><small>${beforeLabel}</small>${renderScreenshot(report, before, beforeLabel)}</div><div><small>操作后现场</small>${renderScreenshot(report, entry.afterScreenshot, '操作后现场')}</div></div>`;
+}
+
+function renderOperationDetail(report, entry, index) {
+  const isAction = entry.category === 'ACTION';
+  const status = processEntryStatus(entry);
+  const afterUsable = isAction ? entry.afterObservation?.usable : entry.observation?.usable;
+  const foreground = isAction ? entry.afterObservationEntry?.observation?.app?.foregroundApp : entry.observation?.app?.foregroundApp;
+  const artifacts = isAction ? entry.postActionArtifacts : entry.artifacts;
+  return `<article class="selected-step"><header class="selected-step-head"><div><span>步骤 ${index + 1} · ${escapeHtml(label(PHASE_LABELS, pathPhase(entry), '未归类'))}</span><h2>${escapeHtml(processEntryTitle(entry))}</h2>${entry.executionContext ? `<p>${renderExecutionContext(entry)}</p>` : ''}</div><span class="status-text ${status.tone}">${escapeHtml(status.label)}</span></header>
+    <section class="detail-purpose"><div><span>执行目的</span><p>${escapeHtml(entry.intent || '未记录')}</p></div><div><span>Agent 预期</span><p>${escapeHtml(entry.expectedOutcome || '未单独声明')}</p></div></section>
+    ${isAction ? `<section class="detail-block"><div class="block-heading"><h3>执行操作</h3></div>${renderActionSpec(entry.action, entry.coordinateAudit)}</section>` : ''}
+    <section class="detail-block"><div class="block-heading"><h3>执行结果</h3></div><div class="detail-results"><div><span>${isAction ? '设备操作' : '现场采集'}</span><b>${escapeHtml(label(OUTCOME_LABELS, entry.outcome?.status, '未知'))}</b><p>${escapeHtml(entry.outcome?.summary || entry.summary || '未记录')}</p></div><div><span>${isAction ? '可见变化' : '当前现场'}</span><b>${isAction ? escapeHtml(label(ACTION_EFFECT_LABELS, entry.actionEffect?.status, '无法判断')) : (afterUsable === true ? '证据可用' : afterUsable === false ? '证据不可用' : '未取得现场')}</b><p>${isAction ? escapeHtml(entry.actionEffect?.reason || '动作前后现场不可比较') : escapeHtml(foreground ? `前台 App：${foreground}` : '未记录前台 App')}</p></div>${renderExpectation(entry.expectationAssessment)}</div>${renderLayoutCaptureNotice(entry)}</section>
+    <section class="detail-block evidence-block"><div class="block-heading"><h3>${isAction ? '现场对比' : '现场截图'}</h3></div>${renderDetailScreenshots(report, entry)}</section>
+    <section class="detail-block"><div class="block-heading"><h3>Agent 分析</h3></div>${renderAgentAnalysis(entry.agentAnalysis)}</section>${renderArtifacts(report, artifacts)}
+  </article>`;
+}
+
+function renderPathEventDetail(report, entry, index) {
+  const status = processEntryStatus(entry);
+  return `<article class="selected-step event-detail"><header class="selected-step-head"><div><span>步骤 ${index + 1} · ${escapeHtml(label(PHASE_LABELS, pathPhase(entry), '未归类'))}</span><h2>${escapeHtml(pathEventTitle(entry))}</h2></div><span class="status-text ${status.tone}">${escapeHtml(status.label)}</span></header><section class="event-summary"><span>${escapeHtml(CATEGORY_LABELS[entry.category] || '记录')}</span><p>${escapeHtml(pathEventSummary(entry) || '未记录说明')}</p></section>${renderKnowledgeCandidates(report, entry.candidates)}</article>`;
+}
+
+function renderExecutionWorkspace(report, trace) {
+  const entries = trace.pathEntries.filter((entry) => entry.category !== 'PROTOCOL');
+  if (!entries.length) return '<p class="empty">暂无执行路径。</p>';
+  const selectedIndex = defaultProcessIndex(entries);
+  const groups = [];
+  entries.forEach((entry, index) => {
+    const phase = pathPhase(entry);
+    const last = groups.at(-1);
+    const item = { entry, index };
+    if (!last || last.phase !== phase) groups.push({ phase, items: [item] });
+    else last.items.push(item);
+  });
+  const attentionCount = entries.filter((entry) => processEntryRank(entry) >= 3).length;
+  return `<div class="process-workspace"><aside class="process-nav"><header><div><h2>执行路径</h2><p>${entries.length} 个步骤${attentionCount ? ` · ${attentionCount} 处需关注` : ''}</p></div></header><div class="process-list">${groups.map((group) => `<section><h3>${escapeHtml(label(PHASE_LABELS, group.phase, '未归类'))}</h3>${group.items.map(({ entry, index }) => {
+    const status = processEntryStatus(entry);
+    return `<button type="button" class="process-step${index === selectedIndex ? ' active' : ''}" data-process-target="process-step-${index}" aria-selected="${index === selectedIndex}"><span class="process-index">${index + 1}</span><span class="process-step-copy"><small>${escapeHtml(CATEGORY_LABELS[entry.category] || '记录')}${entry.durationMs !== null ? ` · ${escapeHtml(formatDuration(entry.durationMs))}` : ''}</small><b>${escapeHtml(processEntryTitle(entry))}</b></span><span class="status-dot ${status.tone}" title="${escapeHtml(status.label)}"></span></button>`;
+  }).join('')}</section>`).join('')}</div></aside><main class="process-detail">${entries.map((entry, index) => `<section id="process-step-${index}" class="process-detail-panel${index === selectedIndex ? ' active' : ''}">${['ACTION', 'OBSERVATION'].includes(entry.category) ? renderOperationDetail(report, entry, index) : renderPathEventDetail(report, entry, index)}</section>`).join('')}</main></div>`;
 }
 
 function renderEntry(report, entry) {
   const outcome = entry.outcome ? `<span class="outcome ${outcomeClass(entry.outcome.status)}">${escapeHtml(label(OUTCOME_LABELS, entry.outcome.status))}</span>` : '';
   const meta = [formatDisplayTime(entry.time), entry.durationMs !== null ? formatDuration(entry.durationMs) : null, entry.operationId].filter(Boolean);
   const intent = entry.intent || entry.expectedOutcome ? `<dl class="decision-fields">${entry.intent ? `<div><dt>Agent 意图</dt><dd>${escapeHtml(entry.intent)}</dd></div>` : ''}${entry.expectedOutcome ? `<div><dt>预期结果</dt><dd>${escapeHtml(entry.expectedOutcome)}</dd></div>` : ''}</dl>` : '';
-  const action = renderActionSpec(entry.action);
+  const action = renderActionSpec(entry.action, entry.coordinateAudit);
   const compare = entry.category === 'ACTION' ? `<div class="shot-pair"><div><small>操作前</small>${renderScreenshot(report, entry.beforeScreenshot, '操作前现场')}</div><div><small>操作后</small>${renderScreenshot(report, entry.afterScreenshot, '操作后现场')}</div></div>` : '';
   const observation = entry.category === 'OBSERVATION' ? `<div class="observation-row">${renderScreenshot(report, entry.screenshot, label(OBSERVATION_PURPOSE_LABELS, entry.observationPurpose, '现场截图'))}<div><b>${entry.observation?.usable ? '证据可用' : '证据不可用'}</b><p>${escapeHtml(entry.observation?.app?.foregroundApp || '未记录前台 App')}</p><p class="muted">${escapeHtml(label(OBSERVATION_PURPOSE_LABELS, entry.observationPurpose, 'Agent 自主观察'))}${entry.relatedOperationId ? ` · 关联操作 ${escapeHtml(entry.relatedOperationId)}` : ''}</p></div></div>` : '';
   const retry = entry.retrySafety ? `<p class="retry"><b>重试策略</b> ${escapeHtml(label(RETRY_LABELS, entry.retrySafety.status))}：${escapeHtml(entry.retrySafety.reason)}</p>` : '';
@@ -349,114 +517,66 @@ function renderRecoveryAnchor(report, anchor) {
   </aside>`;
 }
 
-function renderRequirements(report) {
-  const understanding = report.understanding || {};
-  const findings = new Map((report.result?.requirementFindings || []).map((item) => [item.requirementId, item]));
-  const requirements = understanding.requirements || [];
-  return requirements.length ? requirements.map((requirement) => {
-    const finding = findings.get(requirement.id);
-    return `<article class="requirement"><div><span>验证要求</span><b>${escapeHtml(label(REQUIREMENT_STATUS_LABELS, finding?.status, '未确认'))}</b></div><h3>${escapeHtml(requirement.text)}</h3><p>${escapeHtml(label(REQUIREMENT_BASIS_LABELS, requirement.basis, ''))}</p>${finding?.evidenceRefs?.length ? `<p>证据：${finding.evidenceRefs.map((ref, index) => htmlEvidence(report, ref, `证据截图 ${index + 1}`)).join('、')}</p>` : ''}</article>`;
-  }).join('') : '<p class="empty">当前理解没有可展示的需求。</p>';
-}
-
 function renderUnderstanding(report) {
   const understanding = report.understanding;
   if (!understanding) return '<p class="empty">Agent 尚未形成用例理解。</p>';
-  const statements = (items, kind) => items?.length ? `<div class="statement-group"><h3>${kind}</h3>${items.map((item, index) => `<div class="statement"><span class="statement-order">${index + 1}</span><div><b>${escapeHtml(item.text)}</b><span>${escapeHtml(label(REQUIREMENT_BASIS_LABELS, item.basis, item.basis === 'assumed' ? 'Agent 假设' : ''))}</span></div></div>`).join('')}</div>` : '';
+  const statements = (items, kind) => items?.length ? `<div class="statement-group"><h3>${kind}</h3>${items.map((item, index) => `<div class="statement"><span class="statement-order">${index + 1}</span><div><b>${escapeHtml(item.text)}</b><span>${escapeHtml(label(REQUIREMENT_BASIS_LABELS, item.basis, item.basis === 'assumed' ? 'Agent 假设' : ''))}</span>${item.requiredInteractions?.length ? `<p><strong>必须执行</strong>${escapeHtml(item.requiredInteractions.join('；'))}</p>` : ''}${item.expectedOutcomes?.length ? `<p><strong>预期结果</strong>${escapeHtml(item.expectedOutcomes.join('；'))}</p>` : ''}</div></div>`).join('')}</div>` : '';
   return `<div class="understanding-summary"><span>理解版本 ${escapeHtml(understanding.revision)}</span><p>${escapeHtml(understanding.summary)}</p></div>
     <div class="understanding-columns">${statements(understanding.startConditions, '起点条件')}${statements(understanding.requirements, '验证要求')}</div>
     ${understanding.uncertainties?.length ? `<div class="uncertainties"><b>初始不确定性</b>${understanding.uncertainties.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : ''}`;
-}
-
-function renderNarrativeEntry(report, entry, stepNumber) {
-  const title = entry.category === 'CHECKPOINT' ? '形成检查点结论' : entry.title;
-  const outcomeText = entry.outcome?.status === 'SUCCEEDED' && entry.category === 'OBSERVATION'
-    ? '现场采集成功'
-    : entry.outcome?.status === 'SUCCEEDED' && entry.category === 'ACTION' ? '操作成功' : label(OUTCOME_LABELS, entry.outcome?.status);
-  const outcome = entry.outcome ? `<span class="outcome ${outcomeClass(entry.outcome.status)}">${escapeHtml(outcomeText)}</span>` : '';
-  const meta = [formatDisplayTime(entry.time), entry.durationMs !== null ? formatDuration(entry.durationMs) : null].filter(Boolean);
-  const action = renderActionSpec(entry.action);
-  const screenshots = entry.category === 'ACTION'
-    ? `<div class="shot-pair"><div><small>操作前</small>${renderScreenshot(report, entry.beforeScreenshot, '操作前现场')}</div><div><small>操作后</small>${renderScreenshot(report, entry.afterScreenshot, '操作后现场')}</div></div>`
-    : entry.category === 'OBSERVATION' ? `<div class="single-shot">${renderScreenshot(report, entry.screenshot, label(OBSERVATION_PURPOSE_LABELS, entry.observationPurpose, '现场截图'))}</div>` : '';
-  return `<div class="work-step">
-    <div class="work-step-marker"><span>${escapeHtml(stepNumber)}</span></div>
-    <div class="work-step-body"><div class="work-step-head"><div><span class="category ${className(entry.category)}">${escapeHtml(CATEGORY_LABELS[entry.category] || '记录')}</span><h4>${escapeHtml(title)}</h4></div>${outcome}</div>
-      <div class="entry-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}</div>
-      ${entry.intent ? `<p><b>执行意图：</b>${escapeHtml(entry.intent)}</p>` : ''}${entry.expectedOutcome ? `<p><b>${entry.category === 'OBSERVATION' ? '观察目标' : '操作目标'}：</b>${escapeHtml(entry.expectedOutcome)}</p>` : ''}${entry.category === 'OBSERVATION' ? `<p class="entry-summary"><b>采集结果：</b>${entry.observation?.usable ? '现场证据可用' : '现场证据不可用'}</p>` : entry.summary ? `<p class="entry-summary">${escapeHtml(entry.summary)}</p>` : ''}
-      ${action}${screenshots}${renderKnowledgeCandidates(report, entry.candidates)}${renderArtifacts(report, entry.artifacts)}
-      <details class="technical-meta"><summary>技术标识</summary><code>全局记录序号 ${escapeHtml(entry.sequence)}</code><code>${escapeHtml(entry.operationId || '无操作标识')}</code>${entry.authorization?.planRevision ? `<code>计划版本 ${escapeHtml(entry.authorization.planRevision)}</code>` : ''}</details>
-    </div>
-  </div>`;
 }
 
 function renderOverviewPlan(report, narrative) {
   const plan = narrative.latestPlan;
   if (!plan) return '<p class="empty">Agent 尚未生成动态计划。</p>';
   return `<div class="overview-plan-head"><div><span>最新版本</span><b>${escapeHtml(plan.revision)}</b></div><div><span>调整原因</span><b>${escapeHtml(plan.reason)}</b></div></div>
-    <ol class="overview-plan-list">${narrative.checkpoints.filter((item) => item.current).map((checkpoint) => `<li><span class="checkpoint-state ${className(checkpoint.executionStatus)}">${escapeHtml(label(CHECKPOINT_STATUS_LABELS, checkpoint.executionStatus, '未知'))}</span><div><b>${escapeHtml(checkpoint.goal)}</b><small>${checkpoint.actions.length} 次操作 · ${checkpoint.observations.length} 次观察 · ${checkpoint.requirementFindings.length || checkpoint.findings.length ? '已形成检查结果' : '尚未形成检查结果'}</small></div></li>`).join('')}</ol>`;
+    <ol class="overview-plan-list">${narrative.checkpoints.filter((item) => item.current).map((checkpoint) => {
+    const requirementText = checkpoint.requirements.length
+      ? checkpoint.requirements.map((item) => item.text).join('；') : '未关联具体原文要求';
+    const hasFinding = checkpoint.requirementFindings.length || checkpoint.findings.length;
+    return `<li><span class="plan-checkpoint-number">${escapeHtml(checkpoint.order)}</span><div class="plan-checkpoint-main"><div><span class="checkpoint-state ${className(checkpoint.executionStatus)}">${escapeHtml(label(CHECKPOINT_STATUS_LABELS, checkpoint.executionStatus, '未知'))}</span><span class="action-requirement">${checkpoint.requiresAction ? '包含用例指定操作' : '观察验证'}</span></div><b>${escapeHtml(checkpoint.objective)}</b><p><span>必须执行</span>${escapeHtml(checkpoint.requiredInteractions.join('；') || '无')}</p><p><span>预期结果</span>${escapeHtml(checkpoint.expectedOutcomes.join('；') || '无')}</p><p><span>关联要求</span>${escapeHtml(requirementText)}</p><small>${checkpoint.actions.length} 次操作 · ${checkpoint.observations.length} 次观察 · ${hasFinding ? '已形成检查结果' : '尚未形成检查结果'}</small></div></li>`;
+  }).join('')}</ol>`;
 }
 
-function renderStartPreparation(report, entries) {
-  return entries.length ? `<div class="work-log">${entries.map((entry, index) => renderNarrativeEntry(report, entry, index + 1)).join('')}</div>` : '<p class="empty">本次执行没有单独记录起点恢复操作，Agent 从当前现场直接开始业务检查。</p>';
+function renderOutcomeSummary(report, trace) {
+  const display = report.display || {};
+  return `<section class="case-outcome ${className(display.status)}"><div class="outcome-copy"><span>执行结果</span><div><strong>${escapeHtml(label(VERDICT_LABELS, display.status, '未知'))}</strong><small>${escapeHtml(label(BASIS_LABELS, display.verdictBasis))}</small></div><p>${escapeHtml(display.summary || '暂无结论')}</p></div><dl class="outcome-stats"><div><dt>总耗时</dt><dd>${escapeHtml(formatDuration(display.durationMs))}</dd></div><div><dt>操作</dt><dd>${trace.counts.actions}</dd></div><div><dt>观察</dt><dd>${trace.counts.observations}</dd></div></dl></section>
+    <details class="run-info"><summary>运行信息</summary><dl><div><dt>执行状态</dt><dd>${escapeHtml(label(EXECUTION_STATUS_LABELS, display.executionStatus))}</dd></div><div><dt>Agent 编排间隔</dt><dd>${escapeHtml(formatDuration(report.metrics?.timing?.agentOrchestrationGapMs))}</dd></div><div><dt>设备适配器工作</dt><dd>${escapeHtml(formatDuration(report.metrics?.timing?.adapterActiveMs))}</dd></div><div><dt>协议读取 / 拒绝</dt><dd>${escapeHtml(statusReadCount(report, trace))} / ${escapeHtml(report.metrics?.timing?.contractRejections ?? trace.counts.protocolRejections ?? 0)}</dd></div><div><dt>暖会话 / 恢复</dt><dd>${escapeHtml(trace.recoveryAnchor.warmSessionGeneration ?? '-')} / ${escapeHtml(trace.recoveryAnchor.recoveryCount)}</dd></div></dl></details>`;
 }
 
-function renderCheckpointExecution(report, checkpoint) {
-  const requirementText = checkpoint.requirements.length
-    ? checkpoint.requirements.map((item, index) => `<li><span class="requirement-order">${index + 1}</span><span>${escapeHtml(item.text)}</span></li>`).join('')
-    : '<li><span>未关联具体原文要求</span></li>';
-  const result = checkpoint.findings.at(-1);
-  const resultText = result?.summary || checkpoint.requirementFindings.map((item) => label(REQUIREMENT_STATUS_LABELS, item.status, '未确认')).join('、') || '尚未形成检查点结论';
-  const findingStatuses = new Set(checkpoint.requirementFindings.map((item) => item.status));
-  const incomplete = ['PENDING', 'ACTIVE', 'NOT_EXECUTED', 'SUPERSEDED'].includes(checkpoint.executionStatus);
-  const tone = incomplete ? className(checkpoint.executionStatus)
-    : findingStatuses.has('NOT_SATISFIED') ? 'fail' : findingStatuses.has('BLOCKED') || findingStatuses.has('UNRESOLVED')
-      ? 'blocked' : findingStatuses.size && [...findingStatuses].every((item) => item === 'SATISFIED') ? 'pass' : className(checkpoint.executionStatus);
-  const open = ['fail', 'blocked', 'active'].includes(tone);
-  const recordVersions = checkpoint.recordPlanRevisions.length
-    ? `<span>执行记录来自版本 ${checkpoint.recordPlanRevisions.map((item) => escapeHtml(item)).join('、')}</span>` : '';
-  return `<details class="checkpoint-accordion ${tone}"${open ? ' open' : ''}>
-    <summary><div class="checkpoint-number">${escapeHtml(checkpoint.order)}</div><div class="checkpoint-summary-main"><div class="checkpoint-labels"><span>当前计划 · 版本 ${escapeHtml(checkpoint.planRevision ?? '-')}</span>${recordVersions}</div><h3>${escapeHtml(checkpoint.goal)}</h3><small>${checkpoint.actions.length} 次操作 · ${checkpoint.observations.length} 次观察</small></div><span class="checkpoint-result ${tone}">${escapeHtml(resultText)}</span><span class="fold-icon" aria-hidden="true"></span></summary>
-    <div class="checkpoint-accordion-body"><div class="checkpoint-context"><div><span>关联原文要求</span><ul>${requirementText}</ul></div><div><span>检查结果</span><b>${escapeHtml(resultText)}</b></div><div><span>执行记录</span><b>${checkpoint.actions.length} 次操作 · ${checkpoint.observations.length} 次观察</b></div></div>
-    ${checkpoint.entries.length ? `<div class="work-log">${checkpoint.entries.map((entry, index) => renderNarrativeEntry(report, entry, index + 1)).join('')}</div>` : '<p class="empty checkpoint-empty">该检查点尚无执行记录。</p>'}</div>
-  </details>`;
+function renderRequirementRows(report) {
+  const requirements = report.understanding?.requirements || [];
+  const findings = new Map((report.result?.requirementFindings || []).map((item) => [item.requirementId, item]));
+  if (!requirements.length) return '<p class="empty">当前理解没有可展示的验证要求。</p>';
+  return `<div class="requirement-rows">${requirements.map((requirement, index) => {
+    const finding = findings.get(requirement.id);
+    const status = label(REQUIREMENT_STATUS_LABELS, finding?.status, '未确认');
+    const tone = finding?.status === 'SATISFIED' ? 'pass' : finding?.status === 'NOT_SATISFIED' ? 'fail'
+      : ['BLOCKED', 'UNRESOLVED'].includes(finding?.status) ? 'blocked' : 'unknown';
+    return `<article class="requirement-row"><span class="requirement-index">${index + 1}</span><div><div class="requirement-row-head"><b>${escapeHtml(requirement.text)}</b><span class="status-text ${tone}">${escapeHtml(status)}</span></div>${finding?.reason ? `<p>${escapeHtml(finding.reason)}</p>` : ''}${finding?.evidenceRefs?.length ? `<div class="requirement-evidence">${finding.evidenceRefs.map((ref, evidenceIndex) => htmlEvidence(report, ref, `查看证据 ${evidenceIndex + 1}`)).join('')}</div>` : ''}</div></article>`;
+  }).join('')}</div>`;
 }
 
-function renderInvestigation(report, entries) {
-  return entries.length ? `<div class="work-log">${entries.map((entry, index) => renderNarrativeEntry(report, entry, index + 1)).join('')}</div>` : '<p class="empty">本次执行没有触发异常调查、知识查询或恢复。</p>';
+function renderResultWorkspace(report) {
+  const display = report.display || {};
+  const attention = (report.result?.requirementFindings || []).filter((item) => item.status !== 'SATISFIED');
+  const requirements = new Map((report.understanding?.requirements || []).map((item) => [item.id, item]));
+  return `<div class="result-workspace"><section class="result-focus"><div class="workspace-heading"><span>结论</span><h2>${escapeHtml(label(VERDICT_LABELS, display.status, '未知'))}</h2></div><p>${escapeHtml(display.summary || '暂无结论')}</p><small>结论依据：${escapeHtml(label(BASIS_LABELS, display.verdictBasis))}</small></section>
+    ${attention.length ? `<section class="attention-summary"><div class="workspace-heading"><span>重点</span><h2>需要关注</h2></div>${attention.map((finding) => `<div><b>${escapeHtml(requirements.get(finding.requirementId)?.text || '验证要求')}</b><p>${escapeHtml(finding.reason || label(REQUIREMENT_STATUS_LABELS, finding.status, '未确认'))}</p></div>`).join('')}</section>` : ''}
+    <section class="requirement-section"><div class="workspace-heading"><span>要求</span><h2>逐项验证结果</h2></div>${renderRequirementRows(report)}</section>
+    ${display.uncertainties?.length ? `<section class="uncertainty-section"><div class="workspace-heading"><span>待确认</span><h2>剩余不确定性</h2></div>${display.uncertainties.map((item) => `<p>${escapeHtml(item)}</p>`).join('')}</section>` : ''}</div>`;
 }
 
-function renderConclusion(report, narrative) {
-  const display = narrative.conclusion.display || {};
-  return `<div class="conclusion"><div class="conclusion-primary"><span>最终结论</span><strong class="${className(display.status)}">${escapeHtml(label(VERDICT_LABELS, display.status, '未知'))}</strong><p>${escapeHtml(display.summary || '暂无结论')}</p><small>结论依据：${escapeHtml(label(BASIS_LABELS, display.verdictBasis))}</small></div><div class="conclusion-requirements"><h3>逐项要求结果</h3>${renderRequirements(report)}</div></div>${display.uncertainties?.length ? `<div class="uncertainties"><b>剩余不确定性</b>${display.uncertainties.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : ''}`;
-}
-
-function renderStoryCard({ number, title, subtitle, meta, body, open = false, className: extraClass = '' }) {
-  return `<details class="story-card ${extraClass}"${open ? ' open' : ''}><summary><span class="story-number">${escapeHtml(number)}</span><div class="story-title"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p></div><span class="story-meta">${escapeHtml(meta)}</span><span class="fold-icon" aria-hidden="true"></span></summary><div class="story-card-body">${body}</div></details>`;
-}
-
-function renderExecutionOverview(report, trace) {
+function renderCasePlanWorkspace(report, trace) {
   const narrative = trace.narrative;
-  const currentCheckpoints = narrative.checkpoints.filter((item) => item.current);
-  const issueCheckpoints = currentCheckpoints.filter((checkpoint) => checkpoint.requirementFindings.some((item) => ['NOT_SATISFIED', 'BLOCKED', 'UNRESOLVED'].includes(item.status)));
-  const understanding = narrative.understanding || {};
-  const display = narrative.conclusion.display || {};
-  const cards = [
-    renderStoryCard({ number: '01', title: '原始用例', subtitle: '执行输入的原始内容', meta: `${markdownText(narrative.source.text).split('\n').length} 行`, body: `<div class="source-rendered">${renderSourceMarkdown(narrative.source.text || '')}</div>`, className: 'source-card' }),
-    renderStoryCard({ number: '02', title: '用例理解', subtitle: '从原文提取的起点条件与验证要求', meta: `${(understanding.startConditions || []).length} 个起点 · ${(understanding.requirements || []).length} 项要求`, body: renderUnderstanding(report) }),
-    renderStoryCard({ number: '03', title: '执行计划', subtitle: '本次执行最终采用的检查点集合', meta: `${currentCheckpoints.length} 个检查点`, body: renderOverviewPlan(report, narrative) }),
-    renderStoryCard({ number: '04', title: '起点准备', subtitle: '进入并确认本用例所需起点', meta: `${narrative.startPreparation.length} 条记录`, body: renderStartPreparation(report, narrative.startPreparation) }),
-    renderStoryCard({ number: '05', title: '检查点执行', subtitle: '当前计划中每个检查点的观察、操作、证据与结果', meta: issueCheckpoints.length ? `${currentCheckpoints.length} 个 · ${issueCheckpoints.length} 个需关注` : `${currentCheckpoints.length} 个 · 全部正常`, body: `<div class="checkpoint-executions">${currentCheckpoints.map((checkpoint) => renderCheckpointExecution(report, checkpoint)).join('') || '<p class="empty">暂无检查点执行记录。</p>'}</div>`, open: issueCheckpoints.length > 0, className: issueCheckpoints.length ? 'attention' : '' }),
-    renderStoryCard({ number: '06', title: '异常调查', subtitle: '知识查询、结论复核与受控恢复', meta: narrative.investigation.length ? `${narrative.investigation.length} 条记录` : '未触发', body: renderInvestigation(report, narrative.investigation), open: narrative.investigation.length > 0, className: narrative.investigation.length ? 'attention' : '' }),
-    renderStoryCard({ number: '07', title: '执行结论', subtitle: '结合现场证据与知识调查形成的结果', meta: label(VERDICT_LABELS, display.status, '未知'), body: renderConclusion(report, narrative), open: true, className: `conclusion-card ${className(display.status)}` }),
-  ];
-  return `<div class="overview-controls"><span>执行内容</span><div><button type="button" class="overview-control" id="expand-overview" title="展开全部内容"><span aria-hidden="true">＋</span>全部展开</button><button type="button" class="overview-control" id="collapse-overview" title="收起全部内容"><span aria-hidden="true">−</span>全部收起</button></div></div><div class="execution-story">${cards.join('')}</div>`;
+  return `<div class="case-plan-workspace"><nav class="subtabs" aria-label="用例与计划内容"><button type="button" class="subtab active" data-subtab-group="case-plan" data-subpanel="case-source-panel">原始用例</button><button type="button" class="subtab" data-subtab-group="case-plan" data-subpanel="case-understanding-panel">用例理解</button><button type="button" class="subtab" data-subtab-group="case-plan" data-subpanel="case-plan-panel">执行计划</button></nav>
+    <section id="case-source-panel" class="subpanel active" data-subtab-group="case-plan"><div class="content-heading"><h2>原始用例</h2><span>${markdownText(narrative.source.text).split('\n').length} 行</span></div><div class="source-rendered">${renderSourceMarkdown(narrative.source.text || '')}</div></section>
+    <section id="case-understanding-panel" class="subpanel" data-subtab-group="case-plan"><div class="content-heading"><h2>用例理解</h2><span>Agent 从原文提取的起点与验证要求</span></div>${renderUnderstanding(report)}</section>
+    <section id="case-plan-panel" class="subpanel" data-subtab-group="case-plan"><div class="content-heading"><h2>执行计划</h2><span>最终采用的检查点集合</span></div>${renderOverviewPlan(report, narrative)}</section></div>`;
 }
 
 function renderCurrentContextHtml(caseJson, report) {
-  const display = report.display || {};
   const trace = buildExecutionTrace(report);
-  const statusClass = className(display.status);
   const screenshotsJson = JSON.stringify(trace.screenshots.map((shot) => ({
     ...shot,
     time: formatDisplayTime(shot.time),
@@ -476,14 +596,27 @@ function renderCurrentContextHtml(caseJson, report) {
 .summary-strip{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px;border:0;background:transparent}.summary-strip>div{min-height:84px;padding:13px 15px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}.summary-strip>div:last-child{border-right:1px solid var(--line)}.summary-strip .result-summary{grid-column:span 2;border-left:4px solid var(--accent)}.summary-strip.pass .result-summary{border-left-color:var(--pass)}.summary-strip.fail .result-summary{border-left-color:var(--fail)}.summary-strip.blocked .result-summary,.summary-strip.inconclusive .result-summary{border-left-color:var(--warn)}.summary-strip .result-summary b{max-width:680px}.category.protocol{background:var(--warn-soft);color:var(--warn)}@media(max-width:760px){.summary-strip{grid-template-columns:1fr 1fr;gap:7px}.summary-strip .result-summary{grid-column:1/-1}.summary-strip>div{min-height:76px;padding:11px 12px}}
 .overview-panel{padding-top:22px}.execution-story{display:grid;gap:28px}.story-section{min-width:0;padding:0 0 28px;border-bottom:1px solid var(--line)}.story-section:last-child{border-bottom:0}.section-heading{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px}.section-heading>span{display:grid;place-items:center;flex:0 0 auto;width:32px;height:32px;border:1px solid var(--accent);border-radius:50%;color:var(--accent);font:800 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace}.section-heading h2{margin:0;font-size:18px;letter-spacing:0}.section-heading p{margin:2px 0 0;color:var(--muted);font-size:12px}.source-rendered{padding:16px 18px;border:1px solid var(--line);border-left:4px solid var(--accent);background:var(--surface);overflow-wrap:anywhere}.source-rendered>:first-child{margin-top:0}.source-rendered>:last-child{margin-bottom:0}.source-rendered h3,.source-rendered h4,.source-rendered h5,.source-rendered h6{margin:18px 0 8px;letter-spacing:0}.source-rendered h3{font-size:18px}.source-rendered h4{font-size:15px}.source-rendered p{margin:8px 0;line-height:1.7}.source-rendered ol,.source-rendered ul{margin:8px 0;padding-left:24px}.source-rendered li{padding:3px 0;line-height:1.65}.source-rendered code{padding:1px 4px;border-radius:3px;background:#edf1f5;font-size:12px}.source-rendered pre{max-height:360px;padding:12px;background:#f7f8fa;overflow:auto;white-space:pre-wrap}.source-rendered blockquote{margin:10px 0;padding:8px 12px;border-left:3px solid var(--line);color:var(--muted)}.source-rendered hr{border:0;border-top:1px solid var(--line)}.understanding-summary{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px;align-items:start;padding:13px 15px;background:#eef4f5}.understanding-summary span{color:var(--accent);font-size:11px;font-weight:800}.understanding-summary p{margin:0;font-weight:700}.understanding-columns{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:16px}.statement-group h3{margin:0 0 8px;font-size:13px}.statement{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:10px 0;border-top:1px solid var(--line)}.statement .statement-order,.requirement-order{display:grid;place-items:center;width:20px;height:20px;margin:0;border-radius:50%;background:#e7eff0;color:var(--accent);font-size:10px;font-weight:800}.statement b,.statement div>span{display:block;overflow-wrap:anywhere}.statement div>span{margin-top:3px;color:var(--muted);font-size:11px}.uncertainties{display:flex;flex-wrap:wrap;gap:7px;margin-top:13px;padding:10px 12px;background:var(--warn-soft)}.uncertainties b{margin-right:5px}.uncertainties span{padding-left:8px;border-left:1px solid #d8b86f}.overview-plan-head{display:grid;grid-template-columns:130px minmax(0,1fr);border:1px solid var(--line);background:var(--surface)}.overview-plan-head>div{padding:11px 13px}.overview-plan-head>div+div{border-left:1px solid var(--line)}.overview-plan-head span,.overview-plan-head b{display:block}.overview-plan-head span{color:var(--muted);font-size:11px}.overview-plan-head b{margin-top:3px}.overview-plan-list{margin:0;padding:0;border:1px solid var(--line);border-top:0;list-style:none}.overview-plan-list li{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;padding:11px 13px;border-top:1px solid #edf0f3}.overview-plan-list li:first-child{border-top:0}.overview-plan-list b,.overview-plan-list small{display:block}.overview-plan-list small{margin-top:4px;color:var(--muted)}.checkpoint-state{align-self:start;padding:2px 6px;border-radius:4px;background:#edf1f5;color:var(--muted);font-size:10px;font-weight:800}.checkpoint-state.completed{background:var(--pass-soft);color:var(--pass)}.checkpoint-state.active{background:var(--accent-soft);color:var(--accent)}.checkpoint-executions{display:grid;gap:22px}.checkpoint-execution{border:1px solid var(--line);background:var(--surface)}.checkpoint-execution-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:start;padding:14px 15px;background:#edf3f4;border-bottom:1px solid var(--line)}.checkpoint-number{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--accent);color:#fff;font-weight:850}.checkpoint-labels{display:flex;flex-wrap:wrap;gap:6px 10px;color:var(--muted);font-size:11px}.checkpoint-execution-head h3{margin:4px 0 0;font-size:16px;letter-spacing:0}.checkpoint-context{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(160px,.8fr) minmax(150px,.7fr);border-bottom:1px solid var(--line)}.checkpoint-context>div{min-width:0;padding:11px 13px;border-right:1px solid var(--line)}.checkpoint-context>div:last-child{border-right:0}.checkpoint-context>div>span{display:block;color:var(--muted);font-size:11px}.checkpoint-context b{display:block;margin-top:4px;overflow-wrap:anywhere}.checkpoint-context ul{display:grid;gap:4px;margin:5px 0 0;padding:0;list-style:none}.checkpoint-context li{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:start;font-size:12px}.work-log{padding:0 15px}.work-step{display:grid;grid-template-columns:34px minmax(0,1fr)}.work-step-marker{position:relative;display:flex;justify-content:center;padding-top:17px}.work-step-marker:after{content:"";position:absolute;top:43px;bottom:0;width:1px;background:var(--line)}.work-step:last-child .work-step-marker:after{display:none}.work-step-marker span{position:relative;z-index:1;display:grid;place-items:center;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;background:#fff;color:var(--muted);font-size:10px;font-weight:800}.work-step-body{min-width:0;padding:15px 0 18px 8px;border-bottom:1px solid #edf0f3}.work-step:last-child .work-step-body{border-bottom:0}.work-step-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.work-step-head>div{min-width:0}.work-step-head h4{display:inline;margin:0 0 0 8px;font-size:14px;overflow-wrap:anywhere;letter-spacing:0}.work-step-body>p{margin:7px 0 0;overflow-wrap:anywhere}.single-shot{width:min(100%,360px);margin-top:11px}.technical-meta{margin-top:10px;color:var(--muted);font-size:11px}.technical-meta summary{cursor:pointer}.technical-meta code{display:inline-block;margin:5px 10px 0 0}.checkpoint-empty{margin:14px}.conclusion{display:grid;grid-template-columns:minmax(240px,.65fr) minmax(0,1.35fr);gap:24px}.conclusion-primary{padding:16px;border-left:4px solid var(--accent);background:#eef4f5}.conclusion-primary>span{display:block;color:var(--muted);font-size:11px}.conclusion-primary strong{display:block;margin-top:4px;font-size:24px}.conclusion-primary strong.pass{color:var(--pass)}.conclusion-primary strong.fail{color:var(--fail)}.conclusion-primary strong.blocked{color:var(--warn)}.conclusion-primary p{margin:12px 0}.conclusion-primary small{color:var(--muted)}.conclusion-requirements h3{margin:0 0 5px;font-size:14px}.technical-panel{padding-top:18px}.technical-panel>.trace-tools{margin-top:0}
 .overview-controls{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.overview-controls>span{color:var(--muted);font-size:12px;font-weight:700}.overview-controls>div{display:flex;gap:6px}.overview-control{display:flex;align-items:center;gap:5px;min-height:32px;padding:5px 9px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--ink);cursor:pointer}.overview-control:hover,.overview-control:focus-visible{border-color:var(--accent);color:var(--accent)}.overview-control span{font-size:16px;line-height:1}.execution-story{gap:12px}.story-card{min-width:0;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:6px;background:var(--surface);overflow:hidden}.story-card.attention{border-left-color:var(--warn)}.story-card.conclusion-card.pass{border-left-color:var(--pass)}.story-card.conclusion-card.fail{border-left-color:var(--fail)}.story-card.conclusion-card.blocked,.story-card.conclusion-card.inconclusive{border-left-color:var(--warn)}.story-card>summary,.checkpoint-accordion>summary{list-style:none;cursor:pointer}.story-card>summary::-webkit-details-marker,.checkpoint-accordion>summary::-webkit-details-marker{display:none}.story-card>summary{display:grid;grid-template-columns:auto minmax(0,1fr) auto 26px;align-items:center;gap:12px;min-height:70px;padding:12px 15px}.story-card[open]>summary{border-bottom:1px solid var(--line);background:#fafbfc}.story-number{display:grid;place-items:center;width:32px;height:32px;border:1px solid var(--accent);border-radius:50%;color:var(--accent);font:800 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace}.story-title h2{margin:0;font-size:17px;letter-spacing:0}.story-title p{margin:2px 0 0;color:var(--muted);font-size:11px}.story-meta{justify-self:end;padding:3px 7px;border-radius:4px;background:#edf1f5;color:var(--ink);font-size:11px;font-weight:750;text-align:right}.fold-icon{display:grid;place-items:center;width:24px;height:24px;color:var(--muted);font-size:18px}.fold-icon:before{content:"+"}.story-card[open]>summary .fold-icon:before,.checkpoint-accordion[open]>summary .fold-icon:before{content:"−"}.story-card-body{padding:18px}.source-card .story-card-body{padding:0}.source-rendered{border:0}.checkpoint-executions{display:block;border-top:1px solid var(--line)}.checkpoint-accordion{border-bottom:1px solid var(--line);background:#fff}.checkpoint-accordion:last-child{border-bottom:0}.checkpoint-accordion.fail{border-left:3px solid var(--fail)}.checkpoint-accordion.blocked,.checkpoint-accordion.unresolved{border-left:3px solid var(--warn)}.checkpoint-accordion.pass,.checkpoint-accordion.verified{border-left:3px solid var(--pass)}.checkpoint-accordion.not-executed,.checkpoint-accordion.pending,.checkpoint-accordion.superseded{border-left:3px solid var(--line)}.checkpoint-accordion>summary{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(120px,auto) 26px;align-items:start;gap:12px;padding:14px 15px}.checkpoint-accordion[open]>summary{background:#f7f9fa;border-bottom:1px solid var(--line)}.checkpoint-summary-main{min-width:0}.checkpoint-summary-main h3{margin:4px 0 0;font-size:15px;letter-spacing:0;overflow-wrap:anywhere}.checkpoint-summary-main small{display:block;margin-top:4px;color:var(--muted)}.checkpoint-result{align-self:center;justify-self:end;max-width:280px;padding:3px 7px;border-radius:4px;background:#edf1f5;color:var(--ink);font-size:11px;font-weight:750;text-align:right;overflow-wrap:anywhere}.checkpoint-result.pass,.checkpoint-result.verified{background:var(--pass-soft);color:var(--pass)}.checkpoint-result.fail,.checkpoint-result.not-satisfied{background:var(--fail-soft);color:var(--fail)}.checkpoint-result.blocked,.checkpoint-result.unresolved{background:var(--warn-soft);color:var(--warn)}.checkpoint-state.verified{background:var(--pass-soft);color:var(--pass)}.checkpoint-state.not-satisfied{background:var(--fail-soft);color:var(--fail)}.checkpoint-state.blocked,.checkpoint-state.unresolved{background:var(--warn-soft);color:var(--warn)}.checkpoint-accordion-body{background:#fff}.checkpoint-context{border-top:0}.story-card-body>.understanding-summary:first-child,.story-card-body>.overview-plan-head:first-child{margin-top:0}.plan-history{margin-top:14px;border:1px solid var(--line);background:#f8fafc}.plan-history>summary{display:flex;justify-content:space-between;gap:12px;padding:10px 12px;cursor:pointer;font-weight:750}.plan-history>summary span{color:var(--muted);font-size:11px}.plan-history>p{margin:0;padding:0 12px 10px;color:var(--muted);font-size:12px}.action-spec{margin-top:12px;padding:10px 12px;border:1px solid #d8e0ea;border-left:3px solid #4f7dbd;border-radius:4px;background:#f8fafc}.action-kind{display:flex;align-items:center;gap:8px;padding-bottom:8px;border-bottom:1px solid #d8e0ea}.action-kind span{color:var(--muted);font-size:10px}.action-kind b{color:#24496f;font-size:14px}.action-spec dl{display:flex;flex-wrap:wrap;gap:7px 22px;margin:9px 0 0}.action-spec .action-field{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px;align-items:start;min-width:0;max-width:100%}.action-spec .action-field.wide{flex-basis:100%}.action-spec dt{font-size:10px;line-height:1.55}.action-spec dd{margin:0;color:#26384a;font-size:12px;line-height:1.55;overflow-wrap:anywhere}.shot-pair{display:flex;flex-wrap:wrap;align-items:flex-start;gap:14px;margin-top:12px}.shot-pair>div{flex:0 0 auto}.shot-pair>div>small{margin-bottom:5px}.shot-trigger{display:inline-flex;flex-direction:column;align-items:center;gap:5px;width:auto;min-width:104px;min-height:0;padding:4px 4px 7px}.shot-trigger img{display:block;width:auto;height:180px;max-width:min(150px,50vw);object-fit:contain}.shot-trigger span{padding:0 6px;font-size:11px}.single-shot{width:auto}.empty-shot{width:104px;min-height:120px}.checkpoint-labels span+span:before{content:"·";margin-right:10px;color:var(--line)}
+.overview-plan-list li{grid-template-columns:30px minmax(0,1fr);padding:14px 13px}.plan-checkpoint-number{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--accent);border-radius:50%;color:var(--accent);font-size:11px;font-weight:850}.plan-checkpoint-main>div{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:5px}.plan-checkpoint-main>b{display:block;font-size:14px}.plan-checkpoint-main p{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;margin:7px 0 0;color:var(--ink);font-size:12px}.plan-checkpoint-main p span{color:var(--muted);font-size:11px}.action-requirement{padding:2px 6px;border-radius:4px;background:#eef3f7;color:#46576a;font-size:10px;font-weight:750}.execution-path{display:grid;gap:24px}.path-phase{min-width:0}.path-phase>header{display:flex;align-items:baseline;gap:10px;padding:0 0 8px;border-bottom:2px solid var(--ink)}.path-phase>header span{color:var(--muted);font-size:10px;font-weight:800}.path-phase>header h3{margin:0;font-size:16px;letter-spacing:0}.path-phase-body{display:grid;gap:12px;padding-top:12px}.execution-step{min-width:0;border:1px solid var(--line);border-left:4px solid #4f7dbd;border-radius:4px;background:#fff;overflow:hidden}.execution-step.observation-step{border-left-color:var(--pass)}.execution-step-head{display:grid;grid-template-columns:32px minmax(0,1fr) auto;gap:11px;align-items:start;padding:12px 14px;background:#f7f9fb;border-bottom:1px solid var(--line)}.execution-step-number{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#31485f;color:#fff;font-size:11px;font-weight:850}.execution-step-title{min-width:0}.execution-step-title>div{display:flex;flex-wrap:wrap;gap:5px 9px;align-items:baseline;color:var(--muted);font-size:10px}.execution-step-title>div>b{color:var(--ink);font-size:11px}.execution-step-title h3{margin:4px 0 0;font-size:14px;line-height:1.45;letter-spacing:0;overflow-wrap:anywhere}.step-statuses{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.expectation-badge{padding:2px 6px;border-radius:4px;background:#edf1f5;color:#52606d;font-size:10px;font-weight:850}.expectation-badge.pass{background:var(--pass-soft);color:var(--pass)}.expectation-badge.fail{background:var(--fail-soft);color:var(--fail)}.expectation-badge.blocked{background:var(--warn-soft);color:var(--warn)}.execution-step-body{padding:14px}.step-decision{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding-bottom:12px;border-bottom:1px solid var(--line)}.step-decision>div{min-width:0}.step-decision span,.step-result-grid>div>span,.expectation-panel>span,.agent-analysis>span{display:block;color:var(--muted);font-size:10px;font-weight:800}.step-decision p,.step-result-grid p,.expectation-panel p,.agent-analysis p{margin:4px 0 0;overflow-wrap:anywhere}.step-result-grid{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:0;margin-top:12px;border:1px solid var(--line);background:#fbfcfd}.step-result-grid>div{min-width:0;padding:10px 12px;border-left:1px solid var(--line)}.step-result-grid>div:first-child{border-left:0}.step-result-grid b{display:block;margin-top:3px}.expectation-panel.pass{background:var(--pass-soft)}.expectation-panel.fail{background:var(--fail-soft)}.expectation-panel.blocked{background:var(--warn-soft)}.expectation-panel small{display:block;margin-top:6px;color:var(--muted);font-size:10px}.story-shot-pair{display:flex;flex-wrap:wrap;align-items:flex-start;gap:14px;margin-top:13px}.story-shot-pair>div{flex:0 0 auto}.story-shot-pair>div>small{display:block;margin-bottom:5px;color:var(--muted);font-size:10px;font-weight:800}.story-observation-shot{margin-top:13px}.agent-analysis{display:grid;grid-template-columns:120px minmax(0,1fr);gap:10px;margin-top:12px;padding:9px 11px;border-left:3px solid var(--accent);background:var(--accent-soft)}.agent-analysis p{margin:0}.path-event{position:relative;display:grid;grid-template-columns:18px minmax(0,1fr);gap:9px;padding:2px 5px}.path-event:before{content:"";position:absolute;left:13px;top:-13px;bottom:-13px;width:1px;background:var(--line)}.path-event:first-child:before{top:10px}.path-event:last-child:before{bottom:calc(100% - 11px)}.path-event-marker{position:relative;z-index:1;width:9px;height:9px;margin:7px 0 0 4px;border:2px solid var(--accent);border-radius:50%;background:#fff}.path-event-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 9px}.path-event-head>span{padding:2px 5px;border-radius:3px;background:#edf1f5;color:var(--muted);font-size:9px;font-weight:850}.path-event-head>b{font-size:13px}.path-event>div:last-child>p{margin:4px 0 0;color:var(--ink)}.path-event-context{display:flex;flex-wrap:wrap;gap:5px 9px;margin-top:4px;color:var(--muted);font-size:10px}.path-event-context b{color:var(--ink)}
 @media(max-width:760px){.understanding-columns,.conclusion{grid-template-columns:1fr}.overview-plan-head,.checkpoint-context{grid-template-columns:1fr}.overview-plan-head>div+div{border-left:0;border-top:1px solid var(--line)}.checkpoint-context>div{border-right:0;border-bottom:1px solid var(--line)}.checkpoint-context>div:last-child{border-bottom:0}.work-log{padding:0 10px}.work-step{grid-template-columns:29px minmax(0,1fr)}.work-step-body{padding-left:5px}.work-step-head h4{display:block;margin:5px 0 0}.overview-controls{align-items:flex-start}.overview-controls>span{display:none}.story-card>summary{grid-template-columns:auto minmax(0,1fr) 24px;gap:9px;padding:11px 10px}.story-meta{grid-column:2;justify-self:start;text-align:left}.story-card-body{padding:13px}.story-title h2{font-size:15px}.checkpoint-accordion>summary{grid-template-columns:auto minmax(0,1fr) 24px;gap:9px;padding:12px 10px}.checkpoint-result{grid-column:2;justify-self:start;text-align:left}.checkpoint-number{width:27px;height:27px}.source-rendered{padding:14px}.action-spec{padding:9px 10px}.action-spec dl{gap:6px 14px}.action-spec .action-field{flex-basis:100%}.shot-trigger img{height:160px;max-width:42vw}.section-heading p{font-size:11px}}
+@media(max-width:760px){.execution-step-head{grid-template-columns:29px minmax(0,1fr);padding:10px}.step-statuses{grid-column:2;justify-content:flex-start}.execution-step-body{padding:11px}.step-decision,.step-result-grid{grid-template-columns:1fr}.step-decision{gap:10px}.step-result-grid>div{border-left:0;border-top:1px solid var(--line)}.step-result-grid>div:first-child{border-top:0}.agent-analysis{grid-template-columns:1fr;gap:3px}.story-shot-pair{gap:9px}.story-shot-pair .shot-trigger img{height:150px;max-width:38vw}.plan-checkpoint-main p{grid-template-columns:1fr;gap:2px}}
+
+/* Report workspace: result first, details on demand. */
+body{background:#f6f7f8}.page{width:min(1360px,calc(100vw - 40px));margin:0 auto 48px}.summary-head{padding:26px 2px 16px;border:0}.summary-head h1{font-size:23px}.case-outcome{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:32px;align-items:center;padding:20px 22px;border:1px solid var(--line);border-left:5px solid #52606d;border-radius:6px;background:var(--surface)}.case-outcome.pass{border-left-color:var(--pass)}.case-outcome.fail{border-left-color:var(--fail)}.case-outcome.blocked,.case-outcome.inconclusive{border-left-color:var(--warn)}.outcome-copy>span{display:block;margin-bottom:5px;color:var(--muted);font-size:11px;font-weight:750}.outcome-copy>div{display:flex;align-items:baseline;gap:10px}.outcome-copy strong{font-size:25px;line-height:1.2}.case-outcome.pass .outcome-copy strong{color:var(--pass)}.case-outcome.fail .outcome-copy strong{color:var(--fail)}.case-outcome.blocked .outcome-copy strong,.case-outcome.inconclusive .outcome-copy strong{color:var(--warn)}.outcome-copy small{color:var(--muted)}.outcome-copy p{max-width:850px;margin:9px 0 0;font-size:15px;overflow-wrap:anywhere}.outcome-stats{display:grid;grid-template-columns:repeat(3,minmax(74px,1fr));margin:0}.outcome-stats>div{padding:3px 16px;border-left:1px solid var(--line)}.outcome-stats dt{font-size:10px}.outcome-stats dd{margin-top:2px;font-size:15px;font-weight:800;white-space:nowrap}.run-info{margin:8px 0 0;color:var(--muted)}.run-info>summary{width:max-content;padding:5px 2px;cursor:pointer;font-size:12px;font-weight:700}.run-info dl{display:flex;flex-wrap:wrap;gap:10px 28px;margin:6px 0 0;padding:12px 15px;border-top:1px solid var(--line);background:rgba(255,255,255,.55)}.run-info dl>div{display:flex;gap:7px}.run-info dd{color:var(--ink);font-size:12px}.tabs{gap:22px;margin-top:14px}.tab{padding:9px 2px}.panel{padding-top:24px}
+.result-workspace{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(300px,.8fr);gap:0 42px}.result-workspace>section{min-width:0;padding:0 0 24px;margin-bottom:24px;border-bottom:1px solid var(--line)}.result-focus{grid-column:1}.attention-summary{grid-column:2;grid-row:1/3}.requirement-section,.uncertainty-section{grid-column:1}.workspace-heading{display:flex;align-items:baseline;gap:10px;margin-bottom:9px}.workspace-heading span{color:var(--muted);font-size:10px;font-weight:800}.workspace-heading h2{margin:0;font-size:18px}.result-focus>p{margin:0;font-size:16px;line-height:1.7}.result-focus>small{display:block;margin-top:8px;color:var(--muted)}.attention-summary>div:not(.workspace-heading){padding:12px 0;border-top:1px solid var(--line)}.attention-summary>div:nth-child(2){border-top:0}.attention-summary p{margin:4px 0 0;color:var(--muted)}.requirement-rows{display:grid}.requirement-row{display:grid;grid-template-columns:24px minmax(0,1fr);gap:10px;padding:13px 0;border-top:1px solid var(--line)}.requirement-row:first-child{border-top:0}.requirement-index{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#e8ecef;color:var(--muted);font-size:10px;font-weight:800}.requirement-row-head{display:flex;justify-content:space-between;gap:16px}.requirement-row p{margin:5px 0 0;color:var(--muted)}.requirement-evidence{display:flex;gap:12px;margin-top:7px}.status-text{flex:0 0 auto;font-size:11px;font-weight:800}.status-text.pass{color:var(--pass)}.status-text.fail{color:var(--fail)}.status-text.blocked{color:var(--warn)}.status-text.neutral,.status-text.unknown{color:var(--muted)}.uncertainty-section p{margin:7px 0;color:var(--muted)}
+.subtabs{display:flex;gap:4px;width:max-content;max-width:100%;margin:0 0 22px;padding:3px;border-radius:6px;background:#e9edf0}.subtab{min-height:34px;padding:6px 14px;border:0;border-radius:4px;background:transparent;color:var(--muted);cursor:pointer;font-weight:750}.subtab.active{background:var(--surface);color:var(--text);box-shadow:0 1px 2px rgba(23,33,43,.12)}.subpanel{display:none}.subpanel.active{display:block}.content-heading{display:flex;align-items:baseline;justify-content:space-between;gap:20px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--line)}.content-heading h2{margin:0;font-size:18px}.content-heading span{color:var(--muted);font-size:12px}.case-plan-workspace{max-width:980px}.case-plan-workspace .source-rendered{padding:2px 0;border:0;background:transparent}.case-plan-workspace .understanding-summary{border-left:3px solid var(--accent);background:#eef4f5}.case-plan-workspace .overview-plan-head{border:0;border-bottom:1px solid var(--line);background:transparent}.case-plan-workspace .overview-plan-list{border:0}.case-plan-workspace .overview-plan-list li{padding:14px 0}.case-plan-workspace .plan-checkpoint-number{border-color:var(--line);color:var(--muted)}
+.process-workspace{display:grid;grid-template-columns:340px minmax(0,1fr);min-height:650px;border:1px solid var(--line);border-radius:6px;background:var(--surface);overflow:hidden}.process-nav{min-width:0;border-right:1px solid var(--line);background:#fafbfc}.process-nav>header{padding:18px 18px 12px}.process-nav h2{margin:0;font-size:16px}.process-nav p{margin:3px 0 0;color:var(--muted);font-size:11px}.process-list{max-height:calc(100vh - 270px);min-height:560px;overflow:auto;padding-bottom:14px}.process-list section>h3{position:sticky;top:0;z-index:1;margin:0;padding:8px 18px;background:#f0f3f5;color:var(--muted);font-size:10px;font-weight:800}.process-step{position:relative;display:grid;grid-template-columns:26px minmax(0,1fr) 10px;gap:9px;align-items:center;width:100%;min-height:58px;padding:9px 14px 9px 16px;border:0;border-left:3px solid transparent;border-bottom:1px solid #e8ecef;background:transparent;color:var(--text);cursor:pointer;text-align:left}.process-step:hover{background:#f1f5f6}.process-step.active{border-left-color:var(--accent);background:var(--accent-soft)}.process-index{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#e8ecef;color:var(--muted);font-size:10px;font-weight:800}.process-step.active .process-index{background:var(--accent);color:#fff}.process-step-copy{min-width:0}.process-step-copy small,.process-step-copy b{display:block}.process-step-copy small{margin-bottom:2px;color:var(--muted);font-size:10px}.process-step-copy b{display:-webkit-box;overflow:hidden;font-size:12px;line-height:1.45;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:2}.status-dot{width:8px;height:8px;border-radius:50%;background:#9aa5b1}.status-dot.pass{background:var(--pass)}.status-dot.fail{background:var(--fail)}.status-dot.blocked{background:var(--warn)}.process-detail{min-width:0;background:var(--surface)}.process-detail-panel{display:none}.process-detail-panel.active{display:block}.selected-step{min-width:0}.selected-step-head{display:flex;justify-content:space-between;gap:18px;padding:22px 24px 18px;border-bottom:1px solid var(--line)}.selected-step-head>div{min-width:0}.selected-step-head>div>span{color:var(--muted);font-size:11px}.selected-step-head h2{margin:5px 0 0;font-size:19px;line-height:1.4;overflow-wrap:anywhere}.selected-step-head p{display:flex;flex-wrap:wrap;gap:5px 10px;margin:6px 0 0;color:var(--muted);font-size:11px}.selected-step-head p b{color:var(--ink)}.detail-purpose{display:grid;grid-template-columns:1fr 1fr;gap:0;padding:0 24px;border-bottom:1px solid var(--line)}.detail-purpose>div{min-width:0;padding:15px 18px 15px 0}.detail-purpose>div+div{padding-left:18px;border-left:1px solid var(--line)}.detail-purpose span,.detail-results span,.event-summary>span{color:var(--muted);font-size:10px;font-weight:800}.detail-purpose p,.detail-results p{margin:4px 0 0;overflow-wrap:anywhere}.detail-block{padding:18px 24px;border-bottom:1px solid var(--line)}.block-heading{margin-bottom:10px}.block-heading h3{margin:0;font-size:13px}.detail-block .action-spec{display:grid;grid-template-columns:110px minmax(0,1fr);gap:16px;margin:0;padding:0;border:0;background:transparent}.detail-block .action-kind{display:block;padding:0;border:0}.detail-block .action-kind span,.detail-block .action-kind b{display:block}.detail-block .action-kind b{margin-top:3px}.detail-block .action-spec dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 20px;margin:0}.detail-block .action-spec .action-field{display:block;min-width:0}.detail-block .action-spec .action-field.wide{grid-column:1/-1}.detail-block .action-spec dt{font-size:10px}.detail-block .action-spec dd{margin-top:2px;font-size:12px}.detail-results{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:0;border:1px solid var(--line);border-radius:4px;overflow:hidden}.detail-results>div{min-width:0;padding:12px}.detail-results>div+div{border-left:1px solid var(--line)}.detail-results b{display:block;margin-top:3px}.detail-results .expectation-panel{margin:0}.detail-results .expectation-panel.pass{background:var(--pass-soft)}.detail-results .expectation-panel.fail{background:var(--fail-soft)}.detail-results .expectation-panel.blocked{background:var(--warn-soft)}.detail-shot-pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}.detail-shot-pair>div,.detail-single-shot{min-width:0}.detail-shot-pair small{display:block;margin-bottom:6px;color:var(--muted);font-size:10px;font-weight:800}.detail-shot-pair .shot-trigger,.detail-single-shot .shot-trigger{display:flex;flex-direction:column;width:100%;min-height:0;padding:6px;border:1px solid var(--line);background:#f3f5f7}.detail-shot-pair .shot-trigger img,.detail-single-shot .shot-trigger img{width:100%;height:min(52vh,460px);max-width:none;object-fit:contain;background:#151a21}.detail-shot-pair .shot-trigger span,.detail-single-shot .shot-trigger span{padding:5px 4px 1px;color:var(--muted);font-size:10px}.detail-shot-pair .empty-shot,.detail-single-shot .empty-shot{width:100%;height:min(52vh,460px);min-height:260px}.detail-single-shot{max-width:620px}.detail-block .agent-analysis{grid-template-columns:130px minmax(0,1fr);margin:0;padding:11px 13px}.event-summary{padding:22px 24px}.event-summary p{margin:5px 0 0;font-size:15px}.event-detail>.knowledge-list{margin:0 24px 22px}.selected-step>.artifacts{margin:14px 24px 20px}.technical-panel{padding-top:24px}.technical-subtabs{margin-bottom:0}.technical-panel .subpanel{padding-top:0}.raw-panel{padding-top:18px}
+.coordinate-audit{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin-top:14px;border:1px solid var(--line);border-radius:4px;background:#fafbfc;overflow:hidden}.coordinate-audit>div{min-width:0;padding:9px 11px;border-left:1px solid var(--line)}.coordinate-audit>div:first-child{border-left:0}.coordinate-audit span,.coordinate-audit b{display:block}.coordinate-audit span{color:var(--muted);font-size:10px;font-weight:800}.coordinate-audit b{margin-top:3px;font-size:12px;overflow-wrap:anywhere}.coordinate-audit .audit-matched{color:var(--pass)}
+.detail-block .action-kind span{display:none}
+@media(max-width:900px){.case-outcome{grid-template-columns:1fr}.outcome-stats{width:max-content}.outcome-stats>div:first-child{padding-left:0;border-left:0}.result-workspace{grid-template-columns:1fr}.result-focus,.attention-summary,.requirement-section,.uncertainty-section{grid-column:1;grid-row:auto}.process-workspace{grid-template-columns:290px minmax(0,1fr)}.detail-results{grid-template-columns:1fr}.detail-results>div+div{border-left:0;border-top:1px solid var(--line)}.detail-block .action-spec dl{grid-template-columns:repeat(2,minmax(0,1fr))}.coordinate-audit{grid-template-columns:1fr 1fr}.coordinate-audit>div:nth-child(3){border-top:1px solid var(--line);border-left:0}.coordinate-audit>div:nth-child(4){border-top:1px solid var(--line)}}
+@media(max-width:700px){.page{width:calc(100vw - 20px);margin-bottom:24px}.summary-head{padding:16px 2px 10px}.summary-head h1{font-size:20px}.case-outcome{gap:17px;padding:16px}.outcome-copy strong{font-size:22px}.outcome-copy p{font-size:14px}.outcome-stats{width:100%}.outcome-stats>div{padding:3px 10px}.run-info dl{display:grid;grid-template-columns:1fr}.tabs{gap:16px;overflow:auto}.panel{padding-top:18px}.result-workspace{display:block}.subtabs{width:100%;overflow:auto}.subtab{flex:1 0 auto;padding:6px 10px}.content-heading{align-items:flex-start;flex-direction:column;gap:3px}.understanding-columns{grid-template-columns:1fr}.process-workspace{display:block;min-height:0}.process-nav{border-right:0;border-bottom:1px solid var(--line)}.process-list{max-height:340px;min-height:0}.selected-step-head{padding:17px 15px 14px}.selected-step-head h2{font-size:16px}.detail-purpose{grid-template-columns:1fr;padding:0 15px}.detail-purpose>div{padding:12px 0}.detail-purpose>div+div{padding-left:0;border-top:1px solid var(--line);border-left:0}.detail-block{padding:15px}.detail-block .action-spec{grid-template-columns:1fr}.detail-block .action-spec dl{grid-template-columns:1fr 1fr}.detail-shot-pair{grid-template-columns:1fr}.detail-shot-pair .shot-trigger img,.detail-single-shot .shot-trigger img{height:min(58vh,430px)}.detail-shot-pair .empty-shot,.detail-single-shot .empty-shot{height:220px;min-height:220px}.detail-block .agent-analysis{grid-template-columns:1fr;gap:4px}.event-summary{padding:17px 15px}.event-detail>.knowledge-list{margin:0 15px 17px}.selected-step>.artifacts{margin:12px 15px 17px}.trace-layout{display:block}}
 </style></head><body><main class="page">
-<header class="summary-head"><div><h1>${escapeHtml(caseJson.identity?.title || '未命名用例')}</h1><div class="execution-id">${caseJson.identity?.caseNo ? `用例 ${escapeHtml(caseJson.identity.caseNo)} · ` : ''}${escapeHtml(report.execution?.executionId || '-')}</div></div><span class="verdict ${escapeHtml(statusClass)}">${escapeHtml(label(VERDICT_LABELS, display.status, '未知'))}</span></header>
-<section class="summary-strip ${escapeHtml(statusClass)}"><div class="result-summary"><span>执行结论</span><b>${escapeHtml(display.summary || '暂无结论')}</b></div><div><span>结论依据</span><b>${escapeHtml(label(BASIS_LABELS, display.verdictBasis))}</b></div><div><span>执行状态</span><b>${escapeHtml(label(EXECUTION_STATUS_LABELS, display.executionStatus))}</b></div><div><span>总耗时</span><b>${escapeHtml(formatDuration(display.durationMs))}</b></div><div><span>Agent 决策间隔</span><b>${escapeHtml(formatDuration(report.metrics?.timing?.agentDecisionGapMs))}</b></div><div><span>设备适配器工作</span><b>${escapeHtml(formatDuration(report.metrics?.timing?.adapterActiveMs))}</b></div><div><span>协议读取 / 拒绝</span><b>${escapeHtml(statusReadCount(report, trace))} / ${escapeHtml(report.metrics?.timing?.contractRejections ?? trace.counts.protocolRejections ?? 0)}</b></div><div><span>操作 / 观察</span><b>${trace.counts.actions} / ${trace.counts.observations}</b></div><div><span>暖会话 / 恢复</span><b>${escapeHtml(trace.recoveryAnchor.warmSessionGeneration ?? '-')} / ${escapeHtml(trace.recoveryAnchor.recoveryCount)}</b></div></section>
-<nav class="tabs" aria-label="报告视图"><button class="tab" role="tab" aria-selected="true" data-panel="overview-panel">执行详情</button><button class="tab" role="tab" aria-selected="false" data-panel="technical-panel">技术记录</button><button class="tab" role="tab" aria-selected="false" data-panel="raw-panel">原始数据</button></nav>
-<section id="overview-panel" class="panel active overview-panel" role="tabpanel">${renderExecutionOverview(report, trace)}</section>
-<section id="technical-panel" class="panel technical-panel" role="tabpanel"><div class="trace-tools"><div class="filters">${filterCategories.map((category) => `<button type="button" class="filter${category === 'ALL' ? ' active' : ''}" data-filter="${category}">${category === 'ALL' ? '全部' : CATEGORY_LABELS[category]}</button>`).join('')}</div><span class="trace-count">显示 <b id="visible-count">${trace.entries.length}</b> / ${trace.entries.length}</span></div><div class="trace-layout"><div class="trace-main">${renderPhaseGroups(report, trace.entries)}</div>${renderRecoveryAnchor(report, trace.recoveryAnchor)}</div></section>
-<section id="raw-panel" class="panel raw-panel" role="tabpanel"><p class="raw-note">底层协议数据的只读投影，字段名和枚举保留协议原值；时间按本地时区展示，输入类动作已脱敏。</p><pre>${jsonText(trace.raw)}</pre></section>
+<header class="summary-head"><div><h1>${escapeHtml(caseJson.identity?.title || '未命名用例')}</h1><div class="execution-id">${caseJson.identity?.caseNo ? `用例 ${escapeHtml(caseJson.identity.caseNo)} · ` : ''}${escapeHtml(report.execution?.executionId || '-')}</div></div></header>
+${renderOutcomeSummary(report, trace)}
+<nav class="tabs" aria-label="报告视图"><button class="tab" role="tab" aria-selected="true" data-panel="result-panel">执行结果</button><button class="tab" role="tab" aria-selected="false" data-panel="case-plan-workspace-panel">用例与计划</button><button class="tab" role="tab" aria-selected="false" data-panel="process-panel">执行过程</button><button class="tab" role="tab" aria-selected="false" data-panel="technical-panel">技术记录</button></nav>
+<section id="result-panel" class="panel active" role="tabpanel">${renderResultWorkspace(report)}</section>
+<section id="case-plan-workspace-panel" class="panel" role="tabpanel">${renderCasePlanWorkspace(report, trace)}</section>
+<section id="process-panel" class="panel" role="tabpanel">${renderExecutionWorkspace(report, trace)}</section>
+<section id="technical-panel" class="panel technical-panel" role="tabpanel"><nav class="subtabs technical-subtabs" aria-label="技术记录内容"><button type="button" class="subtab active" data-subtab-group="technical" data-subpanel="technical-trace-panel">执行记录</button><button type="button" class="subtab" data-subtab-group="technical" data-subpanel="raw-data-panel">原始数据</button></nav><section id="technical-trace-panel" class="subpanel active" data-subtab-group="technical"><div class="trace-tools"><div class="filters">${filterCategories.map((category) => `<button type="button" class="filter${category === 'ALL' ? ' active' : ''}" data-filter="${category}">${category === 'ALL' ? '全部' : CATEGORY_LABELS[category]}</button>`).join('')}</div><span class="trace-count">显示 <b id="visible-count">${trace.entries.length}</b> / ${trace.entries.length}</span></div><div class="trace-layout"><div class="trace-main">${renderPhaseGroups(report, trace.entries)}</div>${renderRecoveryAnchor(report, trace.recoveryAnchor)}</div></section><section id="raw-data-panel" class="subpanel raw-panel" data-subtab-group="technical"><p class="raw-note">底层协议数据的只读投影，字段名和枚举保留协议原值；时间按本地时区展示，输入类动作已脱敏。</p><pre>${jsonText(trace.raw)}</pre></section></section>
 </main>
 <dialog id="shot-dialog" aria-label="截图查看器"><div class="viewer-head"><b id="viewer-title">截图</b><div class="viewer-actions"><button type="button" class="icon-button" id="zoom-out" title="缩小" aria-label="缩小">−</button><button type="button" class="icon-button" id="zoom-in" title="放大" aria-label="放大">＋</button><button type="button" class="icon-button" id="fit-image" title="完整显示" aria-label="完整显示">⌗</button><button type="button" class="icon-button" id="actual-image" title="原始尺寸" aria-label="原始尺寸">1:1</button><button type="button" class="icon-button" id="close-viewer" title="关闭" aria-label="关闭">×</button></div></div><div class="viewer-stage" id="viewer-stage"><div class="viewer-canvas" id="viewer-canvas"><img id="viewer-image" alt="执行截图"></div></div><div class="viewer-foot"><button type="button" class="icon-button" id="previous-shot" title="上一张" aria-label="上一张">‹</button><span id="viewer-meta"></span><button type="button" class="icon-button" id="next-shot" title="下一张" aria-label="下一张">›</button></div></dialog>
 <script>
@@ -494,11 +627,12 @@ function applyActualSize(){const stageWidth=stage.clientWidth;const stageHeight=
 function showShot(index,open){if(!screenshots.length)return;currentShot=(Number(index)+screenshots.length)%screenshots.length;const shot=screenshots[currentShot];scale=1;viewMode='fit';image.src=shot.src;image.alt=shot.title||'执行截图';document.getElementById('viewer-title').textContent=shot.title||shot.ref;document.getElementById('viewer-meta').textContent=(currentShot+1)+' / '+screenshots.length+' · '+(shot.phaseLabel||'')+' · '+(shot.time||'');if(open&&!dialog.open)dialog.showModal();requestAnimationFrame(applyScale);}
 image.addEventListener('load',()=>{if(dialog.open){if(viewMode==='actual')applyActualSize();else applyScale();}});
 document.querySelectorAll('.shot-trigger[data-shot]').forEach(button=>button.addEventListener('click',()=>showShot(button.dataset.shot,true)));
-const overviewFolds=()=>document.querySelectorAll('#overview-panel details.story-card,#overview-panel details.checkpoint-accordion');
-document.getElementById('expand-overview').addEventListener('click',()=>overviewFolds().forEach(item=>{item.open=true}));
-document.getElementById('collapse-overview').addEventListener('click',()=>overviewFolds().forEach(item=>{item.open=false}));
 document.getElementById('close-viewer').addEventListener('click',()=>dialog.close());document.getElementById('previous-shot').addEventListener('click',()=>showShot(currentShot-1,false));document.getElementById('next-shot').addEventListener('click',()=>showShot(currentShot+1,false));document.getElementById('zoom-in').addEventListener('click',()=>{const fromActual=viewMode==='actual';viewMode='zoom';scale=Math.min(4,fromActual?1.25:scale+.25);applyScale()});document.getElementById('zoom-out').addEventListener('click',()=>{const fromActual=viewMode==='actual';viewMode='zoom';scale=Math.max(.25,fromActual?.75:scale-.25);applyScale()});document.getElementById('fit-image').addEventListener('click',()=>{viewMode='fit';scale=1;applyScale()});document.getElementById('actual-image').addEventListener('click',()=>{viewMode='actual';scale=1;applyActualSize()});dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close()});window.addEventListener('resize',()=>{if(dialog.open){if(viewMode==='actual')applyActualSize();else applyScale();}});
-document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(item=>item.setAttribute('aria-selected',String(item===tab)));document.querySelectorAll('.panel').forEach(panel=>panel.classList.toggle('active',panel.id===tab.dataset.panel));}));
+document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(item=>item.setAttribute('aria-selected',String(item===tab)));document.querySelectorAll('.panel').forEach(panel=>panel.classList.toggle('active',panel.id===tab.dataset.panel));if(tab.dataset.panel==='process-panel')requestAnimationFrame(revealSelectedProcessStep);}));
+document.querySelectorAll('.subtab').forEach(tab=>tab.addEventListener('click',()=>{const group=tab.dataset.subtabGroup;document.querySelectorAll('.subtab[data-subtab-group="'+group+'"]').forEach(item=>item.classList.toggle('active',item===tab));document.querySelectorAll('.subpanel[data-subtab-group="'+group+'"]').forEach(panel=>panel.classList.toggle('active',panel.id===tab.dataset.subpanel));}));
+const revealSelectedProcessStep=()=>{const list=document.querySelector('.process-list');const active=list?.querySelector('.process-step.active');if(list&&active)list.scrollTop=Math.max(0,active.offsetTop-list.offsetTop-(list.clientHeight-active.offsetHeight)/2)};
+document.querySelectorAll('.process-step').forEach(step=>step.addEventListener('click',()=>{document.querySelectorAll('.process-step').forEach(item=>{item.classList.toggle('active',item===step);item.setAttribute('aria-selected',String(item===step))});document.querySelectorAll('.process-detail-panel').forEach(panel=>panel.classList.toggle('active',panel.id===step.dataset.processTarget));if(matchMedia('(max-width:700px)').matches)document.querySelector('.process-detail')?.scrollIntoView({block:'start'});}));
+revealSelectedProcessStep();
 document.querySelectorAll('.filter').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.filter').forEach(item=>item.classList.toggle('active',item===button));const filter=button.dataset.filter;let count=0;document.querySelectorAll('.trace-entry').forEach(entry=>{const visible=filter==='ALL'||entry.dataset.category===filter;entry.hidden=!visible;if(visible)count++});document.querySelectorAll('.phase-group').forEach(group=>group.classList.toggle('hidden',!group.querySelector('.trace-entry:not([hidden])')));document.getElementById('visible-count').textContent=count;}));
 document.addEventListener('keydown',event=>{if(!dialog.open)return;if(event.key==='ArrowLeft')showShot(currentShot-1,false);if(event.key==='ArrowRight')showShot(currentShot+1,false)});
 </script></body></html>\n`;

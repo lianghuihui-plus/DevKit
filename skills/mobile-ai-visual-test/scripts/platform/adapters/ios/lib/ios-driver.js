@@ -704,13 +704,20 @@ function resolveSwipeExecution(rest) {
 
 async function executablePoint(target, sessionId, point, coordinateSource) {
   const raw = { x: Number(point.x), y: Number(point.y) };
-  if (coordinateSource !== 'visual') return raw;
+  const rectRequest = appium.request(target.appiumServer, 'GET', `/session/${sessionId}/window/rect`);
+  if (coordinateSource !== 'visual') {
+    const rect = await rectRequest;
+    return {
+      ...raw,
+      viewport: { width: Number(rect.value?.width), height: Number(rect.value?.height) },
+      coordinateSource,
+    };
+  }
   const [shot, rect] = await Promise.all([
     appium.request(target.appiumServer, 'GET', `/session/${sessionId}/screenshot`),
-    appium.request(target.appiumServer, 'GET', `/session/${sessionId}/window/rect`),
+    rectRequest,
   ]);
-  const transformed = scaleVisualPoint(raw, pngSizeFromBase64(shot.value), rect.value);
-  return { ...transformed, coordinateSource };
+  return { ...scaleVisualPoint(raw, pngSizeFromBase64(shot.value), rect.value), coordinateSource };
 }
 
 async function runAtom(atom, argv) {
@@ -752,6 +759,16 @@ async function runAtom(atom, argv) {
     const fakeInputMode = atom === 'input-text' ? optionValue(rest, '--mode', 'replace') : undefined;
     const fakeInputText = atom === 'input-text' ? optionValue(rest, '--text') : undefined;
     const fakeInputExpected = fakeInputMode === 'append' ? `${process.env.MAVT_IOS_FAKE_INPUT_VALUE || ''}${fakeInputText}` : fakeInputText;
+    const fakeCoordinateSource = optionValue(rest, '--coordinate-source', 'layout');
+    const fakeViewport = { width: 393, height: 852 };
+    const fakePoint = ['tap', 'long-press'].includes(atom)
+      ? {
+        x: Number(optionValue(rest, '--x')),
+        y: Number(optionValue(rest, '--y')),
+        viewport: fakeViewport,
+        coordinateSource: fakeCoordinateSource,
+      }
+      : undefined;
     writeJson(actionResult(atom === 'launch-app' ? 'launchApp' : atom === 'restart-app' ? 'restartApp' : atom === 'long-press' ? 'longPress' : atom === 'input-text' ? 'inputText' : atom === 'dismiss-keyboard' ? 'dismissKeyboard' : atom === 'keyevent' ? optionValue(rest, '--key', 'keyevent') : atom, {
       inputMethod: atom === 'input-text' ? (fakeInputMode === 'replace' ? 'wda-clear-set-value' : 'wda-read-compose-set-value') : undefined,
       inputMode: fakeInputMode,
@@ -766,6 +783,13 @@ async function runAtom(atom, argv) {
       launchMethod: atom === 'restart-app' ? 'appium-terminate-activate' : undefined,
       velocity: swipeExecution?.velocity,
       durationMs: swipeExecution?.durationMs,
+      executedPoint: fakePoint,
+      executedFrom: swipeExecution ? {
+        x: swipeExecution.fromX, y: swipeExecution.fromY, viewport: fakeViewport, coordinateSource: fakeCoordinateSource,
+      } : undefined,
+      executedTo: swipeExecution ? {
+        x: swipeExecution.toX, y: swipeExecution.toY, viewport: fakeViewport, coordinateSource: fakeCoordinateSource,
+      } : undefined,
     }));
     return;
   }
@@ -877,7 +901,12 @@ async function runAtom(atom, argv) {
       executedFrom = await executablePoint(target, sessionId, { x: swipeExecution.fromX, y: swipeExecution.fromY }, coordinateSource);
       executedTo = coordinateSource === 'visual'
         ? scaleVisualPoint({ x: swipeExecution.toX, y: swipeExecution.toY }, executedFrom.screenshot, executedFrom.viewport)
-        : { x: swipeExecution.toX, y: swipeExecution.toY };
+        : {
+          x: swipeExecution.toX,
+          y: swipeExecution.toY,
+          viewport: executedFrom.viewport,
+          coordinateSource,
+        };
       await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, swipeAction(
         executedFrom.x,
         executedFrom.y,

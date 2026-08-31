@@ -9,6 +9,7 @@ const {
   ensureUniqueIds,
   sha256,
 } = require('../../lib/contract-utils');
+const { sameKnowledgeDecisionContext, validateKnowledgeContext } = require('../../lib/knowledge-context');
 
 const RESULT_SCHEMA_VERSION = 2;
 const METRICS_SCHEMA_VERSION = 2;
@@ -31,7 +32,7 @@ function sameStringSet(values, expected) {
   return Array.isArray(values) && values.length === expected.size && values.every((value) => expected.has(value));
 }
 
-function hasBoundVerdictReview(reviews, queries, knowledgeReviews, evidence, understanding, plan, executionId, verdict) {
+function hasBoundVerdictReview(reviews, queries, knowledgeReviews, evidence, understanding, plan, executionId, verdict, currentKnowledgeContext) {
   const sourceRefs = new Set(understanding.sourceRefs?.map((item) => item.id) || []);
   const requirementRefs = new Set(understanding.requirements?.map((item) => item.id) || []);
   return reviews.some((review) => review.executionId === executionId
@@ -43,8 +44,10 @@ function hasBoundVerdictReview(reviews, queries, knowledgeReviews, evidence, und
     && Array.isArray(review.queryRefs)
     && (verdict === 'PASS' || review.queryRefs.length > 0)
     && review.queryRefs.every((ref) => queries.get(ref)?.executionId === executionId)
-    && review.queryRefs.every((ref) => queries.get(ref)?.matchCount === 0
-      || knowledgeReviews.get(ref)?.executionId === executionId)
+    && review.queryRefs.every((ref) => sameKnowledgeDecisionContext(queries.get(ref).knowledgeContext, currentKnowledgeContext))
+    && review.queryRefs.every((ref) => queries.get(ref)?.candidateCount === 0
+      || (knowledgeReviews.get(ref)?.executionId === executionId
+        && sameKnowledgeDecisionContext(knowledgeReviews.get(ref).knowledgeContext, currentKnowledgeContext)))
     && Array.isArray(review.sourceRecheck?.sourceRefs) && review.sourceRecheck.sourceRefs.length > 0
     && typeof review.sourceRecheck?.conclusion === 'string' && review.sourceRecheck.conclusion.trim()
     && Array.isArray(review.currentObservationRefs) && (review.currentObservationRefs.length > 0 || review.observationUnavailable === true)
@@ -79,7 +82,8 @@ function validateFinding(finding, index, context) {
   for (const ref of knowledgeRefs) {
     ensureString(ref, `${label}.knowledgeRefs item`, 'RESULT_INVALID');
     const assessment = context.knowledge.get(ref);
-    if (!assessment || assessment.executionId !== context.executionId || assessment.assessment !== 'APPLICABLE') {
+    if (!assessment || assessment.executionId !== context.executionId || assessment.assessment !== 'APPLICABLE'
+      || !sameKnowledgeDecisionContext(assessment.knowledgeContext, context.currentKnowledgeContext)) {
       throw contractError('RESULT_KNOWLEDGE_INVALID', `${label} knowledge is not an applicable assessment from the current execution: ${ref}`);
     }
   }
@@ -105,12 +109,6 @@ function validateFinding(finding, index, context) {
   if (finding.status === 'NOT_SATISFIED' && directSupportCount === 0 && productIncidentCount === 0) {
     throw contractError('RESULT_EVIDENCE_INVALID', `${label} NOT_SATISFIED requires evidence, applicable knowledge, or a PRODUCT incident`);
   }
-  if (context.verdict === 'FAIL' && finding.status === 'NOT_SATISFIED' && context.currentObservationRef
-    && !evidenceRefs.includes(context.currentObservationRef) && productIncidentCount === 0) {
-    throw contractError('CURRENT_OBSERVATION_REQUIRED', `${label} must cite the latest usable observation or a PRODUCT incident`, {
-      fieldPath: `${label}.evidenceRefs`, expected: context.currentObservationRef, received: evidenceRefs,
-    });
-  }
   if (finding.status === 'UNRESOLVED' && directSupportCount === 0 && !String(finding.reason || '').trim()) {
     throw contractError('RESULT_EVIDENCE_INVALID', `${label} UNRESOLVED without evidence requires reason`);
   }
@@ -132,6 +130,7 @@ function validateResult(value, options = {}) {
   ensureString(value.summary, 'summary', 'RESULT_INVALID');
   const understanding = options.understanding || { requirements: [] };
   const plan = options.plan || null;
+  const currentKnowledgeContext = validateKnowledgeContext(options.currentKnowledgeContext, 'currentKnowledgeContext', 'RESULT_INVALID');
   const requirements = new Map((understanding.requirements || []).map((item) => [item.id, item]));
   const findings = ensureArray(value.requirementFindings, 'requirementFindings', 'RESULT_INVALID');
   findings.forEach((item, index) => ensureObject(item, `requirementFindings[${index}]`, 'RESULT_INVALID'));
@@ -147,7 +146,7 @@ function validateResult(value, options = {}) {
     knowledge: refIndex(options.knowledgeAssessments),
     incidents: refIndex(options.incidents),
     technicalFailureCode: value.technicalFailureCode || null,
-    currentObservationRef: options.currentObservationRef || null,
+    currentKnowledgeContext,
   };
   let evidenceCount = 0;
   let knowledgeCount = 0;
@@ -175,7 +174,11 @@ function validateResult(value, options = {}) {
   if (value.verdict === 'FAIL' && !findingStatuses.has('NOT_SATISFIED')) {
     throw contractError('RESULT_SEMANTICS_INVALID', 'FAIL requires at least one NOT_SATISFIED requirement');
   }
-  if (value.verdict === 'INCONCLUSIVE' && (!findingStatuses.has('UNRESOLVED')
+  const emptyUnderstanding = requirements.size === 0;
+  if (emptyUnderstanding && (value.verdict !== 'INCONCLUSIVE' || findings.length !== 0)) {
+    throw contractError('RESULT_SEMANTICS_INVALID', 'an understanding without requirements can only produce INCONCLUSIVE with no findings');
+  }
+  if (value.verdict === 'INCONCLUSIVE' && ((!emptyUnderstanding && !findingStatuses.has('UNRESOLVED'))
     || value.verdictBasis !== 'INSUFFICIENT_EVIDENCE' || uncertainties.length === 0)) {
     throw contractError('RESULT_SEMANTICS_INVALID', 'INCONCLUSIVE requires unresolved requirements and recorded uncertainty');
   }
@@ -191,7 +194,17 @@ function validateResult(value, options = {}) {
   const reviews = options.verdictReviews || [];
   const queries = refIndex(options.knowledgeQueries);
   const knowledgeReviews = new Map((options.knowledgeReviews || []).map((entry) => [entry.queryId, entry]));
-  const reviewed = hasBoundVerdictReview(reviews, queries, knowledgeReviews, context.evidence, understanding, plan, value.executionId, value.verdict);
+  const reviewed = hasBoundVerdictReview(
+    reviews,
+    queries,
+    knowledgeReviews,
+    context.evidence,
+    understanding,
+    plan,
+    value.executionId,
+    value.verdict,
+    currentKnowledgeContext,
+  );
   const reviewRequired = ['FAIL', 'INCONCLUSIVE'].includes(value.verdict)
     || (value.verdict === 'BLOCKED' && value.verdictBasis !== 'TECHNICAL_CONSTRAINT');
   if (reviewRequired && !reviewed) {
@@ -230,12 +243,8 @@ function validateMetrics(value, options = {}) {
   if (!Number.isFinite(value.elapsedMs) || value.elapsedMs < 0) throw contractError('METRICS_INVALID', 'elapsedMs must be a non-negative number');
   if (value.timing !== undefined) {
     ensureObject(value.timing, 'timing', 'METRICS_INVALID');
-    for (const field of ['adapterActiveMs', 'protocolActiveMs', 'agentDecisionGapMs', 'protocolAttempts', 'contractRejections']) {
+    for (const field of ['adapterActiveMs', 'protocolActiveMs', 'agentOrchestrationGapMs', 'protocolAttempts', 'contractRejections']) {
       if (!Number.isFinite(value.timing[field]) || value.timing[field] < 0) throw contractError('METRICS_INVALID', `timing.${field} must be a non-negative number`);
-    }
-    if (value.timing.agentOrchestrationGapMs !== undefined
-      && (!Number.isFinite(value.timing.agentOrchestrationGapMs) || value.timing.agentOrchestrationGapMs < 0)) {
-      throw contractError('METRICS_INVALID', 'timing.agentOrchestrationGapMs must be a non-negative number');
     }
     if (value.timing.statusReads !== undefined && (!Number.isInteger(value.timing.statusReads) || value.timing.statusReads < 0)) {
       throw contractError('METRICS_INVALID', 'timing.statusReads must be a non-negative integer');

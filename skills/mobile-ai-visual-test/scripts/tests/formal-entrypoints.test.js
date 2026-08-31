@@ -53,7 +53,7 @@ assert.ok(fs.readFileSync(path.join(workspace, 'index.html'), 'utf8').includes('
 const contract = run(['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony']);
 assert.strictEqual(contract.schemaVersion, 2);
 assert.strictEqual(contract.profile, undefined);
-assert.strictEqual(contract.requiredResources[0], 'SKILL.md');
+assert.deepStrictEqual(contract.requiredResources, ['references/agent-execution.md', 'references/knowledge.md']);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/build-agent-contract.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/execute-next-work.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/agent/finalize.js'), false);

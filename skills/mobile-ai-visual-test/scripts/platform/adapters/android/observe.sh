@@ -49,6 +49,8 @@ local_activity_dump="$out/logs/${label}-activity-dump.txt"
 local_pidof="$out/logs/${label}-pidof.txt"
 local_logcat="$out/logs/${label}-logcat.txt"
 local_errors="$out/logs/${label}-errors.txt"
+local_dump_tree_json="$out/logs/${label}-dump-tree.json"
+local_dump_layout="$out/logs/${label}-dump-layout.txt"
 
 : >"$local_errors"
 
@@ -57,8 +59,9 @@ if ! "$atoms_dir/screenshot.sh" "${device_args[@]}" --out "$local_png" >"$out/lo
   rm -f "$local_png"
 fi
 
-if ! "$atoms_dir/dump-tree.sh" "${device_args[@]}" --out "$local_xml" --remote "/sdcard/mavt-${label}.xml" >"$out/logs/${label}-dump-tree.json" 2>"$out/logs/${label}-dump-layout.txt"; then
-  printf '[layout] uiautomator dump failed. See logs/%s-dump-layout.txt\n' "$label" >>"$local_errors"
+if ! "$atoms_dir/dump-tree.sh" "${device_args[@]}" --out "$local_xml" --remote "/sdcard/mavt-${label}.xml" >"$local_dump_tree_json" 2>"$local_dump_layout"; then
+  layout_error="$(head -n 1 "$local_dump_layout" | tr -d '\r' || true)"
+  printf '[layout] %s. See logs/%s-dump-layout.txt\n' "${layout_error:-uiautomator dump failed}" "$label" >>"$local_errors"
   rm -f "$local_xml"
 fi
 
@@ -73,7 +76,7 @@ node -e '
 const path = require("path");
 const fs = require("fs");
 const out = process.argv[1], label = process.argv[2], png = process.argv[3], xml = process.argv[4], device = process.argv[5], app = process.argv[6];
-const windowDump = process.argv[7], activityDump = process.argv[8], pidofFile = process.argv[9], logcat = process.argv[10], errorsFile = process.argv[11], foregroundJson = process.argv[12];
+const windowDump = process.argv[7], activityDump = process.argv[8], pidofFile = process.argv[9], logcat = process.argv[10], errorsFile = process.argv[11], foregroundJson = process.argv[12], dumpTreeJson = process.argv[13];
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();
   const sign = offset >= 0 ? "+" : "-";
@@ -122,6 +125,12 @@ const logs = [windowDump, activityDump, pidofFile, logcat, errorsFile].map(rel).
 const screenshotRel = rel(png);
 const layoutRel = rel(xml);
 const errors = read(errorsFile).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+const dumpTree = readJson(dumpTreeJson);
+const layoutCapture = dumpTree?.capture || (layoutRel ? {
+  status: "AVAILABLE", code: null, message: "控件树采集成功", durationMs: null, fallback: null,
+} : {
+  status: "UNAVAILABLE", code: "ANDROID_LAYOUT_CAPTURE_FAILED", message: "本次观察没有生成控件树", durationMs: null, fallback: "SCREENSHOT",
+});
 console.log(JSON.stringify({
   schemaVersion: 1,
   type: "observation",
@@ -150,6 +159,9 @@ console.log(JSON.stringify({
     foregroundApp: !!foreground,
     logs: logs.length > 0
   },
+  technicalSignals: {
+    layoutCapture
+  },
   raw: {
     foregroundLine: foreground?.line || null,
     foreground,
@@ -159,4 +171,4 @@ console.log(JSON.stringify({
   screenshot: screenshotRel,
   layout: layoutRel
 }, null, 2));
-' "$out" "$label" "$local_png" "$local_xml" "$device" "$bundle" "$local_window_dump" "$local_activity_dump" "$local_pidof" "$local_logcat" "$local_errors" "$out/logs/${label}-foreground.json"
+' "$out" "$label" "$local_png" "$local_xml" "$device" "$bundle" "$local_window_dump" "$local_activity_dump" "$local_pidof" "$local_logcat" "$local_errors" "$out/logs/${label}-foreground.json" "$local_dump_tree_json"

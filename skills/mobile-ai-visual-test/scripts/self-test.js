@@ -11,6 +11,8 @@ const suites = Object.freeze({
   platformRuntime: 'tests/platform-runtime.test.js',
   iosInput: 'tests/ios-input.test.js',
   layout: 'tests/layout-observation.test.js',
+  androidLayout: 'tests/android-layout-capture.test.js',
+  coordinateAudit: 'tests/action-coordinate-audit.test.js',
   harmonyInput: 'tests/harmony-input-effect.test.js',
   metrics: 'tests/execution-metrics.test.js',
   report: 'tests/report-reader.test.js',

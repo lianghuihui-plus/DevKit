@@ -6,24 +6,24 @@ const path = require('path');
 const { canonicalJson, contractError, ensureArray, ensureObject, ensureString, sha256 } = require('../lib/contract-utils');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { withAuthorizationSha } = require('../lib/plan-authorization');
-const { checkpointActivity } = require('../lib/checkpoint-progress');
 const { coordinateActionConflict } = require('../lib/observation-consistency');
+const { assertCurrentKnowledgeContext, buildCurrentKnowledgeContext } = require('../lib/knowledge-context');
 const { KNOWLEDGE_REVIEW_CONCLUSIONS } = require('../execution/contracts/execution-event-contract');
 const {
   STATE_CHANGING_ACTIONS,
+  assertCurrentPlan,
   assertAgentWriteReady,
   changePhase,
   confirmStartObservation,
   currentObservation,
   hasCurrentStartObservation,
   knowledgeQueryDraftIds,
+  latestStateChangeIndex,
   operationDraftIds,
   timelineEvents,
   turnDraftIds,
 } = require('../execution/core');
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
-const { sourceSha } = require('../execution/contracts/case-contract');
-const { sourceLines } = require('../lib/source-reference');
 const { commitAgentTurn } = require('./turn');
 const {
   alignOperationPhase,
@@ -38,8 +38,24 @@ const { finalizeWithReview } = require('./finalize');
 const { createAgentResult } = require('./core');
 const { buildObservationView, findElement } = require('./observation-view');
 const { activeCheckpoint, controlRequestPath } = require('./control-request');
+const {
+  assertConclusionEligibility,
+  assertFindingEvidenceOwnership,
+  checkpointFacts,
+  defaultResultFields,
+} = require('./conclusion-policy');
+const {
+  assertAgentInputFields,
+  normalizeTextList,
+  validateSemanticActionInput,
+} = require('../lib/agent-input-contract');
+const {
+  buildPlanTurn,
+  buildUnderstandingTurn,
+  sameCurrentPlan,
+  sameUnderstanding,
+} = require('./semantic-service');
 
-const STAGES = new Set(['PREPARE', 'BUSINESS']);
 const VERDICTS = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const DEFAULT_POST_ACTION_SETTLE_MS = 500;
 const MAX_POST_ACTION_SETTLE_MS = 5000;
@@ -103,6 +119,23 @@ function context(execDir) {
   return { ...value, binding, events, observation };
 }
 
+function knowledgeContext(current) {
+  return buildCurrentKnowledgeContext({
+    execution: current.execution,
+    understanding: current.understanding,
+    plan: current.plan,
+    events: current.events,
+    observation: current.observation,
+    stateBoundaryIndex: latestStateChangeIndex(current.events),
+  });
+}
+
+function assertExecutableRequirements(current) {
+  if (!current.understanding?.requirements?.length) {
+    throw contractError('NO_EXECUTABLE_REQUIREMENTS', 'the current understanding has no executable requirements; device work is not authorized');
+  }
+}
+
 function withRuntimeState(execDir, value, options = {}) {
   const { readAgentStatus } = require('./status');
   return { ...value, runtimeState: readAgentStatus(execDir, options.now, { includeEvidence: false }) };
@@ -112,22 +145,17 @@ function stageScope(stage) {
   return stage === 'PREPARE' ? 'case-prepare' : 'case-business';
 }
 
-function normalizeStage(value, execDir) {
+function currentStage(execDir) {
   const current = context(execDir);
-  const inferred = hasCurrentStartObservation(current.events, current.understanding?.revision, current.execution.warmSessionGeneration)
+  return hasCurrentStartObservation(current.events, current.understanding?.revision, current.execution.warmSessionGeneration)
     ? 'BUSINESS' : 'PREPARE';
-  const stage = String(value || inferred).trim().toUpperCase();
-  if (!STAGES.has(stage)) {
-    throw contractError('AGENT_FACADE_INVALID', 'stage must be PREPARE or BUSINESS', {
-      fieldPath: 'stage', expected: 'PREPARE | BUSINESS', received: value,
-    });
-  }
-  return stage;
 }
 
 function authorizationFor(execDir, input, stage) {
   const current = context(execDir);
   if (!current.understanding || !current.plan) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'understanding and plan are required before device work');
+  assertExecutableRequirements(current);
+  assertCurrentPlan(current.events);
   const scope = stageScope(stage);
   const checkpointRef = stage === 'BUSINESS'
     ? input.checkpointRef || activeCheckpoint(current.plan, current.events, current.execution.warmSessionGeneration)
@@ -143,6 +171,9 @@ function authorizationFor(execDir, input, stage) {
   if (stage === 'PREPARE' && checkpoint) {
     throw contractError('AGENT_FACADE_INVALID', 'PREPARE does not bind a checkpoint', { fieldPath: 'checkpointRef' });
   }
+  if (stage === 'BUSINESS' && input.startConditionRef) {
+    throw contractError('AGENT_FACADE_INVALID', 'BUSINESS does not bind a start condition', { fieldPath: 'startConditionRef' });
+  }
   const startCondition = input.startConditionRef
     ? current.understanding.startConditions.find((entry) => entry.id === input.startConditionRef)
     : current.understanding.startConditions.length === 1 ? current.understanding.startConditions[0] : null;
@@ -157,7 +188,7 @@ function authorizationFor(execDir, input, stage) {
     executionId: current.execution.executionId,
     phase: scope,
     understandingRevision: current.understanding.revision,
-    purpose: requireText(input.intent || input.purpose || '观察并推进当前用例', 'intent'),
+    purpose: requireText(input.intent || '观察并推进当前用例', 'intent'),
     requirementRefs: checkpoint?.requirementRefs || [],
     sourceRefs: [],
     ...(stage === 'PREPARE' && startCondition ? { startConditionId: startCondition.id } : {}),
@@ -175,14 +206,14 @@ function observationResponse(execDir, fact, extra = {}) {
 }
 
 function inspectCurrent(execDir, input = {}, options = {}) {
-  ensureObject(input, 'inspect request', 'AGENT_FACADE_INVALID');
+  assertAgentInputFields('inspect', input);
   assertNoFacadeRecovery(execDir);
-  const stage = normalizeStage(input.stage, execDir);
+  const stage = currentStage(execDir);
   const request = {
     operationId: generatedId('obs'),
     intent: requireText(input.intent || (stage === 'PREPARE' ? '观察当前现场并建立用例起点' : '观察当前业务现场'), 'intent'),
     expectedOutcome: requireText(input.expectedOutcome || '取得当前 App 截图、控件树和诊断资料', 'expectedOutcome'),
-    purpose: input.purpose || (stage === 'PREPARE' ? 'ESTABLISH_START' : 'AGENT_DECIDED'),
+    purpose: stage === 'PREPARE' ? 'ESTABLISH_START' : 'AGENT_DECIDED',
     authorization: authorizationFor(execDir, input, stage),
   };
   const value = executeDeviceOperation(execDir, request, options);
@@ -222,7 +253,7 @@ function pixelBounds(bounds, image, field = 'action.normalizedBounds') {
 }
 
 function resolveSemanticAction(execDir, proposal) {
-  ensureObject(proposal, 'action', 'AGENT_FACADE_INVALID');
+  validateSemanticActionInput(proposal);
   requireText(proposal.type, 'action.type');
   const current = context(execDir);
   if (!current.observation) throw contractError('CURRENT_OBSERVATION_REQUIRED', 'step requires a current usable observation');
@@ -443,8 +474,10 @@ function executeStep(execDir, input, options = {}) {
     if (!draft) throw contractError('AGENT_STEP_RECOVERY_MISSING', `step draft is missing: ${resumeStepId}`);
     return withRuntimeState(execDir, executeFrozenStep(execDir, draft, options), options);
   }
+  assertAgentInputFields('step', input);
   assertNoFacadeRecovery(execDir);
-  const stage = normalizeStage(input.stage, execDir);
+  assertExecutableRequirements(context(execDir));
+  const stage = currentStage(execDir);
   const intent = requireText(input.intent, 'intent');
   const resolved = resolveSemanticAction(execDir, input.action);
   const authorization = authorizationFor(execDir, { ...input, intent }, stage);
@@ -480,104 +513,45 @@ function executeStep(execDir, input, options = {}) {
 }
 
 function normalizeUnderstandingInput(execDir, input) {
-  ensureObject(input, 'understand request', 'AGENT_FACADE_INVALID');
+  assertAgentInputFields('understand', input);
   assertNoFacadeRecovery(execDir);
-  const current = context(execDir);
-  const previousUnderstanding = current.understanding;
-  const previousPlan = current.plan;
-  if (!input.understanding && !previousUnderstanding) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'initial understand request requires understanding');
-  const sourceText = fs.readFileSync(path.join(execDir, 'source.snapshot.md'), 'utf8');
-  const rootSourceRef = {
-    id: 'source-case',
-    sourceSha: sourceSha(sourceText),
-    lineStart: 1,
-    lineEnd: sourceLines(sourceText).length,
-    quote: sourceText,
-  };
-  const freezeStatement = (statement) => ({
-    id: statement.id,
-    text: statement.text,
-    basis: statement.basis,
-    sourceRefs: statement.basis === 'assumed' ? [] : [rootSourceRef.id],
-  });
-  const understanding = input.understanding ? {
-    summary: input.understanding.summary,
-    sourceRefs: [rootSourceRef],
-    startConditions: ensureArray(input.understanding.startConditions, 'understanding.startConditions', 'AGENT_FACADE_INVALID').map(freezeStatement),
-    requirements: ensureArray(input.understanding.requirements, 'understanding.requirements', 'AGENT_FACADE_INVALID').map(freezeStatement),
-    schemaVersion: 1,
-    revision: (previousUnderstanding?.revision || 0) + 1,
-    uncertainties: input.understanding.uncertainties || [],
-    requirementDispositions: input.understanding.requirementDispositions || [],
-    ...(previousUnderstanding ? { reason: input.reason || 'Agent 根据当前执行信息修订用例理解' } : {}),
-  } : undefined;
-  const checkpoints = input.checkpoints || input.plan?.checkpoints;
-  if (!checkpoints && !previousPlan) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'initial understand request requires checkpoints');
-  const plan = checkpoints ? {
-    schemaVersion: 1,
-    revision: (previousPlan?.revision || 0) + 1,
-    reason: input.reason || input.plan?.reason || 'Agent 根据冻结原文建立可修订检查点',
-    checkpoints: ensureArray(checkpoints, 'checkpoints', 'AGENT_FACADE_INVALID').map((checkpoint) => ({
-      ...checkpoint,
-      requiredAction: checkpoint.requiredAction === true,
-    })),
-  } : undefined;
-  return {
-    schemaVersion: 1,
-    turnId: generatedId('turn-understand'),
-    ...(understanding ? { understanding } : {}),
-    ...(plan ? { plan } : {}),
-    facts: [],
-  };
-}
-
-function semanticUnderstanding(value) {
-  if (!value) return null;
-  return {
-    summary: value.summary,
-    startConditions: value.startConditions.map(({ id, text, basis }) => ({ id, text, basis })),
-    requirements: value.requirements.map(({ id, text, basis }) => ({ id, text, basis })),
-    uncertainties: value.uncertainties || [],
-    requirementDispositions: value.requirementDispositions || [],
-  };
-}
-
-function semanticCheckpoints(values = []) {
-  return values.map((checkpoint) => ({
-    id: checkpoint.id,
-    goal: checkpoint.goal,
-    requirementRefs: checkpoint.requirementRefs,
-    requiredAction: checkpoint.requiredAction === true,
-  }));
-}
-
-function unchangedUnderstandingRequest(execDir, input) {
-  const current = context(execDir);
-  if (!current.understanding || !current.plan) return false;
-  const requestedCheckpoints = input.checkpoints || input.plan?.checkpoints;
-  const sameUnderstanding = !input.understanding || canonicalJson(semanticUnderstanding(input.understanding))
-    === canonicalJson(semanticUnderstanding(current.understanding));
-  const samePlan = !requestedCheckpoints || canonicalJson(semanticCheckpoints(requestedCheckpoints))
-    === canonicalJson(semanticCheckpoints(current.plan.checkpoints));
-  return sameUnderstanding && samePlan;
+  return buildUnderstandingTurn(execDir, input, context(execDir), generatedId, requireText);
 }
 
 function understand(execDir, input, options = {}) {
-  ensureObject(input, 'understand request', 'AGENT_FACADE_INVALID');
+  assertAgentInputFields('understand', input);
   assertNoFacadeRecovery(execDir);
-  if (unchangedUnderstandingRequest(execDir, input)) {
+  if (sameUnderstanding(context(execDir), input)) {
     return withRuntimeState(execDir, { accepted: true, idempotent: true }, options);
   }
   const turn = normalizeUnderstandingInput(execDir, input);
   return withRuntimeState(execDir, commitAgentTurn(execDir, turn, options), options);
 }
 
+function normalizePlanInput(execDir, input) {
+  assertAgentInputFields('plan', input);
+  assertNoFacadeRecovery(execDir);
+  return buildPlanTurn(input, context(execDir), generatedId);
+}
+
+function plan(execDir, input, options = {}) {
+  assertAgentInputFields('plan', input);
+  assertNoFacadeRecovery(execDir);
+  const current = context(execDir);
+  if (sameCurrentPlan(current, input)) {
+    return withRuntimeState(execDir, { accepted: true, idempotent: true }, options);
+  }
+  return withRuntimeState(execDir, commitAgentTurn(execDir, normalizePlanInput(execDir, input), options), options);
+}
+
 function markStart(execDir, input = {}, options = {}) {
-  ensureObject(input, 'mark-start request', 'AGENT_FACADE_INVALID');
+  assertAgentInputFields('markStart', input);
   assertNoFacadeRecovery(execDir);
   assertAgentWriteReady(execDir);
   const current = context(execDir);
   if (!current.understanding || !current.plan) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'understanding and plan are required before marking the start');
+  assertExecutableRequirements(current);
+  assertCurrentPlan(current.events);
   const latest = current.observation;
   if (!latest || latest.scope !== 'case-prepare' || latest.understandingRevision !== current.understanding.revision) {
     throw contractError('START_OBSERVATION_REQUIRED', 'mark-start requires the latest usable PREPARE observation for the current understanding');
@@ -603,13 +577,30 @@ function markStart(execDir, input = {}, options = {}) {
 }
 
 function investigate(execDir, input, options = {}) {
-  ensureObject(input, 'investigate request', 'AGENT_FACADE_INVALID');
+  assertAgentInputFields('investigate', input);
   assertNoFacadeRecovery(execDir);
+  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  if (execution.phase !== 'INVESTIGATE') {
+    changePhase(execDir, 'INVESTIGATE', input.reason || 'Agent 开始本地知识调查', {
+      implementationSha: execution.implementationSha,
+      now: options.now,
+    });
+  }
   if (input.query) {
-    const query = executeKnowledgeQuery({ execDir, queryId: generatedId('query'), query: input.query, reason: input.reason, now: options.now });
-    if (query.matchCount > 0) return withRuntimeState(execDir, query, options);
+    const current = context(execDir);
+    const decisionContext = knowledgeContext(current);
+    const query = executeKnowledgeQuery({
+      execDir,
+      queryId: generatedId('query'),
+      query: input.query,
+      reason: input.reason,
+      knowledgeContext: decisionContext,
+      now: options.now,
+    });
+    if (query.candidateCount > 0) return withRuntimeState(execDir, query, options);
     const review = {
       factId: generatedId('knowledge-review'), type: 'knowledgeReview', queryId: query.queryId,
+      knowledgeContext: query.knowledgeContext,
       conclusion: 'NO_MATCH', assessmentRefs: [], reason: input.reason || '本次知识查询未命中候选，调查已完成',
     };
     const reviewTurn = commitAgentTurn(execDir, { schemaVersion: 1, turnId: generatedId('turn-review'), facts: [review] }, options);
@@ -626,6 +617,9 @@ function investigate(execDir, input, options = {}) {
   }
   const query = timelineEvents(execDir).find((event) => event.type === 'knowledgeQuery' && event.queryId === input.queryId);
   if (!query) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', `unknown queryId: ${input.queryId}`);
+  assertCurrentKnowledgeContext(query.knowledgeContext, knowledgeContext(context(execDir)), {
+    fieldPath: 'queryId',
+  });
   const facts = assessments.map((assessment) => {
     const candidate = query.candidates.find((entry) => entry.entryId === assessment.entryId);
     if (!candidate) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', `unknown knowledge candidate: ${assessment.entryId}`);
@@ -644,115 +638,25 @@ function investigate(execDir, input, options = {}) {
   });
   facts.push({
     factId: generatedId('knowledge-review'), type: 'knowledgeReview', queryId: query.queryId,
+    knowledgeContext: query.knowledgeContext,
     conclusion, assessmentRefs: facts.map((fact) => fact.knowledgeRef), reason: requireText(input.reason, 'reason'),
   });
   return withRuntimeState(execDir, commitAgentTurn(execDir, { schemaVersion: 1, turnId: generatedId('turn-assess'), facts }, options), options);
 }
 
-function defaultResultFields(input, events) {
-  const stopped = events.some((event) => event.type === 'timeLimitReached');
-  if (input.verdict === 'PASS') return { executionStatus: stopped ? 'STOPPED_BY_BUDGET' : 'COMPLETED', verdictBasis: input.verdictBasis || 'DIRECT_EVIDENCE', technicalFailureCode: null };
-  if (input.verdict === 'FAIL') return { executionStatus: 'COMPLETED', verdictBasis: input.verdictBasis || 'DIRECT_EVIDENCE', technicalFailureCode: null };
-  if (input.verdict === 'INCONCLUSIVE') return { executionStatus: stopped ? 'STOPPED_BY_BUDGET' : 'COMPLETED', verdictBasis: 'INSUFFICIENT_EVIDENCE', technicalFailureCode: null };
-  if (input.technicalFailureCode) return { executionStatus: 'TECHNICALLY_BLOCKED', verdictBasis: 'TECHNICAL_CONSTRAINT', technicalFailureCode: input.technicalFailureCode };
-  return { executionStatus: 'COMPLETED', verdictBasis: input.verdictBasis || 'DIRECT_EVIDENCE', technicalFailureCode: null };
-}
-
-function checkpointFacts(current, findings) {
-  const byRequirement = new Map(findings.map((finding) => [finding.requirementId, finding]));
-  return current.plan.checkpoints.map((checkpoint) => {
-    const related = checkpoint.requirementRefs.map((ref) => byRequirement.get(ref)).filter(Boolean);
-    const activity = checkpointActivity(current.events, checkpoint.id, current.execution.warmSessionGeneration);
-    const actions = activity.filter((event) => event.type === 'actionResult');
-    const observations = activity.filter((event) => event.type === 'observation' && event.usable === true);
-    const statuses = new Set(related.map((finding) => finding.status));
-    const semanticStatus = statuses.has('NOT_SATISFIED') ? 'NOT_SATISFIED'
-      : statuses.has('BLOCKED') ? 'BLOCKED'
-        : statuses.has('UNRESOLVED') ? 'UNRESOLVED' : 'SATISFIED';
-    const requiredActionSatisfied = checkpoint.requiredAction !== true || actions.length > 0;
-    const findingEvidenceRefs = related.flatMap((finding) => finding.evidenceRefs || []);
-    const evidenceRefs = [...new Set([
-      ...observations.map((event) => event.ref),
-      ...(checkpoint.requiredAction === true ? [] : findingEvidenceRefs),
-    ])];
-    const status = evidenceRefs.length > 0 && requiredActionSatisfied ? semanticStatus : 'NOT_EXECUTED';
-    return {
-      factId: sha256(canonicalJson({ planSha: current.plan.planSha, checkpointId: checkpoint.id, findings }), 'finding', 16),
-      type: 'checkpointFinding',
-      checkpointId: checkpoint.id,
-      planRevision: current.plan.revision,
-      status,
-      requirementRefs: checkpoint.requirementRefs,
-      evidenceRefs,
-      finding: status === 'NOT_EXECUTED'
-        ? `检查点“${checkpoint.goal}”没有满足执行证据要求`
-        : related.map((finding) => finding.reason).filter(Boolean).join('；') || `检查点“${checkpoint.goal}”已由最终 requirement 结论覆盖`,
-      reason: status === 'NOT_EXECUTED'
-        ? `关联 ${actions.length} 次操作、${observations.length} 次可用观察${checkpoint.requiredAction && !requiredActionSatisfied ? '，缺少要求的操作' : ''}`
-        : related.map((finding) => finding.reason).filter(Boolean).join('；') || `检查点“${checkpoint.goal}”已完成`,
-    };
-  });
-}
-
-function assertConclusionEligibility(current, input, findings, checkpointFindings, defaults) {
-  const technicalBlocked = input.verdict === 'BLOCKED' && defaults.verdictBasis === 'TECHNICAL_CONSTRAINT';
-  const timeLimitObservationGap = current.events.some((event) => event.type === 'timeLimitReached'
-    && event.observationUnavailable === true);
-  if (timeLimitObservationGap && input.verdict !== 'INCONCLUSIVE') {
-    throw contractError('RESULT_SEMANTICS_INVALID', 'a time-limit observation gap can only conclude as INCONCLUSIVE', {
-      fieldPath: 'verdict', allowed: ['INCONCLUSIVE'], received: input.verdict,
-    });
-  }
-  const startEstablished = hasCurrentStartObservation(
-    current.events,
-    current.understanding.revision,
-    current.execution.warmSessionGeneration,
-  );
-  if (['PASS', 'FAIL'].includes(input.verdict) && !startEstablished) {
-    throw contractError('START_NOT_ESTABLISHED', `${input.verdict} requires mark-start for the current understanding and warm session`, {
-      fieldPath: 'verdict', expected: 'current startEstablished evidence before PASS or FAIL', received: input.verdict,
-    });
-  }
-  if (!technicalBlocked && !current.observation && !(timeLimitObservationGap && input.verdict === 'INCONCLUSIVE')) {
-    throw contractError('CURRENT_OBSERVATION_REQUIRED', `${input.verdict} requires a current usable observation`);
-  }
-  if (input.verdict === 'PASS') {
-    const incomplete = checkpointFindings.filter((finding) => finding.status === 'NOT_EXECUTED');
-    if (incomplete.length) {
-      throw contractError('CHECKPOINT_EXECUTION_INCOMPLETE', 'PASS requires execution evidence for every current checkpoint', {
-        fieldPath: 'checkpoints', expected: 'no NOT_EXECUTED checkpoint', received: incomplete.map((finding) => finding.checkpointId),
-      });
-    }
-  }
-  if (input.verdict === 'FAIL') {
-    const productIncidents = new Set(current.events
-      .filter((event) => event.type === 'runtimeIncident' && event.category === 'PRODUCT')
-      .map((event) => event.incidentId));
-    const stale = findings.filter((finding) => finding.status === 'NOT_SATISFIED'
-      && !finding.evidenceRefs.includes(current.observation.ref)
-      && !finding.incidentRefs.some((ref) => productIncidents.has(ref)));
-    if (stale.length) {
-      throw contractError('CURRENT_OBSERVATION_REQUIRED', 'each NOT_SATISFIED finding must cite the latest usable observation or a PRODUCT incident', {
-        fieldPath: 'findings.evidenceRefs', expected: current.observation.ref, received: stale.map((finding) => finding.requirementId),
-      });
-    }
-  }
-}
-
 function conclude(execDir, input, options = {}) {
-  ensureObject(input, 'conclude request', 'AGENT_FACADE_INVALID');
+  assertAgentInputFields('conclude', input);
   assertNoFacadeRecovery(execDir);
   if (!VERDICTS.has(input.verdict)) throw contractError('AGENT_FACADE_INVALID', 'verdict is invalid', { fieldPath: 'verdict', allowed: [...VERDICTS] });
   requireText(input.summary, 'summary');
   const current = context(execDir);
   if (!current.understanding || !current.plan) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'understanding and plan are required before conclude');
-  const latest = current.observation;
   const findingsInput = ensureArray(input.findings, 'findings', 'AGENT_FACADE_INVALID');
   const findings = findingsInput.map((finding, index) => ({
-    requirementId: requireText(finding.requirementId || finding.requirementRef, `findings[${index}].requirementRef`),
+    requirementId: requireText(finding.requirementRef, `findings[${index}].requirementRef`),
     status: requireText(finding.status, `findings[${index}].status`),
     reason: requireText(finding.reason, `findings[${index}].reason`),
-    evidenceRefs: finding.evidenceRefs?.length ? finding.evidenceRefs : latest ? [latest.ref] : [],
+    evidenceRefs: finding.evidenceRefs || [],
     knowledgeRefs: finding.knowledgeRefs || [],
     incidentRefs: finding.incidentRefs || [],
     ...(finding.necessityReason ? { necessityReason: finding.necessityReason } : {}),
@@ -771,9 +675,33 @@ function conclude(execDir, input, options = {}) {
       fieldPath: 'findings', expected: [...expectedRequirements], received: [...receivedRequirements], missing, unknown,
     });
   }
-  const allKnowledgeQueryRefs = current.events.filter((event) => event.type === 'knowledgeQuery').map((event) => event.queryId);
-  const completedKnowledgeReviews = new Set(current.events.filter((event) => event.type === 'knowledgeReview').map((event) => event.queryId));
-  const queryRefs = input.queryRefs || (completedKnowledgeReviews.size ? [...completedKnowledgeReviews] : allKnowledgeQueryRefs);
+  const decisionContext = knowledgeContext(current);
+  const knowledgeQueries = new Map(current.events.filter((event) => event.type === 'knowledgeQuery')
+    .map((event) => [event.queryId, event]));
+  const knowledgeReviews = new Map(current.events.filter((event) => event.type === 'knowledgeReview')
+    .map((event) => [event.queryId, event]));
+  const currentReviewedQueryRefs = [...knowledgeReviews.keys()].filter((queryId) => {
+    const query = knowledgeQueries.get(queryId);
+    if (!query) return false;
+    try {
+      assertCurrentKnowledgeContext(query.knowledgeContext, decisionContext);
+      assertCurrentKnowledgeContext(knowledgeReviews.get(queryId).knowledgeContext, decisionContext);
+      return true;
+    } catch (error) {
+      if (error.code === 'KNOWLEDGE_CONTEXT_STALE') return false;
+      throw error;
+    }
+  });
+  const currentQueryRefs = [...knowledgeQueries.entries()].filter(([, query]) => {
+    try {
+      assertCurrentKnowledgeContext(query.knowledgeContext, decisionContext);
+      return true;
+    } catch (error) {
+      if (error.code === 'KNOWLEDGE_CONTEXT_STALE') return false;
+      throw error;
+    }
+  }).map(([queryId]) => queryId);
+  const queryRefs = input.queryRefs || (currentReviewedQueryRefs.length ? currentReviewedQueryRefs : currentQueryRefs);
   const defaults = defaultResultFields(input, current.events);
   const stoppedWithoutObservation = current.events.some((event) => event.type === 'timeLimitReached'
     && event.observationUnavailable === true);
@@ -784,14 +712,23 @@ function conclude(execDir, input, options = {}) {
       fieldPath: 'queryRefs', expected: 'at least one query from investigate', received: [],
     });
   }
-  const unreviewedQueryRefs = queryRefs.filter((ref) => !completedKnowledgeReviews.has(ref));
+  const unknownQueryRefs = queryRefs.filter((ref) => !knowledgeQueries.has(ref));
+  if (unknownQueryRefs.length) {
+    throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'queryRefs contains an unknown knowledge query', {
+      fieldPath: 'queryRefs', received: unknownQueryRefs,
+    });
+  }
+  queryRefs.forEach((ref) => assertCurrentKnowledgeContext(knowledgeQueries.get(ref).knowledgeContext, decisionContext, {
+    fieldPath: 'queryRefs',
+  }));
+  const unreviewedQueryRefs = queryRefs.filter((ref) => !knowledgeReviews.has(ref));
   if (unreviewedQueryRefs.length) {
     throw contractError('KNOWLEDGE_REVIEW_REQUIRED', `${input.verdict} requires reviewed knowledge queries`, {
       fieldPath: 'queryRefs', expected: 'queryRefs with completed knowledgeReview', received: unreviewedQueryRefs,
     });
   }
   const uncertainties = [...new Set([
-    ...(input.uncertainties || []),
+    ...normalizeTextList(input.uncertainties || [], 'uncertainties'),
     ...(stoppedWithoutObservation && !(input.uncertainties || []).length
       ? ['最新状态变更后未取得可用观察'] : []),
   ])];
@@ -802,6 +739,7 @@ function conclude(execDir, input, options = {}) {
     requirementFindings: findings,
     uncertainties,
   };
+  assertFindingEvidenceOwnership(current, findings);
   const conclusionFacts = checkpointFacts(current, findings);
   assertConclusionEligibility(current, input, findings, conclusionFacts, defaults);
   const execution = readJson(path.join(execDir, 'execution.json'), null);
@@ -821,7 +759,10 @@ function conclude(execDir, input, options = {}) {
     }, options);
   }
   const recoveryEvents = current.events.filter((event) => event.type === 'recoveryCompleted');
-  const review = defaults.verdictBasis === 'TECHNICAL_CONSTRAINT' && !current.observation && !stoppedWithoutObservation ? null : {
+  const noExecutableRequirements = current.understanding.requirements.length === 0;
+  const reviewRequired = !(defaults.verdictBasis === 'TECHNICAL_CONSTRAINT' && !current.observation && !stoppedWithoutObservation);
+  const reviewInput = reviewRequired ? ensureObject(input.review, 'review', 'AGENT_FACADE_INVALID') : null;
+  const review = !reviewRequired ? null : {
     factId: sha256(canonicalJson({ verdict: input.verdict, planSha: current.plan.planSha, findings }), 'review', 16),
     type: 'verdictReview',
     understandingRevision: current.understanding.revision,
@@ -832,16 +773,14 @@ function conclude(execDir, input, options = {}) {
     requestedVerdict: input.verdict,
     sourceRecheck: {
       sourceRefs: current.understanding.sourceRefs.map((entry) => entry.id),
-      conclusion: input.sourceRecheck || `已按冻结原文复核全部 ${current.understanding.requirements.length} 项要求`,
+      conclusion: requireText(reviewInput.sourceConclusion, 'review.sourceConclusion'),
     },
     currentObservationRefs: current.observation ? [current.observation.ref] : [],
-    ...(stoppedWithoutObservation ? { observationUnavailable: true } : {}),
+    ...((stoppedWithoutObservation || (noExecutableRequirements && !current.observation)) ? { observationUnavailable: true } : {}),
     recoveryAttempt: {
       performed: recoveryEvents.length > 0,
-      explanation: input.recoveryExplanation || (recoveryEvents.length
-        ? '当前 execution 已完成受控恢复并重新取得现场'
-        : '未发现需要额外执行受控恢复的技术异常'),
-      evidenceRefs: input.recoveryEvidenceRefs || [],
+      explanation: requireText(reviewInput.recoveryConclusion, 'review.recoveryConclusion'),
+      evidenceRefs: recoveryEvents.length > 0 && current.observation ? [current.observation.ref] : [],
     },
     remainingUncertainties: uncertainties,
     reason: input.reason || input.summary,
@@ -868,6 +807,8 @@ module.exports = {
   investigate,
   markStart,
   normalizeUnderstandingInput,
+  normalizePlanInput,
+  plan,
   resolvePostActionSettleMs,
   resolveSemanticAction,
   settleStepRecoveryFailure,

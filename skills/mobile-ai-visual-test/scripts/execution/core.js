@@ -21,9 +21,10 @@ const { assertWorkspace } = require('../lib/workspace');
 const { validateKnowledgeCandidateSnapshot, validateResultKnowledgeSnapshots } = require('../lib/knowledge-snapshot');
 const { unresolvedEvidenceConflicts } = require('../lib/observation-consistency');
 const { buildObservationView } = require('../lib/observation-model');
+const { buildCurrentKnowledgeContext } = require('../lib/knowledge-context');
 
 const PHASE_TRANSITIONS = Object.freeze({
-  UNDERSTAND: new Set(['ESTABLISH_START', 'CONCLUDE']),
+  UNDERSTAND: new Set(['ESTABLISH_START', 'INVESTIGATE', 'CONCLUDE']),
   ESTABLISH_START: new Set(['EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   EXECUTE: new Set(['ESTABLISH_START', 'INVESTIGATE', 'CONCLUDE']),
   INVESTIGATE: new Set(['ESTABLISH_START', 'EXECUTE', 'CONCLUDE']),
@@ -577,6 +578,9 @@ function assertCurrentObservationRefs(events, refs, options = {}) {
 
 function assertConclusionObservationRefs(events, refs, options = {}) {
   const stopped = timeLimitEvent(events);
+  if (options.allowUnavailableWithoutObservation === true && (!Array.isArray(refs) || refs.length === 0)) {
+    return { boundary: latestStateChangeIndex(events), latest: null, observations: [], observationGap: true };
+  }
   if (stopped?.observationUnavailable !== true) return assertCurrentObservationRefs(events, refs, options);
   const requested = Array.isArray(refs) ? refs : [];
   if (requested.length > 0) {
@@ -641,7 +645,12 @@ function buildFinalizationDraft(execDir, proposedResult, execution, options = {}
   const evidence = collectEvidence(events, { execDir, executionId: execution.executionId })
     .filter((item) => item.warmSessionGeneration === execution.warmSessionGeneration);
   const knowledgeQueries = events.filter((event) => event.type === 'knowledgeQuery').map((event) => ({ ...event, ref: event.queryId }));
-  const knowledgeAssessments = events.filter((event) => event.type === 'knowledgeAssessment').map((event) => ({ ...event, ref: event.knowledgeRef }));
+  const knowledgeQueryById = new Map(knowledgeQueries.map((event) => [event.queryId, event]));
+  const knowledgeAssessments = events.filter((event) => event.type === 'knowledgeAssessment').map((event) => ({
+    ...event,
+    ref: event.knowledgeRef,
+    knowledgeContext: knowledgeQueryById.get(event.queryId)?.knowledgeContext,
+  }));
   const knowledgeReviews = events.filter((event) => event.type === 'knowledgeReview');
   const incidents = events.filter((event) => event.type === 'runtimeIncident').map((event) => ({ ...event, ref: event.incidentId }));
   const verdictReviews = [
@@ -665,8 +674,17 @@ function buildFinalizationDraft(execDir, proposedResult, execution, options = {}
   verdictReviews.filter((review) => review.requestedVerdict === result.verdict)
     .forEach((review) => assertConclusionObservationRefs(events, review.currentObservationRefs, {
       warmSessionGeneration: execution.warmSessionGeneration,
+      allowUnavailableWithoutObservation: understanding.requirements.length === 0 && review.observationUnavailable === true,
     }));
   const latestObservation = currentObservation(events, execution.warmSessionGeneration);
+  const currentKnowledgeContext = buildCurrentKnowledgeContext({
+    execution,
+    understanding,
+    plan,
+    events,
+    observation: latestObservation,
+    stateBoundaryIndex: latestStateChangeIndex(events),
+  });
   const evidenceConflicts = unresolvedEvidenceConflicts(execDir, events, buildObservationView, {
     warmSessionGeneration: execution.warmSessionGeneration,
   });
@@ -686,7 +704,7 @@ function buildFinalizationDraft(execDir, proposedResult, execution, options = {}
     knowledgeReviews,
     verdictReviews,
     incidents,
-    currentObservationRef: latestObservation?.ref || null,
+    currentKnowledgeContext,
   });
   validateResultKnowledgeSnapshots(execDir, result, events);
   if (result.verdict === 'PASS') {

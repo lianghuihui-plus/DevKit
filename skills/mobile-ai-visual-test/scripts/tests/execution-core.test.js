@@ -15,9 +15,11 @@ const {
   changePhase,
   completeOperation,
   confirmStartObservation,
+  currentObservation,
   createExecution,
   assertConclusionObservationRefs,
   finalizeExecution,
+  latestStateChangeIndex,
   recordKnowledgeQuery,
   sealTimeLimit,
   timelineEvents,
@@ -42,6 +44,8 @@ const {
   timeLimitState,
 } = require('../lib/execution-time-limit');
 const { withPlanSha } = require('../lib/plan-contract');
+const { buildCurrentKnowledgeContext } = require('../lib/knowledge-context');
+const { createExecutionClosure, readExecutionClosure } = require('../lib/execution-closure');
 const { createTestWorkspace } = require('./current-fixture');
 const { runAllowFailure } = require('./helpers');
 
@@ -96,10 +100,12 @@ function understandingFor(sourceText) {
     revision: 1,
     summary: '验证目标状态',
     startConditions: [{ id: 'start-001', text: '确认当前起点', basis: 'implied', sourceRefs: ['src-001'] }],
-    requirements: [{ id: 'req-001', text: '目标状态符合原文', basis: 'explicit', sourceRefs: ['src-001'] }],
+    requirements: [{
+      id: 'req-001', text: '目标状态符合原文', basis: 'explicit', sourceRefs: ['src-001'],
+      requiredInteractions: [], expectedOutcomes: ['目标状态符合原文'],
+    }],
     sourceRefs: [{ id: 'src-001', sourceSha: sourceSha(sourceText), lineStart: 1, lineEnd: 1, quote }],
     uncertainties: [],
-    requirementDispositions: [],
   };
 }
 
@@ -108,7 +114,7 @@ function planFor(revision = 1, reason = '建立目标检查点', requirementId =
     schemaVersion: 1,
     revision,
     reason,
-    checkpoints: [{ id: 'cp-001', goal: '检查目标状态', requirementRefs: [requirementId], requiredAction: false }],
+    checkpoints: [{ id: 'cp-001', objective: '检查目标状态', requirementRefs: [requirementId] }],
   });
 }
 
@@ -130,6 +136,25 @@ function commitTurn(item, value, options = {}) {
 
 function recordFact(item, fact, options = {}) {
   return commitTurn(item, { facts: [fact] }, options);
+}
+
+function knowledgeContextFor(item) {
+  const execution = readJson(path.join(item.execDir, 'execution.json'));
+  const understanding = readJson(path.join(item.execDir, 'understanding.json'));
+  const plan = readJson(path.join(item.execDir, 'plan.json'));
+  const events = timelineEvents(item.execDir);
+  return buildCurrentKnowledgeContext({
+    execution,
+    understanding,
+    plan,
+    events,
+    observation: currentObservation(events, execution.warmSessionGeneration),
+    stateBoundaryIndex: latestStateChangeIndex(events),
+  });
+}
+
+function recordQuery(item, query) {
+  return recordKnowledgeQuery(item.execDir, { ...query, knowledgeContext: knowledgeContextFor(item) });
 }
 
 function bindFormalRuntime(item) {
@@ -219,6 +244,27 @@ expectCode(() => createExecution({
   executionRequestSha: EXECUTION_REQUEST_SHA,
   interactionPolicy: 'UNATTENDED',
 }), 'EXECUTION_ACTIVE_CONFLICT');
+const replacementImplementation = `agent-implementation-${'f'.repeat(16)}`;
+const closedLifecycle = createExecutionClosure(lifecycleRoot, lifecycle.execDir, {
+  closedByImplementationSha: replacementImplementation,
+  replacementBatchId: 'batch-replacement',
+  now: '2026-08-13T10:05:00.000Z',
+});
+assert.strictEqual(closedLifecycle.idempotent, false);
+assert.strictEqual(readExecutionClosure(lifecycleRoot, lifecycle.execDir).reasonCode, 'IMPLEMENTATION_REPLACED');
+const replacementExecution = createExecution({
+  workspaceRoot: lifecycleRoot,
+  runtimeDir: conflictRuntime,
+  caseJson: conflictCase,
+  sourceText: '冲突用例',
+  executionId: 'execution-replacement',
+  batchId: 'batch-replacement',
+  platform: 'harmony',
+  implementationSha: replacementImplementation,
+  executionRequestSha: EXECUTION_REQUEST_SHA,
+  interactionPolicy: 'UNATTENDED',
+});
+assert.strictEqual(replacementExecution.execution.executionId, 'execution-replacement');
 
 const orphanDir = path.join(lifecycle.runtimeDir, 'executions', 'execution-orphan');
 fs.mkdirSync(orphanDir);
@@ -295,7 +341,7 @@ expectCode(() => assertOperationAllowed(executionClock, 'action', '2026-08-13T10
 assertOperationAllowed(executionClock, 'conclude', '2026-08-13T11:00:00.000Z');
 assertOperationAllowed(executionClock, 'record', '2026-08-13T11:00:00.000Z');
 const manyEvents = Array.from({ length: 500 }, (_, index) => ({ type: index % 2 ? 'observation' : 'actionResult', scope: 'case-business' }));
-assert.deepStrictEqual(buildCounts(manyEvents), { actions: 250, observations: 250, preparationActions: 0, knowledgeQueries: 0, knowledgeAssessments: 0, planRevisions: 0, reflections: 0 });
+assert.deepStrictEqual(buildCounts(manyEvents), { actions: 250, observations: 250, preparationActions: 0, knowledgeQueries: 0, knowledgeAssessments: 0, planRevisions: 0 });
 
 const unboundRoot = path.join(temp, 'unbound');
 createTestWorkspace(unboundRoot);
@@ -311,24 +357,23 @@ const revisedUnderstanding = {
   ...understandingFor(revision.sourceText),
   revision: 2,
   reason: '现场证据表明原目标应通过新的表现形式确认',
-  requirements: [{ id: 'req-002', text: '目标状态以新的表现形式符合原文', basis: 'implied', sourceRefs: ['src-001'] }],
-  requirementDispositions: [{ requirementId: 'req-001', disposition: 'REPLACED', replacementRefs: ['req-002'], reason: '保留原目标并修正表现形式' }],
+  requirements: [{
+    id: 'req-002', text: '目标状态以新的表现形式符合原文', basis: 'implied', sourceRefs: ['src-001'],
+    requiredInteractions: [], expectedOutcomes: ['目标状态以新的表现形式符合原文'],
+  }],
 };
 commitTurn(revision, { understanding: revisedUnderstanding });
 assert.strictEqual(readJson(path.join(revision.execDir, 'understanding.json')).revision, 2);
-changePhase(revision.execDir, 'CONCLUDE', '检查过期计划守卫');
-expectCode(() => finalizeExecution(revision.execDir, {
-  ...resultFor('BLOCKED'),
-  requirementFindings: [{ requirementId: 'req-002', status: 'BLOCKED', evidenceRefs: [], knowledgeRefs: [] }],
-}), 'PLAN_REVISION_STALE');
-changePhase(revision.execDir, 'INVESTIGATE', '修订过期计划');
-commitTurn(revision, { plan: planFor(2, '按最新理解修订计划', 'req-002') });
-expectCode(() => commitTurn(revision, { plan: planFor(1, '过期计划', 'req-002') }), 'PLAN_REVISION_STALE');
+commitTurn(revision, { plan: withPlanSha({
+  schemaVersion: 1, revision: 2, reason: '理解修订后重新建立计划',
+  checkpoints: [{ id: 'cp-002', objective: '检查修订后的目标状态', requirementRefs: ['req-002'] }],
+}) });
+expectCode(() => commitTurn(revision, { plan: planFor(1, '过期计划', 'req-001') }), 'PLAN_REVISION_STALE');
 expectCode(() => recordFact(revision, {
-  type: 'checkpointFinding', planRevision: 1, checkpointId: 'cp-001', requirementRefs: ['req-002'], evidenceRefs: [], finding: '过期计划',
+  type: 'checkpointFinding', planRevision: 1, checkpointId: 'cp-001', requirementRefs: ['req-001'], evidenceRefs: [], finding: '过期计划',
 }), 'PLAN_REVISION_STALE');
 expectCode(() => recordFact(revision, {
-  type: 'checkpointFinding', planRevision: 2, checkpointId: 'cp-001', requirementRefs: ['req-001'], evidenceRefs: [], finding: '失效要求引用',
+  type: 'checkpointFinding', planRevision: 2, checkpointId: 'cp-002', requirementRefs: ['req-001'], evidenceRefs: [], finding: '失效要求引用',
 }), 'EXECUTION_EVENT_REFERENCE_INVALID');
 expectCode(() => changePhase(revision.execDir, 'UNDERSTAND', '非法回退'), 'EXECUTION_PHASE_TRANSITION_INVALID');
 
@@ -369,7 +414,7 @@ for (const verdict of ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']) {
   if (['FAIL', 'INCONCLUSIVE'].includes(verdict)) {
     const reviewEvidence = evidenceRef || addObservation(item);
     changePhase(item.execDir, 'INVESTIGATE', '异常结论前查询知识');
-    recordKnowledgeQuery(item.execDir, { queryId: 'query-001', query: { symptom: '目标状态', keywords: [] }, candidates: [], matchCount: 0 });
+    recordQuery(item, { queryId: 'query-001', query: { symptom: '目标状态', keywords: [] }, candidates: [], candidateCount: 0, truncated: false });
     changePhase(item.execDir, 'CONCLUDE', '形成结论');
     const currentUnderstanding = readJson(path.join(item.execDir, 'understanding.json'));
     const currentPlan = readJson(path.join(item.execDir, 'plan.json'));
@@ -392,7 +437,7 @@ for (const verdict of ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']) {
   assert.strictEqual(finalized.metrics.executionId, item.executionId);
   assert.strictEqual(readExecution(item.execDir).execution.phase, 'FINALIZED');
   assert.strictEqual(finalizeExecution(item.execDir, resultFor(verdict, evidenceRef)).alreadyFinalized, true);
-  expectCode(() => recordFact(item, { type: 'reflection', reason: '已结束后写入' }), 'EXECUTION_FINALIZED');
+  expectCode(() => commitTurn(item, { plan: planFor(2, '已结束后写入') }), 'EXECUTION_FINALIZED');
 }
 
 const knowledgeRoot = path.join(temp, 'knowledge-pass');
@@ -405,8 +450,8 @@ const frozenKnowledge = '# K-001 正常现象\n\n当前现象属于已知表现�
 const frozenKnowledgeSha = crypto.createHash('sha256').update(frozenKnowledge).digest('hex');
 fs.mkdirSync(path.join(knowledgeCase.execDir, 'knowledge'), { recursive: true });
 fs.writeFileSync(path.join(knowledgeCase.execDir, 'knowledge', `${frozenKnowledgeSha}.md`), frozenKnowledge);
-recordKnowledgeQuery(knowledgeCase.execDir, {
-  queryId: 'query-knowledge', query: { symptom: '正常现象', keywords: [] }, matchCount: 1,
+recordQuery(knowledgeCase, {
+  queryId: 'query-knowledge', query: { symptom: '正常现象', keywords: [] }, candidateCount: 1, truncated: false,
   candidates: [{ entryId: 'K-001', title: '正常现象', sourceNamespace: 'workspace', relativePath: 'normal.md', contentSha: frozenKnowledgeSha, snapshotRef: `knowledge/${frozenKnowledgeSha}.md`, score: 10, expired: false, validUntil: null, conflictsWith: [], snippets: ['正常现象', '属于已知表现'] }],
 });
 fs.writeFileSync(path.join(knowledgeCase.execDir, 'knowledge', `${frozenKnowledgeSha}.md`), `${frozenKnowledge}篡改`);
@@ -462,7 +507,7 @@ assert.deepStrictEqual(assertConclusionObservationRefs(timelineEvents(limitCase.
   warmSessionGeneration: 1,
 }).observations, []);
 expectCode(() => finalizeExecution(limitCase.execDir, resultFor('PASS', limitEvidence), { now: '2026-08-13T10:30:00.000Z' }), 'RESULT_SEMANTICS_INVALID');
-recordKnowledgeQuery(limitCase.execDir, { queryId: 'query-time-limit', query: { symptom: '时限后现场未知', keywords: [] }, candidates: [], matchCount: 0 });
+recordQuery(limitCase, { queryId: 'query-time-limit', query: { symptom: '时限后现场未知', keywords: [] }, candidates: [], candidateCount: 0, truncated: false });
 recordFact(limitCase, {
   type: 'verdictReview', understandingRevision: 1, planRevision: 1,
   planSha: readJson(path.join(limitCase.execDir, 'plan.json')).planSha,
@@ -485,7 +530,7 @@ bindFormalRuntime(noObservationCase);
 commitTurn(noObservationCase, { understanding: understandingFor(noObservationCase.sourceText), plan: planFor() });
 changePhase(noObservationCase.execDir, 'ESTABLISH_START', '准备观察起点');
 sealTimeLimit(noObservationCase.execDir, { now: '2026-08-13T10:30:00.000Z' });
-recordKnowledgeQuery(noObservationCase.execDir, { queryId: 'query-no-observation', query: { symptom: '无法取得现场', keywords: [] }, candidates: [], matchCount: 0 });
+recordQuery(noObservationCase, { queryId: 'query-no-observation', query: { symptom: '无法取得现场', keywords: [] }, candidates: [], candidateCount: 0, truncated: false });
 recordFact(noObservationCase, {
   type: 'verdictReview', understandingRevision: 1, planRevision: 1,
   planSha: readJson(path.join(noObservationCase.execDir, 'plan.json')).planSha,

@@ -15,23 +15,29 @@ const { validateUnderstanding } = require('../lib/understanding-contract');
 const { validatePlan, withPlanSha } = require('../lib/plan-contract');
 const { validateExecutionEvent } = require('../execution/contracts/execution-event-contract');
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
-const { appendEvent, assertAgentWriteReady, assertConclusionObservationRefs, requireBoundRuntime, timelineEvents } = require('../execution/core');
+const {
+  appendEvent,
+  assertAgentWriteReady,
+  assertConclusionObservationRefs,
+  currentObservation,
+  latestStateChangeIndex,
+  requireBoundRuntime,
+  timelineEvents,
+} = require('../execution/core');
 const { validateKnowledgeCandidateSnapshot } = require('../lib/knowledge-snapshot');
+const { assertCurrentKnowledgeContext, buildCurrentKnowledgeContext, sameKnowledgeContext } = require('../lib/knowledge-context');
 
-const FACT_TYPES = new Set(['checkpointFinding', 'reflection', 'knowledgeAssessment', 'knowledgeReview', 'verdictReview']);
+const FACT_TYPES = new Set(['checkpointFinding', 'knowledgeAssessment', 'knowledgeReview', 'verdictReview']);
 
-function assertInitialTurnReady(turn, previousUnderstanding, previousPlan) {
-  if (previousUnderstanding || previousPlan) return;
+function assertInitialTurnReady(turn, previousUnderstanding) {
+  if (previousUnderstanding) return;
   const missing = [];
   if (!turn.understanding) missing.push('understanding');
-  if (!turn.plan) missing.push('plan');
   if (!turn.understanding?.sourceRefs?.length) missing.push('understanding.sourceRefs');
-  if (!turn.understanding?.requirements?.length) missing.push('understanding.requirements');
-  if (!turn.plan?.checkpoints?.length) missing.push('plan.checkpoints');
   if (missing.length) {
-    throw contractError('AGENT_TURN_NOT_EXECUTABLE', `initial turn is missing execution-ready artifacts: ${missing.join(', ')}`, {
+    throw contractError('AGENT_TURN_NOT_EXECUTABLE', `initial turn is missing frozen understanding artifacts: ${missing.join(', ')}`, {
       fieldPath: missing[0],
-      expected: 'complete understanding and at least one checkpoint in the same initial turn',
+      expected: 'complete understanding before planning',
       missing,
     });
   }
@@ -78,7 +84,7 @@ function prevalidateTurn(execDir, input, options = {}) {
   const livePlan = readJson(path.join(execDir, 'plan.json'), null);
   const previousUnderstanding = options.previousUnderstanding !== undefined ? options.previousUnderstanding : liveUnderstanding;
   const previousPlan = options.previousPlan !== undefined ? options.previousPlan : livePlan;
-  assertInitialTurnReady(turn, previousUnderstanding, previousPlan);
+  assertInitialTurnReady(turn, previousUnderstanding);
   const understanding = turn.understanding || previousUnderstanding;
   if (turn.understanding && !options.committed?.has('understanding')) {
     validateUnderstanding(turn.understanding, { sourceText, previous: previousUnderstanding });
@@ -89,6 +95,14 @@ function prevalidateTurn(execDir, input, options = {}) {
   }
   const plan = turn.plan || previousPlan;
   const events = timelineEvents(execDir);
+  const currentKnowledgeContext = understanding ? buildCurrentKnowledgeContext({
+    execution,
+    understanding,
+    plan,
+    events,
+    observation: currentObservation(events, execution.warmSessionGeneration),
+    stateBoundaryIndex: latestStateChangeIndex(events),
+  }) : null;
   const eventCandidates = [];
   const knowledgeRefs = new Set(events.filter((entry) => entry.type === 'knowledgeAssessment').map((entry) => entry.knowledgeRef));
   const assessmentsByRef = new Map(events.filter((entry) => entry.type === 'knowledgeAssessment')
@@ -129,6 +143,7 @@ function prevalidateTurn(execDir, input, options = {}) {
       knowledgeRefs.add(fact.knowledgeRef);
       const query = events.find((entry) => entry.type === 'knowledgeQuery' && entry.queryId === fact.queryId);
       if (!query) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'knowledge assessment references an unknown query');
+      assertCurrentKnowledgeContext(query.knowledgeContext, currentKnowledgeContext, { fieldPath: 'knowledgeAssessment.queryId' });
       const candidate = query.candidates.find((item) => item.entryId === fact.entryId
         && item.sourceNamespace === fact.sourceNamespace && item.relativePath === fact.relativePath
         && item.contentSha === fact.contentSha);
@@ -141,16 +156,20 @@ function prevalidateTurn(execDir, input, options = {}) {
       if (reviewedQueries.has(fact.queryId)) throw contractError('KNOWLEDGE_REVIEW_ALREADY_COMPLETED', `knowledge query is already reviewed: ${fact.queryId}`);
       const query = events.find((entry) => entry.type === 'knowledgeQuery' && entry.queryId === fact.queryId);
       if (!query) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'knowledge review references an unknown query');
+      assertCurrentKnowledgeContext(query.knowledgeContext, currentKnowledgeContext, { fieldPath: 'knowledgeReview.queryId' });
+      if (!sameKnowledgeContext(fact.knowledgeContext, query.knowledgeContext)) {
+        throw contractError('KNOWLEDGE_CONTEXT_STALE', 'knowledge review must preserve the frozen query context');
+      }
       const refs = new Set(fact.assessmentRefs);
       if (refs.size !== fact.assessmentRefs.length) throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'knowledge review assessmentRefs must be unique');
       const assessments = fact.assessmentRefs.map((ref) => assessmentsByRef.get(ref));
       if (assessments.some((assessment) => !assessment || assessment.queryId !== fact.queryId)) {
         throw contractError('EXECUTION_EVENT_REFERENCE_INVALID', 'knowledge review assessments must belong to its query');
       }
-      if (query.matchCount === 0 && (fact.conclusion !== 'NO_MATCH' || assessments.length !== 0)) {
+      if (query.candidateCount === 0 && (fact.conclusion !== 'NO_MATCH' || assessments.length !== 0)) {
         throw contractError('KNOWLEDGE_REVIEW_INVALID', 'a zero-match query requires an empty NO_MATCH review');
       }
-      if (query.matchCount > 0 && (fact.conclusion === 'NO_MATCH' || assessments.length === 0)) {
+      if (query.candidateCount > 0 && (fact.conclusion === 'NO_MATCH' || assessments.length === 0)) {
         throw contractError('KNOWLEDGE_REVIEW_INVALID', 'a matched query requires assessed candidates and a non-NO_MATCH conclusion');
       }
       const values = new Set(assessments.map((assessment) => assessment.assessment));
@@ -182,9 +201,10 @@ function prevalidateTurn(execDir, input, options = {}) {
       }
       assertConclusionObservationRefs(events, fact.currentObservationRefs, {
         warmSessionGeneration: execution.warmSessionGeneration,
+        allowUnavailableWithoutObservation: understanding.requirements.length === 0 && fact.observationUnavailable === true,
       });
       const observationUnavailable = events.some((entry) => entry.type === 'timeLimitReached' && entry.observationUnavailable === true);
-      if (fact.observationUnavailable === true && !observationUnavailable) {
+      if (fact.observationUnavailable === true && !observationUnavailable && understanding.requirements.length > 0) {
         throw contractError('VERDICT_REVIEW_INVALID', 'observationUnavailable requires a matching time-limit observation gap');
       }
       if (observationUnavailable && fact.observationUnavailable !== true) {

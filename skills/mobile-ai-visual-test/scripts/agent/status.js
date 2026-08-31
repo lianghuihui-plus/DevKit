@@ -11,6 +11,7 @@ const {
   hasCurrentStartObservation,
   knowledgeQueryDraftIds,
   latestRecoveryIndex,
+  latestStateChangeIndex,
   openOperations,
   pendingPostActionObservation,
   timelineEvents,
@@ -19,6 +20,8 @@ const {
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
 const { activeCheckpoint, controlRequestPath } = require('./control-request');
 const { deriveCheckpointProgress } = require('../lib/checkpoint-progress');
+const { expandCheckpoint } = require('../lib/checkpoint-semantics');
+const { buildCurrentKnowledgeContext, sameKnowledgeDecisionContext } = require('../lib/knowledge-context');
 
 function operationRecoveries(execDir, events, timeLimitReached = false) {
   const agentDir = path.join(execDir, 'agent');
@@ -73,6 +76,9 @@ function readAgentStatus(execDir, now = new Date().toISOString(), options = {}) 
   const limit = timeLimitState(execution, now);
   const understanding = readJson(path.join(execDir, 'understanding.json'), null);
   const plan = readJson(path.join(execDir, 'plan.json'), null);
+  const lastUnderstanding = events.map((event) => event.type).lastIndexOf('caseUnderstood');
+  const lastPlan = events.map((event) => event.type).lastIndexOf('planRevised');
+  const planCurrent = Boolean(plan) && lastPlan >= lastUnderstanding;
   const evidence = collectEvidence(events, { execDir, executionId: execution.executionId });
   const pendingObservation = pendingPostActionObservation(events);
   const pendingRecoveries = operationRecoveries(execDir, events, limit.reached);
@@ -88,10 +94,9 @@ function readAgentStatus(execDir, now = new Date().toISOString(), options = {}) 
   if (!understanding) missingArtifacts.push('understanding');
   else {
     if (!understanding.sourceRefs?.length) missingArtifacts.push('understanding.sourceRefs');
-    if (!understanding.requirements?.length) missingArtifacts.push('understanding.requirements');
   }
-  if (!plan) missingArtifacts.push('plan');
-  else if (!plan.checkpoints?.length) missingArtifacts.push('plan.checkpoints');
+  if (!planCurrent) missingArtifacts.push('plan');
+  else if (understanding.requirements.length > 0 && !plan.checkpoints?.length) missingArtifacts.push('plan.checkpoints');
   const operationSlotAvailable = !execution.finalized && !limit.reached && openOperations(events).length === 0
     && pendingRecoveries.length === 0 && knowledgeQueryRecoveries.length === 0 && pendingTurnRecoveries.length === 0
     && pendingStepRecoveries.length === 0;
@@ -100,7 +105,22 @@ function readAgentStatus(execDir, now = new Date().toISOString(), options = {}) 
   const postRecoveryObservationRequired = latestRecoveryIndex(events) >= 0 && !latestObservation;
   const timeLimitObservationGap = events.some((event) => event.type === 'timeLimitReached'
     && event.observationUnavailable === true);
-  const completedKnowledgeReview = events.some((event) => event.type === 'knowledgeReview');
+  const currentKnowledgeContext = understanding ? buildCurrentKnowledgeContext({
+    execution,
+    understanding,
+    plan: planCurrent ? plan : null,
+    events,
+    observation: latestObservation,
+    stateBoundaryIndex: latestStateChangeIndex(events),
+  }) : null;
+  const queries = new Map(events.filter((event) => event.type === 'knowledgeQuery').map((event) => [event.queryId, event]));
+  const completedKnowledgeReview = Boolean(currentKnowledgeContext) && events.some((event) => {
+    if (event.type !== 'knowledgeReview') return false;
+    const query = queries.get(event.queryId);
+    return Boolean(query)
+      && sameKnowledgeDecisionContext(event.knowledgeContext, currentKnowledgeContext)
+      && sameKnowledgeDecisionContext(query.knowledgeContext, currentKnowledgeContext);
+  });
   const conclusionConstraint = timeLimitObservationGap ? {
     mode: 'TIME_LIMIT_OBSERVATION_GAP',
     allowedVerdicts: ['INCONCLUSIVE'],
@@ -112,10 +132,23 @@ function readAgentStatus(execDir, now = new Date().toISOString(), options = {}) 
     findingStatus: null,
     knowledgeRequired: false,
   };
-  const conclusionTransactionsReady = !execution.finalized && Boolean(understanding && plan) && !pendingObservation
+  const conclusionTransactionsReady = !execution.finalized && Boolean(understanding && planCurrent) && !pendingObservation
     && pendingRecoveries.length === 0 && knowledgeQueryRecoveries.length === 0 && pendingTurnRecoveries.length === 0
     && pendingStepRecoveries.length === 0 && !controlRequest
     && ['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE'].includes(execution.phase);
+  const activeCheckpointRef = startEstablished && planCurrent
+    ? activeCheckpoint(plan, events, execution.warmSessionGeneration)
+    : null;
+  const continuation = {
+    mode: !understanding || !planCurrent
+      ? 'INITIAL'
+      : postRecoveryObservationRequired ? 'RECOVERY_RESUME' : 'RESUME',
+    understanding: understanding ? 'PRESENT' : 'MISSING',
+    plan: planCurrent ? 'CURRENT' : 'MISSING',
+    preserveSemanticArtifacts: Boolean(understanding && planCurrent),
+    postRecoveryObservationRequired,
+  };
+  const deviceWorkAuthorized = Boolean(understanding?.requirements?.length);
   const status = {
     schemaVersion: 1,
     executionId: execution.executionId,
@@ -124,11 +157,14 @@ function readAgentStatus(execDir, now = new Date().toISOString(), options = {}) 
     phase: execution.phase,
     finalized: execution.finalized === true,
     understandingRevision: understanding?.revision || null,
-    planRevision: plan?.revision || null,
-    checkpointIds: (plan?.checkpoints || []).map((entry) => entry.id),
-    activeCheckpointRef: activeCheckpoint(plan, events, execution.warmSessionGeneration),
-    checkpointProgress: deriveCheckpointProgress(plan, events, null, {
+    planRevision: planCurrent ? plan.revision : null,
+    checkpointIds: (planCurrent ? plan.checkpoints : []).map((entry) => entry.id),
+    activeCheckpointRef,
+    activeCheckpoint: expandCheckpoint(understanding, planCurrent ? plan.checkpoints?.find((entry) => entry.id === activeCheckpointRef) : null),
+    continuation,
+    checkpointProgress: deriveCheckpointProgress(planCurrent ? plan : null, events, null, {
       warmSessionGeneration: execution.warmSessionGeneration,
+      understanding,
     }),
     currentObservationRef: latestObservation?.ref || null,
     openOperationIds: openOperations(events).map((entry) => entry.operationId),
@@ -155,17 +191,33 @@ function readAgentStatus(execDir, now = new Date().toISOString(), options = {}) 
       contractSha: binding.request.agentContractSha,
     },
     signals: {
-      mayOperate: operationSlotAvailable && executionReady && !controlRequest,
-      mayObserve: operationSlotAvailable && executionReady && !controlRequest,
-      mayAct: operationSlotAvailable && executionReady && Boolean(latestObservation) && !pendingObservation && !controlRequest,
+      mayOperate: deviceWorkAuthorized && operationSlotAvailable && executionReady && !controlRequest,
+      mayObserve: deviceWorkAuthorized && operationSlotAvailable && executionReady && !controlRequest,
+      mayAct: deviceWorkAuthorized && operationSlotAvailable && executionReady && Boolean(latestObservation) && !pendingObservation && !controlRequest,
       mayConclude: conclusionTransactionsReady && (!timeLimitObservationGap || completedKnowledgeReview),
       startEstablished,
       currentObservationAvailable: Boolean(latestObservation),
-      hasCheckpoints,
+      hasCheckpoints: planCurrent && hasCheckpoints,
       knowledgeAvailable: Array.isArray(binding.request.knowledgeRoots) && binding.request.knowledgeRoots.length === 2,
     },
   };
   if (options.includeEvidence !== false) {
+    status.semanticContext = {
+      understanding: understanding ? {
+        revision: understanding.revision,
+        summary: understanding.summary,
+        startConditions: understanding.startConditions.map(({ id, text, basis }) => ({ id, text, basis })),
+        requirements: understanding.requirements.map(({ id, text, basis, requiredInteractions, expectedOutcomes }) => ({
+          id, text, basis, requiredInteractions, expectedOutcomes,
+        })),
+        uncertainties: understanding.uncertainties || [],
+      } : null,
+      plan: planCurrent ? {
+        revision: plan.revision,
+        planSha: plan.planSha,
+        checkpoints: plan.checkpoints.map((checkpoint) => expandCheckpoint(understanding, checkpoint)),
+      } : null,
+    };
     status.evidence = evidence.map((entry) => ({
       ref: entry.ref,
       scope: entry.phase,

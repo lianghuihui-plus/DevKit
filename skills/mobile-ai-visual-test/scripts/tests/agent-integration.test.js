@@ -11,6 +11,7 @@ const {
   bootstrapBatch, commitCurrentCase, initializeBatch, loadBatch, reconcileBatch, recoverApp, startCurrentCase,
 } = require('../batch/core');
 const { createAgentRequest, createAgentResult } = require('../agent/core');
+const { readAgentStatus } = require('../agent/status');
 const { requestRecovery } = require('../agent/control-request');
 const { executeKnowledgeQuery } = require('../agent/query-knowledge');
 const { recordSimulatedOperation } = require('./simulated-operation');
@@ -58,16 +59,19 @@ function understanding(item) {
   return {
     schemaVersion: 1, revision: 1, summary: `理解 ${item.name}`,
     startConditions: [{ id: 'start-001', text: '通过当前现场建立起点', basis: 'implied', sourceRefs: ['src-001'] }],
-    requirements: [{ id: 'req-001', text: item.sourceText, basis: 'explicit', sourceRefs: ['src-001'] }],
+    requirements: [{
+      id: 'req-001', text: item.sourceText, basis: 'explicit', sourceRefs: ['src-001'],
+      requiredInteractions: [], expectedOutcomes: [item.sourceText],
+    }],
     sourceRefs: [{ id: 'src-001', sourceSha: sourceSha(item.sourceText), lineStart: 1, lineEnd: 1, quote: item.sourceText }],
-    uncertainties: [], requirementDispositions: [],
+    uncertainties: [],
   };
 }
 
 function plan(revision = 1, reason = '建立当前检查点') {
   return withPlanSha({
     schemaVersion: 1, revision, reason,
-    checkpoints: [{ id: 'cp-001', goal: '验证当前明确要求', requirementRefs: ['req-001'], requiredAction: false }],
+    checkpoints: [{ id: 'cp-001', objective: '验证当前明确要求', requirementRefs: ['req-001'] }],
   });
 }
 
@@ -225,6 +229,12 @@ assert.strictEqual(fs.existsSync(path.join(defect.execDir, 'agent', 'control-req
 const reboundRequest = readJson(path.join(defect.execDir, 'agent', 'request.json'));
 assert.strictEqual(reboundRequest.warmSessionGeneration, 2);
 assert.strictEqual(fs.existsSync(path.join(defect.execDir, 'agent', 'request-generation-1.json')), true);
+const resumedStatus = readAgentStatus(defect.execDir, T0);
+assert.strictEqual(resumedStatus.continuation.mode, 'RECOVERY_RESUME');
+assert.strictEqual(resumedStatus.continuation.preserveSemanticArtifacts, true);
+assert.ok(resumedStatus.semanticContext.understanding);
+assert.ok(resumedStatus.semanticContext.plan);
+assert.strictEqual(resumedStatus.activeCheckpointRef, null);
 const recoveredStartRef = observe(defect, 'prepare-after-recovery', prepareAuth(defect)).fact.ref;
 confirmStartObservation(defect.execDir, recoveredStartRef, '恢复后重新确认用例起点', { now: T0 });
 const postRecoveryEvidence = observe(defect, 'defect-after-recovery', businessAuth(defect)).fact.ref;

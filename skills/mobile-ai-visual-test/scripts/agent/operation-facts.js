@@ -48,6 +48,7 @@ function factFromResult(execDir, validated, kind, result, options = {}) {
     actionNormalizations: validated.actionNormalizations,
     authorization: request.authorization,
     deviceResult: adapterResult,
+    ...(result.coordinateAudit ? { coordinateAudit: result.coordinateAudit } : {}),
     warmSessionGeneration: validated.context.execution.warmSessionGeneration,
     ...(request.intent ? { intent: request.intent } : {}),
     ...(request.expectedOutcome ? { expectedOutcome: request.expectedOutcome } : {}),

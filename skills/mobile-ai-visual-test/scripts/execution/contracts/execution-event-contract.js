@@ -8,6 +8,7 @@ const {
   ensureObject,
   ensureString,
 } = require('../../lib/contract-utils');
+const { validateKnowledgeContext } = require('../../lib/knowledge-context');
 
 const EVENT_SCHEMA_VERSION = 1;
 const PHASES = new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE', 'FINALIZED']);
@@ -23,7 +24,6 @@ const EVENT_WRITERS = Object.freeze({
   caseUnderstood: 'agent',
   planRevised: 'agent',
   checkpointFinding: 'agent',
-  reflection: 'agent',
   knowledgeQuery: 'knowledge-query',
   knowledgeAssessment: 'agent',
   knowledgeReview: 'agent',
@@ -52,7 +52,6 @@ const EVENT_PHASES = Object.freeze({
   caseUnderstood: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   planRevised: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   checkpointFinding: new Set(['ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
-  reflection: new Set(['EXECUTE', 'INVESTIGATE']),
   knowledgeQuery: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   knowledgeAssessment: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
   knowledgeReview: new Set(['UNDERSTAND', 'ESTABLISH_START', 'EXECUTE', 'INVESTIGATE', 'CONCLUDE']),
@@ -169,6 +168,21 @@ function validateExecutionEvent(value, options = {}) {
       if (typeof value.ok !== 'boolean') throw contractError('EXECUTION_EVENT_INVALID', 'actionResult ok must be boolean');
       if (value.intent !== undefined) ensureString(value.intent, 'intent', 'EXECUTION_EVENT_INVALID');
       if (value.expectedOutcome !== undefined) ensureString(value.expectedOutcome, 'expectedOutcome', 'EXECUTION_EVENT_INVALID');
+      if (value.coordinateAudit !== undefined) {
+        ensureObject(value.coordinateAudit, 'coordinateAudit', 'EXECUTION_EVENT_INVALID');
+        if (value.coordinateAudit.schemaVersion !== 1) throw contractError('EXECUTION_EVENT_INVALID', 'coordinateAudit.schemaVersion is invalid');
+        if (!['POINT', 'GESTURE'].includes(value.coordinateAudit.kind)) throw contractError('EXECUTION_EVENT_INVALID', 'coordinateAudit.kind is invalid');
+        if (value.coordinateAudit.consistency !== 'MATCHED') throw contractError('EXECUTION_EVENT_INVALID', 'coordinateAudit.consistency must be MATCHED');
+        if (!['layout', 'visual', 'pixel'].includes(value.coordinateAudit.source)) throw contractError('EXECUTION_EVENT_INVALID', 'coordinateAudit.source is invalid');
+        ensureObject(value.coordinateAudit.requested, 'coordinateAudit.requested', 'EXECUTION_EVENT_INVALID');
+        ensureObject(value.coordinateAudit.executed, 'coordinateAudit.executed', 'EXECUTION_EVENT_INVALID');
+        if (value.coordinateAudit.overlayRef !== undefined) {
+          ensureString(value.coordinateAudit.overlayRef, 'coordinateAudit.overlayRef', 'EXECUTION_EVENT_INVALID');
+          if (value.coordinateAudit.overlayRef.startsWith('/') || value.coordinateAudit.overlayRef.split(/[\\/]+/).includes('..')) {
+            throw contractError('EXECUTION_EVENT_INVALID', 'coordinateAudit.overlayRef is unsafe');
+          }
+        }
+      }
       if (value.scope === 'case-prepare') {
         if (value.startConditionId !== undefined) ensureId(value.startConditionId, 'startConditionId', 'EXECUTION_EVENT_INVALID');
         ensureInteger(value.understandingRevision, 'understandingRevision', 'EXECUTION_EVENT_INVALID', 1);
@@ -196,16 +210,15 @@ function validateExecutionEvent(value, options = {}) {
       validateStringArray(value.evidenceRefs, 'evidenceRefs');
       ensureString(value.finding, 'finding', 'EXECUTION_EVENT_INVALID');
       break;
-    case 'reflection':
-      ensureString(value.reason, 'reason', 'EXECUTION_EVENT_INVALID');
-      break;
     case 'knowledgeQuery':
       ensureId(value.queryId, 'queryId', 'EXECUTION_EVENT_INVALID');
       ensureObject(value.query, 'query', 'EXECUTION_EVENT_INVALID');
+      validateKnowledgeContext(value.knowledgeContext, 'knowledgeContext', 'EXECUTION_EVENT_INVALID');
       const candidates = ensureArray(value.candidates, 'candidates', 'EXECUTION_EVENT_INVALID');
       candidates.forEach((candidate, index) => validateKnowledgeCandidate(candidate, `candidates[${index}]`));
-      ensureInteger(value.matchCount, 'matchCount', 'EXECUTION_EVENT_INVALID', 0);
-      if (value.matchCount !== candidates.length) throw contractError('EXECUTION_EVENT_INVALID', 'matchCount must equal candidates.length');
+      ensureInteger(value.candidateCount, 'candidateCount', 'EXECUTION_EVENT_INVALID', 0);
+      if (value.candidateCount !== candidates.length) throw contractError('EXECUTION_EVENT_INVALID', 'candidateCount must equal candidates.length');
+      if (typeof value.truncated !== 'boolean') throw contractError('EXECUTION_EVENT_INVALID', 'truncated must be boolean');
       break;
     case 'knowledgeAssessment':
       ensureId(value.queryId, 'queryId', 'EXECUTION_EVENT_INVALID');
@@ -220,6 +233,7 @@ function validateExecutionEvent(value, options = {}) {
       break;
     case 'knowledgeReview':
       ensureId(value.queryId, 'queryId', 'EXECUTION_EVENT_INVALID');
+      validateKnowledgeContext(value.knowledgeContext, 'knowledgeContext', 'EXECUTION_EVENT_INVALID');
       if (!KNOWLEDGE_REVIEW_CONCLUSIONS.has(value.conclusion)) throw contractError('EXECUTION_EVENT_INVALID', 'knowledge review conclusion is invalid');
       validateStringArray(value.assessmentRefs, 'assessmentRefs');
       ensureString(value.reason, 'reason', 'EXECUTION_EVENT_INVALID');
@@ -229,7 +243,6 @@ function validateExecutionEvent(value, options = {}) {
       ensureInteger(value.planRevision, 'planRevision', 'EXECUTION_EVENT_INVALID', 1);
       ensureString(value.planSha, 'planSha', 'EXECUTION_EVENT_INVALID');
       validateStringArray(value.requirementRefs, 'requirementRefs');
-      if (value.requirementRefs.length === 0) throw contractError('EXECUTION_EVENT_INVALID', 'verdictReview requires at least one requirement reference');
       validateStringArray(value.queryRefs, 'queryRefs');
       if (value.queryRefs.length === 0 && ['FAIL', 'INCONCLUSIVE'].includes(value.requestedVerdict)) {
         throw contractError('EXECUTION_EVENT_INVALID', `${value.requestedVerdict} verdictReview requires at least one knowledge query reference`);

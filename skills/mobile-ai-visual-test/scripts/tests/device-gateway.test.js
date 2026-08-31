@@ -66,23 +66,35 @@ function okObservationRunner(overrides = {}) {
 }
 
 function okActionRunner(overrides = {}) {
-  return runnerFactory((command, args) => ({
-    status: 0,
-    stdout: JSON.stringify({
+  return runnerFactory((command, args) => {
+    const action = valueAfter(args, '--type');
+    const coordinateResult = action === 'swipe' ? {
+      executedFrom: { x: Number(valueAfter(args, '--from-x')), y: Number(valueAfter(args, '--from-y')) },
+      executedTo: { x: Number(valueAfter(args, '--to-x')), y: Number(valueAfter(args, '--to-y')) },
+    } : valueAfter(args, '--x') !== null ? {
+      executedPoint: { x: Number(valueAfter(args, '--x')), y: Number(valueAfter(args, '--y')) },
+    } : {};
+    return {
+      status: 0,
+      stdout: JSON.stringify({
       schemaVersion: 1, type: 'actionResult', platform: 'harmony', action: valueAfter(args, '--type'), ok: true,
-      device: { id: BINDING.deviceId }, app: { appId: BINDING.appId }, ...overrides,
-    }),
-    stderr: '',
-  }));
+        device: { id: BINDING.deviceId }, app: { appId: BINDING.appId }, ...coordinateResult, ...overrides,
+      }),
+      stderr: '',
+    };
+  });
 }
 
 function understanding(sourceText) {
   return {
     schemaVersion: 1, revision: 1, summary: '理解设备网关用例',
     startConditions: [{ id: 'start-001', text: '确认当前页面', basis: 'implied', sourceRefs: ['src-001'] }],
-    requirements: [{ id: 'req-001', text: sourceText, basis: 'explicit', sourceRefs: ['src-001'] }],
+    requirements: [{
+      id: 'req-001', text: sourceText, basis: 'explicit', sourceRefs: ['src-001'],
+      requiredInteractions: [], expectedOutcomes: [sourceText],
+    }],
     sourceRefs: [{ id: 'src-001', sourceSha: sourceSha(sourceText), lineStart: 1, lineEnd: 1, quote: sourceText }],
-    uncertainties: [], requirementDispositions: [],
+    uncertainties: [],
   };
 }
 
@@ -141,7 +153,7 @@ const started = startCurrentCase({ workspaceRoot: root, batchId: 'batch-gateway'
 createAgentRequest({ workspaceRoot: root, execDir: started.execDir, skillContract: contract });
 commitAgentTurn(started.execDir, {
   schemaVersion: 1, turnId: 'turn-gateway', understanding: understanding(sourceText),
-  plan: withPlanSha({ schemaVersion: 1, revision: 1, reason: '建立设备检查点', checkpoints: [{ id: 'cp-001', goal: '验证当前页面', requirementRefs: ['req-001'], requiredAction: false }] }),
+  plan: withPlanSha({ schemaVersion: 1, revision: 1, reason: '建立设备检查点', checkpoints: [{ id: 'cp-001', objective: '验证当前页面', requirementRefs: ['req-001'] }] }),
   facts: [],
 }, { now: T0 });
 changePhase(started.execDir, 'ESTABLISH_START', '准备观察起点', { implementationSha: contract.implementationSha, now: T0 });

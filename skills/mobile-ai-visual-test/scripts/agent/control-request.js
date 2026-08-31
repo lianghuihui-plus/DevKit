@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { canonicalJson, contractError, ensureObject, ensureString, sha256 } = require('../lib/contract-utils');
+const { canonicalJson, contractError, ensureString, sha256 } = require('../lib/contract-utils');
 const { currentObservation, latestStateChangeIndex, timelineEvents } = require('../execution/core');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { validateLiveAgentBinding } = require('../lib/agent-driven-contract');
@@ -12,6 +12,7 @@ const {
   incidentCategory,
   isIncidentRecovery,
 } = require('../lib/recovery-contract');
+const { assertAgentInputFields } = require('../lib/agent-input-contract');
 
 const CONTROL_REQUEST_FILE = 'control-request.json';
 
@@ -52,7 +53,7 @@ function recoveryBinding(value) {
 }
 
 function requestRecovery(execDir, input = {}, options = {}) {
-  ensureObject(input, 'recovery request', 'AGENT_CONTROL_REQUEST_INVALID');
+  assertAgentInputFields('requestRecovery', input, 'AGENT_CONTROL_REQUEST_INVALID');
   ensureString(input.reason, 'reason', 'AGENT_CONTROL_REQUEST_INVALID');
   const triggerType = String(input.triggerType || 'AGENT_DECIDED_RESTART').trim().toUpperCase();
   if (!RECOVERY_TRIGGERS.has(triggerType)) {
@@ -65,8 +66,11 @@ function requestRecovery(execDir, input = {}, options = {}) {
     : null;
   const binding = validateLiveAgentBinding(execDir);
   const plan = readJson(path.join(execDir, 'plan.json'), null);
-  if (!plan?.checkpoints?.length) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'recovery requires the current plan');
   const understanding = readJson(path.join(execDir, 'understanding.json'), null);
+  if (!understanding?.requirements?.length) {
+    throw contractError('NO_EXECUTABLE_REQUIREMENTS', 'the current understanding has no executable requirements; recovery is not authorized');
+  }
+  if (!plan?.checkpoints?.length) throw contractError('AGENT_TURN_NOT_EXECUTABLE', 'recovery requires the current plan');
   const events = timelineEvents(execDir);
   const observation = currentObservation(events, binding.execution.warmSessionGeneration);
   const technicalObservation = INCIDENT_RECOVERY_TRIGGERS.has(triggerType)
@@ -84,9 +88,12 @@ function requestRecovery(execDir, input = {}, options = {}) {
   const checkpoint = plan.checkpoints.find((entry) => entry.id === checkpointId);
   const requirementIds = new Set(checkpoint?.requirementRefs || []);
   const sourceRefs = triggerType === 'SOURCE_REQUIRED_COLD_START'
-    ? [...new Set((understanding?.requirements || [])
-      .filter((requirement) => requirementIds.has(requirement.id))
-      .flatMap((requirement) => requirement.sourceRefs || []))]
+    ? [...new Set([
+      ...(understanding?.startConditions || []).flatMap((condition) => condition.sourceRefs || []),
+      ...(understanding?.requirements || [])
+        .filter((requirement) => requirementIds.has(requirement.id))
+        .flatMap((requirement) => requirement.sourceRefs || []),
+    ])]
     : [];
   if (triggerType === 'SOURCE_REQUIRED_COLD_START' && sourceRefs.length === 0) {
     throw contractError('RECOVERY_EVIDENCE_REQUIRED', 'source-required cold start needs a source reference from the active checkpoint');

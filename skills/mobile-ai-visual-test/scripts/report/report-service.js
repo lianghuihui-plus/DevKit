@@ -16,7 +16,7 @@ const PLATFORM_ORDER = ['android', 'ios', 'harmony'];
 const PLATFORM_LABELS = Object.freeze({ android: 'Android', ios: 'iOS', harmony: 'HarmonyOS' });
 const STATUS_LABELS = Object.freeze({
   PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', UNKNOWN: '无法判断', INCONCLUSIVE: '无法判断',
-  RUNNING: '执行中', PENDING_PUBLICATION: '待发布', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', NOT_RUN: '未执行',
+  RUNNING: '执行中', ABANDONED: '执行已废弃', PENDING_PUBLICATION: '待发布', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', NOT_RUN: '未执行',
 });
 
 function readJson(file, fallback = null) {
@@ -88,7 +88,7 @@ function collectCasePlatforms(caseDir) {
 function aggregateStatus(platforms) {
   const statuses = platforms.map((entry) => entry.status);
   if (!statuses.length) return 'NOT_RUN';
-  for (const status of ['FAIL', 'BLOCKED', 'RUNNING', 'FINALIZATION_RECOVERY_REQUIRED', 'PENDING_PUBLICATION', 'UNKNOWN']) {
+  for (const status of ['FAIL', 'BLOCKED', 'RUNNING', 'FINALIZATION_RECOVERY_REQUIRED', 'PENDING_PUBLICATION', 'UNKNOWN', 'ABANDONED']) {
     if (statuses.includes(status)) return status === 'FINALIZATION_RECOVERY_REQUIRED' ? 'RUNNING' : status;
   }
   return statuses.every((status) => status === 'PASS') ? 'PASS' : 'NOT_RUN';

@@ -1,5 +1,7 @@
 'use strict';
 
+const { checkpointRequirements } = require('./checkpoint-semantics');
+
 const FINDING_PROGRESS = Object.freeze({
   SATISFIED: 'VERIFIED',
   NOT_SATISFIED: 'NOT_SATISFIED',
@@ -27,12 +29,14 @@ function deriveCheckpointProgress(plan, events = [], result = null, options = {}
     const observations = activity.filter((event) => event.type === 'observation' && event.usable === true);
     const finding = [...events].reverse().find((event) => event.type === 'checkpointFinding'
       && event.checkpointId === checkpoint.id && event.planRevision === plan.revision);
-    const hasRequiredAction = checkpoint.requiredAction !== true || actions.length > 0;
+    const requiresAction = checkpointRequirements(options.understanding, checkpoint)
+      .some((requirement) => (requirement.requiredInteractions || []).length > 0);
+    const actionRequirementSatisfied = !requiresAction || actions.length > 0;
     const hasExecutionEvidence = observations.length > 0 || actions.length > 0 || (finding?.evidenceRefs || []).length > 0;
     let status;
     if (finding) {
-      status = FINDING_PROGRESS[finding.status] || (hasExecutionEvidence && hasRequiredAction ? 'VERIFIED' : 'NOT_EXECUTED');
-      if (status === 'VERIFIED' && (!hasExecutionEvidence || !hasRequiredAction)) status = 'NOT_EXECUTED';
+      status = FINDING_PROGRESS[finding.status] || (hasExecutionEvidence && actionRequirementSatisfied ? 'VERIFIED' : 'NOT_EXECUTED');
+      if (status === 'VERIFIED' && (!hasExecutionEvidence || !actionRequirementSatisfied)) status = 'NOT_EXECUTED';
     } else if (activity.length) status = 'ACTIVE';
     else status = 'PENDING';
     return {
@@ -46,7 +50,8 @@ function deriveCheckpointProgress(plan, events = [], result = null, options = {}
         ...(finding?.evidenceRefs || []),
       ])],
       requirementFindings: (checkpoint.requirementRefs || []).map((ref) => requirementFindings.get(ref)).filter(Boolean),
-      requiredActionSatisfied: hasRequiredAction,
+      requiresAction,
+      actionRequirementSatisfied,
     };
   });
 }

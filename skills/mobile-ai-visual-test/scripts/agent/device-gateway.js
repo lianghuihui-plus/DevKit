@@ -8,6 +8,7 @@ const { bindingSha, validateBatchContract, validateBinding } = require('../lib/b
 const { environmentAdapterArgs } = require('../lib/execution-environment');
 const { inspectPng } = require('../lib/image-evidence');
 const { isSafeRelativeArtifact, resolveArtifact, sha256File } = require('../lib/execution-evidence');
+const { buildCoordinateAudit } = require('../lib/action-coordinate-audit');
 
 const ACTION_ARGUMENTS = Object.freeze({
   type: '--type',
@@ -177,9 +178,13 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
   if (kind === 'ACTION' && adapterResult.action !== validated.action.type) {
     throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'action adapter result does not match the requested action');
   }
+  const coordinateAudit = kind === 'ACTION'
+    ? buildCoordinateAudit(execDir, validated, adapterResult)
+    : null;
   return {
     binding,
     adapterResult,
+    ...(coordinateAudit ? { coordinateAudit } : {}),
     postActionSettleMs: preAdapterDelayMs,
     ...(kind === 'OBSERVE' ? { evidence: validateObservationArtifacts(execDir, adapterResult) } : {}),
   };

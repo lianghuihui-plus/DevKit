@@ -109,14 +109,20 @@ function emptyExecutionReport(execDir = null) {
   };
 }
 
-function executionSelection(execDir) {
+function executionSelection(execDir, workspaceRoot = null) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
   if (execution?.schemaVersion !== 3) return null;
+  const closure = workspaceRoot && execution.finalized !== true
+    ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
+    : null;
   const result = readJson(path.join(execDir, 'result.json'), null);
   const completion = readJson(path.join(execDir, 'completion.json'), null);
   let priority = 1;
   let state = 'ACTIVE';
-  if (execution.finalized !== true) {
+  if (closure) {
+    priority = 0;
+    state = 'ABANDONED';
+  } else if (execution.finalized !== true) {
     priority = 4;
     state = execution.lifecycle === 'FINALIZING' || fs.existsSync(path.join(execDir, 'finalization.draft.json'))
       ? 'FINALIZATION_RECOVERY_REQUIRED' : 'ACTIVE';
@@ -124,15 +130,16 @@ function executionSelection(execDir) {
   else if (execution.finalized === true && result && !completion) { priority = 3; state = 'FINALIZED_PENDING_COMPLETION'; }
   else if (completion) { priority = 2; state = 'PUBLISHED'; }
   const time = Date.parse(execution?.endedAt || execution?.startedAt || 0) || fs.statSync(execDir).mtimeMs;
-  return { execDir, execution, result, completion, priority, state, time };
+  return { execDir, execution, result, completion, closure, priority, state, time };
 }
 
 function selectExecutionDir(runtimeDir) {
   const root = path.join(runtimeDir, 'executions');
   if (!fs.existsSync(root)) return null;
+  const workspaceRoot = path.resolve(runtimeDir, '../../../..');
   return fs.readdirSync(root).filter((name) => !name.startsWith('.')).map((name) => path.join(root, name))
     .filter((execDir) => fs.statSync(execDir).isDirectory() && fs.existsSync(path.join(execDir, 'execution.json')))
-    .map(executionSelection).filter(Boolean)
+    .map((execDir) => executionSelection(execDir, workspaceRoot)).filter(Boolean)
     .sort((left, right) => right.priority - left.priority || right.time - left.time || right.execDir.localeCompare(left.execDir))[0] || null;
 }
 
@@ -145,6 +152,7 @@ function readExecutionReport(execDir) {
   report.metrics = readJson(path.join(execDir, 'metrics.json'), null);
   report.completion = readJson(path.join(execDir, 'completion.json'), null);
   report.events = readJsonl(path.join(execDir, 'timeline.jsonl'));
+  report.closure = require('./execution-closure').executionClosureForDir(execDir);
   const finalizationPending = report.execution?.schemaVersion === 3
     && report.execution.finalized !== true
     && (report.execution.lifecycle === 'FINALIZING' || fs.existsSync(path.join(execDir, 'finalization.draft.json')));
@@ -166,8 +174,10 @@ function readExecutionReport(execDir) {
       report.understanding = readJson(path.join(execDir, 'understanding.json'), null);
       report.plan = readJson(path.join(execDir, 'plan.json'), null);
       report.display = {
-        status: 'RUNNING', verdict: null, executionStatus: 'RUNNING', verdictBasis: null,
-        summary: '用例执行中', uncertainties: [], failureCode: null, failedStep: null,
+        status: report.closure ? 'ABANDONED' : 'RUNNING', verdict: null,
+        executionStatus: report.closure ? 'INTERRUPTED' : 'RUNNING', verdictBasis: null,
+        summary: report.closure ? '执行因实现变更被废弃，未形成测试结论' : '用例执行中',
+        uncertainties: [], failureCode: report.closure?.reasonCode || null, failedStep: null,
         startedAt: report.execution.startedAt || '', endedAt: '', durationMs: null, stepsSummary: '-', metrics: null,
       };
     }

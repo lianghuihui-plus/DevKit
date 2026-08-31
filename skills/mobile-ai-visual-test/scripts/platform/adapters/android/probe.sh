@@ -95,7 +95,7 @@ if (hasTarget && !screenshot) {
   diag("androidScreenshotUnavailable", "ERROR", "Android 截图能力不可用", "确认设备已解锁并允许调试，然后重试 scripts/probe-env.sh --platform android", "adb exec-out screencap -p");
 }
 if (hasTarget && !layout) {
-  diag("androidLayoutUnavailable", "ERROR", "Android 控件树能力不可用", "确认 uiautomator dump 可执行，必要时解锁设备并保持目标页面前台", "adb shell uiautomator dump");
+  diag("androidLayoutSampleUnavailable", "WARN", "当前页面未取得 Android 控件树样本，执行时将自动使用截图继续", "无需阻塞环境确认；如静态页面也持续缺失控件树，再检查 uiautomator dump 能力", "adb shell uiautomator dump");
 }
 if (hasTarget && !foregroundApp) {
   diag("androidForegroundUnavailable", "ERROR", "Android 前台应用识别不可用", "确认 dumpsys window/activity 可执行，并保持设备处于可调试状态", "adb shell dumpsys window");

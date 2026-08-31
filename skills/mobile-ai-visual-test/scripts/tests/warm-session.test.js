@@ -118,10 +118,12 @@ function understandingFor(item, options = {}) {
     revision: 1,
     summary: '验证当前用例目标',
     startConditions: options.noStart ? [] : [{ id: 'start-001', text: '目标页面起点可建立', basis: 'implied', sourceRefs: ['src-001'] }],
-    requirements: [{ id: 'req-001', text: '目标状态符合原文', basis: 'explicit', sourceRefs: ['src-001'] }],
+    requirements: [{
+      id: 'req-001', text: '目标状态符合原文', basis: 'explicit', sourceRefs: ['src-001'],
+      requiredInteractions: [], expectedOutcomes: ['目标状态符合原文'],
+    }],
     sourceRefs: [sourceRef],
     uncertainties: [],
-    requirementDispositions: [],
   };
 }
 
@@ -130,7 +132,7 @@ function planFor(checkpoints = ['cp-001']) {
     schemaVersion: 1,
     revision: 1,
     reason: '建立当前用例检查点',
-    checkpoints: checkpoints.map((id) => ({ id, goal: `验证 ${id}`, requirementRefs: ['req-001'], requiredAction: false })),
+    checkpoints: checkpoints.map((id) => ({ id, objective: `验证 ${id}`, requirementRefs: ['req-001'] })),
   });
 }
 
@@ -491,37 +493,37 @@ expectCode(() => recoverApp({
 
 // Recovery validates trigger evidence, is idempotent, and updates both warm and Agent generations.
 const recoveryFixture = initializeAndBootstrap('recovery', ['recovery-case']);
-const recoveryCase = startPrepared(recoveryFixture, 0, { checkpoints: ['cp-source', 'cp-crash', 'cp-system', 'cp-unknown', 'cp-failure'] });
+const recoveryCase = startPrepared(recoveryFixture, 0, { checkpoints: ['cp-recovery'] });
 enterBusiness(recoveryCase);
 const recoveryEvidence = addObservation(recoveryCase, 'exit-evidence');
 expectCode(() => recoverApp({
   workspaceRoot: recoveryFixture.root, batchId: recoveryFixture.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: recoveryFixture.adapter,
-  request: { recoveryId: 'recovery-vague', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-source', triggerType: 'CANNOT_FIND_PAGE', sourceRefs: ['src-001'] },
+  request: { recoveryId: 'recovery-vague', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-recovery', triggerType: 'CANNOT_FIND_PAGE', sourceRefs: ['src-001'] },
 }), 'RECOVERY_TRIGGER_INVALID');
 expectCode(() => recoverApp({
   workspaceRoot: recoveryFixture.root, batchId: recoveryFixture.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: recoveryFixture.adapter,
-  request: { recoveryId: 'recovery-missing-source', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-source', triggerType: 'SOURCE_REQUIRED_COLD_START', sourceRefs: ['src-missing'] },
+  request: { recoveryId: 'recovery-missing-source', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-recovery', triggerType: 'SOURCE_REQUIRED_COLD_START', sourceRefs: ['src-missing'] },
 }), 'RECOVERY_REFERENCE_INVALID');
 expectCode(() => recoverApp({
   workspaceRoot: recoveryFixture.root, batchId: recoveryFixture.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: recoveryFixture.adapter,
-  request: incidentRequest({ recoveryId: 'recovery-missing-evidence', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-crash', triggerType: 'APP_CRASH', evidenceRefs: ['screenshots/foreign.png'] }, 'PRODUCT'),
+  request: incidentRequest({ recoveryId: 'recovery-missing-evidence', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-recovery', triggerType: 'APP_CRASH', evidenceRefs: ['screenshots/foreign.png'] }, 'PRODUCT'),
 }), 'RECOVERY_REFERENCE_INVALID');
 
 const sourceRecovery = recoverApp({
   workspaceRoot: recoveryFixture.root, batchId: recoveryFixture.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: recoveryFixture.adapter, now: T0,
-  request: { recoveryId: 'recovery-source', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-source', triggerType: 'SOURCE_REQUIRED_COLD_START', sourceRefs: ['src-001'] },
+  request: { recoveryId: 'recovery-source', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-recovery', triggerType: 'SOURCE_REQUIRED_COLD_START', sourceRefs: ['src-001'] },
 });
 assert.strictEqual(sourceRecovery.recovery.noAutomaticReplay, true);
 assert.deepStrictEqual([sourceRecovery.state.warmSession.generation, sourceRecovery.state.warmSession.appStartCount], [2, 2]);
 assert.strictEqual(readJson(path.join(recoveryCase.execDir, 'agent', 'runtime.json')).warmSessionGeneration, 2);
 const repeatedSourceRecovery = recoverApp({
   workspaceRoot: recoveryFixture.root, batchId: recoveryFixture.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: recoveryFixture.adapter,
-  request: { recoveryId: 'recovery-source-repeat', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-source', triggerType: 'SOURCE_REQUIRED_COLD_START', sourceRefs: ['src-001'] },
+  request: { recoveryId: 'recovery-source-repeat', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-recovery', triggerType: 'SOURCE_REQUIRED_COLD_START', sourceRefs: ['src-001'] },
 });
 assert.strictEqual(repeatedSourceRecovery.recovery.status, 'SUCCEEDED');
 
 const crashEvidence = addObservation(recoveryCase, 'evidence-after-source-recoveries');
-const crashRequest = incidentRequest({ recoveryId: 'recovery-crash', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-crash', triggerType: 'APP_CRASH', evidenceRefs: [crashEvidence] }, 'PRODUCT');
+const crashRequest = incidentRequest({ recoveryId: 'recovery-crash', executionId: recoveryCase.execution.executionId, checkpointId: 'cp-recovery', triggerType: 'APP_CRASH', evidenceRefs: [crashEvidence] }, 'PRODUCT');
 assert.throws(() => recoverApp({ workspaceRoot: recoveryFixture.root, batchId: recoveryFixture.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: recoveryFixture.adapter, request: crashRequest, interruptAfter: 'action', now: T0 }), /MAVT_BATCH_RECOVERY_INTERRUPTED/);
 assert.strictEqual(reconcileBatch({ workspaceRoot: recoveryFixture.root, batchId: recoveryFixture.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: recoveryFixture.adapter, now: T0 }).action, 'RESUME_RECOVERY');
 const callsAfterInterruptedRecovery = recoveryFixture.adapter.calls.length;
@@ -551,7 +553,7 @@ expectCode(() => recoverApp({
 const stateInterruptedEvidence = addObservation(recoveryCase, 'evidence-after-crash-recovery');
 const stateInterruptedRequest = incidentRequest({
   recoveryId: 'recovery-state-interrupted', executionId: recoveryCase.execution.executionId,
-  checkpointId: 'cp-failure', triggerType: 'AUTOMATION_SESSION_LOST', evidenceRefs: [stateInterruptedEvidence],
+  checkpointId: 'cp-recovery', triggerType: 'AUTOMATION_SESSION_LOST', evidenceRefs: [stateInterruptedEvidence],
 });
 assert.throws(() => recoverApp({
   workspaceRoot: recoveryFixture.root, batchId: recoveryFixture.batchId, implementationSha: IMPLEMENTATION_SHA,
@@ -567,8 +569,8 @@ assert.strictEqual(timelineEvents(recoveryCase.execDir).filter((event) => event.
   && event.recoveryId === stateInterruptedRequest.recoveryId).length, 1);
 
 for (const [id, checkpointId, triggerType] of [
-  ['recovery-system', 'cp-system', 'SYSTEM_KILLED'],
-  ['recovery-unknown', 'cp-unknown', 'UNKNOWN_EXIT'],
+  ['recovery-system', 'cp-recovery', 'SYSTEM_KILLED'],
+  ['recovery-unknown', 'cp-recovery', 'UNKNOWN_EXIT'],
 ]) {
   const loopEvidence = addObservation(recoveryCase, `${id}-evidence`);
   const recoveredResult = recoverApp({
@@ -603,6 +605,17 @@ const failedRecovery = recoverApp({
   request: incidentRequest({ recoveryId: 'recovery-failed', executionId: failedRecoveryCase.execution.executionId, checkpointId: 'cp-failure', triggerType: 'AUTOMATION_SESSION_LOST', evidenceRefs: [failedEvidence] }),
 });
 assert.deepStrictEqual([failedRecovery.recovery.status, failedRecovery.state.status, failedRecovery.state.warmSession.status], ['FAILED', 'BLOCKED', 'DEGRADED']);
+assert.strictEqual(failedRecovery.state.failureCode, 'APP_RECOVERY_FAILED');
+assert.strictEqual(failedRecovery.state.reason, 'APP_RECOVERY_FAILED: cannot restart App');
+assert.strictEqual(failedRecovery.state.stoppedAt, T0);
+assert.strictEqual(failedRecovery.state.stopContext.source, 'app-recovery');
+assert.strictEqual(failedRecovery.state.stopContext.recoveryId, 'recovery-failed');
+assert.strictEqual(failedRecovery.state.stopContext.executionId, failedRecoveryCase.execution.executionId);
+assert.strictEqual(failedRecovery.state.stopContext.caseKey, failedRecovery.state.cases[0].caseKey);
+assert.strictEqual(failedRecovery.state.stopContext.adapter.ok, false);
+const failedBatchEvents = fs.readFileSync(batchPaths(failedRecoveryFixture.root, failedRecoveryFixture.batchId).events, 'utf8')
+  .split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+assert.strictEqual(failedBatchEvents.filter((event) => event.type === 'batchStopped').length, 1);
 assert.strictEqual(recoverApp({
   workspaceRoot: failedRecoveryFixture.root, batchId: failedRecoveryFixture.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: failedAdapter, now: T0,
   request: incidentRequest({ recoveryId: 'recovery-failed', executionId: failedRecoveryCase.execution.executionId, checkpointId: 'cp-failure', triggerType: 'AUTOMATION_SESSION_LOST', evidenceRefs: [failedEvidence] }),
@@ -711,7 +724,17 @@ const releaseCase = startPrepared(releaseReconcile);
 enterBusiness(releaseCase);
 const releaseEvidence = addObservation(releaseCase, 'release-evidence');
 finalize(releaseCase, 'PASS', releaseEvidence);
+writeJsonAtomic(path.join(releaseCase.execDir, 'agent', 'attempt.current.json'), {
+  schemaVersion: 1,
+  attemptId: 'conclude-interrupted-after-finalize',
+  entrypoint: 'conclude',
+  startedAt: '2026-08-13T09:59:59.000Z',
+});
 assert.strictEqual(reconcileBatch({ workspaceRoot: releaseReconcile.root, batchId: releaseReconcile.batchId, implementationSha: IMPLEMENTATION_SHA, adapter: releaseReconcile.adapter, now: T0 }).action, 'CREATE_AGENT_RESULT');
+assert.strictEqual(fs.existsSync(path.join(releaseCase.execDir, 'agent', 'attempt.current.json')), false);
+const settledAttempt = JSON.parse(fs.readFileSync(path.join(releaseCase.execDir, 'agent', 'attempts.jsonl'), 'utf8').trim());
+assert.strictEqual(settledAttempt.executionCompleted, true);
+assert.strictEqual(settledAttempt.error.code, 'AGENT_ENTRYPOINT_OUTPUT_INTERRUPTED');
 assert.throws(() => commitCurrentCase({ workspaceRoot: releaseReconcile.root, batchId: releaseReconcile.batchId, implementationSha: IMPLEMENTATION_SHA, now: T0 }), (error) => error?.code === 'AGENT_RESULT_INVALID');
 assert.strictEqual(readJson(path.join(releaseCase.execDir, 'agent', 'runtime.json')).status, 'BOUND');
 createAgentResult({ execDir: releaseCase.execDir });

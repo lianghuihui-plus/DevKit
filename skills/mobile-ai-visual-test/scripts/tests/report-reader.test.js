@@ -12,6 +12,7 @@ const {
   writeCaseReports,
 } = require('../report/report-service');
 const { readExecutionReport, selectExecutionDir } = require('../lib/execution-reader');
+const { createExecutionClosure } = require('../lib/execution-closure');
 const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -48,7 +49,7 @@ for (const [verdict, fixture] of fixtures) {
   assert.strictEqual(fs.existsSync(path.join(path.dirname(paths.context), 'report-publication.draft.json')), false);
   assert.ok(markdown.includes(`执行结论：${{ PASS: '通过', FAIL: '失败', INCONCLUSIVE: '无法判断', BLOCKED: '阻塞' }[verdict]}`));
   assert.ok(markdown.includes(fixture.result.summary));
-  assert.ok(markdown.includes('## 完整执行轨迹'));
+  assert.ok(markdown.includes('## 实际执行路径'));
   assert.ok(markdown.includes('## 恢复锚点'));
   assert.ok(markdown.includes('操作前'));
   assert.ok(markdown.includes('操作后'));
@@ -57,8 +58,10 @@ for (const [verdict, fixture] of fixtures) {
   if (verdict === 'PASS') assert.ok(markdown.includes('输入方式：替换原内容'));
   assert.strictEqual(markdown.includes('"coordinateSource"'), false);
   assert.ok(markdown.includes('直接证据') || markdown.includes('证据不足') || markdown.includes('技术约束'));
-  assert.ok(html.includes('执行详情'));
-  assert.ok(html.includes('检查点执行'));
+  assert.ok(html.includes('执行结果'));
+  assert.ok(html.includes('用例与计划'));
+  assert.ok(html.includes('执行过程'));
+  assert.ok(html.includes('执行路径'));
   assert.ok(html.includes('技术记录'));
   assert.ok(html.includes('恢复锚点'));
   assert.ok(html.includes('shot-dialog'));
@@ -70,9 +73,18 @@ for (const [verdict, fixture] of fixtures) {
   assert.ok(html.includes('计划版本'));
   assert.ok(html.includes('执行计划'));
   assert.ok(html.includes('最新版本'));
-  assert.ok(html.includes('1 个检查点'));
+  assert.ok(html.includes('最终采用的检查点集合'));
   assert.ok(html.includes('形成可展示结论'));
+  assert.ok(html.includes('执行目的'));
+  assert.ok(html.includes('Agent 预期'));
+  assert.ok(html.includes('执行结果'));
+  assert.ok(html.includes('预期判断'));
+  assert.ok(html.includes('class="process-workspace"'));
+  assert.ok(html.includes('class="process-step'));
+  assert.ok(html.includes('class="process-detail-panel'));
   assert.strictEqual(html.includes('data-panel="plan-panel"'), false);
+  assert.strictEqual(html.includes('data-panel="raw-panel"'), false);
+  assert.strictEqual(html.includes('class="story-card'), false);
   const actionSpec = html.match(/<div class="action-spec">[\s\S]*?<\/dl><\/div>/)?.[0] || '';
   assert.ok(actionSpec.includes('<dt>目标</dt>'));
   assert.ok(actionSpec.includes('<dt>定位依据</dt><dd>视觉识别</dd>'));
@@ -125,6 +137,14 @@ fs.writeFileSync(path.join(activeDir, 'case.snapshot.json'), JSON.stringify(pass
 assert.strictEqual(selectExecutionDir(passRuntimeDir).state, 'ACTIVE');
 assert.strictEqual(selectExecutionDir(passRuntimeDir).execDir, activeDir);
 assert.strictEqual(readExecutionReport(activeDir).display.status, 'RUNNING');
+createExecutionClosure(workspace, activeDir, {
+  closedByImplementationSha: `agent-implementation-${'f'.repeat(16)}`,
+  replacementBatchId: 'batch-report-replacement',
+  now: '2026-08-18T12:01:00.000Z',
+});
+assert.strictEqual(readExecutionReport(activeDir).display.status, 'ABANDONED');
+assert.strictEqual(selectExecutionDir(passRuntimeDir).state, 'PUBLISHED');
+assert.strictEqual(selectExecutionDir(passRuntimeDir).execDir, passFixture.execDir);
 
 const extraArtifact = path.join(passFixture.execDir, 'screenshots', 'extra-after-publication.png');
 fs.writeFileSync(extraArtifact, Buffer.from('not part of the published artifact set'));

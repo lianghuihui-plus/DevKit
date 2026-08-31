@@ -48,5 +48,5 @@ function localIso(date = new Date()) {
   const pad = (value, size = 2) => String(value).padStart(size, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
-console.log(JSON.stringify({schemaVersion:1,type:"actionResult",platform:"harmony",time:localIso(),action:"swipe",ok:true,velocity:Number(process.argv[1])}, null, 2));
-' "$velocity"
+console.log(JSON.stringify({schemaVersion:1,type:"actionResult",platform:"harmony",time:localIso(),action:"swipe",ok:true,velocity:Number(process.argv[1]),executedFrom:{x:Number(process.argv[2]),y:Number(process.argv[3])},executedTo:{x:Number(process.argv[4]),y:Number(process.argv[5])}}, null, 2));
+' "$velocity" "$from_x" "$from_y" "$to_x" "$to_y"

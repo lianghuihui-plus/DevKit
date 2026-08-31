@@ -29,6 +29,7 @@ const {
 const { createCaseContract, sourceSha } = require('../execution/contracts/case-contract');
 const { validatePlan, withPlanSha } = require('../lib/plan-contract');
 const { validateUnderstanding } = require('../lib/understanding-contract');
+const { STAGE_FIELDS } = require('../lib/case-agent-guidance');
 const { withAuthorizationSha, validatePlanAuthorization } = require('../lib/plan-authorization');
 const { sha256File } = require('../lib/execution-evidence');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
@@ -98,10 +99,12 @@ function understandingFor(item, revision = 1, requirementText = '目标状态符
     ...(revision > 1 ? { reason: '现场信息需要修订用例理解' } : {}),
     summary: '验证当前目标状态',
     startConditions: [{ id: 'start-001', text: '目标入口可建立', basis: 'implied', sourceRefs: ['src-001'] }],
-    requirements: [{ id: 'req-001', text: requirementText, basis: 'explicit', sourceRefs: ['src-001'] }],
+    requirements: [{
+      id: 'req-001', text: requirementText, basis: 'explicit', sourceRefs: ['src-001'],
+      requiredInteractions: [], expectedOutcomes: [requirementText],
+    }],
     sourceRefs: [{ id: 'src-001', sourceSha: sourceSha(item.sourceText), lineStart: 1, lineEnd: 1, quote: item.sourceText.split(/\r?\n/)[0] }],
     uncertainties: [],
-    requirementDispositions: [],
   };
 }
 
@@ -110,7 +113,7 @@ function planFor(revision = 1, checkpoints = ['cp-001']) {
     schemaVersion: 1,
     revision,
     reason: revision === 1 ? '建立初始动态检查点' : '根据现场修订检查点',
-    checkpoints: checkpoints.map((id) => ({ id, goal: `处理 ${id}`, requirementRefs: ['req-001'], requiredAction: false })),
+    checkpoints: checkpoints.map((id) => ({ id, objective: `处理 ${id}`, requirementRefs: ['req-001'] })),
   });
 }
 
@@ -272,6 +275,15 @@ fs.copyFileSync(path.join(repo, 'references', 'agent-execution.md'), path.join(p
 const implementationBefore = JSON.parse(childProcess.execFileSync(process.execPath, [
   'scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--skill-root', protocolRoot,
 ], { cwd: repo, encoding: 'utf8', env: { ...process.env, MAVT_SELF_TEST: '1' } }));
+const knowledgeProtocolPath = path.join(protocolRoot, 'references', 'knowledge.md');
+const knowledgeProtocolSource = fs.readFileSync(knowledgeProtocolPath, 'utf8');
+fs.appendFileSync(knowledgeProtocolPath, '\n协议摘要变化测试\n');
+const knowledgeProtocolAfter = JSON.parse(childProcess.execFileSync(process.execPath, [
+  'scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--skill-root', protocolRoot,
+], { cwd: repo, encoding: 'utf8', env: { ...process.env, MAVT_SELF_TEST: '1' } }));
+assert.notStrictEqual(implementationBefore.protocolSha, knowledgeProtocolAfter.protocolSha);
+assert.strictEqual(implementationBefore.implementationSha, knowledgeProtocolAfter.implementationSha);
+fs.writeFileSync(knowledgeProtocolPath, knowledgeProtocolSource);
 fs.appendFileSync(path.join(protocolRoot, 'scripts', 'agent', 'status.js'), '\n// implementation digest test\n');
 const implementationAfter = JSON.parse(childProcess.execFileSync(process.execPath, [
   'scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--skill-root', protocolRoot,
@@ -293,8 +305,38 @@ assert.strictEqual(request.executionPolicy.maxDurationMs, 30 * 60 * 1000);
 assert.strictEqual(request.agentContractPath, path.join(fs.realpathSync(requestCase.execDir), 'agent', 'contract.json'));
 const runtimeContract = readJson(request.agentContractPath);
 assert.strictEqual(runtimeContract.contractSha, request.agentContractSha);
-assert.deepStrictEqual(runtimeContract.schemas.understand.basis, ['assumed', 'explicit', 'implied']);
+assert.strictEqual('examples' in runtimeContract, false);
+const decisionStages = ['understand', 'plan', 'establishStart', 'executeCheckpoint', 'investigate', 'recovery', 'conclude'];
+assert.deepStrictEqual(Object.keys(runtimeContract.guidance), ['common', ...decisionStages]);
+assert.ok(runtimeContract.guidance.common.principles.length > 0);
+assert.ok(runtimeContract.guidance.common.boundaries.length > 0);
+for (const stage of decisionStages) {
+  const guidance = runtimeContract.guidance[stage];
+  assert.deepStrictEqual(Object.keys(guidance), STAGE_FIELDS, stage);
+  for (const field of ['role', 'objective', 'inputContext', 'outputResponsibility']) {
+    assert.strictEqual(typeof guidance[field], 'string', `${stage}.${field}`);
+    assert.ok(guidance[field].trim(), `${stage}.${field}`);
+  }
+  for (const field of ['procedure', 'principles', 'boundaries']) {
+    assert.ok(Array.isArray(guidance[field]) && guidance[field].length > 0, `${stage}.${field}`);
+    assert.ok(guidance[field].every((item) => typeof item === 'string' && item.trim()), `${stage}.${field}`);
+  }
+}
+assert.ok(runtimeContract.guidance.understand.procedure.includes('完整阅读 source.snapshot.md 后再开始组织输出'));
+assert.ok(runtimeContract.guidance.understand.principles.includes('需要不同现场、不同证据时机或可以独立形成结论的内容应分为不同 requirement'));
+assert.ok(runtimeContract.guidance.understand.boundaries.includes('不生成执行计划或设备操作步骤'));
+assert.ok(runtimeContract.guidance.plan.procedure.includes('完整阅读冻结 understanding 后再生成检查点'));
+assert.ok(runtimeContract.guidance.plan.principles.includes('一个检查点是能在连续业务阶段内独立执行、独立取证和独立判断的业务验证单元'));
+assert.ok(runtimeContract.guidance.plan.boundaries.includes('不让同一 requirement 在当前计划中归属多个检查点'));
+assert.ok(runtimeContract.guidance.plan.boundaries.includes('不重新解释原始用例'));
+assert.ok(runtimeContract.guidance.establishStart.procedure.includes('仅在当前可用 PREPARE observation 明确满足起点时调用 mark-start'));
+assert.ok(runtimeContract.guidance.executeCheckpoint.boundaries.includes('不把 action ok、页面跳转或可见变化直接判定为 requirement 满足'));
+assert.ok(runtimeContract.guidance.investigate.boundaries.includes('不因查询命中直接改变 verdict'));
+assert.ok(runtimeContract.guidance.recovery.procedure.includes('提交 request-recovery 后立即停止当前 Agent'));
+assert.ok(runtimeContract.guidance.conclude.boundaries.includes('不在缺少当前证据时形成确定性 PASS 或 FAIL'));
+assert.deepStrictEqual(runtimeContract.schemas.understand.understanding.statement.basis, ['assumed', 'explicit', 'implied']);
 assert.match(runtimeContract.commands.understand, /--request-json/);
+assert.match(runtimeContract.commands.plan, /--request-json/);
 assert.match(runtimeContract.commands.step, /--request-json/);
 assert.match(runtimeContract.commands.conclude, /--request-json/);
 for (const hidden of ['action', 'observe', 'commitTurn', 'phase', 'finalize', 'result']) {
@@ -302,13 +344,36 @@ for (const hidden of ['action', 'observe', 'commitTurn', 'phase', 'finalize', 'r
 }
 assert.ok(runtimeContract.schemas.runtimeState.required.includes('frameworkRecoveryPending'));
 assert.ok(runtimeContract.schemas.runtimeState.required.includes('activeCheckpointRef'));
+assert.ok(runtimeContract.schemas.runtimeState.required.includes('activeCheckpoint'));
+assert.ok(runtimeContract.schemas.runtimeState.required.includes('continuation'));
 assert.match(runtimeContract.commands.requestRecovery, /--request-json/);
 assert.match(runtimeContract.behavior.state, /successful responses/);
 assert.match(runtimeContract.behavior.planRevision, /do not create plan revisions/);
+assert.match(runtimeContract.schemas.plan.coverage, /exactly one checkpoint/);
 assert.match(runtimeContract.schemas.conclude.knowledgeRule, /direct-evidence PASS/);
-assert.deepStrictEqual(request.skillContract.requiredResources, ['SKILL.md', 'references/agent-execution.md', 'references/knowledge.md']);
+assert.deepStrictEqual(runtimeContract.schemas.conclude.review.required, ['sourceConclusion', 'recoveryConclusion']);
+assert.deepStrictEqual(runtimeContract.schemas.semanticAction.locatorModes.visualSwipe.normalizedFrom, {
+  type: 'tuple', items: ['number 0..1', 'number 0..1'], length: 2,
+});
+assert.ok(runtimeContract.schemas.inspect.rules.some((rule) => rule.includes('stage is framework-derived')));
+assert.match(runtimeContract.behavior.zeroRequirements, /device operations/);
+assert.match(runtimeContract.behavior.isolation, /host must enforce/);
+assert.deepStrictEqual(request.skillContract.requiredResources, ['references/agent-execution.md', 'references/knowledge.md']);
+assert.strictEqual(request.skillContract.allowedEntrypoints.some((entry) => entry.startsWith('scripts/batch')), false);
+assert.strictEqual(request.skillContract.allowedEntrypoints.some((entry) => entry.includes('/platform/')), false);
+const codexHostContract = fs.readFileSync(path.join(repo, 'references', 'agent-runtimes', 'codex.md'), 'utf8');
+assert.match(codexHostContract, /工具白名单/);
+assert.match(codexHostContract, /协议隔离/);
+const agentVisiblePrompt = [
+  JSON.stringify(runtimeContract),
+  ...request.skillContract.requiredResources.map((relative) => fs.readFileSync(path.join(repo, relative), 'utf8')),
+].join('\n');
+assert.doesNotMatch(agentVisiblePrompt, /示例|例如|比如|譬如|正例|反例|类比|for example|such as|e\.g\./i);
 assert.deepStrictEqual(runtimeContract.schemas.understand.generated, [
-  'schemaVersion', 'turnId', 'understanding.revision', 'understanding.sourceRefs', 'statement.sourceRefs', 'plan.revision', 'plan.planSha',
+  'schemaVersion', 'turnId', 'understanding.revision', 'understanding.sourceRefs', 'statement.sourceRefs',
+]);
+assert.deepStrictEqual(runtimeContract.schemas.plan.generated, [
+  'schemaVersion', 'turnId', 'plan.revision', 'plan.planSha',
 ]);
 assert.ok(runtimeContract.schemas.step.generated.includes('operationId'));
 assert.ok(runtimeContract.schemas.step.generated.includes('authorization'));
@@ -424,7 +489,7 @@ assert.throws(() => action(operationCase, 'action-interrupted', operationAuthori
 assert.strictEqual(readAgentStatus(operationCase.execDir, T0).signals.mayConclude, false);
 expectCode(() => commitAgentTurn(operationCase.execDir, {
   schemaVersion: 1, turnId: 'turn-during-operation-recovery',
-  facts: [{ factId: 'reflection-during-operation-recovery', type: 'reflection', reason: '不得越过待恢复操作提交判断' }],
+  plan: planFor(2), facts: [],
 }), 'EXECUTION_OPERATION_RECOVERY_REQUIRED');
 expectCode(() => executeKnowledgeQuery({
   execDir: operationCase.execDir, queryId: 'query-during-operation-recovery',
@@ -432,10 +497,6 @@ expectCode(() => executeKnowledgeQuery({
 }), 'EXECUTION_OPERATION_RECOVERY_REQUIRED');
 expectCode(() => action(operationCase, 'action-interrupted', businessAuthorization(operationCase, 'cp-001', { purpose: '改变请求' })), 'AGENT_OPERATION_BINDING_MISMATCH');
 assert.strictEqual(action(operationCase, 'action-interrupted', operationAuthorization).recovered, true);
-assert.strictEqual(commitAgentTurn(operationCase.execDir, {
-  schemaVersion: 1, turnId: 'turn-after-operation-recovery',
-  facts: [{ factId: 'reflection-after-operation-recovery', type: 'reflection', reason: '恢复完成后允许继续判断' }],
-}).turnId, 'turn-after-operation-recovery');
 assert.strictEqual(action(operationCase, 'action-interrupted', operationAuthorization).idempotent, true);
 expectCode(() => action(operationCase, 'action-interrupted', businessAuthorization(operationCase, 'cp-001', { purpose: '完成后改变请求' })), 'AGENT_OPERATION_BINDING_MISMATCH');
 const staleRuntime = { ...readJson(path.join(operationCase.execDir, 'agent', 'runtime.json')), warmSessionGeneration: 2 };
@@ -475,7 +536,7 @@ const validTurn = initialTurn(turnCase);
 assert.throws(() => commitAgentTurn(turnCase.execDir, validTurn, { interruptAfter: 'understanding', now: T0 }), /MAVT_AGENT_TURN_INTERRUPTED/);
 assert.deepStrictEqual(readAgentStatus(turnCase.execDir, T0).turnRecoveries.map((entry) => entry.turnId), ['turn-initial']);
 expectCode(() => commitAgentTurn(turnCase.execDir, {
-  schemaVersion: 1, turnId: 'turn-overtake', facts: [{ factId: 'reflection-overtake', type: 'reflection', reason: '不应越过冻结 turn' }],
+  schemaVersion: 1, turnId: 'turn-overtake', plan: planFor(1), facts: [],
 }), 'AGENT_TURN_RECOVERY_REQUIRED');
 expectCode(() => changePhase(turnCase.execDir, 'ESTABLISH_START', '不应越过冻结 turn', {
   implementationSha: turnCase.contract.implementationSha, now: T0,
@@ -484,26 +545,30 @@ const recoveredTurn = recoverInternalTransactions(turnCase.execDir, { now: T0 })
 assert.deepStrictEqual(recoveredTurn.recovered, [{ type: 'turn', id: validTurn.turnId }]);
 assert.deepStrictEqual(readAgentStatus(turnCase.execDir, T0).turnRecoveries, []);
 assert.strictEqual(commitAgentTurn(turnCase.execDir, validTurn).idempotent, true);
-expectCode(() => commitAgentTurn(turnCase.execDir, { ...validTurn, facts: [{ factId: 'reflection-001', type: 'reflection', reason: '改变同一 turn' }] }), 'AGENT_TURN_BINDING_MISMATCH');
+expectCode(() => commitAgentTurn(turnCase.execDir, {
+  ...validTurn, plan: { ...validTurn.plan, reason: '改变同一 turn' },
+}), 'AGENT_TURN_BINDING_MISMATCH');
 
 changePhase(turnCase.execDir, 'ESTABLISH_START', '验证并发 revision', { implementationSha: turnCase.contract.implementationSha, now: T0 });
-const revisionTwo = understandingFor(turnCase, 2, '修订后的目标状态符合原文');
 const planTwo = planFor(2, ['cp-002']);
-const revisionTurn = { schemaVersion: 1, turnId: 'turn-revision-two', understanding: revisionTwo, plan: planTwo, facts: [] };
+const revisionTurn = { schemaVersion: 1, turnId: 'turn-revision-two', plan: planTwo, facts: [] };
 assert.throws(() => commitAgentTurn(turnCase.execDir, revisionTurn, { interruptAfter: 'plan', now: T0 }), /MAVT_AGENT_TURN_INTERRUPTED/);
 assert.strictEqual(commitAgentTurn(turnCase.execDir, revisionTurn, { now: T0 }).committed.includes('plan'), true);
-expectCode(() => commitAgentTurn(turnCase.execDir, {
+commitAgentTurn(turnCase.execDir, {
   schemaVersion: 1, turnId: 'turn-stale-revision', understanding: understandingFor(turnCase, 2), facts: [],
-}), 'UNDERSTANDING_REVISION_STALE');
+});
+commitAgentTurn(turnCase.execDir, {
+  schemaVersion: 1, turnId: 'turn-plan-after-understanding', plan: planFor(3, ['cp-002']), facts: [],
+});
 
-// Dynamic loop supports fewer steps, extra steps, zero-action checkpoints, and plan correction.
+// Dynamic loop supports fewer actions, extra actions, zero-action checkpoints, and plan correction.
 const fewer = makeExecution('fewer-steps');
-establishBusiness(fewer, ['cp-001', 'cp-002']);
+establishBusiness(fewer);
 const fewerEvidence = observe(fewer, 'fewer-business', businessAuthorization(fewer, 'cp-001')).fact.ref;
 commitAgentTurn(fewer.execDir, {
   schemaVersion: 1, turnId: 'turn-fewer-finding', facts: [{
     factId: 'finding-fewer', type: 'checkpointFinding', planRevision: 1, checkpointId: 'cp-001',
-    requirementRefs: ['req-001'], evidenceRefs: [fewerEvidence], finding: '一次观察已覆盖目标，无需执行第二检查点',
+    requirementRefs: ['req-001'], evidenceRefs: [fewerEvidence], finding: '一次观察已覆盖目标，无需执行额外动作',
   }],
 });
 finalizePass(fewer, fewerEvidence);
@@ -524,7 +589,7 @@ assert.strictEqual(readAgentStatus(extra.execDir, T0).signals.mayConclude, true)
 finalizePass(extra, extraEvidence);
 assert.strictEqual(timelineEvents(extra.execDir).filter((entry) => entry.type === 'actionResult').length, 3);
 expectCode(() => commitAgentTurn(extra.execDir, {
-  schemaVersion: 1, turnId: 'turn-after-finalize', facts: [{ factId: 'reflection-finalized', type: 'reflection', reason: '不得写入' }],
+  schemaVersion: 1, turnId: 'turn-after-finalize', plan: planFor(2), facts: [],
 }), 'EXECUTION_FINALIZED');
 
 // Only a usable observation bound to the pending action clears the post-action guard.
@@ -618,7 +683,7 @@ changePhase(knowledgeCase.execDir, 'INVESTIGATE', '查询目标状态资料', { 
 const queryResult = executeKnowledgeQuery({
   execDir: knowledgeCase.execDir, queryId: 'query-known', query: { platform: 'harmony', version: '3.2.5', page: '目标页', symptom: '目标按钮延迟', keywords: ['重新观察'] }, now: T0,
 });
-assert.strictEqual(queryResult.matchCount, 2);
+assert.strictEqual(queryResult.candidateCount, 2);
 assert.strictEqual(executeKnowledgeQuery({ execDir: knowledgeCase.execDir, queryId: 'query-known', query: queryResult.query, now: T0 }).idempotent, true);
 const known = queryResult.candidates.find((item) => item.entryId === 'K-known-001');
 const expired = queryResult.candidates.find((item) => item.entryId === 'K-expired-001');
@@ -664,13 +729,13 @@ for (const stage of ['draft', 'snapshots', 'event']) {
   assert.deepStrictEqual(readAgentStatus(transactionCase.execDir, T0).knowledgeQueryRecoveries, [{ queryId: `query-transaction-${stage}`, recoveryMode: 'COMMIT_FROZEN_QUERY' }]);
   expectCode(() => changePhase(transactionCase.execDir, 'CONCLUDE', '不得绕过查询恢复', { implementationSha: transactionCase.contract.implementationSha, now: T0 }), 'KNOWLEDGE_QUERY_RECOVERY_REQUIRED');
   expectCode(() => commitAgentTurn(transactionCase.execDir, {
-    schemaVersion: 1, turnId: `turn-during-query-${stage}`, facts: [{ factId: `reflection-during-query-${stage}`, type: 'reflection', reason: '不得在查询恢复期间插入事实' }],
+    schemaVersion: 1, turnId: `turn-during-query-${stage}`, plan: planFor(2), facts: [],
   }, { now: T0 }), 'KNOWLEDGE_QUERY_RECOVERY_REQUIRED');
   fs.writeFileSync(entryPath, knowledgeEntry(`K-transaction-${stage}`, { title: `事务候选 ${stage}`, symptom: `事务现象 ${stage} 已变化` }));
   const recoveredQueryTransaction = recoverInternalTransactions(transactionCase.execDir, { now: T0 });
   assert.deepStrictEqual(recoveredQueryTransaction.recovered, [{ type: 'knowledge-query', id: `query-transaction-${stage}` }]);
   const resumed = timelineEvents(transactionCase.execDir).find((entry) => entry.type === 'knowledgeQuery' && entry.queryId === `query-transaction-${stage}`);
-  assert.strictEqual(resumed.matchCount, 1);
+  assert.strictEqual(resumed.candidateCount, 1);
   assert.strictEqual(resumed.candidates[0].entryId, `K-transaction-${stage}`);
   assert.strictEqual(resumed.candidates[0].contentSha, frozenContentSha);
   assert.strictEqual(fs.existsSync(draftPath), false);
