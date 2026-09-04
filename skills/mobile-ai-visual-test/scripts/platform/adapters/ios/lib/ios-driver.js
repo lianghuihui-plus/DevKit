@@ -30,7 +30,8 @@ const ATOM_OPTIONS = Object.freeze({
   'launch-app': [],
   'restart-app': [],
   'tap': ['--x', '--y', '--coordinate-source'],
-  'long-press': ['--x', '--y', '--duration-ms', '--coordinate-source'],
+  'double-tap': ['--x', '--y', '--interval-ms', '--coordinate-source'],
+  'long-press': ['--x', '--y', '--duration-ms', '--coordinate-source', '--capture-out', '--capture-ref', '--capture-at-ms'],
   'swipe': ['--from-x', '--from-y', '--to-x', '--to-y', '--velocity', '--coordinate-source'],
   'input-text': ['--x', '--y', '--text', '--mode'],
   'dismiss-keyboard': [],
@@ -198,7 +199,7 @@ async function runProbe(argv) {
       foregroundApp: implemented,
       logs: logsImplemented,
       launchApp: implemented,
-      actions: implemented ? ['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait'] : [],
+      actions: implemented ? ['launchApp', 'restartApp', 'tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait'] : [],
       screenCap: implemented,
       dumpLayout: implemented,
       implemented,
@@ -450,6 +451,51 @@ function pointerAction(x, y, holdMs = 80) {
         { type: 'pause', duration: Number(holdMs) },
         { type: 'pointerUp', button: 0 },
       ],
+    }],
+  };
+}
+
+function doubleTapAction(x, y, intervalMs = 100) {
+  return {
+    actions: [{
+      type: 'pointer',
+      id: `finger-${Date.now()}`,
+      parameters: { pointerType: 'touch' },
+      actions: [
+        { type: 'pointerMove', duration: 0, x: Number(x), y: Number(y), origin: 'viewport' },
+        { type: 'pointerDown', button: 0 },
+        { type: 'pause', duration: 60 },
+        { type: 'pointerUp', button: 0 },
+        { type: 'pause', duration: Number(intervalMs) },
+        { type: 'pointerDown', button: 0 },
+        { type: 'pause', duration: 60 },
+        { type: 'pointerUp', button: 0 },
+      ],
+    }],
+  };
+}
+
+function pointerDownAction(x, y, pointerId) {
+  return {
+    actions: [{
+      type: 'pointer',
+      id: pointerId,
+      parameters: { pointerType: 'touch' },
+      actions: [
+        { type: 'pointerMove', duration: 0, x: Number(x), y: Number(y), origin: 'viewport' },
+        { type: 'pointerDown', button: 0 },
+      ],
+    }],
+  };
+}
+
+function pointerUpAction(pointerId) {
+  return {
+    actions: [{
+      type: 'pointer',
+      id: pointerId,
+      parameters: { pointerType: 'touch' },
+      actions: [{ type: 'pointerUp', button: 0 }],
     }],
   };
 }
@@ -761,7 +807,7 @@ async function runAtom(atom, argv) {
     const fakeInputExpected = fakeInputMode === 'append' ? `${process.env.MAVT_IOS_FAKE_INPUT_VALUE || ''}${fakeInputText}` : fakeInputText;
     const fakeCoordinateSource = optionValue(rest, '--coordinate-source', 'layout');
     const fakeViewport = { width: 393, height: 852 };
-    const fakePoint = ['tap', 'long-press'].includes(atom)
+    const fakePoint = ['tap', 'double-tap', 'long-press'].includes(atom)
       ? {
         x: Number(optionValue(rest, '--x')),
         y: Number(optionValue(rest, '--y')),
@@ -769,7 +815,14 @@ async function runAtom(atom, argv) {
         coordinateSource: fakeCoordinateSource,
       }
       : undefined;
-    writeJson(actionResult(atom === 'launch-app' ? 'launchApp' : atom === 'restart-app' ? 'restartApp' : atom === 'long-press' ? 'longPress' : atom === 'input-text' ? 'inputText' : atom === 'dismiss-keyboard' ? 'dismissKeyboard' : atom === 'keyevent' ? optionValue(rest, '--key', 'keyevent') : atom, {
+    const fakeCaptureOut = atom === 'long-press' ? optionValue(rest, '--capture-out') : '';
+    const fakeCaptureRef = atom === 'long-press' ? optionValue(rest, '--capture-ref') : '';
+    const fakeCaptureAtMs = atom === 'long-press' ? Number(optionValue(rest, '--capture-at-ms', '0')) : 0;
+    if (fakeCaptureOut) {
+      ensureDir(path.dirname(fakeCaptureOut));
+      fs.writeFileSync(fakeCaptureOut, 'fake-ios-png');
+    }
+    writeJson(actionResult(atom === 'launch-app' ? 'launchApp' : atom === 'restart-app' ? 'restartApp' : atom === 'double-tap' ? 'doubleTap' : atom === 'long-press' ? 'longPress' : atom === 'input-text' ? 'inputText' : atom === 'dismiss-keyboard' ? 'dismissKeyboard' : atom === 'keyevent' ? optionValue(rest, '--key', 'keyevent') : atom, {
       inputMethod: atom === 'input-text' ? (fakeInputMode === 'replace' ? 'wda-clear-set-value' : 'wda-read-compose-set-value') : undefined,
       inputMode: fakeInputMode,
       inputEffect: atom === 'input-text' ? { status: 'VERIFIED', expectedText: fakeInputExpected, actualText: fakeInputExpected } : undefined,
@@ -783,7 +836,9 @@ async function runAtom(atom, argv) {
       launchMethod: atom === 'restart-app' ? 'appium-terminate-activate' : undefined,
       velocity: swipeExecution?.velocity,
       durationMs: swipeExecution?.durationMs,
+      intervalMs: atom === 'double-tap' ? Number(optionValue(rest, '--interval-ms', '100')) : undefined,
       executedPoint: fakePoint,
+      duringActionCapture: fakeCaptureOut ? { capturedAtMs: fakeCaptureAtMs, artifacts: { screenshot: fakeCaptureRef } } : undefined,
       executedFrom: swipeExecution ? {
         x: swipeExecution.fromX, y: swipeExecution.fromY, viewport: fakeViewport, coordinateSource: fakeCoordinateSource,
       } : undefined,
@@ -878,19 +933,60 @@ async function runAtom(atom, argv) {
     writeJson(actionResult('tap', { executedPoint: executed }));
     return;
   }
+  if (atom === 'double-tap') {
+    const x = optionValue(rest, '--x');
+    const y = optionValue(rest, '--y');
+    const intervalMs = Number(optionValue(rest, '--interval-ms', '100'));
+    const coordinateSource = optionValue(rest, '--coordinate-source', 'layout');
+    if (x === '' || y === '') throw new Error('doubleTap 需要 --x 和 --y');
+    if (!Number.isInteger(intervalMs) || intervalMs < 20 || intervalMs > 1000) throw new Error('doubleTap --interval-ms 必须为 20..1000 的整数');
+    let executed;
+    await appium.withSession(target, async ({ sessionId }) => {
+      executed = await executablePoint(target, sessionId, { x, y }, coordinateSource);
+      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, doubleTapAction(executed.x, executed.y, intervalMs));
+      await appium.request(target.appiumServer, 'DELETE', `/session/${sessionId}/actions`, {});
+    }, sessionOptions);
+    writeJson(actionResult('doubleTap', { intervalMs, executedPoint: executed }));
+    return;
+  }
   if (atom === 'long-press') {
     const x = optionValue(rest, '--x');
     const y = optionValue(rest, '--y');
     const durationMs = Number(optionValue(rest, '--duration-ms', '800'));
     const coordinateSource = optionValue(rest, '--coordinate-source', 'layout');
+    const captureOut = optionValue(rest, '--capture-out');
+    const captureRef = optionValue(rest, '--capture-ref');
+    const captureAtMs = Number(optionValue(rest, '--capture-at-ms', '0'));
     if (x === '' || y === '') throw new Error('longPress 需要 --x 和 --y');
+    if (captureOut && (!captureRef || !Number.isInteger(captureAtMs) || captureAtMs < 20 || captureAtMs >= durationMs)) {
+      throw new Error('longPress 过程截图需要有效的 --capture-ref，且 --capture-at-ms 必须位于按压时长内');
+    }
     let executed;
     await appium.withSession(target, async ({ sessionId }) => {
       executed = await executablePoint(target, sessionId, { x, y }, coordinateSource);
-      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerAction(executed.x, executed.y, durationMs));
-      await appium.request(target.appiumServer, 'DELETE', `/session/${sessionId}/actions`, {});
+      if (!captureOut) {
+        await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerAction(executed.x, executed.y, durationMs));
+        await appium.request(target.appiumServer, 'DELETE', `/session/${sessionId}/actions`, {});
+        return;
+      }
+      ensureDir(path.dirname(captureOut));
+      const pointerId = `finger-${Date.now()}`;
+      await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerDownAction(executed.x, executed.y, pointerId));
+      try {
+        await sleep(captureAtMs);
+        const shot = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/screenshot`);
+        decodeBase64Png(shot.value, captureOut);
+        await sleep(durationMs - captureAtMs);
+        await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerUpAction(pointerId));
+      } finally {
+        await appium.request(target.appiumServer, 'DELETE', `/session/${sessionId}/actions`, {}).catch(() => {});
+      }
     }, sessionOptions);
-    writeJson(actionResult('longPress', { durationMs, executedPoint: executed }));
+    writeJson(actionResult('longPress', {
+      durationMs,
+      executedPoint: executed,
+      duringActionCapture: captureOut ? { capturedAtMs: captureAtMs, artifacts: { screenshot: captureRef } } : undefined,
+    }));
     return;
   }
   if (atom === 'swipe') {

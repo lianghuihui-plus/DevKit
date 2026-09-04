@@ -90,7 +90,7 @@ assert.strictEqual(Object.hasOwn(environment.binding, 'device'), false);
 assert.strictEqual(fs.existsSync(path.join(root, 'runs')), false);
 
 expectCode(() => validateBinding({
-  platform: 'android', device: 'legacy-android-device', appId: 'com.example.android', entry: '.MainActivity',
+  platform: 'android', device: 'fixture-android-device', appId: 'com.example.android', entry: '.MainActivity',
 }), 'BATCH_CONTRACT_INVALID');
 const numberedFirst = JSON.parse(fs.readFileSync(path.join(first.caseDir, 'case.json'), 'utf8'));
 const numberedSecond = JSON.parse(fs.readFileSync(path.join(second.caseDir, 'case.json'), 'utf8'));
@@ -184,7 +184,6 @@ for (const interruptAfter of ['draft', 'snapshot-1', 'request']) {
     targets: [{ caseKey: first.caseKey, caseDir: first.caseDir }],
     userInstruction: '单个执行冻结恢复用例',
     skillRoot: SKILL_ROOT,
-    provider: 'codex',
     interruptAfter,
     now: T0,
   }), /MAVT_EXECUTION_REQUEST_INTERRUPTED/);
@@ -196,7 +195,6 @@ for (const interruptAfter of ['draft', 'snapshot-1', 'request']) {
     targets: [{ caseKey: first.caseKey, caseDir: first.caseDir }],
     userInstruction: '单个执行冻结恢复用例',
     skillRoot: SKILL_ROOT,
-    provider: 'codex',
     now: '2026-08-13T10:05:00.000Z',
   });
   assert.strictEqual(fs.readFileSync(path.join(resumed.targets[0].snapshotPath, 'source.snapshot.md'), 'utf8'), first.sourceText);

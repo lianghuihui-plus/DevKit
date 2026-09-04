@@ -20,6 +20,7 @@ const {
   acquireAppium,
   releaseAppium,
 } = require('../platform/adapters/ios/lib/service-lifecycle');
+const { withSession } = require('../platform/adapters/ios/lib/appium-client');
 const {
   acquireIosRuntime,
   releaseIosRuntime,
@@ -36,7 +37,7 @@ const T0 = '2026-08-26T10:00:00.000+08:00';
 const BINDING = Object.freeze({ platform: 'harmony', deviceId: 'runtime-device', appId: 'com.example.runtime', entry: 'EntryAbility' });
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-platform-runtime-'));
 const implementationSha = buildContract({
-  skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', provider: 'codex', platform: 'harmony',
+  skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform: 'harmony',
 }).implementationSha;
 
 function fixture(name) {
@@ -250,6 +251,8 @@ async function verifyIosAdapterSemantics() {
   assert.strictEqual((await releaseWda(historicalClaim.resource, 'owner-new-batch', historicalHarness.dependencies)).status, 'RELEASED');
 
   const order = [];
+  let sessionCreates = 0;
+  let sessionDeletes = 0;
   const composite = await acquireIosRuntime(target, 'owner-composite', {
     acquireAppium: async () => ({
       ok: true,
@@ -264,10 +267,24 @@ async function verifyIosAdapterSemantics() {
       resource: { deviceId: target.device, bundleId: target.updatedWDABundleId, claimToken: 'wda-token', baselinePids: [] },
     }),
     listeningPorts: () => [],
+    createSession: async () => {
+      sessionCreates += 1;
+      return { sessionId: 'batch-session-001', capabilities: { platformName: 'iOS' } };
+    },
   });
   assert.strictEqual(composite.resource.appium.pid, 4401);
   assert.strictEqual(composite.resource.wda.status, 'PENDING');
+  assert.strictEqual(composite.resource.session.sessionId, 'batch-session-001');
+  assert.strictEqual(sessionCreates, 1);
+  const reusedSessionIds = [];
+  await withSession({ appiumSessionId: composite.resource.session.sessionId }, async ({ sessionId }) => { reusedSessionIds.push(sessionId); });
+  await withSession({ appiumSessionId: composite.resource.session.sessionId }, async ({ sessionId }) => { reusedSessionIds.push(sessionId); });
+  assert.deepStrictEqual(reusedSessionIds, ['batch-session-001', 'batch-session-001']);
   const compositeReleased = await releaseIosRuntime({ ...composite, ownerKey: 'owner-composite' }, {
+    deleteSession: async (_server, sessionId) => {
+      sessionDeletes += 1;
+      assert.strictEqual(sessionId, 'batch-session-001');
+    },
     releaseWda: async () => {
       order.push('wda');
       return { ok: true, status: 'RELEASED', ownership: 'FRAMEWORK_MANAGED' };
@@ -279,9 +296,11 @@ async function verifyIosAdapterSemantics() {
     listeningPorts: () => [],
   });
   assert.deepStrictEqual(order, ['wda', 'appium']);
+  assert.strictEqual(sessionDeletes, 1);
   assert.strictEqual(compositeReleased.status, 'RELEASED');
 
   const retained = await releaseIosRuntime({ ...composite, ownerKey: 'owner-composite' }, {
+    deleteSession: async () => {},
     releaseWda: async () => ({ ok: true, status: 'RETAINED', ownership: 'EXTERNAL' }),
     releaseAppium: async () => ({ ok: true, status: 'RELEASED', ownership: 'FRAMEWORK_MANAGED' }),
     listeningPorts: () => [],
@@ -290,6 +309,7 @@ async function verifyIosAdapterSemantics() {
   assert.strictEqual(retained.ownership, 'EXTERNAL');
 
   const failedWda = await releaseIosRuntime({ ...composite, ownerKey: 'owner-composite' }, {
+    deleteSession: async () => {},
     releaseWda: async () => ({
       ok: false,
       status: 'RELEASE_FAILED',
@@ -304,6 +324,7 @@ async function verifyIosAdapterSemantics() {
   assert.strictEqual(failedWda.failureCode, 'IOS_WDA_STOP_FAILED');
 
   const residualPort = await releaseIosRuntime({ ...composite, ownerKey: 'owner-composite' }, {
+    deleteSession: async () => {},
     releaseWda: async () => ({ ok: true, status: 'RELEASED', ownership: 'FRAMEWORK_MANAGED' }),
     releaseAppium: async () => ({ ok: true, status: 'RELEASED', ownership: 'FRAMEWORK_MANAGED' }),
     listeningPorts: () => [8100],

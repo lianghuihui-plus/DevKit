@@ -18,4 +18,4 @@ iOS `prepare-env` 会复用可连接的外部 Appium，或启动并登记框架�
 
 bootstrap/recovery 的冷启动验证分为两类事实：Adapter 必须明确返回 `ok=true` 和 `coldStartVerified=true`；启动显示则由公共层根据环境冻结的 `startupDisplayPolicy` 判断是否必需。Android、iOS 当前默认策略为 `preserve + none`，因此 `startupDisplay` 是可选审计事实，Adapter 可显式返回 `startupDisplay.status=SKIPPED`；HarmonyOS 命中 `required` 策略时必须返回匹配策略的 `startupDisplay.status=VERIFIED`，缺失或不匹配仍阻断 bootstrap/recovery。
 
-观察只有在 adapter 明确确认目标 `deviceId`、目标 App 且截图有效时才可作为可用证据，前台状态未知不能按可用处理。
+观察只有在 adapter 明确确认冻结 `deviceId`、目标 App 绑定且截图有效时才可作为可用证据；`foregroundApp/inTargetApp` 只描述当前前台上下文，系统设置、应用市场等外部页面的合法截图仍可作为当前观察和后续动作依据。

@@ -50,6 +50,9 @@ function parseArgs(argv) {
       case '--appium-server':
         options.appiumServer = requiredValue(argv, ++i, arg);
         break;
+      case '--appium-session-id':
+        options.appiumSessionId = requiredValue(argv, ++i, arg);
+        break;
       case '--wda-local-port':
         options.wdaLocalPort = requiredValue(argv, ++i, arg);
         break;
@@ -170,6 +173,7 @@ function buildTarget(options = {}) {
     appId,
     deviceType: inferDeviceType(options.deviceType || process.env.MAVT_IOS_DEVICE_TYPE, device),
     appiumServer: options.appiumServer || process.env.MAVT_IOS_APPIUM_SERVER || 'http://127.0.0.1:4723',
+    appiumSessionId: options.appiumSessionId || process.env.MAVT_IOS_APPIUM_SESSION_ID || '',
     wdaLocalPort: options.wdaLocalPort || process.env.MAVT_IOS_WDA_LOCAL_PORT || '8100',
     webDriverAgentUrl: options.webDriverAgentUrl || process.env.MAVT_IOS_WDA_URL || '',
     xcodeOrgId: options.xcodeOrgId || process.env.MAVT_IOS_XCODE_ORG_ID || '',

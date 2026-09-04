@@ -143,6 +143,7 @@ function environmentAdapterArgs(binding, purpose = 'observe') {
   if (binding.platform === 'ios') {
     add('--device-type', binding.deviceType);
     add('--appium-server', binding.appiumServer);
+    add('--appium-session-id', binding.appiumSessionId);
     add('--wda-local-port', binding.wdaLocalPort);
     add('--web-driver-agent-url', binding.webDriverAgentUrl);
     add('--xcode-org-id', binding.xcodeOrgId);

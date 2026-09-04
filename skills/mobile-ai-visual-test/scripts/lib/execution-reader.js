@@ -2,8 +2,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { completionDisplayResult, validatePublishedCompletion } = require('./completion-contract');
-const { validateResultKnowledgeSnapshots } = require('./knowledge-snapshot');
+const { buildContract } = require('../build-agent-contract');
+const { validatePublishedCompletion } = require('./completion-contract');
+const { referencedTechnicalFacts } = require('./technical-facts');
+
+const currentContracts = new Map();
 
 function readJson(file, fallback = null) {
   if (!fs.existsSync(file)) return fallback;
@@ -15,41 +18,50 @@ function readJsonl(file) {
   return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
-function executionSchemaFamily(execution, result) {
-  if (execution?.schemaVersion === 3 && result?.schemaVersion === 2) return 'current';
-  const error = new Error(`Unsupported execution/result schema combination: execution=${execution?.schemaVersion ?? 'missing'}, result=${result?.schemaVersion ?? 'missing'}`);
-  error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
-  throw error;
+function currentContract(platform, skillRoot = path.resolve(__dirname, '../..')) {
+  const key = `${skillRoot}\0${platform}`;
+  if (!currentContracts.has(key)) {
+    currentContracts.set(key, buildContract({ skillRoot, role: 'case-executor', platform }));
+  }
+  return currentContracts.get(key);
 }
 
-function currentDisplayModel(result, metrics, execution) {
+function assertCurrentExecution(execution, options = {}) {
+  if (execution?.schemaVersion !== 6 || execution.runtime !== 'case-runtime') {
+    const error = new Error('This execution was created by an unsupported protocol and must be run again');
+    error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
+    throw error;
+  }
+  let contract;
+  try {
+    contract = options.contract || currentContract(execution.platform, options.skillRoot);
+  } catch (cause) {
+    const error = new Error(`This execution uses an unsupported platform or protocol and must be run again: ${cause.message || cause}`);
+    error.code = 'AGENT_PROTOCOL_MISMATCH';
+    throw error;
+  }
+  if (execution.caseProtocolSha !== contract.protocolSha || execution.runtimeSha !== contract.runtimeSha) {
+    const error = new Error('This execution does not match the current Case Agent protocol or Runtime and must be run again');
+    error.code = 'AGENT_PROTOCOL_MISMATCH';
+    throw error;
+  }
+  return execution;
+}
+
+function currentDisplayModel(result, metrics, execution, events = []) {
+  const evidenceBacked = (result?.checks || []).some((check) => (check.sceneRefs || []).length > 0);
+  const technicalFact = referencedTechnicalFacts(result, events, execution).at(-1) || null;
+  const verdictBasis = result?.verdict === 'BLOCKED'
+    ? (technicalFact ? 'TECHNICAL_CONSTRAINT' : 'INSUFFICIENT_EVIDENCE')
+    : result?.verdict === 'INCONCLUSIVE' && !evidenceBacked ? 'INSUFFICIENT_EVIDENCE' : 'DIRECT_EVIDENCE';
   return {
     status: result?.verdict || 'NOT_RUN',
     verdict: result?.verdict || null,
-    executionStatus: result?.executionStatus || null,
-    verdictBasis: result?.verdictBasis || null,
+    executionStatus: metrics?.executionStatus || execution?.executionStatus || null,
+    verdictBasis,
     summary: result?.summary || '',
     uncertainties: Array.isArray(result?.uncertainties) ? result.uncertainties : [],
-    failureCode: result?.technicalFailureCode || null,
-    failedStep: null,
-    startedAt: result?.startedAt || execution?.startedAt || '',
-    endedAt: result?.endedAt || execution?.endedAt || '',
-    durationMs: metrics?.elapsedMs,
-    stepsSummary: '-',
-    metrics: metrics || null,
-  };
-}
-
-function pendingCompletionDisplayModel(result, metrics, execution) {
-  return {
-    status: 'PENDING_PUBLICATION',
-    verdict: null,
-    requestedVerdict: result?.verdict || null,
-    executionStatus: 'PENDING_PUBLICATION',
-    verdictBasis: null,
-    summary: '执行结果已生成，等待框架完成校验和发布',
-    uncertainties: [],
-    failureCode: null,
+    failureCode: technicalFact?.code || null,
     failedStep: null,
     startedAt: execution?.startedAt || '',
     endedAt: execution?.endedAt || '',
@@ -59,59 +71,58 @@ function pendingCompletionDisplayModel(result, metrics, execution) {
   };
 }
 
+function pendingCompletionDisplayModel(result, metrics, execution) {
+  return {
+    status: 'PENDING_PUBLICATION', verdict: null, requestedVerdict: result?.verdict || null,
+    executionStatus: 'PENDING_PUBLICATION', verdictBasis: null,
+    summary: '执行结果已生成，等待框架完成校验和发布', uncertainties: [],
+    failureCode: null, failedStep: null,
+    startedAt: execution?.startedAt || '', endedAt: execution?.endedAt || '',
+    durationMs: metrics?.elapsedMs, stepsSummary: '-', metrics: metrics || null,
+  };
+}
+
 function finalizationRecoveryDisplayModel(execution, metrics) {
   return {
-    status: 'FINALIZATION_RECOVERY_REQUIRED',
-    verdict: null,
-    requestedVerdict: null,
-    executionStatus: 'FINALIZATION_RECOVERY_REQUIRED',
-    verdictBasis: null,
-    summary: '执行收尾中断，等待框架从冻结草稿恢复',
+    status: 'FINALIZATION_RECOVERY_REQUIRED', verdict: null, requestedVerdict: null,
+    executionStatus: 'FINALIZATION_RECOVERY_REQUIRED', verdictBasis: null,
+    summary: '执行收尾中断，等待框架从冻结草稿恢复', uncertainties: [],
+    failureCode: 'RESUME_FINALIZE', failedStep: null,
+    startedAt: execution?.startedAt || '', endedAt: '',
+    durationMs: metrics?.elapsedMs, stepsSummary: '-', metrics: metrics || null,
+  };
+}
+
+function invalidCompletionDisplayModel(result, metrics, execution, message) {
+  return {
+    requestedVerdict: result?.verdict || null,
+    status: 'BLOCKED',
+    verdict: 'BLOCKED',
+    executionStatus: 'TECHNICALLY_BLOCKED',
+    verdictBasis: 'TECHNICAL_CONSTRAINT',
+    summary: `完成态校验失败，业务结果未发布：${message}`,
     uncertainties: [],
-    failureCode: 'RESUME_FINALIZE',
+    failureCode: 'EXECUTION_COMPLETION_INVALID',
     failedStep: null,
     startedAt: execution?.startedAt || '',
-    endedAt: '',
+    endedAt: execution?.endedAt || '',
     durationMs: metrics?.elapsedMs,
     stepsSummary: '-',
     metrics: metrics || null,
   };
 }
 
-function invalidCompletionResult(result, message) {
-  return {
-    ...result,
-    requestedVerdict: result?.verdict || null,
-    verdict: 'BLOCKED',
-    executionStatus: 'TECHNICALLY_BLOCKED',
-    verdictBasis: 'TECHNICAL_CONSTRAINT',
-    summary: `完成态校验失败，业务结果未发布：${message}`,
-    technicalFailureCode: 'EXECUTION_COMPLETION_INVALID',
-  };
-}
-
 function emptyExecutionReport(execDir = null) {
   return {
-    latest: execDir,
-    schemaFamily: null,
-    execution: null,
-    snapshot: null,
-    sourceText: '',
-    understanding: null,
-    plan: null,
-    rawResult: null,
-    result: null,
-    metrics: null,
-    events: [],
-    completion: null,
-    completionError: null,
-    display: null,
+    latest: execDir, schemaFamily: null, execution: null, snapshot: null, sourceText: '',
+    rawResult: null, result: null, metrics: null, events: [], completion: null,
+    completionError: null, display: null,
   };
 }
 
 function executionSelection(execDir, workspaceRoot = null) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 3) return null;
+  if (execution?.schemaVersion !== 6 || execution.runtime !== 'case-runtime') return null;
   const closure = workspaceRoot && execution.finalized !== true
     ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
     : null;
@@ -119,17 +130,14 @@ function executionSelection(execDir, workspaceRoot = null) {
   const completion = readJson(path.join(execDir, 'completion.json'), null);
   let priority = 1;
   let state = 'ACTIVE';
-  if (closure) {
-    priority = 0;
-    state = 'ABANDONED';
-  } else if (execution.finalized !== true) {
+  if (closure) { priority = 0; state = 'ABANDONED'; }
+  else if (execution.finalized !== true) {
     priority = 4;
-    state = execution.lifecycle === 'FINALIZING' || fs.existsSync(path.join(execDir, 'finalization.draft.json'))
+    state = execution.lifecycle === 'FINALIZING' || fs.existsSync(path.join(execDir, 'transactions', 'finish.draft.json'))
       ? 'FINALIZATION_RECOVERY_REQUIRED' : 'ACTIVE';
-  }
-  else if (execution.finalized === true && result && !completion) { priority = 3; state = 'FINALIZED_PENDING_COMPLETION'; }
+  } else if (result && !completion) { priority = 3; state = 'FINALIZED_PENDING_COMPLETION'; }
   else if (completion) { priority = 2; state = 'PUBLISHED'; }
-  const time = Date.parse(execution?.endedAt || execution?.startedAt || 0) || fs.statSync(execDir).mtimeMs;
+  const time = Date.parse(execution.endedAt || execution.startedAt || 0) || fs.statSync(execDir).mtimeMs;
   return { execDir, execution, result, completion, closure, priority, state, time };
 }
 
@@ -146,61 +154,39 @@ function selectExecutionDir(runtimeDir) {
 function readExecutionReport(execDir) {
   if (!execDir) return emptyExecutionReport();
   const report = emptyExecutionReport(execDir);
-  report.execution = readJson(path.join(execDir, 'execution.json'), null);
+  report.execution = assertCurrentExecution(readJson(path.join(execDir, 'execution.json'), null));
+  report.schemaFamily = 'current';
   report.snapshot = readJson(path.join(execDir, 'case.snapshot.json'), null);
   report.rawResult = readJson(path.join(execDir, 'result.json'), null);
   report.metrics = readJson(path.join(execDir, 'metrics.json'), null);
   report.completion = readJson(path.join(execDir, 'completion.json'), null);
-  report.events = readJsonl(path.join(execDir, 'timeline.jsonl'));
+  report.events = readJsonl(path.join(execDir, 'events.jsonl'));
   report.closure = require('./execution-closure').executionClosureForDir(execDir);
-  const finalizationPending = report.execution?.schemaVersion === 3
-    && report.execution.finalized !== true
-    && (report.execution.lifecycle === 'FINALIZING' || fs.existsSync(path.join(execDir, 'finalization.draft.json')));
-  if (finalizationPending) {
-    report.schemaFamily = 'current';
+  const sourcePath = path.join(execDir, 'source.snapshot.md');
+  report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
+
+  if (!report.rawResult) {
+    report.display = {
+      status: report.closure ? 'ABANDONED' : 'RUNNING', verdict: null,
+      executionStatus: report.closure ? 'INTERRUPTED' : 'RUNNING', verdictBasis: null,
+      summary: report.closure ? '执行因实现变更被废弃，未形成测试结论' : '用例执行中',
+      uncertainties: [], failureCode: report.closure?.reasonCode || null, failedStep: null,
+      startedAt: report.execution.startedAt || '', endedAt: '', durationMs: null, stepsSummary: '-', metrics: null,
+    };
+    return report;
+  }
+
+  if (report.execution.finalized !== true) {
     report.finalizationPending = true;
-    const sourcePath = path.join(execDir, 'source.snapshot.md');
-    report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
-    report.understanding = readJson(path.join(execDir, 'understanding.json'), null);
-    report.plan = readJson(path.join(execDir, 'plan.json'), null);
     report.display = finalizationRecoveryDisplayModel(report.execution, report.metrics);
     return report;
   }
-  if (!report.rawResult) {
-    if (report.execution?.schemaVersion === 3) {
-      report.schemaFamily = 'current';
-      const sourcePath = path.join(execDir, 'source.snapshot.md');
-      report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
-      report.understanding = readJson(path.join(execDir, 'understanding.json'), null);
-      report.plan = readJson(path.join(execDir, 'plan.json'), null);
-      report.display = {
-        status: report.closure ? 'ABANDONED' : 'RUNNING', verdict: null,
-        executionStatus: report.closure ? 'INTERRUPTED' : 'RUNNING', verdictBasis: null,
-        summary: report.closure ? '执行因实现变更被废弃，未形成测试结论' : '用例执行中',
-        uncertainties: [], failureCode: report.closure?.reasonCode || null, failedStep: null,
-        startedAt: report.execution.startedAt || '', endedAt: '', durationMs: null, stepsSummary: '-', metrics: null,
-      };
-    }
-    return report;
-  }
-  report.schemaFamily = executionSchemaFamily(report.execution, report.rawResult);
-  const sourcePath = path.join(execDir, 'source.snapshot.md');
-  report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
-  report.understanding = readJson(path.join(execDir, 'understanding.json'), null);
-  report.plan = readJson(path.join(execDir, 'plan.json'), null);
-  if (report.execution?.batchId && report.execution.finalized === true && report.metrics && !report.completion) {
-    try {
-      validateResultKnowledgeSnapshots(execDir, report.rawResult, report.events);
-    } catch (error) {
-      report.completionError = error.message || String(error);
-      report.result = invalidCompletionResult(report.rawResult, report.completionError);
-      report.display = currentDisplayModel(report.result, report.metrics, report.execution);
-      return report;
-    }
+  if (report.execution.batchId && report.metrics && !report.completion) {
     report.pendingCompletion = true;
     report.display = pendingCompletionDisplayModel(report.rawResult, report.metrics, report.execution);
     return report;
   }
+
   report.result = report.rawResult;
   if (report.completion) {
     try {
@@ -210,27 +196,27 @@ function readExecutionReport(execDir) {
         result: report.rawResult,
         metrics: report.metrics,
       });
-      report.result = completionDisplayResult(report.rawResult, report.completion);
+      report.result = report.rawResult;
     } catch (error) {
       report.completionError = error.message || String(error);
-      report.result = invalidCompletionResult(report.rawResult, report.completionError);
+      report.result = null;
+      report.display = invalidCompletionDisplayModel(report.rawResult, report.metrics, report.execution, report.completionError);
       report.completion = null;
       if (/EXECUTION_ARTIFACT_/.test(report.completionError)) {
         report.sourceText = '';
-        report.understanding = null;
-        report.plan = null;
         report.events = [];
       }
+      return report;
     }
   }
-  report.display = currentDisplayModel(report.result, report.metrics, report.execution);
+  report.display = currentDisplayModel(report.result, report.metrics, report.execution, report.events);
   return report;
 }
 
 module.exports = {
+  assertCurrentExecution,
   currentDisplayModel,
   emptyExecutionReport,
-  executionSchemaFamily,
   finalizationRecoveryDisplayModel,
   pendingCompletionDisplayModel,
   readExecutionReport,

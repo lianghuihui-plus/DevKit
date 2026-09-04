@@ -65,7 +65,7 @@ function inputRepairSucceeded(actionEvent) {
 
 function coordinateActionConflict(view, platform, actionType) {
   if (String(platform || '').toLowerCase() !== 'ios'
-    || !['tap', 'toggle', 'longPress', 'swipe'].includes(actionType)) return null;
+    || !['tap', 'doubleTap', 'toggle', 'longPress', 'swipe'].includes(actionType)) return null;
   return view?.conflicts?.find((entry) => entry.code === 'KEYBOARD_COORDINATE_SPACE_MISMATCH') || null;
 }
 

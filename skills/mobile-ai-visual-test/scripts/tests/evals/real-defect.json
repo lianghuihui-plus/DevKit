@@ -1,1 +1,0 @@
-{"schemaVersion":1,"id":"real-defect","title":"当前证据确认真实缺陷","sourceText":"提交表单后应展示成功提示","initialState":"提交后稳定出现错误提示，恢复与知识调查均不能解释为正常","must":[{"type":"businessObservation"},{"type":"knowledgeQuery"},{"type":"verdictReview"},{"type":"result"}],"mustNot":[],"outcome":{"allowedVerdicts":["FAIL"],"allowedVerdictBases":["DIRECT_EVIDENCE"],"rationale":"知识调查不能掩盖由当前业务证据确认的明确不满足。"}}

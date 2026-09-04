@@ -20,7 +20,7 @@ const { validateKnowledgeRoots } = require('./knowledge-query');
 const { ensureWorkspaceCaseNumbers, resolveCaseNo } = require('./case-numbering');
 
 const ENVIRONMENT_CONFIRMATION_SCHEMA_VERSION = 1;
-const EXECUTION_REQUEST_SCHEMA_VERSION = 2;
+const EXECUTION_REQUEST_SCHEMA_VERSION = 3;
 const EXECUTION_MODES = new Set(['SINGLE', 'BATCH']);
 const INTERACTION_POLICY = 'UNATTENDED';
 
@@ -277,9 +277,11 @@ function validateExecutionRequest(value, options = {}) {
   if (value.interactionPolicy !== INTERACTION_POLICY) throw contractError('EXECUTION_REQUEST_INVALID', 'interactionPolicy must be UNATTENDED');
   ensureId(value.environmentConfirmationId, 'environmentConfirmationId', 'EXECUTION_REQUEST_INVALID');
   ensureString(value.environmentConfirmationSha, 'environmentConfirmationSha', 'EXECUTION_REQUEST_INVALID');
-  ensureString(value.caseExecutorProtocolSha, 'caseExecutorProtocolSha', 'EXECUTION_REQUEST_INVALID');
+  ensureString(value.caseProtocolSha, 'caseProtocolSha', 'EXECUTION_REQUEST_INVALID');
   ensureString(value.coordinatorProtocolSha, 'coordinatorProtocolSha', 'EXECUTION_REQUEST_INVALID');
-  ensureString(value.implementationSha, 'implementationSha', 'EXECUTION_REQUEST_INVALID');
+  ensureString(value.runtimeSha, 'runtimeSha', 'EXECUTION_REQUEST_INVALID');
+  ensureString(value.adapterSha, 'adapterSha', 'EXECUTION_REQUEST_INVALID');
+  ensureString(value.coordinatorSha, 'coordinatorSha', 'EXECUTION_REQUEST_INVALID');
   validateBinding(value.binding);
   const targets = ensureArray(value.targets, 'targets', 'EXECUTION_REQUEST_INVALID');
   if (!targets.length) throw contractError('EXECUTION_REQUEST_INVALID', 'targets must not be empty');
@@ -345,13 +347,9 @@ function createExecutionRequest(options) {
     ], { now: options.now });
     const requestedAt = options.now || new Date().toISOString();
     const skillRoot = path.resolve(options.skillRoot || path.join(__dirname, '..', '..'));
-    const provider = options.provider || 'codex';
-    const contractOptions = { skillRoot, provider, platform: environment.binding.platform };
+    const contractOptions = { skillRoot, platform: environment.binding.platform };
     const caseExecutorContract = buildContract({ ...contractOptions, role: 'case-executor' });
     const coordinatorContract = buildContract({ ...contractOptions, role: 'batch-coordinator' });
-    if (caseExecutorContract.implementationSha !== coordinatorContract.implementationSha) {
-      throw contractError('AGENT_IMPLEMENTATION_MISMATCH', 'Agent roles do not share one implementation digest');
-    }
     const targets = liveTargets.map((target, index) => snapshotTargetDescriptor(workspace.root, batchId, target, index));
     const value = {
       schemaVersion: EXECUTION_REQUEST_SCHEMA_VERSION,
@@ -361,9 +359,11 @@ function createExecutionRequest(options) {
       interactionPolicy: INTERACTION_POLICY,
       environmentConfirmationId: environment.confirmationId,
       environmentConfirmationSha: environment.confirmationSha,
-      caseExecutorProtocolSha: caseExecutorContract.protocolSha,
+      caseProtocolSha: caseExecutorContract.protocolSha,
       coordinatorProtocolSha: coordinatorContract.protocolSha,
-      implementationSha: caseExecutorContract.implementationSha,
+      runtimeSha: caseExecutorContract.runtimeSha,
+      adapterSha: caseExecutorContract.adapterSha,
+      coordinatorSha: coordinatorContract.coordinatorSha,
       binding: validateBinding({ ...environment.binding }),
       targets,
       userInstruction,

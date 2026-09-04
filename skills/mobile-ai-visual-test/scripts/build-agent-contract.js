@@ -4,19 +4,18 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { implementationFiles, roleEntrypoints, roleResources } = require('./lib/agent-contract-manifest');
+const { implementationFiles, implementationGroups, roleEntrypoints, roleResources } = require('./lib/agent-contract-manifest');
 
 function usage() {
-  console.error('Usage: build-agent-contract.js --role <case-executor|batch-coordinator> --platform <harmony|android|ios> [--provider <id>] [--skill-root <path>] [--verify-sha <sha>]');
+  console.error('Usage: build-agent-contract.js --role <case-executor|batch-coordinator> --platform <harmony|android|ios> [--skill-root <path>] [--verify-sha <sha>]');
   process.exit(2);
 }
 
 function parseArgs(args) {
-  const options = { skillRoot: path.resolve(__dirname, '..'), provider: 'codex' };
+  const options = { skillRoot: path.resolve(__dirname, '..') };
   for (let index = 0; index < args.length; index += 1) {
     switch (args[index]) {
       case '--role': options.role = args[++index]; break;
-      case '--provider': options.provider = String(args[++index] || '').trim().toLowerCase(); break;
       case '--platform': options.platform = String(args[++index] || '').trim().toLowerCase(); break;
       case '--skill-root': options.skillRoot = path.resolve(args[++index]); break;
       case '--verify-sha': options.verifySha = args[++index]; break;
@@ -25,13 +24,12 @@ function parseArgs(args) {
   }
   if (!['case-executor', 'batch-coordinator'].includes(options.role)) usage();
   if (!['harmony', 'android', 'ios'].includes(options.platform)) usage();
-  if (!/^[a-z][a-z0-9._-]{0,63}$/.test(options.provider)) usage();
   return options;
 }
 
-function contractDigest(skillRoot, role, provider, platform, resources, entrypoints) {
+function contractDigest(skillRoot, role, platform, resources, entrypoints) {
   const hash = crypto.createHash('sha256');
-  hash.update(JSON.stringify({ role, provider, platform, resources, entrypoints }));
+  hash.update(JSON.stringify({ role, platform, resources, entrypoints }));
   hash.update('\0', 'utf8');
   for (const relative of resources) {
     const file = path.join(skillRoot, relative);
@@ -45,8 +43,7 @@ function contractDigest(skillRoot, role, provider, platform, resources, entrypoi
   return `agent-protocol-${hash.digest('hex').slice(0, 16)}`;
 }
 
-function implementationDigest(skillRoot, role, platform) {
-  const files = implementationFiles(skillRoot, role, platform);
+function filesDigest(skillRoot, files, prefix) {
   const hash = crypto.createHash('sha256');
   for (const relative of files) {
     const file = path.join(skillRoot, relative);
@@ -57,9 +54,18 @@ function implementationDigest(skillRoot, role, platform) {
     hash.update(fs.readFileSync(file));
     hash.update('\0', 'utf8');
   }
+  return `${prefix}-${hash.digest('hex').slice(0, 16)}`;
+}
+
+function implementationDigest(skillRoot, role, platform) {
+  const files = implementationFiles(skillRoot, role, platform);
+  const groups = implementationGroups(skillRoot, platform);
   const value = {
     implementationFiles: files,
-    implementationSha: `agent-implementation-${hash.digest('hex').slice(0, 16)}`,
+    runtimeSha: filesDigest(skillRoot, groups.runtime, 'case-runtime'),
+    coordinatorSha: filesDigest(skillRoot, groups.coordinator, 'batch-coordinator'),
+    adapterSha: filesDigest(skillRoot, groups.adapter, 'platform-adapter'),
+    reportRendererSha: filesDigest(skillRoot, groups.report, 'report-renderer'),
   };
   return value;
 }
@@ -67,22 +73,24 @@ function implementationDigest(skillRoot, role, platform) {
 function buildContract(options) {
   const resources = roleResources(options.role);
   const entrypoints = roleEntrypoints(options.role);
-  const protocolSha = contractDigest(options.skillRoot, options.role, options.provider, options.platform, resources, entrypoints);
+  const protocolSha = contractDigest(options.skillRoot, options.role, options.platform, resources, entrypoints);
   const implementation = implementationDigest(options.skillRoot, options.role, options.platform);
   if (options.verifySha && options.verifySha !== protocolSha) {
     throw new Error(`AGENT_PROTOCOL_MISMATCH: requested ${options.verifySha}, current ${protocolSha}`);
   }
   const value = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'mobile-ai-visual-test',
     root: options.skillRoot,
     role: options.role,
-    provider: options.provider,
     platform: options.platform,
     requiredResources: resources,
     allowedEntrypoints: entrypoints,
     protocolSha,
-    implementationSha: implementation.implementationSha,
+    runtimeSha: implementation.runtimeSha,
+    coordinatorSha: implementation.coordinatorSha,
+    adapterSha: implementation.adapterSha,
+    reportRendererSha: implementation.reportRendererSha,
     implementationFiles: implementation.implementationFiles,
   };
   if (options.verifySha) value.verified = true;
@@ -104,5 +112,6 @@ module.exports = {
   buildContract,
   contractDigest,
   implementationDigest,
+  filesDigest,
   parseArgs,
 };

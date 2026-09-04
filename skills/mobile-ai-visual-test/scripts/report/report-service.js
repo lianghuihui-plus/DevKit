@@ -16,7 +16,8 @@ const PLATFORM_ORDER = ['android', 'ios', 'harmony'];
 const PLATFORM_LABELS = Object.freeze({ android: 'Android', ios: 'iOS', harmony: 'HarmonyOS' });
 const STATUS_LABELS = Object.freeze({
   PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', UNKNOWN: '无法判断', INCONCLUSIVE: '无法判断',
-  RUNNING: '执行中', ABANDONED: '执行已废弃', PENDING_PUBLICATION: '待发布', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', NOT_RUN: '未执行',
+  RUNNING: '执行中', ABANDONED: '执行已废弃', PENDING_PUBLICATION: '待发布', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复',
+  NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行',
 });
 
 function readJson(file, fallback = null) {
@@ -58,21 +59,24 @@ function runtimeSummary(caseDir, platform) {
   const report = readLatestExecutionReport(caseDir, { platform });
   if (!report) return null;
   const display = report.display || {};
+  const currentCase = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
+  const sourceCurrent = report.execution?.sourceSha === currentCase.identity.sourceSha;
   return {
     platform,
-    status: display.status === 'INCONCLUSIVE' ? 'UNKNOWN' : display.status || 'NOT_RUN',
-    verdict: display.verdict || null,
-    verdictBasis: display.verdictBasis || null,
-    executionStatus: display.executionStatus || null,
+    status: sourceCurrent ? (display.status === 'INCONCLUSIVE' ? 'UNKNOWN' : display.status || 'NOT_RUN') : 'NEEDS_RERUN',
+    verdict: sourceCurrent ? display.verdict || null : null,
+    verdictBasis: sourceCurrent ? display.verdictBasis || null : null,
+    executionStatus: sourceCurrent ? display.executionStatus || null : null,
     latestExecutionId: report.execution?.executionId || '',
     startedAt: display.startedAt || '',
     endedAt: display.endedAt || '',
     updatedAt: display.endedAt || display.startedAt || '',
     durationMs: display.durationMs ?? null,
-    reason: display.summary || '',
-    failureCode: display.failureCode || '',
-    currentMetrics: report.metrics || null,
-    schemaFamily: 'current',
+    reason: sourceCurrent ? display.summary || '' : '用例原文已更新，已有执行结果不再代表当前用例',
+    failureCode: sourceCurrent ? display.failureCode || '' : 'CASE_SOURCE_CHANGED',
+    currentMetrics: sourceCurrent ? report.metrics || null : null,
+    sourceCurrent,
+    schemaFamily: report.schemaFamily,
     contextPath: path.join(caseRuntimeDir(caseDir, platform), 'CONTEXT.html'),
   };
 }
@@ -88,7 +92,7 @@ function collectCasePlatforms(caseDir) {
 function aggregateStatus(platforms) {
   const statuses = platforms.map((entry) => entry.status);
   if (!statuses.length) return 'NOT_RUN';
-  for (const status of ['FAIL', 'BLOCKED', 'RUNNING', 'FINALIZATION_RECOVERY_REQUIRED', 'PENDING_PUBLICATION', 'UNKNOWN', 'ABANDONED']) {
+  for (const status of ['FAIL', 'BLOCKED', 'RUNNING', 'FINALIZATION_RECOVERY_REQUIRED', 'PENDING_PUBLICATION', 'NEEDS_RERUN', 'UNKNOWN', 'ABANDONED']) {
     if (statuses.includes(status)) return status === 'FINALIZATION_RECOVERY_REQUIRED' ? 'RUNNING' : status;
   }
   return statuses.every((status) => status === 'PASS') ? 'PASS' : 'NOT_RUN';
@@ -246,6 +250,20 @@ function renderIndexForRoot(rootDir) {
   return renderIndexArtifacts(rootDir, cases);
 }
 
+function refreshBatchIndex(rootDir, targetCaseDirs) {
+  ensureWorkspaceCaseNumbers(rootDir);
+  const targets = new Set(targetCaseDirs.map((caseDir) => path.resolve(caseDir)));
+  const cases = collectIndexCases(rootDir);
+  const selected = cases.filter((item) => targets.has(path.resolve(item.caseDir)));
+  if (selected.length !== targets.size || selected.some((item) => item.status === 'REPORT_ERROR')) {
+    const error = new Error('batch target reports are incomplete');
+    error.code = 'REPORT_PUBLICATION_INCOMPLETE';
+    throw error;
+  }
+  assertIndexLinks(rootDir, selected);
+  return renderIndexArtifacts(rootDir, cases);
+}
+
 function refreshCommittedCaseReports(caseDir, platform) {
   const rootDir = caseRootFromCaseDir(caseDir);
   ensureWorkspaceCaseNumbers(rootDir);
@@ -290,6 +308,7 @@ module.exports = {
   readLatestExecutionReport,
   rebuildCaseDerivedArtifacts,
   refreshCommittedCaseReports,
+  refreshBatchIndex,
   renderIndexForRoot,
   writeCaseReports,
   writePlatformCaseReports,

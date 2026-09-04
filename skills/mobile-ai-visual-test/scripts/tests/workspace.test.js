@@ -54,7 +54,7 @@ for (const text of ['移动端 AI 视觉测试', '运行控制状态', '环境�
 }
 assert.strictEqual(emptyIndex.includes('暂无测试结果。'), false);
 const emptyReportMetadata = JSON.parse(fs.readFileSync(path.join(empty, 'report-metadata.json'), 'utf8'));
-assert.match(emptyReportMetadata.rendererSha, /^report-renderer-[0-9a-f]{16}$/);
+assert.match(emptyReportMetadata.reportRendererSha, /^report-renderer-[0-9a-f]{16}$/);
 assert.ok(emptyReportMetadata.rendererFiles.includes('scripts/report/index-renderer.js'));
 for (const dependency of [
   'scripts/lib/execution-artifact-manifest.js',

@@ -46,8 +46,11 @@ function ownerKey(workspaceRoot, batchId, contractSha) {
 
 function protocolBindings(options) {
   return {
-    caseExecutorProtocolSha: options.caseExecutorProtocolSha,
+    caseProtocolSha: options.caseProtocolSha,
     coordinatorProtocolSha: options.coordinatorProtocolSha,
+    runtimeSha: options.runtimeSha,
+    adapterSha: options.adapterSha,
+    coordinatorSha: options.coordinatorSha,
   };
 }
 
@@ -141,7 +144,7 @@ function publishReleaseEvent(loaded, state) {
 }
 
 function acquireBatchPlatformRuntime(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, options.implementationSha, protocolBindings(options));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
   const paths = runtimePaths(loaded.paths.batchDir);
   return withFileLock(loaded.paths.lock, () => {
     const existing = readJson(paths.state, null);
@@ -213,8 +216,8 @@ function acquireBatchPlatformRuntime(options) {
 }
 
 function releaseBatchPlatformRuntime(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, options.implementationSha, protocolBindings(options));
-  if (!['COMPLETED', 'BLOCKED'].includes(loaded.state.status)) {
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
+  if (!['FINALIZING', 'COMPLETED', 'BLOCKED'].includes(loaded.state.status)) {
     throw contractError('PLATFORM_RUNTIME_RELEASE_EARLY', 'platform runtime can only be released after the batch reaches a terminal state');
   }
   const paths = runtimePaths(loaded.paths.batchDir);
@@ -288,7 +291,7 @@ function releaseBatchPlatformRuntime(options) {
 }
 
 function loadBatchPlatformRuntime(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, options.implementationSha, protocolBindings(options));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
   const state = readJson(runtimePaths(loaded.paths.batchDir).state, null);
   return state ? validateState(state, loaded) : null;
 }

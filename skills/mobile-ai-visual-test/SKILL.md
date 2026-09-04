@@ -1,78 +1,61 @@
 ---
 name: mobile-ai-visual-test
-description: 当需要基于任意非空文本人工用例，对移动端应用进行 AI 黑盒视觉自动化测试时使用；由 Agent 自主理解目标、建立起点、调整计划、执行与断言，并支持本地知识调查、批次暖会话及 HarmonyOS、Android、iOS 平台适配。
+description: 当需要基于任意非空文本人工用例，对移动端应用进行 AI 黑盒视觉自动化测试时使用；支持 HarmonyOS、Android、iOS 的环境确认、单用例或批量执行、独立 Case Agent、证据记录与报告生成。
 ---
 
 # 移动端 AI 视觉测试
 
-## 核心原则
+## 你的身份
 
-1. 任意非空文本都可进入执行；框架不校验用例格式、步骤数量或表达质量。
-2. Agent 负责业务理解、计划、动作、断言、知识适用性和结论；框架只处理确定性协议、设备调用、证据、事务和产物。
-3. 执行计划是可修订的业务检查点集合，不是固定点击脚本；现场路径可以增减动作或改变策略。
-4. 用例理解应忠实保留原文语义；发现遗漏或误解时允许修订，修订后必须重新生成计划并重新确认起点。
-5. 现场异常不直接判定失败；先复核证据，并按结论规则查询本地知识。
-6. 只保留设备与 App 绑定、真实证据、30 分钟单用例时限、事务恢复和产物完整性约束，不限制必要业务动作。
-7. 同批次只在 bootstrap 冷启动一次 App；用例间复用暖状态，每个用例使用独立 execution 和 Agent session。
-8. 环境确认与执行授权分离；批量执行开始后全程无人值守。
-9. 只接受当前协议和当前实现，不转换、改写或兼容旧产物。
+你是本次测试的主 Agent。你负责工作空间、环境、执行授权、批次、Case Agent 委托和报告发布；每个 Case Agent 独立负责一个用例的完整理解、执行和判断。
 
-## 角色路由
+## 你能做什么
 
-批次协调器读取 `references/workflow.md`、`references/interfaces.md`、`references/environment-probing.md`、`references/failure-policy.md`、`references/case-format.md`、`references/agent-runtime.md`；Codex 运行时再读取 `references/agent-runtimes/codex.md`。
+- 校验或初始化工作空间，导入任意非空文本用例。
+- 探测并确认 HarmonyOS、Android 或 iOS 的设备、App 和入口。
+- 根据用户明确授权创建单用例或批量执行请求。
+- 初始化批次、复用批次内 App 暖状态，并串行调度用例。
+- 为每个用例创建一个全新 Case Agent，并等待它完成整个用例。
+- 校验并提交 Case Agent 保存的原始结果，刷新单用例报告和批次总览。
 
-Case Agent 的冻结协议资源包含 `references/agent-execution.md` 和 `references/knowledge.md`，并读取 execution 内的 `agent/request.json`、`agent/contract.json` 和 `source.snapshot.md`。`agent/contract.json` 是命令、Schema、枚举和阶段 guidance 的唯一权威；知识协议只需在进入调查时使用。
+## 主流程
 
-## 人工与批次流程
+1. 使用 `scripts/workspace.js` 校验或初始化工作空间，再用 `scripts/import-case.js` 导入用例。
+2. 按 `references/environment-probing.md` 探测环境，由用户确认平台、设备、App 和入口。
+3. 用户明确执行范围后，用 `scripts/execution-request.js` 创建 `SINGLE` 或 `BATCH` 请求。
+4. 使用 `scripts/batch.js init` 和 `bootstrap` 建立批次暖会话。
+5. 循环调用 `scripts/batch.js reconcile`，按返回动作推进：
+   - `START_CASE` 或 `RESUME_CASE_START`：调用 `batch start`，读取 `prompts/case-agent.md`，通过宿主提供的 Agent 能力创建独立 Case Agent；只向它发送该 Prompt 的内容和返回的 `brief`。
+   - `WAIT_CASE_AGENT`：等待当前 Case Agent 完成，不进入它与 Case Runtime 的交互过程。
+   - `COMMIT_CASE`：调用 `batch commit`，保留 Case Agent 的原始结果并刷新报告。
+   - `RELEASE_PLATFORM`：再次调用 `batch reconcile`，由确定性收尾流程释放平台资源。
+   - `PUBLISH_REPORTS`：再次调用 `batch reconcile`，只重试报告发布，不重跑用例。
+   - `BATCH_COMPLETE`：读取最终检查清单并汇总批次结果。
+   - 批次级阻塞状态：保留现场并报告明确的技术原因。
+6. Case Agent 返回最终摘要后，以 execution 中的完成状态为准继续 commit；批次结束后向用户汇总结果和报告位置。
 
-1. 校验或初始化空目录或既有工作空间。
-2. 导入任意非空文本并分配稳定用例编号；空文本在创建 case 前返回 `CASE_INPUT_EMPTY`。
-3. 探测环境并等待用户确认设备、App 和入口；确认后停止，不自动执行用例。
-4. 用户另行按看板编号授权单用例或批量用例及顺序。
-5. 协调器执行 `init -> bootstrap -> reconcile -> start -> Case Agent -> commit`，每个 commit 后增量刷新看板。
-6. App 意外退出或原文明示冷启动时，Case Agent 提交统一恢复请求，由协调器受控恢复。
-7. 批次结束后释放框架托管的平台资源并全量重建看板。
+一个用例只委托一次。`executionId` 是持久化的业务执行链标识；宿主返回的 Agent 句柄只由主 Agent 在当前会话中持有。恢复时优先续用该句柄；句柄确实丢失时，以同一 Case Brief 和 execution 创建 continuation Agent，并记录续接事实，不创建第二条业务执行链。用例间共享 App 暖状态，但使用独立的 Case Agent、业务上下文和证据。
 
-## Case Agent 主链
+## 角色边界
 
-正式入口只有 `status`、`understand`、`plan`、`inspect`、`step`、`mark-start`、`request-recovery`、`investigate` 和 `conclude`。
+- Case Agent 直接使用 Case Brief 中预绑定的 Runtime Client，独立完成 `observe`、`act`、`knowledge`、`recover` 和 `finish`。
+- Case Runtime 是确定性本地代码，负责设备调用、证据、事务和恢复；Agent 的创建与上下文隔离由宿主平台负责。
+- 主 Agent 接收 Case Agent 的最终摘要，批次和报告使用其已保存的 `result.json`，保持 verdict、checks 和实际表现不变。
 
-正常顺序为：
+## 完成条件
 
-```text
-understand -> plan -> inspect/step PREPARE -> mark-start
--> inspect/step BUSINESS -> investigate（按需）-> conclude
-```
+- 当前用例只有在 Case Agent 调用 `finish` 且 `reconcile` 返回 `COMMIT_CASE` 后才进入提交。
+- 当前批次只有在所有授权用例完成、平台资源释放且报告发布成功后才结束。
+- 真实设备、批次存储或 bootstrap 无法工作时，以批次级技术状态结束并保留诊断。
 
-- `understand` 忠实提取起点、requirement、必做交互、预期结果和不确定性。无法提取可执行 requirement 时保留空集合并记录 uncertainty。
-- `plan` 将每项 requirement 恰好归属到一个检查点；检查点数量由独立执行、取证和判断的业务边界决定。没有 requirement 时提交空计划。
-- `inspect` 取得截图、控件树和技术诊断；`step` 执行一个 Agent 选择的动作并自动采集动作后现场。
-- `mark-start` 显式确认当前 PREPARE 现场满足本用例起点。
-- `investigate` 查询并评估本地知识，入口自动记录调查阶段。
-- `conclude` 提交业务结论和原文、恢复语义复核；框架补充引用与客观事实，并生成检查点事实、result、metrics 和 AgentResult。
+## 按需资源
 
-零 requirement 且计划为空时，`inspect`、`step`、`mark-start` 和 `request-recovery` 均不可用；Agent 只能修订理解与计划、调查知识或以 `INCONCLUSIVE` 收口。
-
-每个成功响应携带轻量 `runtimeState`。只有重连、Recovery 续接或响应不确定时调用 `status`；完整状态提供现有 understanding 和 plan，续接时不得重建。设备阶段和默认活动检查点由框架推导，Agent 不提交 `stage`，仅在 BUSINESS 主动切换检查点时提交 `checkpointRef`。内部 step、operation、turn 和知识查询事务由协调器恢复；`controlRequestPending=true` 时 Case Agent 停止。
-
-## 结论边界
-
-- 当前直接证据充分支持 PASS 且无待解释异常时，不强制查询知识。
-- FAIL、INCONCLUSIVE 和业务 BLOCKED 必须完成至少一次知识调查；纯技术 BLOCKED 可不查询。
-- 有 requirement 时，每项必须且只能有一个 finding；零 requirement 只能形成 `INCONCLUSIVE + INSUFFICIENT_EVIDENCE`，findings 为空且 uncertainty 非空。
-- `ok=true` 只表示动作调用完成。业务断言由 Agent 根据真实现场形成。
-- verdictReview 使用最后一次状态变化后的当前观察；Agent 必须为 requirement finding 显式选择当前暖会话代次内对应检查点的有效证据，框架不自动补用最新观察。
-- Recovery 前证据不能支持 Recovery 后的当前结论。
-- 知识调查绑定当前理解版本、暖会话代次、状态变化边界和当前观察；任一上下文变化后旧调查只保留审计价值。
-- PASS 和 FAIL 必须显式确认当前起点；FAIL 取得充分负向证据后不强制继续无关检查点。
-- 达到时限后停止新设备调用，但继续恢复事务、知识调查和结论收口。
-
-## 禁止事项
-
-- Case Agent 不调用底层 operation、平台 adapter、`hdc`、`adb` 或 Appium。
-- Agent 宿主必须按 Case Agent 的 `allowedEntrypoints` 和只读资源清单限制工具；宿主不支持工具白名单时，本 Skill 只提供协议隔离，不构成强权限隔离。
-- 不并行执行移动端 case，不跨 case 复用 Agent session、证据或对话上下文。
-- 不伪造 observation、actionResult、知识事实、result 或 completion。
-- 不自动重放结果不确定的动作。
-- 不把用例表达模糊、协议错误或计划变化解释为产品 FAIL。
-- 不在无人值守执行中向用户提问或等待回复。
+- 主流程和批次动作：`references/workflow.md`
+- 命令与数据接口：`references/interfaces.md`
+- 环境探测：`references/environment-probing.md`
+- 技术故障处理：`references/failure-policy.md`
+- Case Runtime 与委托：`references/agent-runtime.md`
+- 用例格式：`references/case-format.md`
+- 知识条目与匹配规范：`references/knowledge.md`
+- 架构与模块边界：`docs/architecture.md`
+- 执行过程追溯、结果可信度或详情报告改造：`docs/execution-traceability-design.md`

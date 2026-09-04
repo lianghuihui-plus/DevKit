@@ -11,7 +11,7 @@ const {
 } = require('./contract-utils');
 const { normalizeDeviceBinding } = require('./target-binding');
 
-const BATCH_CONTRACT_SCHEMA_VERSION = 3;
+const BATCH_CONTRACT_SCHEMA_VERSION = 4;
 const PLATFORMS = new Set(['harmony', 'android', 'ios']);
 const EXECUTION_MODES = new Set(['SINGLE', 'BATCH']);
 
@@ -46,9 +46,11 @@ function validateBatchContract(value) {
     throw contractError('BATCH_CONTRACT_SCHEMA_UNSUPPORTED', `schemaVersion must be ${BATCH_CONTRACT_SCHEMA_VERSION}`);
   }
   ensureId(value.batchId, 'batchId', 'BATCH_CONTRACT_INVALID');
-  ensureString(value.implementationSha, 'implementationSha', 'BATCH_CONTRACT_INVALID');
-  ensureString(value.caseExecutorProtocolSha, 'caseExecutorProtocolSha', 'BATCH_CONTRACT_INVALID');
+  ensureString(value.caseProtocolSha, 'caseProtocolSha', 'BATCH_CONTRACT_INVALID');
   ensureString(value.coordinatorProtocolSha, 'coordinatorProtocolSha', 'BATCH_CONTRACT_INVALID');
+  ensureString(value.runtimeSha, 'runtimeSha', 'BATCH_CONTRACT_INVALID');
+  ensureString(value.adapterSha, 'adapterSha', 'BATCH_CONTRACT_INVALID');
+  ensureString(value.coordinatorSha, 'coordinatorSha', 'BATCH_CONTRACT_INVALID');
   ensureId(value.executionRequestId, 'executionRequestId', 'BATCH_CONTRACT_INVALID');
   ensureString(value.executionRequestSha, 'executionRequestSha', 'BATCH_CONTRACT_INVALID');
   if (!EXECUTION_MODES.has(value.mode)) throw contractError('BATCH_CONTRACT_INVALID', 'mode must be SINGLE or BATCH');
@@ -74,13 +76,15 @@ function validateBatchContract(value) {
   return value;
 }
 
-function createBatchContract({ batchId, implementationSha, executionRequest }) {
+function createBatchContract({ batchId, executionRequest }) {
   const value = {
     schemaVersion: BATCH_CONTRACT_SCHEMA_VERSION,
     batchId,
-    implementationSha,
-    caseExecutorProtocolSha: executionRequest.caseExecutorProtocolSha,
+    caseProtocolSha: executionRequest.caseProtocolSha,
     coordinatorProtocolSha: executionRequest.coordinatorProtocolSha,
+    runtimeSha: executionRequest.runtimeSha,
+    adapterSha: executionRequest.adapterSha,
+    coordinatorSha: executionRequest.coordinatorSha,
     executionRequestId: executionRequest.requestId,
     executionRequestSha: executionRequest.requestSha,
     mode: executionRequest.mode,
@@ -92,15 +96,17 @@ function createBatchContract({ batchId, implementationSha, executionRequest }) {
   return validateBatchContract(value);
 }
 
-function assertBatchImplementation(contract, implementationSha, protocols = {}) {
+function assertBatchImplementation(contract, versions = {}) {
   validateBatchContract(contract);
-  if (contract.implementationSha !== implementationSha) {
-    throw contractError('BATCH_IMPLEMENTATION_MISMATCH', 'batch belongs to a different implementation');
+  for (const field of ['runtimeSha', 'adapterSha', 'coordinatorSha']) {
+    if (versions[field] && contract[field] !== versions[field]) {
+      throw contractError('BATCH_IMPLEMENTATION_MISMATCH', `batch belongs to a different ${field}`);
+    }
   }
-  if (protocols.caseExecutorProtocolSha && contract.caseExecutorProtocolSha !== protocols.caseExecutorProtocolSha) {
-    throw contractError('BATCH_PROTOCOL_MISMATCH', 'batch belongs to a different case executor protocol');
+  if (versions.caseProtocolSha && contract.caseProtocolSha !== versions.caseProtocolSha) {
+    throw contractError('BATCH_PROTOCOL_MISMATCH', 'batch belongs to a different case protocol');
   }
-  if (protocols.coordinatorProtocolSha && contract.coordinatorProtocolSha !== protocols.coordinatorProtocolSha) {
+  if (versions.coordinatorProtocolSha && contract.coordinatorProtocolSha !== versions.coordinatorProtocolSha) {
     throw contractError('BATCH_PROTOCOL_MISMATCH', 'batch belongs to a different coordinator protocol');
   }
   return contract;

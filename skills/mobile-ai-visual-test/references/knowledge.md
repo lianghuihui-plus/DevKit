@@ -23,23 +23,60 @@
 | 4 | `结论与处理建议` | 描述知识支持的解释及执行建议 |
 | 5 | `追溯信息` | 记录知识来源和可追溯依据 |
 
-四个二级章节必须存在、顺序固定且内容非空。`适用范围` 支持 `App`、`Platform`、`Version`、`Page`、`Operation`、`Valid until` 和 `Conflicts with` 元数据；未声明的元数据不参与筛选，多值使用英文逗号分隔。`Valid until` 使用 `YYYY-MM-DD`，超过日期的条目仍可被查到并标记过期，但不能作为 `APPLICABLE` 依据。`Conflicts with` 只声明已知冲突条目 ID，不代替 Agent 对当前场景的判断。条目不使用 YAML frontmatter、数据库、向量服务或可信评分。
+四个二级章节必须存在、顺序固定且内容非空。`适用范围` 支持以下元数据；未声明的维度不参与筛选，多值使用英文逗号分隔：
+
+| 字段 | 写法 |
+|---|---|
+| `App` | 使用执行环境中的稳定 `appId`，即 Android/HarmonyOS 包名或 iOS Bundle ID；不填写产品展示名 |
+| `Platform` | 使用 `harmony`、`android` 或 `ios` |
+| `Version` | 仅在规则受版本限制时填写；支持精确版本、`3.2.x`/`3.2.*` 和 `4.0-4.5` |
+| `Page` | 填写知识实际适用的业务页面名称 |
+| `Operation` | 填写触发现象的业务操作 |
+| `Valid until` | 使用 `YYYY-MM-DD`；过期条目仍可查到，但不能评估为 `APPLICABLE` |
+| `Conflicts with` | 填写已知冲突条目的 `K-` ID |
+
+`App` 和 `Platform` 使用标准化后的精确值匹配；其他适用范围字段用于进一步缩小候选。产品展示名、来源说明和适用包名可以出现在正文或追溯信息中，但参与 App 过滤的包名必须写入 `App`。条目不使用 YAML frontmatter、数据库、向量服务或可信评分。
+
+`可观察现象` 只描述能从截图、控件树或当前业务现场核对的表现，并包含用户或用例常用的关键名称。原因解释、适用后的判断方式和不能解释的边界写入 `结论与处理建议`；来源、确认人或确认方式、日期和外部依据写入 `追溯信息`。未知的版本、页面或操作不要猜测，直接省略对应元数据。
+
+最小示例：
+
+```markdown
+# K-editor-001 HarmonyOS 我的作品页不展示 Nemo 分类
+
+## 适用范围
+- App: com.codemao.hos.lunar
+- Platform: harmony
+- Page: 我的作品
+- Operation: 查看作品分类 TAB
+
+## 可观察现象
+将作品分类 TAB 滑动到最右端后显示 Kids，但不显示 Nemo TAB；其他分类正常显示。
+
+## 结论与处理建议
+Nemo 缺失属于已知平台差异。独立验证其他分类，并在采用本规则时引用该知识条目。
+
+## 追溯信息
+产品确认，2026-08-20，适用包名 com.codemao.hos.lunar。
+```
 
 ## 查询与审计
 
-查询可包含 `platform`、`app`、`version`、`page`、`operation`、`symptom` 和 `keywords`。本地脚本先排除与查询中已声明元数据明确冲突的条目，再优先返回现象或关键词命中的条目；没有词面命中时，只返回至少一个已声明元数据维度匹配的发现候选。每次最多返回 5 条，响应以 `candidateCount` 表示返回数量，并以 `truncated` 表示是否仍有候选被上限截断。分数只用于候选排序。
+查询可包含 `platform`、`app`、`version`、`page`、`operation`、`symptom` 和 `keywords`。Runtime 始终使用 execution 绑定的 `appId` 作为 `app`，不会使用产品展示名。本地脚本先排除与查询中已声明元数据明确冲突的条目，再优先返回现象或关键词命中的条目；没有词面命中时，只返回至少一个已声明元数据维度匹配的发现候选。每次最多返回 5 条，响应以 `candidateCount` 表示返回数量，并以 `truncated` 表示是否仍有候选被上限截断。分数只用于候选排序。
 
-每次查询冻结候选条目的 ID、来源 namespace、相对路径、完整适用范围元数据、追溯信息、内容 SHA、有效期、冲突声明和摘要片段。每个命中内容同时按 SHA 保存到当前 execution 的 `knowledge/<contentSha>.md`，候选通过 `snapshotRef` 引用它。相同内容只保存一份；查询提交、评估写入、finalize、completion 和报告读取都校验安全路径、文件存在性和 SHA。Agent 只需评估与总体判断相关的候选：
+零候选时，响应和 execution 事件使用 `filterDiagnostics` 记录扫描数量、按字段排除的数量和有限的拒绝示例。该诊断用于说明为什么没有命中，不改变知识候选，也不要求 Case Agent 追加调用。
+
+每次查询冻结候选条目的 ID、来源 namespace、相对路径、完整适用范围元数据、追溯信息、内容 SHA、有效期、冲突声明和摘要片段。每个命中内容同时按 SHA 保存到当前 execution 的 `knowledge/<contentSha>.md`，候选通过 `snapshotRef` 引用它。相同内容只保存一份。查询事件同时绑定当时的 Scene、用例理解版本和相关验证点。Case Agent 结合当前现场判断候选是否适用，查询命中本身不改变 verdict。
 
 - `APPLICABLE`：适用于当前现场，可作为知识支持依据。
 - `NOT_APPLICABLE`：内容可信，但不适用于当前版本、页面或现象。
 - `CONFLICTING`：候选之间或候选与当前现场存在冲突。
 - `INSUFFICIENT`：候选相关，但不足以支持当前结论。
 
-有候选时，同一次评估调用还要提交查询级 `conclusion/reason`；框架据此生成 `knowledgeReview`，标记这次调查已经闭合。结论可为 `APPLICABLE_FOUND`、`NO_APPLICABLE`、`CONFLICTING` 或 `INSUFFICIENT`，并与已提交评估保持一致。零命中是有效查询结果，框架自动生成 `NO_MATCH knowledgeReview`，Agent 不需要再提交空评估。
+候选评估附在下一次已有 Runtime 请求的 `decision.knowledgeReview` 中，不增加新的操作类型或 Agent 往返。Runtime 随后记录 `knowledgeReviewed`；零候选由 Runtime 自动记录 `NO_MATCH`。有候选时用 `APPLICABLE_FOUND`、`NO_APPLICABLE`、`CONFLICTING` 或 `INSUFFICIENT` 总结本次调查；`NO_APPLICABLE` 需要评估全部候选，过期条目不能评估为 `APPLICABLE`。
 
-FAIL、INCONCLUSIVE 和业务 BLOCKED 引用的查询必须已经闭合，并绑定当前理解版本、暖会话代次、状态变化边界、当前 observation 和活动检查点。理解修订、Recovery、状态变化或当前 observation 变化后，旧调查只保留审计价值，不能支撑当前 finding 或 verdictReview。计划只调整检查点组织且 requirement 语义未变化时，不单独使调查失效。已发布报告只使用 execution 中冻结的候选、内容快照、评估和查询级复核，不重新读取当前知识文件；实时知识条目后续修改或删除不会改变既有 execution 的依据。
+FAIL、INCONCLUSIVE 和没有有效 `technicalRefs` 的 BLOCKED，在 finish 前应完成与相关验证点关联的知识调查；零命中也是有效调查结果。知识被评估为适用并影响最终检查时，check 使用 `knowledgeRefs` 引用条目 ID。Runtime 只检查调查与引用是否闭合，不替 Agent 修改 verdict。
 
-知识查询由现场需要触发，不作为每个结果的固定步骤。FAIL、INCONCLUSIVE 和业务相关 BLOCKED 必须查询；前置条件异常、路径变化或现场无法独立解释时可以随时查询。当前直接证据已经充分支持 PASS 且没有异常时不要求查询；PASS 需要依赖已知正常现象、平台差异或版本行为时，必须查询并把适用候选评估为 `APPLICABLE` 后才能作为依据。
+已发布报告只使用 execution 中冻结的候选和内容快照，不重新读取当前知识文件；实时知识条目后续修改或删除不会改变既有 execution 的依据。
 
-查询以 `agent/knowledge-query-<queryId>.draft.json` 作为本地提交日志：先冻结标准化 query、候选及完整内容，再写内容快照，最后写 timeline 事件并删除草稿。任一阶段中断后由协调器自动恢复，继续使用草稿中的首轮候选，即使实时知识文件已变化也不会重新检索；事件已经写入但草稿未删除时只校验绑定并清理草稿。
+知识查询由现场需要触发，不是每个结果的固定步骤。直接证据足以判断时可直接形成结论；现象与用例不一致、性质无法判断、存在平台/版本/账号/配置差异、前置或路径异常，或准备形成负向结论时再查询。瞬态加载经重新观察恢复且不影响结论时不需要查询。

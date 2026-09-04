@@ -10,7 +10,7 @@ const {
   initializeBatch,
   loadBatch,
   reconcileBatch,
-  recoverApp,
+  recordFinalizationStep,
   startCurrentCase,
 } = require('./batch/core');
 const { createDeviceSessionAdapter } = require('./batch/device-session');
@@ -20,10 +20,11 @@ const {
   releaseBatchPlatformRuntime,
 } = require('./batch/platform-runtime');
 const { loadExecutionRequest } = require('./lib/run-control');
-const { refreshCommittedCaseReports } = require('./report/report-service');
+const { refreshBatchIndex, refreshCommittedCaseReports } = require('./report/report-service');
+const { recordPublicationAttempt } = require('./report/publication-state');
 
 const SKILL_ROOT = path.resolve(__dirname, '..');
-const COMMANDS = new Set(['init', 'bootstrap', 'reconcile', 'start', 'commit', 'recover', 'status', 'teardown']);
+const COMMANDS = new Set(['init', 'bootstrap', 'reconcile', 'start', 'commit', 'status', 'teardown']);
 
 function fail(message) {
   const error = new Error(`BATCH_CLI_INVALID: ${message}`);
@@ -43,11 +44,6 @@ function parseArgs(argv) {
   if (!options.workspace || !options.batchId) fail('--workspace and --batch-id are required');
   options.workspace = path.resolve(options.workspace);
   return options;
-}
-
-function json(value, label) {
-  if (!value) fail(`${label} is required`);
-  try { return JSON.parse(value); } catch (error) { fail(`${label} is invalid JSON: ${error.message}`); }
 }
 
 function buildRoleContract(role, platform) {
@@ -71,8 +67,10 @@ function context(options) {
   return {
     skillContract,
     coordinatorContract,
-    implementationSha: skillContract.implementationSha,
-    caseExecutorProtocolSha: skillContract.protocolSha,
+    runtimeSha: skillContract.runtimeSha,
+    adapterSha: skillContract.adapterSha,
+    coordinatorSha: coordinatorContract.coordinatorSha,
+    caseProtocolSha: skillContract.protocolSha,
     coordinatorProtocolSha: coordinatorContract.protocolSha,
     adapter: createDeviceSessionAdapter(),
   };
@@ -95,7 +93,43 @@ function refreshCommittedDashboard(committed, refresh = refreshCommittedCaseRepo
 
 function commitWithDashboard(common, refresh, commit = commitCurrentCase) {
   const committed = commit(common);
-  return { ...committed, dashboardRefresh: refreshCommittedDashboard(committed, refresh) };
+  const dashboardRefresh = refreshCommittedDashboard(committed, refresh);
+  const publicationState = common.workspaceRoot && common.batchId
+    ? recordPublicationAttempt(common.workspaceRoot, common.batchId, 'case', dashboardRefresh, { now: common.now })
+    : null;
+  return { ...committed, dashboardRefresh, ...(publicationState ? { publicationState } : {}) };
+}
+
+function reconcileWithFinalization(common, current) {
+  const reconciled = reconcileBatch({ ...common, adapter: current.adapter });
+  if (reconciled.action === 'RELEASE_PLATFORM') {
+    const platformRuntimeCleanup = releaseBatchPlatformRuntime({ ...common, adapter: current.adapter });
+    const finalized = recordFinalizationStep({ ...common, step: 'platformReleased', result: platformRuntimeCleanup });
+    return { ...reconciled, state: finalized.state, platformRuntimeCleanup, nextAction: 'PUBLISH_REPORTS' };
+  }
+  if (reconciled.action === 'PUBLISH_REPORTS') {
+    const startedAt = Date.now();
+    let publication;
+    try {
+      const loaded = loadBatch(common.workspaceRoot, common.batchId, common);
+      refreshBatchIndex(common.workspaceRoot, loaded.contract.targets.map((target) => target.caseDir));
+      publication = { status: 'PUBLISHED', durationMs: Date.now() - startedAt };
+    } catch (error) {
+      publication = {
+        status: 'FAILED',
+        errorCode: error.code || 'REPORT_PUBLICATION_FAILED',
+        reason: error.message || String(error),
+        durationMs: Date.now() - startedAt,
+      };
+    }
+    const publicationState = recordPublicationAttempt(common.workspaceRoot, common.batchId, 'batch', publication, { now: common.now });
+    if (publication.status !== 'PUBLISHED') {
+      return { ...reconciled, publication, publicationState, retryable: true };
+    }
+    const finalized = recordFinalizationStep({ ...common, step: 'reportsPublished', result: publication });
+    return { ...reconciled, state: finalized.state, publication, publicationState, nextAction: 'BATCH_COMPLETE' };
+  }
+  return reconciled;
 }
 
 function cleanupTerminalPlatformRuntime(common, current, result) {
@@ -128,8 +162,10 @@ function execute(options) {
     return initializeBatch({
       workspaceRoot: options.workspace,
       batchId: options.batchId,
-      implementationSha: current.implementationSha,
-      caseExecutorProtocolSha: current.caseExecutorProtocolSha,
+      runtimeSha: current.runtimeSha,
+      adapterSha: current.adapterSha,
+      coordinatorSha: current.coordinatorSha,
+      caseProtocolSha: current.caseProtocolSha,
       coordinatorProtocolSha: current.coordinatorProtocolSha,
     });
   }
@@ -137,8 +173,10 @@ function execute(options) {
   const common = {
     workspaceRoot: options.workspace,
     batchId: options.batchId,
-    implementationSha: current.implementationSha,
-    caseExecutorProtocolSha: current.caseExecutorProtocolSha,
+    runtimeSha: current.runtimeSha,
+    adapterSha: current.adapterSha,
+    coordinatorSha: current.coordinatorSha,
+    caseProtocolSha: current.caseProtocolSha,
     coordinatorProtocolSha: current.coordinatorProtocolSha,
   };
   switch (options.command) {
@@ -152,25 +190,24 @@ function execute(options) {
         }));
       } catch (error) {
         try {
-          cleanupTerminalPlatformRuntime(common, current, loadBatch(options.workspace, options.batchId, current.implementationSha));
+          cleanupTerminalPlatformRuntime(common, current, loadBatch(options.workspace, options.batchId, common));
         } catch {
           // Preserve the bootstrap error; cleanup state records its own failure when possible.
         }
         throw error;
       }
     }
-    case 'reconcile': return cleanupTerminalPlatformRuntime(common, current, reconcileBatch({ ...common, adapter: current.adapter }));
+    case 'reconcile': return cleanupTerminalPlatformRuntime(common, current, reconcileWithFinalization(common, current));
     case 'start': {
-      return startCurrentCase({ ...common, skillContract: current.skillContract });
+      return startCurrentCase({ ...common, skillContract: current.skillContract, continuationReason: options.continuationReason });
     }
     case 'commit': return cleanupTerminalPlatformRuntime(common, current, commitWithDashboard(common));
-    case 'recover': return recoverApp({ ...common, adapter: current.adapter, request: json(options.requestJson, '--request-json') });
     case 'status': {
-      const loaded = loadBatch(options.workspace, options.batchId, current.implementationSha);
+      const loaded = loadBatch(options.workspace, options.batchId, common);
       return { ...loaded, platformRuntime: loadBatchPlatformRuntime(common) };
     }
     case 'teardown': {
-      const loaded = loadBatch(options.workspace, options.batchId, current.implementationSha);
+      const loaded = loadBatch(options.workspace, options.batchId, common);
       return {
         ...loaded,
         platformRuntimeCleanup: releaseBatchPlatformRuntime({ ...common, adapter: current.adapter }),
@@ -181,7 +218,21 @@ function execute(options) {
 }
 
 function main(argv = process.argv.slice(2)) {
-  process.stdout.write(`${JSON.stringify(execute(parseArgs(argv)), null, 2)}\n`);
+  const options = parseArgs(argv);
+  let response;
+  try {
+    response = execute(options);
+  } catch (error) {
+    response = {
+      status: 'TECHNICAL',
+      code: error.code || 'BATCH_OPERATION_FAILED',
+      message: error.message || String(error),
+      batchId: options.batchId,
+      command: options.command,
+    };
+  }
+  process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
+  return response;
 }
 
 if (require.main === module) {
@@ -197,4 +248,5 @@ module.exports = {
   main,
   parseArgs,
   refreshCommittedDashboard,
+  reconcileWithFinalization,
 };

@@ -26,6 +26,7 @@ const STATUS_LABELS = {
   PREPARED: '已准备',
   PENDING_PUBLICATION: '待发布',
   FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复',
+  NEEDS_RERUN: '需重新执行',
 };
 
 const EVENT_LABELS = {
@@ -65,6 +66,7 @@ const ACTION_LABELS = {
   tap: '点击',
   toggle: '切换开关',
   longPress: '长按',
+  doubleTap: '双击',
   inputText: '输入文本',
   swipe: '滑动',
   back: '返回',

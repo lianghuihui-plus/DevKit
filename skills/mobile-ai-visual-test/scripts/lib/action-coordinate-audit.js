@@ -6,7 +6,7 @@ const { contractError } = require('./contract-utils');
 const { inspectPng } = require('./image-evidence');
 const { isSafeRelativeArtifact, resolveArtifact } = require('./execution-evidence');
 
-const POINT_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText']);
+const POINT_ACTIONS = new Set(['tap', 'doubleTap', 'toggle', 'longPress', 'inputText']);
 
 function finitePoint(value, field) {
   const x = Number(value?.x);
@@ -120,22 +120,20 @@ function auditSwipe(action, adapterResult) {
 function basisScreenshot(execDir, basisObservationRef) {
   if (!basisObservationRef) return null;
   const timeline = path.join(execDir, 'timeline.jsonl');
-  if (!fs.existsSync(timeline)) return null;
-  const observation = fs.readFileSync(timeline, 'utf8').split(/\r?\n/).filter(Boolean)
-    .map((line) => JSON.parse(line))
-    .find((event) => event.type === 'observation' && event.ref === basisObservationRef);
-  const ref = observation?.artifacts?.screenshot || observation?.ref;
+  const observation = fs.existsSync(timeline)
+    ? fs.readFileSync(timeline, 'utf8').split(/\r?\n/).filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .find((event) => event.type === 'observation' && event.ref === basisObservationRef)
+    : null;
+  const currentScenePath = path.join(execDir, 'current-scene.json');
+  const currentScene = fs.existsSync(currentScenePath) ? JSON.parse(fs.readFileSync(currentScenePath, 'utf8')) : null;
+  const sceneRef = currentScene?.screenshot?.ref === basisObservationRef ? currentScene.screenshot.ref : null;
+  const ref = observation?.artifacts?.screenshot || observation?.ref || sceneRef;
   if (!isSafeRelativeArtifact(ref)) return null;
   const file = resolveArtifact(execDir, ref);
   if (!fs.existsSync(file)) return null;
   const image = inspectPng(file);
   return image.decodeStatus === 'VALID' ? { ref, width: image.width, height: image.height } : null;
-}
-
-function xml(value) {
-  return String(value).replace(/[&<>"']/g, (character) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;',
-  })[character]);
 }
 
 function sourcePoint(point, audit, screenshot) {
@@ -148,12 +146,13 @@ function sourcePoint(point, audit, screenshot) {
 }
 
 function writeOverlay(execDir, operationId, screenshot, audit) {
+  if (typeof operationId !== 'string' || !/^action-\d+$/.test(operationId)) {
+    throw contractError('ACTION_COORDINATE_AUDIT_INVALID', 'coordinate audit requires a valid action operationId');
+  }
   const dir = path.join(execDir, 'coordinate-audits');
   fs.mkdirSync(dir, { recursive: true });
   const ref = path.posix.join('coordinate-audits', `${operationId}.svg`);
   const file = resolveArtifact(execDir, ref);
-  const screenshotFile = resolveArtifact(execDir, screenshot.ref);
-  const href = path.relative(dir, screenshotFile).split(path.sep).join('/');
   const requestedRaw = audit.kind === 'POINT'
     ? [audit.requested.point]
     : [audit.requested.from, audit.requested.to];
@@ -179,7 +178,7 @@ function writeOverlay(execDir, operationId, screenshot, audit) {
     : '';
   const requestMarks = requested.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="${radius}" fill="none" stroke="#2563eb" stroke-width="${stroke}"/>`).join('');
   const executionMarks = executed.map((point) => `<g stroke="#ef4444" stroke-width="${stroke}"><line x1="${point.x - radius}" y1="${point.y}" x2="${point.x + radius}" y2="${point.y}"/><line x1="${point.x}" y1="${point.y - radius}" x2="${point.x}" y2="${point.y + radius}"/></g>`).join('');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${screenshot.width}" height="${screenshot.height}" viewBox="0 0 ${screenshot.width} ${screenshot.height}"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#ef4444"/></marker></defs><image href="${xml(href)}" width="${screenshot.width}" height="${screenshot.height}"/>${boundsSvg}${trajectory}${requestMarks}${executionMarks}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${screenshot.width}" height="${screenshot.height}" viewBox="0 0 ${screenshot.width} ${screenshot.height}"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#ef4444"/></marker></defs>${boundsSvg}${trajectory}${requestMarks}${executionMarks}</svg>`;
   fs.writeFileSync(file, svg);
   return ref;
 }
@@ -217,7 +216,7 @@ function buildCoordinateAudit(execDir, validated, adapterResult) {
     ...(screenshot ? { screenshot } : {}),
     consistency: 'MATCHED',
   };
-  if (screenshot) audit.overlayRef = writeOverlay(execDir, validated.request.operationId, screenshot, audit);
+  if (screenshot) audit.overlayRef = writeOverlay(execDir, validated.operationId, screenshot, audit);
   return audit;
 }
 

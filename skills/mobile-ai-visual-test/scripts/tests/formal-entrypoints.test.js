@@ -51,24 +51,23 @@ assert.ok(fs.readFileSync(imported.contextHtml, 'utf8').includes('看一下当�
 assert.ok(fs.readFileSync(path.join(workspace, 'index.html'), 'utf8').includes('查看详情'));
 
 const contract = run(['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony']);
-assert.strictEqual(contract.schemaVersion, 2);
+assert.strictEqual(contract.schemaVersion, 3);
 assert.strictEqual(contract.profile, undefined);
-assert.deepStrictEqual(contract.requiredResources, ['references/agent-execution.md', 'references/knowledge.md']);
+assert.deepStrictEqual(contract.requiredResources, [
+  'prompts/case-agent.md',
+]);
+assert.deepStrictEqual(contract.allowedEntrypoints, ['scripts/case-runtime/runtime-client.js']);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/build-agent-contract.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/execute-next-work.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/agent/finalize.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/agent/query-knowledge.js'), false);
+const coordinatorContract = run(['scripts/build-agent-contract.js', '--role', 'batch-coordinator', '--platform', 'harmony']);
+assert.strictEqual(coordinatorContract.requiredResources[0], 'SKILL.md');
+assert.ok(coordinatorContract.requiredResources.includes('references/workflow.md'));
+assert.strictEqual(coordinatorContract.requiredResources.includes('prompts/case-agent.md'), false);
+assert.strictEqual(fs.existsSync(path.join(repo, 'prompts/main-agent.md')), false);
 
-for (const internalModule of ['scripts/agent/finalize.js', 'scripts/agent/query-knowledge.js']) {
-  const direct = childProcess.spawnSync(process.execPath, [internalModule, '--help'], {
-    cwd: repo,
-    encoding: 'utf8',
-    env: { ...process.env, MAVT_SELF_TEST: '' },
-  });
-  assert.strictEqual(direct.status, 0);
-  assert.strictEqual(direct.stdout, '');
-  assert.strictEqual(direct.stderr, '');
-}
+assert.strictEqual(fs.existsSync(path.join(repo, 'scripts/agent')), false);
 
 const batchId = 'batch-formal-entrypoints';
 const binding = { platform: 'harmony', deviceId: 'offline-device', appId: 'com.example.app', entry: 'EntryAbility' };
@@ -98,7 +97,8 @@ const initializedBatch = run([
 assert.strictEqual(initializedBatch.state.status, 'INITIALIZING');
 assert.strictEqual(initializedBatch.state.interactionPolicy, 'UNATTENDED');
 assert.strictEqual(initializedBatch.contract.executionRequestSha, executionRequest.requestSha);
-assert.strictEqual(initializedBatch.contract.implementationSha, contract.implementationSha);
+assert.strictEqual(initializedBatch.contract.runtimeSha, contract.runtimeSha);
+assert.strictEqual(initializedBatch.contract.adapterSha, contract.adapterSha);
 const status = run(['scripts/batch.js', 'status', '--workspace', workspace, '--batch-id', batchId]);
 assert.strictEqual(status.state.currentIndex, 0);
 assert.strictEqual(status.state.cases[0].executionId, null);
@@ -107,8 +107,10 @@ const implicitBatch = childProcess.spawnSync(process.execPath, [
   'scripts/batch.js', 'init', '--workspace', workspace, '--batch-id', 'batch-implicit',
   '--binding-json', JSON.stringify(binding), '--targets-json', JSON.stringify(executionRequest.targets),
 ], { cwd: repo, encoding: 'utf8', env: { ...process.env, MAVT_SELF_TEST: '' } });
-assert.notStrictEqual(implicitBatch.status, 0);
-assert.match(implicitBatch.stderr, /no longer accepts --binding-json or --targets-json/);
+assert.strictEqual(implicitBatch.status, 0);
+const implicitFailure = JSON.parse(implicitBatch.stdout);
+assert.strictEqual(implicitFailure.status, 'TECHNICAL');
+assert.match(implicitFailure.message, /no longer accepts --binding-json or --targets-json/);
 
 const profile = childProcess.spawnSync(process.execPath, [
   'scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--profile', 'agent-driven',

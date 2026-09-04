@@ -62,15 +62,35 @@ function baseObservationView(execDir, observation, cache = null) {
   if (cache?.has(observation.ref)) return cache.get(observation.ref);
   const screenshotPath = resolveArtifact(execDir, observation.ref);
   const image = inspectPng(screenshotPath);
-  const screenshot = { ref: observation.ref, sha256: observation.sha256 || null, width: image.width, height: image.height };
+  const screenshot = {
+    ref: observation.ref,
+    sha256: observation.sha256 || null,
+    width: image.width,
+    height: image.height,
+    absolutePath: screenshotPath,
+    attachment: {
+      type: 'image',
+      mediaType: 'image/png',
+      path: screenshotPath,
+      sha256: observation.sha256 || null,
+    },
+  };
   const { layoutRef, parsed, projected } = layoutProjection(execDir, observation, screenshot);
   const view = {
     schemaVersion: 2,
     observationRef: observation.ref,
     operationId: observation.operationId,
     scope: observation.scope,
+    observationPurpose: observation.observationPurpose || null,
     usable: observation.usable === true,
     screenshot,
+    app: observation.app || null,
+    evidenceChannels: {
+      visual: { available: true, ref: observation.ref, attachment: screenshot.attachment },
+      layout: { available: parsed.usable === true, ref: layoutRef, diagnostics: parsed.diagnostics || [] },
+      policy: 'COMBINE_VISUAL_AND_LAYOUT',
+      conflictRule: 'REOBSERVE_OR_REVIEW',
+    },
     layoutRef,
     layout: {
       usable: parsed.usable === true,
@@ -150,6 +170,17 @@ function findElement(view, ref) {
   if (!element) {
     throw contractError('TARGET_ELEMENT_INVALID', `targetRef is not available in the current observation: ${ref}`, {
       fieldPath: 'action.targetRef', expected: 'element ref from the latest observation view', received: ref,
+    });
+  }
+  const [left, top, right, bottom] = element.bounds || [];
+  const { width, height } = view.screenshot || {};
+  if (![left, top, right, bottom, width, height].every(Number.isFinite)
+    || left < 0 || top < 0 || right > width || bottom > height || right <= left || bottom <= top) {
+    throw contractError('TARGET_ELEMENT_BOUNDS_INVALID', `targetRef bounds are outside the current screenshot: ${ref}`, {
+      fieldPath: 'action.targetRef',
+      received: element.bounds || null,
+      allowed: { x: [0, Math.max(0, Number(width) - 1)], y: [0, Math.max(0, Number(height) - 1)] },
+      screenshot: { width, height },
     });
   }
   return element;

@@ -103,7 +103,7 @@ const canUseUitest = hasTarget && !!uitestVersion;
 const canLaunchApp = hasTarget && aaDump;
 const actions = [];
 if (canLaunchApp) actions.push("launchApp", "restartApp");
-if (canUseUitest) actions.push("tap", "toggle", "longPress", "inputText", "swipe", "back", "home");
+if (canUseUitest) actions.push("tap", "doubleTap", "toggle", "longPress", "inputText", "swipe", "back", "home");
 if (hasTarget) actions.push("wait");
 const diagnostics = [];
 function diag(id, level, message, howToFix, check) {

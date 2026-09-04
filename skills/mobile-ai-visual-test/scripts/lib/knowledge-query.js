@@ -11,6 +11,9 @@ const ROOT_NAMESPACES = Object.freeze(['skill', 'workspace']);
 const SECTION_NAMES = Object.freeze(['适用范围', '可观察现象', '结论与处理建议', '追溯信息']);
 const QUERY_FIELDS = Object.freeze(['platform', 'app', 'version', 'page', 'operation', 'symptom']);
 const FIELD_WEIGHTS = Object.freeze({ platform: 12, app: 10, version: 8, page: 8, operation: 6, symptom: 6 });
+const LIST_META_FIELDS = new Set(['app', 'platform', 'version', 'page', 'operation', 'conflictsWith']);
+const EXACT_META_FIELDS = new Set(['app', 'platform']);
+const APP_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+$/;
 const META_FIELDS = Object.freeze({
   app: 'app', platform: 'platform', version: 'version', page: 'page', operation: 'operation',
   'valid until': 'validUntil', 'conflicts with': 'conflictsWith',
@@ -45,12 +48,17 @@ function parseMetadata(scope) {
     if (!match) continue;
     const field = META_FIELDS[normalizeText(match[1])];
     if (!field) continue;
-    metadata[field] = ['conflictsWith', 'platform'].includes(field) ? splitValues(match[2]) : match[2].trim();
+    metadata[field] = LIST_META_FIELDS.has(field) ? splitValues(match[2]) : match[2].trim();
   }
   if (metadata.validUntil && !/^\d{4}-\d{2}-\d{2}$/.test(metadata.validUntil)) {
     throw contractError('KNOWLEDGE_ENTRY_INVALID', 'Valid until must use YYYY-MM-DD');
   }
   for (const id of metadata.conflictsWith || []) ensureId(id, 'Conflicts with item', 'KNOWLEDGE_ENTRY_INVALID');
+  for (const appId of metadata.app || []) {
+    if (!APP_ID_PATTERN.test(appId)) {
+      throw contractError('KNOWLEDGE_ENTRY_INVALID', `App must use a stable appId such as com.example.app: ${appId}`);
+    }
+  }
   return metadata;
 }
 
@@ -174,7 +182,8 @@ function fieldText(entry, field) {
 
 function versionMatches(actual, declared) {
   const query = normalizeText(actual);
-  return splitValues(declared).some((value) => {
+  const declaredValues = Array.isArray(declared) ? declared : splitValues(declared);
+  return declaredValues.some((value) => {
     const pattern = normalizeText(value);
     if (pattern === query || pattern.includes(query) || query.includes(pattern)) return true;
     if (/[x*]/.test(pattern)) {
@@ -199,15 +208,23 @@ function versionMatches(actual, declared) {
   });
 }
 
+function metadataValueMatches(field, actualValue, declaredValue) {
+  if (field === 'version') return versionMatches(actualValue, declaredValue);
+  const actual = normalizeText(actualValue);
+  const expected = normalizeText(declaredValue);
+  if (EXACT_META_FIELDS.has(field)) return actual === expected;
+  return actual === expected || actual.includes(expected) || expected.includes(actual);
+}
+
 function matchScore(entry, query) {
   let metadataScore = 0;
   let lexicalScore = 0;
   const matched = [];
   for (const field of ['platform', 'app', 'version', 'page', 'operation']) {
     if (!query[field]) continue;
-    const needle = normalizeText(query[field]);
-    const haystack = normalizeText(fieldText(entry, field));
-    if ((field === 'version' && versionMatches(query[field], fieldText(entry, field))) || haystack.includes(needle) || needle.includes(haystack)) {
+    const declared = entry.metadata[field];
+    const values = declared === undefined ? [] : Array.isArray(declared) ? declared : [declared];
+    if (values.some((value) => metadataValueMatches(field, query[field], value))) {
       metadataScore += FIELD_WEIGHTS[field];
       matched.push(field);
     }
@@ -232,21 +249,15 @@ function matchScore(entry, query) {
 
 function metadataCompatible(entry, query) {
   let declaredMatches = 0;
+  const mismatches = [];
   for (const field of ['platform', 'app', 'version', 'page', 'operation']) {
     if (!query[field] || entry.metadata[field] === undefined) continue;
     const declared = entry.metadata[field];
     const values = Array.isArray(declared) ? declared : [declared];
-    const matches = field === 'version'
-      ? versionMatches(query[field], declared)
-      : values.some((value) => {
-        const actual = normalizeText(query[field]);
-        const expected = normalizeText(value);
-        return actual === expected || actual.includes(expected) || expected.includes(actual);
-      });
-    if (!matches) return { compatible: false, declaredMatches: 0 };
-    declaredMatches += 1;
+    if (values.some((value) => metadataValueMatches(field, query[field], value))) declaredMatches += 1;
+    else mismatches.push({ field, query: query[field], declared: values });
   }
-  return { compatible: true, declaredMatches };
+  return { compatible: mismatches.length === 0, declaredMatches, mismatches };
 }
 
 function snippet(text, needles, limit = 180) {
@@ -268,7 +279,7 @@ function queryKnowledge(options) {
   const query = normalizeQuery(options.query || {});
   const now = options.now || new Date();
   const needles = [...QUERY_FIELDS.map((field) => query[field]).filter(Boolean), ...query.keywords];
-  const ranked = loadKnowledgeEntries(options.roots).map((entry) => {
+  const evaluated = loadKnowledgeEntries(options.roots).map((entry) => {
     const match = matchScore(entry, query);
     const compatibility = metadataCompatible(entry, query);
     const candidate = {
@@ -283,11 +294,11 @@ function queryKnowledge(options) {
       expired: isExpired(entry.metadata.validUntil, now),
       conflictsWith: entry.metadata.conflictsWith || [],
       metadata: {
-        app: entry.metadata.app || null,
+        app: entry.metadata.app || [],
         platform: entry.metadata.platform || [],
-        version: entry.metadata.version || null,
-        page: entry.metadata.page || null,
-        operation: entry.metadata.operation || null,
+        version: entry.metadata.version || [],
+        page: entry.metadata.page || [],
+        operation: entry.metadata.operation || [],
         validUntil: entry.metadata.validUntil || null,
         conflictsWith: entry.metadata.conflictsWith || [],
       },
@@ -300,19 +311,41 @@ function queryKnowledge(options) {
     };
     if (options.includeContent === true) candidate.snapshotContent = entry.content;
     return { candidate, match, compatibility };
-  }).filter((item) => item.compatibility.compatible);
+  });
+  const ranked = evaluated.filter((item) => item.compatibility.compatible);
   const lexicalMatches = ranked.filter((item) => item.match.lexicalScore > 0);
   const eligible = (lexicalMatches.length > 0
     ? lexicalMatches
     : ranked.filter((item) => item.compatibility.declaredMatches > 0))
     .sort((a, b) => b.match.score - a.match.score || a.candidate.entryId.localeCompare(b.candidate.entryId));
   const candidates = eligible.slice(0, MAX_KNOWLEDGE_CANDIDATES).map((item) => item.candidate);
+  const rejected = evaluated.filter((item) => !item.compatibility.compatible);
+  const excludedBy = {};
+  for (const item of rejected) {
+    for (const mismatch of item.compatibility.mismatches) {
+      excludedBy[mismatch.field] = (excludedBy[mismatch.field] || 0) + 1;
+    }
+  }
+  const eligibleIds = new Set(eligible.map((item) => item.candidate.entryId));
+  const filterDiagnostics = candidates.length === 0 ? {
+    scannedCount: evaluated.length,
+    compatibleCount: ranked.length,
+    eligibleCount: eligible.length,
+    noRelevantMatchCount: ranked.filter((item) => !eligibleIds.has(item.candidate.entryId)).length,
+    excludedBy,
+    rejected: rejected.slice(0, MAX_KNOWLEDGE_CANDIDATES).map((item) => ({
+      entryId: item.candidate.entryId,
+      title: item.candidate.title,
+      mismatches: item.compatibility.mismatches,
+    })),
+  } : null;
   return {
     schemaVersion: 1,
     query,
     candidates,
     candidateCount: candidates.length,
     truncated: eligible.length > candidates.length,
+    filterDiagnostics,
   };
 }
 

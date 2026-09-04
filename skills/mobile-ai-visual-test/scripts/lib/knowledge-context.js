@@ -76,7 +76,6 @@ function sameKnowledgeDecisionContext(left, right) {
       understandingRevision: context.understandingRevision,
       warmSessionGeneration: context.warmSessionGeneration,
       stateBoundaryIndex: context.stateBoundaryIndex,
-      observationRef: context.observationRef,
     };
   };
   return canonicalJson(decisionFields(left)) === canonicalJson(decisionFields(right));

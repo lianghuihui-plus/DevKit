@@ -29,7 +29,7 @@ const {
 } = require('../batch/device-session');
 
 const platforms = ['harmony', 'android', 'ios'];
-const commonActions = ['launchApp', 'restartApp', 'tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait'];
+const commonActions = ['launchApp', 'restartApp', 'tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait'];
 
 for (const platform of platforms) {
   const constraints = describeActionConstraints(platform, 'formal-execution');
@@ -74,6 +74,14 @@ assert.strictEqual(describeActionConstraints('android').inputText.coordinates, '
 assert.strictEqual(describeActionConstraints('ios').inputText.focusedFieldRequired, true);
 assert.ok(describeActionConstraints('ios').actionTypes.includes('dismissKeyboard'));
 assert.ok(!describeActionConstraints('android').actionTypes.includes('dismissKeyboard'));
+assert.strictEqual(validateActionExecution({
+  type: 'doubleTap', x: 10, y: 20, intervalMs: 120,
+  coordinateSource: 'layout', coordinateEvidence: '控件树 bounds', coordinateArtifactRef: 'layouts/current.xml',
+}, { platform: 'android', scope: 'case-business' }).intervalMs, 120);
+assert.throws(() => validateActionExecution({
+  type: 'doubleTap', x: 10, y: 20, intervalMs: 10,
+  coordinateSource: 'layout', coordinateEvidence: '控件树 bounds', coordinateArtifactRef: 'layouts/current.xml',
+}, { platform: 'android', scope: 'case-business' }), /intervalMs/);
 assert.strictEqual(normalizeActionProposal({ type: 'inputText', text: 'x', mode: 'addition' }).action.mode, 'append');
 assert.strictEqual(normalizeActionProposal({ type: 'inputText', text: 'x' }).action.mode, 'replace');
 assert.throws(() => validateActionExecution({
@@ -105,17 +113,17 @@ assert.strictEqual(normalizeRestartResult({
 }, { platform: 'harmony', deviceFormFactor: 'phone' }).startupDisplayVerified, false);
 
 assert.throws(() => normalizeEnvironmentBinding({
-  platform: 'android', device: 'legacy-device', appId: 'com.example.android', entry: '.MainActivity',
+  platform: 'android', device: 'fixture-device', appId: 'com.example.android', entry: '.MainActivity',
 }, 'android'), /use binding.deviceId/);
-const legacyEnvironmentSnapshot = {
-  binding: { platform: 'android', device: 'legacy-device', appId: 'com.example.android', entry: '.MainActivity' },
+const fixtureEnvironmentSnapshot = {
+  binding: { platform: 'android', device: 'fixture-device', appId: 'com.example.android', entry: '.MainActivity' },
   probe: null,
   dependencies: {},
   confirmedAt: '2026-08-27T10:00:00.000+08:00',
 };
 assert.throws(() => validateExecutionEnvironment({
-  environmentSnapshot: legacyEnvironmentSnapshot,
-  environmentSha: executionEnvironmentSha(legacyEnvironmentSnapshot),
+  environmentSnapshot: fixtureEnvironmentSnapshot,
+  environmentSha: executionEnvironmentSha(fixtureEnvironmentSnapshot),
 }, 'android'), /use binding.deviceId/);
 
 const originalSpawnSync = childProcess.spawnSync;
@@ -225,6 +233,27 @@ assert.deepStrictEqual(iosLayoutTap.executedPoint, {
   viewport: { width: 393, height: 852 },
   coordinateSource: 'layout',
 });
+
+const iosDoubleTap = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
+  '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'doubleTap',
+  '--x', '120', '--y', '240', '--interval-ms', '90', '--coordinate-source', 'layout',
+], { env: { ...process.env, MAVT_IOS_FAKE: '1' } }));
+assert.strictEqual(iosDoubleTap.action, 'doubleTap');
+assert.strictEqual(iosDoubleTap.intervalMs, 90);
+assert.strictEqual(iosDoubleTap.executedPoint.x, 120);
+
+const iosDuringDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-ios-during-'));
+const iosDuring = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
+  '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'longPress',
+  '--x', '120', '--y', '240', '--duration-ms', '800',
+  '--capture-out', iosDuringDir, '--capture-label', 'during-test', '--capture-at-ms', '300',
+], { env: { ...process.env, MAVT_IOS_FAKE: '1' } }));
+assert.strictEqual(iosDuring.action, 'longPress');
+assert.deepStrictEqual(iosDuring.duringActionCapture, {
+  capturedAtMs: 300,
+  artifacts: { screenshot: 'screenshots/during-test.png' },
+});
+assert.ok(fs.existsSync(path.join(iosDuringDir, 'screenshots', 'during-test.png')));
 
 const iosDismissKeyboard = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
   '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'dismissKeyboard',

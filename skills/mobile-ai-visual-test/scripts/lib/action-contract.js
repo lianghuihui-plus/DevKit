@@ -16,6 +16,7 @@ const ACTION_FIELDS = Object.freeze({
   launchApp: ['reason'],
   restartApp: ['reason'],
   tap: ['target', 'x', 'y', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
+  doubleTap: ['target', 'x', 'y', 'intervalMs', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
   toggle: ['target', 'x', 'y', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
   longPress: ['target', 'x', 'y', 'durationMs', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
   inputText: ['target', 'x', 'y', 'text', 'mode', 'coordinateSource', 'targetBounds', 'coordinateEvidence', 'coordinateArtifactRef', 'reason'],
@@ -27,8 +28,8 @@ const ACTION_FIELDS = Object.freeze({
 });
 
 const SCOPE_ACTION_TYPES = Object.freeze({
-  'case-business': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait']),
-  'case-prepare': Object.freeze(['tap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait']),
+  'case-business': Object.freeze(['tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait']),
+  'case-prepare': Object.freeze(['tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait']),
   'formal-execution': Object.freeze(Object.keys(ACTION_FIELDS)),
 });
 
@@ -43,7 +44,7 @@ const SCOPE_COORDINATE_SOURCES = Object.freeze({
   'case-prepare': Object.freeze(['layout', 'visual', 'pixel']),
   'formal-execution': Object.freeze(['layout', 'visual', 'pixel']),
 });
-const COORDINATE_ACTIONS = new Set(['tap', 'toggle', 'longPress', 'inputText', 'swipe']);
+const COORDINATE_ACTIONS = new Set(['tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe']);
 const BOUNDS_REQUIRED_SOURCES = new Set(['visual', 'pixel']);
 
 function fail(context, message, details = {}) {
@@ -161,6 +162,9 @@ function validateAction(action, options = {}) {
   if (action.durationMs !== undefined && (!Number.isInteger(Number(action.durationMs)) || Number(action.durationMs) <= 0)) {
     fail(context, 'durationMs must be a positive integer', { field: 'durationMs', received: action.durationMs });
   }
+  if (action.intervalMs !== undefined && (!Number.isInteger(Number(action.intervalMs)) || Number(action.intervalMs) < 20 || Number(action.intervalMs) > 1000)) {
+    fail(context, 'intervalMs must be an integer from 20 to 1000', { field: 'intervalMs', received: action.intervalMs, allowed: ['20-1000'] });
+  }
   if (action.ms !== undefined && (!Number.isInteger(Number(action.ms)) || Number(action.ms) < 0)) {
     fail(context, 'ms must be a non-negative integer', { field: 'ms', received: action.ms });
   }
@@ -208,7 +212,7 @@ function validateActionExecution(action, options = {}) {
       suggestion: `use one of: ${allowedActionTypes.join(', ')}`,
     });
   }
-  if (['tap', 'toggle', 'longPress'].includes(action.type) && (!finiteNumber(action.x) || !finiteNumber(action.y))) {
+  if (['tap', 'doubleTap', 'toggle', 'longPress'].includes(action.type) && (!finiteNumber(action.x) || !finiteNumber(action.y))) {
     fail(context, `${action.type} requires executable x and y coordinates on ${platform}`, { field: 'x,y' });
   }
   if (action.type === 'inputText') {

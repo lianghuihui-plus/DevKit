@@ -19,4 +19,4 @@ cases/<title>__<caseKey>/
 
 用户通过编号沟通单个或批量执行范围。协调器创建执行请求时提交目标 `caseNo`，框架负责解析为稳定的 `caseKey` 和目录；编号不存在或不匹配时在创建请求前明确报错。
 
-execution 创建时复制 `source.snapshot.md` 和 `case.snapshot.json`。后续修改源文件不会改变进行中的 execution；再次执行应创建新 execution，不续写旧产物。
+execution 创建时复制 `source.snapshot.md` 和 `case.snapshot.json`。后续修改源文件不会改变进行中的 execution；再次执行应创建新 execution，并使用独立产物。

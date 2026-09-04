@@ -93,6 +93,9 @@ async function deleteSession(server, sessionId) {
 }
 
 async function withSession(target, fn, options = {}) {
+  if (target.appiumSessionId) {
+    return fn({ sessionId: target.appiumSessionId, capabilities: target.appiumSessionCapabilities || {} });
+  }
   const session = await createSession(target, options);
   try {
     return await fn(session);

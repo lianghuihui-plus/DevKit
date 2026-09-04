@@ -40,9 +40,11 @@ function closureDigest(value) {
 }
 
 function validateExecutionClosure(workspaceRoot, value, execDir = null) {
+  const componentBound = String(value?.runtimeSha || '').trim() && String(value?.adapterSha || '').trim()
+    && String(value?.closedByRuntimeSha || '').trim() && String(value?.closedByAdapterSha || '').trim();
   if (value?.schemaVersion !== CLOSURE_SCHEMA_VERSION || !String(value.executionId || '').trim()
-    || !String(value.executionPath || '').trim() || !String(value.implementationSha || '').trim()
-    || !String(value.closedByImplementationSha || '').trim() || value.reasonCode !== 'IMPLEMENTATION_REPLACED'
+    || !String(value.executionPath || '').trim() || !componentBound
+    || value.reasonCode !== 'IMPLEMENTATION_REPLACED'
     || !String(value.reason || '').trim() || Number.isNaN(Date.parse(value.closedAt))) {
     throw contractError('EXECUTION_CLOSURE_INVALID', 'execution closure is incomplete');
   }
@@ -63,7 +65,8 @@ function readExecutionClosure(workspaceRoot, execDir, execution = null) {
   if (!identity?.executionId) return null;
   const value = readJson(closurePath(workspaceRoot, identity.executionId), null);
   if (!value) return null;
-  if (value.executionId !== identity.executionId || value.implementationSha !== identity.implementationSha) {
+  const identityMatches = value.runtimeSha === identity.runtimeSha && value.adapterSha === identity.adapterSha;
+  if (value.executionId !== identity.executionId || !identityMatches) {
     throw contractError('EXECUTION_CLOSURE_BINDING_MISMATCH', 'execution closure identity does not match execution.json');
   }
   return validateExecutionClosure(workspaceRoot, value, execDir);
@@ -79,8 +82,11 @@ function createExecutionClosure(workspaceRoot, execDir, options = {}) {
   if (!execution?.executionId || execution.finalized === true) {
     throw contractError('EXECUTION_CLOSURE_INVALID', 'only an unfinalized execution can be closed');
   }
-  if (execution.implementationSha === options.closedByImplementationSha) {
-    throw contractError('EXECUTION_CLOSURE_INVALID', 'an execution cannot be closed as an implementation replacement by the same implementation');
+  if (!execution.runtimeSha || !execution.adapterSha) {
+    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'execution does not use the current component binding and must be run again');
+  }
+  if (execution.runtimeSha === options.closedByRuntimeSha && execution.adapterSha === options.closedByAdapterSha) {
+    throw contractError('EXECUTION_CLOSURE_INVALID', 'an execution cannot be replaced by compatible runtime components');
   }
   const relative = path.relative(path.resolve(workspaceRoot), path.resolve(execDir)).replace(/\\/g, '/');
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
@@ -91,8 +97,10 @@ function createExecutionClosure(workspaceRoot, execDir, options = {}) {
     executionId: execution.executionId,
     executionPath: relative,
     batchId: execution.batchId || null,
-    implementationSha: execution.implementationSha,
-    closedByImplementationSha: options.closedByImplementationSha,
+    runtimeSha: execution.runtimeSha,
+    adapterSha: execution.adapterSha,
+    closedByRuntimeSha: options.closedByRuntimeSha,
+    closedByAdapterSha: options.closedByAdapterSha,
     replacementBatchId: options.replacementBatchId || null,
     reasonCode: 'IMPLEMENTATION_REPLACED',
     reason: options.reason || '未完成执行属于其他实现，当前协议不再续写',
@@ -104,7 +112,7 @@ function createExecutionClosure(workspaceRoot, execDir, options = {}) {
   if (existing) {
     validateExecutionClosure(workspaceRoot, existing, execDir);
     if (existing.executionId !== value.executionId || existing.executionPath !== value.executionPath
-      || existing.implementationSha !== value.implementationSha) {
+      || existing.runtimeSha !== value.runtimeSha || existing.adapterSha !== value.adapterSha) {
       throw contractError('EXECUTION_CLOSURE_BINDING_MISMATCH', 'existing execution closure belongs to another execution');
     }
     return { closure: existing, idempotent: true };
@@ -132,14 +140,17 @@ function executionDirs(workspaceRoot) {
   return values;
 }
 
-function closeIncompatibleExecutions(workspaceRoot, implementationSha, options = {}) {
+function closeStaleExecutions(workspaceRoot, components, options = {}) {
   const closed = [];
   for (const execDir of executionDirs(workspaceRoot)) {
     const execution = readJson(path.join(execDir, 'execution.json'), null);
-    if (!execution || execution.finalized === true || execution.implementationSha === implementationSha
+    if (!execution || execution.schemaVersion !== 6 || execution.runtime !== 'case-runtime'
+      || execution.finalized === true
+      || (execution.runtimeSha === components.runtimeSha && execution.adapterSha === components.adapterSha)
       || readExecutionClosure(workspaceRoot, execDir, execution)) continue;
     closed.push(createExecutionClosure(workspaceRoot, execDir, {
-      closedByImplementationSha: implementationSha,
+      closedByRuntimeSha: components.runtimeSha,
+      closedByAdapterSha: components.adapterSha,
       replacementBatchId: options.replacementBatchId,
       reason: options.reason,
       now: options.now,
@@ -151,7 +162,7 @@ function closeIncompatibleExecutions(workspaceRoot, implementationSha, options =
 module.exports = {
   CLOSURE_DIR,
   CLOSURE_SCHEMA_VERSION,
-  closeIncompatibleExecutions,
+  closeStaleExecutions,
   closurePath,
   createExecutionClosure,
   executionClosureForDir,

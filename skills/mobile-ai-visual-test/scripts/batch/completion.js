@@ -3,72 +3,79 @@
 const path = require('path');
 const { canonicalJson, contractError } = require('../lib/contract-utils');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { completionPaths, sha256File, validatePublishedCompletion } = require('../lib/completion-contract');
-const { validateResultKnowledgeSnapshots } = require('../lib/knowledge-snapshot');
-const { timelineEvents } = require('../execution/core');
-const { validateAgentRequest, validateAgentResult } = require('../lib/agent-driven-contract');
+const { completionPaths, sha256File, validateCompletionBinding } = require('../lib/completion-contract');
 const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
+const caseRuntimeLifecycle = require('../case-runtime/lifecycle');
 
-function releaseRuntime(execDir, options = {}) {
-  const runtimePath = path.join(execDir, 'agent', 'runtime.json');
-  const runtime = readJson(runtimePath, null);
-  if (!runtime) throw contractError('AGENT_RUNTIME_MISSING', 'Agent Runtime is missing');
-  if (runtime.status === 'RELEASED') return runtime;
-  const released = { ...runtime, status: 'RELEASED', releasedAt: options.now || new Date().toISOString() };
-  writeJsonAtomic(runtimePath, released);
-  return released;
+function releaseRuntime(execDir) {
+  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  if (execution?.schemaVersion !== 6) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  const runtime = readJson(path.join(execDir, 'runtime.json'), null);
+  if (!runtime || runtime.status !== 'COMPLETED') throw contractError('CASE_RUNTIME_INCOMPLETE', 'Case Runtime has not completed');
+  return runtime;
 }
 
-function prepareCurrentCompletion(execDir) {
-  const execution = readJson(path.join(execDir, 'execution.json'));
+function prepareCurrentCompletion(execDir, options = {}) {
+  const committed = caseRuntimeLifecycle.commitExecution({ executionDir: execDir });
+  const { execution, result, metrics } = committed;
   const snapshot = readJson(path.join(execDir, 'case.snapshot.json'));
-  const result = readJson(path.join(execDir, 'result.json'));
-  const metrics = readJson(path.join(execDir, 'metrics.json'));
-  const request = validateAgentRequest(readJson(path.join(execDir, 'agent', 'request.json'), null));
-  const agentResult = validateAgentResult(readJson(path.join(execDir, 'agent', 'result.json'), null), { request });
-  validateResultKnowledgeSnapshots(execDir, result, timelineEvents(execDir));
-  if (agentResult.verdict !== result.verdict || agentResult.executionStatus !== result.executionStatus
-    || agentResult.warmSessionGeneration !== execution.warmSessionGeneration) {
-    throw contractError('AGENT_RESULT_BINDING_MISMATCH', 'AgentResult does not match finalized execution artifacts');
+  if (execution?.schemaVersion !== 6) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (metrics?.schemaVersion !== 3 || metrics.executionId !== execution.executionId || metrics.verdict !== result.verdict) {
+    throw contractError('CASE_RUNTIME_RESULT_BINDING_MISMATCH', 'Case Runtime result and metrics do not match the execution');
   }
-  return { execution, snapshot, result, metrics };
+  const artifactManifest = buildExecutionArtifactManifest(execDir, { hashFile: options.hashFile });
+  const paths = completionPaths(execDir);
+  const validationContext = {
+    artifactManifest,
+    resultSha256: (options.hashFile || sha256File)(paths.result),
+    metricsSha256: (options.hashFile || sha256File)(paths.metrics),
+    artifactManifestSha256: (options.hashFile || sha256File)(paths.artifactManifest),
+  };
+  return { execution, snapshot, result, metrics, validationContext };
 }
 
 function buildCurrentCompletion(execDir, state, item, prepared, runtime) {
-  const { execution, snapshot, result, metrics } = prepared;
-  if (runtime?.status !== 'RELEASED' || runtime.executionId !== execution.executionId) {
-    throw contractError('AGENT_RUNTIME_STATE_INVALID', 'completion requires the current Agent Runtime to be released');
+  const { execution, snapshot, result, metrics, validationContext } = prepared;
+  if (execution.schemaVersion !== 6) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (runtime?.status !== 'COMPLETED' || runtime.executionId !== execution.executionId) {
+    throw contractError('CASE_RUNTIME_STATE_INVALID', 'completion requires a completed Case Runtime');
   }
-  const paths = completionPaths(execDir);
-  buildExecutionArtifactManifest(execDir);
-  const completion = {
-    schemaVersion: 2,
+  return { completion: {
+    schemaVersion: 3,
     executionId: execution.executionId,
     batchId: state.batchId,
     caseKey: item.caseKey,
     platform: execution.platform,
     completionSource: 'framework',
-    implementationSha: execution.implementationSha,
+    runtimeSha: execution.runtimeSha,
+    adapterSha: execution.adapterSha,
     contractSha: execution.contractSha,
     batchContractSha: state.contractSha,
-    resultSchemaVersion: 2,
-    metricsSchemaVersion: 2,
+    metricsSchemaVersion: 3,
     verdict: result.verdict,
-    executionStatus: result.executionStatus,
-    sessionReleased: true,
-    resultSha256: sha256File(paths.result),
-    metricsSha256: sha256File(paths.metrics),
-    agentResultSha256: sha256File(paths.agentResult),
-    artifactManifestSha256: sha256File(paths.artifactManifest),
-    validationSha256: null,
-  };
-  return { completion, execution, snapshot, result, metrics };
+    executionStatus: metrics.executionStatus,
+    runtimeCompleted: true,
+    resultSha256: validationContext.resultSha256,
+    metricsSha256: validationContext.metricsSha256,
+    artifactManifestSha256: validationContext.artifactManifestSha256,
+  }, execution, snapshot, result, metrics, validationContext };
 }
 
 function publishCurrentCompletion(execDir, prepared) {
   const { completion, execution, snapshot, result, metrics } = prepared;
   const paths = completionPaths(execDir);
-  validatePublishedCompletion(execDir, completion, { execution, snapshot, result, metrics });
+  validateCompletionBinding(completion, {
+    executionId: execution.executionId,
+    batchId: execution.batchId,
+    caseKey: snapshot.identity?.caseKey,
+    platform: execution.platform,
+    completionSource: 'framework',
+    runtimeSha: execution.runtimeSha,
+    adapterSha: execution.adapterSha,
+    contractSha: execution.contractSha,
+    batchContractSha: execution.batchContractSha,
+  });
+  if (!prepared.validationContext?.artifactManifest) throw contractError('EXECUTION_VALIDATION_CONTEXT_MISSING', 'completion publication requires validated artifacts');
   const existing = readJson(paths.completion, null);
   if (existing) {
     if (canonicalJson(existing) !== canonicalJson(completion)) {

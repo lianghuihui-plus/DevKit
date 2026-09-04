@@ -3,11 +3,16 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 atoms_dir="$script_dir/atoms"
+source "$script_dir/../../../lib/action-common.sh"
 
 type=""
 ms=""
 device=""
 app=""
+interval_ms=""
+capture_out=""
+capture_label=""
+capture_at_ms=""
 args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -15,6 +20,10 @@ while [[ $# -gt 0 ]]; do
     --ms) ms="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --device) device="${2:-}"; args+=("$1" "$2"); shift 2 ;;
     --app) app="${2:-}"; args+=("$1" "$2"); shift 2 ;;
+    --interval-ms) interval_ms="${2:-}"; shift 2 ;;
+    --capture-out) capture_out="${2:-}"; shift 2 ;;
+    --capture-label) capture_label="${2:-}"; shift 2 ;;
+    --capture-at-ms) capture_at_ms="${2:-}"; shift 2 ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -69,6 +78,15 @@ console.log(JSON.stringify(event, null, 2));
   normalize_action "$output" "$action"
 }
 
+run_captured_long_press() {
+  mkdir -p "$capture_out/screenshots"
+  local screenshot_file="$capture_out/screenshots/${capture_label}.png"
+  run_atom "$type" "$atoms_dir/long-press.sh" "${args[@]}" \
+    --capture-out "$screenshot_file" \
+    --capture-ref "screenshots/${capture_label}.png" \
+    --capture-at-ms "$capture_at_ms"
+}
+
 case "$type" in
   wait)
     run_atom "$type" "$atoms_dir/wait.sh" --ms "${ms:-1000}"
@@ -82,8 +100,15 @@ case "$type" in
   tap|toggle)
     run_atom "$type" "$atoms_dir/tap.sh" "${args[@]}"
     ;;
+  doubleTap)
+    run_atom "$type" "$atoms_dir/double-tap.sh" "${args[@]}" --interval-ms "${interval_ms:-100}"
+    ;;
   longPress)
-    run_atom "$type" "$atoms_dir/long-press.sh" "${args[@]}"
+    if [[ -n "$capture_at_ms" ]]; then
+      run_captured_long_press
+    else
+      run_atom "$type" "$atoms_dir/long-press.sh" "${args[@]}"
+    fi
     ;;
   inputText)
     run_atom "$type" "$atoms_dir/input-text.sh" "${args[@]}"

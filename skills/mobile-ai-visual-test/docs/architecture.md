@@ -1,263 +1,290 @@
-# mobile-ai-visual-test 架构
+# mobile-ai-visual-test 当前架构
 
-本文描述正式切换后的当前架构。Agent 执行语义以 `SKILL.md` 和其 requiredResources 为准，准确命令与 Schema 以 execution 冻结的 `agent/contract.json` 为准；脚本负责客观边界、事实固化和产物发布，不决定业务路径或 verdict。
+## 1. 设计目标
 
-## 核心原则
+本 Skill 基于人工文本用例执行移动端黑盒视觉测试。架构围绕以下目标设计：
 
-1. 任意非空文本都可以成为用例输入，框架不校验写法和格式质量。
-2. Case Agent 自主理解原文、维护动态检查点、选择操作、调查异常并形成结论。
-3. 同批次 App 暖状态复用，每个 case 保持独立 execution、逻辑 session 和证据。
-4. 疑似异常先复核现场并查询本地知识；知识候选由 Agent 判断是否适用。
-5. 唯一通用执行预算是单 case 30 分钟；动作授权、目标绑定和证据来源由脚本强校验。
-6. 环境确认不等于执行授权；只有用户后续明确给出单用例或有序批量范围，系统才创建执行请求。
-7. 执行请求之后全程无人值守；case 问题收敛为结果，批次级问题自动停批，Agent 不等待用户。
-8. 正式执行只有一条主链，只接受当前协议；`implementationSha` 不一致时新建 batch，不存在旧协议兼容、Flow 或 profile 开关。
+1. 一个 Case Agent 独立负责一个用例的理解、计划、操作、调查和结论。
+2. 主 Agent 负责环境、授权、批次、委托、提交和报告，不进入单用例执行循环。
+3. Case Agent 只接触一页角色 Prompt、Case Brief、当前 Scene 和一个 Runtime Client。
+4. Runtime 自动处理平台参数、事务、证据、恢复和技术状态。
+5. 批次内复用 App 暖状态，每个用例保持独立 Agent、execution、上下文和证据。
+6. 运行事实与报告展示分离，报告可以从正式产物完整重建。
+7. 所有组件只处理当前协议；其他格式的 execution 需要重新执行，已经生成的静态文件保持原样。
 
-## 总体架构
+执行过程记录和详情报告的字段设计见 [`execution-traceability-design.md`](execution-traceability-design.md)。
 
-```mermaid
-flowchart TD
-  U["任意非空文本"] --> W["Workspace 与 Case Import"]
-  W --> P["环境探测与人工确认"]
-  P --> E["ENV_CONFIRMED<br/>不触发执行"]
-  E --> Q["用户明确执行范围与顺序"]
-  Q --> B["Execution Request 与 Batch 暖会话"]
-  B --> X["独立 Execution 与 Agent Session"]
-  X --> A["Case Agent<br/>理解 / 动态计划 / 操作 / 调查 / 结论"]
-  A --> G["受信设备网关"]
-  G --> H["HarmonyOS Adapter"]
-  G --> D["Android Adapter"]
-  G --> I["iOS Adapter"]
-  A --> K["本地 Markdown 知识库"]
-  A --> Y["控制请求<br/>仅提交恢复原因"]
-  Y --> B
-  A --> F["Result Finalize<br/>Result / Metrics / AgentResult"]
-  F --> J["记录 conclude attempt"]
-  J --> C["Batch Commit<br/>释放 Runtime"]
-  C --> L["执行产物清单"]
-  L --> O["Framework Completion"]
-  O --> R["当前 Case 详情 + 首页<br/>增量刷新"]
-  R --> N{"批次还有用例"}
-  N -- "是" --> X
-  N -- "否" --> Z["全量报告一致性重建"]
-```
-
-## 模块职责
-
-| 模块 | 主要入口 | 职责 |
-| --- | --- | --- |
-| 工作空间与输入 | `scripts/workspace.js`、`scripts/import-case.js` | 校验空目录或既有工作空间；初始化时用正式 renderer 生成零数据看板；保存原文、工作空间唯一 `caseNo` 和稳定 `caseKey`；仅拒绝空文本 |
-| 环境探测 | `scripts/probe-env.sh`、`scripts/prepare-env.sh` | 探测平台能力并准备客观依赖；不读取业务用例 |
-| 运行控制 | `scripts/environment.js`、`scripts/execution-request.js` | 分离环境确认与执行授权；只接受 `deviceId`；将人工 `caseNo` 解析为内部 case 身份，冻结确认、执行模式、有序 target 快照、双角色协议、实现摘要和无人值守策略 |
-| 批次协调 | `scripts/batch.js`、`scripts/batch/core.js`、`scripts/batch/platform-runtime.js`、`scripts/batch/completion.js` | 消费显式执行请求；绑定和释放平台运行资源；一次 bootstrap；串行 case；自动恢复内部事务；封存中断 attempt；消费控制请求；独立校验并发布 completion；每个 case commit 后触发报告增量刷新 |
-| 内部恢复 | `scripts/batch/internal-recovery.js`、`recovery-validation.js` | 从冻结草稿恢复 step、operation、turn 和知识查询；独立校验 App 恢复请求的证据、代次、检查点和事故分类；不要求 Case Agent维护事务 ID |
-| Execution Core | `scripts/execution/core.js` | 生命周期、阶段、30 分钟时限、事实事件、证据和 finalize |
-| Agent Facade | 9 个 `scripts/agent/` 公开入口、`facade-core.js` | 接收语义决策并编排当前入口；公开入口保持稳定，不向 Agent 暴露内部事务模块 |
-| Agent 语义服务 | `scripts/agent/semantic-service.js`、`conclusion-policy.js`、`query-knowledge.js` | 将 Agent 输入转换为冻结 understanding/plan；校验 finding 证据归属与结论边界；执行有界知识召回和内容快照，不替 Agent 生成业务语义 |
-| 现场证据模型 | `scripts/lib/layout-observation.js`、`scripts/lib/observation-model.js`、`scripts/lib/observation-consistency.js` | 无外部依赖解析 HarmonyOS JSON、Android XML 和 iOS XML；归一化元素与技术信号；计算动作前后状态变化和未解决证据冲突；Agent 与 Execution Core 只依赖该框架层模型 |
-| 产物完整性 | `scripts/lib/agent-attempt-lifecycle.js`、`execution-artifact-manifest.js`、`completion-contract.js` | 在发布前封存入口 attempt；冻结报告依赖产物的路径、大小和 SHA；completion 绑定清单，报告读取前验真 |
-| 动态契约 | `scripts/lib/agent-input-contract.js`、`scripts/lib/*-contract.js` | 从同一结构定义生成 Agent 可见输入契约并执行语法归一化与校验；领域契约继续确定性校验 revision、引用、授权、结果和实现摘要 |
-| 知识查询 | `scripts/knowledge.js`、`scripts/lib/knowledge-query.js`、`knowledge-context.js`、`scripts/agent/query-knowledge.js` | 请求前校验知识库；执行中排除明确不兼容条目并最多冻结 5 个候选；词面零命中时允许元数据发现召回；绑定当前理解与现场代次；不自动改变 verdict |
-| 平台适配 | `scripts/platform/adapters/` | 平台运行资源生命周期、截图、控件树、前台检测和原子动作；iOS 内部按 Appium、WDA、端口转发分项管理，不形成业务判断 |
-| 报告读取 | `scripts/lib/execution-reader.js`、`scripts/report/report-service.js`、`scripts/report/current-*.js` | 只读取当前 schema 的产物并独立渲染；每次 commit 只重建当前 case 详情和首页，批次结束再全量重建；单个 case 损坏时隔离为报告数据异常 |
-
-设备身份在框架内只有一个标准字段 `deviceId`，环境确认及后续冻结产物不接受 `device`。Adapter CLI 继续使用 `--device`，这是外部接口参数名，不是第二套领域字段。
-
-## 用例执行
+## 2. 总体架构
 
 ```mermaid
-flowchart TD
-  U["understand<br/>建立可修订业务理解"] --> L["plan<br/>组织可修订检查点"]
-  L --> I["inspect PREPARE<br/>取得当前现场"]
-  I --> P{"起点是否满足"}
-  P -- "否" --> S0["step PREPARE<br/>自主调整状态"]
-  S0 --> P
-  P -- "是" --> M["mark-start<br/>显式确认起点"]
-  M --> S1["step BUSINESS<br/>动作 + 自动后置观察"]
-  S1 --> D{"Agent 判断"}
-  D -- "继续操作" --> S1
-  D -- "检查点策略变化" --> L
-  D -- "需要调查" --> K["investigate<br/>查询并评估知识"]
-  D -- "App 需要恢复" --> R["request-recovery<br/>只提交原因"]
-  R --> RR["协调器 recover<br/>新隔离 Agent继续"]
-  K --> D
-  D -- "证据足够" --> C["conclude<br/>语义 finding + verdict"]
-  C --> F["框架生成 review / result / metrics / AgentResult"]
+flowchart LR
+  U["用户"] --> M["主 Agent"]
+  M --> W["Workspace / Environment"]
+  M --> B["Batch Coordinator"]
+  B --> L["Case Runtime Lifecycle"]
+  M -->|"一次性委托 Case Brief"| A["Case Agent"]
+  A -->|"RuntimeRequest"| R["Case Runtime"]
+  R --> D["Device Port"]
+  D --> P["Platform Adapter"]
+  R --> K["Knowledge"]
+  R --> S["Execution Store"]
+  A -->|"最终摘要"| M
+  B --> C["Completion / Commit"]
+  C --> V["Reader / Report"]
 ```
 
-计划是可修订检查点集合，不是固定点击序列。检查点是能在连续业务阶段内独立执行、取证和判断的业务验证单元；每项 requirement 在当前计划中恰好归属一个检查点。Agent 可以增删、合并、拆分或重排检查点，实际动作可以多于或少于计划；脚本只校验唯一归属、修订可追溯与原文目标不被静默改变，不决定检查点数量或业务分组。同一 ID 表示跨 revision 仍是同一语义检查点，可继承当前暖会话代次的动作和观察；语义完全变化必须使用新 ID。受控 recovery 推进代次后，旧代次证据不再继承。
+架构中只有主 Agent 和 Case Agent 进行业务决策。Case Runtime、Batch、Adapter、Store 和 Report 都是确定性代码。
 
-## 暖会话与恢复
+## 3. 角色与上下文
+
+### 3.1 主 Agent
+
+主 Agent 读取 `SKILL.md` 以及主流程需要的 references，完成：
+
+1. 校验或初始化 Workspace，导入用例。
+2. 探测环境并取得用户对平台、设备、App 和入口的确认。
+3. 根据用户明确的执行范围创建单用例或批量执行请求。
+4. 初始化 Batch 和暖会话。
+5. 为当前用例创建 Case Runtime，并一次性委托独立 Case Agent。
+6. 等待 Case Agent 完成，校验 execution 终态并提交结果。
+7. 释放平台资源，发布单用例报告和批次看板。
+
+主 Agent 持有宿主返回的 Agent 句柄。单用例执行期间，Case Agent 直接与 Case Runtime 交互；主 Agent 只等待终态。
+
+### 3.2 Case Agent
+
+Case Agent 只读取 `prompts/case-agent.md` 和 Case Brief。它负责：
+
+1. 理解原始用例，识别前置条件、验证点、不确定项和初始计划。
+2. 基于当前 Scene 选择操作并自主调整路径。
+3. 在现有 Runtime 请求中提交简短的观察、结论、目的和期望结果。
+4. 现场存在差异或判断不确定时查询知识，并复核候选是否适用；必要时恢复 App。
+5. 为全部验证点形成 check，并提交 CaseResult。
+6. 向主 Agent 返回最终摘要。
+
+Case Agent 不读取主流程文档、Batch 状态、平台脚本、存储实现或报告实现。
+
+### 3.3 公共资源
+
+原始用例、目标 App 信息和必要的知识结果可以由两个角色使用。角色 Prompt、生命周期入口和实现依赖分别管理，具体清单由 `scripts/lib/agent-contract-manifest.js` 生成并由架构测试固定。
+
+## 4. 执行生命周期
 
 ```mermaid
 sequenceDiagram
-  participant U as User
-  participant C as Coordinator
+  participant M as 主 Agent
   participant B as Batch
   participant A as Case Agent
-  participant G as Device Gateway
-  U->>C: confirm environment
-  C-->>U: ENV_CONFIRMED; no execution
-  U->>C: execute one case / ordered batch
-  C->>C: freeze UNATTENDED execution request
-  C->>B: init + bootstrap
-  B->>G: cold start once
-  G-->>B: restart facts
-  B->>B: apply startup display policy
-  loop 串行处理 case
-    C->>B: start
-    B-->>C: isolated request/session
-    C->>A: execute one case
-    A->>G: inspect/step through semantic Facade
-    opt 原文明示或客观技术故障
-      A-->>C: frozen control request
-      C->>B: recover
-      B->>G: controlled restart
-      B-->>A: generation/request rebound
-    end
-    A-->>C: finalized result
-    C->>B: commit
-    C->>C: refresh current case and index
+  participant R as Case Runtime
+  participant D as Adapter
+
+  M->>B: init / bootstrap
+  B-->>M: START_CASE
+  M->>B: start
+  B-->>M: Case Brief
+  M->>A: 一次性委托
+  A->>R: 首次请求 + caseContext
+  R->>D: 观察或操作
+  D-->>R: 客观结果
+  R-->>A: Scene / 结构化状态
+  loop Case Agent 自主执行
+    A->>R: act / observe / knowledge / recover + decision
+    R-->>A: 新 Scene / 结构化状态
   end
-  C->>C: rebuild all reports for consistency
+  A->>R: finish + decision + CaseResult
+  R-->>A: COMPLETED 或 RESULT_INCOMPLETE
+  A-->>M: 最终摘要
+  M->>B: commit
+  B-->>M: 下一用例或批次收尾
 ```
 
-普通 case 切换不重启 App。新 case 必须建立自己的 understanding 和 plan，再重新观察当前现场并建立起点；首次 `case-business` 操作要求绑定当前 understanding revision 的可用 `case-prepare` observation。发现理解遗漏或误解时可以提交完整的新 revision，框架随即使旧 plan 和起点确认失效，要求重新计划并重新建立起点。仅现场路径或检查点策略变化时只修订 plan。`case-prepare` 只是生命周期标记，不限制 Agent 为建立起点而执行的动作。受控 recovery 递增 generation，同步重绑定 execution、Runtime 和当前 Agent request，旧 request 按 generation 归档；恢复前证据仅用于审计，不能授权动作或支撑当前结论。同一 case 的逻辑 session 不变。执行开始后不存在 `WAITING_FOR_USER`：case 级歧义或外部条件缺失分别收敛为 INCONCLUSIVE/BLOCKED 并继续，设备或批次状态不可恢复时自动停批并报告。
+批次内同一时刻只有一个活跃用例。用例完成后保留 App 暖状态供下一个用例使用，但不共享 Case Agent 上下文和 execution 证据。
 
-暖会话探测失败会通过统一停批入口写入 failureCode、reason、stoppedAt、当前 case/execution、generation、探测摘要和稳定事件；进程重启后不需要依赖上一次 CLI 响应恢复失败原因。bootstrap 与 recovery 复用同一冷启动验证链：Adapter 只报告 `ok/coldStartVerified/startupDisplay` 客观事实，`device-session` 按冻结策略计算标准验证结果，Batch 不解释平台专属字段。Android、iOS 默认不强制启动方向；HarmonyOS 的 required 策略保持严格验证。
+Agent 句柄丢失时，主 Agent使用相同 Case Brief 和 execution 创建 continuation Agent，并记录续接事实。Runtime 从已保存的 Scene 和事务状态恢复，不创建第二条业务执行链。
 
-## 原子提交与恢复
+## 5. Case Runtime 接口
 
-运行控制使用小型 JSON 草稿实现幂等事务，不引入数据库或外部队列：
+### 5.1 两个入口
 
-| 事务 | 草稿 | 权威提交与恢复 |
-| --- | --- | --- |
-| 执行请求 | `execution-request.draft.json` | 先冻结输入与协议，再幂等创建 target 快照，最后发布 request；中断后不重读实时用例 |
-| 用例导入 | `case-import.draft.json` | 冻结原文与 case contract，一致替换 source/case 并重建派生报告 |
-| Batch 初始化 | `batch-init.draft.json` | 一致提交 batch contract、初始状态和 `batchInitialized` 事件 |
-| Batch Bootstrap | `bootstrap.draft.json` | 设备启动结果只取得一次；先提交 warm session 状态，再按稳定 eventId 补事件，失败状态也能继续收口 |
-| Case 启动 | `case-start.draft.json` | 固定 execution/session/event，补齐 execution、Runtime、Agent request 与 batch 状态 |
-| 语义 Step | `agent/steps/<stepId>.draft.json` | 冻结 Agent 意图与展开后的 action；由协调器自动恢复；时限后取消未发送动作或关闭观察缺口 |
-| 内部 Agent Turn | `agent/turns/<turnId>.draft.json` | Facade 原子提交 understanding、plan、候选 assessment、查询级 knowledgeReview 和判断事实；Case Agent 不维护 turnId/revision/factId |
-| 设备操作 | `agent/operation-<id>.draft.json` | 冻结请求和适配器结果；按状态提交结果、标记结果不确定或根据已完成 timeline 重建 operation 记录，不自动重放动作 |
-| 知识查询 | `agent/knowledge-query-<id>.draft.json` | 冻结标准化 query、候选和完整内容；补齐内容快照与 timeline 后清理草稿，恢复时不重读实时知识库 |
-| Phase 迁移 | `phase.draft.json` | `execution.json` 是权威阶段，timeline 缺失时用稳定 eventId 补写 |
-| App 恢复 | `recovery.draft.json` | adapter 结果只执行一次；batch 状态已提交后补写 incident/recovery 事件 |
-| Agent 控制请求 | `agent/control-request.json` | Agent 只写原因；框架绑定 execution、活动检查点和当前证据；协调器恢复成功后清理 |
-| 时限停止 | timeline `timeLimitReached` | 禁止新设备调用，确定性关闭全部草稿并记录操作后观察缺口，再进入 CONCLUDE |
-| Finalize | `finalization.draft.json` | 幂等生成 result、metrics 与最终事件；入口可先收口 verdictReview 和阶段，不重复形成业务结论 |
-| Case 发布 | `case-commit.draft.json` | 补齐 completion、batch state 和稳定 `caseCommitted` 事件；finalized 后不再依赖在线设备探测 |
-| 产物封存 | `artifact-manifest.json` | 当前 attempt 已写入或确定性封存且 Runtime 释放后生成，绑定原文、理解、计划、timeline、操作记录、知识和设备证据；报告读取时逐项验真 |
-| 报告发布 | `report-publication.draft.json` | 内容文件逐个原子替换，最后提交带 SHA 的 metadata；不一致时从 execution 重渲染 |
+- `scripts/case-runtime/lifecycle.js`：供 Batch 使用，负责 create、resume、reconcile、commit 和 completion 读取。
+- `scripts/case-runtime/runtime-client.js`：Case Agent 的唯一入口，执行 `observe`、`act`、`knowledge`、`recover`、`finish` 和 `status`。
 
-实现升级不会续写其他 `implementationSha` 的未完成 execution，也不会修改其目录。新 batch 初始化时只在 Workspace 根目录写入带摘要的 `execution-closures/<executionId>.json`，将旧 execution 标记为 `IMPLEMENTATION_REPLACED`；同实现的活动 execution 仍按并发守卫阻止新批次。报告读取闭合记录后把该执行展示为“执行已废弃”，但已发布结果仍优先于废弃的未完成执行。
+Case Brief 提供固定绝对 `runtime.command` 和固定 `runtime.requestPath`。Case Agent 将一个 RuntimeRequest JSON 写入该路径后原样执行命令，不拼装设备、App、平台或脚本参数。
 
-`batch reconcile` 优先处理批次与发布草稿，然后自动收口 Agent 内部事务；Case Agent 只看到 `frameworkRecoveryPending`，不读取内部恢复 ID。对当前 execution，状态决策优先级为：“时限 + 控制请求”先闭合控制请求再超时收口，“仅时限”直接超时收口，“仅控制请求”进入 `RECOVER_APP`，其余状态才恢复 execution。时限后框架写入 `controlRequestClosed`、删除待处理文件，不发起新设备调用。未超时时，恢复沿用同一 execution 和冻结请求，不重新决策业务路径。Facade 与 Batch 共同消费 `recovery-contract` 中的触发类型和事故分类枚举；非法分类在 Facade 写文件前拒绝，Batch 不转换或改写冻结请求。
+### 5.2 Scene 与 Capability
 
-## 事实与守卫
+`observe` 以及每次动作后的自动观察都会返回 Scene。Scene 包含：
 
-- 执行请求先在 `request-targets/` 冻结每个 target 的 source/case；execution 再复制自己的 snapshot，并绑定 target、batch、双角色协议、implementationSha 和 contractSha。
-- Case Agent request 绑定 `agent/contract.json` 的路径与摘要；`references/agent-execution.md` 与 `references/knowledge.md` 都参与 Case Agent `protocolSha`。契约从统一 guidance 模块冻结公共原则和全部语义决策阶段任务卡，并包含准确命令、完整字段、枚举和条件规则，Agent 无需读取实现代码。
-- environment confirmation 与 execution request 分别冻结；batch、execution 和 Agent request 必须绑定同一 `executionRequestSha` 及 `UNATTENDED` 策略。
-- environment confirmation、execution request、batch contract 和 execution snapshot 均只使用 `deviceId`；`device` 在框架领域契约中直接拒绝。
-- observation/actionResult 只能由专用设备入口生成，均须确认冻结 platform、`deviceId` 和 App；Agent turn 不能伪造设备事实。
-- 平台 adapter 采集原始截图、布局和平台技术信号；现场证据模型统一解析键盘、焦点、安全输入和坐标空间，不读取用例业务；布局解析失败显式诊断，不再静默投影为空元素。
-- Case Agent 只提交语义对象；Facade 从 `source.snapshot.md` 生成原文引用，是 understanding、plan、checkpointFinding、knowledgeAssessment、knowledgeReview 和 verdictReview 的唯一转换边界，自动生成 revision、引用和事实 ID。Agent 不提交 source SHA、行号或摘录，但必须提交结论阶段的原文复核与恢复必要性判断，框架不代写业务语义。结论中的 checkpointFinding 与 verdictReview 组成同一 turn，完整预校验通过后再幂等提交；契约拒绝不会改变 phase 或 timeline。零命中查询自动以 `NO_MATCH` 闭合；有候选时由 Agent 提交相关候选评估和查询级结论。
-- Agent 输入字段、类型、非空规则、数组项、坐标元组和阶段条件由 `agent-input-contract.js` 单点定义，冻结契约与 Facade 使用同一来源。纯空白列表项可做无语义归一化，框架不补写业务内容。
-- `stage`、默认活动检查点、revision、observation 和授权绑定由 Facade 推导。起点建立前 runtimeState 不暴露活动检查点；Recovery 后完整 `status` 返回精简语义上下文，新隔离 Agent 保留既有理解与计划并从当前阶段续接。
-- 零 requirement 与空计划只允许理解、计划、知识和结论入口；设备观察、动作、起点确认与恢复请求统一返回 `NO_EXECUTABLE_REQUIREMENTS`。
-- 动作由 Facade 自动绑定当前 execution、understanding/plan revision、checkpoint/start condition 和 observation；这些字段不由 Agent 手工维护，也不构成业务副作用门禁。
-- 改变现场的动作必须引用当前暖会话代次的可用 observation；坐标动作还必须引用该 observation 同次采集的 layout、visual 或 pixel 产物。框架不判断业务副作用，Agent 可自主执行必要的起点恢复与调查动作。
-- 状态变更动作完成后，设备网关默认缓冲 500ms 再启动 POST_ACTION observation；`MAVT_POST_ACTION_SETTLE_MS=0..5000` 可调整，配置值冻结在 step 草稿并写入操作 timing，恢复不会重放动作或改变等待值。
-- 动作发送前按声明时长、页面缓冲和固定 5 秒后置观察余量执行预算准入；不足时返回 `CASE_TIME_LIMIT_INSUFFICIENT`，不创建 operation 草稿、不触碰设备，也不进入事务恢复。无副作用的 `wait` 失败按普通动作失败记录，只有可能改变现场且响应丢失的动作才进入 `DEVICE_ACTION_OUTCOME_UNCERTAIN`。
-- iOS `inputText` 优先使用 Appium active element，并在单个 Appium session 内执行最多两种 WDA 整串输入方式。内部尝试只生成一个 actionResult 和一次后置 observation；普通框验证明文，安全框验证掩码长度，失败时保留结构化方法、阶段和错误摘要。
-- iOS observe 在同一 Appium session 采集 `isKeyboardShown` 和窗口矩形。键盘存在且坐标空间不一致时，Facade 在发送坐标动作前返回 `ACTION_COORDINATE_CONFLICT`；平台专属 `dismissKeyboard` 调用 `mobile: hideKeyboard` 并沿用统一动作后观察链路。
-- 平台 adapter 的可控失败仍必须返回一个合法 JSON；网关仅在真正无法解析成功进程输出时使用 `DEVICE_ADAPTER_OUTPUT_INVALID`，非零退出优先保留退出码、signal 和脱敏 stderr。后台 Appium 日志默认追加到本机临时目录，可由 `MAVT_IOS_APPIUM_LOG` 指定。
-- 平台运行资源采用批次级 `acquire/release` 接口，批次层只保存复合资源，不感知平台进程细节。HarmonyOS、Android 当前无需批次托管资源；iOS adapter 内部由 Appium 生命周期、WDA 生命周期和端口核验三个模块组成。Appium 按服务地址登记；WDA 按设备 ID 与 bundle id 登记，并以批次开始前进程为外部基线。终态按 WDA、Appium、最终进程与端口核验的顺序收口；命令、设备、bundle、PID、独立进程组或所有权任一不匹配都不得终止。全部框架资源消失为 `RELEASED`，仅剩外部资源为 `RETAINED`，框架资源残留为 `RELEASE_FAILED` 并允许补偿重试。Session 删除仍由每次设备调用负责，不能替代批次级服务关闭。
-- 可用 observation 才能支撑业务断言；状态变化后的不可用 observation 可以作为事故恢复的客观技术证据，但不能进入 requirement finding。Agent 主动决定重启仍必须引用当前可用 observation，Batch 会复核证据的 execution、暖会话代次和状态变化边界。
-- 动作后的守卫通常只能由与该动作关联且可用的新 observation 清除；达到时限且禁止新设备调用时，由 `timeLimitReached` 如实记录当前观察不可得并解除流程死锁，verdictReview 以空 `currentObservationRefs + observationUnavailable` 显式承认缺口，不引用状态变化前旧现场，结论固定为 `INCONCLUSIVE + STOPPED_BY_BUDGET`。知识调查闭合前 `mayConclude=false`，其他最终复核仍必须引用最后一次动作、结果不确定或 recovery 之后的最新可用观察。
-- 每个 requirement 独立闭合 evidence、适用 knowledge 或未决/阻塞原因，用例级结论不能替代逐 requirement 依据。Agent 必须显式选择 finding 的 `evidenceRefs`；框架只校验证据可用性、暖会话代次和检查点归属，不自动把最新观察分配给 finding。
-- Finalize 复算 execution 内未解决的关键现场冲突；非输入动作污染安全输入且未被后续成功整串输入及观察修复时，以 `EVIDENCE_CONFLICT_UNRESOLVED` 拒绝 PASS/FAIL，允许 Agent 如实转为 INCONCLUSIVE 或技术 BLOCKED。
-- PASS/FAIL 必须先以当前 understanding 和暖会话代次显式建立起点。PASS 必须完成当前计划全部检查点；观察型检查点可复用建立起点的当前观察，要求动作的检查点必须具备动作及动作后观察。FAIL 可在当前观察或相关产品事故形成充分负向证据后提前结束，不要求执行后续检查点；技术事故只能支持 BLOCKED。产品事故是否与 requirement 相关由 Agent 判断，脚本不全局否决 PASS。准备/业务 scope 只用于报告归类。
-- FAIL、INCONCLUSIVE 和业务 BLOCKED 前必须完成原文复核、已闭合的知识查询和剩余不确定性记录；知识查询冻结 understanding revision、warm session generation、状态变化边界、当前 observation 和活动检查点，任一语义或现场代次变化后旧调查不能支撑当前结论。整体 verdictReview 使用最后一次状态变化后的当前观察，逐 requirement finding 可使用当前暖会话代次内对应检查点执行时取得的有效证据。有命中但缺少 knowledgeReview 的查询不能支撑负向结论。直接证据 PASS 和纯技术 BLOCKED 不强制查询。
-- verdictReview 必须绑定当前 understanding revision、当前 plan revision 与 `planSha`，并精确覆盖当前全部 requirement；任一绑定过期都必须重新复核。
-- 达到 30 分钟后停止新的设备操作，但仍允许基于已有事实进入 CONCLUDE。
-- AgentResult 校验 request、双角色协议、实现、session、result、metrics 和哈希；成功入口写入 `agent/attempts.jsonl`。finalize 后若入口输出中断，`reconcile` 或 commit 将 `attempt.current.json` 封存为 `AGENT_ENTRYPOINT_OUTPUT_INTERRUPTED`，再释放 Runtime、生成产物清单并发布 completion。报告区分活动执行、收尾待恢复、待发布和已发布 execution；当前 case 读取失败只生成该 case 的报告数据异常状态，不阻断其他 case，也不回退其他 execution 掩盖错误。
-- Case Agent 角色边界由 Skill 白名单和宿主工具权限共同组成；宿主未按 `allowedEntrypoints/requiredResources` 限制工具时只能视为协议隔离，不视为强权限隔离。
-- `implementationSha` 覆盖 Agent、Batch、Case、Execution、运行时 lib、平台公共入口及当前平台 adapter；纯报告读取和展示模块不参与执行实现摘要。续写 execution 前必须匹配该摘要，不匹配时拒绝并新建 batch。
-- 报告使用独立 `rendererSha`，覆盖报告 service、renderer manifest、报告入口及其只读依赖，并写入 `report-metadata.json`；重渲染不会改变 execution 的 `implementationSha`。
-- Agent 入口调用与结构化错误写入 `agent/attempts.jsonl`；metrics 区分 Agent 决策间隔、协议活动时间、设备适配器工作时间和阶段耗时，这些诊断事实不参与业务 verdict。
+- 稳定 `sceneId` 和暖会话 `generation`。
+- 截图、尺寸、内容摘要和可选布局引用。
+- 目标 App 状态、归一化控件、键盘与坐标信号。
+- 基于该 Scene 生成的 Capability 列表。
+- 前一个动作的客观结果。
 
-## 产物结构
+Case Agent 优先选择当前 Capability。截图中的目标无法由控件树表达时，可提交归一化视觉坐标；Runtime 负责像素换算、平台调用和坐标审计。
+
+Capability 绑定生成它的 Scene。非当前 Scene 的 Capability 返回 `SCENE_CHANGED` 和最新 Scene，不发送设备动作。
+
+### 5.3 业务语义
+
+首次请求携带 `caseContext`：
+
+```json
+{
+  "summary": "验证设置保存后正确显示",
+  "preconditions": ["用户已登录"],
+  "expectations": ["设置入口可用", "保存后显示目标状态"],
+  "initialPlan": ["进入设置", "修改并保存", "检查结果"],
+  "uncertainties": []
+}
+```
+
+业务请求可携带 `decision`：
+
+```json
+{
+  "observation": "当前页已显示设置入口",
+  "conclusion": "可以开始验证",
+  "purpose": "进入设置页",
+  "expectedOutcome": "显示目标设置",
+  "expectationRefs": ["E1"]
+}
+```
+
+计划变化时在同一 decision 中增加 `planUpdate`。首次建立现场的 `observe` 只需有效 caseContext；之后主动发起的五类业务请求缺 decision、或初始计划为空时，Runtime 记录 `narrativeGap`，并继续处理可执行的设备请求。报告据此输出 `COMPLETE`、`PARTIAL` 或 `UNAVAILABLE`。这些语义字段不增加 Runtime 调用或设备动作。
+
+知识候选评估同样附在下一次已有请求的 `decision.knowledgeReview` 中。Runtime 把查询和复核绑定到当前 execution、平台/App、Scene、用例理解版本及相关验证点；零候选自动闭合，不增加操作类型。
+
+## 6. CaseResult 与运行状态
+
+CaseResult 只表达 Case Agent 的业务结论：
+
+```json
+{
+  "verdict": "PASS",
+  "summary": "设置入口和保存结果均符合预期",
+  "checks": [
+    {
+      "expectationRef": "E1",
+      "status": "PASS",
+      "actual": "设置入口可点击",
+      "sceneRefs": ["scene-0002"],
+      "knowledgeRefs": []
+    }
+  ],
+  "uncertainties": []
+}
+```
+
+Runtime 对 CaseResult 执行严格字段校验，并验证：
+
+- 每个当前验证点恰好有一个 check。
+- 整体 verdict 与 checks 一致。
+- PASS/FAIL check 至少引用一个有效 Scene。
+- Scene、事件、截图、布局和内容摘要形成一致证据图。
+- 负向业务结论已完成相关知识调查；具有当前 execution、验证点和 generation 关联且仍有效的 Runtime 技术事实的 BLOCKED 除外。
+- 知识支持的检查只引用当前 execution 已冻结并评估为 `APPLICABLE` 的条目。
+
+验证点遗漏返回 `RESULT_INCOMPLETE`，Case Agent 可补充后再次 finish。Runtime 原样保存通过校验的 CaseResult；框架运行状态、耗时和完成绑定分别保存在 `execution.json`、`metrics.json` 和 `completion.json`。
+
+## 7. 事件、事务与 Telemetry
+
+`events.jsonl` 是 execution 的事实时间线，包含：
+
+- `caseContextRecorded`、`agentDecisionRecorded`、`narrativeGap`。
+- `sceneObserved`、`actionRequested`、`actionCompleted`、`actionOutcomeUnknown`。
+- `knowledgeQueried`、`knowledgeReviewed`。
+- `appRecovered`、`recoveryFailed`、`recoveryOutcomeUnknown`。
+- `technicalIssue`、`timeBudgetExhausted`、`caseFinished`。
+
+Runtime 自动生成事件 ID、operationId、Scene 关系、时间和 generation。Case Agent 只提交业务语义和操作请求。
+
+技术事实写入时自动关联 decision、验证点、Scene 和 generation。后续成功操作或恢复可以使瞬态事实失效；Result Integrity 与报告使用共享判定逻辑，避免结果归因和页面展示不一致。
+
+动作、恢复和 finish 使用 execution 内部事务。设备调用前先持久化请求；结果未知时优先观察现场，不自动重放可能已经生效的动作。Runtime 启动时自动恢复未完成事务。
+
+`telemetry/invocations.jsonl` 记录 Runtime 请求次数、耗时、状态和格式错误；`telemetry/spans.jsonl` 记录 Adapter、截图、布局、稳定等待和恢复控制耗时。Metrics 从调用时间计算首次准备、步骤决策、结论整理和未归类间隔。Telemetry 不作为业务 verdict 的来源，这些间隔也不等同于纯模型思考时间。
+
+单用例预算结束后，Runtime 停止新的设备动作并保持 `finish` 可用，使 Case Agent 能基于已有证据收口。
+
+## 8. 产物闭环
+
+正式 execution 产物包括：
 
 ```text
-<workspace>/
-  workspace.json
-  environment-confirmation.json
-  execution-closures/<executionId>.json
-  knowledge/
-  cases/<case>/
-    case-import.draft.json
-    source.md
-    case.json
-    CONTEXT.md
-    CONTEXT.html
-    report-metadata.json
-    platforms/<platform>/
-      executions/<execution>/
-        source.snapshot.md
-        execution.json
-        phase.draft.json
-        finalization.draft.json
-        understanding.json
-        plan.json
-        timeline.jsonl
-        knowledge/<contentSha>.md
-        result.json
-        metrics.json
-        artifact-manifest.json
-        completion.json
-        agent/
-          contract.json
-          request.json
-          runtime.json
-          result.json
-          control-request.json
-          attempts.jsonl
-          steps/<stepId>.draft.json
-          steps/<stepId>.json
-          turns/<turnId>.draft.json
-          turns/<turnId>.json
-          operation-<id>.draft.json
-          knowledge-query-<id>.draft.json
-          operation-<id>.json
-        screenshots/
-        layouts/
-        logs/
-      CONTEXT.md
-      CONTEXT.html
-      report-metadata.json
-  runs/<batch>/
-    request-targets/<order-caseKey>/
-      source.snapshot.md
-      case.snapshot.json
-    execution-request.json
-    contract.json
-    batch.json
-    platform-runtime.json
-    platform-runtime-acquire.draft.json
-    platform-runtime-release.draft.json
-    events.jsonl
-    batch-init.draft.json
-    bootstrap.draft.json
-    case-start.draft.json
-    case-commit.draft.json
-    recovery.draft.json
-  report-metadata.json
-  index.html
+execution.json
+binding.snapshot.json
+case.snapshot.json
+source.snapshot.md
+events.jsonl
+scenes/
+screenshots/
+layouts/
+logs/
+operations/
+knowledge/
+telemetry/
+coordinate-audits/
+result.json
+metrics.json
+artifact-manifest.json
+completion.json
 ```
 
-## 文档边界
+`runtime.json`、`runtime-request.json`、锁文件和 `transactions/*.draft.json` 是运行期文件。`artifact-manifest.json` 绑定正式证据集合的路径、大小和 SHA；`completion.json` 绑定 Result、Metrics、组件摘要和清单摘要。报告发布前校验完整证据图，发布后只读这些产物。
 
-- 当前架构以本文为准；执行语义以 `../SKILL.md` 及其 requiredResources 为准，准确接口契约以每个 execution 的 `agent/contract.json` 为准。
-- 阶段性方案和切换前记录由 Git 历史保留，不作为当前操作或接口依据。
+Narrative Projector 从事件投影用例理解、计划历史、业务步骤、知识调查、独立最终判断和验证点覆盖。Renderer 只消费 Reader 与 Projector 的 ViewModel，不回写 execution。
+
+## 9. 模块与依赖
+
+```text
+scripts/
+├── batch/                 # 批次、暖会话协调、commit 与 completion
+├── case-runtime/          # Case Runtime 接口、服务、事务与 Store
+├── case/                  # 用例导入
+├── execution/contracts/   # 原始用例契约
+├── lib/                   # 共享契约、证据、Reader 与运行控制
+├── platform/
+│   ├── device-port.js     # Runtime 到 Adapter 的端口
+│   └── adapters/          # HarmonyOS / Android / iOS 实现
+├── report/                # Narrative、Trace、详情页与看板
+└── session/               # 暖会话状态
+```
+
+依赖方向：
+
+1. Case Agent 只依赖 Runtime Client。
+2. Batch 只依赖 Case Runtime Lifecycle，不调用内部业务 service。
+3. Case Runtime 通过 Device Port 调用 Adapter，不依赖 Report。
+4. Adapter 只处理设备能力，不读取 Batch、用例和 verdict。
+5. Store 只处理事实与原子性，不产生业务结论。
+6. Report 通过只读 Reader 使用 execution，不调用 Runtime 或 Adapter。
+7. 修改报告不改变 Runtime 摘要；修改单个平台 Adapter 不改变其他平台摘要。
+
+`scripts/tests/architecture-boundaries.test.js` 和 `scripts/build-agent-contract.js` 固定角色资源、入口和实现摘要边界。
+
+## 10. 故障边界
+
+- 产品表现与预期不一致：由 Case Agent 基于 Scene 判断并写入 checks。
+- 证据不足或前置条件不成立：Case Agent 使用 INCONCLUSIVE 或 BLOCKED，并说明 uncertainties。
+- 设备、App、Adapter 或存储异常：Runtime 返回结构化 `TECHNICAL`，保存技术事件和最后 Scene。
+- Runtime 请求格式错误：返回 `REQUEST_INVALID` 和字段提示，同时写入 Telemetry。
+- 完成态校验失败：Reader 不发布业务 Result，以独立技术状态展示失败原因。
+- Runtime 或 Adapter 实现摘要变化：未完成 execution 通过 closure 结束，新批次创建新的 execution。
+
+技术异常不会被报告为产品 FAIL，业务 Result 也不会被框架运行状态覆盖。
+
+## 11. 验证基线
+
+自动化验证覆盖：
+
+- Runtime 请求、CaseResult、Scene、Capability 和证据图契约。
+- PASS、FAIL、INCONCLUSIVE、BLOCKED 结果及缺失验证点。
+- action、recover、finish 中断恢复与未知结果处理。
+- 理解、计划调整、每步决策、知识、恢复和 finish 的 Narrative 投影。
+- 调用耗时、格式错误、暖状态 generation 和恢复次数。
+- 批次串行、暖会话复用、completion、报告发布和增量刷新。
+- HarmonyOS、Android、iOS Adapter 契约与输入、布局、坐标行为。
+- 主 Agent、Case Agent、Runtime、Batch、Adapter 和 Report 的依赖边界。
+
+真实设备用例作为独立验收，不属于无设备自动化回归。验收时重点检查 Runtime 调用格式错误、耗时分布、业务步骤完整性、验证点覆盖、证据关联和暖会话复用。

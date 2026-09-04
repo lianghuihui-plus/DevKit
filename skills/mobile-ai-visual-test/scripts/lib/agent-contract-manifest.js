@@ -6,15 +6,7 @@ const path = require('path');
 
 const ROLE_ENTRYPOINTS = Object.freeze({
   'case-executor': Object.freeze([
-    'scripts/agent/status.js',
-    'scripts/agent/understand.js',
-    'scripts/agent/plan.js',
-    'scripts/agent/inspect.js',
-    'scripts/agent/step.js',
-    'scripts/agent/mark-start.js',
-    'scripts/agent/request-recovery.js',
-    'scripts/agent/investigate.js',
-    'scripts/agent/conclude.js',
+    'scripts/case-runtime/runtime-client.js',
   ]),
   'batch-coordinator': Object.freeze([
     'scripts/workspace.js',
@@ -33,8 +25,7 @@ const ROLE_ENTRYPOINTS = Object.freeze({
 
 const ROLE_RESOURCES = Object.freeze({
   'case-executor': Object.freeze([
-    'references/agent-execution.md',
-    'references/knowledge.md',
+    'prompts/case-agent.md',
   ]),
   'batch-coordinator': Object.freeze([
     'SKILL.md',
@@ -44,21 +35,46 @@ const ROLE_RESOURCES = Object.freeze({
     'references/failure-policy.md',
     'references/case-format.md',
     'references/agent-runtime.md',
-    'references/agent-runtimes/codex.md',
   ]),
 });
 
 const SHARED_IMPLEMENTATION_FILES = new Set([
   'scripts/build-agent-contract.js',
   'scripts/lib/agent-contract-manifest.js',
+  'scripts/lib/contract-utils.js',
+  'scripts/lib/execution-lifecycle.js',
+  'scripts/lib/execution-evidence.js',
+  'scripts/lib/image-evidence.js',
+  'scripts/lib/batch-contract.js',
+  'scripts/lib/execution-environment.js',
+  'scripts/lib/target-binding.js',
+  'scripts/lib/startup-display.js',
 ]);
 
 const REPORT_ONLY_LIB_FILES = new Set([
-  'scripts/lib/agent-eval.js',
   'scripts/lib/cli-args.js',
   'scripts/lib/display-format.js',
   'scripts/lib/execution-reader.js',
   'scripts/lib/failure-catalog.js',
+]);
+
+const PLATFORM_ENTRYPOINTS = Object.freeze([
+  'scripts/platform/action.sh',
+  'scripts/platform/observe.sh',
+  'scripts/platform/probe-env.sh',
+  'scripts/platform/prepare-env.sh',
+  'scripts/platform/runtime.sh',
+]);
+
+const COORDINATOR_ENTRYPOINTS = Object.freeze([
+  'scripts/batch.js',
+  'scripts/environment.js',
+  'scripts/execution-request.js',
+  'scripts/import-case.js',
+  'scripts/knowledge.js',
+  'scripts/workspace.js',
+  'scripts/probe-env.sh',
+  'scripts/prepare-env.sh',
 ]);
 
 function walkFiles(root, relative) {
@@ -83,37 +99,80 @@ function roleEntrypoints(role) {
   return [...ROLE_ENTRYPOINTS[role]];
 }
 
+function implementationGroups(skillRoot, platform) {
+  const sharedRuntime = new Set(SHARED_IMPLEMENTATION_FILES);
+  const adapter = new Set(PLATFORM_ENTRYPOINTS);
+  for (const relative of walkFiles(skillRoot, `scripts/platform/adapters/${platform}`)) adapter.add(relative);
+
+  const runtime = new Set([...sharedRuntime]);
+  for (const relative of walkFiles(skillRoot, 'scripts/case-runtime')) {
+    if (relative !== 'scripts/case-runtime/lifecycle.js') runtime.add(relative);
+  }
+  runtime.add('scripts/platform/device-port.js');
+  for (const relative of walkFiles(skillRoot, 'scripts/session')) runtime.add(relative);
+  for (const relative of [
+    'scripts/execution/contracts/case-contract.js',
+    'scripts/lib/action-contract.js',
+    'scripts/lib/action-coordinate-audit.js',
+    'scripts/lib/knowledge-query.js',
+    'scripts/lib/layout-observation.js',
+    'scripts/lib/observation-consistency.js',
+    'scripts/lib/observation-model.js',
+    'scripts/lib/technical-facts.js',
+    'scripts/lib/warm-session-contract.js',
+    'scripts/lib/workspace.js',
+  ]) runtime.add(relative);
+
+  const coordinator = new Set([...sharedRuntime, ...COORDINATOR_ENTRYPOINTS]);
+  coordinator.add('scripts/case-runtime/lifecycle.js');
+  for (const relative of walkFiles(skillRoot, 'scripts/batch')) coordinator.add(relative);
+  for (const relative of walkFiles(skillRoot, 'scripts/case')) coordinator.add(relative);
+  for (const relative of walkFiles(skillRoot, 'scripts/execution')) coordinator.add(relative);
+  for (const relative of walkFiles(skillRoot, 'scripts/lib')) {
+    if (!REPORT_ONLY_LIB_FILES.has(relative)) coordinator.add(relative);
+  }
+
+  const report = new Set(walkFiles(skillRoot, 'scripts/report'));
+  report.add('scripts/render-context.js');
+  report.add('scripts/render-index.js');
+  for (const relative of REPORT_ONLY_LIB_FILES) report.add(relative);
+  for (const relative of [
+    'scripts/build-agent-contract.js',
+    'scripts/execution/contracts/case-contract.js',
+    'scripts/lib/agent-contract-manifest.js',
+    'scripts/lib/batch-contract.js',
+    'scripts/lib/completion-contract.js',
+    'scripts/lib/contract-utils.js',
+    'scripts/lib/execution-evidence.js',
+    'scripts/lib/execution-evidence-graph.js',
+    'scripts/lib/execution-lifecycle.js',
+    'scripts/lib/execution-artifact-manifest.js',
+    'scripts/lib/image-evidence.js',
+    'scripts/lib/observation-consistency.js',
+    'scripts/lib/technical-facts.js',
+  ]) report.add(relative);
+
+  const caseExecutor = new Set([...runtime, ...adapter]);
+
+  return {
+    sharedRuntime: [...sharedRuntime].sort(),
+    runtime: [...runtime].sort(),
+    caseExecutor: [...caseExecutor].sort(),
+    coordinator: [...coordinator].sort(),
+    adapter: [...adapter].sort(),
+    report: [...report].sort(),
+  };
+}
+
 function implementationFiles(skillRoot, role, platform) {
   if (!ROLE_ENTRYPOINTS[role]) throw new Error(`Unsupported Agent role: ${role}`);
-  const files = new Set(SHARED_IMPLEMENTATION_FILES);
-  for (const relative of walkFiles(skillRoot, 'scripts/agent')) files.add(relative);
-  for (const relative of walkFiles(skillRoot, 'scripts/batch')) files.add(relative);
-  for (const relative of walkFiles(skillRoot, 'scripts/case')) files.add(relative);
-  for (const relative of walkFiles(skillRoot, 'scripts/execution')) files.add(relative);
-  for (const relative of walkFiles(skillRoot, 'scripts/lib')) {
-    if (!REPORT_ONLY_LIB_FILES.has(relative)) files.add(relative);
-  }
-  for (const relative of [
-    'scripts/batch.js',
-    'scripts/environment.js',
-    'scripts/execution-request.js',
-    'scripts/import-case.js',
-    'scripts/knowledge.js',
-    'scripts/workspace.js',
-    'scripts/probe-env.sh',
-    'scripts/prepare-env.sh',
-    'scripts/platform/action.sh',
-    'scripts/platform/observe.sh',
-    'scripts/platform/probe-env.sh',
-    'scripts/platform/prepare-env.sh',
-    'scripts/platform/runtime.sh',
-  ]) files.add(relative);
-  for (const relative of walkFiles(skillRoot, `scripts/platform/adapters/${platform}`)) files.add(relative);
-  return [...files].sort();
+  const groups = implementationGroups(skillRoot, platform);
+  return role === 'case-executor' ? groups.caseExecutor : groups.coordinator;
 }
 
 module.exports = {
   REPORT_ONLY_LIB_FILES,
+  implementationGroups,
   implementationFiles,
   roleEntrypoints,
   roleResources,

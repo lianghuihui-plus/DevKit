@@ -1,6 +1,6 @@
 # 接口契约
 
-## 批次协调器入口
+## 主 Agent
 
 ```bash
 node scripts/workspace.js --cwd <workspace>
@@ -8,70 +8,69 @@ node scripts/import-case.js <input-file> --workspace <workspace>
 scripts/probe-env.sh --platform <platform>
 scripts/prepare-env.sh --platform <platform> [platform options]
 node scripts/environment.js confirm --workspace <workspace> --binding-json '<json>' --probe-json '<json>' --user-confirmation '<text>'
-node scripts/environment.js status --workspace <workspace>
 node scripts/execution-request.js create --workspace <workspace> --batch-id <id> --mode <single|batch> --targets-json '[{"caseNo":"004"}]' --user-instruction '<text>'
-node scripts/execution-request.js status --workspace <workspace> --batch-id <id>
-node scripts/knowledge.js validate --workspace <workspace>
 node scripts/batch.js init --workspace <workspace> --batch-id <id>
 node scripts/batch.js bootstrap --workspace <workspace> --batch-id <id>
 node scripts/batch.js reconcile --workspace <workspace> --batch-id <id>
 node scripts/batch.js start --workspace <workspace> --batch-id <id>
-node scripts/batch.js recover --workspace <workspace> --batch-id <id> --request-json '<json>'
+node scripts/batch.js start --workspace <workspace> --batch-id <id> --continuation-reason '<native Agent handle 丢失原因>'
 node scripts/batch.js commit --workspace <workspace> --batch-id <id>
 node scripts/batch.js status --workspace <workspace> --batch-id <id>
 node scripts/batch.js teardown --workspace <workspace> --batch-id <id>
 ```
 
-`environment.js confirm` 冻结用户确认的 `platform`、`deviceId`、`appId`、平台必要参数、probe 摘要和确认原文，只形成 `environment-confirmation.json`。它不创建 batch，也不启动 App。
+`batch start` 返回 `brief`，其中包含冻结用例、目标摘要、可选初始 Scene 和预绑定 Runtime 入口。主 Agent 将其一次性交给 Case Agent。
 
-框架产物统一使用 `deviceId` 表示设备身份，环境确认、execution request、batch contract 和 execution snapshot 都不接受或保留 `device`。平台脚本的命令行参数仍为 `--device`，该名称只属于 adapter 边界，不进入框架数据契约。
+`batch reconcile` 在新 execution 上只返回批次动作，不返回 Case Agent 中间决策：运行中为 `WAIT_CASE_AGENT`，完成后为 `COMMIT_CASE`。
 
-`execution-request.js create` 必须由后续明确执行指令触发。`targets-json` 是有序 target 数组，人工指定时优先使用 `[{"caseNo":"004"}]`；框架解析为内部 `caseKey/caseDir`，内部调用仍可直接提交这两个字段。编号必须在当前工作空间唯一存在，caseDir 必须位于 `cases/`；`SINGLE` 只允许一个 target。请求创建前校验 Skill/Workspace 知识库，随后在 `runs/<batch>/request-targets/` 冻结 source/case 快照，并冻结 case-executor、batch-coordinator 协议摘要和 implementationSha。请求固定为 `UNATTENDED`，创建后不可改写；中断时从 `execution-request.draft.json` 恢复，不重新读取实时用例。环境确认发生变化时，旧请求失效。
+## Case Agent
 
-`batch.js init` 只消费同一 batchId 的现有执行请求；不再接受 `--binding-json` 或 `--targets-json`，因此不能把环境确认隐式升级为执行。
+Case Brief 提供固定 `runtime.command` 和固定 `runtime.requestPath`。Case Agent 将一个请求 JSON 写入该路径，然后不带参数运行 command：
 
-`batch.js bootstrap` 在冷启动 App 前通过平台运行资源接口完成批次级资源绑定。HarmonyOS、Android 当前返回 `NOT_REQUIRED`；iOS 返回包含 `resource.appium`、`resource.wda` 和 `resource.forwarding` 的复合资源，每一项独立记录 `status/ownership`。WDA 身份至少绑定 `deviceId`、`updatedWDABundleId`、PID 和独立进程组；无法建立精确身份时按外部资源保留，不做泛化进程清理。批次 `COMPLETED/BLOCKED` 后，`commit/reconcile` 自动执行幂等清理，`teardown` 用于终态批次的显式补偿。全部框架资源已消失才返回 `RELEASED`；存在确认的外部资源返回 `RETAINED`；所有权不一致、停止失败或端口残留返回 `RELEASE_FAILED`。分项结果写入 `runs/<batch>/platform-runtime.json` 和批次事件，不改变已提交用例结果。
-
-bootstrap/recovery 不直接按某个平台返回字段是否存在来判断成功。Adapter 先返回冷启动客观事实和可选 `startupDisplay`；`device-session` 再结合冻结的 `startupDisplayPolicy` 统一计算 `coldStartVerified`、`startupDisplayVerified` 和校验诊断；Batch 只消费这两个标准结果。Android、iOS 默认 `preserve + none`，显示方向不是启动成功的必要条件；HarmonyOS 命中 `required` 策略时仍必须获得 `VERIFIED` 显示证据。
-
-`batch.js recover` 接受原文明示冷启动、`AGENT_DECIDED_RESTART` 和客观技术/产品事故恢复。原文明示冷启动由 Case Agent 只提交 `SOURCE_REQUIRED_COLD_START` 和原因，Facade 从活动检查点关联 requirement 自动生成 sourceRefs；Agent 主动决定重启时必须绑定当前可用 observation；事故恢复在没有当前可用现场时可以绑定最新状态变化后的不可用 observation。`incidentCategory` 只允许 `PRODUCT/TECHNICAL`，省略时为 `TECHNICAL`，具体故障描述由 `reason` 冻结为 `incidentReason`。Facade 在写控制请求前完成枚举校验，再自动生成 `recoveryId/executionId/checkpointId/triggerType/evidenceRefs` 和决策/事故字段，Batch 复用同一共享契约并校验证据属于当前 execution 与暖会话代次。同一 recoveryId 重入按已冻结记录中的 executionId 定位原 execution，不使用当前 case 推断目录。
-
-## case Agent 入口
-
-```bash
-node scripts/agent/status.js --exec-dir <execution>
-node scripts/agent/understand.js --exec-dir <execution> --request-json '<json>'
-node scripts/agent/plan.js --exec-dir <execution> --request-json '<json>'
-node scripts/agent/inspect.js --exec-dir <execution> [--request-json '<json>']
-node scripts/agent/step.js --exec-dir <execution> --request-json '<json>'
-node scripts/agent/mark-start.js --exec-dir <execution> [--request-json '<json>']
-node scripts/agent/request-recovery.js --exec-dir <execution> --request-json '<json>'
-node scripts/agent/investigate.js --exec-dir <execution> --request-json '<json>'
-node scripts/agent/conclude.js --exec-dir <execution> --request-json '<json>'
+```json
+{ "operation": "observe", "caseContext": { "summary": "验证设置保存结果", "preconditions": ["用户已登录"], "expectations": ["设置入口可用", "保存后显示目标状态"], "initialPlan": ["进入设置", "修改并保存", "检查结果"], "uncertainties": [] } }
+{ "operation": "act", "capabilityId": "scene-0001:tap:el-8", "intent": "打开设置", "decision": { "observation": "页面显示设置入口", "conclusion": "可以开始验证", "purpose": "进入设置页", "expectedOutcome": "显示目标设置", "expectationRefs": ["E1"] } }
+{ "operation": "knowledge", "query": "当前页面显示异常", "decision": { "observation": "结果与预期不一致", "conclusion": "需要确认是否为已知表现", "purpose": "查询本地经验", "expectedOutcome": "获得可用于判断的候选信息", "expectationRefs": ["E2"] } }
+{ "operation": "observe", "decision": { "observation": "现场仍与预期不同", "conclusion": "候选知识适用于当前平台", "purpose": "按知识规则复核现场", "expectedOutcome": "形成可追溯的最终判断", "expectationRefs": ["E2"], "knowledgeReview": { "queryId": "knowledge-0001", "conclusion": "APPLICABLE_FOUND", "assessments": [{ "entryId": "K-example-001", "status": "APPLICABLE", "reason": "平台、页面和现象均一致" }] } } }
+{ "operation": "recover", "reason": "重新建立 App 起点", "decision": { "observation": "目标 App 已离开前台", "conclusion": "当前现场无法继续", "purpose": "恢复 App 后继续用例", "expectedOutcome": "目标 App 回到可操作状态", "expectationRefs": [] } }
+{ "operation": "status" }
 ```
 
-每个语义入口成功后都返回不含完整证据清单的轻量 `runtimeState`；`status` 只用于重连或响应不确定，返回完整状态和证据清单，不返回业务 NextWork。`runtimeState.conclusionConstraint` 只表达框架收口边界；超时观察缺口时固定允许 `INCONCLUSIVE`，并在当前知识调查闭合前令 `mayConclude=false`。`understand` 建立可修订业务理解；修订后旧 plan 和起点确认失效。`plan` 基于当前 requirement 生成或修订检查点并维护 revision、turnId 和 planSha；运行态展开活动检查点的必做操作与预期结果。零 requirement 与空计划关闭所有设备入口、起点确认和恢复请求。`inspect` 返回截图原始尺寸、布局可用性、控件树精简元素和技术信号。`step` 自动生成 operationId/authorization/证据绑定，执行一个动作并采集动作后现场，同时计算状态差异和证据冲突。`mark-start` 显式确认最新 PREPARE observation。`investigate` 自动进入调查阶段并负责知识查询与候选评估。`conclude` 接收 Agent 提交的原文与恢复语义复核，框架生成引用和恢复客观事实；完整候选结论预校验后，再以同一 turn 幂等生成 checkpointFinding、verdictReview、result、metrics 和 AgentResult。契约拒绝不会写入半成品事实或切换阶段。
+`caseContext` 放在首次 Runtime 请求中，初始计划至少包含一个步骤；首次用于建立现场的 `observe` 可以不带 decision，之后的 `observe`、`act`、`knowledge`、`recover` 和 `finish` 均随已有业务请求提交 decision，不增加单独调用。知识候选评估放在下一次已有请求的 `decision.knowledgeReview` 中。Runtime 为验证点分配稳定的 `E1`、`E2` 引用，并自动关联 Scene、operationId、时间和计划版本。记录状态统一为 `COMPLETE`、`PARTIAL` 或 `UNAVAILABLE`。
 
-内部 step、turn、operation、知识查询和 phase 草稿由协调器在 `reconcile` 中自动收口，不再交给 Case Agent。`request-recovery` 只接收 Agent 的原因、可选触发类型和枚举事故分类，其余绑定由框架生成；非法分类在控制请求写入前被拒绝。协调器收到 `RECOVER_APP` 后将返回的 `recoveryRequest` 原样传给 `batch.js recover`。若此时已达单用例时限，框架记录 `controlRequestClosed`、删除控制请求并进入超时结论，不再调用设备恢复。
+每次调用输出一个 JSON 对象。状态包括 `SCENE`、`SCENE_CHANGED`、`KNOWLEDGE`、`COMPLETED`、`RESULT_INCOMPLETE`、`REQUEST_INVALID`、`TIME_LIMIT` 和 `TECHNICAL`。Runtime 技术错误、时间限制或未知动作/恢复结果会返回稳定的 `technicalFactRef`。请求文件先被原子认领再解析，因此有效或无效请求都会被消费；Case Agent 不提供 executionDir、deviceId、appId、平台参数或 Adapter 命令。
 
-execution 创建时生成 `agent/contract.json`，并由 Agent request 的 `agentContractPath`、`agentContractSha`、protocol SHA 和 implementation SHA 绑定。该文件是 Case Agent 的字段与命令权威来源；所有入口错误均返回包含 `code`、`entrypoint`、`message`、可选 `fieldPath/expected/allowed` 和 `retryable` 的 JSON。
+Batch 命令的业务或环境失败同样输出一个 `TECHNICAL` JSON 并正常结束进程；只有命令名、选项和值缺失等调用语法错误使用非零退出码。
 
-Case Agent 优先使用 `observationView.elements[].ref` 定位控件；视觉坐标使用相对原始截图的 0..1 值。Facade 将元素 bounds 或归一化坐标转换为平台像素，并自动绑定 basis observation、截图/控件树证据和动作后 observation。平台 adapter 回传真实执行坐标，公共层校验转换并冻结 `coordinateAudit` 与标注现场；动作后观察自动生成 `actionEffect`，只区分可见变化、无可见变化和无法判断。布局层统一解析 HarmonyOS JSON、Android UiAutomator XML 和 iOS XCUI XML；解析失败写入 `layout.diagnostics`。iOS 键盘与坐标空间冲突时只暴露平台动作 `dismissKeyboard` 解除冲突，其他平台不会获得该动作。状态变更动作完成后默认缓冲 500ms 再启动 observation，可用 `MAVT_POST_ACTION_SETTLE_MS=0..5000` 调整；该等待由框架执行，不要求 Agent 提交 `wait`。底层 actionResult 与 observation 仍分别写入 timeline，并确认冻结 platform、`deviceId` 和 App。
+复杂视觉动作请求示例：
 
-`inputText` 对 Agent 始终是一条整串输入命令；iOS adapter 使用当前 active editable element，在单次设备调用内完成有界备选输入并返回 `inputMethod/inputAttempts/inputEffect`。动作调用前由 Facade 传入页面缓冲，设备层为动作声明时长和一次后置观察检查最低剩余时间；不足时以 `CASE_TIME_LIMIT_INSUFFICIENT` 在设备调用前结束该 step。
-
-## 分层
-
-```text
-SKILL / references
-  -> workspace + case import
-  -> environment confirmation + explicit execution request
-  -> batch warm session and recovery
-  -> isolated case Agent
-  -> execution lifecycle and evidence guards
-  -> platform adapter
+```json
+{
+  "operation": "act",
+  "visual": { "gesture": "tap", "point": [0.5, 0.72] },
+  "intent": "打开截图中可见的确认按钮",
+  "decision": { "observation": "截图中显示确认按钮", "conclusion": "需要点击该按钮继续", "purpose": "确认当前设置", "expectedOutcome": "页面显示确认后的状态", "expectationRefs": ["E1"] }
+}
 ```
 
-平台 adapter 只做 probe、运行资源生命周期、observe 和 action，不读取 case 业务内容、不写 timeline、不形成断言。`conclude` 生成 `agent/result.json`，绑定 Agent request、双角色协议、实现、result/metrics 路径与摘要；CLI 随后写入成功 conclude attempt。若入口在 finalize 后、输出记录前中断，`reconcile` 或 commit 会先把 `attempt.current.json` 归档为 execution 已完成的输出中断。batch commit 校验 AgentResult、Recovery 闭环和引用知识快照，确认不存在未封存 attempt 后释放 Runtime，再生成覆盖执行与证据产物的 `artifact-manifest.json`，最后发布绑定该清单 SHA 的 framework completion。commit 完成后由 batch CLI 增量重建当前用例的平台详情、用例详情和工作区首页，并在 `dashboardRefresh` 返回刷新状态；该耗时不进入 execution metrics，刷新失败不改变已提交结果。批次完成时再调用一次 `scripts/render-index.js` 全量重建并校验链接；`scripts/render-context.js` 仅用于定向刷新。报告 reader 先校验 completion 与产物清单，再从 timeline、最新版计划和冻结 operation 投影页面，不创建第二份操作日志；单个 case 数据损坏时只发布该 case 的“报告数据异常”页面，不阻断其他 case 重建，也不改用其他 execution 掩盖错误。
+完成结果：
 
-执行实现摘要和报告实现摘要相互独立：`implementationSha` 只覆盖会影响运行与设备行为的代码；`rendererSha` 覆盖报告 service、报告入口和只读依赖，随 `report-metadata.json` 发布。报告代码升级后可重渲染当前 schema 的已发布 execution，但不能冒充当时的执行实现；旧 schema 直接拒绝。
+```json
+{
+  "verdict": "PASS",
+  "summary": "目标交互与预期一致",
+  "checks": [
+    {
+      "expectationRef": "E1",
+      "status": "PASS",
+      "actual": "页面已显示目标状态",
+      "sceneRefs": ["scene-0003"],
+      "knowledgeRefs": [],
+      "technicalRefs": []
+    }
+  ],
+  "uncertainties": []
+}
+```
+
+CaseResult 必须覆盖当前全部验证点。负向业务结论必须完成相关知识调查；知识支持的检查通过 `knowledgeRefs` 引用已冻结且评估为适用的条目。只有 Runtime 返回的技术事实属于当前 execution、关联当前验证点与 generation、未被后续成功执行恢复且仍直接阻止验证时，BLOCKED check 才通过 `technicalRefs` 引用该事实并免于知识调查；没有显式有效引用时仍按业务阻塞调查。不属于当前协议的 execution 不恢复或转换，需要重新执行用例。

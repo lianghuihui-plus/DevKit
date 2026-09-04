@@ -1,14 +1,13 @@
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { createCaseContract, sourceSha, validateCaseContract } = require('../execution/contracts/case-contract');
-const { validateMetrics, validateResult, withResultSha } = require('../execution/contracts/result-contract');
+const { buildContract } = require('../build-agent-contract');
+const { createCaseContract, validateCaseContract } = require('../execution/contracts/case-contract');
 const { completionPaths, sha256File, validatePublishedCompletion } = require('../lib/completion-contract');
 const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
-const { withPlanSha, validatePlan } = require('../lib/plan-contract');
 const { confirmEnvironment, createExecutionRequest } = require('../lib/run-control');
-const { validateUnderstanding } = require('../lib/understanding-contract');
 
 const TEST_WORKSPACE_TYPE = 'mobile-ai-visual-test-test-workspace';
 const FIXTURE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -56,6 +55,10 @@ function createTestExecutionRequest(root, batchId, binding, targets, options = {
   });
 }
 
+function event(executionId, sequence, time, type, payload = {}) {
+  return { schemaVersion: 1, eventId: `fixture-event-${sequence}`, executionId, sequence, time, type, ...payload };
+}
+
 function createCurrentFixture(root, options = {}) {
   assertTestRoot(root);
   const verdict = options.verdict || 'PASS';
@@ -70,6 +73,7 @@ function createCurrentFixture(root, options = {}) {
     importPath: `/fixtures/${suffix}.txt`,
   });
   validateCaseContract(caseJson);
+
   const caseDir = path.join(root, 'cases', `${suffix}__${caseKey}`);
   const runtimeDir = path.join(caseDir, 'platforms', 'harmony');
   const execDir = path.join(runtimeDir, 'executions', executionId);
@@ -79,150 +83,76 @@ function createCurrentFixture(root, options = {}) {
   fs.writeFileSync(path.join(execDir, 'source.snapshot.md'), sourceText);
   writeJson(path.join(execDir, 'case.snapshot.json'), caseJson);
 
-  const sourceRef = { id: 'src-001', sourceSha: sourceSha(sourceText), lineStart: 1, lineEnd: 1, quote: sourceText.split(/\r?\n/)[0] };
-  const includePreparation = options.includePreparation === true;
-  const understanding = {
-    schemaVersion: 1,
-    revision: 1,
-    summary: `理解 ${verdict} 用例`,
-    startConditions: includePreparation ? [{ id: 'start-001', text: '进入用例目标页面', basis: 'implied', sourceRefs: ['src-001'] }] : [],
-    requirements: [{
-      id: 'req-001', text: '验证当前报告结果', basis: 'explicit', sourceRefs: ['src-001'],
-      requiredInteractions: [], expectedOutcomes: ['当前报告结果符合预期'],
-    }],
-    sourceRefs: [sourceRef],
-    uncertainties: [],
-  };
-  validateUnderstanding(understanding, { sourceText });
-  const plan = withPlanSha({
-    schemaVersion: 1,
-    revision: 1,
-    reason: '建立报告 fixture 检查点',
-    checkpoints: [{ id: 'cp-001', objective: '形成可展示结论', requirementRefs: ['req-001'] }],
-  });
-  validatePlan(plan, { understanding });
-  writeJson(path.join(execDir, 'understanding.json'), understanding);
-  writeJson(path.join(execDir, 'plan.json'), plan);
-
-  const prepareEvidenceRef = 'screenshots/prepare-start.png';
-  const beforeEvidenceRef = 'screenshots/observe-before.png';
-  const evidenceRef = 'screenshots/observe-after.png';
-  const evidence = [
-    ...(includePreparation ? [{ ref: prepareEvidenceRef, executionId, phase: 'case-prepare', usable: true }] : []),
-    ...[beforeEvidenceRef, evidenceRef].map((ref) => ({ ref, executionId, phase: 'case-business', usable: true })),
-  ];
-  fs.mkdirSync(path.join(execDir, 'screenshots'), { recursive: true });
-  fs.mkdirSync(path.join(execDir, 'layouts'), { recursive: true });
-  fs.mkdirSync(path.join(execDir, 'logs'), { recursive: true });
-  fs.mkdirSync(path.join(execDir, 'agent'), { recursive: true });
-  if (includePreparation) fs.writeFileSync(path.join(execDir, prepareEvidenceRef), FIXTURE_PNG);
-  fs.writeFileSync(path.join(execDir, beforeEvidenceRef), FIXTURE_PNG);
-  fs.writeFileSync(path.join(execDir, evidenceRef), FIXTURE_PNG);
-  fs.writeFileSync(path.join(execDir, 'layouts', 'observe-before.json'), '{}\n');
-  if (options.afterLayoutAvailable !== false) fs.writeFileSync(path.join(execDir, 'layouts', 'observe-after.json'), '{}\n');
-  fs.writeFileSync(path.join(execDir, 'logs', 'observe-after-errors.txt'), 'fixture observation diagnostics\n');
-  const needsEvidence = ['PASS', 'FAIL'].includes(verdict);
-  const needsReview = ['FAIL', 'INCONCLUSIVE'].includes(verdict);
-  const verdictBasis = verdict === 'BLOCKED'
-    ? 'TECHNICAL_CONSTRAINT'
-    : verdict === 'INCONCLUSIVE' ? 'INSUFFICIENT_EVIDENCE' : 'DIRECT_EVIDENCE';
-  const findingStatus = verdict === 'PASS'
-    ? 'SATISFIED'
-    : verdict === 'FAIL' ? 'NOT_SATISFIED' : verdict === 'BLOCKED' ? 'BLOCKED' : 'UNRESOLVED';
-  const knowledgeContext = {
-    schemaVersion: 1,
-    understandingRevision: understanding.revision,
-    warmSessionGeneration: 1,
-    stateBoundaryIndex: includePreparation ? 9 : 6,
-    observationRef: evidenceRef,
-    checkpointRef: 'cp-001',
-    requirementRefs: ['req-001'],
-  };
-  const result = withResultSha({
-    schemaVersion: 2,
-    executionId,
-    platform: 'harmony',
-    verdict,
-    executionStatus: verdict === 'BLOCKED' ? 'TECHNICALLY_BLOCKED' : 'COMPLETED',
-    verdictBasis,
-    summary: options.summary || `${verdict} 当前报告结论`,
-    requirementFindings: [{
-      requirementId: 'req-001',
-      status: findingStatus,
-      evidenceRefs: needsEvidence ? [evidenceRef] : [],
-      knowledgeRefs: [],
-      ...(findingStatus === 'UNRESOLVED' ? { reason: '目标状态仍不确定' } : {}),
-    }],
-    uncertainties: options.uncertainties || (verdict === 'INCONCLUSIVE' ? ['目标状态仍不确定'] : []),
-    technicalFailureCode: verdict === 'BLOCKED' ? 'AUTOMATION_CONNECTION_LOST' : null,
-    startedAt: '2026-08-13T10:00:00.000+08:00',
-    endedAt: '2026-08-13T10:00:05.000+08:00',
-  });
-  const verdictReviews = needsReview ? [{
-    executionId, understandingRevision: understanding.revision, planRevision: plan.revision, planSha: plan.planSha,
-    requirementRefs: understanding.requirements.map((item) => item.id), queryRefs: ['query-001'], requestedVerdict: verdict,
-    sourceRecheck: { sourceRefs: ['src-001'], conclusion: '已重新核对原始要求' },
-    currentObservationRefs: [evidenceRef],
-    recoveryAttempt: { performed: false, explanation: '报告 fixture 无需执行恢复动作', evidenceRefs: [] },
-    remainingUncertainties: verdict === 'INCONCLUSIVE' ? ['目标状态仍不确定'] : [],
-  }] : [];
-  const knowledgeQueries = needsReview ? [{ ref: 'query-001', executionId, candidateCount: 0, knowledgeContext }] : [];
-  validateResult(result, {
-    executionId,
-    understanding,
-    plan,
-    evidence,
-    verdictReviews,
-    knowledgeQueries,
-    currentKnowledgeContext: knowledgeContext,
-  });
-  const metrics = {
-    schemaVersion: 2,
-    executionId,
-    verdict,
-    executionStatus: result.executionStatus,
-    elapsedMs: 5000,
-    warmSessionGeneration: 1,
-    warmSessionReused: options.warmSessionReused === true,
-    recoveryCount: options.recoveryCount || 0,
-    timeLimitStopped: false,
-    counts: { actions: 1, observations: includePreparation ? 3 : 2, preparationActions: 0, knowledgeQueries: needsReview ? 1 : 0, knowledgeAssessments: 0, planRevisions: 1 },
-  };
-  validateMetrics(metrics, { executionId });
-  writeJson(path.join(execDir, 'result.json'), result);
-  writeJson(path.join(execDir, 'metrics.json'), metrics);
-
+  const startedAt = '2026-08-13T10:00:00.000+08:00';
+  const endedAt = '2026-08-13T10:00:05.000+08:00';
+  const currentContract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform: 'harmony' });
   const execution = {
-    schemaVersion: 3,
+    schemaVersion: 6,
+    runtime: 'case-runtime',
     executionId,
     batchId: `batch-${suffix}`,
     platform: 'harmony',
-    finalized: true,
-    implementationSha: 'implementation-fixture-0123456789abcdef',
+    runtimeSha: currentContract.runtimeSha,
+    adapterSha: currentContract.adapterSha,
+    caseProtocolSha: currentContract.protocolSha,
+    coordinatorProtocolSha: 'agent-protocol-fixture0002',
     contractSha: caseJson.contractSha,
     batchContractSha: `batch-contract-${'a'.repeat(24)}`,
     executionRequestSha: `execution-request-${'a'.repeat(24)}`,
     interactionPolicy: 'UNATTENDED',
-    warmSessionGeneration: 1,
+    targetBinding: { platform: 'harmony', deviceId: 'fixture-device', appId: 'com.example.fixture', entry: 'EntryAbility' },
+    targetBindingSha: 'target-binding-fixture',
+    warmSessionGeneration: 1 + (options.recoveryCount || 0),
+    warmSessionGenerationStart: 1,
     warmSessionReused: options.warmSessionReused === true,
-    recoveryCount: options.recoveryCount || 0,
-    startedAt: result.startedAt,
-    endedAt: result.endedAt,
+    executionRecoveryCount: options.recoveryCount || 0,
+    batchRecoveryCountAtStart: 0,
+    batchRecoveryCountAtEnd: options.recoveryCount || 0,
+    sourceSha: caseJson.identity.sourceSha,
+    startedAt,
+    endedAt,
+    status: 'FINISHED',
+    lifecycle: 'FINALIZED',
+    finalized: true,
+    executionStatus: 'COMPLETED',
   };
   writeJson(path.join(execDir, 'execution.json'), execution);
-  const authorization = {
-    schemaVersion: 1, source: 'agent-plan', executionId, phase: 'case-business', understandingRevision: 1,
-    planRevision: 1, checkpointId: 'cp-001', purpose: '打开目标并验证结果', requirementRefs: ['req-001'],
-    sourceRefs: ['src-001'], sideEffect: false, authorizationSha: `authorization-${'a'.repeat(24)}`,
-  };
-  const preparationAuthorization = {
-    schemaVersion: 1, source: 'agent-plan', executionId, phase: 'case-prepare', understandingRevision: 1,
-    startConditionId: 'start-001', purpose: '确认并建立用例起点', requirementRefs: [], sourceRefs: ['src-001'],
-    sideEffect: false, authorizationSha: `authorization-${'b'.repeat(24)}`,
-  };
+  writeJson(path.join(execDir, 'binding.snapshot.json'), {
+    schemaVersion: 1,
+    binding: execution.targetBinding,
+    bindingSha: execution.targetBindingSha,
+    batchContractSha: execution.batchContractSha,
+  });
+
+  for (const name of ['screenshots', 'layouts', 'logs', 'scenes', 'operations', 'coordinate-audits', 'knowledge', 'telemetry']) {
+    fs.mkdirSync(path.join(execDir, name), { recursive: true });
+  }
+  const beforeRef = 'screenshots/scene-0001.png';
+  const afterRef = 'screenshots/scene-0002.png';
+  fs.writeFileSync(path.join(execDir, beforeRef), FIXTURE_PNG);
+  fs.writeFileSync(path.join(execDir, afterRef), FIXTURE_PNG);
+  const screenshotSha = sha256File(path.join(execDir, beforeRef));
+  const beforeLayoutRef = 'layouts/scene-0001.json';
+  const afterLayoutRef = options.afterLayoutAvailable === false ? null : 'layouts/scene-0002.json';
+  fs.writeFileSync(path.join(execDir, beforeLayoutRef), '{}\n');
+  if (afterLayoutRef) fs.writeFileSync(path.join(execDir, afterLayoutRef), '{"screen":"after"}\n');
+  fs.writeFileSync(path.join(execDir, 'logs', 'scene-0002-errors.txt'), 'fixture observation diagnostics\n');
+  const app = { appId: execution.targetBinding.appId, inTargetApp: true };
+  const scene = (sceneId, screenshotRef, layoutRef, previousAction = null) => ({
+    schemaVersion: 1,
+    sceneId,
+    generation: execution.warmSessionGeneration,
+    capturedAt: sceneId === 'scene-0001' ? '2026-08-13T10:00:01.000+08:00' : '2026-08-13T10:00:03.000+08:00',
+    screenshot: { ref: screenshotRef, path: path.join(execDir, screenshotRef), sha256: screenshotSha, width: 1, height: 1 },
+    layoutRef,
+    layout: null,
+    app,
+    signals: {}, conflicts: [], elements: [], capabilities: [],
+    visual: { gestures: ['tap'], coordinates: 'normalized-0-to-1' },
+    previousAction,
+  });
   const action = options.action || { type: 'tap', x: 120, y: 240, target: '目标按钮', coordinateSource: 'visual', targetBounds: [80, 210, 160, 270], coordinateEvidence: '操作前截图中的目标按钮' };
-  const afterLayoutAvailable = options.afterLayoutAvailable !== false;
-  const afterTechnicalSignals = options.afterTechnicalSignals || null;
+  const redactedAction = action.type === 'inputText' ? { ...action, text: '[REDACTED]' } : action;
   const coordinateAudit = action.x !== undefined && action.y !== undefined ? {
     schemaVersion: 1,
     source: action.coordinateSource,
@@ -230,77 +160,118 @@ function createCurrentFixture(root, options = {}) {
     requested: { point: { x: Number(action.x), y: Number(action.y) }, bounds: action.targetBounds },
     executed: { point: { x: Number(action.x), y: Number(action.y) } },
     expectedExecuted: { point: { x: Number(action.x), y: Number(action.y) } },
-    screenshot: { ref: beforeEvidenceRef, width: 320, height: 640 },
-    viewport: { width: 320, height: 640 },
+    screenshot: { ref: beforeRef, width: 1, height: 1 },
+    viewport: { width: 1, height: 1 },
     consistency: 'MATCHED',
-    overlayRef: 'coordinate-audits/action-tap.svg',
+    overlayRef: 'coordinate-audits/action-0001.svg',
   } : null;
-  if (coordinateAudit) {
-    fs.mkdirSync(path.join(execDir, 'coordinate-audits'), { recursive: true });
-    fs.writeFileSync(path.join(execDir, coordinateAudit.overlayRef), '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="640"><image href="../screenshots/observe-before.png" width="320" height="640"/><circle cx="120" cy="240" r="12" fill="none" stroke="#2563eb" stroke-width="4"/><path d="M108 240h24M120 228v24" stroke="#ef4444" stroke-width="4"/></svg>');
-  }
-  const actionDeviceResult = action.type === 'inputText' ? {
-    ok: true,
-    inputEffect: { status: 'VERIFIED', expectedText: action.text, actualText: action.text, secureInput: false, attempts: 1 },
-    ...(coordinateAudit ? { executedPoint: coordinateAudit.executed.point } : {}),
-  } : { ok: true, ...(coordinateAudit ? { executedPoint: coordinateAudit.executed.point } : {}) };
-  const timeline = [
-    { schemaVersion: 1, executionId, time: result.startedAt, type: 'caseUnderstood', writer: 'agent', phase: 'UNDERSTAND', understandingRevision: 1, sourceRefs: ['src-001'] },
-    { schemaVersion: 1, executionId, time: result.startedAt, type: 'planRevised', writer: 'agent', phase: 'UNDERSTAND', planRevision: 1, planSha: plan.planSha, reason: plan.reason },
-    ...(includePreparation ? [
-      { schemaVersion: 1, executionId, time: '2026-08-13T10:00:00.100+08:00', type: 'operationStarted', writer: 'runtime-core', phase: 'ESTABLISH_START', operationId: 'prepare-start', kind: 'OBSERVE' },
-      { schemaVersion: 1, executionId, time: '2026-08-13T10:00:00.200+08:00', type: 'observation', writer: 'observe.sh', phase: 'ESTABLISH_START', operationId: 'prepare-start', scope: 'case-prepare', ref: prepareEvidenceRef, sha256: 'c'.repeat(64), usable: true, warmSessionGeneration: 1, observationPurpose: 'ESTABLISH_START', intent: '确认用例起点', expectedOutcome: '目标页面已就绪', artifacts: { screenshot: prepareEvidenceRef, layout: null, logs: [] }, authorization: preparationAuthorization },
-      { schemaVersion: 1, executionId, time: '2026-08-13T10:00:00.300+08:00', type: 'operationCompleted', writer: 'runtime-core', phase: 'ESTABLISH_START', operationId: 'prepare-start', outcome: 'SUCCEEDED' },
-    ] : []),
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:00.500+08:00', type: 'operationStarted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'observe-before', kind: 'OBSERVE' },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:01.000+08:00', type: 'observation', writer: 'observe.sh', phase: 'EXECUTE', operationId: 'observe-before', scope: 'case-business', ref: beforeEvidenceRef, sha256: 'a'.repeat(64), usable: true, warmSessionGeneration: 1, observationPurpose: 'PRE_ACTION', intent: '确认操作前目标位置', expectedOutcome: '目标按钮可见', artifacts: { screenshot: beforeEvidenceRef, layout: 'layouts/observe-before.json', logs: [] }, authorization },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:01.000+08:00', type: 'operationCompleted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'observe-before', outcome: 'SUCCEEDED' },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:01.500+08:00', type: 'operationStarted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'action-tap', kind: 'ACTION' },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:02.000+08:00', type: 'actionResult', writer: 'action.sh', phase: 'EXECUTE', operationId: 'action-tap', scope: 'case-business', ok: true, warmSessionGeneration: 1, requestedAction: action, basisObservationRef: beforeEvidenceRef, authorization, intent: '打开目标内容', expectedOutcome: '页面展示验证结果', deviceResult: actionDeviceResult, ...(coordinateAudit ? { coordinateAudit } : {}) },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:02.000+08:00', type: 'operationCompleted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'action-tap', outcome: 'SUCCEEDED' },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:02.500+08:00', type: 'operationStarted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'observe-after', kind: 'OBSERVE' },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.000+08:00', type: 'observation', writer: 'observe.sh', phase: 'EXECUTE', operationId: 'observe-after', scope: 'case-business', ref: evidenceRef, sha256: 'b'.repeat(64), usable: true, warmSessionGeneration: 1, observationPurpose: 'POST_ACTION', relatedOperationId: 'action-tap', intent: '确认点击后的现场', expectedOutcome: '页面展示验证结果', artifacts: { screenshot: evidenceRef, layout: afterLayoutAvailable ? 'layouts/observe-after.json' : null, logs: ['logs/observe-after-errors.txt'] }, ...(afterTechnicalSignals ? { technicalSignals: afterTechnicalSignals } : {}), authorization },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.000+08:00', type: 'operationCompleted', writer: 'runtime-core', phase: 'EXECUTE', operationId: 'observe-after', outcome: 'SUCCEEDED' },
-    { schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.200+08:00', type: 'checkpointFinding', writer: 'agent', phase: 'EXECUTE', checkpointId: 'cp-001', planRevision: 1, requirementRefs: ['req-001'], evidenceRefs: needsEvidence ? [evidenceRef] : [], finding: `检查点已完成，结果为 ${findingStatus}` },
-    ...(needsReview ? [{ schemaVersion: 1, executionId, time: '2026-08-13T10:00:03.500+08:00', type: 'knowledgeQuery', writer: 'knowledge-query', phase: 'INVESTIGATE', queryId: 'query-001', query: { symptom: verdict, keywords: [] }, knowledgeContext, candidates: [], candidateCount: 0, truncated: false }] : []),
-    ...(needsReview ? [{ schemaVersion: 1, executionId, time: result.endedAt, type: 'verdictReview', writer: 'agent', phase: 'CONCLUDE', ...verdictReviews[0], reason: '已完成疑似失败复核' }] : []),
-    { schemaVersion: 1, executionId, time: result.endedAt, type: 'result', writer: 'runtime-core', phase: 'FINALIZED', resultSha: result.resultSha, verdict },
+  if (coordinateAudit) fs.writeFileSync(path.join(execDir, coordinateAudit.overlayRef), '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>\n');
+  const beforeScene = scene('scene-0001', beforeRef, beforeLayoutRef);
+  const afterScene = scene('scene-0002', afterRef, afterLayoutRef, { operationId: 'action-0001', status: 'SUCCEEDED', action: redactedAction });
+  writeJson(path.join(execDir, 'scenes', 'scene-0001.json'), beforeScene);
+  writeJson(path.join(execDir, 'scenes', 'scene-0002.json'), afterScene);
+
+  const context = {
+    summary: `理解 ${verdict} 用例`,
+    preconditions: options.includePreparation ? ['目标页面可进入'] : [],
+    expectations: [{ id: 'E1', text: '验证当前报告结果' }],
+    initialPlan: ['观察当前页面', '执行必要操作', '检查最终结果'],
+    uncertainties: [],
+  };
+  const decision = {
+    observation: '当前页面显示目标入口', conclusion: '可以执行验证操作',
+    purpose: action.type === 'inputText' ? '输入测试内容' : '打开目标并验证结果',
+    expectedOutcome: '页面展示目标结果', expectationRefs: ['E1'],
+  };
+  const finalDecision = {
+    observation: '操作后已取得目标页面现场', conclusion: `验证结果为 ${verdict}`,
+    purpose: '完成用例并提交结论', expectedOutcome: '最终结果与现场证据关联', expectationRefs: ['E1'],
+  };
+  const events = [
+    event(executionId, 1, startedAt, 'executionStarted', { generation: 1 }),
+    event(executionId, 2, startedAt, 'caseContextRecorded', { contextVersion: 1, reason: 'INITIAL_UNDERSTANDING', caseContext: context }),
+    event(executionId, 3, '2026-08-13T10:00:01.000+08:00', 'sceneObserved', {
+      sceneId: 'scene-0001', generation: 1, operationId: 'observation-0001', purpose: options.includePreparation ? 'INITIAL_SCENE' : 'CURRENT_SCENE',
+      relatedOperationId: null, decisionId: null, screenshotRef: beforeRef, screenshotSha256: screenshotSha, layoutRef: beforeLayoutRef, app,
+    }),
+    event(executionId, 4, '2026-08-13T10:00:01.500+08:00', 'agentDecisionRecorded', {
+      decisionId: 'decision-0001', requestedOperation: 'act', sceneId: 'scene-0001', contextVersion: 1, decision,
+    }),
+    event(executionId, 5, '2026-08-13T10:00:01.600+08:00', 'actionRequested', {
+      operationId: 'action-0001', sceneId: 'scene-0001', action: redactedAction,
+      intent: decision.purpose, expectedOutcome: decision.expectedOutcome, decisionId: 'decision-0001',
+    }),
+    event(executionId, 6, '2026-08-13T10:00:02.000+08:00', 'actionCompleted', {
+      operationId: 'action-0001', sceneId: 'scene-0001', action: redactedAction, ok: true,
+      result: { schemaVersion: 1, type: 'actionResult', platform: 'harmony', action: action.type, ok: true },
+      coordinateAudit, decisionId: 'decision-0001',
+    }),
+    event(executionId, 7, '2026-08-13T10:00:03.000+08:00', 'sceneObserved', {
+      sceneId: 'scene-0002', generation: execution.warmSessionGeneration, operationId: 'observation-0002', purpose: 'POST_ACTION',
+      relatedOperationId: 'action-0001', decisionId: 'decision-0001', screenshotRef: afterRef, screenshotSha256: screenshotSha,
+      layoutRef: afterLayoutRef, app, technicalSignals: options.afterTechnicalSignals || null,
+    }),
+    ...(options.recoveryCount ? [event(executionId, 8, '2026-08-13T10:00:03.200+08:00', 'appRecovered', {
+      operationId: 'recovery-0001', reason: '恢复当前 App', decisionId: null,
+      generationBefore: 1, generationAfter: execution.warmSessionGeneration,
+    })] : []),
   ];
-  fs.writeFileSync(path.join(execDir, 'timeline.jsonl'), `${timeline.map((event) => JSON.stringify(event)).join('\n')}\n`);
-  if (includePreparation) writeJson(path.join(execDir, 'agent', 'operation-prepare-start.json'), { schemaVersion: 2, kind: 'OBSERVE', request: { operationId: 'prepare-start', purpose: 'ESTABLISH_START', intent: '确认用例起点', expectedOutcome: '目标页面已就绪', authorization: preparationAuthorization }, fact: timeline.find((event) => event.operationId === 'prepare-start' && event.type === 'observation') });
-  writeJson(path.join(execDir, 'agent', 'operation-action-tap.json'), { schemaVersion: 2, kind: 'ACTION', request: { operationId: 'action-tap', intent: '打开目标内容', expectedOutcome: '页面展示验证结果', basisObservationRef: beforeEvidenceRef, authorization, action }, fact: timeline.find((event) => event.type === 'actionResult'), deviceResult: actionDeviceResult });
-  writeJson(path.join(execDir, 'agent', 'operation-observe-before.json'), { schemaVersion: 2, kind: 'OBSERVE', request: { operationId: 'observe-before', purpose: 'PRE_ACTION', intent: '确认操作前目标位置', expectedOutcome: '目标按钮可见', authorization }, fact: timeline.find((event) => event.operationId === 'observe-before' && event.type === 'observation') });
-  writeJson(path.join(execDir, 'agent', 'operation-observe-after.json'), { schemaVersion: 2, kind: 'OBSERVE', request: { operationId: 'observe-after', purpose: 'POST_ACTION', relatedOperationId: 'action-tap', intent: '确认点击后的现场', expectedOutcome: '页面展示验证结果', authorization }, fact: timeline.find((event) => event.operationId === 'observe-after' && event.type === 'observation'), deviceResult: { artifacts: { screenshot: evidenceRef, layout: afterLayoutAvailable ? 'layouts/observe-after.json' : null, logs: ['logs/observe-after-errors.txt'] }, ...(afterTechnicalSignals ? { technicalSignals: afterTechnicalSignals } : {}), app: { foregroundApp: 'com.example.fixture', inTargetApp: true } } });
-  if (options.attempts?.length) {
-    fs.writeFileSync(path.join(execDir, 'agent', 'attempts.jsonl'), `${options.attempts.map(JSON.stringify).join('\n')}\n`);
+  let sequence = events.length + 1;
+  if (['FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(verdict)) {
+    events.push(event(executionId, sequence++, '2026-08-13T10:00:03.500+08:00', 'knowledgeQueried', {
+      queryId: 'knowledge-0001', query: '当前结果异常', candidateRefs: [], candidates: [], candidateCount: 0,
+      decisionId: null, sceneId: 'scene-0002', contextVersion: 1, expectationRefs: ['E1'], truncated: false,
+    }));
+    events.push(event(executionId, sequence++, '2026-08-13T10:00:03.600+08:00', 'knowledgeReviewed', {
+      queryId: 'knowledge-0001', conclusion: 'NO_MATCH', assessments: [], automatic: true,
+      decisionId: null, sceneId: 'scene-0002', contextVersion: 1, expectationRefs: ['E1'],
+    }));
   }
-  const paths = completionPaths(execDir);
-  writeJson(paths.agentResult, { schemaVersion: 2, executionId, fixture: true });
-  const artifactManifest = buildExecutionArtifactManifest(execDir, { now: result.endedAt });
-  const completion = {
-    schemaVersion: 2,
-    executionId,
-    batchId: execution.batchId,
-    caseKey,
-    platform: 'harmony',
-    completionSource: 'framework',
-    implementationSha: execution.implementationSha,
-    contractSha: execution.contractSha,
-    batchContractSha: execution.batchContractSha,
-    resultSchemaVersion: 2,
-    metricsSchemaVersion: 2,
+  events.push(event(executionId, sequence++, '2026-08-13T10:00:04.000+08:00', 'agentDecisionRecorded', {
+    decisionId: 'decision-0002', requestedOperation: 'finish', sceneId: 'scene-0002', contextVersion: 1, decision: finalDecision,
+  }));
+
+  const checkStatus = verdict;
+  const needsScene = ['PASS', 'FAIL'].includes(verdict);
+  const result = {
     verdict,
-    executionStatus: result.executionStatus,
-    sessionReleased: true,
-    resultSha256: sha256File(paths.result),
-    metricsSha256: sha256File(paths.metrics),
-    agentResultSha256: sha256File(paths.agentResult),
+    summary: options.summary || `${verdict} 当前报告结论`,
+    checks: [{ expectationRef: 'E1', status: checkStatus, actual: verdict === 'PASS' ? '页面符合预期' : `页面结果为 ${verdict}`, sceneRefs: needsScene ? ['scene-0002'] : [] }],
+    uncertainties: options.uncertainties || (verdict === 'INCONCLUSIVE' ? ['目标状态仍不确定'] : []),
+  };
+  events.push(event(executionId, sequence, endedAt, 'caseFinished', {
+    verdict, checkCount: 1, expectationCount: 1, coveredExpectationRefs: ['E1'], unresolvedSceneRefs: [], decisionId: 'decision-0002',
+  }));
+  fs.writeFileSync(path.join(execDir, 'events.jsonl'), `${events.map((item) => JSON.stringify(item)).join('\n')}\n`);
+  writeJson(path.join(execDir, 'result.json'), result);
+
+  const metrics = {
+    schemaVersion: 3, executionId, verdict, executionStatus: execution.executionStatus, elapsedMs: 5000,
+    totalElapsedMs: 5000, runtimeActiveMs: 3000, adapterActiveMs: 2000, actionDeviceMs: 500,
+    observationCaptureMs: 1000, postActionSettleMs: 500, explicitWaitMs: 0, knowledgeQueryMs: 0,
+    recoveryControlMs: 0, runtimeOverheadMs: 1000, recoveryMs: 0, agentAndSchedulingGapMs: 2000,
+    agentTiming: { firstPreparationMs: 500, stepDecisionMs: 900, conclusionPreparationMs: 500, unclassifiedGapMs: 100, stepDecisionIntervals: [] },
+    invocationCount: 4, invocationErrorCount: 0,
+    warmSessionGenerationStart: 1, warmSessionGenerationEnd: execution.warmSessionGeneration,
+    warmSessionReused: execution.warmSessionReused, executionRecoveryCount: execution.executionRecoveryCount,
+    batchRecoveryCountAtStart: 0, batchRecoveryCountAtEnd: execution.batchRecoveryCountAtEnd, timeLimitStopped: false,
+    counts: { actions: 1, observations: 2, knowledgeQueries: ['FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(verdict) ? 1 : 0, knowledgeReviews: ['FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(verdict) ? 1 : 0, recoveries: options.recoveryCount || 0, agentContinuations: 0, invocationCorrections: 0, caseContextRevisions: 1, agentDecisions: 2, narrativeGaps: 0 },
+    knowledgeUsage: { queryIds: ['FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(verdict) ? ['knowledge-0001'] : [], reviewedQueryIds: ['FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(verdict) ? ['knowledge-0001'] : [], candidateRefs: [], applicableEntryIds: [] },
+  };
+  writeJson(path.join(execDir, 'metrics.json'), metrics);
+  const artifactManifest = buildExecutionArtifactManifest(execDir, { now: endedAt });
+  const paths = completionPaths(execDir);
+  const completion = {
+    schemaVersion: 3, executionId, batchId: execution.batchId, caseKey, platform: 'harmony',
+    completionSource: 'framework', runtimeSha: execution.runtimeSha, adapterSha: execution.adapterSha,
+    contractSha: execution.contractSha, batchContractSha: execution.batchContractSha, metricsSchemaVersion: 3,
+    verdict, executionStatus: execution.executionStatus, runtimeCompleted: true,
+    resultSha256: sha256File(paths.result), metricsSha256: sha256File(paths.metrics),
     artifactManifestSha256: sha256File(paths.artifactManifest),
-    validationSha256: null,
   };
   writeJson(paths.completion, completion);
   validatePublishedCompletion(execDir, completion, { execution, result, metrics, snapshot: caseJson });
-  return { caseDir, runtimeDir, execDir, execution, result, metrics, completion, caseJson };
+  return { caseDir, runtimeDir, execDir, execution, result, metrics, completion, caseJson, artifactManifest };
 }
 
 module.exports = {

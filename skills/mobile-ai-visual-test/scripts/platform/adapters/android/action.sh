@@ -21,6 +21,10 @@ to_y=""
 ms=""
 velocity=""
 duration_ms=""
+interval_ms=""
+capture_out=""
+capture_label=""
+capture_at_ms=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +45,10 @@ while [[ $# -gt 0 ]]; do
     --ms) ms="${2:-}"; shift 2 ;;
     --velocity) velocity="${2:-}"; shift 2 ;;
     --duration-ms) duration_ms="${2:-}"; shift 2 ;;
+    --interval-ms) interval_ms="${2:-}"; shift 2 ;;
+    --capture-out) capture_out="${2:-}"; shift 2 ;;
+    --capture-label) capture_label="${2:-}"; shift 2 ;;
+    --capture-at-ms) capture_at_ms="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
@@ -87,6 +95,32 @@ run_atom() {
   normalize_action "$output" "$action"
 }
 
+attach_during_capture() {
+  node -e '
+const event = JSON.parse(process.argv[1]);
+event.duringActionCapture = { capturedAtMs: Number(process.argv[3]), artifacts: { screenshot: `screenshots/${process.argv[2]}.png` } };
+console.log(JSON.stringify(event, null, 2));
+' "$1" "$capture_label" "$capture_at_ms"
+}
+
+run_captured_long_press() {
+  mkdir -p "$capture_out/screenshots" "$capture_out/logs"
+  local result_file="$capture_out/logs/${capture_label}-action.json"
+  local screenshot_file="$capture_out/screenshots/${capture_label}.png"
+  set +e
+  "$atoms_dir/long-press.sh" "${device_args[@]}" --x "$x" --y "$y" ${duration_ms:+--duration-ms "$duration_ms"} >"$result_file" &
+  local action_pid=$!
+  mavt_sleep_ms "$capture_at_ms"
+  "$atoms_dir/screenshot.sh" "${device_args[@]}" --out "$screenshot_file" >/dev/null
+  local capture_status=$?
+  wait "$action_pid"
+  local action_status=$?
+  set -e
+  [[ $action_status -eq 0 ]] || return "$action_status"
+  [[ $capture_status -eq 0 ]] || return "$capture_status"
+  attach_during_capture "$(normalize_action "$(cat "$result_file")" "$type")"
+}
+
 case "$type" in
   launchApp)
     run_atom "$type" "$atoms_dir/launch-app.sh" "${device_args[@]}" --app "$bundle" ${entry:+--entry "$entry"}
@@ -97,11 +131,20 @@ case "$type" in
   tap)
     run_atom "$type" "$atoms_dir/tap.sh" "${device_args[@]}" --x "$x" --y "$y"
     ;;
+  doubleTap)
+    "$atoms_dir/tap.sh" "${device_args[@]}" --x "$x" --y "$y" >/dev/null
+    mavt_sleep_ms "${interval_ms:-100}"
+    run_atom "$type" "$atoms_dir/tap.sh" "${device_args[@]}" --x "$x" --y "$y"
+    ;;
   toggle)
     run_atom "$type" "$atoms_dir/tap.sh" "${device_args[@]}" --x "$x" --y "$y"
     ;;
   longPress)
-    run_atom "$type" "$atoms_dir/long-press.sh" "${device_args[@]}" --x "$x" --y "$y" ${duration_ms:+--duration-ms "$duration_ms"}
+    if [[ -n "$capture_at_ms" ]]; then
+      run_captured_long_press
+    else
+      run_atom "$type" "$atoms_dir/long-press.sh" "${device_args[@]}" --x "$x" --y "$y" ${duration_ms:+--duration-ms "$duration_ms"}
+    fi
     ;;
   inputText)
     if [[ -n "$x" || -n "$y" ]]; then

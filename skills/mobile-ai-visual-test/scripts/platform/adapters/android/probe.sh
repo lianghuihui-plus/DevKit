@@ -81,7 +81,7 @@ const screen = process.argv[8] || null;
 const dependencies = JSON.parse(process.argv[9] || "[]");
 const hasTarget = adb && !!device;
 const actions = [];
-if (hasTarget) actions.push("launchApp", "restartApp", "tap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait");
+if (hasTarget) actions.push("launchApp", "restartApp", "tap", "doubleTap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait");
 const diagnostics = [];
 function diag(id, level, message, howToFix, check) {
   diagnostics.push({ id, level, message, howToFix, check });

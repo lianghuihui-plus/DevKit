@@ -11,7 +11,7 @@ while [[ $# -gt 0 ]]; do
       cat >&2 <<'EOF'
 probe-env 只探测平台/设备能力，不接收 --app/--entry/--bundle/--ability。
 目标 App 环境确认请在用户确认后写入 environment confirmation binding；
-目标 App 当前前台状态由 case Agent 的 scripts/agent/inspect.js 或 step 后置观察采集。
+目标 App 当前前台状态由 Case Runtime 的 Scene 观察采集。
 EOF
       exit 2
       ;;
