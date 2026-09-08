@@ -42,7 +42,7 @@ function validateCompletionBinding(value, expected) {
 function validatePublishedCompletion(execDir, completion, artifacts) {
   const paths = completionPaths(execDir);
   const { execution, result, metrics, snapshot } = artifacts;
-  if (execution?.schemaVersion !== 6 || !execution.finalized || !result || !metrics || !snapshot) {
+  if (execution?.schemaVersion !== 7 || !execution.finalized || !result || !metrics || !snapshot) {
     throw new Error('Execution completion artifacts are incomplete or unsupported');
   }
   validateCompletionBinding(completion, {

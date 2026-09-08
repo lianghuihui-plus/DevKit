@@ -7,6 +7,7 @@ const { resolveArtifact, sha256File } = require('../lib/execution-evidence');
 const { inspectPng } = require('../lib/image-evidence');
 const { readJson } = require('../lib/execution-lifecycle');
 const { technicalFacts, technicalFactState } = require('../lib/technical-facts');
+const { evidenceRef, readActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { validateCaseResult } = require('./contract');
 const { buildKnowledgeIndex } = require('./knowledge-review');
 const store = require('./store');
@@ -50,7 +51,7 @@ function validateVerdict(result, events) {
 
 function validateExpectationCoverage(execDir, result, events, suppliedExecution = null) {
   const execution = suppliedExecution || readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 6) {
+  if (!execution || execution.schemaVersion !== 7) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
 
@@ -80,9 +81,6 @@ function validateKnowledgeClosure(result, events, execution = null) {
     .filter((event) => event.technicalFactRef)
     .map((event) => [event.technicalFactRef, event]));
   const referencedTechnicalFactRefs = new Set();
-  const closedFor = (expectationRef) => [...reviews.values()].some((review) =>
-    queries.has(review.queryId) && (review.expectationRefs || []).includes(expectationRef));
-
   for (const check of result.checks) {
     const applicable = applicableByExpectation.get(check.expectationRef) || new Set();
     const supplied = new Set(check.knowledgeRefs || []);
@@ -93,12 +91,6 @@ function validateKnowledgeClosure(result, events, execution = null) {
           reason: `知识 ${entryId} 未在该验证点的调查中评估为 APPLICABLE`,
         });
       }
-    }
-    if (check.status === 'PASS' && applicable.size && ![...supplied].some((entryId) => applicable.has(entryId))) {
-      missing.push({
-        field: `checks.${check.expectationRef}.knowledgeRefs`,
-        reason: '该验证点采用了适用知识，PASS 检查需要引用对应知识',
-      });
     }
     const technicalRefs = check.technicalRefs || [];
     const unknownTechnicalRefs = technicalRefs.filter((ref) => !technicalByRef.has(ref));
@@ -127,16 +119,6 @@ function validateKnowledgeClosure(result, events, execution = null) {
         });
       }
     }
-    const hasTechnicalBasis = check.status === 'BLOCKED'
-      && validTechnicalRefs.length > 0;
-    const requiresInvestigation = ['FAIL', 'INCONCLUSIVE'].includes(check.status)
-      || (check.status === 'BLOCKED' && !hasTechnicalBasis);
-    if (requiresInvestigation && !closedFor(check.expectationRef)) {
-      missing.push({
-        field: `checks.${check.expectationRef}.knowledgeInvestigation`,
-        reason: `${check.status} 结论形成前需要完成与该验证点相关的知识调查`,
-      });
-    }
   }
   if (missing.length) {
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult knowledge investigation is incomplete', { missing });
@@ -147,6 +129,42 @@ function validateKnowledgeClosure(result, events, execution = null) {
     applicableEntryIds: [...new Set([...applicableByExpectation.values()].flatMap((items) => [...items]))],
     referencedTechnicalFactRefs: [...referencedTechnicalFactRefs],
   };
+}
+
+function validateSearchAbsence(execDir, result, execution, expectationCoverage = null) {
+  const missing = [];
+  const expectationByRef = new Map((expectationCoverage?.expectations || []).map((item) => [item.id, item]));
+  for (const check of result.checks) {
+    const searchFailure = expectationByRef.get(check.expectationRef)?.verificationKind === 'SEARCH_EXISTENCE'
+      && check.status === 'FAIL';
+    if (searchFailure && check.evidenceBasis?.type !== 'SEARCH_ABSENCE') {
+      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: '搜索型验证点的不存在结论必须引用完整列表覆盖' });
+      continue;
+    }
+    if (check.evidenceBasis?.type !== 'SEARCH_ABSENCE') continue;
+    const ref = check.evidenceBasis.scrollContextRef;
+    const sceneRef = check.evidenceBasis.sceneRef;
+    if (!(check.sceneRefs || []).includes(sceneRef)) {
+      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: `覆盖 Scene ${sceneRef} 未被该检查引用` });
+      continue;
+    }
+    const evidenceScene = readJson(path.join(execDir, 'scenes', `${sceneRef}.json`), null);
+    const context = (evidenceScene?.scrollContexts || []).find((entry) => entry.id === ref);
+    if (!context) {
+      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 不属于 Scene ${sceneRef}` });
+      continue;
+    }
+    if (context.generation !== execution.warmSessionGeneration) {
+      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 不属于当前 generation` });
+    }
+    if (context.trackingStatus !== 'TRACKING' || context.coverage !== 'CONTIGUOUS'
+      || context.reachedStart !== 'CONFIRMED' || context.reachedEnd !== 'CONFIRMED'
+      || context.absenceConclusionSupported !== true) {
+      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 尚不能支持完整列表不存在结论` });
+    }
+  }
+  if (missing.length) throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult list search evidence is incomplete', { missing });
+  return { searchAbsenceRefs: result.checks.map((check) => check.evidenceBasis?.scrollContextRef).filter(Boolean) };
 }
 
 function validateScene(execDir, sceneId, event, files, options = {}) {
@@ -198,7 +216,7 @@ function validateScene(execDir, sceneId, event, files, options = {}) {
 
 function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 6) {
+  if (!execution || execution.schemaVersion !== 7) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
   const result = suppliedResult || readJson(path.join(execDir, 'result.json'), null);
@@ -207,6 +225,7 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   validateVerdict(result, events);
   const expectationCoverage = validateExpectationCoverage(execDir, result, events, execution);
   const knowledgeCoverage = validateKnowledgeClosure(result, events, execution);
+  const searchCoverage = validateSearchAbsence(execDir, result, execution, expectationCoverage);
   const sceneEvents = events.filter((event) => event.type === 'sceneObserved');
   const byScene = new Map(sceneEvents.map((event) => [event.sceneId, event]));
   if (byScene.size !== sceneEvents.length) throw contractError('CASE_RESULT_SCENE_INVALID', 'Scene event identities must be unique');
@@ -219,16 +238,50 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   }
   const files = new Set();
   for (const [sceneId, event] of byScene) validateScene(execDir, sceneId, event, files, options);
-  for (const event of events.filter((entry) => entry.type === 'actionCompleted' && entry.coordinateAudit?.overlayRef)) {
-    const expectedRef = `coordinate-audits/${event.operationId}.svg`;
-    if (event.coordinateAudit.overlayRef !== expectedRef) {
-      throw contractError('ACTION_COORDINATE_AUDIT_INVALID', `coordinate overlay does not match operation ${event.operationId}`);
+  for (const event of events.filter((entry) => entry.type === 'actionCompleted' && entry.spatialEvidenceRef)) {
+    const expectedRef = evidenceRef(event.operationId);
+    if (event.spatialEvidenceRef !== expectedRef) {
+      throw contractError('ACTION_SPATIAL_EVIDENCE_INVALID', `action spatial evidence does not match operation ${event.operationId}`);
     }
-    const overlay = resolveArtifact(execDir, expectedRef);
-    if (!fs.existsSync(overlay) || !fs.statSync(overlay).isFile()) {
-      throw contractError('ACTION_COORDINATE_AUDIT_MISSING', `coordinate overlay is missing: ${expectedRef}`);
+    const evidence = readActionSpatialEvidence(execDir, expectedRef, {
+      operationId: event.operationId,
+      actionType: event.action?.type,
+      verifyContent: options.verifyContent !== false,
+    });
+    if (evidence.screenshot?.ref !== byScene.get(event.sceneId)?.screenshotRef) {
+      throw contractError('ACTION_SPATIAL_EVIDENCE_INVALID', `action spatial evidence does not use the operation's basis Scene: ${event.operationId}`);
     }
     files.add(expectedRef);
+    if (evidence.screenshot?.ref) files.add(evidence.screenshot.ref);
+    if (evidence.annotatedScreenshotRef) files.add(evidence.annotatedScreenshotRef);
+  }
+  // Schema v7 executions created before spatial evidence remain publishable.
+  for (const event of events.filter((entry) => entry.type === 'actionCompleted'
+    && !entry.spatialEvidenceRef && entry.coordinateAudit?.overlayRef)) {
+    const legacyRef = `coordinate-audits/${event.operationId}.svg`;
+    if (event.coordinateAudit.overlayRef !== legacyRef) {
+      throw contractError('ACTION_COORDINATE_AUDIT_INVALID', `coordinate overlay does not match operation ${event.operationId}`);
+    }
+    const overlay = resolveArtifact(execDir, legacyRef);
+    if (!fs.existsSync(overlay) || !fs.statSync(overlay).isFile()) {
+      throw contractError('ACTION_COORDINATE_AUDIT_MISSING', `coordinate overlay is missing: ${legacyRef}`);
+    }
+    files.add(legacyRef);
+  }
+  for (const event of events.filter((entry) => entry.type === 'actionCompleted' && entry.duringActionObservation?.screenshotRef)) {
+    const ref = event.duringActionObservation.screenshotRef;
+    const screenshot = resolveArtifact(execDir, ref);
+    if (!fs.existsSync(screenshot) || !fs.statSync(screenshot).isFile()) {
+      throw contractError('DURING_ACTION_OBSERVATION_MISSING', `during-action screenshot is missing: ${ref}`);
+    }
+    const png = inspectPng(screenshot);
+    if (png.decodeStatus !== 'VALID') throw contractError('DURING_ACTION_OBSERVATION_INVALID', `during-action screenshot is invalid: ${ref}`);
+    if (event.duringActionObservation.screenshotSha256
+      && options.verifyContent !== false
+      && (options.hashFile || sha256File)(screenshot) !== event.duringActionObservation.screenshotSha256) {
+      throw contractError('EXECUTION_ARTIFACT_CHANGED', `during-action screenshot digest changed: ${ref}`);
+    }
+    files.add(ref);
   }
   for (const event of events.filter((entry) => entry.type === 'knowledgeQueried')) {
     if (!Array.isArray(event.candidates) || event.candidateCount !== event.candidates.length
@@ -261,7 +314,7 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   if (unknown.length) throw contractError('CASE_RESULT_SCENE_UNKNOWN', `CaseResult references unknown scenes: ${unknown.join(', ')}`);
   return {
     files: [...files].sort(), events, result, sceneRefs: refs,
-    technicalFacts: technicalFacts(events), expectationCoverage, knowledgeCoverage,
+    technicalFacts: technicalFacts(events), expectationCoverage, knowledgeCoverage, searchCoverage,
   };
 }
 
@@ -280,6 +333,7 @@ module.exports = {
   validateCaseRuntimeEvidenceGraph,
   validateExpectationCoverage,
   validateKnowledgeClosure,
+  validateSearchAbsence,
   validateResultIntegrity,
   validateVerdict,
 };

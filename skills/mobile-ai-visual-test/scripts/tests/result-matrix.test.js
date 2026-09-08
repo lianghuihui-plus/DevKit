@@ -114,6 +114,7 @@ function executeResult(verdict, options = {}) {
   if (verdict !== 'PASS' && !options.technical) {
     const knowledge = run(started.execDir, {
       operation: 'knowledge',
+      basedOnSceneId: observed.scene.sceneId,
       query: `${verdict} 现场是否存在已知解释`,
       decision: {
         observation: '现场没有满足目标验证点',
@@ -136,6 +137,7 @@ function executeResult(verdict, options = {}) {
   };
   const finished = run(started.execDir, {
     operation: 'finish',
+    basedOnSceneId: observed.scene.sceneId,
     decision: {
       observation: check.actual,
       conclusion: `E1 最终状态为 ${verdict}`,

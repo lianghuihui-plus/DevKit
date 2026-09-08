@@ -57,8 +57,8 @@ for (const [verdict, fixture] of fixtures) {
   assert.ok(html.includes('data-shot='));
   assert.ok(html.includes('class="step-expectations"'));
   assert.ok(html.includes('步骤 1'));
-  assert.ok(html.includes('查看坐标标记'));
-  assert.ok(html.includes('coordinate-audits/action-0001.svg'));
+  assert.ok(html.includes('查看动作落点'));
+  assert.ok(html.includes('action-spatial-evidence/action-0001.svg'));
   assert.ok(html.includes('overlaySrc'));
   assert.ok(html.includes('输入类动作已脱敏'));
   assert.strictEqual(html.includes('data-panel="plan-panel"'), false);

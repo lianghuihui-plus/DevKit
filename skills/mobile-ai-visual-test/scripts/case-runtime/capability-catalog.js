@@ -34,6 +34,7 @@ function buildCapabilities(scene, platform) {
         label: labelFor(kind, `“${element.text || element.role || element.id}”`),
         target: element.id,
         ...(kind === 'inputText' ? { input: 'text' } : {}),
+        ...(kind === 'longPress' ? { input: { durationMs: 'positive-integer' } } : {}),
       });
     }
   }
@@ -77,6 +78,9 @@ function elementAction(scene, capability, input, intent, platform) {
     ...coordinateMetadata(scene, 'layout', element.bounds, intent),
     ...(intent ? { reason: intent } : {}),
   };
+  if (capability.kind === 'longPress' && input?.durationMs !== undefined) {
+    base.durationMs = Number(input.durationMs);
+  }
   if (capability.kind === 'inputText') {
     base.text = String(input?.text ?? input ?? '');
     base.mode = input?.mode || 'replace';
@@ -92,15 +96,24 @@ function globalAction(scene, capability, input, intent) {
   const { width, height } = scene.screenshot;
   const x1 = Math.round(width * 0.2); const x2 = Math.round(width * 0.8);
   const y1 = Math.round(height * 0.25); const y2 = Math.round(height * 0.75);
+  const verticalContext = (scene.scrollContexts || []).find((entry) => entry.axis === 'VERTICAL'
+    && entry.trackingStatus === 'TRACKING' && Array.isArray(entry.bounds));
+  const verticalBounds = verticalContext?.bounds || [0, 0, width, height];
+  const verticalCenterX = Math.round((verticalBounds[0] + verticalBounds[2]) / 2);
+  const verticalCenterY = Math.round((verticalBounds[1] + verticalBounds[3]) / 2);
+  const verticalDistance = Math.max(1, Math.min(
+    Number(verticalContext?.suggestedSwipeDistance) || Math.round((verticalBounds[3] - verticalBounds[1]) * 0.5),
+    Math.round((verticalBounds[3] - verticalBounds[1]) * 0.75),
+  ));
   const swipe = {
-    swipeUp: [Math.round(width / 2), y2, Math.round(width / 2), y1],
-    swipeDown: [Math.round(width / 2), y1, Math.round(width / 2), y2],
+    swipeUp: [verticalCenterX, verticalCenterY + Math.round(verticalDistance / 2), verticalCenterX, verticalCenterY - Math.round(verticalDistance / 2)],
+    swipeDown: [verticalCenterX, verticalCenterY - Math.round(verticalDistance / 2), verticalCenterX, verticalCenterY + Math.round(verticalDistance / 2)],
     swipeLeft: [x2, Math.round(height / 2), x1, Math.round(height / 2)],
     swipeRight: [x1, Math.round(height / 2), x2, Math.round(height / 2)],
   }[capability.kind];
   if (swipe) return {
     type: 'swipe', fromX: swipe[0], fromY: swipe[1], toX: swipe[2], toY: swipe[3], velocity: 600,
-    ...coordinateMetadata(scene, 'visual', [0, 0, width, height], intent),
+    ...coordinateMetadata(scene, 'visual', ['swipeUp', 'swipeDown'].includes(capability.kind) ? verticalBounds : [0, 0, width, height], intent),
     ...(intent ? { reason: intent } : {}),
   };
   if (capability.kind === 'inputText') return {
@@ -132,6 +145,7 @@ function visualAction(scene, visual, intent) {
   const at = point(visual.point, 'visual.point');
   return {
     type: visual.gesture, x: at[0], y: at[1],
+    ...(visual.gesture === 'longPress' && visual.durationMs !== undefined ? { durationMs: Number(visual.durationMs) } : {}),
     ...coordinateMetadata(scene, 'visual', [0, 0, width, height], intent), ...(intent ? { reason: intent } : {}),
   };
 }

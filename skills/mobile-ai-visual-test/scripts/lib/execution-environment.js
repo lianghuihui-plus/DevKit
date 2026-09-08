@@ -68,13 +68,6 @@ function normalizeEnvironmentBinding(value, platform) {
     binding.deviceFormFactor = normalized;
   }
   binding.startupDisplayPolicy = normalizeStartupDisplayPolicy(binding.startupDisplayPolicy, { platform });
-  if (platform === 'harmony'
-    && binding.startupDisplayPolicy.orientation !== 'preserve'
-    && binding.startupDisplayPolicy.enforcement === 'required'
-    && binding.startupDisplayPolicy.appliesTo.length > 0
-    && !binding.deviceFormFactor) {
-    throw new Error('ENV_UNCONFIRMED: HarmonyOS form-dependent startup display policy requires deviceFormFactor');
-  }
   return binding;
 }
 

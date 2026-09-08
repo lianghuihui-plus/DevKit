@@ -136,6 +136,17 @@ function stableStateKey(node, path) {
   return sha256(canonicalJson(identity), 'state', 20);
 }
 
+function stableAnchorKey(state) {
+  return sha256(canonicalJson({
+    role: state.role,
+    resourceId: state.resourceId,
+    accessibilityId: state.accessibilityId,
+    name: state.name,
+    label: state.label,
+    text: state.text,
+  }), 'scroll-anchor', 20);
+}
+
 function elementRef(observationRef, stateKey) {
   return sha256(canonicalJson({ observationRef, stateKey }), 'element', 16);
 }
@@ -192,11 +203,18 @@ function projectLayout(parsed, observationRef, screenshot = {}, adapterSignals =
       enabled: attributes.enabled === undefined || boolAttribute(attributes, ['enabled'], true),
       visible,
       focused: boolAttribute(attributes, ['focused', 'hasFocus']),
+      selected: boolAttribute(attributes, ['selected']),
+      scrollable: boolAttribute(attributes, ['scrollable']),
+      resourceId: attributes['resource-id'] || attributes.resourceId || attributes.id || null,
+      accessibilityId: attributes.accessibilityId || null,
+      name: attributes.name || null,
+      label: attributes.label || null,
       secure,
       maskedLength: secure ? secureLength(attributes.value ?? attributes.text) : null,
       systemWindow,
       hasOwnText: Boolean(compactText(safeOwnLabels)),
       depth: path.length - 1,
+      path,
     };
     states.push(state);
     return [...safeOwnLabels, ...childLabels].filter(Boolean);
@@ -237,8 +255,41 @@ function projectLayout(parsed, observationRef, screenshot = {}, adapterSignals =
       stateKey: entry.stateKey,
       depth: entry.depth,
     }));
+  const scrollContainers = states
+    .filter((entry) => entry.scrollable && entry.visible && entry.bounds && /list/i.test(entry.role))
+    .map((container) => {
+      const items = states.filter((entry) => entry.visible && entry.bounds
+        && entry.path.length === container.path.length + 1
+        && container.path.every((part, index) => entry.path[index] === part)
+        && /listitem/i.test(entry.role));
+      if (!items.length) return null;
+      const exteriorSelection = states.filter((entry) => entry.selected
+        && !container.path.every((part, index) => entry.path[index] === part))
+        .map((entry) => ({ role: entry.role, text: entry.text, stateKey: entry.stateKey }));
+      const contextKey = sha256(canonicalJson({
+        stateKey: container.stateKey,
+        bounds: container.bounds,
+        exteriorSelection,
+      }), 'scroll-context', 20);
+      return {
+        containerKey: container.stateKey,
+        contextKey,
+        role: container.role,
+        bounds: container.bounds,
+        axis: 'VERTICAL',
+        items: items.sort((left, right) => left.bounds[1] - right.bounds[1]).map((item) => ({
+          anchorKey: stableAnchorKey(item),
+          textHash: sha256(item.text, 'scroll-text', 16),
+          role: item.role,
+          bounds: item.bounds,
+          boundaryHint: /到底|没有更多|no more|end of (?:list|content)/i.test(item.text) ? 'END' : null,
+        })),
+      };
+    })
+    .filter(Boolean);
   return {
     elements,
+    scrollContainers,
     states,
     signals: {
       keyboard: {

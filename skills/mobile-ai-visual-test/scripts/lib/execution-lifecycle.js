@@ -153,7 +153,7 @@ function listExecutionDirs(workspaceRoot) {
 function findActiveExecutions(workspaceRoot) {
   return listExecutionDirs(workspaceRoot).flatMap((execDir) => {
     const execution = readJson(path.join(execDir, 'execution.json'), null);
-    if (execution?.schemaVersion !== 6 || execution.runtime !== 'case-runtime') return [];
+    if (execution?.schemaVersion !== 7 || execution.runtime !== 'case-runtime') return [];
     const closure = execution && execution.finalized !== true
       ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
       : null;

@@ -17,7 +17,7 @@ const CURRENT_ROOT_FILES = new Set([
   'result.json',
   'metrics.json',
 ]);
-const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge', 'coordinate-audits', 'scenes', 'operations', 'telemetry']);
+const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge', 'action-spatial-evidence', 'coordinate-audits', 'scenes', 'operations', 'telemetry']);
 
 function manifestPath(execDir) {
   return path.join(execDir, MANIFEST_FILE);
@@ -33,7 +33,7 @@ function walkFiles(root, relative = '') {
 
 function executionArtifactFiles(execDir) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 6) {
+  if (execution?.schemaVersion !== 7) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
   return walkFiles(execDir).filter((relative) => {
@@ -45,7 +45,7 @@ function executionArtifactFiles(execDir) {
 }
 
 function requiredArtifactFiles(execution) {
-  if (execution?.schemaVersion !== 6) {
+  if (execution?.schemaVersion !== 7) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
   return [...CURRENT_ROOT_FILES];

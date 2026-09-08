@@ -18,10 +18,10 @@ const CATEGORY_LABELS = Object.freeze({
 const PHASE_LABELS = Object.freeze({
   UNDERSTAND: '理解用例', EXECUTE: '执行与检查', INVESTIGATE: '调查异常', RECOVERY: '恢复现场', CONCLUDE: '形成结论', FINALIZED: '执行完成', FRAMEWORK_CHECK: '框架校验', UNKNOWN: '未归类',
 });
-const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '未执行', RUNNING: '执行中', ABANDONED: '执行已废弃', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布' });
+const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '未执行', RUNNING: '执行中', CANCELLED: '已取消', ABANDONED: '执行已废弃', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布' });
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
-const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', STOPPED_BY_BUDGET: '达到时限后停止', TECHNICALLY_BLOCKED: '技术阻塞', INTERRUPTED: '执行中断' });
-const OUTCOME_LABELS = Object.freeze({ SUCCEEDED: '成功', FAILED: '失败', REJECTED: '已拒绝', UNCERTAIN: '结果待确认', UNKNOWN: '未知' });
+const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', CANCELLED: '已取消', STOPPED_BY_BUDGET: '达到时限后停止', TECHNICALLY_BLOCKED: '技术阻塞', INTERRUPTED: '执行中断' });
+const OUTCOME_LABELS = Object.freeze({ SUCCEEDED: '成功', OBSERVED: '已记录事实', FAILED: '失败', REJECTED: '已拒绝', UNCERTAIN: '结果待确认', UNKNOWN: '未知' });
 const RETRY_LABELS = Object.freeze({ SAFE: '可安全重试', OBSERVE_FIRST: '先观察现场', AGENT_DECIDES: '由 Agent 判断', UNKNOWN: '未知' });
 const OBSERVATION_PURPOSE_LABELS = Object.freeze({ INITIAL_SCENE: '初始现场', CURRENT_SCENE: '当前现场', POST_ACTION: '操作后', AFTER_UNKNOWN_ACTION: '未知动作后复核', POST_RECOVERY: '恢复后', AFTER_UNKNOWN_RECOVERY: '未知恢复后复核' });
 const ACTION_FIELD_LABELS = Object.freeze({
@@ -283,28 +283,31 @@ function coordinateText(value) {
   return '-';
 }
 
-function renderCoordinateAudit(audit, coordinateScreenshot = null) {
-  if (!audit) return '';
-  const overlay = coordinateScreenshot
-    ? `<button type="button" class="coordinate-overlay-button" data-shot="${escapeHtml(coordinateScreenshot.index)}">查看坐标标记</button>`
+function renderSpatialEvidence(evidence, spatialScreenshot = null) {
+  if (!evidence) return '';
+  const screenshot = spatialScreenshot
+    ? `<button type="button" class="spatial-evidence-button" data-shot="${escapeHtml(spatialScreenshot.index)}">查看动作落点</button>`
     : '';
-  return `<div class="coordinate-audit"><div><span>定位来源</span><b>${escapeHtml(label(ACTION_VALUE_LABELS, audit.source, audit.source))}</b></div><div><span>请求坐标</span><b>${escapeHtml(coordinateText(audit.requested))}</b></div><div><span>真实执行坐标</span><b>${escapeHtml(coordinateText(audit.executed))}</b></div><div><span>传递校验</span><b class="audit-matched">一致</b>${overlay}</div></div>`;
+  const actual = evidence.actual
+    ? coordinateText(evidence.actual)
+    : evidence.certainty === 'DISPATCH_ONLY' ? '平台未提供真实触点' : '-';
+  return `<div class="action-spatial-evidence"><div><span>定位来源</span><b>${escapeHtml(label(ACTION_VALUE_LABELS, evidence.source, evidence.source))}</b></div><div><span>请求坐标</span><b>${escapeHtml(coordinateText(evidence.requested))}</b></div><div><span>命令投递坐标</span><b>${escapeHtml(coordinateText(evidence.dispatched))}</b></div><div><span>设备实际触点</span><b>${escapeHtml(actual)}</b>${screenshot}</div></div>`;
 }
 
-function renderActionSpec(action, coordinateAudit = null, coordinateScreenshot = null) {
+function renderActionSpec(action, spatialEvidence = null, spatialScreenshot = null) {
   if (!action) return '';
   const fields = actionDetails(action).map((detail) => {
     const wide = ['坐标证据', '操作原因'].includes(detail.label) || String(detail.value).length > 56;
     return `<div class="action-field${wide ? ' wide' : ''}"><dt>${escapeHtml(detail.label)}</dt><dd>${escapeHtml(detail.value)}</dd></div>`;
   }).join('');
-  return `<div class="action-spec"><div class="action-kind"><span>执行操作</span><b>${escapeHtml(actionLabel(action.type))}</b></div><dl>${fields}</dl></div>${renderCoordinateAudit(coordinateAudit, coordinateScreenshot)}`;
+  return `<div class="action-spec"><div class="action-kind"><span>执行操作</span><b>${escapeHtml(actionLabel(action.type))}</b></div><dl>${fields}</dl></div>${renderSpatialEvidence(spatialEvidence, spatialScreenshot)}`;
 }
 
 function renderEntry(report, entry) {
   const outcome = entry.outcome ? `<span class="outcome ${outcomeClass(entry.outcome.status)}">${escapeHtml(label(OUTCOME_LABELS, entry.outcome.status))}</span>` : '';
   const meta = [formatDisplayTime(entry.time), entry.durationMs !== null ? formatDuration(entry.durationMs) : null, entry.operationId].filter(Boolean);
   const intent = entry.intent || entry.expectedOutcome ? `<dl class="decision-fields">${entry.intent ? `<div><dt>Agent 意图</dt><dd>${escapeHtml(entry.intent)}</dd></div>` : ''}${entry.expectedOutcome ? `<div><dt>预期结果</dt><dd>${escapeHtml(entry.expectedOutcome)}</dd></div>` : ''}</dl>` : '';
-  const action = renderActionSpec(entry.action, entry.coordinateAudit, entry.coordinateScreenshot);
+  const action = renderActionSpec(entry.action, entry.spatialEvidence, entry.spatialEvidenceScreenshot);
   const compare = entry.category === 'ACTION' ? `<div class="shot-pair"><div><small>操作前</small>${renderScreenshot(report, entry.beforeScreenshot, '操作前现场')}</div><div><small>操作后</small>${renderScreenshot(report, entry.afterScreenshot, '操作后现场')}</div></div>` : '';
   const observation = entry.category === 'OBSERVATION' ? `<div class="observation-row">${renderScreenshot(report, entry.screenshot, label(OBSERVATION_PURPOSE_LABELS, entry.observationPurpose, '现场截图'))}<div><b>${entry.observation?.usable ? '证据可用' : '证据不可用'}</b><p>${escapeHtml(entry.observation?.app?.foregroundApp || '未记录前台 App')}</p><p class="muted">${escapeHtml(label(OBSERVATION_PURPOSE_LABELS, entry.observationPurpose, 'Agent 自主观察'))}${entry.relatedOperationId ? ` · 关联操作 ${escapeHtml(entry.relatedOperationId)}` : ''}</p></div></div>` : '';
   const retry = entry.retrySafety ? `<p class="retry"><b>重试策略</b> ${escapeHtml(label(RETRY_LABELS, entry.retrySafety.status))}：${escapeHtml(entry.retrySafety.reason)}</p>` : '';
@@ -381,13 +384,13 @@ function renderNarrativeSteps(report, trace, narrative) {
     const before = sceneShot(trace, step.beforeScene);
     const after = sceneShot(trace, step.afterScene);
     const outcome = step.action?.status || step.recovery?.status || (step.knowledge ? `知识候选 ${step.knowledge.candidateCount}` : step.operation);
-    const coordinateScreenshot = trace.screenshots.find((shot) => shot.operationId === step.action?.operationId && shot.purpose === 'COORDINATE_AUDIT') || null;
+    const spatialScreenshot = trace.screenshots.find((shot) => shot.operationId === step.action?.operationId && shot.purpose === 'ACTION_SPATIAL_EVIDENCE') || null;
     const expectations = step.expectations.length
       ? `<div class="step-expectations">${step.expectations.map((item) => `<div class="${className(item.status)}"><b>${escapeHtml(item.ref)} ${escapeHtml(item.text)}</b><span>${escapeHtml(label(VERDICT_LABELS, item.status, item.status === 'NOT_ASSESSED' ? '未形成最终检查' : item.status))}${item.actual ? ` · ${escapeHtml(item.actual)}` : ''}</span></div>`).join('')}</div>`
       : '';
     const knowledgeDiagnosis = step.knowledge?.candidateCount === 0 && step.knowledge.filterDiagnostics
       ? `<p>未命中诊断：${escapeHtml(knowledgeFilterSummary(step.knowledge.filterDiagnostics))}</p>` : '';
-    return `<article class="narrative-step" id="step-${step.number}"><header><span>${step.number}</span><div><small>${escapeHtml(formatDisplayTime(step.time))} · ${escapeHtml(step.operation)}</small><h3>${escapeHtml(step.purpose || '未记录操作目的')}</h3></div><b>${escapeHtml(outcome || '-')}</b></header>${expectations}<div class="narrative-decision"><div><span>操作前观察</span><p>${escapeHtml(step.observation || '未记录')}</p></div><div><span>当时结论</span><p>${escapeHtml(step.conclusion || '未记录')}</p></div><div><span>期望结果</span><p>${escapeHtml(step.expectedOutcome || '未记录')}</p></div></div>${step.action ? `<div class="narrative-action"><span>实际操作</span>${renderActionSpec(step.action.value, step.action.coordinateAudit, coordinateScreenshot)}</div>` : step.knowledge ? `<div class="narrative-action"><b>知识调查</b> ${escapeHtml(step.knowledge.query)} · ${step.knowledge.candidateCount} 个候选${step.knowledge.review ? `<p>复核结论：${escapeHtml(step.knowledge.review.conclusion)}</p>` : '<p>候选尚未复核</p>'}${knowledgeDiagnosis}</div>` : step.recovery ? `<p class="narrative-action"><b>现场恢复</b> ${escapeHtml(step.recovery.reason)}</p>` : ''}<div class="narrative-shots"><div><small>操作前现场</small>${renderScreenshot(report, before, '操作前现场')}</div><div><small>操作后现场</small>${renderScreenshot(report, after, '操作后现场')}</div></div><div class="post-assessment"><span>操作后的结论</span><p>${escapeHtml(step.postAssessment?.observation || '未单独记录操作后观察')}</p><b>${escapeHtml(step.postAssessment?.conclusion || '由后续步骤继续判断')}</b></div>${step.planUpdate ? `<div class="plan-update"><span>计划调整</span><b>${escapeHtml(step.planUpdate.reason)}</b><p>${escapeHtml(step.planUpdate.next.join('；'))}</p></div>` : ''}</article>`;
+    return `<article class="narrative-step" id="step-${step.number}"><header><span>${step.number}</span><div><small>${escapeHtml(formatDisplayTime(step.time))} · ${escapeHtml(step.operation)}</small><h3>${escapeHtml(step.purpose || '未记录操作目的')}</h3></div><b>${escapeHtml(outcome || '-')}</b></header>${expectations}<div class="narrative-decision"><div><span>操作前观察</span><p>${escapeHtml(step.observation || '未记录')}</p></div><div><span>当时结论</span><p>${escapeHtml(step.conclusion || '未记录')}</p></div><div><span>期望结果</span><p>${escapeHtml(step.expectedOutcome || '未记录')}</p></div></div>${step.action ? `<div class="narrative-action"><span>实际操作</span>${renderActionSpec(step.action.value, step.action.spatialEvidence, spatialScreenshot)}</div>` : step.knowledge ? `<div class="narrative-action"><b>知识调查</b> ${escapeHtml(step.knowledge.query)} · ${step.knowledge.candidateCount} 个候选${step.knowledge.review ? `<p>复核结论：${escapeHtml(step.knowledge.review.conclusion)}</p>` : '<p>候选尚未复核</p>'}${knowledgeDiagnosis}</div>` : step.recovery ? `<p class="narrative-action"><b>现场恢复</b> ${escapeHtml(step.recovery.reason)}</p>` : ''}<div class="narrative-shots"><div><small>操作前现场</small>${renderScreenshot(report, before, '操作前现场')}</div><div><small>操作后现场</small>${renderScreenshot(report, after, '操作后现场')}</div></div><div class="post-assessment"><span>操作后的结论</span><p>${escapeHtml(step.postAssessment?.observation || '未单独记录操作后观察')}</p><b>${escapeHtml(step.postAssessment?.conclusion || '由后续步骤继续判断')}</b></div>${step.planUpdate ? `<div class="plan-update"><span>计划调整</span><b>${escapeHtml(step.planUpdate.reason)}</b><p>${escapeHtml(step.planUpdate.next.join('；'))}</p></div>` : ''}</article>`;
   }).join('')}</div>`;
 }
 
@@ -710,23 +713,22 @@ body{background:#f6f7f8}
 .technical-panel .subpanel{padding-top:0}
 .raw-panel{padding-top:18px}
 
-.coordinate-audit{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin-top:14px;border:1px solid var(--line);border-radius:4px;background:#fafbfc;overflow:hidden}
-.coordinate-audit>div{min-width:0;padding:9px 11px;border-left:1px solid var(--line)}
-.coordinate-audit>div:first-child{border-left:0}
-.coordinate-audit span,.coordinate-audit b{display:block}
-.coordinate-audit span{color:var(--muted);font-size:10px;font-weight:800}
-.coordinate-audit b{margin-top:3px;font-size:12px;overflow-wrap:anywhere}
-.coordinate-audit .audit-matched{color:var(--pass)}
+.action-spatial-evidence{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin-top:14px;border:1px solid var(--line);border-radius:4px;background:#fafbfc;overflow:hidden}
+.action-spatial-evidence>div{min-width:0;padding:9px 11px;border-left:1px solid var(--line)}
+.action-spatial-evidence>div:first-child{border-left:0}
+.action-spatial-evidence span,.action-spatial-evidence b{display:block}
+.action-spatial-evidence span{color:var(--muted);font-size:10px;font-weight:800}
+.action-spatial-evidence b{margin-top:3px;font-size:12px;overflow-wrap:anywhere}
 
-.coordinate-overlay-button{margin-top:7px;padding:4px 7px;border:1px solid var(--accent);border-radius:4px;background:var(--surface);color:var(--accent);cursor:pointer;font-size:11px;font-weight:750}
-.coordinate-overlay-button:hover,.coordinate-overlay-button:focus-visible{background:var(--accent-soft)}
+.spatial-evidence-button{margin-top:7px;padding:4px 7px;border:1px solid var(--accent);border-radius:4px;background:var(--surface);color:var(--accent);cursor:pointer;font-size:11px;font-weight:750}
+.spatial-evidence-button:hover,.spatial-evidence-button:focus-visible{background:var(--accent-soft)}
 
 @media(max-width:900px){.case-outcome{grid-template-columns:1fr}
 .outcome-stats{width:max-content}
 .outcome-stats>div:first-child{padding-left:0;border-left:0}
-.coordinate-audit{grid-template-columns:1fr 1fr}
-.coordinate-audit>div:nth-child(3){border-top:1px solid var(--line);border-left:0}
-.coordinate-audit>div:nth-child(4){border-top:1px solid var(--line)}
+.action-spatial-evidence{grid-template-columns:1fr 1fr}
+.action-spatial-evidence>div:nth-child(3){border-top:1px solid var(--line);border-left:0}
+.action-spatial-evidence>div:nth-child(4){border-top:1px solid var(--line)}
 }
 
 @media(max-width:700px){.page{width:calc(100vw - 20px);margin-bottom:24px}

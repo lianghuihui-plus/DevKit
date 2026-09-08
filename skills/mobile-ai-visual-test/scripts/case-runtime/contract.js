@@ -5,7 +5,8 @@ const { contractError, ensureArray, ensureObject, ensureString } = require('../l
 const VERDICTS = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const RESULT_FIELDS = new Set(['verdict', 'summary', 'checks', 'uncertainties']);
-const CHECK_FIELDS = new Set(['expectationRef', 'status', 'actual', 'sceneRefs', 'knowledgeRefs', 'technicalRefs']);
+const CHECK_FIELDS = new Set(['expectationRef', 'status', 'actual', 'sceneRefs', 'knowledgeRefs', 'technicalRefs', 'evidenceBasis']);
+const VERIFICATION_KINDS = new Set(['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE']);
 
 function validateStringArray(value, label) {
   return ensureArray(value, label, 'CASE_NARRATIVE_INVALID')
@@ -20,8 +21,13 @@ function validateCaseContext(value) {
   if (!expectations.length) throw contractError('CASE_NARRATIVE_INVALID', 'caseContext.expectations must contain at least one item', { fieldPath: 'caseContext.expectations' });
   expectations.forEach((item, index) => {
     if (typeof item === 'string') ensureString(item, `caseContext.expectations[${index}]`, 'CASE_NARRATIVE_INVALID');
-    else ensureString(ensureObject(item, `caseContext.expectations[${index}]`, 'CASE_NARRATIVE_INVALID').text,
-      `caseContext.expectations[${index}].text`, 'CASE_NARRATIVE_INVALID');
+    else {
+      const expectation = ensureObject(item, `caseContext.expectations[${index}]`, 'CASE_NARRATIVE_INVALID');
+      ensureString(expectation.text, `caseContext.expectations[${index}].text`, 'CASE_NARRATIVE_INVALID');
+      if (expectation.verificationKind !== undefined && !VERIFICATION_KINDS.has(expectation.verificationKind)) {
+        throw contractError('CASE_NARRATIVE_INVALID', `caseContext.expectations[${index}].verificationKind is invalid`);
+      }
+    }
   });
   validateStringArray(context.initialPlan, 'caseContext.initialPlan');
   validateStringArray(context.uncertainties, 'caseContext.uncertainties');
@@ -65,6 +71,16 @@ function validateCaseResult(value) {
       throw contractError('CASE_RESULT_INVALID', `checks[${index}].status must be one of ${CHECK_STATUSES.join(', ')}`);
     }
     ensureString(check.actual, `checks[${index}].actual`, 'CASE_RESULT_INVALID');
+    if (check.evidenceBasis !== undefined) {
+      const basis = ensureObject(check.evidenceBasis, `checks[${index}].evidenceBasis`, 'CASE_RESULT_INVALID');
+      ensureOnlyFields(basis, new Set(['type', 'sceneRef', 'scrollContextRef']), `checks[${index}].evidenceBasis`);
+      if (basis.type !== 'SEARCH_ABSENCE') {
+        throw contractError('CASE_RESULT_INVALID', `checks[${index}].evidenceBasis.type must be SEARCH_ABSENCE`);
+      }
+      ensureString(basis.scrollContextRef, `checks[${index}].evidenceBasis.scrollContextRef`, 'CASE_RESULT_INVALID');
+      ensureString(basis.sceneRef, `checks[${index}].evidenceBasis.sceneRef`, 'CASE_RESULT_INVALID');
+      if (check.status === 'PASS') throw contractError('CASE_RESULT_INVALID', `checks[${index}] cannot use SEARCH_ABSENCE with PASS`);
+    }
     if (check.sceneRefs !== undefined) {
       ensureArray(check.sceneRefs, `checks[${index}].sceneRefs`, 'CASE_RESULT_INVALID')
         .forEach((ref, refIndex) => ensureString(ref, `checks[${index}].sceneRefs[${refIndex}]`, 'CASE_RESULT_INVALID'));
@@ -97,12 +113,27 @@ function validateRuntimeRequest(value) {
   if (!['observe', 'act', 'knowledge', 'recover', 'finish', 'status'].includes(operation)) {
     throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'operation must be observe, act, knowledge, recover, finish, or status');
   }
+  if (value.basedOnSceneId !== undefined) {
+    ensureString(value.basedOnSceneId, 'basedOnSceneId', 'CASE_RUNTIME_REQUEST_INVALID');
+  }
   if (operation === 'act') {
     if (!value.capabilityId && !value.visual) {
-      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'act requires capabilityId or visual');
+      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'act requires exactly one of capabilityId or visual');
+    }
+    if (value.capabilityId && value.visual) {
+      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'act capabilityId and visual are mutually exclusive');
     }
     if (value.capabilityId !== undefined) ensureString(value.capabilityId, 'capabilityId', 'CASE_RUNTIME_REQUEST_INVALID');
     if (value.intent !== undefined) ensureString(value.intent, 'intent', 'CASE_RUNTIME_REQUEST_INVALID');
+    if (value.observationPolicy !== undefined) {
+      const policy = ensureObject(value.observationPolicy, 'observationPolicy', 'CASE_RUNTIME_REQUEST_INVALID');
+      const unsupported = Object.keys(policy).filter((field) => field !== 'duringActionAtMs');
+      if (unsupported.length) throw contractError('CASE_RUNTIME_REQUEST_INVALID', `observationPolicy contains unsupported fields: ${unsupported.join(', ')}`);
+      if (!Number.isInteger(Number(policy.duringActionAtMs)) || Number(policy.duringActionAtMs) < 20) {
+        throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'observationPolicy.duringActionAtMs must be an integer greater than or equal to 20');
+      }
+    }
+    if (value.visual?.gesture === 'longPress') validateLongPressTiming(value.visual.durationMs, value.observationPolicy);
   }
   if (operation === 'knowledge') ensureString(value.query, 'query', 'CASE_RUNTIME_REQUEST_INVALID');
   if (operation === 'recover') ensureString(value.reason, 'reason', 'CASE_RUNTIME_REQUEST_INVALID');
@@ -110,11 +141,23 @@ function validateRuntimeRequest(value) {
   return value;
 }
 
+function validateLongPressTiming(durationMs, observationPolicy) {
+  if (!Number.isInteger(Number(durationMs)) || Number(durationMs) <= 0) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'longPress requires a positive integer durationMs');
+  }
+  if (observationPolicy?.duringActionAtMs !== undefined
+    && Number(observationPolicy.duringActionAtMs) >= Number(durationMs)) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'observationPolicy.duringActionAtMs must be less than longPress durationMs');
+  }
+}
+
 module.exports = {
   CHECK_STATUSES,
+  VERIFICATION_KINDS,
   VERDICTS,
   validateCaseContext,
   validateCaseResult,
   validateDecision,
   validateRuntimeRequest,
+  validateLongPressTiming,
 };

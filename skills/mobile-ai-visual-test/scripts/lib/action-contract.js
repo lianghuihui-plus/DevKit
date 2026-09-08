@@ -134,6 +134,9 @@ function describeActionConstraints(platform, scope = 'case-business') {
         ? { coordinates: 'required' }
         : { coordinates: 'forbidden', focusedFieldRequired: true }),
     },
+    longPress: {
+      durationMs: 'required-positive-integer',
+    },
   };
 }
 
@@ -161,6 +164,9 @@ function validateAction(action, options = {}) {
   }
   if (action.durationMs !== undefined && (!Number.isInteger(Number(action.durationMs)) || Number(action.durationMs) <= 0)) {
     fail(context, 'durationMs must be a positive integer', { field: 'durationMs', received: action.durationMs });
+  }
+  if (action.type === 'longPress' && action.durationMs === undefined) {
+    fail(context, 'durationMs is required for longPress', { field: 'durationMs', received: action.durationMs });
   }
   if (action.intervalMs !== undefined && (!Number.isInteger(Number(action.intervalMs)) || Number(action.intervalMs) < 20 || Number(action.intervalMs) > 1000)) {
     fail(context, 'intervalMs must be an integer from 20 to 1000', { field: 'intervalMs', received: action.intervalMs, allowed: ['20-1000'] });

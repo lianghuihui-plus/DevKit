@@ -61,7 +61,6 @@ function technicalFactState(fact, events = [], execution = null, expectationRef 
   }
   const later = events.filter((event) => Number(event.sequence || 0) > Number(fact.sequence || 0));
   const successfulFollowUp = later.some((event) => (event.type === 'sceneObserved' && event.screenshotRef)
-    || (event.type === 'actionCompleted' && event.ok !== false)
     || event.type === 'appRecovered');
   let recovered = false;
   if (fact.type === 'technicalIssue') {

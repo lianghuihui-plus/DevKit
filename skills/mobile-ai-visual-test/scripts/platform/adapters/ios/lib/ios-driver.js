@@ -748,6 +748,24 @@ function resolveSwipeExecution(rest) {
   };
 }
 
+function resolveLongPressExecution(rest) {
+  const x = optionValue(rest, '--x');
+  const y = optionValue(rest, '--y');
+  const durationValue = optionValue(rest, '--duration-ms');
+  const durationMs = Number(durationValue);
+  const coordinateSource = optionValue(rest, '--coordinate-source', 'layout');
+  const captureOut = optionValue(rest, '--capture-out');
+  const captureRef = optionValue(rest, '--capture-ref');
+  const captureAtMs = Number(optionValue(rest, '--capture-at-ms', '0'));
+  if (x === '' || y === '' || durationValue === '' || !Number.isInteger(durationMs) || durationMs <= 0) {
+    throw new Error('longPress 需要 --x、--y 和正整数 --duration-ms');
+  }
+  if (captureOut && (!captureRef || !Number.isInteger(captureAtMs) || captureAtMs < 20 || captureAtMs >= durationMs)) {
+    throw new Error('longPress 过程截图需要有效的 --capture-ref，且 --capture-at-ms 必须位于按压时长内');
+  }
+  return { x, y, durationMs, coordinateSource, captureOut, captureRef, captureAtMs };
+}
+
 async function executablePoint(target, sessionId, point, coordinateSource) {
   const raw = { x: Number(point.x), y: Number(point.y) };
   const rectRequest = appium.request(target.appiumServer, 'GET', `/session/${sessionId}/window/rect`);
@@ -776,6 +794,7 @@ async function runAtom(atom, argv) {
   const rest = parsed.rest;
   const sessionOptions = { autoLaunch: false };
   const swipeExecution = atom === 'swipe' ? resolveSwipeExecution(rest) : null;
+  const longPressExecution = atom === 'long-press' ? resolveLongPressExecution(rest) : null;
   if (atom === 'input-text' && (optionValue(rest, '--x') || optionValue(rest, '--y'))) {
     throw new Error('iOS inputText 只向已聚焦输入框输入文本，不接受 --x/--y；请先调用 tap 聚焦目标输入框。');
   }
@@ -815,9 +834,9 @@ async function runAtom(atom, argv) {
         coordinateSource: fakeCoordinateSource,
       }
       : undefined;
-    const fakeCaptureOut = atom === 'long-press' ? optionValue(rest, '--capture-out') : '';
-    const fakeCaptureRef = atom === 'long-press' ? optionValue(rest, '--capture-ref') : '';
-    const fakeCaptureAtMs = atom === 'long-press' ? Number(optionValue(rest, '--capture-at-ms', '0')) : 0;
+    const fakeCaptureOut = longPressExecution?.captureOut || '';
+    const fakeCaptureRef = longPressExecution?.captureRef || '';
+    const fakeCaptureAtMs = longPressExecution?.captureAtMs || 0;
     if (fakeCaptureOut) {
       ensureDir(path.dirname(fakeCaptureOut));
       fs.writeFileSync(fakeCaptureOut, 'fake-ios-png');
@@ -835,7 +854,7 @@ async function runAtom(atom, argv) {
       stopMethod: atom === 'restart-app' ? 'appium-terminate-app' : undefined,
       launchMethod: atom === 'restart-app' ? 'appium-terminate-activate' : undefined,
       velocity: swipeExecution?.velocity,
-      durationMs: swipeExecution?.durationMs,
+      durationMs: longPressExecution?.durationMs ?? swipeExecution?.durationMs,
       intervalMs: atom === 'double-tap' ? Number(optionValue(rest, '--interval-ms', '100')) : undefined,
       executedPoint: fakePoint,
       duringActionCapture: fakeCaptureOut ? { capturedAtMs: fakeCaptureAtMs, artifacts: { screenshot: fakeCaptureRef } } : undefined,
@@ -950,18 +969,9 @@ async function runAtom(atom, argv) {
     return;
   }
   if (atom === 'long-press') {
-    const x = optionValue(rest, '--x');
-    const y = optionValue(rest, '--y');
-    const durationMs = Number(optionValue(rest, '--duration-ms', '800'));
-    const coordinateSource = optionValue(rest, '--coordinate-source', 'layout');
-    const captureOut = optionValue(rest, '--capture-out');
-    const captureRef = optionValue(rest, '--capture-ref');
-    const captureAtMs = Number(optionValue(rest, '--capture-at-ms', '0'));
-    if (x === '' || y === '') throw new Error('longPress 需要 --x 和 --y');
-    if (captureOut && (!captureRef || !Number.isInteger(captureAtMs) || captureAtMs < 20 || captureAtMs >= durationMs)) {
-      throw new Error('longPress 过程截图需要有效的 --capture-ref，且 --capture-at-ms 必须位于按压时长内');
-    }
+    const { x, y, durationMs, coordinateSource, captureOut, captureRef, captureAtMs } = longPressExecution;
     let executed;
+    let capturedAtMs = null;
     await appium.withSession(target, async ({ sessionId }) => {
       executed = await executablePoint(target, sessionId, { x, y }, coordinateSource);
       if (!captureOut) {
@@ -971,11 +981,13 @@ async function runAtom(atom, argv) {
       }
       ensureDir(path.dirname(captureOut));
       const pointerId = `finger-${Date.now()}`;
+      const pressedAt = Date.now();
       await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerDownAction(executed.x, executed.y, pointerId));
       try {
         await sleep(captureAtMs);
         const shot = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/screenshot`);
         decodeBase64Png(shot.value, captureOut);
+        capturedAtMs = Date.now() - pressedAt;
         await sleep(durationMs - captureAtMs);
         await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerUpAction(pointerId));
       } finally {
@@ -985,7 +997,7 @@ async function runAtom(atom, argv) {
     writeJson(actionResult('longPress', {
       durationMs,
       executedPoint: executed,
-      duringActionCapture: captureOut ? { capturedAtMs: captureAtMs, artifacts: { screenshot: captureRef } } : undefined,
+      duringActionCapture: captureOut ? { capturedAtMs, artifacts: { screenshot: captureRef } } : undefined,
     }));
     return;
   }

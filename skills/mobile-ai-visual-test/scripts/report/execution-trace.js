@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { displayAction } = require('../lib/display-format');
 const { classifyActionEffect } = require('../lib/observation-consistency');
+const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { buildExecutionNarrative } = require('./execution-narrative');
 
 const STATE_CHANGING_ACTIONS = new Set(['tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard']);
@@ -79,9 +80,20 @@ function actionOutcome(event) {
   if (event.type === 'actionOutcomeUnknown') {
     return { status: 'UNCERTAIN', code: event.code || null, summary: event.message || '动作结果未知，已转为现场观察' };
   }
-  return event.ok === false
-    ? { status: 'FAILED', code: event.code || null, summary: event.message || '设备操作失败' }
-    : { status: 'SUCCEEDED', code: null, summary: '设备已完成操作' };
+  if (event.command?.status === 'REJECTED') {
+    return { status: 'FAILED', code: event.command.failureCode || null, summary: event.command.message || '设备命令被拒绝' };
+  }
+  if (event.deviceExecution?.status === 'FAILED') {
+    return { status: 'FAILED', code: event.deviceExecution.failureCode || null, summary: event.deviceExecution.message || '设备操作效果已确认不符合请求' };
+  }
+  if (!event.command) return { status: 'UNCERTAIN', code: null, summary: '旧动作结果缺少分层执行事实' };
+  const effect = event.observedEffect?.status || 'UNKNOWN';
+  const device = event.deviceExecution?.status || 'UNVERIFIED';
+  return {
+    status: 'OBSERVED',
+    code: null,
+    summary: `命令${event.command.status === 'ACCEPTED' ? '已接受' : '状态未知'}；设备执行${device === 'VERIFIED' ? '已验证' : device === 'NOT_EXECUTED' ? '未执行' : '未验证'}；界面${effect === 'CHANGED' ? '已变化' : effect === 'UNCHANGED' ? '未观察到变化' : '变化未知'}`,
+  };
 }
 
 function retrySafety(action, outcome) {
@@ -163,7 +175,14 @@ function buildExecutionTrace(report) {
         operationId: event.operationId, sceneId: event.sceneId || request.sceneId || null, decisionId: event.decisionId || request.decisionId || null,
         title: decision.purpose || request.intent || actionLabel(action?.type), intent: decision.purpose || request.intent || null,
         expectedOutcome: decision.expectedOutcome || request.expectedOutcome || null, summary: outcome.summary,
-        action, decision, outcome, coordinateAudit: sanitizeOperationValue(event.coordinateAudit || null),
+        action, decision, outcome,
+        spatialEvidence: event.spatialEvidenceRef
+          ? sanitizeOperationValue(projectActionSpatialEvidence(report.latest, event.spatialEvidenceRef, {
+            operationId: event.operationId,
+            actionType: action?.type,
+          }))
+          : sanitizeOperationValue(event.coordinateAudit || null),
+        legacyCoordinateAudit: !event.spatialEvidenceRef && event.coordinateAudit ? true : false,
         retrySafety: retrySafety(action, outcome), raw: sanitizeOperationValue({ event, request, decision }),
       });
       continue;
@@ -218,21 +237,22 @@ function buildExecutionTrace(report) {
   for (const action of actions) {
     action.beforeScreenshot = screenshotByRef.get(action.beforeObservation?.ref) || null;
     action.afterScreenshot = screenshotByRef.get(action.afterObservation?.ref) || null;
-    const overlayRef = safeRef(action.coordinateAudit?.overlayRef);
-    if (overlayRef && action.beforeScreenshot?.ref) {
-      const coordinateScreenshot = {
-        id: `coordinate-audit-${action.operationId}`,
+    const annotatedRef = safeRef(action.spatialEvidence?.annotatedScreenshot?.ref
+      || action.spatialEvidence?.overlayRef);
+    if (annotatedRef && (action.spatialEvidence?.annotatedScreenshot || action.beforeScreenshot?.ref)) {
+      const spatialScreenshot = {
+        id: `action-spatial-evidence-${action.operationId}`,
         index: screenshots.length,
-        ref: overlayRef,
-        baseRef: action.beforeScreenshot.ref,
+        ref: annotatedRef,
+        ...(action.legacyCoordinateAudit ? { baseRef: action.beforeScreenshot.ref } : {}),
         operationId: action.operationId,
         time: action.time,
         phase: action.phase,
-        purpose: 'COORDINATE_AUDIT',
-        title: `坐标标记：${action.title}`,
+        purpose: 'ACTION_SPATIAL_EVIDENCE',
+        title: `动作落点：${action.title}`,
       };
-      screenshots.push(coordinateScreenshot);
-      action.coordinateScreenshot = coordinateScreenshot;
+      screenshots.push(spatialScreenshot);
+      action.spatialEvidenceScreenshot = spatialScreenshot;
     }
   }
 

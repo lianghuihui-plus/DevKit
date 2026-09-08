@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   bootstrapBatch,
+  cancelBatch,
   commitCurrentCase,
   initializeBatch,
   loadBatch,
@@ -24,7 +25,7 @@ const { refreshBatchIndex, refreshCommittedCaseReports } = require('./report/rep
 const { recordPublicationAttempt } = require('./report/publication-state');
 
 const SKILL_ROOT = path.resolve(__dirname, '..');
-const COMMANDS = new Set(['init', 'bootstrap', 'reconcile', 'start', 'commit', 'status', 'teardown']);
+const COMMANDS = new Set(['init', 'bootstrap', 'reconcile', 'start', 'commit', 'status', 'cancel', 'teardown']);
 
 function fail(message) {
   const error = new Error(`BATCH_CLI_INVALID: ${message}`);
@@ -133,7 +134,7 @@ function reconcileWithFinalization(common, current) {
 }
 
 function cleanupTerminalPlatformRuntime(common, current, result) {
-  if (!['COMPLETED', 'BLOCKED'].includes(result?.state?.status)) return result;
+  if (!['COMPLETED', 'CANCELLED', 'BLOCKED'].includes(result?.state?.status)) return result;
   try {
     return {
       ...result,
@@ -206,6 +207,7 @@ function execute(options) {
       const loaded = loadBatch(options.workspace, options.batchId, common);
       return { ...loaded, platformRuntime: loadBatchPlatformRuntime(common) };
     }
+    case 'cancel': return cancelBatch({ ...common, reason: options.reason });
     case 'teardown': {
       const loaded = loadBatch(options.workspace, options.batchId, common);
       return {

@@ -10,7 +10,7 @@ const { assertWorkspace } = require('../lib/workspace');
 const runtimeCore = require('./runtime-core');
 const store = require('./store');
 
-const EXECUTION_SCHEMA_VERSION = 6;
+const EXECUTION_SCHEMA_VERSION = 7;
 
 function createBoundClient(execDir) {
   const entry = path.join(execDir, 'runtime-client.js');
@@ -135,6 +135,42 @@ function resumeExecution({ executionDir }) {
   return { executionDir: path.resolve(executionDir), execution, brief, status: runtimeCore.runtimeStatus(executionDir) };
 }
 
+function buildContinuationBrief({ executionDir, reason }) {
+  const execution = store.loadExecution(executionDir, { allowFinalized: true });
+  const initial = readJson(path.join(executionDir, 'case-brief.json'), null);
+  if (!initial) throw contractError('CASE_BRIEF_MISSING', 'case-brief.json is missing');
+  const events = store.events(executionDir);
+  const narrative = require('./narrative-service').narrativeStatus(executionDir);
+  const reviewed = new Set(events.filter((event) => event.type === 'knowledgeReviewed').map((event) => event.queryId));
+  const pendingKnowledgeReviews = events.filter((event) => event.type === 'knowledgeQueried' && !reviewed.has(event.queryId))
+    .map((event) => ({ queryId: event.queryId, candidateCount: event.candidateCount, expectationRefs: event.expectationRefs || [] }));
+  const lastAction = events.filter((event) => ['actionCompleted', 'actionOutcomeUnknown'].includes(event.type)).at(-1) || null;
+  const technical = require('../lib/technical-facts');
+  const unresolvedTechnicalFacts = technical.technicalFacts(events)
+    .filter((event) => technical.technicalFactState(event, events, execution).state === 'VALID')
+    .map((event) => ({ technicalFactRef: event.technicalFactRef, code: event.code, message: event.message, expectationRefs: event.expectationRefs || [] }));
+  return {
+    ...initial,
+    schemaVersion: 2,
+    mode: 'CONTINUATION',
+    continuation: {
+      reason: String(reason || 'native Agent handle is unavailable'),
+      sequence: events.filter((event) => event.type === 'agentContinuation').length + 1,
+    },
+    scene: store.readCurrentScene(executionDir),
+    resumeState: {
+      executionStatus: execution.status,
+      remainingMs: runtimeCore.runtimeStatus(executionDir).remainingMs,
+      caseContext: narrative.caseContext,
+      contextVersion: narrative.contextVersion,
+      latestPlan: narrative.latestPlan,
+      lastAction,
+      unresolvedTechnicalFacts,
+      pendingKnowledgeReviews,
+    },
+  };
+}
+
 function reconcileExecution({ executionDir, runtimeOptions = {} }) {
   store.loadExecution(executionDir, { allowFinalized: true });
   const reconciled = runtimeCore.reconcileExecution(executionDir, runtimeOptions);
@@ -166,4 +202,31 @@ function commitExecution({ executionDir }) {
   return completion;
 }
 
-module.exports = { EXECUTION_SCHEMA_VERSION, commitExecution, createExecution, readCompletion, reconcileExecution, recordAgentContinuation, resumeExecution };
+function cancelExecution({ executionDir, reason, now }) {
+  return store.withRuntimeLock(executionDir, () => {
+    const execution = store.loadExecution(executionDir, { allowFinalized: true });
+    if (execution.status === 'CANCELLED') return { execution, idempotent: true };
+    if (execution.finalized === true) throw contractError('EXECUTION_ALREADY_FINALIZED', 'a completed execution cannot be cancelled');
+    const cancelledAt = now || new Date().toISOString();
+    const cancellationReason = String(reason || 'execution cancelled by user').trim();
+    store.appendEvent(executionDir, 'executionCancelled', {
+      reason: cancellationReason,
+      pendingTransactions: fs.existsSync(store.paths(executionDir).transactions)
+        ? fs.readdirSync(store.paths(executionDir).transactions).filter((name) => name.endsWith('.draft.json')).sort() : [],
+    }, { now: cancelledAt });
+    const cancelled = store.updateExecution(executionDir, {
+      ...execution,
+      status: 'CANCELLED',
+      lifecycle: 'TERMINATED',
+      executionStatus: 'CANCELLED',
+      finalized: true,
+      endedAt: cancelledAt,
+      cancellation: { reason: cancellationReason, cancelledAt },
+    });
+    const runtime = readJson(path.join(executionDir, 'runtime.json'), null);
+    if (runtime) writeJsonAtomic(path.join(executionDir, 'runtime.json'), { ...runtime, status: 'CANCELLED', completedAt: cancelledAt });
+    return { execution: cancelled, idempotent: false };
+  }, { now });
+}
+
+module.exports = { EXECUTION_SCHEMA_VERSION, buildContinuationBrief, cancelExecution, commitExecution, createExecution, readCompletion, reconcileExecution, recordAgentContinuation, resumeExecution };

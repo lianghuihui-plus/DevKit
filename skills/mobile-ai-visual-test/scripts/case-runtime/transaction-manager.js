@@ -7,6 +7,14 @@ const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const store = require('./store');
 
 const ACTION_STATES = Object.freeze(['PREPARED', 'DISPATCHED', 'RESULT_RECORDED', 'OBSERVED', 'COMPLETED']);
+const SENSITIVE_FIELDS = new Set(['text', 'expectedText', 'actualText', 'preInputState']);
+
+function sanitizeTransactionValue(value, field = null) {
+  if (SENSITIVE_FIELDS.has(field)) return '[REDACTED]';
+  if (Array.isArray(value)) return value.map((item) => sanitizeTransactionValue(item));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeTransactionValue(item, key)]));
+}
 
 function actionDraftPath(execDir, operationId) {
   return path.join(store.paths(execDir).transactions, `${operationId}.draft.json`);
@@ -28,7 +36,7 @@ function prepareAction(execDir, value) {
   const target = store.paths(execDir);
   fs.mkdirSync(target.transactions, { recursive: true });
   fs.mkdirSync(target.operations, { recursive: true });
-  const draft = validateActionDraft({ schemaVersion: 1, status: 'PREPARED', ...value });
+  const draft = validateActionDraft(sanitizeTransactionValue({ schemaVersion: 1, status: 'PREPARED', ...value }));
   writeJsonAtomic(actionDraftPath(execDir, draft.operationId), draft);
   return draft;
 }
@@ -43,7 +51,7 @@ function transitionAction(execDir, draft, expected, status, update = {}) {
   if (draft.status !== expected) {
     throw contractError('ACTION_TRANSACTION_STATE_MISMATCH', `action ${draft.operationId} is ${draft.status}, expected ${expected}`);
   }
-  const next = validateActionDraft({ ...draft, ...update, status });
+  const next = validateActionDraft(sanitizeTransactionValue({ ...draft, ...update, status }));
   writeJsonAtomic(actionDraftPath(execDir, draft.operationId), next);
   return next;
 }
@@ -53,7 +61,7 @@ function completeAction(execDir, draft, update = {}) {
   if (draft.status !== 'OBSERVED') {
     throw contractError('ACTION_TRANSACTION_STATE_MISMATCH', `action ${draft.operationId} must be OBSERVED before completion`);
   }
-  const completed = validateActionDraft({ ...draft, ...update, status: 'COMPLETED' });
+  const completed = validateActionDraft(sanitizeTransactionValue({ ...draft, ...update, status: 'COMPLETED' }));
   writeJsonAtomic(actionOperationPath(execDir, draft.operationId), completed);
   const draftPath = actionDraftPath(execDir, draft.operationId);
   if (fs.existsSync(draftPath)) fs.unlinkSync(draftPath);
@@ -67,6 +75,7 @@ module.exports = {
   completeAction,
   prepareAction,
   readAction,
+  sanitizeTransactionValue,
   transitionAction,
   validateActionDraft,
 };

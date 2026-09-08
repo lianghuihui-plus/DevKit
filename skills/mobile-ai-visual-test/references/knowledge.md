@@ -75,7 +75,7 @@ Nemo 缺失属于已知平台差异。独立验证其他分类，并在采用本
 
 候选评估附在下一次已有 Runtime 请求的 `decision.knowledgeReview` 中，不增加新的操作类型或 Agent 往返。Runtime 随后记录 `knowledgeReviewed`；零候选由 Runtime 自动记录 `NO_MATCH`。有候选时用 `APPLICABLE_FOUND`、`NO_APPLICABLE`、`CONFLICTING` 或 `INSUFFICIENT` 总结本次调查；`NO_APPLICABLE` 需要评估全部候选，过期条目不能评估为 `APPLICABLE`。
 
-FAIL、INCONCLUSIVE 和没有有效 `technicalRefs` 的 BLOCKED，在 finish 前应完成与相关验证点关联的知识调查；零命中也是有效调查结果。知识被评估为适用并影响最终检查时，check 使用 `knowledgeRefs` 引用条目 ID。Runtime 只检查调查与引用是否闭合，不替 Agent 修改 verdict。
+只有最终判断实际依赖外部业务规则时才需要知识调查。知识被评估为适用并影响最终检查时，check 使用 `knowledgeRefs` 引用条目 ID；Runtime 校验所有引用均来自当前 execution 已冻结并评估为 `APPLICABLE` 的候选，但不因 verdict 类型机械要求查询。
 
 已发布报告只使用 execution 中冻结的候选和内容快照，不重新读取当前知识文件；实时知识条目后续修改或删除不会改变既有 execution 的依据。
 

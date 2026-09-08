@@ -27,7 +27,7 @@ function currentContract(platform, skillRoot = path.resolve(__dirname, '../..'))
 }
 
 function assertCurrentExecution(execution, options = {}) {
-  if (execution?.schemaVersion !== 6 || execution.runtime !== 'case-runtime') {
+  if (execution?.schemaVersion !== 7 || execution.runtime !== 'case-runtime') {
     const error = new Error('This execution was created by an unsupported protocol and must be run again');
     error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
     throw error;
@@ -122,7 +122,7 @@ function emptyExecutionReport(execDir = null) {
 
 function executionSelection(execDir, workspaceRoot = null) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 6 || execution.runtime !== 'case-runtime') return null;
+  if (execution?.schemaVersion !== 7 || execution.runtime !== 'case-runtime') return null;
   const closure = workspaceRoot && execution.finalized !== true
     ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
     : null;
@@ -130,7 +130,8 @@ function executionSelection(execDir, workspaceRoot = null) {
   const completion = readJson(path.join(execDir, 'completion.json'), null);
   let priority = 1;
   let state = 'ACTIVE';
-  if (closure) { priority = 0; state = 'ABANDONED'; }
+  if (execution.status === 'CANCELLED') { priority = 3; state = 'CANCELLED'; }
+  else if (closure) { priority = 0; state = 'ABANDONED'; }
   else if (execution.finalized !== true) {
     priority = 4;
     state = execution.lifecycle === 'FINALIZING' || fs.existsSync(path.join(execDir, 'transactions', 'finish.draft.json'))
@@ -166,12 +167,14 @@ function readExecutionReport(execDir) {
   report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
 
   if (!report.rawResult) {
+    const cancelled = report.execution.status === 'CANCELLED';
     report.display = {
-      status: report.closure ? 'ABANDONED' : 'RUNNING', verdict: null,
-      executionStatus: report.closure ? 'INTERRUPTED' : 'RUNNING', verdictBasis: null,
-      summary: report.closure ? '执行因实现变更被废弃，未形成测试结论' : '用例执行中',
-      uncertainties: [], failureCode: report.closure?.reasonCode || null, failedStep: null,
-      startedAt: report.execution.startedAt || '', endedAt: '', durationMs: null, stepsSummary: '-', metrics: null,
+      status: cancelled ? 'CANCELLED' : report.closure ? 'ABANDONED' : 'RUNNING', verdict: null,
+      executionStatus: cancelled ? 'CANCELLED' : report.closure ? 'INTERRUPTED' : 'RUNNING', verdictBasis: null,
+      summary: cancelled ? `执行已取消：${report.execution.cancellation?.reason || '用户取消'}`
+        : report.closure ? '执行因实现变更被废弃，未形成测试结论' : '用例执行中',
+      uncertainties: [], failureCode: cancelled ? null : report.closure?.reasonCode || null, failedStep: null,
+      startedAt: report.execution.startedAt || '', endedAt: report.execution.endedAt || '', durationMs: null, stepsSummary: '-', metrics: null,
     };
     return report;
   }

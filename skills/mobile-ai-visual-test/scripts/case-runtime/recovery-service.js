@@ -9,6 +9,8 @@ const { commitRecoveryGeneration } = require('../session/warm-session-store');
 const sceneService = require('./scene-service');
 const store = require('./store');
 const actionTransactions = require('./transaction-manager');
+const { sanitizeAdapterActionResult } = require('../lib/action-result');
+const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 
 function commitGeneration(execDir, execution, nextGeneration, now) {
   const runtime = readJson(path.join(execDir, 'runtime.json'), null);
@@ -49,6 +51,7 @@ function recoverPendingTransactions(execDir, options = {}) {
       continue;
     }
     if (['DISPATCHED', 'RESULT_RECORDED'].includes(draft.status)) {
+      if (draft.deviceResult) draft.deviceResult = sanitizeAdapterActionResult(draft.deviceResult);
       const unknown = draft.status === 'DISPATCHED';
       let technicalFact = store.events(execDir).find((event) => event.type === 'actionOutcomeUnknown' && event.operationId === draft.operationId) || null;
       if (unknown && !technicalFact) {
@@ -61,16 +64,6 @@ function recoverPendingTransactions(execDir, options = {}) {
           decisionId: draft.decisionId || null,
         }, options);
       }
-      if (!unknown && !store.events(execDir).some((event) => event.type === 'actionCompleted' && event.operationId === draft.operationId)) {
-        store.appendEvent(execDir, 'actionCompleted', {
-          operationId: draft.operationId,
-          sceneId: draft.sceneId,
-          action: draft.action,
-          ok: draft.deviceResult?.ok !== false,
-          result: draft.deviceResult,
-          coordinateAudit: draft.coordinateAudit || null,
-        }, options);
-      }
       const observed = sceneService.observe(execDir, {
         ...options,
         purpose: unknown ? 'AFTER_UNKNOWN_ACTION' : 'POST_ACTION',
@@ -78,19 +71,41 @@ function recoverPendingTransactions(execDir, options = {}) {
         preAdapterDelayMs: unknown || draft.action?.type === 'wait' ? 0 : 500,
         previousAction: {
           operationId: draft.operationId,
-          status: unknown ? 'UNKNOWN' : draft.deviceResult?.ok === false ? 'FAILED' : 'SUCCEEDED',
+          lifecycle: { status: unknown ? 'UNKNOWN' : 'COMPLETED' },
           action: draft.action,
-          ...(draft.deviceResult ? { result: draft.deviceResult } : {}),
+          command: unknown ? { status: 'UNKNOWN' } : draft.deviceResult.command,
+          deviceExecution: unknown ? { status: 'UNVERIFIED' } : draft.deviceResult.deviceExecution,
+          ...(!unknown && draft.spatialEvidenceRef ? {
+            spatialEvidence: projectActionSpatialEvidence(execDir, draft.spatialEvidenceRef, {
+              operationId: draft.operationId,
+              actionType: draft.action?.type,
+            }),
+          } : {}),
         },
       });
+      if (!unknown && !store.events(execDir).some((event) => event.type === 'actionCompleted' && event.operationId === draft.operationId)) {
+        store.appendEvent(execDir, 'actionCompleted', {
+          operationId: draft.operationId,
+          sceneId: draft.sceneId,
+          sceneIdAfter: observed.scene.sceneId,
+          action: draft.action,
+          lifecycle: observed.scene.previousAction.lifecycle,
+          command: observed.scene.previousAction.command,
+          deviceExecution: observed.scene.previousAction.deviceExecution,
+          observedEffect: observed.scene.previousAction.observedEffect,
+          duringActionObservation: draft.duringActionObservation || null,
+          spatialEvidenceRef: draft.spatialEvidenceRef || null,
+        }, options);
+      }
       const observedDraft = actionTransactions.transitionAction(execDir, draft, draft.status, 'OBSERVED', {
-        outcome: unknown ? 'UNKNOWN' : draft.deviceResult?.ok === false ? 'FAILED' : 'SUCCEEDED',
+        outcome: unknown ? 'UNKNOWN' : 'RECORDED',
         sceneIdAfter: observed.scene.sceneId,
+        observedEffect: observed.scene.previousAction?.observedEffect || null,
       });
       actionTransactions.completeAction(execDir, observedDraft, { recoveredAfterInterruption: true });
       const response = unknown
         ? { ...observed, action: { operationId: draft.operationId, status: 'UNKNOWN', technicalFactRef: technicalFact.technicalFactRef } }
-        : observed;
+        : { ...observed, action: observed.scene.previousAction };
       recovered.push({ kind: 'action', operationId: draft.operationId, status: unknown ? 'OUTCOME_UNKNOWN' : 'OBSERVED', response });
       continue;
     }
@@ -174,7 +189,7 @@ function recover(execDir, request, options = {}) {
       recovery: { operationId: draft.operationId, status: draft.outcome === 'UNKNOWN' ? 'UNKNOWN' : 'SUCCEEDED', generation: execution.warmSessionGeneration },
     };
   }
-  if (draft.status === 'RESULT_RECORDED' && (draft.result?.ok !== true || draft.result?.coldStartVerified !== true || draft.result?.startupDisplayVerified !== true)) {
+  if (draft.status === 'RESULT_RECORDED' && (draft.result?.coldStartVerified !== true || draft.result?.startupDisplayVerified !== true)) {
     const error = contractError('APP_RECOVERY_FAILED', draft.result?.reason || 'App restart was not verified');
     writeJsonAtomic(path.join(target.operations, `${draft.operationId}.json`), { ...draft, status: 'FAILED' });
     if (!store.events(execDir).some((event) => event.type === 'recoveryFailed' && event.operationId === draft.operationId)) {
@@ -204,7 +219,13 @@ function recover(execDir, request, options = {}) {
     ...options,
     purpose: 'POST_RECOVERY',
     relatedOperationId: draft.operationId,
-    previousAction: { operationId: draft.operationId, status: 'SUCCEEDED', action: { type: 'restartApp' } },
+    previousAction: {
+      operationId: draft.operationId,
+      lifecycle: { status: 'COMPLETED' },
+      action: { type: 'restartApp' },
+      command: { status: 'ACCEPTED' },
+      deviceExecution: { status: 'VERIFIED', verification: 'COLD_START_AND_DISPLAY' },
+    },
     decisionId: draft.decisionId || null,
   });
   draft = { ...draft, status: 'OBSERVED', sceneIdAfter: observed.scene.sceneId };

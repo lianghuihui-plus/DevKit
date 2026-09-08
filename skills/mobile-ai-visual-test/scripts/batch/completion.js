@@ -9,7 +9,7 @@ const caseRuntimeLifecycle = require('../case-runtime/lifecycle');
 
 function releaseRuntime(execDir) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 6) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (execution?.schemaVersion !== 7) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   const runtime = readJson(path.join(execDir, 'runtime.json'), null);
   if (!runtime || runtime.status !== 'COMPLETED') throw contractError('CASE_RUNTIME_INCOMPLETE', 'Case Runtime has not completed');
   return runtime;
@@ -19,7 +19,7 @@ function prepareCurrentCompletion(execDir, options = {}) {
   const committed = caseRuntimeLifecycle.commitExecution({ executionDir: execDir });
   const { execution, result, metrics } = committed;
   const snapshot = readJson(path.join(execDir, 'case.snapshot.json'));
-  if (execution?.schemaVersion !== 6) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (execution?.schemaVersion !== 7) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   if (metrics?.schemaVersion !== 3 || metrics.executionId !== execution.executionId || metrics.verdict !== result.verdict) {
     throw contractError('CASE_RUNTIME_RESULT_BINDING_MISMATCH', 'Case Runtime result and metrics do not match the execution');
   }
@@ -36,7 +36,7 @@ function prepareCurrentCompletion(execDir, options = {}) {
 
 function buildCurrentCompletion(execDir, state, item, prepared, runtime) {
   const { execution, snapshot, result, metrics, validationContext } = prepared;
-  if (execution.schemaVersion !== 6) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (execution.schemaVersion !== 7) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   if (runtime?.status !== 'COMPLETED' || runtime.executionId !== execution.executionId) {
     throw contractError('CASE_RUNTIME_STATE_INVALID', 'completion requires a completed Case Runtime');
   }

@@ -17,7 +17,7 @@ const PLATFORM_LABELS = Object.freeze({ android: 'Android', ios: 'iOS', harmony:
 const STATUS_LABELS = Object.freeze({
   PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', UNKNOWN: '无法判断', INCONCLUSIVE: '无法判断',
   RUNNING: '执行中', ABANDONED: '执行已废弃', PENDING_PUBLICATION: '待发布', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复',
-  NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行',
+  NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行', CANCELLED: '已取消',
 });
 
 function readJson(file, fallback = null) {
@@ -55,11 +55,11 @@ function readLatestExecutionReport(caseDir, options = {}) {
   return selected ? readExecutionReport(selected.execDir) : null;
 }
 
-function runtimeSummary(caseDir, platform) {
-  const report = readLatestExecutionReport(caseDir, { platform });
+function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
+  report = report || readLatestExecutionReport(caseDir, { platform });
   if (!report) return null;
   const display = report.display || {};
-  const currentCase = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
+  currentCase = currentCase || validateCaseContract(readJson(path.join(caseDir, 'case.json')));
   const sourceCurrent = report.execution?.sourceSha === currentCase.identity.sourceSha;
   return {
     platform,
@@ -81,18 +81,30 @@ function runtimeSummary(caseDir, platform) {
   };
 }
 
-function collectCasePlatforms(caseDir) {
+function buildCaseReportProjection(caseDir, suppliedCaseJson = null) {
+  const caseJson = suppliedCaseJson || validateCaseContract(readJson(path.join(caseDir, 'case.json')));
   const platformsDir = path.join(caseDir, 'platforms');
-  if (!fs.existsSync(platformsDir)) return [];
-  return fs.readdirSync(platformsDir).map(normalizePlatform).filter(Boolean)
-    .map((platform) => runtimeSummary(caseDir, platform)).filter(Boolean)
+  const reports = new Map();
+  if (fs.existsSync(platformsDir)) {
+    for (const platform of fs.readdirSync(platformsDir).map(normalizePlatform).filter(Boolean)) {
+      const report = readLatestExecutionReport(caseDir, { platform });
+      if (report) reports.set(platform, report);
+    }
+  }
+  const platforms = [...reports.entries()].map(([platform, report]) => runtimeSummary(caseDir, platform, report, caseJson))
+    .filter(Boolean)
     .sort((left, right) => PLATFORM_ORDER.indexOf(left.platform) - PLATFORM_ORDER.indexOf(right.platform));
+  return { caseDir, caseJson, reports, platforms };
+}
+
+function collectCasePlatforms(caseDir) {
+  return buildCaseReportProjection(caseDir).platforms;
 }
 
 function aggregateStatus(platforms) {
   const statuses = platforms.map((entry) => entry.status);
   if (!statuses.length) return 'NOT_RUN';
-  for (const status of ['FAIL', 'BLOCKED', 'RUNNING', 'FINALIZATION_RECOVERY_REQUIRED', 'PENDING_PUBLICATION', 'NEEDS_RERUN', 'UNKNOWN', 'ABANDONED']) {
+  for (const status of ['FAIL', 'BLOCKED', 'RUNNING', 'FINALIZATION_RECOVERY_REQUIRED', 'PENDING_PUBLICATION', 'CANCELLED', 'NEEDS_RERUN', 'UNKNOWN', 'ABANDONED']) {
     if (statuses.includes(status)) return status === 'FINALIZATION_RECOVERY_REQUIRED' ? 'RUNNING' : status;
   }
   return statuses.every((status) => status === 'PASS') ? 'PASS' : 'NOT_RUN';
@@ -143,8 +155,9 @@ function collectIndexCases(rootDir, options = {}) {
     .map((caseDir) => {
       if (options.errors?.has(caseDir)) return options.errors.get(caseDir);
       try {
-        const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
-        const platforms = collectCasePlatforms(caseDir).map((entry) => ({
+        const projection = options.projections?.get(path.resolve(caseDir)) || buildCaseReportProjection(caseDir);
+        const caseJson = projection.caseJson;
+        const platforms = projection.platforms.map((entry) => ({
           ...entry,
           contextHref: path.relative(rootDir, entry.contextPath).replace(/\\/g, '/'),
         }));
@@ -172,10 +185,10 @@ function collectIndexCases(rootDir, options = {}) {
     });
 }
 
-function rootOverview(caseDir, caseJson) {
+function rootOverview(caseDir, caseJson, suppliedPlatforms = null) {
   const sourceFile = path.join(caseDir, 'source.md');
   const source = fs.existsSync(sourceFile) ? fs.readFileSync(sourceFile, 'utf8') : '';
-  const platforms = collectCasePlatforms(caseDir);
+  const platforms = suppliedPlatforms || collectCasePlatforms(caseDir);
   const rows = platforms.length ? platforms.map((entry) => `<a class="run" href="${escapeHtml(path.relative(caseDir, entry.contextPath).replace(/\\/g, '/'))}"><span>${escapeHtml(PLATFORM_LABELS[entry.platform])}</span><b>${escapeHtml(STATUS_LABELS[entry.status] || entry.status)}</b><small>${escapeHtml(entry.reason || '查看执行详情')} · ${escapeHtml(formatDuration(entry.durationMs))}</small></a>`).join('') : '<p class="empty">该用例尚未执行。</p>';
   const title = `${caseJson.identity.caseNo ? `${caseJson.identity.caseNo} ` : ''}${caseJson.identity.title}`;
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>:root{--line:#dfe4e9;--muted:#66717d;--accent:#176b70}*{box-sizing:border-box}body{margin:0;background:#f5f7f9;color:#20262d;font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(980px,calc(100% - 32px));margin:28px auto 60px}header{padding:20px 0;border-bottom:1px solid var(--line)}h1{margin:0;font-size:24px;letter-spacing:0}header p{margin:5px 0 0;color:var(--muted)}section{padding:22px 0;border-bottom:1px solid var(--line)}h2{margin:0 0 13px;font-size:16px}.source{padding:16px 18px;border:1px solid var(--line);border-left:4px solid var(--accent);background:#fff;overflow-wrap:anywhere}.source>:first-child{margin-top:0}.source>:last-child{margin-bottom:0}.runs{display:grid;gap:8px}.run{display:grid;grid-template-columns:120px 100px minmax(0,1fr);gap:12px;padding:12px 14px;border:1px solid var(--line);background:#fff;color:inherit;text-decoration:none}.run b{color:var(--accent)}.run small{color:var(--muted)}.empty{color:var(--muted)}@media(max-width:640px){.run{grid-template-columns:1fr}.run>*{display:block}}</style></head><body><main><header><h1>${escapeHtml(title)}</h1><p>${escapeHtml(caseJson.identity.caseKey)}</p></header><section><h2>原始用例</h2><div class="source">${renderSourceMarkdown(source)}</div></section><section><h2>平台执行</h2><div class="runs">${rows}</div></section></main></body></html>`;
@@ -202,7 +215,7 @@ function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = 
     contextHtml = renderCurrentContextHtml(snapshot, current);
     executionId = current.execution?.executionId || null;
   } else {
-    const overview = rootOverview(caseDir, caseJson);
+    const overview = rootOverview(caseDir, caseJson, options.platforms || null);
     contextMarkdown = overview.markdown;
     contextHtml = overview.html;
   }
@@ -213,8 +226,9 @@ function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = 
   return { context: path.join(runtimeDir, 'CONTEXT.md'), contextHtml: path.join(runtimeDir, 'CONTEXT.html') };
 }
 
-function writePlatformCaseReports(caseDir, caseJson) {
-  return collectCasePlatforms(caseDir).map((entry) => writeCaseReports(caseDir, caseJson, {}, [], null, {
+function writePlatformCaseReports(caseDir, caseJson, suppliedProjection = null) {
+  const projection = suppliedProjection || buildCaseReportProjection(caseDir, caseJson);
+  return projection.platforms.map((entry) => writeCaseReports(caseDir, caseJson, {}, [], projection.reports.get(entry.platform), {
     platform: entry.platform, skipRootOverview: true,
   }));
 }
@@ -230,14 +244,17 @@ function renderIndexForRoot(rootDir) {
   ensureWorkspaceCaseNumbers(rootDir);
   const casesDir = path.join(rootDir, 'cases');
   const errors = new Map();
+  const projections = new Map();
   if (fs.existsSync(casesDir)) {
     for (const name of fs.readdirSync(casesDir)) {
       const caseDir = path.join(casesDir, name);
       if (!fs.statSync(caseDir).isDirectory()) continue;
       try {
         const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
-        writePlatformCaseReports(caseDir, caseJson);
-        writeCaseReports(caseDir, caseJson);
+        const projection = buildCaseReportProjection(caseDir, caseJson);
+        projections.set(path.resolve(caseDir), projection);
+        writePlatformCaseReports(caseDir, caseJson, projection);
+        writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: projection.platforms });
       } catch (error) {
         const item = reportErrorModel(rootDir, caseDir, error);
         publishReportError(caseDir, item);
@@ -245,7 +262,7 @@ function renderIndexForRoot(rootDir) {
       }
     }
   }
-  const cases = collectIndexCases(rootDir, { errors, publishErrors: true });
+  const cases = collectIndexCases(rootDir, { errors, projections, publishErrors: true });
   assertIndexLinks(rootDir, cases);
   return renderIndexArtifacts(rootDir, cases);
 }
@@ -253,7 +270,22 @@ function renderIndexForRoot(rootDir) {
 function refreshBatchIndex(rootDir, targetCaseDirs) {
   ensureWorkspaceCaseNumbers(rootDir);
   const targets = new Set(targetCaseDirs.map((caseDir) => path.resolve(caseDir)));
-  const cases = collectIndexCases(rootDir);
+  const errors = new Map();
+  const projections = new Map();
+  for (const caseDir of targets) {
+    try {
+      const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
+      const projection = buildCaseReportProjection(caseDir, caseJson);
+      projections.set(path.resolve(caseDir), projection);
+      writePlatformCaseReports(caseDir, caseJson, projection);
+      writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: projection.platforms });
+    } catch (error) {
+      const item = reportErrorModel(rootDir, caseDir, error);
+      publishReportError(caseDir, item);
+      errors.set(caseDir, item);
+    }
+  }
+  const cases = collectIndexCases(rootDir, { errors, projections, publishErrors: true });
   const selected = cases.filter((item) => targets.has(path.resolve(item.caseDir)));
   if (selected.length !== targets.size || selected.some((item) => item.status === 'REPORT_ERROR')) {
     const error = new Error('batch target reports are incomplete');
@@ -268,16 +300,19 @@ function refreshCommittedCaseReports(caseDir, platform) {
   const rootDir = caseRootFromCaseDir(caseDir);
   ensureWorkspaceCaseNumbers(rootDir);
   let itemError = null;
+  const projections = new Map();
   try {
     const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
-    writeCaseReports(caseDir, caseJson, {}, [], null, { platform, skipRootOverview: true });
-    writeCaseReports(caseDir, caseJson);
+    const projection = buildCaseReportProjection(caseDir, caseJson);
+    projections.set(path.resolve(caseDir), projection);
+    writeCaseReports(caseDir, caseJson, {}, [], projection.reports.get(platform), { platform, skipRootOverview: true });
+    writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: projection.platforms });
   } catch (error) {
     itemError = reportErrorModel(rootDir, caseDir, error);
     publishReportError(caseDir, itemError);
   }
   const errors = itemError ? new Map([[caseDir, itemError]]) : new Map();
-  const cases = collectIndexCases(rootDir, { errors });
+  const cases = collectIndexCases(rootDir, { errors, projections });
   assertIndexLinks(rootDir, cases);
   const indexHtml = renderIndexArtifacts(rootDir, cases);
   return {
@@ -303,6 +338,7 @@ function rebuildCaseDerivedArtifacts(caseDir, { refreshIndex = true, scope = 'al
 module.exports = {
   caseRootFromCaseDir,
   caseRuntimeDir,
+  buildCaseReportProjection,
   collectIndexCases,
   normalizePlatform,
   readLatestExecutionReport,

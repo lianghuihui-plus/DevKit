@@ -72,6 +72,7 @@ function completeCase(started, index) {
   assert.strictEqual(observed.status, 'SCENE');
   const finished = run(started.execDir, {
     operation: 'finish',
+    basedOnSceneId: observed.scene.sceneId,
     decision: {
       observation: '目标页面可见', conclusion: '验证点已满足', purpose: '提交最终结论',
       expectedOutcome: '结果与当前 Scene 关联', expectationRefs: ['E1'],

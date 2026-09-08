@@ -72,12 +72,12 @@ fi
 
 normalize_action() {
   node -e '
-const event = JSON.parse(process.argv[1]);
-event.action = process.argv[2];
-event.device = { ...(event.device || {}), id: process.argv[3] || null };
-event.app = { ...(event.app || {}), appId: process.argv[4] || null };
+const { normalizeAdapterActionResult } = require(process.argv[5]);
+const event = normalizeAdapterActionResult(JSON.parse(process.argv[1]), {
+  action: process.argv[2], deviceId: process.argv[3], appId: process.argv[4], platform: "android", transport: "ADB_INPUT",
+});
 console.log(JSON.stringify(event, null, 2));
-' "$1" "$2" "$device" "$bundle"
+' "$1" "$2" "$device" "$bundle" "$script_dir/../../../lib/action-result.js"
 }
 
 run_atom() {
@@ -100,25 +100,29 @@ attach_during_capture() {
 const event = JSON.parse(process.argv[1]);
 event.duringActionCapture = { capturedAtMs: Number(process.argv[3]), artifacts: { screenshot: `screenshots/${process.argv[2]}.png` } };
 console.log(JSON.stringify(event, null, 2));
-' "$1" "$capture_label" "$capture_at_ms"
+' "$1" "$capture_label" "${2:-$capture_at_ms}"
 }
 
 run_captured_long_press() {
   mkdir -p "$capture_out/screenshots" "$capture_out/logs"
   local result_file="$capture_out/logs/${capture_label}-action.json"
   local screenshot_file="$capture_out/screenshots/${capture_label}.png"
+  local action_started_ms
+  local captured_at_ms
+  action_started_ms="$(node -e 'process.stdout.write(String(Date.now()))')"
   set +e
   "$atoms_dir/long-press.sh" "${device_args[@]}" --x "$x" --y "$y" ${duration_ms:+--duration-ms "$duration_ms"} >"$result_file" &
   local action_pid=$!
   mavt_sleep_ms "$capture_at_ms"
   "$atoms_dir/screenshot.sh" "${device_args[@]}" --out "$screenshot_file" >/dev/null
   local capture_status=$?
+  captured_at_ms="$(( $(node -e 'process.stdout.write(String(Date.now()))') - action_started_ms ))"
   wait "$action_pid"
   local action_status=$?
   set -e
   [[ $action_status -eq 0 ]] || return "$action_status"
   [[ $capture_status -eq 0 ]] || return "$capture_status"
-  attach_during_capture "$(normalize_action "$(cat "$result_file")" "$type")"
+  attach_during_capture "$(normalize_action "$(cat "$result_file")" "$type")" "$captured_at_ms"
 }
 
 case "$type" in

@@ -14,13 +14,14 @@ const TIME_LIMIT_MS = 30 * 60 * 1000;
 function runtimeStatus(execDir) {
   const execution = store.loadExecution(execDir, { allowFinalized: true });
   return {
-    status: execution.finalized ? 'COMPLETED' : 'READY',
+    status: execution.status === 'CANCELLED' ? 'CANCELLED' : execution.finalized ? 'COMPLETED' : 'READY',
     executionId: execution.executionId,
     generation: execution.warmSessionGeneration,
     remainingMs: Math.max(0, TIME_LIMIT_MS - (Date.now() - Date.parse(execution.startedAt))),
     scene: store.readCurrentScene(execDir),
     narrative: narrativeService.narrativeStatus(execDir),
-    ...(execution.finalized ? { verdict: require('../lib/execution-lifecycle').readJson(store.paths(execDir).result, null)?.verdict || null } : {}),
+    ...(execution.finalized && execution.status !== 'CANCELLED'
+      ? { verdict: require('../lib/execution-lifecycle').readJson(store.paths(execDir).result, null)?.verdict || null } : {}),
   };
 }
 
@@ -36,6 +37,41 @@ function timeBudget(execDir, execution, now, context = {}) {
     expectationRefs,
   }, { now });
   return { exhausted: true, remainingMs: 0, technicalFactRef: fact.technicalFactRef };
+}
+
+function assertSceneBasis(execDir, request) {
+  if (!['act', 'knowledge', 'recover', 'finish'].includes(request.operation)) return;
+  const scene = store.readCurrentScene(execDir);
+  if (!scene) return;
+  if (!request.basedOnSceneId) {
+    const error = new Error(`${request.operation} requires basedOnSceneId from the Scene used for this decision`);
+    error.code = 'CASE_RUNTIME_REQUEST_INVALID';
+    throw error;
+  }
+  if (request.basedOnSceneId !== scene.sceneId) {
+    const error = new Error(`request is based on ${request.basedOnSceneId}, but the current Scene is ${scene.sceneId}`);
+    error.code = 'CASE_RUNTIME_SCENE_STALE';
+    throw error;
+  }
+}
+
+function recoveryBarrier(execDir, recoveredTransactions, pendingFinish) {
+  const visibleRecoveries = recoveredTransactions.filter((item) => item.status !== 'NOT_SENT');
+  if (!visibleRecoveries.length && !pendingFinish) return null;
+  const execution = store.loadExecution(execDir, { allowFinalized: true });
+  return {
+    status: 'RECOVERY_APPLIED',
+    executionId: execution.executionId,
+    executionStatus: execution.status,
+    requiresReassessment: execution.finalized !== true,
+    recoveredTransactions: visibleRecoveries.map((item) => ({
+      kind: item.kind,
+      operationId: item.operationId,
+      status: item.status,
+    })),
+    ...(pendingFinish ? { recoveredFinish: { status: pendingFinish.status, verdict: pendingFinish.verdict || null } } : {}),
+    scene: store.readCurrentScene(execDir),
+  };
 }
 
 function execute(execDir, request, options = {}) {
@@ -65,16 +101,19 @@ function execute(execDir, request, options = {}) {
     response = store.withRuntimeLock(execDir, () => {
       store.loadExecution(execDir, { allowFinalized: true });
       const recoveredTransactions = require('./recovery-service').recoverPendingTransactions(execDir, { ...options, allowFinalized: true });
+      const pendingFinish = resultService.resumePendingFinish(execDir, { ...options, openInvocation: invocation });
       if (request.operation === 'status') {
-        resultService.resumePendingFinish(execDir, { ...options, openInvocation: invocation });
         return runtimeStatus(execDir);
       }
+      const barrier = recoveryBarrier(execDir, recoveredTransactions, pendingFinish);
+      if (barrier) return barrier;
       const latestExecution = store.loadExecution(execDir, { allowFinalized: true });
       if (latestExecution.finalized) {
         return request.operation === 'finish'
           ? resultService.finish(execDir, request.result, { ...options, openInvocation: invocation })
           : runtimeStatus(execDir);
       }
+      assertSceneBasis(execDir, request);
       narrative = narrativeService.recordRequestNarrative(execDir, request, options);
       if (request.operation === 'finish') {
         return resultService.finish(execDir, request.result, { ...options, openInvocation: invocation, narrative });
@@ -123,7 +162,22 @@ function execute(execDir, request, options = {}) {
       };
     }, options);
   } catch (error) {
-    response = error.code === 'CASE_RESULT_INCOMPLETE'
+    const requestInvalid = error.code === 'CASE_RUNTIME_REQUEST_INVALID' || error.code === 'ACTION_CONTRACT_INVALID';
+    response = requestInvalid
+      ? {
+        status: 'REQUEST_INVALID',
+        code: error.code,
+        message: error.message,
+        scene: store.readCurrentScene(execDir),
+      }
+      : error.code === 'CASE_RUNTIME_SCENE_STALE'
+      ? {
+        status: 'SCENE_CHANGED',
+        code: error.code,
+        message: error.message,
+        scene: store.readCurrentScene(execDir),
+      }
+      : error.code === 'CASE_RESULT_INCOMPLETE'
       ? {
         status: 'RESULT_INCOMPLETE',
         code: error.code,
@@ -154,4 +208,4 @@ function reconcileExecution(execDir, options = {}) {
   }, options);
 }
 
-module.exports = { TIME_LIMIT_MS, execute, reconcileExecution, runtimeStatus, timeBudget };
+module.exports = { TIME_LIMIT_MS, assertSceneBasis, execute, reconcileExecution, recoveryBarrier, runtimeStatus, timeBudget };

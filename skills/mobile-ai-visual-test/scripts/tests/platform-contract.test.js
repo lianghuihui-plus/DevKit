@@ -27,6 +27,7 @@ const {
   restartTimeoutMs,
   run: runDeviceAdapter,
 } = require('../batch/device-session');
+const { classifyRuntimeDisplay, startupDisplayRequirement } = require('../lib/startup-display');
 
 const platforms = ['harmony', 'android', 'ios'];
 const commonActions = ['launchApp', 'restartApp', 'tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait'];
@@ -41,11 +42,13 @@ for (const platform of platforms) {
   assert.deepStrictEqual(constraints.inputText.modes, ['replace', 'append'], `${platform}: input modes`);
 
   const waitResult = JSON.parse(run(`./scripts/platform/adapters/${platform}/action.sh`, ['--device', `${platform}-device`, '--app', `com.example.${platform}`, '--type', 'wait', '--ms', '0']));
-  assert.strictEqual(waitResult.schemaVersion, 1, `${platform}: action result schema`);
+  assert.strictEqual(waitResult.schemaVersion, 2, `${platform}: action result schema`);
   assert.strictEqual(waitResult.type, 'actionResult', `${platform}: action result type`);
   assert.strictEqual(waitResult.platform, platform, `${platform}: action result platform`);
   assert.strictEqual(waitResult.action, 'wait', `${platform}: wait action`);
-  assert.strictEqual(waitResult.ok, true, `${platform}: wait result`);
+  assert.strictEqual(waitResult.command.status, 'ACCEPTED', `${platform}: wait command result`);
+  assert.strictEqual(waitResult.deviceExecution.status, 'UNVERIFIED', `${platform}: wait device result`);
+  assert.strictEqual(Object.hasOwn(waitResult, 'ok'), false, `${platform}: action result must not expose ambiguous ok`);
   assert.strictEqual(waitResult.device.id, `${platform}-device`, `${platform}: action result device binding`);
   assert.strictEqual(waitResult.app.appId, `com.example.${platform}`, `${platform}: action result App binding`);
   assert.match(waitResult.time, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/, `${platform}: local timestamp`);
@@ -67,7 +70,68 @@ for (const platform of platforms) {
     assert.strictEqual(result.status, expectedStatus, `${platform}: ${script} rejects unknown arguments`);
     assert.match(result.stderr, /未知参数|不支持的动作/, `${platform}: ${script} explains unknown argument`);
   }
+
+  const missingLongPressDuration = runAllowFailure(`./scripts/platform/adapters/${platform}/action.sh`, [
+    '--device', `${platform}-device`, '--app', `com.example.${platform}`, '--type', 'longPress', '--x', '120', '--y', '240',
+  ], { env: { ...process.env, MAVT_IOS_FAKE: '1' } });
+  assert.strictEqual(missingLongPressDuration.status, platform === 'ios' ? 1 : 2, `${platform}: longPress duration is required before dispatch`);
+  assert.match(missingLongPressDuration.stderr || missingLongPressDuration.stdout, /durationMs|duration-ms/, `${platform}: missing longPress duration is explained`);
+  if (platform === 'ios') {
+    const rejected = JSON.parse(missingLongPressDuration.stdout);
+    assert.strictEqual(rejected.command.status, 'REJECTED');
+    assert.strictEqual(rejected.deviceExecution.status, 'NOT_EXECUTED');
+  }
 }
+
+const fakeHdcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-harmony-long-press-'));
+const fakeHdcLog = path.join(fakeHdcDir, 'hdc-args.txt');
+const fakeHdc = path.join(fakeHdcDir, 'hdc');
+fs.writeFileSync(fakeHdc, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$MAVT_HDC_ARGS_OUT"\n');
+fs.chmodSync(fakeHdc, 0o755);
+const harmonyLongPress = JSON.parse(run('./scripts/platform/adapters/harmony/action.sh', [
+  '--device', 'harmony-device', '--app', 'com.example.harmony', '--type', 'longPress',
+  '--x', '120', '--y', '240', '--duration-ms', '25',
+], { env: { ...process.env, PATH: `${fakeHdcDir}:${process.env.PATH}`, MAVT_HDC_ARGS_OUT: fakeHdcLog } }));
+assert.deepStrictEqual(fs.readFileSync(fakeHdcLog, 'utf8').trim().split('\n'), [
+  '-t', 'harmony-device', 'shell', 'uinput', '-T', '-m', '120', '240', '119', '240', '-k', '0', '25',
+]);
+assert.strictEqual(harmonyLongPress.durationMs, 25);
+assert.strictEqual(harmonyLongPress.command.status, 'ACCEPTED');
+assert.strictEqual(harmonyLongPress.command.transport, 'HDC_UINPUT');
+assert.ok(Number.isInteger(harmonyLongPress.command.elapsedMs));
+assert.strictEqual(harmonyLongPress.timing.requestedDurationMs, 25);
+assert.strictEqual(harmonyLongPress.timing.dispatchElapsedMs, harmonyLongPress.command.elapsedMs);
+assert.ok(harmonyLongPress.timing.completionBarrierWaitMs >= 0);
+assert.ok(harmonyLongPress.timing.adapterElapsedMs >= 25);
+assert.strictEqual(harmonyLongPress.deviceExecution.verification, 'REQUEST_ECHO');
+assert.deepStrictEqual(harmonyLongPress.deviceExecution.dispatchedPoint, { x: 120, y: 240 });
+run('./scripts/platform/adapters/harmony/atoms/long-press.sh', [
+  '--device', 'harmony-device', '--x', '120', '--y', '240', '--duration-ms', '1025',
+], { env: { ...process.env, PATH: `${fakeHdcDir}:${process.env.PATH}`, MAVT_HDC_ARGS_OUT: fakeHdcLog } });
+assert.deepStrictEqual(fs.readFileSync(fakeHdcLog, 'utf8').trim().split('\n'), [
+  '-t', 'harmony-device', 'shell', 'uinput', '-T', '-m', '120', '240', '119', '240', '-k', '25', '1000',
+]);
+run('./scripts/platform/adapters/harmony/atoms/long-press.sh', [
+  '--device', 'harmony-device', '--x', '0', '--y', '240', '--duration-ms', '1',
+], { env: { ...process.env, PATH: `${fakeHdcDir}:${process.env.PATH}`, MAVT_HDC_ARGS_OUT: fakeHdcLog } });
+assert.deepStrictEqual(fs.readFileSync(fakeHdcLog, 'utf8').trim().split('\n'), [
+  '-t', 'harmony-device', 'shell', 'uinput', '-T', '-m', '0', '240', '1', '240', '-k', '0', '1',
+]);
+const harmonyVelocityAlias = runAllowFailure('./scripts/platform/adapters/harmony/atoms/long-press.sh', [
+  '--x', '120', '--y', '240', '--velocity', '5000',
+]);
+assert.strictEqual(harmonyVelocityAlias.status, 2);
+assert.match(harmonyVelocityAlias.stderr, /未知参数/);
+const harmonyFractionalDuration = runAllowFailure('./scripts/platform/adapters/harmony/atoms/long-press.sh', [
+  '--x', '120', '--y', '240', '--duration-ms', '2.5',
+]);
+assert.strictEqual(harmonyFractionalDuration.status, 2);
+assert.match(harmonyFractionalDuration.stderr, /正整数/);
+const harmonyExcessiveDuration = runAllowFailure('./scripts/platform/adapters/harmony/atoms/long-press.sh', [
+  '--x', '120', '--y', '240', '--duration-ms', '61001',
+]);
+assert.strictEqual(harmonyExcessiveDuration.status, 2);
+assert.match(harmonyExcessiveDuration.stderr, /61000/);
 
 assert.strictEqual(describeActionConstraints('harmony').inputText.coordinates, 'required');
 assert.strictEqual(describeActionConstraints('android').inputText.coordinates, 'forbidden');
@@ -91,14 +155,27 @@ assert.throws(() => validateActionExecution({
   type: 'restartApp', reason: 'business navigation',
 }, { platform: 'harmony', scope: 'case-business' }), /restartApp is not allowed for case-business/);
 
+assert.deepStrictEqual(classifyRuntimeDisplay(2232, 1008), {
+  displayClass: 'PHONE_LIKE', width: 2232, height: 1008, aspectRatio: 2.2143, threshold: 1.7,
+});
+assert.strictEqual(classifyRuntimeDisplay(1008, 2232).displayClass, 'PHONE_LIKE');
+assert.strictEqual(classifyRuntimeDisplay(1600, 1200).displayClass, 'TABLET_LIKE');
+assert.strictEqual(classifyRuntimeDisplay(0, 1200).displayClass, 'UNKNOWN');
+assert.strictEqual(startupDisplayRequirement(undefined, 'triplefold', {
+  platform: 'harmony', runtimeDisplayClass: 'PHONE_LIKE',
+}).reason, 'RUNTIME_DISPLAY_PHONE_LIKE');
+assert.strictEqual(startupDisplayRequirement(undefined, 'phone', {
+  platform: 'harmony', runtimeDisplayClass: 'TABLET_LIKE',
+}).reason, 'RUNTIME_DISPLAY_TABLET_LIKE');
+
 const androidRestartWithoutDisplay = normalizeRestartResult({
-  ok: true, coldStartVerified: true, platform: 'android',
+  command: { status: 'ACCEPTED' }, coldStartVerified: true, platform: 'android',
 }, { platform: 'android' });
 assert.strictEqual(androidRestartWithoutDisplay.coldStartVerified, true);
 assert.strictEqual(androidRestartWithoutDisplay.startupDisplayVerified, true);
 assert.strictEqual(androidRestartWithoutDisplay.startupDisplayValidation.reason, 'POLICY_PRESERVE');
 const androidRestartWithSkippedDisplay = normalizeRestartResult({
-  ok: true,
+  command: { status: 'ACCEPTED' },
   coldStartVerified: true,
   platform: 'android',
   startupDisplay: {
@@ -107,9 +184,9 @@ const androidRestartWithSkippedDisplay = normalizeRestartResult({
   },
 }, { platform: 'android' });
 assert.strictEqual(androidRestartWithSkippedDisplay.startupDisplayVerified, true);
-assert.strictEqual(normalizeRestartResult({ ok: true, platform: 'android' }, { platform: 'android' }).coldStartVerified, false);
+assert.strictEqual(normalizeRestartResult({ command: { status: 'ACCEPTED' }, platform: 'android' }, { platform: 'android' }).coldStartVerified, false);
 assert.strictEqual(normalizeRestartResult({
-  ok: true, coldStartVerified: true, platform: 'harmony',
+  command: { status: 'ACCEPTED' }, coldStartVerified: true, platform: 'harmony',
 }, { platform: 'harmony', deviceFormFactor: 'phone' }).startupDisplayVerified, false);
 
 assert.throws(() => normalizeEnvironmentBinding({
@@ -155,7 +232,7 @@ try {
     return {
       status: 0,
       stderr: '',
-      stdout: JSON.stringify({ ok: true, coldStartVerified: true, platform: 'ios' }),
+      stdout: JSON.stringify({ command: { status: 'ACCEPTED' }, coldStartVerified: true, platform: 'ios' }),
     };
   };
   const restart = restartApp({ binding: {
@@ -227,11 +304,10 @@ const iosLayoutTap = JSON.parse(run('./scripts/platform/adapters/ios/action.sh',
   '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'tap',
   '--x', '120', '--y', '240', '--coordinate-source', 'layout',
 ], { env: { ...process.env, MAVT_IOS_FAKE: '1' } }));
-assert.deepStrictEqual(iosLayoutTap.executedPoint, {
+assert.deepStrictEqual(iosLayoutTap.deviceExecution.dispatchedPoint, {
   x: 120,
   y: 240,
   viewport: { width: 393, height: 852 },
-  coordinateSource: 'layout',
 });
 
 const iosDoubleTap = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
@@ -240,17 +316,18 @@ const iosDoubleTap = JSON.parse(run('./scripts/platform/adapters/ios/action.sh',
 ], { env: { ...process.env, MAVT_IOS_FAKE: '1' } }));
 assert.strictEqual(iosDoubleTap.action, 'doubleTap');
 assert.strictEqual(iosDoubleTap.intervalMs, 90);
-assert.strictEqual(iosDoubleTap.executedPoint.x, 120);
+assert.strictEqual(iosDoubleTap.deviceExecution.dispatchedPoint.x, 120);
 
 const iosDuringDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-ios-during-'));
 const iosDuring = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
   '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'longPress',
-  '--x', '120', '--y', '240', '--duration-ms', '800',
-  '--capture-out', iosDuringDir, '--capture-label', 'during-test', '--capture-at-ms', '300',
+  '--x', '120', '--y', '240', '--duration-ms', '5000',
+  '--capture-out', iosDuringDir, '--capture-label', 'during-test', '--capture-at-ms', '4000',
 ], { env: { ...process.env, MAVT_IOS_FAKE: '1' } }));
 assert.strictEqual(iosDuring.action, 'longPress');
+assert.strictEqual(iosDuring.durationMs, 5000);
 assert.deepStrictEqual(iosDuring.duringActionCapture, {
-  capturedAtMs: 300,
+  capturedAtMs: 4000,
   artifacts: { screenshot: 'screenshots/during-test.png' },
 });
 assert.ok(fs.existsSync(path.join(iosDuringDir, 'screenshots', 'during-test.png')));
@@ -258,7 +335,8 @@ assert.ok(fs.existsSync(path.join(iosDuringDir, 'screenshots', 'during-test.png'
 const iosDismissKeyboard = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
   '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'dismissKeyboard',
 ], { env: { ...process.env, MAVT_IOS_FAKE: '1' } }));
-assert.strictEqual(iosDismissKeyboard.ok, true);
+assert.strictEqual(iosDismissKeyboard.command.status, 'ACCEPTED');
+assert.strictEqual(iosDismissKeyboard.deviceExecution.status, 'UNVERIFIED');
 assert.strictEqual(iosDismissKeyboard.action, 'dismissKeyboard');
 const iosObservationDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-ios-observe-'));
 const iosObservation = JSON.parse(run('./scripts/platform/adapters/ios/observe.sh', [

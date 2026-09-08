@@ -181,6 +181,64 @@ function pixelRgb(decoded, x, y) {
   ];
 }
 
+function decodePngRgba(buffer) {
+  const decoded = decodePng(buffer);
+  const pixels = Buffer.alloc(decoded.width * decoded.height * 4);
+  let outputOffset = 0;
+  for (let y = 0; y < decoded.height; y++) {
+    for (let x = 0; x < decoded.width; x++) {
+      const [red, green, blue] = pixelRgb(decoded, x, y);
+      pixels[outputOffset++] = red;
+      pixels[outputOffset++] = green;
+      pixels[outputOffset++] = blue;
+      pixels[outputOffset++] = 255;
+    }
+  }
+  return { width: decoded.width, height: decoded.height, pixels };
+}
+
+function pngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, 'ascii');
+  const chunk = Buffer.alloc(data.length + 12);
+  chunk.writeUInt32BE(data.length, 0);
+  typeBuffer.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), data.length + 8);
+  return chunk;
+}
+
+function encodePngRgba(image) {
+  const width = Number(image?.width);
+  const height = Number(image?.height);
+  const pixels = image?.pixels;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0
+    || width * height > 100_000_000 || !Buffer.isBuffer(pixels) || pixels.length !== width * height * 4) {
+    throw new Error('RGBA PNG 图像尺寸或像素数据无效');
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const rowBytes = width * 4;
+  const scanlines = Buffer.alloc(height * (rowBytes + 1));
+  for (let y = 0; y < height; y++) {
+    const rowOffset = y * (rowBytes + 1);
+    scanlines[rowOffset] = 0;
+    pixels.copy(scanlines, rowOffset + 1, y * rowBytes, (y + 1) * rowBytes);
+  }
+  return Buffer.concat([
+    PNG_SIGNATURE,
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(scanlines)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function readPngRgba(file) {
+  return decodePngRgba(fs.readFileSync(file));
+}
+
 function normalizeRegion(region) {
   if (!region || typeof region !== 'object' || Array.isArray(region)) throw new Error('qualityClaim region 必须是对象');
   const normalized = {};
@@ -376,8 +434,10 @@ function main() {
 if (require.main === module) main();
 
 module.exports = {
+  encodePngRgba,
   enrichObservationScreenshot,
   inspectPng,
+  readPngRgba,
   screenshotMetadata,
   validateQualityClaim,
   verifyQualityClaim,

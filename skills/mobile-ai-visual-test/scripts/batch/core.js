@@ -400,10 +400,14 @@ function startCurrentCase(options) {
     if (item.status === 'RUNNING' && !fs.existsSync(loaded.paths.caseStartDraft)) {
       const execDir = path.join(caseRuntimeDir(item.caseDir, loaded.contract.binding.platform), 'executions', item.executionId);
       const execution = readJson(path.join(execDir, 'execution.json'));
-      if (execution?.schemaVersion !== 6) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
-      const agentContinuation = options.continuationReason
-        ? caseRuntimeLifecycle.recordAgentContinuation({ executionDir: execDir, reason: options.continuationReason, now: options.now })
-        : null;
+      if (execution?.schemaVersion !== 7) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+      let agentContinuation = null;
+      let brief = readJson(path.join(execDir, 'case-brief.json'));
+      if (options.continuationReason) {
+        caseRuntimeLifecycle.reconcileExecution({ executionDir: execDir, runtimeOptions: options.runtimeOptions || {} });
+        brief = caseRuntimeLifecycle.buildContinuationBrief({ executionDir: execDir, reason: options.continuationReason });
+        agentContinuation = caseRuntimeLifecycle.recordAgentContinuation({ executionDir: execDir, reason: options.continuationReason, now: options.now });
+      }
       return {
         state,
         item,
@@ -411,7 +415,7 @@ function startCurrentCase(options) {
         execDir,
         execution,
         runtime: readJson(path.join(execDir, 'runtime.json')),
-        brief: readJson(path.join(execDir, 'case-brief.json')),
+        brief,
         ...(agentContinuation ? { agentContinuation } : {}),
       };
     }
@@ -529,7 +533,7 @@ function commitCurrentCase(options) {
     }
     const execDir = path.join(caseRuntimeDir(item.caseDir, loaded.contract.binding.platform), 'executions', item.executionId);
     const execution = readJson(path.join(execDir, 'execution.json'));
-    if (execution?.schemaVersion !== 6) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+    if (execution?.schemaVersion !== 7) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
     if (!execution?.finalized) throw contractError('EXECUTION_NOT_FINALIZED', 'current execution must be finalized before commit');
     if (execution.batchContractSha !== state.contractSha || execution.runtimeSha !== state.runtimeSha
       || execution.adapterSha !== state.adapterSha) {
@@ -595,8 +599,9 @@ function recordFinalizationStep(options) {
   const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
   return withFileLock(loaded.paths.lock, () => {
     const state = readJson(loaded.paths.state);
-    if (state.status === 'COMPLETED') return { state, idempotent: true };
-    if (state.status !== 'FINALIZING' || state.finalization?.casesCommitted !== true) {
+    if (['COMPLETED', 'CANCELLED'].includes(state.status)) return { state, idempotent: true };
+    if (!['FINALIZING', 'CANCELLING'].includes(state.status)
+      || (state.status === 'FINALIZING' && state.finalization?.casesCommitted !== true)) {
       throw contractError('BATCH_FINALIZATION_INVALID', 'batch is not ready for finalization');
     }
     if (options.step === 'platformReleased') {
@@ -610,11 +615,71 @@ function recordFinalizationStep(options) {
       throw contractError('BATCH_FINALIZATION_INVALID', `unknown finalization step: ${options.step}`);
     }
     if (state.finalization.platformReleased && state.finalization.reportsPublished) {
-      state.status = 'COMPLETED';
-      state.completedAt = options.now || new Date().toISOString();
+      const terminalStatus = state.status === 'CANCELLING' ? 'CANCELLED' : 'COMPLETED';
+      state.status = terminalStatus;
+      state[terminalStatus === 'CANCELLED' ? 'cancelledAt' : 'completedAt'] = options.now || new Date().toISOString();
     }
     saveBatch(loaded.paths, state, options.now);
     return { state, finalization: state.finalization };
+  }, { now: options.now });
+}
+
+function archiveBatchDrafts(paths) {
+  const drafts = [paths.bootstrapDraft, paths.caseStartDraft, paths.caseCommitDraft].filter((file) => fs.existsSync(file));
+  if (!drafts.length) return [];
+  const target = path.join(paths.batchDir, 'cancelled-transactions');
+  fs.mkdirSync(target, { recursive: true });
+  return drafts.map((file) => {
+    const destination = path.join(target, path.basename(file));
+    fs.renameSync(file, destination);
+    return path.relative(paths.batchDir, destination).replace(/\\/g, '/');
+  });
+}
+
+function cancelBatch(options) {
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
+  return withFileLock(loaded.paths.lock, () => {
+    const state = readJson(loaded.paths.state);
+    if (state.status === 'CANCELLED') return { action: 'BATCH_CANCELLED', state, idempotent: true };
+    if (state.status === 'CANCELLING') {
+      const nextAction = state.finalization?.platformReleased === true ? 'PUBLISH_REPORTS' : 'RELEASE_PLATFORM';
+      return { action: 'CANCELLING', state, cancelledExecutions: [], nextAction, idempotent: true };
+    }
+    if (state.status === 'COMPLETED') throw contractError('BATCH_ALREADY_COMPLETED', 'a completed batch cannot be cancelled');
+    const reason = String(options.reason || 'batch cancelled by user').trim();
+    const active = findActiveExecutions(options.workspaceRoot)
+      .filter((entry) => entry.execution.batchId === state.batchId);
+    const cancelledExecutions = active.map((entry) => caseRuntimeLifecycle.cancelExecution({
+      executionDir: entry.execDir, reason, now: options.now,
+    }).execution.executionId);
+    const item = currentCase(state);
+    if (item?.status === 'RUNNING') {
+      const execDir = item.executionId
+        ? path.join(caseRuntimeDir(item.caseDir, loaded.contract.binding.platform), 'executions', item.executionId) : null;
+      const execution = execDir ? readJson(path.join(execDir, 'execution.json'), null) : null;
+      const result = execDir ? readJson(path.join(execDir, 'result.json'), null) : null;
+      if (execution?.finalized === true && execution.status !== 'CANCELLED' && result?.verdict) {
+        Object.assign(item, { status: 'COMPLETED', verdict: result.verdict, executionStatus: execution.executionStatus || 'COMPLETED', endedAt: execution.endedAt });
+      } else {
+        Object.assign(item, { status: 'CANCELLED', executionStatus: 'CANCELLED', endedAt: options.now || new Date().toISOString() });
+      }
+    }
+    for (const pending of state.cases.filter((entry) => entry.status === 'PENDING')) pending.status = 'SKIPPED';
+    const archivedDrafts = archiveBatchDrafts(loaded.paths);
+    state.status = 'CANCELLING';
+    state.reason = reason;
+    state.finalization = { casesCommitted: false, executionTerminated: true, platformReleased: false, reportsPublished: false };
+    saveBatch(loaded.paths, state, options.now);
+    appendJsonl(loaded.paths.events, {
+      schemaVersion: 1,
+      eventId: `batch-cancelled-${state.batchId}`,
+      time: options.now || new Date().toISOString(),
+      type: 'batchCancellationRequested',
+      reason,
+      cancelledExecutions,
+      archivedDrafts,
+    });
+    return { action: 'CANCELLING', state, cancelledExecutions, nextAction: 'RELEASE_PLATFORM' };
   }, { now: options.now });
 }
 
@@ -627,6 +692,12 @@ function reconcileBatch(options) {
     if (fs.existsSync(loaded.paths.caseStartDraft)) return { action: 'RESUME_CASE_START', state, draft: readJson(loaded.paths.caseStartDraft) };
     if (fs.existsSync(loaded.paths.caseCommitDraft)) return { action: 'COMMIT_CASE', state, draft: readJson(loaded.paths.caseCommitDraft) };
     if (state.status === 'BLOCKED') return { action: 'BATCH_BLOCKED', state };
+    if (state.status === 'CANCELLING') {
+      if (state.finalization.platformReleased !== true) return { action: 'RELEASE_PLATFORM', state };
+      if (state.finalization.reportsPublished !== true) return { action: 'PUBLISH_REPORTS', state };
+      return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_FINALIZATION_INVALID', 'cancelled batch finalization was not committed', { now: options.now });
+    }
+    if (state.status === 'CANCELLED' && state.warmSession.status === 'CLOSED') return { action: 'BATCH_CANCELLED', state };
     if (state.status === 'FINALIZING') {
       if (state.finalization?.casesCommitted !== true) return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_FINALIZATION_INVALID', 'finalizing batch has uncommitted cases', { now: options.now });
       if (state.finalization.platformReleased !== true) return { action: 'RELEASE_PLATFORM', state };
@@ -679,7 +750,7 @@ function reconcileBatch(options) {
       || entry.execution.batchContractSha !== state.contractSha) {
       throw contractError('BATCH_IMPLEMENTATION_MISMATCH', 'active execution belongs to another batch implementation');
     }
-    if (entry.execution.schemaVersion === 6) {
+    if (entry.execution.schemaVersion === 7) {
       try {
         caseRuntimeLifecycle.reconcileExecution({ executionDir: entry.execDir, runtimeOptions: options.runtimeOptions || {} });
       } catch (error) {
@@ -707,6 +778,7 @@ module.exports = {
   BATCH_SCHEMA_VERSION,
   batchPaths,
   bootstrapBatch,
+  cancelBatch,
   commitCurrentCase,
   currentCase,
   initializeBatch,

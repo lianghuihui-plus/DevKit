@@ -69,7 +69,7 @@ if [[ -n "$device" || "$(printf '%s\n' "$targets" | sed '/^\s*$/d' | wc -l | tr 
 fi
 
 node -e '
-const { normalizeDeviceFormFactor } = require(process.argv[10]);
+const { classifyRuntimeDisplay, normalizeDeviceFormFactor } = require(process.argv[10]);
 const { parseDeviceList, parseDisplayState, selectDeviceProfile } = require(process.argv[11]);
 const hdc = !!process.argv[3];
 const device = process.argv[1] || null;
@@ -98,6 +98,7 @@ const deviceFormFactor = explicitFormFactor || selectedProfile?.deviceFormFactor
 const display = parseDisplayState(process.argv[14] || "");
 const displayCommandOk = process.argv[15] === "true";
 const displayReadable = displayCommandOk && display.readable;
+const runtimeDisplay = classifyRuntimeDisplay(display.width, display.height);
 const hasTarget = hdc && !!device;
 const canUseUitest = hasTarget && !!uitestVersion;
 const canLaunchApp = hasTarget && aaDump;
@@ -130,10 +131,10 @@ if (hasTarget && !hilog) {
   diag("harmonyLogsUnavailable", "WARN", "HarmonyOS hilog 不可用", "确认 hdc shell hilog 可执行；日志缺失不阻塞核心视觉测试", "hdc shell hilog");
 }
 if (hasTarget && !deviceFormFactor) {
-  diag("harmonyDeviceFormFactorUnknown", "ERROR", "无法确认鸿蒙设备形态", "确保 devecocli device list 能识别设备类型，或通过 --device-form-factor 显式指定", "devecocli device list");
+  diag("harmonyDeviceFormFactorUnknown", "WARN", "无法确认鸿蒙静态设备形态", "该信息只用于诊断；冷启动策略将使用运行时屏幕比例", "devecocli device list");
 }
-if (hasTarget && deviceFormFactor === "phone" && !displayReadable) {
-  diag("harmonyStartupDisplayUnavailable", "ERROR", "无法读取手机屏幕方向", "确认 DisplayManagerService hidumper 能返回 Rotation、Width 和 Height", "hdc shell hidumper -s DisplayManagerService -a -a");
+if (hasTarget && !displayReadable) {
+  diag("harmonyStartupDisplayUnavailable", "ERROR", "无法读取运行时屏幕方向和尺寸", "确认 DisplayManagerService hidumper 能返回 Rotation、Width 和 Height", "hdc shell hidumper -s DisplayManagerService -a -a");
 }
 const data = {
   schemaVersion: 1,
@@ -156,9 +157,11 @@ const data = {
     deviceFormFactor,
     startupDisplay: {
       canReadOrientation: displayReadable,
-      canSetOrientation: hasTarget && deviceFormFactor === "phone" && displayReadable,
+      runtimeDisplayClass: runtimeDisplay.displayClass,
+      runtimeDisplay,
+      canSetOrientation: hasTarget && runtimeDisplay.displayClass === "PHONE_LIKE" && displayReadable,
       canVerifyAfterLaunch: displayReadable,
-      supportedOrientations: deviceFormFactor === "phone" && displayReadable ? ["portrait", "preserve"] : ["preserve"],
+      supportedOrientations: runtimeDisplay.displayClass === "PHONE_LIKE" && displayReadable ? ["portrait", "preserve"] : ["preserve"],
       current: displayReadable ? display : null
     },
     actions,

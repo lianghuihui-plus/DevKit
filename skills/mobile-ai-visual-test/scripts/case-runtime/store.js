@@ -28,7 +28,7 @@ function paths(execDir) {
 
 function loadExecution(execDir, options = {}) {
   const execution = readJson(paths(execDir).execution, null);
-  if (!execution || execution.schemaVersion !== 6 || execution.runtime !== 'case-runtime') {
+  if (!execution || execution.schemaVersion !== 7 || execution.runtime !== 'case-runtime') {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
   if (!options.allowFinalized && execution.finalized === true) {

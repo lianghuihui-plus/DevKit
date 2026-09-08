@@ -54,14 +54,14 @@ scripts/probe-env.sh --platform android
 需要安装：
 
 - DevEco Studio 或 HarmonyOS Command Line Tools。
-- `devecocli`，用于确定性枚举设备形态。
+- `devecocli`，用于枚举设备并记录静态设备形态诊断信息。
 - 可被 `devecocli` 识别的 DevEco/HarmonyOS 工具链。
 
 设备准备：
 
 - 连接真机或启动模拟器。
 - `devecocli device list` 能看到目标设备。
-- 设备支持 `uitest`、`screenCap`、`dumpLayout`、`aa dump`、`hilog`。
+- 设备支持 `uitest`、`screenCap`、`dumpLayout`、`aa dump`、`hilog` 和 `DisplayManagerService` 状态读取。
 
 验证：
 

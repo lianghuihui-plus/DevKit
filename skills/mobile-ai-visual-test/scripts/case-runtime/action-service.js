@@ -1,7 +1,11 @@
 'use strict';
 
 const { invokeDeviceOperation } = require('../platform/device-port');
+const { classifyActionEffect } = require('../lib/observation-consistency');
+const { sanitizeAdapterActionResult } = require('../lib/action-result');
+const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { resolveAction } = require('./capability-catalog');
+const { validateLongPressTiming } = require('./contract');
 const sceneService = require('./scene-service');
 const store = require('./store');
 const transactions = require('./transaction-manager');
@@ -10,12 +14,54 @@ function redactedAction(action) {
   return action?.type === 'inputText' ? { ...action, text: '[REDACTED]' } : action;
 }
 
+function duringActionObservation(request, deviceResult) {
+  if (!deviceResult?.duringActionEvidence) return null;
+  return {
+    status: 'CAPTURED',
+    requestedAtMs: Number(request.observationPolicy.duringActionAtMs),
+    capturedAtMs: Number(deviceResult.adapterResult.duringActionCapture?.capturedAtMs),
+    screenshotRef: deviceResult.duringActionEvidence.ref,
+    screenshotSha256: deviceResult.duringActionEvidence.sha256,
+  };
+}
+
+function completedAction(operationId, action, adapterResult, beforeScene, afterScene, spatialEvidence = null, duringObservation = null) {
+  return {
+    operationId,
+    lifecycle: { status: 'COMPLETED' },
+    action: redactedAction(action),
+    command: adapterResult.command,
+    deviceExecution: adapterResult.deviceExecution,
+    observedEffect: {
+      ...classifyActionEffect(beforeScene, afterScene, operationId),
+      beforeSceneRef: beforeScene.sceneId,
+      afterSceneRef: afterScene.sceneId,
+    },
+    ...(spatialEvidence ? { spatialEvidence } : {}),
+    ...(duringObservation ? { duringActionObservation: duringObservation } : {}),
+  };
+}
+
+function persistedActionResult(actionResult) {
+  const { spatialEvidence, ...stored } = actionResult;
+  return {
+    ...stored,
+    ...(spatialEvidence?.ref ? { spatialEvidenceRef: spatialEvidence.ref } : {}),
+  };
+}
+
 function act(execDir, request, options = {}) {
   const execution = store.loadExecution(execDir);
   const scene = store.readCurrentScene(execDir);
   if (!scene) return sceneService.observe(execDir, options);
   const resolved = resolveAction(scene, request, execution.platform);
   if (resolved.stale) return { status: 'SCENE_CHANGED', scene };
+  if (request.observationPolicy && resolved.action.type !== 'longPress') {
+    const error = new Error('observationPolicy.duringActionAtMs is only supported for longPress');
+    error.code = 'CASE_RUNTIME_REQUEST_INVALID';
+    throw error;
+  }
+  if (resolved.action.type === 'longPress') validateLongPressTiming(resolved.action.durationMs, request.observationPolicy);
   const operationId = store.nextId(execDir, 'action');
   let transaction = transactions.prepareAction(execDir, {
     operationId,
@@ -43,22 +89,17 @@ function act(execDir, request, options = {}) {
       context: { execution },
       operationId,
       action: resolved.action,
-      request: { basisObservationRef: scene.screenshot.ref },
+      request: {
+        basisObservationRef: scene.screenshot.ref,
+        ...(request.observationPolicy ? { observationPolicy: request.observationPolicy } : {}),
+      },
     }, 'ACTION', { now: options.now, runner: options.runner, onAdapterSpan: options.onAdapterSpan });
     transaction = transactions.transitionAction(execDir, transaction, 'DISPATCHED', 'RESULT_RECORDED', {
-      deviceResult: redactedAction(deviceResult.adapterResult),
-      coordinateAudit: deviceResult.coordinateAudit || null,
+      deviceResult: sanitizeAdapterActionResult(deviceResult.adapterResult),
+      spatialEvidenceRef: deviceResult.spatialEvidenceRef || null,
+      duringActionObservation: duringActionObservation(request, deviceResult),
       recordedAt: options.now || new Date().toISOString(),
     });
-    store.appendEvent(execDir, 'actionCompleted', {
-      operationId,
-      sceneId: scene.sceneId,
-      action: redactedAction(resolved.action),
-      ok: deviceResult.adapterResult.ok !== false,
-      result: redactedAction(deviceResult.adapterResult),
-      coordinateAudit: deviceResult.coordinateAudit || null,
-      decisionId: request.decisionId || null,
-    }, options);
     if (options.interruptAfter === 'device-result') throw new Error('MAVT_CASE_ACTION_INTERRUPTED: device-result');
   } catch (error) {
     if (transaction.status !== 'DISPATCHED') throw error;
@@ -75,7 +116,13 @@ function act(execDir, request, options = {}) {
         ...options,
         purpose: 'AFTER_UNKNOWN_ACTION',
         relatedOperationId: operationId,
-        previousAction: { operationId, status: 'UNKNOWN', action: redactedAction(resolved.action) },
+        previousAction: {
+          operationId,
+          lifecycle: { status: 'UNKNOWN' },
+          action: redactedAction(resolved.action),
+          command: { status: 'UNKNOWN' },
+          deviceExecution: { status: 'UNVERIFIED' },
+        },
         decisionId: request.decisionId || null,
       });
       transaction = transactions.transitionAction(execDir, transaction, 'DISPATCHED', 'OBSERVED', {
@@ -93,6 +140,12 @@ function act(execDir, request, options = {}) {
       });
     }
   }
+  const spatialEvidence = deviceResult.spatialEvidenceRef
+    ? projectActionSpatialEvidence(execDir, deviceResult.spatialEvidenceRef, {
+      operationId,
+      actionType: resolved.action.type,
+    })
+    : null;
   const observed = sceneService.observe(execDir, {
     ...options,
     purpose: 'POST_ACTION',
@@ -100,18 +153,44 @@ function act(execDir, request, options = {}) {
     preAdapterDelayMs: resolved.action.type === 'wait' ? 0 : 500,
     previousAction: {
       operationId,
-      status: deviceResult.adapterResult.ok === false ? 'FAILED' : 'SUCCEEDED',
+      lifecycle: { status: 'COMPLETED' },
       action: redactedAction(resolved.action),
-      result: redactedAction(deviceResult.adapterResult),
+      command: deviceResult.adapterResult.command,
+      deviceExecution: deviceResult.adapterResult.deviceExecution,
+      ...(spatialEvidence ? { spatialEvidence } : {}),
     },
     decisionId: request.decisionId || null,
   });
+  const actionResult = completedAction(
+    operationId,
+    resolved.action,
+    sanitizeAdapterActionResult(deviceResult.adapterResult),
+    scene,
+    observed.scene,
+    spatialEvidence,
+    duringActionObservation(request, deviceResult),
+  );
+  observed.scene.previousAction = actionResult;
+  store.writeScene(execDir, observed.scene);
+  store.appendEvent(execDir, 'actionCompleted', {
+    operationId,
+    sceneId: scene.sceneId,
+    sceneIdAfter: observed.scene.sceneId,
+    action: redactedAction(resolved.action),
+    lifecycle: actionResult.lifecycle,
+    command: actionResult.command,
+    deviceExecution: actionResult.deviceExecution,
+    observedEffect: actionResult.observedEffect,
+    duringActionObservation: actionResult.duringActionObservation || null,
+    spatialEvidenceRef: deviceResult.spatialEvidenceRef || null,
+    decisionId: request.decisionId || null,
+  }, options);
   transaction = transactions.transitionAction(execDir, transaction, 'RESULT_RECORDED', 'OBSERVED', {
     sceneIdAfter: observed.scene.sceneId,
   });
   if (options.interruptAfter === 'observe') throw new Error('MAVT_CASE_ACTION_INTERRUPTED: observe');
-  transactions.completeAction(execDir, transaction);
-  return { ...observed, action: { operationId, status: deviceResult.adapterResult.ok === false ? 'FAILED' : 'SUCCEEDED' } };
+  transactions.completeAction(execDir, transaction, { actionResult: persistedActionResult(actionResult) });
+  return { ...observed, action: actionResult };
 }
 
 module.exports = { act, redactedAction };

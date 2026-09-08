@@ -8,7 +8,8 @@ const { bindingSha, validateBinding } = require('../lib/batch-contract');
 const { environmentAdapterArgs } = require('../lib/execution-environment');
 const { inspectPng } = require('../lib/image-evidence');
 const { isSafeRelativeArtifact, resolveArtifact, sha256File } = require('../lib/execution-evidence');
-const { buildCoordinateAudit } = require('../lib/action-coordinate-audit');
+const { createActionSpatialEvidence } = require('../lib/action-spatial-evidence');
+const { validateAdapterActionResult } = require('../lib/action-result');
 const { startupDisplayVerified } = require('../lib/startup-display');
 const { normalizeDeviceBinding } = require('../lib/target-binding');
 
@@ -132,9 +133,11 @@ function parseAdapterOutput(result, kind) {
 
 function assertResultBinding(result, binding, kind) {
   const expectedType = kind === 'ACTION' ? 'actionResult' : 'observation';
-  if (!result || result.schemaVersion !== 1 || result.type !== expectedType || result.platform !== binding.platform) {
+  const expectedSchemaVersion = kind === 'ACTION' ? 2 : 1;
+  if (!result || result.schemaVersion !== expectedSchemaVersion || result.type !== expectedType || result.platform !== binding.platform) {
     throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', `${kind} adapter result identity is invalid`);
   }
+  if (kind === 'ACTION') validateAdapterActionResult(result);
   const label = kind === 'ACTION' ? 'action result' : 'observation';
   const expectedDevice = binding.deviceId;
   if (result.device?.id !== expectedDevice) throw contractError('DEVICE_RESULT_BINDING_MISMATCH', `${label} does not confirm the frozen device`);
@@ -220,13 +223,13 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
       app: adapterResult.app,
     });
   }
-  const coordinateAudit = kind === 'ACTION'
-    ? buildCoordinateAudit(execDir, validated, adapterResult)
+  const spatialEvidenceRef = kind === 'ACTION'
+    ? createActionSpatialEvidence(execDir, validated, adapterResult)
     : null;
   return {
     binding,
     adapterResult,
-    ...(coordinateAudit ? { coordinateAudit } : {}),
+    ...(spatialEvidenceRef ? { spatialEvidenceRef } : {}),
     ...(duringActionEvidence ? { duringActionEvidence } : {}),
     postActionSettleMs: preAdapterDelayMs,
     ...(kind === 'OBSERVE' ? { evidence: validateObservationArtifacts(execDir, adapterResult) } : {}),
@@ -250,7 +253,7 @@ function invokeAppRestart(rawBinding, options = {}) {
   const display = startupDisplayVerified(binding.startupDisplayPolicy, adapterResult.startupDisplay, binding.deviceFormFactor, { platform: binding.platform });
   return {
     ...adapterResult,
-    coldStartVerified: adapterResult.ok === true && adapterResult.coldStartVerified === true,
+    coldStartVerified: adapterResult.command?.status === 'ACCEPTED' && adapterResult.coldStartVerified === true,
     startupDisplayVerified: display.verified,
     startupDisplayValidation: { required: display.required, reason: display.reason, errors: display.validation.errors },
   };

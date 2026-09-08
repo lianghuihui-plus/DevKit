@@ -18,7 +18,7 @@ const report = {
       planUpdate: { reason: '入口已直接出现', next: ['打开目标页面', '验证内容'] },
     } },
     { sequence: 4, time: '2026-09-04T01:00:02.100Z', type: 'actionRequested', operationId: 'action-0001', decisionId: 'decision-0001', sceneId: 'scene-0001', action: { type: 'tap', target: '目标入口' } },
-    { sequence: 5, time: '2026-09-04T01:00:02.200Z', type: 'actionCompleted', operationId: 'action-0001', decisionId: 'decision-0001', ok: true, result: { ok: true } },
+    { sequence: 5, time: '2026-09-04T01:00:02.200Z', type: 'actionCompleted', operationId: 'action-0001', decisionId: 'decision-0001', lifecycle: { status: 'COMPLETED' }, command: { status: 'ACCEPTED' }, deviceExecution: { status: 'UNVERIFIED' }, observedEffect: { status: 'CHANGED' } },
     { sequence: 6, time: '2026-09-04T01:00:03.000Z', type: 'sceneObserved', sceneId: 'scene-0002', relatedOperationId: 'action-0001', screenshotRef: 'screenshots/scene-0002.png', app: { inTargetApp: true } },
     { sequence: 7, time: '2026-09-04T01:00:03.200Z', type: 'agentDecisionRecorded', decisionId: 'decision-0002', requestedOperation: 'knowledge', sceneId: 'scene-0002', decision: {
       observation: '目标内容已显示但状态说明需要确认', conclusion: '查询本地经验辅助解释', purpose: '确认当前状态说明', expectedOutcome: '获得相关候选信息', expectationRefs: ['E1'],
@@ -57,7 +57,10 @@ assert.strictEqual(narrative.plan.reason, '入口已直接出现');
 assert.deepStrictEqual(narrative.plan.items, ['打开目标页面', '验证内容']);
 assert.strictEqual(narrative.planHistory.length, 2);
 assert.strictEqual(narrative.steps.length, 3);
-assert.strictEqual(narrative.steps[0].action.status, 'SUCCEEDED');
+assert.strictEqual(narrative.steps[0].action.status, 'OBSERVED');
+assert.strictEqual(narrative.steps[0].action.result.command.status, 'ACCEPTED');
+assert.strictEqual(narrative.steps[0].action.result.deviceExecution.status, 'UNVERIFIED');
+assert.strictEqual(narrative.steps[0].action.result.observedEffect.status, 'CHANGED');
 assert.strictEqual(narrative.steps[0].beforeScene.sceneId, 'scene-0001');
 assert.strictEqual(narrative.steps[0].afterScene.sceneId, 'scene-0002');
 assert.strictEqual(narrative.steps[0].postAssessment.conclusion, '查询本地经验辅助解释');

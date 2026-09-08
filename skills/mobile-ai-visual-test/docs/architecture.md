@@ -100,7 +100,7 @@ sequenceDiagram
 
 批次内同一时刻只有一个活跃用例。用例完成后保留 App 暖状态供下一个用例使用，但不共享 Case Agent 上下文和 execution 证据。
 
-Agent 句柄丢失时，主 Agent使用相同 Case Brief 和 execution 创建 continuation Agent，并记录续接事实。Runtime 从已保存的 Scene 和事务状态恢复，不创建第二条业务执行链。
+Agent 句柄丢失时，Batch 先 reconcile Runtime，再根据最新 Scene、用例理解、计划、未解决技术事实和待复核知识生成 continuation Brief。主 Agent 使用该 Brief 和同一 execution 创建 continuation Agent，不恢复旧动作意图，也不创建第二条业务执行链。
 
 ## 5. Case Runtime 接口
 
@@ -119,11 +119,18 @@ Case Brief 提供固定绝对 `runtime.command` 和固定 `runtime.requestPath`�
 - 截图、尺寸、内容摘要和可选布局引用。
 - 目标 App 状态、归一化控件、键盘与坐标信号。
 - 基于该 Scene 生成的 Capability 列表。
-- 前一个动作的客观结果。
+- 前一个动作的分层客观结果：生命周期、命令接受状态、设备执行验证和前后 Scene 可观察效果。
+- 可识别单层垂直列表的容器快照与滚动覆盖上下文。
 
-Case Agent 优先选择当前 Capability。截图中的目标无法由控件树表达时，可提交归一化视觉坐标；Runtime 负责像素换算、平台调用和坐标审计。
+Case Agent 优先选择当前 Capability。截图中的目标无法由控件树表达时，可提交归一化视觉坐标；Runtime 负责像素换算和平台调用，Action Spatial Evidence Service 负责一次性校验、保存并投影动作空间证据。
 
-Capability 绑定生成它的 Scene。非当前 Scene 的 Capability 返回 `SCENE_CHANGED` 和最新 Scene，不发送设备动作。
+坐标动作只产生一份不可变事实源：`action-spatial-evidence/action-N.json`。同目录 PNG 已包含操作前截图底图和请求、投递、可选真实触点标记，可由 Agent 直接查看；Reader 继续兼容历史 execution 的 SVG。Runtime、事务恢复、事件 Reader、看板和报告共用同一 Reader/Projection，不在消费端重复换算或绘制。事务和事件只保存 `spatialEvidenceRef`，面向 Agent 的 `Scene.previousAction.spatialEvidence` 才展开语义字段及可查看附件。
+
+`act`、`knowledge`、`recover` 和 `finish` 使用 `basedOnSceneId` 绑定作出判断时的 Scene。引用非当前 Scene 时返回 `SCENE_CHANGED` 和最新 Scene，不发送设备动作。
+
+Runtime 对垂直列表使用共享锚点连接相邻观察，并维护起止边界、连续覆盖、未探索方向和自适应滑动距离；它不规定固定搜索方向或次数。同方向连续无进展才能提升边界置信度，有效移动或方向切换会清除未完成 streak。`SEARCH_EXISTENCE` 验证点形成 FAIL 时，`finish` 强制校验其引用的不可变 Scene 已确认两端且覆盖连续。
+
+长按从视觉动作或控件能力统一映射为携带必填 `durationMs` 的底层 Action；可选 `duringActionAtMs` 在释放前采集过程截图并进入正式证据图。Adapter 不提供默认长按时长。
 
 ### 5.3 业务语义
 
@@ -133,7 +140,10 @@ Capability 绑定生成它的 Scene。非当前 Scene 的 Capability 返回 `SCE
 {
   "summary": "验证设置保存后正确显示",
   "preconditions": ["用户已登录"],
-  "expectations": ["设置入口可用", "保存后显示目标状态"],
+  "expectations": [
+    { "text": "设置入口可用", "verificationKind": "DIRECT_OBSERVATION" },
+    { "text": "目标条目可在完整列表中找到", "verificationKind": "SEARCH_EXISTENCE" }
+  ],
   "initialPlan": ["进入设置", "修改并保存", "检查结果"],
   "uncertainties": []
 }
@@ -182,8 +192,9 @@ Runtime 对 CaseResult 执行严格字段校验，并验证：
 - 整体 verdict 与 checks 一致。
 - PASS/FAIL check 至少引用一个有效 Scene。
 - Scene、事件、截图、布局和内容摘要形成一致证据图。
-- 负向业务结论已完成相关知识调查；具有当前 execution、验证点和 generation 关联且仍有效的 Runtime 技术事实的 BLOCKED 除外。
-- 知识支持的检查只引用当前 execution 已冻结并评估为 `APPLICABLE` 的条目。
+- 完整列表不存在结论引用当前 generation、两端已确认且连续覆盖的滚动上下文。
+- 搜索型验证点的不存在结论引用不可变 Scene 中完整、连续的列表覆盖。
+- 知识支持的检查只引用当前 execution 已冻结并评估为 `APPLICABLE` 的条目；直接 Scene 证据不强制查询知识。
 
 验证点遗漏返回 `RESULT_INCOMPLETE`，Case Agent 可补充后再次 finish。Runtime 原样保存通过校验的 CaseResult；框架运行状态、耗时和完成绑定分别保存在 `execution.json`、`metrics.json` 和 `completion.json`。
 
@@ -199,9 +210,9 @@ Runtime 对 CaseResult 执行严格字段校验，并验证：
 
 Runtime 自动生成事件 ID、operationId、Scene 关系、时间和 generation。Case Agent 只提交业务语义和操作请求。
 
-技术事实写入时自动关联 decision、验证点、Scene 和 generation。后续成功操作或恢复可以使瞬态事实失效；Result Integrity 与报告使用共享判定逻辑，避免结果归因和页面展示不一致。
+技术事实写入时自动关联 decision、验证点、Scene 和 generation。后续明确结果、有效现场或恢复可以使瞬态事实失效；Result Integrity 与报告使用共享判定逻辑，避免结果归因和页面展示不一致。
 
-动作、恢复和 finish 使用 execution 内部事务。设备调用前先持久化请求；结果未知时优先观察现场，不自动重放可能已经生效的动作。Runtime 启动时自动恢复未完成事务。
+动作、恢复和 finish 使用 execution 内部事务。设备调用前先持久化请求；结果未知时优先观察现场，不自动重放可能已经生效的动作。Runtime 恢复未完成事务后返回 `RECOVERY_APPLIED` 并停止本次旧请求，Agent 必须基于最新 Scene 重新判断。
 
 `telemetry/invocations.jsonl` 记录 Runtime 请求次数、耗时、状态和格式错误；`telemetry/spans.jsonl` 记录 Adapter、截图、布局、稳定等待和恢复控制耗时。Metrics 从调用时间计算首次准备、步骤决策、结论整理和未归类间隔。Telemetry 不作为业务 verdict 的来源，这些间隔也不等同于纯模型思考时间。
 
@@ -224,14 +235,14 @@ logs/
 operations/
 knowledge/
 telemetry/
-coordinate-audits/
+action-spatial-evidence/
 result.json
 metrics.json
 artifact-manifest.json
 completion.json
 ```
 
-`runtime.json`、`runtime-request.json`、锁文件和 `transactions/*.draft.json` 是运行期文件。`artifact-manifest.json` 绑定正式证据集合的路径、大小和 SHA；`completion.json` 绑定 Result、Metrics、组件摘要和清单摘要。报告发布前校验完整证据图，发布后只读这些产物。
+`runtime.json`、`runtime-request.json`、`current-scene.json`、锁文件和 `transactions/*.draft.json` 是运行期文件。正式判断引用 `scenes/` 下不可变 Scene；动作事务和 `actionCompleted` 事件通过 `spatialEvidenceRef` 引用同一动作空间证据。`artifact-manifest.json` 绑定正式证据集合的路径、大小和 SHA。报告发布失败时从这些正式产物幂等重建目标用例、平台和总览报告。
 
 Narrative Projector 从事件投影用例理解、计划历史、业务步骤、知识调查、独立最终判断和验证点覆盖。Renderer 只消费 Reader 与 Projector 的 ViewModel，不回写 execution。
 
@@ -271,6 +282,7 @@ scripts/
 - Runtime 请求格式错误：返回 `REQUEST_INVALID` 和字段提示，同时写入 Telemetry。
 - 完成态校验失败：Reader 不发布业务 Result，以独立技术状态展示失败原因。
 - Runtime 或 Adapter 实现摘要变化：未完成 execution 通过 closure 结束，新批次创建新的 execution。
+- 用户取消：Lifecycle 将活动 execution 写为 `CANCELLED`，Batch 经 `CANCELLING -> RELEASE_PLATFORM -> PUBLISH_REPORTS -> BATCH_CANCELLED` 收口；`teardown` 只释放资源。
 
 技术异常不会被报告为产品 FAIL，业务 Result 也不会被框架运行状态覆盖。
 

@@ -10,10 +10,10 @@ const {
 } = require('../lib/display-format');
 
 const PLATFORM_LABELS = Object.freeze({ harmony: 'HarmonyOS', android: 'Android', ios: 'iOS' });
-const VERDICT_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', UNKNOWN: '无法判断', NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行', REPORT_ERROR: '报告数据异常' });
+const VERDICT_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', UNKNOWN: '无法判断', CANCELLED: '已取消', NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行', REPORT_ERROR: '报告数据异常' });
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
-const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', TECHNICALLY_BLOCKED: '技术阻塞', STOPPED_BY_BUDGET: '达到时限', INTERRUPTED: '执行中断' });
-const BATCH_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', RUNNING: '执行中', FINALIZING: '收尾中', COMPLETED: '已完成', BLOCKED: '已停止', DEGRADED: '已停止' });
+const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', CANCELLED: '已取消', TECHNICALLY_BLOCKED: '技术阻塞', STOPPED_BY_BUDGET: '达到时限', INTERRUPTED: '执行中断' });
+const BATCH_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', RUNNING: '执行中', FINALIZING: '收尾中', CANCELLING: '取消收尾中', CANCELLED: '已取消', COMPLETED: '已完成', BLOCKED: '已停止', DEGRADED: '已停止' });
 const WARM_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', READY: '已就绪', DEGRADED: '已停止', CLOSED: '已关闭' });
 const INTERACTION_POLICY_LABELS = Object.freeze({ UNATTENDED: '无人值守' });
 
@@ -94,7 +94,7 @@ function controlStage(value) {
   return [
     { number: '01', label: '环境确认', value: environment ? '已确认' : '待确认', detail: environmentDetail, state: environment ? 'ready' : 'idle' },
     { number: '02', label: '执行授权', value: request ? (request.mode === 'BATCH' ? '批量执行' : '单用例执行') : '待指令', detail: requestDetail, state: request ? 'ready' : 'idle' },
-    { number: '03', label: '批次进度', value: state ? (BATCH_STATUS_LABELS[state.status] || '未知状态') : '未开始', detail: batchDetail, state: state?.status === 'COMPLETED' ? 'ready' : state?.status === 'BLOCKED' || state?.status === 'DEGRADED' ? 'stopped' : state ? 'active' : 'idle' },
+    { number: '03', label: '批次进度', value: state ? (BATCH_STATUS_LABELS[state.status] || '未知状态') : '未开始', detail: batchDetail, state: state?.status === 'COMPLETED' ? 'ready' : ['BLOCKED', 'DEGRADED', 'CANCELLED'].includes(state?.status) ? 'stopped' : state ? 'active' : 'idle' },
     { number: '04', label: '暖会话', value: warm ? (WARM_STATUS_LABELS[warm.status] || '未知状态') : '未建立', detail: warmDetail, state: warm?.status === 'READY' ? 'active' : warm?.status === 'CLOSED' ? 'ready' : 'idle' },
   ];
 }
@@ -109,6 +109,7 @@ function summarize(cases) {
     blocked: verdicts.filter((value) => value === 'BLOCKED').length,
     inconclusive: verdicts.filter((value) => value === 'INCONCLUSIVE').length,
     pendingPublication: verdicts.filter((value) => value === 'PENDING_PUBLICATION').length,
+    cancelled: verdicts.filter((value) => value === 'CANCELLED').length,
     needsRerun: verdicts.filter((value) => value === 'NEEDS_RERUN').length,
     notRun: verdicts.filter((value) => value === 'NOT_RUN' || value === 'NEEDS_RERUN').length,
     reportError: verdicts.filter((value) => value === 'REPORT_ERROR').length,
@@ -209,6 +210,7 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
     ['BLOCKED', '阻塞', summary.blocked],
     ['INCONCLUSIVE', '无法判断', summary.inconclusive],
     ['PENDING_PUBLICATION', '待发布', summary.pendingPublication],
+    ['CANCELLED', '已取消', summary.cancelled],
     ['NEEDS_RERUN', '需重新执行', summary.needsRerun],
     ['NOT_RUN', '未执行', summary.notRun - summary.needsRerun],
     ['REPORT_ERROR', '报告异常', summary.reportError],

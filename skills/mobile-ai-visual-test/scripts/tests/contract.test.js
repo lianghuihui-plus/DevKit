@@ -4,7 +4,6 @@
 const assert = require('assert');
 const { createCaseContract, sourceSha, validateCaseContract, validateSourceText } = require('../execution/contracts/case-contract');
 const { validateCaseResult, validateRuntimeRequest } = require('../case-runtime/contract');
-const { validateSourceReference, validateSourceReferences } = require('../lib/source-reference');
 
 function expectCode(fn, code) {
   assert.throws(fn, (error) => error?.code === code, `expected ${code}`);
@@ -29,14 +28,6 @@ assert.strictEqual(currentCase.identity.sourceSha, sourceSha(sourceText));
 assert.strictEqual(validateCaseContract(currentCase), currentCase);
 expectCode(() => validateCaseContract({ ...currentCase, schemaVersion: 99 }), 'CASE_SCHEMA_UNSUPPORTED');
 expectCode(() => validateCaseContract({ ...currentCase, identity: { ...currentCase.identity, caseNo: '4' } }), 'CASE_CONTRACT_INVALID');
-
-const sourceRefs = [
-  { id: 'src-001', sourceSha: sourceSha(sourceText), lineStart: 3, lineEnd: 3, quote: '进入包含 AI 回复的会话' },
-  { id: 'src-002', sourceSha: sourceSha(sourceText), lineStart: 4, lineEnd: 4, quote: '最新回复展示单条语音播放按钮' },
-];
-assert.strictEqual(validateSourceReference(sourceRefs[0], { sourceText }), sourceRefs[0]);
-assert.deepStrictEqual([...validateSourceReferences(sourceRefs, { sourceText })], ['src-001', 'src-002']);
-expectCode(() => validateSourceReference({ ...sourceRefs[0], quote: '错误摘录' }, { sourceText }), 'SOURCE_REFERENCE_MISMATCH');
 
 const result = {
   verdict: 'PASS', summary: '语音播放按钮正常显示',

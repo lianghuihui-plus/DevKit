@@ -30,12 +30,12 @@ done
 
 normalize_action() {
   node -e '
-const event = JSON.parse(process.argv[1]);
-event.action = process.argv[2];
-event.device = { ...(event.device || {}), id: process.argv[3] || null };
-event.app = { ...(event.app || {}), appId: process.argv[4] || null };
+const { normalizeAdapterActionResult } = require(process.argv[5]);
+const event = normalizeAdapterActionResult(JSON.parse(process.argv[1]), {
+  action: process.argv[2], deviceId: process.argv[3], appId: process.argv[4], platform: "ios", transport: "APPIUM_W3C",
+});
 console.log(JSON.stringify(event, null, 2));
-' "$1" "$2" "$device" "$app"
+' "$1" "$2" "$device" "$app" "$script_dir/../../../lib/action-result.js"
 }
 
 run_atom() {
@@ -56,7 +56,8 @@ run_atom() {
     if node -e 'JSON.parse(process.argv[1])' "$output" 2>/dev/null; then
       normalize_action "$output" "$action"
     else
-      node -e '
+      local failure_output
+      failure_output="$(node -e '
 const { actionResult } = require(process.argv[1]);
 const message = String(process.argv[6] || `iOS ${process.argv[2]} atom exited with ${process.argv[5]}`).trim().slice(0, 4000);
 const event = actionResult(process.argv[2], {
@@ -68,7 +69,8 @@ const event = actionResult(process.argv[2], {
   app: { appId: process.argv[4] || null },
 });
 console.log(JSON.stringify(event, null, 2));
-' "$script_dir/lib/output.js" "$action" "$device" "$app" "$status" "$error_output"
+' "$script_dir/lib/output.js" "$action" "$device" "$app" "$status" "$error_output")"
+      normalize_action "$failure_output" "$action"
     fi
     return "$status"
   fi

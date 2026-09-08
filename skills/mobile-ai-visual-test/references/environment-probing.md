@@ -16,6 +16,6 @@ scripts/probe-env.sh --platform <platform>
 
 iOS `prepare-env` 会复用可连接的外部 Appium，或启动并登记框架托管的本地 Appium。WDA 验证使用临时所有权记录；验证结束即释放本次准备阶段启动的 WDA，既有外部 WDA 保留。登记只用于后续批次认领和安全关闭，不构成执行授权；未进入批次时可再次运行环境准备复核。框架不得关闭无精确所有权记录的外部 Appium 或 WDA。
 
-bootstrap/recovery 的冷启动验证分为两类事实：Adapter 必须明确返回 `ok=true` 和 `coldStartVerified=true`；启动显示则由公共层根据环境冻结的 `startupDisplayPolicy` 判断是否必需。Android、iOS 当前默认策略为 `preserve + none`，因此 `startupDisplay` 是可选审计事实，Adapter 可显式返回 `startupDisplay.status=SKIPPED`；HarmonyOS 命中 `required` 策略时必须返回匹配策略的 `startupDisplay.status=VERIFIED`，缺失或不匹配仍阻断 bootstrap/recovery。
+bootstrap/recovery 的冷启动验证分为独立事实：Adapter 必须明确返回 `command.status=ACCEPTED` 和 `coldStartVerified=true`；启动显示再由公共层按策略单独验证。Android、iOS 当前默认策略为 `preserve + none`，因此 `startupDisplay` 是可选审计事实，Adapter 可显式返回 `startupDisplay.status=SKIPPED`。HarmonyOS 每次重启在杀 App 前读取有效显示宽高，按长短边比例分类为 `PHONE_LIKE` 或 `TABLET_LIKE`：前者执行竖屏归一化并要求 `startupDisplay.status=VERIFIED`，后者保持当前方向；无法分类时在杀 App 前失败。静态 `deviceFormFactor` 只保留为诊断信息。
 
 观察只有在 adapter 明确确认冻结 `deviceId`、目标 App 绑定且截图有效时才可作为可用证据；`foregroundApp/inTargetApp` 只描述当前前台上下文，系统设置、应用市场等外部页面的合法截图仍可作为当前观察和后续动作依据。

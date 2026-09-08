@@ -3,7 +3,6 @@
 
 const assert = require('assert');
 const { parseLayout, projectLayout } = require('../lib/layout-observation');
-const { compareObservationViews, coordinateActionConflict, unresolvedEvidenceConflicts } = require('../lib/observation-consistency');
 
 const harmony = parseLayout(JSON.stringify({
   attributes: { type: 'Root', bounds: '[0,0][100,200]', visible: 'true' },
@@ -12,6 +11,25 @@ const harmony = parseLayout(JSON.stringify({
 assert.strictEqual(harmony.usable, true);
 assert.strictEqual(harmony.format, 'json');
 assert.strictEqual(projectLayout(harmony, 'harmony-observation', { width: 100, height: 200 }).elements[0].text, '继续');
+
+const listLayout = parseLayout(JSON.stringify({
+  attributes: { type: 'Root', bounds: '[0,0][1000,2000]', visible: 'true' },
+  children: [
+    { attributes: { type: 'Tab', text: '我的作品', selected: 'true', bounds: '[0,0][300,100]' }, children: [] },
+    {
+      attributes: { type: 'List', scrollable: 'true', bounds: '[0,100][1000,1900]', visible: 'true' },
+      children: [
+        { attributes: { type: 'ListItem', text: '作品 A', bounds: '[0,100][1000,500]', visible: 'true' }, children: [] },
+        { attributes: { type: 'ListItem', text: '作品 B', bounds: '[0,500][1000,900]', visible: 'true' }, children: [] },
+      ],
+    },
+  ],
+}));
+const listProjection = projectLayout(listLayout, 'list-observation', { width: 1000, height: 2000 });
+assert.strictEqual(listProjection.scrollContainers.length, 1);
+assert.strictEqual(listProjection.scrollContainers[0].axis, 'VERTICAL');
+assert.strictEqual(listProjection.scrollContainers[0].items.length, 2);
+assert.notStrictEqual(listProjection.scrollContainers[0].items[0].anchorKey, listProjection.scrollContainers[0].items[1].anchorKey);
 
 const android = parseLayout(`<?xml version="1.0"?><hierarchy rotation="0"><node class="android.widget.FrameLayout" bounds="[0,0][1080,2400]" visible="true"><node class="android.widget.EditText" resource-id="account" text="abc" bounds="[20,40][500,120]" focused="true" enabled="true"/></node></hierarchy>`);
 const androidView = projectLayout(android, 'android-observation', { width: 1080, height: 2400 });
@@ -33,33 +51,8 @@ assert.strictEqual(adapterOnlyKeyboard.signals.coordinateConsistency, 'MISMATCH'
 assert.strictEqual(iosBeforeProjection.elements.some((entry) => /Key/.test(entry.role)), false);
 assert.strictEqual(iosBeforeProjection.elements.find((entry) => entry.secure).maskedLength, 6);
 
-const before = { _states: iosBeforeProjection.states, signals: iosBeforeProjection.signals };
-const after = { _states: iosAfterProjection.states, signals: iosAfterProjection.signals };
-const changed = compareObservationViews(before, after, { type: 'tap' });
-assert.deepStrictEqual(changed.stateChanges.map((entry) => [entry.before, entry.after, entry.unexpected]), [[6, 7, true]]);
-assert.ok(changed.conflicts.some((entry) => entry.code === 'UNEXPECTED_SECURE_INPUT_MUTATION' && entry.severity === 'CRITICAL'));
-assert.ok(changed.conflicts.some((entry) => entry.code === 'KEYBOARD_COORDINATE_SPACE_MISMATCH' && entry.severity === 'ACTION_BLOCKING'));
-assert.strictEqual(coordinateActionConflict({ conflicts: changed.conflicts }, 'ios', 'tap').code, 'KEYBOARD_COORDINATE_SPACE_MISMATCH');
-assert.strictEqual(coordinateActionConflict({ conflicts: changed.conflicts }, 'android', 'tap'), null);
-assert.strictEqual(coordinateActionConflict({ conflicts: changed.conflicts }, 'ios', 'dismissKeyboard'), null);
-
 const malformed = parseLayout('<hierarchy><node></hierarchy>');
 assert.strictEqual(malformed.usable, false);
 assert.strictEqual(malformed.diagnostics[0].code, 'LAYOUT_PARSE_FAILED');
-
-const events = [
-  { type: 'actionResult', operationId: 'tap-1', requestedAction: { type: 'tap' }, ok: true },
-  { type: 'observation', ref: 'after-tap', relatedOperationId: 'tap-1' },
-  { type: 'actionResult', operationId: 'input-1', requestedAction: { type: 'inputText' }, ok: true, deviceResult: { inputEffect: { status: 'MASKED' } } },
-  { type: 'observation', ref: 'after-input', relatedOperationId: 'input-1' },
-];
-const views = {
-  'after-tap': { conflicts: changed.conflicts, signals: iosAfterProjection.signals },
-  'after-input': { conflicts: [], _states: iosAfterProjection.states, signals: { keyboard: { shown: false }, coordinateConsistency: 'CONSISTENT' } },
-};
-assert.deepStrictEqual(unresolvedEvidenceConflicts('/unused', events, (_dir, event) => views[event.ref]), []);
-assert.strictEqual(unresolvedEvidenceConflicts('/unused', events.slice(0, 2), (_dir, event) => views[event.ref])[0].code, 'UNEXPECTED_SECURE_INPUT_MUTATION');
-const priorGenerationEvents = events.slice(0, 2).map((entry) => ({ ...entry, warmSessionGeneration: 1 }));
-assert.deepStrictEqual(unresolvedEvidenceConflicts('/unused', priorGenerationEvents, (_dir, event) => views[event.ref], { warmSessionGeneration: 2 }), []);
 
 console.log('layout-observation passed');

@@ -215,13 +215,13 @@ Case Agent 可以在后续请求中携带修订后的 `caseContext`。Runtime �
 }
 ```
 
-Runtime 自动把 decision 绑定到当前 Scene 和随后执行的 operation。Agent 不提交 `basedOnSceneRef`、operationId 或时间戳。
+Runtime 自动把 decision 绑定到当前 Scene 和随后执行的 operation。Agent 只提交 `basedOnSceneId` 作为并发前置条件，不管理 operationId、证据路径或时间戳。
 
 下一次请求中的 observation 和 conclusion 用于解释上一次动作返回的 Scene；最后一次动作的结论由 `finish.decision` 闭合。这样可以还原每步判断，同时不增加 Runtime 调用次数。
 
 ### 7.3 知识调查闭环
 
-知识查询保持为按需能力，不成为固定阶段。以下情况由 Case Agent 结合现场触发：现象与预期不一致、现象性质无法判断、涉及平台/版本/账号/配置差异、前置状态或执行路径异常，以及准备形成 FAIL、INCONCLUSIVE 或没有直接技术事实阻止验证点的 BLOCKED。
+知识查询保持为按需能力，不成为固定阶段。当前 Scene 不能独立解释现象，或判断确实依赖平台、版本、账号、配置等外部规则时，由 Case Agent 触发；直接证据足够时不因 verdict 类型机械查询。
 
 `knowledge` 返回候选后，Case Agent 在下一次已有请求的 `decision.knowledgeReview` 中提交候选适用性和理由。Runtime 以 `knowledgeReviewed` 保存复核，并把查询绑定到当时的 Scene、contextVersion 和 expectationRefs。零候选自动闭合为 `NO_MATCH`，不要求 Agent 再提交空评估。
 
@@ -255,7 +255,7 @@ CaseResult 中的每个 check 引用规范化验证点：
 - PASS/FAIL check 至少引用一个有效 Scene。
 - check 引用有效 Scene；decision 声明 `expectationRefs` 时，报告展示验证点与相关 action、前后 Scene 的关系。
 - 整体 verdict 与 checks 一致。
-- FAIL、INCONCLUSIVE 和没有有效 `technicalRefs` 的 BLOCKED 已完成相关知识调查。
+- 搜索型验证点的 FAIL 引用已完成且连续的列表覆盖。
 - `technicalRefs` 只引用当前 execution 中由 Runtime 生成、且直接阻止该验证点的技术事实。
 - 知识支持的 PASS 引用了相关 `APPLICABLE` 条目。
 - 未完成的验证点必须明确说明未验证原因，整体结果不得错误标记为 PASS。
@@ -330,7 +330,7 @@ logs/
 operations/
 knowledge/
 telemetry/
-coordinate-audits/
+action-spatial-evidence/
 result.json
 metrics.json
 artifact-manifest.json
@@ -374,7 +374,8 @@ completion.json
 - `scripts/case-runtime/narrative-service.js`：规范化上下文、分配验证点 ID、持久化语义事件。
 - `scripts/case-runtime/knowledge-review.js`：规范化候选评估、绑定查询与验证点，并提供结果校验索引。
 - `scripts/case-runtime/runtime-core.js`：在对应设备操作前写入 decision，保证操作与目的顺序一致。
-- `scripts/case-runtime/result-integrity.js`：验证 expectation、check、Scene、坐标覆盖图、知识和技术事实引用的闭环关系。
+- `scripts/lib/action-spatial-evidence.js`：唯一负责动作坐标校验、不可变 JSON/标注图落盘、统一读取和投影。
+- `scripts/case-runtime/result-integrity.js`：验证 expectation、check、Scene、动作空间证据、知识和技术事实引用的闭环关系。
 - `scripts/lib/technical-facts.js`：统一技术事实类型、稳定引用和报告归因。
 - 保持 `runtime-client.js` 为 Case Agent 唯一入口，不把语义逻辑写入 Client。
 
@@ -441,10 +442,10 @@ flowchart LR
 - 漏掉任一验证点时不能完成可信 PASS。
 - PASS check 无 Scene 证据时返回待补充项。
 - FAIL、INCONCLUSIVE 和 BLOCKED 的 checks 与整体 verdict 一致。
-- 负向结果缺少相关知识调查时返回待补充项，零命中或候选不适用视为有效调查。
+- 搜索型验证点缺少完整覆盖时返回待补充项；一般负向结果不强制查询知识。
 - 历史瞬态技术事件不能豁免后续业务 BLOCKED；有效 `technicalRefs` 可以形成技术 BLOCKED。
 - 知识支持的 PASS 必须引用已查询、已冻结且评估为适用的条目。
-- 坐标覆盖图必须按 action operationId 独立保存并进入证据图。
+- 动作空间证据 JSON 和自带底图的标注 SVG 必须按 action operationId 独立保存并进入证据图；Runtime、报告和看板不得重复计算或绘制。
 - Case Agent 原始 result 在 commit 和报告发布过程中不被改写。
 
 ### 13.3 叙事投影测试
@@ -453,7 +454,7 @@ flowchart LR
 - 最后一次动作由 `finish.decision` 闭合，finish 独立投影为最终判断而非设备执行步骤。
 - action、observe、knowledge、recover 和计划调整按时间正确展示，操作后 Scene 关联完整。
 - 执行步骤展示关联验证点文本和最终状态，最终检查展示相关步骤。
-- 坐标覆盖图进入截图查看器并与操作前截图叠加。
+- 动作空间标注图作为独立截图进入查看器，并与 Runtime 返回给 Agent 的附件引用同源。
 - 缺少必需语义的当前 execution 明确显示记录缺口，不生成虚构内容。
 
 ### 13.4 端到端测试
@@ -485,7 +486,7 @@ flowchart LR
 | 用例理解 | `caseContextRecorded` | 必填语义与验证点唯一性 | `understandingHistory`、当前理解 | 用例理解及修订记录 | 契约、叙事投影、报告测试 |
 | 初始与调整计划 | 首次 `initialPlan`、后续 `planUpdate` | 空初始计划形成缺口，调整计划语义有效 | `initialPlan`、`planHistory` | 初始计划与计划调整分开展示 | 记录完整性、叙事投影测试 |
 | 每步业务判断 | `agentDecisionRecorded` | 后续主动请求缺 decision 形成缺口 | `steps`、`finalDecision` | 操作目的、预期、观察和结论 | Runtime、叙事投影、报告测试 |
-| 知识调查 | `knowledgeQueried`、`knowledgeReviewed` | 负向结论调查闭合、适用引用有效 | `knowledgeInvestigations`、check 知识 | 候选、适用性及结论影响 | 知识闭环、结果矩阵测试 |
+| 知识调查 | `knowledgeQueried`、`knowledgeReviewed` | 已提交的适用引用有效 | `knowledgeInvestigations`、check 知识 | 候选、适用性及结论影响 | 知识闭环、结果矩阵测试 |
 | 技术事实 | Runtime 技术事实事件及自动关联 | execution、验证点、generation、有效性和类型 | check 的完整 `technicalFacts` | code、message、时间、操作、状态 | 技术事实反向测试、报告测试 |
 | 记录可信度 | `narrativeGap` 与已有语义事件 | 三态计算规则 | `recordingStatus`、`gaps` | 完整、部分、不可用 | 记录状态与空计划测试 |
 

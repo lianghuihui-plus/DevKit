@@ -102,6 +102,7 @@ function roleEntrypoints(role) {
 function implementationGroups(skillRoot, platform) {
   const sharedRuntime = new Set(SHARED_IMPLEMENTATION_FILES);
   const adapter = new Set(PLATFORM_ENTRYPOINTS);
+  adapter.add('scripts/lib/action-result.js');
   for (const relative of walkFiles(skillRoot, `scripts/platform/adapters/${platform}`)) adapter.add(relative);
 
   const runtime = new Set([...sharedRuntime]);
@@ -113,11 +114,13 @@ function implementationGroups(skillRoot, platform) {
   for (const relative of [
     'scripts/execution/contracts/case-contract.js',
     'scripts/lib/action-contract.js',
-    'scripts/lib/action-coordinate-audit.js',
+    'scripts/lib/action-result.js',
+    'scripts/lib/action-spatial-evidence.js',
     'scripts/lib/knowledge-query.js',
     'scripts/lib/layout-observation.js',
     'scripts/lib/observation-consistency.js',
     'scripts/lib/observation-model.js',
+    'scripts/lib/scroll-context.js',
     'scripts/lib/technical-facts.js',
     'scripts/lib/warm-session-contract.js',
     'scripts/lib/workspace.js',
@@ -147,6 +150,7 @@ function implementationGroups(skillRoot, platform) {
     'scripts/lib/execution-evidence-graph.js',
     'scripts/lib/execution-lifecycle.js',
     'scripts/lib/execution-artifact-manifest.js',
+    'scripts/lib/action-spatial-evidence.js',
     'scripts/lib/image-evidence.js',
     'scripts/lib/observation-consistency.js',
     'scripts/lib/technical-facts.js',

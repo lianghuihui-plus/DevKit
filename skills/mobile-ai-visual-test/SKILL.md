@@ -29,12 +29,13 @@ description: 当需要基于任意非空文本人工用例，对移动端应用�
    - `WAIT_CASE_AGENT`：等待当前 Case Agent 完成，不进入它与 Case Runtime 的交互过程。
    - `COMMIT_CASE`：调用 `batch commit`，保留 Case Agent 的原始结果并刷新报告。
    - `RELEASE_PLATFORM`：再次调用 `batch reconcile`，由确定性收尾流程释放平台资源。
-   - `PUBLISH_REPORTS`：再次调用 `batch reconcile`，只重试报告发布，不重跑用例。
+   - `PUBLISH_REPORTS`：再次调用 `batch reconcile`，从正式 execution 产物修复目标用例、平台和批次报告，不重跑用例。
+   - `BATCH_CANCELLED`：确认取消后的 execution、平台资源和报告均已收口。
    - `BATCH_COMPLETE`：读取最终检查清单并汇总批次结果。
    - 批次级阻塞状态：保留现场并报告明确的技术原因。
 6. Case Agent 返回最终摘要后，以 execution 中的完成状态为准继续 commit；批次结束后向用户汇总结果和报告位置。
 
-一个用例只委托一次。`executionId` 是持久化的业务执行链标识；宿主返回的 Agent 句柄只由主 Agent 在当前会话中持有。恢复时优先续用该句柄；句柄确实丢失时，以同一 Case Brief 和 execution 创建 continuation Agent，并记录续接事实，不创建第二条业务执行链。用例间共享 App 暖状态，但使用独立的 Case Agent、业务上下文和证据。
+一个用例只委托一次。`executionId` 是持久化的业务执行链标识；宿主返回的 Agent 句柄只由主 Agent 在当前会话中持有。恢复时优先续用该句柄；句柄确实丢失时，先 reconcile Runtime，再使用返回的 continuation Brief 和同一 execution 创建 continuation Agent，不创建第二条业务执行链。用例间共享 App 暖状态，但使用独立的 Case Agent、业务上下文和证据。
 
 ## 角色边界
 
@@ -46,6 +47,7 @@ description: 当需要基于任意非空文本人工用例，对移动端应用�
 
 - 当前用例只有在 Case Agent 调用 `finish` 且 `reconcile` 返回 `COMMIT_CASE` 后才进入提交。
 - 当前批次只有在所有授权用例完成、平台资源释放且报告发布成功后才结束。
+- 用户要求停止时使用 `batch cancel`，再继续 reconcile 直到 `BATCH_CANCELLED`；`teardown` 只释放资源，不代表业务取消。
 - 真实设备、批次存储或 bootstrap 无法工作时，以批次级技术状态结束并保留诊断。
 
 ## 按需资源

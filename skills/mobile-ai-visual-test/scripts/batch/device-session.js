@@ -54,12 +54,13 @@ function normalizeRestartResult(value, binding, stderr = '') {
     binding?.deviceFormFactor,
     { platform },
   );
-  const coldStartVerified = value?.ok === true && value?.coldStartVerified === true;
+  const coldStartVerified = value?.command?.status === 'ACCEPTED' && value?.coldStartVerified === true;
   const displayReason = display.validation.errors.length
     ? `startup display verification failed: ${display.validation.errors.join('; ')}`
     : '';
   return {
     ...value,
+    ok: coldStartVerified && display.verified,
     coldStartVerified,
     startupDisplayVerified: display.verified,
     startupDisplayValidation: {

@@ -39,10 +39,12 @@ function normalizeExpectations(value, previous = null) {
         `caseContext.expectations[${index}].text`, 'CASE_NARRATIVE_INVALID').trim();
     if (used.some((entry) => entry.text === text)) throw contractError('CASE_NARRATIVE_INVALID', `duplicate expectation: ${text}`);
     const explicitId = typeof item === 'object' && item ? String(item.id || '').trim() : '';
+    const verificationKind = typeof item === 'object' && item?.verificationKind
+      ? item.verificationKind : 'DIRECT_OBSERVATION';
     const previousId = previousItems.find((entry) => entry.text === text)?.id || '';
     let id = explicitId || previousId || nextExpectationId([...previousItems, ...used]);
     if (!/^E\d+$/.test(id) || used.some((entry) => entry.id === id)) id = nextExpectationId([...previousItems, ...used]);
-    used.push({ id, text });
+    used.push({ id, text, verificationKind });
   }
   return used;
 }

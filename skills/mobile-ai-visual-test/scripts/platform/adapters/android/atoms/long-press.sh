@@ -4,7 +4,7 @@ set -euo pipefail
 device=""
 x=""
 y=""
-duration_ms="800"
+duration_ms=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -16,7 +16,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$x" && -n "$y" ]] || { echo "longPress 需要 --x 和 --y" >&2; exit 2; }
+[[ -n "$x" && -n "$y" && -n "$duration_ms" ]] || { echo "longPress 需要 --x、--y 和 --duration-ms" >&2; exit 2; }
 node -e '
 const value = Number(process.argv[1]);
 process.exit(Number.isFinite(value) && value > 0 ? 0 : 1);

@@ -87,7 +87,7 @@ function createCurrentFixture(root, options = {}) {
   const endedAt = '2026-08-13T10:00:05.000+08:00';
   const currentContract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform: 'harmony' });
   const execution = {
-    schemaVersion: 6,
+    schemaVersion: 7,
     runtime: 'case-runtime',
     executionId,
     batchId: `batch-${suffix}`,
@@ -124,7 +124,7 @@ function createCurrentFixture(root, options = {}) {
     batchContractSha: execution.batchContractSha,
   });
 
-  for (const name of ['screenshots', 'layouts', 'logs', 'scenes', 'operations', 'coordinate-audits', 'knowledge', 'telemetry']) {
+  for (const name of ['screenshots', 'layouts', 'logs', 'scenes', 'operations', 'action-spatial-evidence', 'knowledge', 'telemetry']) {
     fs.mkdirSync(path.join(execDir, name), { recursive: true });
   }
   const beforeRef = 'screenshots/scene-0001.png';
@@ -139,7 +139,7 @@ function createCurrentFixture(root, options = {}) {
   fs.writeFileSync(path.join(execDir, 'logs', 'scene-0002-errors.txt'), 'fixture observation diagnostics\n');
   const app = { appId: execution.targetBinding.appId, inTargetApp: true };
   const scene = (sceneId, screenshotRef, layoutRef, previousAction = null) => ({
-    schemaVersion: 1,
+    schemaVersion: 2,
     sceneId,
     generation: execution.warmSessionGeneration,
     capturedAt: sceneId === 'scene-0001' ? '2026-08-13T10:00:01.000+08:00' : '2026-08-13T10:00:03.000+08:00',
@@ -147,27 +147,69 @@ function createCurrentFixture(root, options = {}) {
     layoutRef,
     layout: null,
     app,
-    signals: {}, conflicts: [], elements: [], capabilities: [],
+    signals: {}, conflicts: [], elements: [], capabilities: [], scrollContainers: [], scrollContexts: [],
     visual: { gestures: ['tap'], coordinates: 'normalized-0-to-1' },
     previousAction,
   });
   const action = options.action || { type: 'tap', x: 120, y: 240, target: '目标按钮', coordinateSource: 'visual', targetBounds: [80, 210, 160, 270], coordinateEvidence: '操作前截图中的目标按钮' };
   const redactedAction = action.type === 'inputText' ? { ...action, text: '[REDACTED]' } : action;
-  const coordinateAudit = action.x !== undefined && action.y !== undefined ? {
+  const spatialEvidenceData = action.x !== undefined && action.y !== undefined ? {
     schemaVersion: 1,
+    type: 'actionSpatialEvidence',
+    operationId: 'action-0001',
+    actionType: action.type,
     source: action.coordinateSource,
     kind: 'POINT',
+    certainty: 'DISPATCH_ONLY',
     requested: { point: { x: Number(action.x), y: Number(action.y) }, bounds: action.targetBounds },
-    executed: { point: { x: Number(action.x), y: Number(action.y) } },
-    expectedExecuted: { point: { x: Number(action.x), y: Number(action.y) } },
+    expectedDispatched: { point: { x: Number(action.x), y: Number(action.y) } },
+    dispatched: { point: { x: Number(action.x), y: Number(action.y) } },
+    actual: null,
     screenshot: { ref: beforeRef, width: 1, height: 1 },
     viewport: { width: 1, height: 1 },
     consistency: 'MATCHED',
-    overlayRef: 'coordinate-audits/action-0001.svg',
+    annotatedScreenshotRef: 'action-spatial-evidence/action-0001.svg',
   } : null;
-  if (coordinateAudit) fs.writeFileSync(path.join(execDir, coordinateAudit.overlayRef), '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>\n');
+  const spatialEvidenceRef = spatialEvidenceData ? 'action-spatial-evidence/action-0001.json' : null;
+  const spatialEvidence = spatialEvidenceData ? {
+    ref: spatialEvidenceRef,
+    ...spatialEvidenceData,
+    annotatedScreenshot: {
+      ref: spatialEvidenceData.annotatedScreenshotRef,
+      absolutePath: path.join(execDir, spatialEvidenceData.annotatedScreenshotRef),
+      attachment: {
+        type: 'image', mediaType: 'image/svg+xml', path: path.join(execDir, spatialEvidenceData.annotatedScreenshotRef),
+      },
+    },
+  } : null;
+  if (spatialEvidenceData) {
+    writeJson(path.join(execDir, spatialEvidenceRef), spatialEvidenceData);
+    fs.writeFileSync(path.join(execDir, spatialEvidenceData.annotatedScreenshotRef), `<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="data:image/png;base64,${FIXTURE_PNG.toString('base64')}" width="1" height="1"/></svg>\n`);
+  }
+  const actionResult = {
+    operationId: 'action-0001', lifecycle: { status: 'COMPLETED' }, action: redactedAction,
+    command: { status: 'ACCEPTED', transport: 'HDC_UITEST', elapsedMs: 20 },
+    deviceExecution: { status: 'UNVERIFIED', verification: 'REQUEST_ECHO', actualTouchPoint: null },
+    observedEffect: { status: 'UNCHANGED', beforeSceneRef: 'scene-0001', afterSceneRef: 'scene-0002' },
+    ...(spatialEvidence ? { spatialEvidence } : {}),
+  };
+  const storedActionResult = { ...actionResult };
+  delete storedActionResult.spatialEvidence;
+  if (spatialEvidenceRef) storedActionResult.spatialEvidenceRef = spatialEvidenceRef;
+  writeJson(path.join(execDir, 'operations', 'action-0001.json'), {
+    schemaVersion: 1,
+    operationId: 'action-0001',
+    status: 'COMPLETED',
+    sceneId: 'scene-0001',
+    sceneIdAfter: 'scene-0002',
+    action: redactedAction,
+    intent: action.type === 'inputText' ? '输入测试内容' : '打开目标并验证结果',
+    deviceResult: { command: actionResult.command, deviceExecution: actionResult.deviceExecution },
+    spatialEvidenceRef,
+    actionResult: storedActionResult,
+  });
   const beforeScene = scene('scene-0001', beforeRef, beforeLayoutRef);
-  const afterScene = scene('scene-0002', afterRef, afterLayoutRef, { operationId: 'action-0001', status: 'SUCCEEDED', action: redactedAction });
+  const afterScene = scene('scene-0002', afterRef, afterLayoutRef, actionResult);
   writeJson(path.join(execDir, 'scenes', 'scene-0001.json'), beforeScene);
   writeJson(path.join(execDir, 'scenes', 'scene-0002.json'), afterScene);
 
@@ -202,9 +244,10 @@ function createCurrentFixture(root, options = {}) {
       intent: decision.purpose, expectedOutcome: decision.expectedOutcome, decisionId: 'decision-0001',
     }),
     event(executionId, 6, '2026-08-13T10:00:02.000+08:00', 'actionCompleted', {
-      operationId: 'action-0001', sceneId: 'scene-0001', action: redactedAction, ok: true,
-      result: { schemaVersion: 1, type: 'actionResult', platform: 'harmony', action: action.type, ok: true },
-      coordinateAudit, decisionId: 'decision-0001',
+      operationId: 'action-0001', sceneId: 'scene-0001', sceneIdAfter: 'scene-0002', action: redactedAction,
+      lifecycle: actionResult.lifecycle, command: actionResult.command,
+      deviceExecution: actionResult.deviceExecution, observedEffect: actionResult.observedEffect,
+      spatialEvidenceRef, decisionId: 'decision-0001',
     }),
     event(executionId, 7, '2026-08-13T10:00:03.000+08:00', 'sceneObserved', {
       sceneId: 'scene-0002', generation: execution.warmSessionGeneration, operationId: 'observation-0002', purpose: 'POST_ACTION',

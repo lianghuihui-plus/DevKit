@@ -64,7 +64,7 @@ const adapter = {
 bootstrapBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 });
 
 const started = startCurrentCase({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, executionId: 'execution-runtime-001', now: T0 });
-assert.strictEqual(started.execution.schemaVersion, 6);
+assert.strictEqual(started.execution.schemaVersion, 7);
 assert.strictEqual(started.request, undefined);
 assert.strictEqual(started.brief.case.source, sourceText);
 assert.strictEqual(started.brief.scene, null);
@@ -84,6 +84,9 @@ const continuation = startCurrentCase({
 });
 assert.strictEqual(continuation.execution.executionId, started.execution.executionId);
 assert.strictEqual(continuation.agentContinuation.event.type, 'agentContinuation');
+assert.strictEqual(continuation.brief.mode, 'CONTINUATION');
+assert.strictEqual(continuation.brief.scene, null);
+assert.strictEqual(continuation.brief.resumeState.executionStatus, 'RUNNING');
 writeJsonAtomic(started.brief.runtime.requestPath, { operation: 'status' });
 const clientStatus = JSON.parse(childProcess.execSync(started.brief.runtime.command, { cwd: os.tmpdir(), encoding: 'utf8' }));
 assert.strictEqual(clientStatus.status, 'READY');
@@ -123,15 +126,24 @@ function runner(command, args, options) {
   }
   actionInvocationCount += 1;
   const type = args[args.indexOf('--type') + 1];
+  const xIndex = args.indexOf('--x');
+  const yIndex = args.indexOf('--y');
+  const dispatchedPoint = xIndex >= 0 && yIndex >= 0
+    ? { x: Number(args[xIndex + 1]), y: Number(args[yIndex + 1]) }
+    : null;
   return { status: 0, stdout: JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     type: 'actionResult',
     platform: binding.platform,
     time: T0,
     device: { id: binding.deviceId },
     app: { appId: binding.appId, inTargetApp: true },
     action: type,
-    ok: true,
+    command: { status: 'ACCEPTED', transport: 'TEST_RUNNER', elapsedMs: 0 },
+    deviceExecution: {
+      status: 'UNVERIFIED', verification: dispatchedPoint ? 'REQUEST_ECHO' : 'NONE',
+      ...(dispatchedPoint ? { dispatchedPoint } : {}), actualTouchPoint: null,
+    },
   }), stderr: '' };
 }
 
@@ -146,8 +158,10 @@ const first = run(started.execDir, { operation: 'observe', caseContext }, { runn
 assert.strictEqual(first.status, 'SCENE');
 assert.strictEqual(first.scene.sceneId, 'scene-0001');
 assert.deepStrictEqual(first.narrative.caseContext.expectations.map((item) => item.id), ['E1', 'E2']);
+const currentSceneId = () => JSON.parse(fs.readFileSync(path.join(started.execDir, 'current-scene.json'), 'utf8')).sceneId;
 const knowledge = run(started.execDir, {
   operation: 'knowledge',
+  basedOnSceneId: currentSceneId(),
   query: '当前页面显示异常',
   decision: {
     observation: '当前页面信息不足以解释显示状态',
@@ -180,6 +194,7 @@ Runtime 自动化测试夹具。
 `);
 const knowledgeMiss = run(started.execDir, {
   operation: 'knowledge',
+  basedOnSceneId: currentSceneId(),
   query: '目标内容未显示',
   decision: {
     observation: '当前目标内容仍未显示',
@@ -199,8 +214,28 @@ assert.strictEqual(knowledgeMissEvent.filterDiagnostics.rejected[0].entryId, 'K-
 const wait = first.scene.capabilities.find((item) => item.kind === 'wait');
 assert.ok(wait);
 
+const actionInvocationsBeforeSceneGuard = actionInvocationCount;
+const missingSceneBasis = run(started.execDir, {
+  operation: 'act',
+  capabilityId: wait.id,
+}, { runner, now: '2026-09-03T10:00:00.500Z' });
+assert.strictEqual(missingSceneBasis.status, 'REQUEST_INVALID');
+assert.strictEqual(missingSceneBasis.code, 'CASE_RUNTIME_REQUEST_INVALID');
+assert.strictEqual(actionInvocationCount, actionInvocationsBeforeSceneGuard);
+
+const ambiguousTarget = run(started.execDir, {
+  operation: 'act',
+  basedOnSceneId: currentSceneId(),
+  capabilityId: wait.id,
+  visual: { gesture: 'tap', point: [0.5, 0.5] },
+}, { runner, now: '2026-09-03T10:00:00.600Z' });
+assert.strictEqual(ambiguousTarget.status, 'REQUEST_INVALID');
+assert.match(ambiguousTarget.message, /mutually exclusive/);
+assert.strictEqual(actionInvocationCount, actionInvocationsBeforeSceneGuard);
+
 const second = run(started.execDir, {
   operation: 'act',
+  basedOnSceneId: currentSceneId(),
   capabilityId: wait.id,
   decision: {
     observation: '页面已经打开但仍需等待稳定',
@@ -220,7 +255,10 @@ const second = run(started.execDir, {
   },
 }, { runner, now: '2026-09-03T10:00:01.000Z' });
 assert.strictEqual(second.status, 'SCENE');
-assert.strictEqual(second.action.status, 'SUCCEEDED');
+assert.strictEqual(second.action.lifecycle.status, 'COMPLETED');
+assert.strictEqual(second.action.command.status, 'ACCEPTED');
+assert.strictEqual(second.action.deviceExecution.status, 'UNVERIFIED');
+assert.strictEqual(second.action.observedEffect.status, 'UNCHANGED');
 assert.strictEqual(second.scene.sceneId, 'scene-0002');
 assert.strictEqual(observationCount, 2);
 const narrativeStatus = run(started.execDir, { operation: 'status' });
@@ -230,6 +268,7 @@ assert.strictEqual(narrativeStatus.narrative.lastDecision.decision.purpose, '等
 const actionInvocationsBeforePartialNarrative = actionInvocationCount;
 const partialNarrative = run(started.execDir, {
   operation: 'act',
+  basedOnSceneId: currentSceneId(),
   capabilityId: second.scene.capabilities.find((item) => item.kind === 'wait').id,
   decision: {
     observation: '页面仍在目标 App 内',
@@ -241,13 +280,13 @@ const partialNarrative = run(started.execDir, {
 assert.strictEqual(partialNarrative.status, 'SCENE');
 assert.strictEqual(actionInvocationCount, actionInvocationsBeforePartialNarrative + 1);
 assert.ok(partialNarrative.narrative.warnings.some((item) => item.fields.includes('decision.expectedOutcome')));
-const stale = run(started.execDir, { operation: 'act', capabilityId: wait.id }, { runner, now: '2026-09-03T10:00:01.100Z' });
+const stale = run(started.execDir, { operation: 'act', basedOnSceneId: currentSceneId(), capabilityId: wait.id }, { runner, now: '2026-09-03T10:00:01.100Z' });
 assert.strictEqual(stale.status, 'SCENE_CHANGED');
 assert.strictEqual(stale.scene.sceneId, partialNarrative.scene.sceneId);
 assert.ok(stale.narrative.warnings.some((item) => item.fields.includes('decision')));
 
 let restartCount = 0;
-const recovered = run(started.execDir, { operation: 'recover', reason: '用例要求重新建立 App 起点' }, {
+const recovered = run(started.execDir, { operation: 'recover', basedOnSceneId: currentSceneId(), reason: '用例要求重新建立 App 起点' }, {
   runner,
   now: '2026-09-03T10:00:01.500Z',
   restartApp: () => {
@@ -263,7 +302,7 @@ assert.ok(recovered.narrative.warnings.some((item) => item.fields.includes('deci
 assert.strictEqual(restartCount, 1);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(root, 'runs', batchId, 'batch.json'), 'utf8')).warmSession.generation, 2);
 
-const interruptedRecovery = run(started.execDir, { operation: 'recover', reason: '验证恢复事务可续写' }, {
+const interruptedRecovery = run(started.execDir, { operation: 'recover', basedOnSceneId: currentSceneId(), reason: '验证恢复事务可续写' }, {
   runner,
   now: '2026-09-03T10:00:01.600Z',
   interruptAfter: 'generation',
@@ -275,7 +314,7 @@ const interruptedRecovery = run(started.execDir, { operation: 'recover', reason:
 assert.strictEqual(interruptedRecovery.status, 'TECHNICAL');
 assert.match(interruptedRecovery.message, /MAVT_CASE_RECOVERY_INTERRUPTED/);
 assert.match(interruptedRecovery.technicalFactRef, /^technical-fact-\d{4}$/);
-const resumedRecovery = run(started.execDir, { operation: 'recover', reason: '验证恢复事务可续写' }, {
+const resumedRecovery = run(started.execDir, { operation: 'recover', basedOnSceneId: currentSceneId(), reason: '验证恢复事务可续写' }, {
   runner,
   now: '2026-09-03T10:00:01.700Z',
   restartApp: () => {
@@ -283,13 +322,14 @@ const resumedRecovery = run(started.execDir, { operation: 'recover', reason: '�
     return { ok: true, coldStartVerified: true, startupDisplayVerified: true };
   },
 });
-assert.strictEqual(resumedRecovery.status, 'SCENE');
-assert.strictEqual(resumedRecovery.recovery.generation, 3);
+assert.strictEqual(resumedRecovery.status, 'RECOVERY_APPLIED');
+assert.strictEqual(resumedRecovery.requiresReassessment, true);
+assert.strictEqual(resumedRecovery.recoveredTransactions[0].status, 'SUCCEEDED');
 assert.strictEqual(restartCount, 2);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(root, 'runs', batchId, 'batch.json'), 'utf8')).warmSession.generation, 3);
 
 let unknownRestartCount = 0;
-const unknownRecovery = run(started.execDir, { operation: 'recover', reason: '模拟重启结果未知' }, {
+const unknownRecovery = run(started.execDir, { operation: 'recover', basedOnSceneId: currentSceneId(), reason: '模拟重启结果未知' }, {
   runner,
   now: '2026-09-03T10:00:01.750Z',
   restartApp: () => {
@@ -298,7 +338,7 @@ const unknownRecovery = run(started.execDir, { operation: 'recover', reason: '�
   },
 });
 assert.strictEqual(unknownRecovery.status, 'TECHNICAL');
-const observedUnknownRecovery = run(started.execDir, { operation: 'recover', reason: '模拟重启结果未知' }, {
+const observedUnknownRecovery = run(started.execDir, { operation: 'recover', basedOnSceneId: currentSceneId(), reason: '模拟重启结果未知' }, {
   runner,
   now: '2026-09-03T10:00:01.800Z',
   restartApp: () => {
@@ -306,13 +346,12 @@ const observedUnknownRecovery = run(started.execDir, { operation: 'recover', rea
     throw new Error('must not replay restart');
   },
 });
-assert.strictEqual(observedUnknownRecovery.status, 'SCENE');
-assert.strictEqual(observedUnknownRecovery.recovery.status, 'UNKNOWN');
-assert.match(observedUnknownRecovery.recovery.technicalFactRef, /^technical-fact-\d{4}$/);
+assert.strictEqual(observedUnknownRecovery.status, 'RECOVERY_APPLIED');
+assert.strictEqual(observedUnknownRecovery.recoveredTransactions[0].status, 'UNKNOWN');
 assert.strictEqual(unknownRestartCount, 1);
 assert.strictEqual(fs.existsSync(path.join(started.execDir, 'transactions', 'recovery.draft.json')), false);
 
-const failedRecovery = run(started.execDir, { operation: 'recover', reason: '模拟明确恢复失败' }, {
+const failedRecovery = run(started.execDir, { operation: 'recover', basedOnSceneId: currentSceneId(), reason: '模拟明确恢复失败' }, {
   runner,
   now: '2026-09-03T10:00:01.850Z',
   restartApp: () => ({
@@ -328,7 +367,7 @@ assert.match(failedRecovery.technicalFactRef, /^technical-fact-\d{4}$/);
 assert.strictEqual(fs.existsSync(path.join(started.execDir, 'transactions', 'recovery.draft.json')), false);
 
 let resumedDeviceResultCount = 0;
-const interruptedDeviceResult = run(started.execDir, { operation: 'recover', reason: '验证下一次调用自动续写恢复' }, {
+const interruptedDeviceResult = run(started.execDir, { operation: 'recover', basedOnSceneId: currentSceneId(), reason: '验证下一次调用自动续写恢复' }, {
   runner,
   now: '2026-09-03T10:00:01.875Z',
   interruptAfter: 'device-result',
@@ -353,19 +392,60 @@ const afterAutomaticRecovery = run(started.execDir, {
     throw new Error('must not replay restart');
   },
 });
-assert.strictEqual(afterAutomaticRecovery.status, 'SCENE');
-assert.strictEqual(afterAutomaticRecovery.narrative.contextVersion, 2);
-assert.strictEqual(afterAutomaticRecovery.narrative.latestPlan.version, 2);
-assert.deepStrictEqual(afterAutomaticRecovery.narrative.latestPlan.items, ['等待稳定', '完成两个验证点']);
-assert.deepStrictEqual(afterAutomaticRecovery.narrative.caseContext.expectations.map((item) => item.id), ['E1', 'E2']);
-assert.ok(afterAutomaticRecovery.narrative.warnings.some((item) => item.fields.includes('decision')));
+assert.strictEqual(afterAutomaticRecovery.status, 'RECOVERY_APPLIED');
+assert.strictEqual(afterAutomaticRecovery.requiresReassessment, true);
+const afterRecoveryObserve = run(started.execDir, {
+  operation: 'observe',
+  caseContext: {
+    ...caseContext,
+    revisionReason: '恢复后按当前现场收敛执行计划',
+    initialPlan: ['确认恢复后的页面状态', '完成两个验证点'],
+  },
+}, { runner, now: '2026-09-03T10:00:01.925Z' });
+assert.strictEqual(afterRecoveryObserve.status, 'SCENE');
+assert.strictEqual(afterRecoveryObserve.narrative.contextVersion, 2);
+assert.strictEqual(afterRecoveryObserve.narrative.latestPlan.version, 2);
+assert.deepStrictEqual(afterRecoveryObserve.narrative.latestPlan.items, ['等待稳定', '完成两个验证点']);
+assert.deepStrictEqual(afterRecoveryObserve.narrative.caseContext.expectations.map((item) => item.id), ['E1', 'E2']);
+assert.ok(afterRecoveryObserve.narrative.warnings.some((item) => item.fields.includes('decision')));
 assert.strictEqual(resumedDeviceResultCount, 1);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(root, 'runs', batchId, 'batch.json'), 'utf8')).warmSession.generation, 4);
 assert.strictEqual(fs.existsSync(path.join(started.execDir, 'transactions', 'recovery.draft.json')), false);
 
+const spatialAction = run(started.execDir, {
+  operation: 'act',
+  basedOnSceneId: currentSceneId(),
+  visual: { gesture: 'tap', point: [0, 0] },
+  intent: '验证动作空间证据闭环',
+  decision: {
+    observation: '当前现场左上角可作为无副作用测试位置',
+    conclusion: '执行一次视觉点击以检查 Runtime 返回证据',
+    purpose: '验证动作空间证据闭环',
+    expectedOutcome: '返回请求点、投递点和带底图的标注附件',
+    expectationRefs: [],
+  },
+}, { runner, now: '2026-09-03T10:00:01.950Z' });
+assert.strictEqual(spatialAction.status, 'SCENE');
+assert.strictEqual(spatialAction.action.spatialEvidence.certainty, 'DISPATCH_ONLY');
+assert.deepStrictEqual(spatialAction.action.spatialEvidence.requested.point, { x: 0, y: 0 });
+assert.deepStrictEqual(spatialAction.action.spatialEvidence.dispatched.point, { x: 0, y: 0 });
+assert.strictEqual(spatialAction.action.spatialEvidence.actual, null);
+assert.strictEqual(spatialAction.action.spatialEvidence.annotatedScreenshot.attachment.mediaType, 'image/png');
+assert.strictEqual(fs.existsSync(spatialAction.action.spatialEvidence.annotatedScreenshot.absolutePath), true);
+const spatialOperationId = spatialAction.action.operationId;
+const spatialEvent = require('../case-runtime/store').events(started.execDir)
+  .find((event) => event.type === 'actionCompleted' && event.operationId === spatialOperationId);
+assert.strictEqual(spatialEvent.spatialEvidenceRef, `action-spatial-evidence/${spatialOperationId}.json`);
+assert.strictEqual(spatialEvent.spatialEvidence, undefined);
+assert.strictEqual(spatialEvent.coordinateAudit, undefined);
+const spatialOperation = JSON.parse(fs.readFileSync(path.join(started.execDir, 'operations', `${spatialOperationId}.json`), 'utf8'));
+assert.strictEqual(spatialOperation.spatialEvidenceRef, spatialEvent.spatialEvidenceRef);
+assert.strictEqual(spatialOperation.actionResult.spatialEvidenceRef, spatialEvent.spatialEvidenceRef);
+assert.strictEqual(spatialOperation.actionResult.spatialEvidence, undefined);
+
 const timedOut = run(started.execDir, { operation: 'observe' }, { runner, now: '2026-09-03T10:30:00.000Z' });
 assert.strictEqual(timedOut.status, 'TIME_LIMIT');
-assert.strictEqual(timedOut.scene.sceneId, afterAutomaticRecovery.scene.sceneId);
+assert.strictEqual(timedOut.scene.sceneId, spatialAction.scene.sceneId);
 assert.match(timedOut.technicalFactRef, /^technical-fact-\d{4}$/);
 
 const eventCount = fs.readFileSync(path.join(started.execDir, 'events.jsonl'), 'utf8').trim().split('\n').length;
@@ -383,25 +463,25 @@ const result = {
   ],
   uncertainties: [],
 };
-const emptyPass = run(started.execDir, { operation: 'finish', result: { ...result, checks: [] } }, { now: '2026-09-03T10:00:01.900Z' });
+const emptyPass = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), result: { ...result, checks: [] } }, { now: '2026-09-03T10:00:01.900Z' });
 assert.strictEqual(emptyPass.code, 'CASE_RESULT_CHECKS_REQUIRED');
-const passWithFail = run(started.execDir, { operation: 'finish', result: {
+const passWithFail = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), result: {
   ...result,
   checks: [{ ...result.checks[0], status: 'FAIL' }, result.checks[1]],
 } }, { now: '2026-09-03T10:00:01.900Z' });
 assert.strictEqual(passWithFail.code, 'CASE_RESULT_VERDICT_MISMATCH');
-const passWithoutEvidence = run(started.execDir, { operation: 'finish', result: {
+const passWithoutEvidence = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), result: {
   ...result,
   checks: [{ ...result.checks[0], sceneRefs: [] }, result.checks[1]],
 } }, { now: '2026-09-03T10:00:01.900Z' });
 assert.strictEqual(passWithoutEvidence.code, 'CASE_RESULT_EVIDENCE_REQUIRED');
-const unknownScene = run(started.execDir, { operation: 'finish', result: {
+const unknownScene = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), result: {
   ...result,
   checks: [{ ...result.checks[0], sceneRefs: ['scene-9999'] }, result.checks[1]],
 } }, { now: '2026-09-03T10:00:01.900Z' });
 assert.strictEqual(unknownScene.status, 'TECHNICAL');
 assert.strictEqual(unknownScene.code, 'CASE_RESULT_SCENE_UNKNOWN');
-const uncoveredExpectation = run(started.execDir, { operation: 'finish', result: {
+const uncoveredExpectation = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), result: {
   ...result,
   checks: [result.checks[0]],
 } }, { now: '2026-09-03T10:00:01.900Z' });
@@ -424,7 +504,12 @@ const finishDecision = {
   expectedOutcome: '全部验证点都有明确结果和现场证据',
   expectationRefs: ['E1', 'E2'],
 };
-const interruptedFinish = run(started.execDir, { operation: 'finish', decision: finishDecision, result }, {
+const recoveryBeforeFinish = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), decision: finishDecision, result }, {
+  now: '2026-09-03T10:00:01.950Z', runner,
+});
+assert.strictEqual(recoveryBeforeFinish.status, 'RECOVERY_APPLIED');
+assert.strictEqual(actionInvocationCount, actionsBeforePendingRecovery);
+const interruptedFinish = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), decision: finishDecision, result }, {
   now: '2026-09-03T10:00:02.000Z',
   runner,
   interruptAfter: 'execution',
@@ -439,11 +524,11 @@ assert.strictEqual(fs.existsSync(path.join(started.execDir, 'transactions', 'act
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'COMMIT_CASE');
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'runtime.json'), 'utf8')).status, 'COMPLETED');
 assert.strictEqual(fs.existsSync(path.join(started.execDir, 'transactions', 'finish.draft.json')), false);
-const finished = run(started.execDir, { operation: 'finish', decision: finishDecision, result }, { now: '2026-09-03T10:00:02.500Z' });
+const finished = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), decision: finishDecision, result }, { now: '2026-09-03T10:00:02.500Z' });
 assert.strictEqual(finished.status, 'COMPLETED');
 assert.strictEqual(finished.idempotent, true);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'metrics.json'), 'utf8')).elapsedMs, 2000);
-assert.strictEqual(run(started.execDir, { operation: 'finish', decision: finishDecision, result }).idempotent, true);
+assert.strictEqual(run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), decision: finishDecision, result }).idempotent, true);
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'COMMIT_CASE');
 
 const runtimeMetrics = JSON.parse(fs.readFileSync(path.join(started.execDir, 'metrics.json'), 'utf8'));

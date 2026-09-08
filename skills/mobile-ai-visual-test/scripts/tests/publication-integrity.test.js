@@ -10,6 +10,7 @@ const {
   validateExecutionArtifactManifest,
 } = require('../lib/execution-artifact-manifest');
 const { readPublicationState, recordPublicationAttempt } = require('../report/publication-state');
+const { refreshBatchIndex } = require('../report/report-service');
 const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -38,6 +39,9 @@ const published = fixture('published');
 const manifest = buildExecutionArtifactManifest(published.execDir);
 assert.ok(manifest.files.some((entry) => entry.path === 'result.json'));
 assert.ok(manifest.files.some((entry) => entry.path === 'screenshots/scene-0001.png'));
+assert.ok(manifest.files.some((entry) => entry.path.startsWith('scenes/')));
+assert.ok(manifest.files.some((entry) => entry.path.startsWith('operations/')));
+assert.strictEqual(manifest.files.some((entry) => entry.path === 'current-scene.json'), false);
 assert.strictEqual(manifest.files.some((entry) => entry.path.startsWith('agent/')), false);
 assert.deepStrictEqual(validateExecutionArtifactManifest(published.execDir), manifest);
 fs.appendFileSync(path.join(published.execDir, 'metrics.json'), '\n');
@@ -66,6 +70,17 @@ recordPublicationAttempt(reportRoot, 'batch-retry', 'batch', { status: 'PUBLISHE
 assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').status, 'PUBLISHED');
 assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').attempts.length, 2);
 
+const repairRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-repair-'));
+createTestWorkspace(repairRoot);
+const repairFixture = createCurrentFixture(repairRoot, { verdict: 'PASS', suffix: 'repair' });
+refreshBatchIndex(repairRoot, [repairFixture.caseDir]);
+const platformReport = path.join(repairFixture.caseDir, 'platforms', 'harmony', 'CONTEXT.html');
+fs.unlinkSync(platformReport);
+assert.strictEqual(fs.existsSync(platformReport), false);
+refreshBatchIndex(repairRoot, [repairFixture.caseDir]);
+assert.strictEqual(fs.existsSync(platformReport), true);
+
 for (const item of [published, missing, unsettled, emptyPass, changedScene]) fs.rmSync(item.root, { recursive: true, force: true });
 fs.rmSync(reportRoot, { recursive: true, force: true });
+fs.rmSync(repairRoot, { recursive: true, force: true });
 console.log('publication-integrity passed');

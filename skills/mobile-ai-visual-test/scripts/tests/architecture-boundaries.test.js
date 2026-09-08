@@ -53,7 +53,7 @@ assert.strictEqual(currentReportSource.includes('report.events'), false, 'Render
 for (const obsolete of ['execution-story', 'checkpoint-accordion', 'process-workspace', 'case-plan-workspace']) {
   assert.strictEqual(currentReportSource.includes(obsolete), false, `Renderer must not retain obsolete ${obsolete} UI`);
 }
-for (const artifact of ['binding.snapshot.json', 'case.snapshot.json', 'source.snapshot.md', 'logs/', 'coordinate-audits/']) {
+for (const artifact of ['binding.snapshot.json', 'case.snapshot.json', 'source.snapshot.md', 'logs/', 'action-spatial-evidence/']) {
   assert.ok(read('docs/architecture.md').includes(artifact), `architecture must list ${artifact}`);
   assert.ok(read('docs/execution-traceability-design.md').includes(artifact), `traceability design must list ${artifact}`);
 }
@@ -66,7 +66,7 @@ const runtimeClient = require('../case-runtime/runtime-client');
 const lifecycle = require('../case-runtime/lifecycle');
 const batchCore = require('../batch/core');
 assert.deepStrictEqual(Object.keys(runtimeClient).sort(), ['main', 'parseRequest', 'run']);
-assert.deepStrictEqual(Object.keys(lifecycle).sort(), ['EXECUTION_SCHEMA_VERSION', 'commitExecution', 'createExecution', 'readCompletion', 'reconcileExecution', 'recordAgentContinuation', 'resumeExecution']);
+assert.deepStrictEqual(Object.keys(lifecycle).sort(), ['EXECUTION_SCHEMA_VERSION', 'buildContinuationBrief', 'cancelExecution', 'commitExecution', 'createExecution', 'readCompletion', 'reconcileExecution', 'recordAgentContinuation', 'resumeExecution']);
 assert.strictEqual(batchCore.BATCH_SCHEMA_VERSION, 5);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeClient, 'createExecution'), false);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(lifecycle, 'act'), false);
@@ -155,7 +155,10 @@ for (const relative of [
   'scripts/lib/agent-input-contract.js',
   'scripts/lib/case-agent-guidance.js',
   'scripts/lib/case-agent-runtime-contract.js',
+  'scripts/lib/execution-time-limit.js',
+  'scripts/lib/knowledge-context.js',
   'scripts/lib/recovery-contract.js',
+  'scripts/lib/source-reference.js',
 ]) assert.strictEqual(fs.existsSync(path.join(root, relative)), false, `${relative} should be retired`);
 
 console.log('architecture boundaries passed');

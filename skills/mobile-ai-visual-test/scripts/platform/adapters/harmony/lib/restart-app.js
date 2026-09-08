@@ -3,6 +3,7 @@
 
 const childProcess = require('child_process');
 const {
+  classifyRuntimeDisplay,
   normalizeDeviceFormFactor,
   normalizeStartupDisplayPolicy,
   startupDisplayRequirement,
@@ -159,21 +160,32 @@ function fail(options, startupDisplay, failureStage, error, extra = {}) {
 function main() {
   const options = parseArgs(process.argv.slice(2));
   const policy = policyFrom(options);
-  const policyNeedsFormFactor = policy.orientation !== 'preserve'
-    && policy.enforcement === 'required'
-    && policy.appliesTo.length > 0;
-  const formFactor = options.deviceFormFactor || policyNeedsFormFactor
+  const formFactor = options.deviceFormFactor
     ? resolveDeviceFormFactor(options)
     : { value: null, source: 'policy-independent' };
-  const requirement = startupDisplayRequirement(policy, formFactor.value, { platform: 'harmony' });
+  const beforeDisplay = readDisplay(options);
+  const runtimeDisplay = classifyRuntimeDisplay(beforeDisplay.width, beforeDisplay.height);
+  const requirement = startupDisplayRequirement(policy, formFactor.value, {
+    platform: 'harmony',
+    runtimeDisplayClass: runtimeDisplay.displayClass,
+  });
   let startupDisplay = {
     requestedOrientation: policy.orientation,
     enforcement: policy.enforcement,
     appliesTo: policy.appliesTo,
     deviceFormFactor: formFactor.value,
     deviceFormFactorSource: formFactor.source,
+    staticDeviceFormFactor: formFactor.value,
+    runtimeDisplay: {
+      width: runtimeDisplay.width,
+      height: runtimeDisplay.height,
+      aspectRatio: runtimeDisplay.aspectRatio,
+      threshold: runtimeDisplay.threshold,
+    },
+    runtimeDisplayClass: runtimeDisplay.displayClass,
+    strategy: requirement.required ? 'NORMALIZE_PORTRAIT' : 'PRESERVE',
     required: requirement.required,
-    before: null,
+    before: beforeDisplay,
     afterNormalization: null,
     afterLaunch: null,
     normalizationApplied: false,
@@ -184,8 +196,9 @@ function main() {
     failureStage: null,
   };
 
-  if (requirement.required && !formFactor.value) {
-    fail(options, startupDisplay, 'DEVICE_FORM_FACTOR', '无法确认设备形态，不能安全执行手机竖屏冷启动策略。');
+  if (policy.orientation !== 'preserve' && policy.enforcement === 'required'
+    && runtimeDisplay.displayClass === 'UNKNOWN') {
+    fail(options, startupDisplay, 'RUNTIME_DISPLAY_CLASS', '无法读取有效屏幕宽高，不能选择冷启动方向策略。');
     return;
   }
 
@@ -208,7 +221,6 @@ function main() {
   }
 
   if (requirement.required) {
-    startupDisplay.before = readDisplay(options);
     if (!startupDisplay.before.readable) {
       fail(options, startupDisplay, 'ORIENTATION_READ', '无法读取冷启动前的屏幕方向。', { oldPid });
       return;
@@ -228,7 +240,6 @@ function main() {
       return;
     }
   } else {
-    startupDisplay.before = readDisplay(options);
     startupDisplay.afterNormalization = startupDisplay.before;
     startupDisplay.skippedReason = requirement.reason;
   }

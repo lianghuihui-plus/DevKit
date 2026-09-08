@@ -13,6 +13,23 @@ const DEVICE_FORM_FACTORS = new Set([
 ]);
 const ORIENTATIONS = new Set(['portrait', 'preserve']);
 const ENFORCEMENTS = new Set(['required', 'none']);
+const RUNTIME_DISPLAY_CLASSES = new Set(['PHONE_LIKE', 'TABLET_LIKE', 'UNKNOWN']);
+const PHONE_LIKE_ASPECT_RATIO = 1.70;
+
+function classifyRuntimeDisplay(width, height) {
+  const values = [Number(width), Number(height)];
+  if (!values.every((value) => Number.isFinite(value) && value > 0)) {
+    return { displayClass: 'UNKNOWN', width: null, height: null, aspectRatio: null, threshold: PHONE_LIKE_ASPECT_RATIO };
+  }
+  const aspectRatio = Math.max(...values) / Math.min(...values);
+  return {
+    displayClass: aspectRatio >= PHONE_LIKE_ASPECT_RATIO ? 'PHONE_LIKE' : 'TABLET_LIKE',
+    width: values[0],
+    height: values[1],
+    aspectRatio: Number(aspectRatio.toFixed(4)),
+    threshold: PHONE_LIKE_ASPECT_RATIO,
+  };
+}
 
 function normalizeDeviceFormFactor(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -60,12 +77,18 @@ function normalizeStartupDisplayPolicy(value, { platform } = {}) {
   };
 }
 
-function startupDisplayRequirement(policyValue, deviceFormFactor, { platform } = {}) {
+function startupDisplayRequirement(policyValue, deviceFormFactor, { platform, runtimeDisplayClass } = {}) {
   const policy = normalizeStartupDisplayPolicy(policyValue, { platform });
   if (policy.orientation === 'preserve') {
     return { required: false, policy, reason: 'POLICY_PRESERVE' };
   }
   if (policy.enforcement !== 'required') return { required: false, policy, reason: 'POLICY_NOT_ENFORCED' };
+  if (String(platform || '').toLowerCase() === 'harmony' && RUNTIME_DISPLAY_CLASSES.has(runtimeDisplayClass)) {
+    if (runtimeDisplayClass === 'UNKNOWN') return { required: true, policy, reason: 'RUNTIME_DISPLAY_CLASS_UNKNOWN' };
+    return runtimeDisplayClass === 'PHONE_LIKE'
+      ? { required: true, policy, reason: 'RUNTIME_DISPLAY_PHONE_LIKE' }
+      : { required: false, policy, reason: 'RUNTIME_DISPLAY_TABLET_LIKE' };
+  }
   const formFactor = normalizeDeviceFormFactor(deviceFormFactor);
   if (!policy.appliesTo.length) return { required: true, policy, reason: 'POLICY_ALL_DEVICES' };
   if (!formFactor) return { required: true, policy, reason: 'DEVICE_FORM_FACTOR_UNKNOWN' };
@@ -75,7 +98,10 @@ function startupDisplayRequirement(policyValue, deviceFormFactor, { platform } =
 
 function startupDisplayVerified(policyValue, startupDisplay, deviceFormFactor, { platform } = {}) {
   const factor = startupDisplay?.deviceFormFactor || deviceFormFactor;
-  const requirement = startupDisplayRequirement(policyValue, factor, { platform });
+  const requirement = startupDisplayRequirement(policyValue, factor, {
+    platform,
+    runtimeDisplayClass: startupDisplay?.runtimeDisplayClass,
+  });
   const validation = validateStartupDisplayResult(requirement, startupDisplay, deviceFormFactor);
   return { ...requirement, verified: validation.valid, validation };
 }
@@ -108,6 +134,9 @@ function validateStartupDisplayResult(requirement, startupDisplay, environmentDe
 
 module.exports = {
   DEVICE_FORM_FACTORS,
+  PHONE_LIKE_ASPECT_RATIO,
+  RUNTIME_DISPLAY_CLASSES,
+  classifyRuntimeDisplay,
   defaultStartupDisplayPolicy,
   normalizeDeviceFormFactor,
   normalizeStartupDisplayPolicy,

@@ -1,15 +1,25 @@
 'use strict';
 
 const { buildObservationView } = require('../lib/observation-model');
+const { classifyActionEffect } = require('../lib/observation-consistency');
+const { updateScrollContexts } = require('../lib/scroll-context');
 const { invokeDeviceOperation } = require('../platform/device-port');
 const { buildCapabilities } = require('./capability-catalog');
 const store = require('./store');
 
-function sceneFromObservation(execDir, observation, execution, previousAction = null) {
-  const view = buildObservationView(execDir, observation, { includeConsistency: false, events: [] });
+function sceneFromObservation(execDir, observation, execution, previousAction = null, previousScene = null) {
+  const view = buildObservationView(execDir, observation);
   const sceneId = `scene-${String(store.events(execDir).filter((event) => event.type === 'sceneObserved').length + 1).padStart(4, '0')}`;
+  const normalizedPreviousAction = previousAction && previousScene ? {
+    ...previousAction,
+    observedEffect: {
+      ...classifyActionEffect(previousScene, view, previousAction.operationId),
+      beforeSceneRef: previousScene.sceneId,
+      afterSceneRef: sceneId,
+    },
+  } : previousAction;
   const scene = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sceneId,
     generation: execution.warmSessionGeneration,
     capturedAt: observation.time,
@@ -40,15 +50,25 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
       maskedLength: element.maskedLength,
     })),
     capabilities: [],
+    scrollContainers: view.scrollContainers || [],
+    scrollContexts: [],
     visual: { gestures: ['tap', 'doubleTap', 'longPress', 'swipe'], coordinates: 'normalized-0-to-1' },
-    previousAction,
+    previousAction: normalizedPreviousAction,
   };
+  scene.scrollContexts = updateScrollContexts({
+    previousScene,
+    containers: scene.scrollContainers,
+    previousAction: normalizedPreviousAction,
+    sceneId,
+    generation: execution.warmSessionGeneration,
+  });
   scene.capabilities = buildCapabilities(scene, execution.platform);
   return scene;
 }
 
 function observe(execDir, options = {}) {
   const execution = store.loadExecution(execDir, { allowFinalized: options.allowFinalized === true });
+  const previousScene = store.readCurrentScene(execDir);
   const operationId = store.nextId(execDir, 'observation');
   const invoked = (options.invokeDeviceOperation || invokeDeviceOperation)(execDir, {
     context: { execution },
@@ -75,7 +95,7 @@ function observe(execDir, options = {}) {
     time: options.now || result.time || new Date().toISOString(),
     ...(options.relatedOperationId ? { relatedOperationId: options.relatedOperationId } : {}),
   };
-  const scene = sceneFromObservation(execDir, observation, execution, options.previousAction || null);
+  const scene = sceneFromObservation(execDir, observation, execution, options.previousAction || null, previousScene);
   store.writeScene(execDir, scene);
   store.appendEvent(execDir, 'sceneObserved', {
     sceneId: scene.sceneId,

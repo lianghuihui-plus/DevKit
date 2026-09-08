@@ -1,6 +1,7 @@
 'use strict';
 
 const { technicalFactView, technicalFacts } = require('../lib/technical-facts');
+const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 
 function bySequence(left, right) {
   return Number(left.sequence || 0) - Number(right.sequence || 0);
@@ -145,9 +146,23 @@ function projectCurrentNarrative(report) {
       action: action ? {
         operationId: action.operationId,
         value: action.action || null,
-        status: actionResult?.type === 'actionOutcomeUnknown' ? 'UNKNOWN' : actionResult?.ok === false ? 'FAILED' : actionResult ? 'SUCCEEDED' : 'PENDING',
-        result: actionResult?.result || null,
-        coordinateAudit: actionResult?.coordinateAudit || null,
+        status: actionResult?.type === 'actionOutcomeUnknown'
+          ? 'UNKNOWN'
+          : actionResult?.command?.status === 'REJECTED' || actionResult?.deviceExecution?.status === 'FAILED'
+            ? 'FAILED' : actionResult ? 'OBSERVED' : 'PENDING',
+        result: actionResult ? {
+          lifecycle: actionResult.lifecycle || null,
+          command: actionResult.command || null,
+          deviceExecution: actionResult.deviceExecution || null,
+          observedEffect: actionResult.observedEffect || null,
+          duringActionObservation: actionResult.duringActionObservation || null,
+        } : null,
+        spatialEvidence: actionResult?.spatialEvidenceRef
+          ? projectActionSpatialEvidence(report.latest, actionResult.spatialEvidenceRef, {
+            operationId: actionResult.operationId,
+            actionType: actionResult.action?.type || action.action?.type,
+          })
+          : actionResult?.coordinateAudit || null,
       } : null,
       knowledge: knowledge ? {
         queryId: knowledge.queryId,
