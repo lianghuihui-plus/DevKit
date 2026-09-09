@@ -6,6 +6,7 @@ const { contractError } = require('../lib/contract-utils');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const {
   appProvisioningSha,
+  initialStateStrategy,
   preparationPolicySha,
   validateAppProvisioning,
   validateInstalledAppIdentity,
@@ -47,11 +48,9 @@ function resolveStrategy(execution, runtime, targetState) {
     deviceType: execution.targetBinding.deviceType,
   });
   if (execution.appProvisioningSha !== appProvisioningSha(provisioning)) throw contractError('APP_PROVISIONING_CHANGED', 'frozen App provisioning changed');
-  const strategy = targetState === 'FRESH_INSTALL' || execution.platform === 'ios' ? 'REINSTALL_APP' : 'CLEAR_APP_DATA';
-  const requiredEffects = strategy === 'REINSTALL_APP'
-    ? ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'] : ['CLEAR_APP_DATA'];
+  const { strategy, requiredEffects } = initialStateStrategy(execution.platform, targetState);
   const missing = requiredEffects.filter((effect) => !policy.allowedEffects.includes(effect));
-  if (missing.length) throw unavailable('APP_PREPARATION_NOT_AUTHORIZED', `missing authorization: ${missing.join(', ')}`);
+  if (missing.length) throw unavailable('APP_PREPARATION_SCOPE_MISMATCH', `preparation effects are outside the frozen execution scope: ${missing.join(', ')}`);
   if (strategy === 'REINSTALL_APP' && provisioning.mode !== 'ARTIFACT_MANAGED') {
     throw unavailable('APP_INSTALL_ARTIFACT_UNAVAILABLE', 'reinstall requires a frozen installation artifact');
   }

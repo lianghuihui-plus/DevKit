@@ -156,7 +156,6 @@ function validatePreparationPolicy(value = null) {
   }
   if (new Set(effects).size !== effects.length) throw contractError('PREPARATION_POLICY_INVALID', 'preparationPolicy.allowedEffects must not contain duplicates');
   if (policy.targetAppOnly !== true) throw contractError('PREPARATION_POLICY_INVALID', 'preparationPolicy.targetAppOnly must be true');
-  if (effects.length) ensureString(policy.userAuthorization, 'preparationPolicy.userAuthorization', 'PREPARATION_POLICY_INVALID');
   return { ...policy, allowedEffects: [...effects] };
 }
 
@@ -187,12 +186,21 @@ function initialStateRequirementSha(value) {
 
 function initialStateStrategy(platform, targetState) {
   if (targetState === 'KEEP_EXISTING') return { strategy: 'NONE', requiredEffects: [] };
-  const strategy = targetState === 'FRESH_INSTALL' || platform === 'ios' ? 'REINSTALL_APP' : 'CLEAR_APP_DATA';
+  const strategy = platform === 'ios' ? 'REINSTALL_APP' : 'CLEAR_APP_DATA';
   return {
     strategy,
     requiredEffects: strategy === 'REINSTALL_APP'
       ? ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'] : ['CLEAR_APP_DATA'],
   };
+}
+
+function derivePreparationPolicy(platform, targetState) {
+  const { requiredEffects } = initialStateStrategy(platform, targetState);
+  return validatePreparationPolicy({
+    schemaVersion: PREPARATION_POLICY_SCHEMA_VERSION,
+    allowedEffects: requiredEffects,
+    targetAppOnly: true,
+  });
 }
 
 function initialStatePreflightSha(value) {
@@ -216,7 +224,7 @@ function createInitialStatePreflight(options) {
   const { strategy, requiredEffects } = initialStateStrategy(platform, requirement.targetState);
   const missing = requiredEffects.filter((effect) => !policy.allowedEffects.includes(effect));
   if (missing.length) {
-    throw contractError('INITIAL_STATE_PREFLIGHT_FAILED', `initial state is not authorized: ${missing.join(', ')}`);
+    throw contractError('INITIAL_STATE_PREFLIGHT_FAILED', `initial state effects do not match the derived platform strategy: ${missing.join(', ')}`);
   }
   if (strategy === 'REINSTALL_APP' && provisioning.mode !== 'ARTIFACT_MANAGED') {
     throw contractError('INITIAL_STATE_PREFLIGHT_FAILED', 'initial state requires a frozen installation artifact');
@@ -277,7 +285,6 @@ function validateBootstrapPolicy(value = null) {
     const required = ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'];
     const missing = required.filter((effect) => !effects.includes(effect));
     if (missing.length) throw contractError('BOOTSTRAP_POLICY_INVALID', `REINSTALL_FROZEN requires: ${missing.join(', ')}`);
-    ensureString(policy.userAuthorization, 'bootstrapPolicy.userAuthorization', 'BOOTSTRAP_POLICY_INVALID');
   }
   return { ...policy, allowedEffects: [...effects], userAuthorization: policy.userAuthorization || null };
 }
@@ -437,6 +444,7 @@ module.exports = {
   bootstrapPolicySha,
   contentDigest,
   defaultAppProvisioning,
+  derivePreparationPolicy,
   inspectArtifactIdentity,
   preparationPolicySha,
   createInitialStatePreflight,

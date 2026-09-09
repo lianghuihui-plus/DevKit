@@ -4,7 +4,7 @@
 
 本 Skill 基于人工文本用例执行移动端黑盒视觉测试。架构围绕以下目标设计：
 
-1. 执行授权前冻结独立 CaseSpec 与 InitialStateRequirement，并完成副作用/制品 Preflight；Case Agent 负责计划、操作、调查和结论，但不能改写测试 oracle 或准备策略。
+1. 执行前冻结独立 CaseSpec 与 InitialStateRequirement，并完成平台副作用/制品 Preflight；Case Agent 负责计划、操作、调查和结论，但不能改写测试 oracle 或准备策略。
 2. 主 Agent 负责环境、授权、批次、委托、提交和报告，不进入单用例执行循环。
 3. Case Agent 只接触一页角色 Prompt、派生 Case Brief、当前 Scene 和一个带 operation allowlist 的 Runtime Client。
 4. Runtime 自动处理平台参数、事务、证据、恢复和技术状态。
@@ -44,7 +44,7 @@ flowchart LR
 
 1. 校验或初始化 Workspace，导入用例。
 2. 探测环境并取得用户对平台、设备、App 和入口的确认。
-3. 根据原文生成并审核 CaseSpec 与 InitialStateRequirement，再根据用户明确的执行范围和 bootstrap/单用例副作用授权创建执行请求；请求阶段生成 InitialStatePreflight。
+3. 根据原文生成并审核 CaseSpec 与 InitialStateRequirement，再根据用户明确的执行范围创建执行请求；单用例副作用由平台自动派生，独立 bootstrap 策略单独冻结，请求阶段生成 InitialStatePreflight。
 4. 初始化 Batch 和暖会话。
 5. 为当前用例创建 Case Runtime，由 Lifecycle 自动建立初始状态；只有 `agentRequired=true` 才一次性委托独立 Case Agent。
 6. 等待 Case Agent 完成，通过 reconcile 自动校验并提交 execution。
@@ -305,11 +305,11 @@ iOS Adapter 的 `ios-driver.js` 只负责编排 CLI command 与 Appium 调用顺
 
 ### 10.1 Bootstrap、身份与隔离
 
-`appProvisioning` 只描述 App 来源，不授权安装。执行请求另行冻结 batch 级 `bootstrapPolicy`：默认 `KEEP_EXISTING`；`REINSTALL_FROZEN` 必须同时包含 `UNINSTALL_TARGET_APP` 和 `INSTALL_FROZEN_ARTIFACT` 及用户授权文本。Batch 在调用 Adapter 前即时复核该策略。
+`appProvisioning` 只描述 App 来源。执行请求另行冻结 batch 级 `bootstrapPolicy`：默认 `KEEP_EXISTING`；执行配置选择 `REINSTALL_FROZEN` 时必须同时包含 `UNINSTALL_TARGET_APP` 和 `INSTALL_FROZEN_ARTIFACT`。用户下达执行指令后不再追加授权交互，Batch 在调用 Adapter 前只复核策略、制品和设备条件。
 
-每个 target 另行冻结 `initialStateRequirement`、`preparationPolicy` 及二者与 provisioning 共同生成的 InitialStatePreflight。requirement 表达业务起点，policy 表达授权，Preflight 证明当前组合可执行；三者职责不可合并。Lifecycle 在 Agent 委托前执行准备，实际准备失败由框架直接形成 BLOCKED execution。
+每个 target 另行冻结 `initialStateRequirement`、由 ExecutionRequest 自动派生的内部 `preparationPolicy`，以及二者与 provisioning 共同生成的 InitialStatePreflight。requirement 表达业务起点，policy 记录平台实际副作用，Preflight 证明当前平台组合可执行。用例执行指令覆盖其前置状态准备，不再要求单独授权文本。用例原文的卸载重装映射为 `FRESH_INSTALL`，Android、HarmonyOS 以 `CLEAR_APP_DATA` 等效实现且不依赖安装资产，iOS 以 `REINSTALL_APP` 实现并要求冻结安装资产。Lifecycle 在 Agent 委托前执行准备，实际准备失败由框架直接形成 BLOCKED execution。
 
-制品登记把 CLI 的 `appId/version/build` 作为 expected identity；能够解析 APK、HAP/APP 或 iOS `.app` 时保存提取工具、版本和实际 identity，不能解析时明确记录 `UNAVAILABLE`。任何重装都必须在安装后由 Adapter 返回 `installedIdentity`，并与冻结期望完全一致，否则以 `APP_ARTIFACT_IDENTITY_MISMATCH` 阻止暖会话 READY。
+制品登记把 CLI 的 `appId/version/build` 作为 expected identity；能够解析 APK、HAP/APP 或 iOS `.app` 时保存提取工具、版本和实际 identity，不能解析时明确记录 `UNAVAILABLE`。任何实际重装都必须在安装后由 Adapter 返回 `installedIdentity`，并与冻结期望完全一致，否则以 `APP_ARTIFACT_IDENTITY_MISMATCH` 阻止暖会话 READY。
 
 Case Brief 只公开原文、Frozen CaseSpec、初始状态结果、目标摘要和绑定 Runtime Client。当前 Runtime Broker 已提供 operation allowlist 和协议隔离，但不是操作系统级安全沙箱；共享 Shell/文件系统环境下仍不能宣称强能力隔离。安全边界还需宿主工具权限、独立进程和文件系统访问控制。
 

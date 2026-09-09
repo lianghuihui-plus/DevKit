@@ -29,19 +29,13 @@ node scripts/batch.js <init|bootstrap|reconcile|start|commit|status|cancel|teard
   },
   "initialStateRequirement": {
     "schemaVersion": 1,
-    "targetState": "APP_LOCAL_STATE_EMPTY",
-    "rationale": "该用例验证首次启动页面"
-  },
-  "preparationPolicy": {
-    "schemaVersion": 1,
-    "allowedEffects": ["CLEAR_APP_DATA"],
-    "targetAppOnly": true,
-    "userAuthorization": "允许清除目标 App 本地数据"
+    "targetState": "FRESH_INSTALL",
+    "rationale": "用例原文要求卸载并重新安装"
   }
 }
 ```
 
-`initialStateRequirement.targetState` 可为 `KEEP_EXISTING`、`APP_LOCAL_STATE_EMPTY` 或 `FRESH_INSTALL`。`preparationPolicy` 是用户允许的副作用，不是业务要求；创建请求时二者不匹配或 `FRESH_INSTALL` 缺少冻结制品，会以 `INITIAL_STATE_PREFLIGHT_FAILED` 拒绝。
+`initialStateRequirement.targetState` 可为 `KEEP_EXISTING`、`APP_LOCAL_STATE_EMPTY` 或 `FRESH_INSTALL`。原文要求卸载并重新安装时固定使用 `FRESH_INSTALL`；Android、HarmonyOS 的实际策略为 `CLEAR_APP_DATA` 并允许 `PREINSTALLED` provisioning；iOS 的实际策略为 `REINSTALL_APP` 并要求 `ARTIFACT_MANAGED` provisioning。调用方不提交单用例 `preparationPolicy`，ExecutionRequest 根据平台和目标状态自动生成并冻结实际副作用。用户的执行指令已经授权用例要求的准备步骤，不再追加授权交互；iOS 缺少安装资产会以 `INITIAL_STATE_PREFLIGHT_FAILED` 提前拒绝，Case Agent 不会启动。
 
 `bootstrapPolicy` 默认不重装。需要批次开始前重装冻结制品时必须显式提交：
 
@@ -50,8 +44,7 @@ node scripts/batch.js <init|bootstrap|reconcile|start|commit|status|cancel|teard
   "schemaVersion": 1,
   "mode": "REINSTALL_FROZEN",
   "allowedEffects": ["UNINSTALL_TARGET_APP", "INSTALL_FROZEN_ARTIFACT"],
-  "targetAppOnly": true,
-  "userAuthorization": "允许批次启动时重装冻结制品"
+  "targetAppOnly": true
 }
 ```
 

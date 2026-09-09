@@ -65,6 +65,11 @@ assert.match(mainPrompt, /NEED_CASE_AGENT/);
 assert.match(mainPrompt, /agentRequired=false/);
 assert.match(mainPrompt, /一个用例只委托一次|创建一个全新的原生 Case Agent/);
 assert.match(mainPrompt, /读取 `prompts\/case-agent\.md`/);
+assert.match(mainPrompt, /原文要求“卸载并重新安装”时，固定声明 `FRESH_INSTALL`/);
+assert.match(mainPrompt, /Android、HarmonyOS.*`CLEAR_APP_DATA`.*不需要安装资产/);
+assert.match(mainPrompt, /iOS.*`REINSTALL_APP`.*Case Agent 创建前.*冻结安装资产/);
+assert.match(mainPrompt, /用户明确下达执行指令后.*不再单独询问清除数据或重新安装授权/);
+assert.match(mainPrompt, /`preparationPolicy`.*平台和初始状态自动派生/);
 assert.strictEqual(mainPrompt.includes('allowedDecisions'), false);
 
 const currentReportSource = read('scripts/report/current-report.js');

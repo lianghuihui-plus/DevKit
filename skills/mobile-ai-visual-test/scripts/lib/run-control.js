@@ -24,6 +24,7 @@ const {
   bootstrapPolicySha,
   createInitialStatePreflight,
   defaultAppProvisioning,
+  derivePreparationPolicy,
   initialStatePreflightSha,
   initialStateRequirementSha,
   preparationPolicySha,
@@ -160,7 +161,7 @@ function normalizeExecutionTargetSelectors(workspaceRoot, inputTargets) {
     }
     if (target.caseNo === undefined) return {
       ...target,
-      preparationPolicy: validatePreparationPolicy(target.preparationPolicy),
+      ...(target.preparationPolicy == null ? {} : { preparationPolicy: validatePreparationPolicy(target.preparationPolicy) }),
       initialStateRequirement: validateInitialStateRequirement(target.initialStateRequirement),
     };
     const resolved = resolveCaseNo(workspaceRoot, target.caseNo);
@@ -177,7 +178,7 @@ function normalizeExecutionTargetSelectors(workspaceRoot, inputTargets) {
       caseKey: resolved.caseKey,
       caseDir: resolved.caseDir,
       caseSpec: target.caseSpec,
-      preparationPolicy: validatePreparationPolicy(target.preparationPolicy),
+      ...(target.preparationPolicy == null ? {} : { preparationPolicy: validatePreparationPolicy(target.preparationPolicy) }),
       initialStateRequirement: validateInitialStateRequirement(target.initialStateRequirement),
     };
   });
@@ -422,8 +423,12 @@ function validateExecutionRequest(value, options = {}) {
 function createExecutionRequest(options) {
   const workspace = assertWorkspace(options.workspaceRoot, { allowTest: true });
   ensureWorkspaceCaseNumbers(workspace.root);
-  const selectedTargets = normalizeExecutionTargetSelectors(workspace.root, options.targets);
   const environment = loadEnvironmentConfirmation(workspace.root);
+  const selectedTargets = normalizeExecutionTargetSelectors(workspace.root, options.targets).map((target) => ({
+    ...target,
+    preparationPolicy: target.preparationPolicy
+      || derivePreparationPolicy(environment.binding.platform, target.initialStateRequirement.targetState),
+  }));
   const bootstrapPolicy = validateBootstrapPolicy(options.bootstrapPolicy);
   const batchId = ensureId(options.batchId, 'batchId', 'EXECUTION_REQUEST_INVALID');
   const mode = String(options.mode || '').trim().toUpperCase();

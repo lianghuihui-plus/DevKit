@@ -21,8 +21,8 @@ description: 当需要基于任意非空文本人工用例，对移动端应用�
 ## 主流程
 
 1. 使用 `scripts/workspace.js` 校验或初始化工作空间，再用 `scripts/import-case.js` 导入用例。
-2. 按 `references/environment-probing.md` 探测环境，由用户确认平台、设备、App、入口和 App Provisioning；需要重装能力时先用 `scripts/app-artifact.js` 登记安装资产。
-3. 根据原文整理并审核每个 target 的 CaseSpec 和 `initialStateRequirement`；用户明确执行范围后，用 `scripts/execution-request.js` 创建 `SINGLE` 或 `BATCH` 请求，同时冻结 CaseSpec、初始状态要求、各 target 的 `preparationPolicy` 和 batch 级 `bootstrapPolicy`。请求创建时会完成 InitialStatePreflight；授权不足或缺少冻结安装制品时立即拒绝，不进入设备执行。bootstrap 默认不重装，破坏性授权不能从环境确认推断。
+2. 按 `references/environment-probing.md` 探测环境，由用户确认平台、设备、App、入口和 App Provisioning；只有 iOS 用例初始状态需要重新安装，或 batch bootstrap 明确要求物理重装时，才先用 `scripts/app-artifact.js` 登记安装资产。
+3. 根据原文整理并审核每个 target 的 CaseSpec 和 `initialStateRequirement`；原文要求“卸载并重新安装”时，固定声明 `FRESH_INSTALL`。Android、HarmonyOS 的 `FRESH_INSTALL` 由底层 `CLEAR_APP_DATA` 等效实现，不需要安装资产。iOS 的 `FRESH_INSTALL` 由底层 `REINSTALL_APP` 实现，必须在 Case Agent 创建前完成冻结安装资产校验。用户明确下达执行指令后，该指令已覆盖用例前置步骤所需的 App 状态准备，不再单独询问清除数据或重新安装授权；内部 `preparationPolicy` 根据平台和初始状态自动派生。随后用 `scripts/execution-request.js` 创建 `SINGLE` 或 `BATCH` 请求，冻结 CaseSpec、初始状态要求、内部 preparation policy 和 batch 级 `bootstrapPolicy`。请求创建时会完成 InitialStatePreflight；iOS 缺少冻结安装制品时立即拒绝，不进入设备执行。bootstrap 默认不重装，与用例无关的 batch 级物理重装仍由独立策略控制。
 4. 使用 `scripts/batch.js init` 初始化批次，后续统一由 reconcile 返回的动作驱动。
 5. 循环调用 `scripts/batch.js reconcile`，按返回动作推进；commit 和三段收尾由该命令在一次调用内确定性推进，不要求主 Agent逐个驱动内部 checkpoint：
    - `BOOTSTRAP`：调用 `batch bootstrap` 建立暖会话。

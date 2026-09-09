@@ -78,14 +78,8 @@ createTestExecutionRequest(root, allowedBatch, binding, [{
   ...allowed,
   initialStateRequirement: {
     schemaVersion: 1,
-    targetState: 'APP_LOCAL_STATE_EMPTY',
-    rationale: '用例要求验证首次启动状态',
-  },
-  preparationPolicy: {
-    schemaVersion: 1,
-    allowedEffects: ['CLEAR_APP_DATA'],
-    targetAppOnly: true,
-    userAuthorization: '允许清除目标 App 本地数据以验证首次启动',
+    targetState: 'FRESH_INSTALL',
+    rationale: '用例原文要求卸载并重新安装',
   },
 }], { now: T0 });
 initializeBatch({ workspaceRoot: root, batchId: allowedBatch, now: T0 });
@@ -126,6 +120,11 @@ assert.strictEqual(JSON.stringify(prepared).includes('artifact'), false);
 const execution = JSON.parse(fs.readFileSync(path.join(started.execDir, 'execution.json'), 'utf8'));
 assert.strictEqual(execution.warmSessionId, 'warm-0002');
 assert.strictEqual(execution.warmSessionEpoch, 2);
+assert.deepStrictEqual(execution.preparationPolicy, {
+  schemaVersion: 1,
+  allowedEffects: ['CLEAR_APP_DATA'],
+  targetAppOnly: true,
+});
 const batchState = JSON.parse(fs.readFileSync(path.join(root, 'runs', allowedBatch, 'batch.json'), 'utf8'));
 assert.strictEqual(batchState.warmSession.sessionId, 'warm-0002');
 assert.strictEqual(batchState.warmSession.status, 'READY');
@@ -189,7 +188,6 @@ createTestExecutionRequest(root, unavailableBatch, binding, [{
     schemaVersion: 1,
     allowedEffects: ['CLEAR_APP_DATA'],
     targetAppOnly: true,
-    userAuthorization: '允许清除目标 App 本地数据',
   },
 }], { now: T0 });
 initializeBatch({ workspaceRoot: root, batchId: unavailableBatch, now: T0 });
@@ -212,12 +210,19 @@ assert.strictEqual(unavailableStarted.execution.finalized, true);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(unavailableStarted.execDir, 'result.json'), 'utf8')).verdict, 'BLOCKED');
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId: unavailableBatch, adapter: unavailableAdapter }).action, 'COMMIT_CASE');
 
-const denied = makeCase('未授权清理');
-assert.throws(() => createTestExecutionRequest(root, 'batch-preparation-preflight-denied', binding, [{
-  ...denied,
-  initialStateRequirement: { schemaVersion: 1, targetState: 'APP_LOCAL_STATE_EMPTY', rationale: '验证未授权预检' },
-}], { now: T0 }), (error) => error?.code === 'INITIAL_STATE_PREFLIGHT_FAILED');
-const deniedStarted = bootstrap('batch-preparation-denied', denied);
+const implicit = makeCase('执行授权包含状态准备');
+const implicitRequest = createTestExecutionRequest(root, 'batch-preparation-implicit-authorization', binding, [{
+  ...implicit,
+  initialStateRequirement: { schemaVersion: 1, targetState: 'APP_LOCAL_STATE_EMPTY', rationale: '验证执行授权自动包含状态准备' },
+}], { now: T0 });
+assert.deepStrictEqual(implicitRequest.targets[0].preparationPolicy, {
+  schemaVersion: 1,
+  allowedEffects: ['CLEAR_APP_DATA'],
+  targetAppOnly: true,
+});
+
+const outOfScope = makeCase('冻结范围外清理');
+const deniedStarted = bootstrap('batch-preparation-denied', outOfScope);
 let deniedCalls = 0;
 const deniedResponse = runtimeCore.execute(deniedStarted.execDir, {
   operation: 'prepare',
@@ -242,7 +247,7 @@ assert.strictEqual(deniedBatchState.warmSession.status, 'READY');
 const deniedFinished = run(deniedStarted.execDir, {
   operation: 'finish',
   decision: {
-    observation: 'Runtime 无法建立用例要求的本地空状态',
+    observation: 'Runtime 拒绝执行冻结范围外的状态准备',
     conclusion: '验证点受到技术条件阻塞',
     purpose: '保存阻塞结论',
     expectedOutcome: '阻塞结论引用准备失败技术事实',
@@ -254,7 +259,7 @@ const deniedFinished = run(deniedStarted.execDir, {
     checks: [{
       expectationRef: 'E1',
       status: 'BLOCKED',
-      actual: '未获准清除目标 App 本地数据',
+      actual: '执行请求未声明需要重置 App 状态',
       technicalRefs: [deniedResponse.technicalFactRef],
     }],
     uncertainties: [],
@@ -271,7 +276,6 @@ createTestExecutionRequest(root, interruptedBatch, binding, [{
     schemaVersion: 1,
     allowedEffects: ['CLEAR_APP_DATA'],
     targetAppOnly: true,
-    userAuthorization: '允许清除目标 App 本地数据以验证中断恢复',
   },
 }], { now: T0 });
 initializeBatch({ workspaceRoot: root, batchId: interruptedBatch, now: T0 });

@@ -13,11 +13,11 @@ cancel -> CANCELLING -> deterministic finalization -> BATCH_CANCELLED
 fatal -> BLOCKING -> deterministic finalization -> BATCH_BLOCKED
 ```
 
-环境确认、CaseSpec/初始状态审核和执行授权是三个独立动作。`appProvisioning` 只冻结 App 来源；`bootstrapPolicy` 决定批次启动是否重装；每个 target 的 `initialStateRequirement` 表达业务所需起点，`preparationPolicy` 只表达允许的副作用。ExecutionRequest 创建时生成并冻结 InitialStatePreflight，三者不互相推断。
+环境确认、CaseSpec/初始状态审核和执行授权是三个独立动作。`appProvisioning` 只冻结 App 来源；`bootstrapPolicy` 决定批次启动是否执行与用例无关的物理重装；每个 target 的 `initialStateRequirement` 表达业务所需起点。用例原文的“卸载并重新安装”固定映射为 `FRESH_INSTALL`，再由平台策略解析：Android、HarmonyOS 使用 `CLEAR_APP_DATA` 且不需要安装资产，iOS 使用 `REINSTALL_APP` 且必须预先登记冻结安装资产。用户明确下达执行指令后，用例要求的状态准备已包含在执行范围内；ExecutionRequest 自动派生并冻结内部 preparation policy 和 InitialStatePreflight，不追加授权交互，Case Agent 创建前完成资产校验。
 
 主 Agent 循环处理 `batch reconcile`：
 
-- `BOOTSTRAP`：建立暖会话；只有 `REINSTALL_FROZEN` 获得完整授权时才安装冻结制品。
+- `BOOTSTRAP`：建立暖会话；只有执行配置明确选择 `REINSTALL_FROZEN` 且冻结制品可用时才安装。
 - `NEED_CASE_AGENT`：调用 `batch start`。Lifecycle 先自动建立冻结的初始状态；`agentRequired=true` 时才把 Prompt 和派生 Case Brief 一次性交给新的 Case Agent，`false` 时直接继续 reconcile。
 - `WAIT_CASE_AGENT`：等待，不进入 Case Agent 的观察、动作或恢复循环。
 - `PUBLISH_REPORTS` 且 `retryable=true`：自动发布失败，稍后重试 reconcile，不重跑用例。

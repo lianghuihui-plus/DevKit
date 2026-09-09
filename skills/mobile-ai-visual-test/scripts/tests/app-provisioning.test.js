@@ -12,6 +12,7 @@ const { createCaseContract } = require('../execution/contracts/case-contract');
 const {
   appProvisioningSha,
   createInitialStatePreflight,
+  initialStateStrategy,
   validateBootstrapPolicy,
   preparationPolicySha,
   registerAppArtifact,
@@ -55,6 +56,11 @@ assert.throws(() => validatePreparationPolicy({
   targetAppOnly: false,
   userAuthorization: '允许清理',
 }), (error) => error?.code === 'PREPARATION_POLICY_INVALID');
+assert.doesNotThrow(() => validatePreparationPolicy({
+  schemaVersion: 1,
+  allowedEffects: ['CLEAR_APP_DATA'],
+  targetAppOnly: true,
+}));
 assert.throws(() => validateBootstrapPolicy({
   schemaVersion: 1,
   mode: 'REINSTALL_FROZEN',
@@ -62,12 +68,51 @@ assert.throws(() => validateBootstrapPolicy({
   targetAppOnly: true,
   userAuthorization: '允许安装',
 }), (error) => error?.code === 'BOOTSTRAP_POLICY_INVALID');
+assert.doesNotThrow(() => validateBootstrapPolicy({
+  schemaVersion: 1,
+  mode: 'REINSTALL_FROZEN',
+  allowedEffects: ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'],
+  targetAppOnly: true,
+}));
 const keepExistingRequirement = {
   schemaVersion: 1,
   targetState: 'KEEP_EXISTING',
   rationale: '该契约测试不需要重置 App 状态',
 };
 const noPreparationEffects = { schemaVersion: 1, allowedEffects: [], targetAppOnly: true };
+const reinstallRequirement = {
+  schemaVersion: 1,
+  targetState: 'FRESH_INSTALL',
+  rationale: '用例原文要求卸载并重新安装',
+};
+const equivalentResetPolicy = validatePreparationPolicy({
+  schemaVersion: 1,
+  allowedEffects: ['CLEAR_APP_DATA'],
+  targetAppOnly: true,
+});
+assert.deepStrictEqual(initialStateStrategy('android', 'FRESH_INSTALL'), {
+  strategy: 'CLEAR_APP_DATA',
+  requiredEffects: ['CLEAR_APP_DATA'],
+});
+assert.deepStrictEqual(initialStateStrategy('harmony', 'FRESH_INSTALL'), {
+  strategy: 'CLEAR_APP_DATA',
+  requiredEffects: ['CLEAR_APP_DATA'],
+});
+assert.deepStrictEqual(initialStateStrategy('ios', 'FRESH_INSTALL'), {
+  strategy: 'REINSTALL_APP',
+  requiredEffects: ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'],
+});
+for (const platform of ['android', 'harmony']) {
+  const preflight = createInitialStatePreflight({
+    requirement: reinstallRequirement,
+    preparationPolicy: equivalentResetPolicy,
+    platform,
+    now: registration.now,
+  });
+  assert.strictEqual(preflight.targetState, 'FRESH_INSTALL');
+  assert.strictEqual(preflight.strategy, 'CLEAR_APP_DATA');
+  assert.deepStrictEqual(preflight.requiredEffects, ['CLEAR_APP_DATA']);
+}
 const initialStatePreflight = createInitialStatePreflight({
   requirement: keepExistingRequirement,
   preparationPolicy: noPreparationEffects,
@@ -145,8 +190,24 @@ const reinstallPolicy = validatePreparationPolicy({
   schemaVersion: 1,
   allowedEffects: ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'],
   targetAppOnly: true,
-  userAuthorization: '允许重装目标 App',
 });
+assert.throws(() => createInitialStatePreflight({
+  requirement: reinstallRequirement,
+  preparationPolicy: reinstallPolicy,
+  platform: 'ios',
+  provisioningOptions: { platform: 'ios', appId: iosProvisioning.appId, deviceType: 'simulator' },
+  now: registration.now,
+}), (error) => error?.code === 'INITIAL_STATE_PREFLIGHT_FAILED');
+const iosReinstallPreflight = createInitialStatePreflight({
+  requirement: reinstallRequirement,
+  preparationPolicy: reinstallPolicy,
+  appProvisioning: iosProvisioning,
+  platform: 'ios',
+  provisioningOptions: { workspaceRoot: root, platform: 'ios', appId: iosProvisioning.appId, deviceType: 'simulator' },
+  now: registration.now,
+});
+assert.strictEqual(iosReinstallPreflight.strategy, 'REINSTALL_APP');
+assert.deepStrictEqual(iosReinstallPreflight.requiredEffects, ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT']);
 const iosStrategy = resolveStrategy({
   platform: 'ios',
   targetBinding: { appId: iosProvisioning.appId, deviceType: 'simulator' },
@@ -156,7 +217,7 @@ const iosStrategy = resolveStrategy({
   preparationPolicySha: preparationPolicySha(reinstallPolicy),
 }, {
   sessionRef: { statePath: path.join(root, 'runs', 'fixture-batch', 'batch.json') },
-}, 'APP_LOCAL_STATE_EMPTY');
+}, 'FRESH_INSTALL');
 assert.strictEqual(iosStrategy.strategy, 'REINSTALL_APP');
 
 const source = '验证冻结制品从批次启动开始生效';
@@ -172,7 +233,6 @@ const bootstrapPolicy = validateBootstrapPolicy({
   mode: 'REINSTALL_FROZEN',
   allowedEffects: ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'],
   targetAppOnly: true,
-  userAuthorization: '允许批次启动时重装冻结制品',
 });
 const keepExistingBatchId = 'batch-artifact-keep-existing';
 createTestExecutionRequest(root, keepExistingBatchId, binding, [{ caseKey, caseDir }], { appProvisioning: first });
