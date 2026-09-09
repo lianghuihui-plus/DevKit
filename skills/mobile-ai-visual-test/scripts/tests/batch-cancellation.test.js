@@ -54,7 +54,7 @@ assert.strictEqual(cancelled.state.status, 'CANCELLING');
 assert.strictEqual(cancelled.state.cases[0].status, 'CANCELLED');
 assert.strictEqual(findActiveExecutions(root).length, 0);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'execution.json'), 'utf8')).status, 'CANCELLED');
-assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'RELEASE_PLATFORM');
+assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'SETTLE_EXECUTIONS');
 const repeatedCancellation = cancelBatch({
   workspaceRoot: root,
   batchId,
@@ -62,9 +62,24 @@ const repeatedCancellation = cancelBatch({
   reason: '重复取消不应重置收尾状态',
 });
 assert.strictEqual(repeatedCancellation.idempotent, true);
-assert.strictEqual(repeatedCancellation.nextAction, 'RELEASE_PLATFORM');
+assert.strictEqual(repeatedCancellation.nextAction, 'SETTLE_EXECUTIONS');
 assert.strictEqual(repeatedCancellation.state.reason, '用户停止本批执行');
+assert.throws(() => recordFinalizationStep({
+  workspaceRoot: root,
+  batchId,
+  implementationSha: contract.implementationSha,
+  step: 'reportsPublished',
+  result: { status: 'PUBLISHED' },
+}), (error) => error.code === 'BATCH_FINALIZATION_INVALID');
 
+recordFinalizationStep({
+  workspaceRoot: root,
+  batchId,
+  implementationSha: contract.implementationSha,
+  step: 'executionsSettled',
+  result: { ok: true },
+});
+assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'RELEASE_PLATFORM');
 recordFinalizationStep({
   workspaceRoot: root,
   batchId,

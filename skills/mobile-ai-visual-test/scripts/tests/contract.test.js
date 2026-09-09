@@ -3,6 +3,7 @@
 
 const assert = require('assert');
 const { createCaseContract, sourceSha, validateCaseContract, validateSourceText } = require('../execution/contracts/case-contract');
+const { createCaseSpec, validateCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { validateCaseResult, validateRuntimeRequest } = require('../case-runtime/contract');
 
 function expectCode(fn, code) {
@@ -29,6 +30,27 @@ assert.strictEqual(validateCaseContract(currentCase), currentCase);
 expectCode(() => validateCaseContract({ ...currentCase, schemaVersion: 99 }), 'CASE_SCHEMA_UNSUPPORTED');
 expectCode(() => validateCaseContract({ ...currentCase, identity: { ...currentCase.identity, caseNo: '4' } }), 'CASE_CONTRACT_INVALID');
 
+const caseSpec = createCaseSpec({
+  sourceText,
+  spec: {
+    summary: '验证最新 AI 回复的语音播放入口',
+    preconditions: ['已进入包含 AI 回复的会话'],
+    expectations: [{
+      text: '最新回复展示单条语音播放按钮',
+      verificationKind: 'DIRECT_OBSERVATION',
+      sourceEvidence: [{ quote: '最新回复展示单条语音播放按钮' }],
+    }],
+    ambiguities: [],
+  },
+});
+assert.strictEqual(validateCaseSpec(caseSpec, { sourceText }), caseSpec);
+assert.strictEqual(caseSpec.expectations[0].id, 'E1');
+expectCode(() => validateCaseSpec({ ...caseSpec, expectations: [] }, { sourceText }), 'CASE_SPEC_INVALID');
+expectCode(() => createCaseSpec({
+  sourceText,
+  spec: { summary: '错误引用', preconditions: [], expectations: [{ text: '按钮显示', sourceEvidence: [{ quote: '原文不存在' }] }], ambiguities: [] },
+}), 'CASE_SPEC_SOURCE_MISMATCH');
+
 const result = {
   verdict: 'PASS', summary: '语音播放按钮正常显示',
   checks: [{ expectationRef: 'E1', status: 'PASS', actual: '最新回复显示一个播放按钮', sceneRefs: ['scene-0002'] }],
@@ -51,14 +73,21 @@ expectCode(() => validateCaseResult({ ...result, checks: [{ ...result.checks[0],
 expectCode(() => validateCaseResult({ ...result, checks: [{ ...result.checks[0], expectation: '非协议字段' }] }), 'CASE_RESULT_INVALID');
 
 for (const request of [
-  { operation: 'observe', caseContext: { summary: '验证语音按钮', preconditions: [], expectations: ['播放按钮显示'], initialPlan: ['观察页面'], uncertainties: [] } },
-  { operation: 'act', capabilityId: 'scene-0001:tap:el-1', intent: '点击播放按钮' },
+  { operation: 'observe' },
   { operation: 'knowledge', query: '语音按钮未显示' },
   { operation: 'recover', reason: '恢复目标 App' },
   { operation: 'status' },
+  { operation: 'prepare', preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' } },
+  { operation: 'act', capabilityId: 'scene-0001:tap:el-1', decision: { purpose: '进入目标页', expectationRefs: ['E1'] } },
   { operation: 'finish', result },
 ]) assert.doesNotThrow(() => validateRuntimeRequest(request));
 expectCode(() => validateRuntimeRequest({ operation: 'act' }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'unknown' }), 'CASE_RUNTIME_REQUEST_INVALID');
+expectCode(() => validateRuntimeRequest({ operation: 'status', extra: true }), 'CASE_RUNTIME_REQUEST_INVALID');
+expectCode(() => validateRuntimeRequest({ operation: 'observe', caseContext: {} }), 'CASE_RUNTIME_REQUEST_INVALID');
+expectCode(() => validateRuntimeRequest({ operation: 'act', capabilityId: 'scene-0001:tap:el-1', intent: 'legacy' }), 'CASE_RUNTIME_REQUEST_INVALID');
+expectCode(() => validateRuntimeRequest({
+  operation: 'act', capabilityId: 'scene-0001:tap:el-1', decision: { purpose: '进入目标页', expectationRefs: [], extra: true },
+}), 'CASE_NARRATIVE_INVALID');
 
 console.log('contract tests passed');

@@ -1,34 +1,38 @@
 # 执行流程
 
-## 批次
+## 批次状态机
 
 ```text
-workspace -> import -> probe -> user confirms environment
--> user authorizes cases -> execution request -> batch init -> bootstrap
--> START_CASE -> delegate once -> WAIT_CASE_AGENT -> COMMIT_CASE
--> next case -> FINALIZING -> RELEASE_PLATFORM -> PUBLISH_REPORTS -> BATCH_COMPLETE
-cancel -> CANCELLING -> RELEASE_PLATFORM -> PUBLISH_REPORTS -> BATCH_CANCELLED
+workspace -> import -> probe -> optional artifact registration -> environment confirmation
+-> CaseSpec + InitialStateRequirement review -> execution/bootstrap authorization + preflight
+-> request -> init -> bootstrap -> NEED_CASE_AGENT -> start + initial-state establishment
+-> delegate once -> WAIT_CASE_AGENT -> reconcile auto-commit -> next case
+-> FINALIZING -> deterministic finalization -> BATCH_COMPLETE
+
+cancel -> CANCELLING -> deterministic finalization -> BATCH_CANCELLED
+fatal -> BLOCKING -> deterministic finalization -> BATCH_BLOCKED
 ```
 
-环境确认和执行授权是两个独立动作。确认环境后停止，直到用户明确指定单用例或有序批量范围。
+环境确认、CaseSpec/初始状态审核和执行授权是三个独立动作。`appProvisioning` 只冻结 App 来源；`bootstrapPolicy` 决定批次启动是否重装；每个 target 的 `initialStateRequirement` 表达业务所需起点，`preparationPolicy` 只表达允许的副作用。ExecutionRequest 创建时生成并冻结 InitialStatePreflight，三者不互相推断。
 
 主 Agent 循环处理 `batch reconcile`：
 
-- `BOOTSTRAP`：建立批次暖会话。
-- `START_CASE` 或 `RESUME_CASE_START`：调用 `batch start`，把 Case Brief 交给一个新的 Case Agent。
-- `WAIT_CASE_AGENT`：等待当前 Case Agent 完成，不进入其观察、动作或恢复循环。
-- `COMMIT_CASE`：发布 completion，刷新当前用例报告并进入下一用例。
-- `RELEASE_PLATFORM`：确定性释放平台资源并落盘收尾检查项。
-- `PUBLISH_REPORTS`：从正式 execution 产物重建本批目标的用例、平台和总览报告；失败时停留在该状态，不重跑用例。
-- `BATCH_CANCELLED`：活动 execution 已终止、平台资源已释放、取消状态已进入报告。
-- `BATCH_COMPLETE`：用例、平台资源和报告三项均已闭环。
-- `BATCH_BLOCKED`、`BLOCKED`、`CORRUPTED`：保留现场，释放可释放资源并报告技术原因。
+- `BOOTSTRAP`：建立暖会话；只有 `REINSTALL_FROZEN` 获得完整授权时才安装冻结制品。
+- `NEED_CASE_AGENT`：调用 `batch start`。Lifecycle 先自动建立冻结的初始状态；`agentRequired=true` 时才把 Prompt 和派生 Case Brief 一次性交给新的 Case Agent，`false` 时直接继续 reconcile。
+- `WAIT_CASE_AGENT`：等待，不进入 Case Agent 的观察、动作或恢复循环。
+- `PUBLISH_REPORTS` 且 `retryable=true`：自动发布失败，稍后重试 reconcile，不重跑用例。
+- `BATCH_COMPLETE` / `BATCH_CANCELLED` / `BATCH_BLOCKED`：execution、平台资源和报告均已收口。
 
-同一批次固定平台、设备、App 和入口，只在 bootstrap 冷启动一次。iOS 同一批次还复用一个框架持有的 Appium session，并在平台资源释放时关闭。后续用例继承 App 暖状态，但每个用例使用新的 Case Agent 和 execution。
+`COMMIT_CASE`、`SETTLE_EXECUTIONS`、`RELEASE_PLATFORM` 和 `PUBLISH_REPORTS` 仍是 Batch 内部可审计 checkpoint，但 `scripts/batch.js reconcile` 会在一次调用中自动推进，主 Agent 不逐段编排。返回的 `progress` 保留本次已完成迁移。
+
+Runtime reconcile 只把 `EXECUTION_LOCKED` 视为可重试，并把次数写入 batch state；第三次仍失败时升级为 `FATAL_EXECUTION`。事件存储损坏等错误为 `FATAL_BATCH`。两者都进入 `BLOCKING`，不会无限返回 `WAIT_CASE_AGENT`。
+
+同一批次固定平台、设备、App、入口、App Provisioning、Bootstrap Policy 和有序目标。用例间复用当前 App 暖状态，但 Case Agent、Frozen CaseSpec、execution 上下文和证据相互独立。
 
 ## 单用例
 
-Case Agent 从 Case Brief 开始，自主完成理解、起点建立、业务操作、证据判断、异常调查和结论。它直接使用 Runtime 返回的 Scene 和 Capability，不需要把中间决策发给主 Agent。
+Case Agent 从派生 Case Brief 中读取原文、Frozen CaseSpec、初始状态结果和当前 Scene，自主规划业务路径；它不能修改验证点，也不能请求准备 App。Lifecycle 在委托前按 `initialStateRequirement` 执行内部 prepare；失败时自动生成覆盖全部 expectation 的 BLOCKED CaseResult，因此无需创建 Case Agent。
 
-Runtime 对动作、恢复和完成做事务保护。中断恢复时，已经发送但结果未知的动作不会重放；Runtime 先返回新的 Scene，由同一个 Case Agent 根据现场继续判断。
-事务恢复改变 Agent 可见事实时，Runtime 返回 `RECOVERY_APPLIED` 并停止当前请求。Agent 句柄丢失时，Batch 先 reconcile，再向 continuation Agent 提供最新 Scene 和业务上下文。
+Runtime 对动作、准备、恢复和 finish 做事务保护。已发送但结果未知的副作用不自动重放；恢复改变 Agent 可见事实时返回 `RECOVERY_APPLIED` 并停止旧请求。Agent 句柄丢失时，Batch 先 reconcile，再用同一 execution 的 continuation Brief 继续。
+
+CaseResult 必须逐一覆盖 Frozen CaseSpec。Runtime 完成证据完整性校验后，主 Agent 才能 commit；Case Agent 的聊天摘要不是批次事实来源。

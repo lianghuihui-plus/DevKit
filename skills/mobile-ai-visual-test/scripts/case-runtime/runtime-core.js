@@ -11,8 +11,33 @@ const telemetry = require('./telemetry');
 
 const TIME_LIMIT_MS = 30 * 60 * 1000;
 
+function preparationStatus(execDir, execution) {
+  const events = store.events(execDir);
+  const completed = events.filter((event) => event.type === 'appPreparationCompleted').at(-1);
+  if (completed) {
+    return {
+      targetState: completed.targetState,
+      status: 'SATISFIED',
+      sessionId: completed.sessionId,
+      epoch: completed.epoch,
+      generation: completed.generation,
+    };
+  }
+  if (!execution.preparationFailed) return null;
+  const failed = events.filter((event) => event.type === 'appPreparationFailed').at(-1);
+  const fact = events.filter((event) => event.type === 'technicalIssue'
+    && event.operation === 'prepare' && event.code === 'APP_INITIAL_STATE_UNAVAILABLE').at(-1);
+  return {
+    targetState: failed?.targetState || execution.preparationTargetState || null,
+    status: 'FAILED',
+    code: 'APP_INITIAL_STATE_UNAVAILABLE',
+    technicalFactRef: fact?.technicalFactRef || null,
+  };
+}
+
 function runtimeStatus(execDir) {
   const execution = store.loadExecution(execDir, { allowFinalized: true });
+  const preparation = preparationStatus(execDir, execution);
   return {
     status: execution.status === 'CANCELLED' ? 'CANCELLED' : execution.finalized ? 'COMPLETED' : 'READY',
     executionId: execution.executionId,
@@ -20,6 +45,7 @@ function runtimeStatus(execDir) {
     remainingMs: Math.max(0, TIME_LIMIT_MS - (Date.now() - Date.parse(execution.startedAt))),
     scene: store.readCurrentScene(execDir),
     narrative: narrativeService.narrativeStatus(execDir),
+    ...(preparation ? { preparation } : {}),
     ...(execution.finalized && execution.status !== 'CANCELLED'
       ? { verdict: require('../lib/execution-lifecycle').readJson(store.paths(execDir).result, null)?.verdict || null } : {}),
   };
@@ -68,6 +94,8 @@ function recoveryBarrier(execDir, recoveredTransactions, pendingFinish) {
       kind: item.kind,
       operationId: item.operationId,
       status: item.status,
+      ...(item.response?.code ? { code: item.response.code } : {}),
+      ...(item.response?.technicalFactRef ? { technicalFactRef: item.response.technicalFactRef } : {}),
     })),
     ...(pendingFinish ? { recoveredFinish: { status: pendingFinish.status, verdict: pendingFinish.verdict || null } } : {}),
     scene: store.readCurrentScene(execDir),
@@ -92,7 +120,7 @@ function execute(execDir, request, options = {}) {
       code: error.code || 'CASE_RUNTIME_REQUEST_INVALID',
       message: error.message || String(error),
       scene: store.readCurrentScene(execDir),
-      expected: { operation: 'observe | act | knowledge | recover | finish | status' },
+      expected: { operation: 'prepare | observe | act | knowledge | recover | finish | status' },
     };
     if (invocation) telemetry.endInvocation(execDir, invocation, response, options);
     return response;
@@ -100,7 +128,10 @@ function execute(execDir, request, options = {}) {
   try {
     response = store.withRuntimeLock(execDir, () => {
       store.loadExecution(execDir, { allowFinalized: true });
-      const recoveredTransactions = require('./recovery-service').recoverPendingTransactions(execDir, { ...options, allowFinalized: true });
+      const recoveredTransactions = [
+        ...require('./preparation-service').recoverPendingPreparation(execDir, { ...options, allowFinalized: true }),
+        ...require('./recovery-service').recoverPendingTransactions(execDir, { ...options, allowFinalized: true }),
+      ];
       const pendingFinish = resultService.resumePendingFinish(execDir, { ...options, openInvocation: invocation });
       if (request.operation === 'status') {
         return runtimeStatus(execDir);
@@ -113,6 +144,16 @@ function execute(execDir, request, options = {}) {
           ? resultService.finish(execDir, request.result, { ...options, openInvocation: invocation })
           : runtimeStatus(execDir);
       }
+      if (latestExecution.preparationFailed && !['finish', 'status'].includes(request.operation)) {
+        const preparation = preparationStatus(execDir, latestExecution);
+        return {
+          status: 'TECHNICAL',
+          code: 'APP_INITIAL_STATE_UNAVAILABLE',
+          message: 'The requested App initial state cannot be established in this execution',
+          technicalFactRef: preparation?.technicalFactRef || null,
+          scene: store.readCurrentScene(execDir),
+        };
+      }
       assertSceneBasis(execDir, request);
       narrative = narrativeService.recordRequestNarrative(execDir, request, options);
       if (request.operation === 'finish') {
@@ -123,14 +164,13 @@ function execute(execDir, request, options = {}) {
         operation: request.operation,
         decisionId: narrative.decisionEvent?.decisionId || null,
         expectationRefs: narrative.decisionEvent?.decision?.expectationRefs
-          || (narrative.contextEvent?.contextVersion === 1
-            ? narrative.contextEvent.caseContext.expectations.map((item) => item.id) : []),
+          || narrative.caseContext?.expectations?.map((item) => item.id) || [],
       });
       const recoveredRecovery = recoveredTransactions.find((item) => item.kind === 'recovery');
       if (request.operation === 'recover' && recoveredRecovery) {
         return { ...recoveredRecovery.response, remainingMs: budget.remainingMs };
       }
-      if (budget.exhausted && ['observe', 'act', 'recover'].includes(request.operation)) {
+      if (budget.exhausted && ['prepare', 'observe', 'act', 'recover'].includes(request.operation)) {
         return { status: 'TIME_LIMIT', remainingMs: 0, technicalFactRef: budget.technicalFactRef, scene: store.readCurrentScene(execDir) };
       }
       let response;
@@ -146,7 +186,8 @@ function execute(execDir, request, options = {}) {
         decision: narrative.decisionEvent?.decision || undefined,
         decisionId: narrative.decisionEvent?.decisionId || null,
       };
-      if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
+      if (request.operation === 'prepare') response = require('./preparation-service').prepare(execDir, enrichedRequest, runtimeOptions);
+      else if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
       else if (request.operation === 'act') response = actionService.act(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'knowledge') response = knowledgeService.knowledge(execDir, enrichedRequest, options);
       else if (request.operation === 'recover') response = require('./recovery-service').recover(execDir, enrichedRequest, runtimeOptions);
@@ -162,7 +203,7 @@ function execute(execDir, request, options = {}) {
       };
     }, options);
   } catch (error) {
-    const requestInvalid = error.code === 'CASE_RUNTIME_REQUEST_INVALID' || error.code === 'ACTION_CONTRACT_INVALID';
+    const requestInvalid = ['CASE_RUNTIME_REQUEST_INVALID', 'CASE_NARRATIVE_INVALID', 'ACTION_CONTRACT_INVALID'].includes(error.code);
     response = requestInvalid
       ? {
         status: 'REQUEST_INVALID',
@@ -191,8 +232,7 @@ function execute(execDir, request, options = {}) {
         operation,
         decisionId: narrative?.decisionEvent?.decisionId || null,
         expectationRefs: narrative?.decisionEvent?.decision?.expectationRefs
-          || (narrative?.contextEvent?.contextVersion === 1
-            ? narrative.contextEvent.caseContext.expectations.map((item) => item.id) : []),
+          || narrative?.caseContext?.expectations?.map((item) => item.id) || [],
         allowFinalized: true,
       });
   }
@@ -202,7 +242,10 @@ function execute(execDir, request, options = {}) {
 
 function reconcileExecution(execDir, options = {}) {
   return store.withRuntimeLock(execDir, () => {
-    const recoveredTransactions = require('./recovery-service').recoverPendingTransactions(execDir, { ...options, allowFinalized: true });
+    const recoveredTransactions = [
+      ...require('./preparation-service').recoverPendingPreparation(execDir, { ...options, allowFinalized: true }),
+      ...require('./recovery-service').recoverPendingTransactions(execDir, { ...options, allowFinalized: true }),
+    ];
     const finish = resultService.resumePendingFinish(execDir, options);
     return { recoveredTransactions, finish, status: runtimeStatus(execDir) };
   }, options);

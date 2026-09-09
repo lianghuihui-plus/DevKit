@@ -152,13 +152,13 @@ function visualAction(scene, visual, intent) {
 
 function resolveAction(scene, request, platform) {
   let action;
-  if (request.visual) action = visualAction(scene, request.visual, request.intent);
+  if (request.visual) action = visualAction(scene, request.visual, request.decision?.purpose);
   else {
     const capability = (scene.capabilities || []).find((item) => item.id === request.capabilityId);
     if (!capability) return { stale: true };
     action = capability.target
-      ? elementAction(scene, capability, request.input, request.intent, platform)
-      : globalAction(scene, capability, request.input, request.intent);
+      ? elementAction(scene, capability, request.input, request.decision?.purpose, platform)
+      : globalAction(scene, capability, request.input, request.decision?.purpose);
   }
   validateActionExecution(action, { platform, scope: 'case-business', context: 'Case Runtime action' });
   return { action, stale: false };

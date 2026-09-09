@@ -9,6 +9,7 @@ const { readJson } = require('../lib/execution-lifecycle');
 const { technicalFacts, technicalFactState } = require('../lib/technical-facts');
 const { evidenceRef, readActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { validateCaseResult } = require('./contract');
+const { validateCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { buildKnowledgeIndex } = require('./knowledge-review');
 const store = require('./store');
 
@@ -51,16 +52,17 @@ function validateVerdict(result, events) {
 
 function validateExpectationCoverage(execDir, result, events, suppliedExecution = null) {
   const execution = suppliedExecution || readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 7) {
+  if (!execution || execution.schemaVersion !== 10) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
 
-  const context = events.filter((event) => event.type === 'caseContextRecorded').at(-1)?.caseContext || null;
+  const sourceText = fs.readFileSync(path.join(execDir, 'source.snapshot.md'), 'utf8');
+  const caseSpec = readJson(path.join(execDir, 'case-spec.snapshot.json'), null);
+  if (!caseSpec) throw contractError('CASE_SPEC_MISSING', 'frozen CaseSpec snapshot is missing');
+  validateCaseSpec(caseSpec, { sourceText, sourceSha: execution.sourceSha });
+  if (execution.caseSpecSha !== caseSpec.specSha) throw contractError('CASE_SPEC_CHANGED', 'execution CaseSpec binding changed');
   const missing = [];
-  if (!context) {
-    missing.push({ field: 'caseContext', reason: '用例理解和验证点尚未记录' });
-  }
-  const expectedRefs = (context?.expectations || []).map((item) => item.id);
+  const expectedRefs = caseSpec.expectations.map((item) => item.id);
   const suppliedRefs = result.checks.map((check) => check.expectationRef);
   const duplicates = suppliedRefs.filter((ref, index) => suppliedRefs.indexOf(ref) !== index);
   const unknown = [...new Set(suppliedRefs.filter((ref) => !expectedRefs.includes(ref)))];
@@ -71,7 +73,7 @@ function validateExpectationCoverage(execDir, result, events, suppliedExecution 
   if (missing.length) {
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult does not cover the current expectations', { missing });
   }
-  return { expectations: context.expectations, coveredExpectationRefs: suppliedRefs, complete: true };
+  return { expectations: caseSpec.expectations, coveredExpectationRefs: suppliedRefs, complete: true };
 }
 
 function validateKnowledgeClosure(result, events, execution = null) {
@@ -216,7 +218,7 @@ function validateScene(execDir, sceneId, event, files, options = {}) {
 
 function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 7) {
+  if (!execution || execution.schemaVersion !== 10) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
   const result = suppliedResult || readJson(path.join(execDir, 'result.json'), null);

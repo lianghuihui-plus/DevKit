@@ -40,7 +40,17 @@ function makeCase(root, name) {
   fs.mkdirSync(caseDir, { recursive: true });
   fs.writeFileSync(path.join(caseDir, 'source.md'), sourceText);
   writeJsonAtomic(path.join(caseDir, 'case.json'), caseJson);
-  return { caseKey, caseDir, sourceText };
+  return {
+    caseKey,
+    caseDir,
+    sourceText,
+    caseSpec: {
+      summary: sourceText,
+      preconditions: [],
+      expectations: [{ text: sourceText, sourceEvidence: [{ quote: sourceText }] }],
+      ambiguities: [],
+    },
+  };
 }
 
 function probe(binding = BINDING, ready = true) {
@@ -101,7 +111,7 @@ const numberedRequest = createExecutionRequest({
   workspaceRoot: root,
   batchId: 'batch-by-case-no',
   mode: 'SINGLE',
-  targets: [{ caseNo: '002' }],
+  targets: [{ caseNo: '002', caseSpec: second.caseSpec }],
   userInstruction: '单独执行用例 002',
   now: T0,
 });
@@ -111,7 +121,7 @@ assert.strictEqual(createExecutionRequest({
   workspaceRoot: root,
   batchId: 'batch-by-case-no',
   mode: 'SINGLE',
-  targets: [{ caseNo: 2 }],
+  targets: [{ caseNo: 2, caseSpec: second.caseSpec }],
   userInstruction: '单独执行用例 002',
   now: T1,
 }).requestSha, numberedRequest.requestSha);
@@ -181,7 +191,7 @@ for (const interruptAfter of ['draft', 'snapshot-1', 'request']) {
     workspaceRoot: root,
     batchId: interruptedBatchId,
     mode: 'SINGLE',
-    targets: [{ caseKey: first.caseKey, caseDir: first.caseDir }],
+    targets: [{ caseKey: first.caseKey, caseDir: first.caseDir, caseSpec: first.caseSpec }],
     userInstruction: '单个执行冻结恢复用例',
     skillRoot: SKILL_ROOT,
     interruptAfter,
@@ -192,7 +202,7 @@ for (const interruptAfter of ['draft', 'snapshot-1', 'request']) {
     workspaceRoot: root,
     batchId: interruptedBatchId,
     mode: 'SINGLE',
-    targets: [{ caseKey: first.caseKey, caseDir: first.caseDir }],
+    targets: [{ caseKey: first.caseKey, caseDir: first.caseDir, caseSpec: first.caseSpec }],
     userInstruction: '单个执行冻结恢复用例',
     skillRoot: SKILL_ROOT,
     now: '2026-08-13T10:05:00.000Z',

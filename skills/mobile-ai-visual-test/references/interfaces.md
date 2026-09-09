@@ -1,86 +1,88 @@
 # 接口契约
 
-## 主 Agent
+## 主 Agent CLI
 
 ```bash
 node scripts/workspace.js --cwd <workspace>
 node scripts/import-case.js <input-file> --workspace <workspace>
-scripts/probe-env.sh --platform <platform>
-scripts/prepare-env.sh --platform <platform> [platform options]
-node scripts/environment.js confirm --workspace <workspace> --binding-json '<json>' --probe-json '<json>' --user-confirmation '<text>'
-node scripts/execution-request.js create --workspace <workspace> --batch-id <id> --mode <single|batch> --targets-json '[{"caseNo":"004"}]' --user-instruction '<text>'
-node scripts/batch.js init --workspace <workspace> --batch-id <id>
-node scripts/batch.js bootstrap --workspace <workspace> --batch-id <id>
-node scripts/batch.js reconcile --workspace <workspace> --batch-id <id>
-node scripts/batch.js start --workspace <workspace> --batch-id <id>
-node scripts/batch.js start --workspace <workspace> --batch-id <id> --continuation-reason '<native Agent handle 丢失原因>'
-node scripts/batch.js commit --workspace <workspace> --batch-id <id>
-node scripts/batch.js status --workspace <workspace> --batch-id <id>
-node scripts/batch.js cancel --workspace <workspace> --batch-id <id> --reason '<取消原因>'
-node scripts/batch.js teardown --workspace <workspace> --batch-id <id>
+scripts/probe-env.sh --platform <harmony|android|ios> [platform options]
+scripts/prepare-env.sh --platform <harmony|android|ios> [platform options]
+node scripts/app-artifact.js register --workspace <workspace> --path <apk|hap|app|ipa> --platform <platform> --app-id <id> --version <version> --build <build> [--device-type <simulator|realDevice>]
+node scripts/environment.js confirm --workspace <workspace> --binding-json '<json>' --probe-json '<json>' [--app-provisioning-json '<json>'] --user-confirmation '<text>'
+node scripts/execution-request.js create --workspace <workspace> --batch-id <id> --mode <single|batch> --targets-json '<targets-json>' [--bootstrap-policy-json '<policy-json>'] --user-instruction '<text>'
+node scripts/batch.js <init|bootstrap|reconcile|start|commit|status|cancel|teardown> --workspace <workspace> --batch-id <id>
 ```
 
-`batch start` 返回 `brief`，其中包含冻结用例、目标摘要、可选初始 Scene 和预绑定 Runtime 入口。带 `--continuation-reason` 时，Batch 先恢复 Runtime，再返回包含最新 Scene、用例理解、计划、未解决技术事实和待复核知识的 continuation Brief。
-
-`batch reconcile` 在新 execution 上只返回批次动作，不返回 Case Agent 中间决策：运行中为 `WAIT_CASE_AGENT`，完成后为 `COMMIT_CASE`。
-
-## Case Agent
-
-Case Brief 提供固定 `runtime.command` 和固定 `runtime.requestPath`。Case Agent 将一个请求 JSON 写入该路径，然后不带参数运行 command：
+每个 target 必须在授权前提供 CaseSpec 和初始状态要求。ExecutionRequest 会补齐稳定 ID、哈希和 InitialStatePreflight，并冻结原文、Case Contract、CaseSpec、requirement 与 policy：
 
 ```json
-{ "operation": "observe", "caseContext": { "summary": "验证设置保存结果", "preconditions": ["用户已登录"], "expectations": [{ "text": "设置入口可用", "verificationKind": "DIRECT_OBSERVATION" }, { "text": "目标条目可以在完整列表中找到", "verificationKind": "SEARCH_EXISTENCE" }], "initialPlan": ["进入设置", "搜索目标", "检查结果"], "uncertainties": [] } }
-{ "operation": "act", "basedOnSceneId": "scene-0001", "capabilityId": "scene-0001:tap:el-8", "intent": "打开设置", "decision": { "observation": "页面显示设置入口", "conclusion": "可以开始验证", "purpose": "进入设置页", "expectedOutcome": "显示目标设置", "expectationRefs": ["E1"] } }
-{ "operation": "knowledge", "basedOnSceneId": "scene-0002", "query": "当前页面显示异常", "decision": { "observation": "结果与预期不一致", "conclusion": "需要确认是否为已知表现", "purpose": "查询本地经验", "expectedOutcome": "获得可用于判断的候选信息", "expectationRefs": ["E2"] } }
-{ "operation": "observe", "decision": { "observation": "现场仍与预期不同", "conclusion": "候选知识适用于当前平台", "purpose": "按知识规则复核现场", "expectedOutcome": "形成可追溯的最终判断", "expectationRefs": ["E2"], "knowledgeReview": { "queryId": "knowledge-0001", "conclusion": "APPLICABLE_FOUND", "assessments": [{ "entryId": "K-example-001", "status": "APPLICABLE", "reason": "平台、页面和现象均一致" }] } } }
-{ "operation": "recover", "basedOnSceneId": "scene-0002", "reason": "重新建立 App 起点", "decision": { "observation": "目标 App 已离开前台", "conclusion": "当前现场无法继续", "purpose": "恢复 App 后继续用例", "expectedOutcome": "目标 App 回到可操作状态", "expectationRefs": [] } }
+{
+  "caseNo": "004",
+  "caseSpec": {
+    "summary": "验证设置保存结果",
+    "preconditions": ["用户已登录"],
+    "expectations": [
+      { "text": "设置入口可用", "verificationKind": "DIRECT_OBSERVATION", "sourceEvidence": [{ "quote": "设置入口可用" }] },
+      { "text": "目标条目存在", "verificationKind": "SEARCH_EXISTENCE", "sourceEvidence": [{ "quote": "目标条目存在" }] }
+    ],
+    "ambiguities": []
+  },
+  "initialStateRequirement": {
+    "schemaVersion": 1,
+    "targetState": "APP_LOCAL_STATE_EMPTY",
+    "rationale": "该用例验证首次启动页面"
+  },
+  "preparationPolicy": {
+    "schemaVersion": 1,
+    "allowedEffects": ["CLEAR_APP_DATA"],
+    "targetAppOnly": true,
+    "userAuthorization": "允许清除目标 App 本地数据"
+  }
+}
+```
+
+`initialStateRequirement.targetState` 可为 `KEEP_EXISTING`、`APP_LOCAL_STATE_EMPTY` 或 `FRESH_INSTALL`。`preparationPolicy` 是用户允许的副作用，不是业务要求；创建请求时二者不匹配或 `FRESH_INSTALL` 缺少冻结制品，会以 `INITIAL_STATE_PREFLIGHT_FAILED` 拒绝。
+
+`bootstrapPolicy` 默认不重装。需要批次开始前重装冻结制品时必须显式提交：
+
+```json
+{
+  "schemaVersion": 1,
+  "mode": "REINSTALL_FROZEN",
+  "allowedEffects": ["UNINSTALL_TARGET_APP", "INSTALL_FROZEN_ARTIFACT"],
+  "targetAppOnly": true,
+  "userAuthorization": "允许批次启动时重装冻结制品"
+}
+```
+
+`app-artifact register` 返回的 manifest 包含 expected identity 和实际提取状态。`UNAVAILABLE` 表示登记环境无法解析，不代表已核验；任何实际重装仍必须返回匹配的 `installedIdentity`。
+
+`batch start` 返回从 execution 快照和 Runtime 当前状态派生的 Case Brief，其中只有原文、Frozen CaseSpec、初始状态结果、目标摘要、可选 Scene 和预绑定 Runtime Client；不存在可写的权威 `case-brief.json`。只有 `agentRequired=true` 才创建 Case Agent。`batch reconcile` 对主 Agent 返回 `BOOTSTRAP`、`NEED_CASE_AGENT`、`WAIT_CASE_AGENT`、可重试的 `PUBLISH_REPORTS` 或三类批次终态，内部自动完成 commit、execution settle、平台释放和报告发布。锁竞争最多等待三次，致命错误进入阻塞收口。
+
+## Case Runtime
+
+Case Agent 把一个 RuntimeRequest JSON 写入 `runtime.requestPath`，再不带参数运行 `runtime.command`。Broker 只允许 `observe`、`act`、`knowledge`、`recover`、`finish` 和 `status`；`prepare` 是 Lifecycle 内部能力，通过 Agent Client 调用会返回 `CASE_RUNTIME_OPERATION_FORBIDDEN`。
+
+```json
+{ "operation": "observe", "decision": { "purpose": "建立基线", "expectationRefs": [], "planUpdate": { "reason": "初始计划", "next": ["进入目标页", "逐项验证"] } } }
+{ "operation": "act", "basedOnSceneId": "scene-0001", "capabilityId": "scene-0001:tap:el-8", "decision": { "purpose": "进入设置", "expectationRefs": ["E1"] } }
+{ "operation": "knowledge", "basedOnSceneId": "scene-0002", "query": "当前页面显示异常", "decision": { "purpose": "查询本地经验", "expectationRefs": ["E2"] } }
+{ "operation": "recover", "basedOnSceneId": "scene-0002", "reason": "重新建立 App 起点", "decision": { "purpose": "恢复后继续", "expectationRefs": [] } }
 { "operation": "status" }
 ```
 
-`caseContext` 放在首次 Runtime 请求中，初始计划至少包含一个步骤；首次用于建立现场的 `observe` 可以不带 decision，之后的 `observe`、`act`、`knowledge`、`recover` 和 `finish` 均随已有业务请求提交 decision，不增加单独调用。知识候选评估放在下一次已有请求的 `decision.knowledgeReview` 中。Runtime 为验证点分配稳定的 `E1`、`E2` 引用，并自动关联 Scene、operationId、时间和计划版本。记录状态统一为 `COMPLETE`、`PARTIAL` 或 `UNAVAILABLE`。
+`act` 的 `capabilityId` 与 `visual` 二选一。视觉坐标为 0..1；长按必须提供 `durationMs`。`observationPolicy.duringActionAtMs` 仅适用于长按且满足 `20 <= duringActionAtMs < durationMs`。
 
-每次调用输出一个 JSON 对象。状态包括 `SCENE`、`SCENE_CHANGED`、`RECOVERY_APPLIED`、`KNOWLEDGE`、`COMPLETED`、`RESULT_INCOMPLETE`、`REQUEST_INVALID`、`TIME_LIMIT` 和 `TECHNICAL`。`RECOVERY_APPLIED` 表示中断事务已恢复且当前旧请求没有执行，Case Agent 必须基于返回的最新 Scene 重新判断。Runtime 技术错误、时间限制或未知动作/恢复结果会返回稳定的 `technicalFactRef`。
+每种 operation 使用独立字段白名单，未知字段和旧 `intent` 会被拒绝。`act.decision` 必须包含 `purpose` 与 `expectationRefs`；其余 decision 字段可选，只在确有信息时提交。
 
-Batch 命令的业务或环境失败同样输出一个 `TECHNICAL` JSON 并正常结束进程；只有命令名、选项和值缺失等调用语法错误使用非零退出码。
+Action Result v2 分别公开 `lifecycle`、`command`、`deviceExecution` 和 `observedEffect`。`spatialEvidence` 的当前标注附件为包含操作前底图的 PNG；`DISPATCH_ONLY` 不能证明真实触点，`DEVICE_CONFIRMED` 且 `actual` 非空才表示平台确认。
 
-复杂视觉动作请求示例：
-
-```json
-{
-  "operation": "act",
-  "basedOnSceneId": "scene-0002",
-  "visual": { "gesture": "tap", "point": [0.5, 0.72] },
-  "intent": "打开截图中可见的确认按钮",
-  "decision": { "observation": "截图中显示确认按钮", "conclusion": "需要点击该按钮继续", "purpose": "确认当前设置", "expectedOutcome": "页面显示确认后的状态", "expectationRefs": ["E1"] }
-}
-```
-
-长按的 `durationMs` 必填；控件能力通过 `input.durationMs` 提交，视觉长按通过 `visual.durationMs` 提交。`observationPolicy.duringActionAtMs` 仅适用于长按，必须满足 `20 <= duringActionAtMs < durationMs`，用于保存释放前的过程截图。
-
-动作后的 Scene 使用 Action Result v2 分层返回事实：`lifecycle.status` 表示 Runtime 事务是否完成，`command.status` 表示命令是否被接受，`deviceExecution.status` 表示平台是否能验证设备执行，`observedEffect.status` 表示前后 Scene 为 `CHANGED`、`UNCHANGED` 或 `UNKNOWN`。命令被接受不等于点击命中、控件响应或业务成功；请求坐标回显写入 `deviceExecution.dispatchedPoint/dispatchedFrom/dispatchedTo`，没有真实触点反馈时 `actualTouchPoint` 为 `null`。
-
-点击、长按、输入和滑动还会在 `Scene.previousAction.spatialEvidence` 返回统一动作空间证据：`requested`、`expectedDispatched`、`dispatched`、可空的 `actual`、`certainty`、`consistency` 以及 `annotatedScreenshot.attachment`。`DISPATCH_ONLY` 表示只有请求和命令投递事实，`DEVICE_CONFIRMED` 表示平台提供了真实触点；标注图是包含操作前截图底图的独立 SVG，不需要消费方重新换算或绘制。持久化事件只保存 `spatialEvidenceRef`，完整内容位于 `action-spatial-evidence/action-N.json`。
-
-布局可识别的单层垂直列表在 Scene 中提供 `scrollContexts`，包含当前边界置信度、连续覆盖状态、未探索方向和自适应滑动距离。Runtime 不规定 Agent 的搜索方向或固定滑动次数；只有当前 generation 的滚动上下文达到两端 `CONFIRMED`、`coverage=CONTIGUOUS` 且 `absenceConclusionSupported=true`，才支持完整列表不存在结论。
-
-完成结果：
+搜索型验证点的负向 FAIL 只有在滚动上下文 `absenceConclusionSupported=true` 时成立，并提交：
 
 ```json
-{
-  "verdict": "PASS",
-  "summary": "目标交互与预期一致",
-  "checks": [
-    {
-      "expectationRef": "E1",
-      "status": "PASS",
-      "actual": "页面已显示目标状态",
-      "sceneRefs": ["scene-0003"],
-      "knowledgeRefs": [],
-      "technicalRefs": []
-    }
-  ],
-  "uncertainties": []
-}
+{ "type": "SEARCH_ABSENCE", "sceneRef": "scene-0004", "scrollContextRef": "scroll-context-0001" }
 ```
 
-CaseResult 必须覆盖当前全部验证点。`SEARCH_EXISTENCE` 验证点的 FAIL check 必须提交 `evidenceBasis: { "type": "SEARCH_ABSENCE", "sceneRef": "<覆盖完成的 Scene>", "scrollContextRef": "<该 Scene 中的引用>" }`。知识支持的检查通过 `knowledgeRefs` 引用已冻结且评估为适用的条目；直接 Scene 证据足够时不强制知识调查。只有 Runtime 返回的技术事实仍有效时，BLOCKED check 才通过 `technicalRefs` 引用。不属于当前协议的 execution 不恢复或转换，需要重新执行用例。
+CaseResult 必须一对一覆盖 Frozen CaseSpec 全部 expectation。PASS/FAIL 引用 Scene；知识引用必须已评估为 `APPLICABLE`；BLOCKED 的 `technicalRefs` 必须指向仍有效且绑定该 expectation 的 Runtime 技术事实。
+
+Runtime 状态包括 `SCENE`、`SCENE_CHANGED`、`RECOVERY_APPLIED`、`KNOWLEDGE`、`COMPLETED`、`RESULT_INCOMPLETE`、`REQUEST_INVALID`、`TIME_LIMIT` 和 `TECHNICAL`。批次 CLI 的业务失败也输出结构化 `TECHNICAL` JSON；只有 CLI 语法错误使用非零退出码。

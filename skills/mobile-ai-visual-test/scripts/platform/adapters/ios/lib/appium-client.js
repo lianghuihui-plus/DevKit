@@ -89,7 +89,11 @@ async function createSession(target, options = {}) {
 
 async function deleteSession(server, sessionId) {
   if (!sessionId) return;
-  await request(server, 'DELETE', `/session/${sessionId}`, {}, 30000);
+  try {
+    await request(server, 'DELETE', `/session/${sessionId}`, {}, 30000);
+  } catch (error) {
+    if (error.statusCode !== 404) throw error;
+  }
 }
 
 async function withSession(target, fn, options = {}) {

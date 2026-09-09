@@ -1,6 +1,9 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { canonicalJson, contractError, ensureArray, ensureObject, ensureString } = require('../lib/contract-utils');
+const { validateCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { validateCaseContext, validateDecision } = require('./contract');
 const store = require('./store');
 
@@ -49,12 +52,30 @@ function normalizeExpectations(value, previous = null) {
   return used;
 }
 
-function normalizeCaseContext(value, previous = null) {
+function frozenCaseSpec(execDir) {
+  const spec = require('../lib/execution-lifecycle').readJson(path.join(execDir, 'case-spec.snapshot.json'), null);
+  const execution = store.loadExecution(execDir, { allowFinalized: true });
+  const sourceText = fs.readFileSync(path.join(execDir, 'source.snapshot.md'), 'utf8');
+  return validateCaseSpec(spec, { sourceText, sourceSha: execution.sourceSha });
+}
+
+function normalizeCaseContext(value, previous = null, spec = null) {
   validateCaseContext(value);
+  const fixed = spec ? {
+    summary: spec.summary,
+    preconditions: spec.preconditions,
+    expectations: spec.expectations.map(({ id, text, verificationKind }) => ({ id, text, verificationKind })),
+  } : null;
+  const suppliedExpectations = normalizeExpectations(value.expectations, fixed || previous);
+  if (fixed && (value.summary.trim() !== fixed.summary
+    || canonicalJson(stringList(value.preconditions || [], 'caseContext.preconditions')) !== canonicalJson(fixed.preconditions)
+    || canonicalJson(suppliedExpectations) !== canonicalJson(fixed.expectations))) {
+    throw contractError('CASE_SPEC_IMMUTABLE', 'caseContext cannot replace the frozen CaseSpec summary, preconditions, or expectations');
+  }
   return {
-    summary: ensureString(value.summary, 'caseContext.summary', 'CASE_NARRATIVE_INVALID').trim(),
-    preconditions: stringList(value.preconditions || [], 'caseContext.preconditions'),
-    expectations: normalizeExpectations(value.expectations, previous),
+    summary: fixed?.summary || ensureString(value.summary, 'caseContext.summary', 'CASE_NARRATIVE_INVALID').trim(),
+    preconditions: fixed?.preconditions || stringList(value.preconditions || [], 'caseContext.preconditions'),
+    expectations: fixed?.expectations || suppliedExpectations,
     initialPlan: stringList(value.initialPlan || [], 'caseContext.initialPlan'),
     uncertainties: stringList(value.uncertainties || [], 'caseContext.uncertainties'),
   };
@@ -63,10 +84,11 @@ function normalizeCaseContext(value, previous = null) {
 function normalizeDecision(value, context) {
   validateDecision(value);
   const decision = {
-    observation: ensureString(value.observation, 'decision.observation', 'CASE_NARRATIVE_INVALID').trim(),
-    conclusion: ensureString(value.conclusion, 'decision.conclusion', 'CASE_NARRATIVE_INVALID').trim(),
+    assessment: ensureString(value.assessment || value.conclusion || value.observation || value.purpose, 'decision.assessment', 'CASE_NARRATIVE_INVALID').trim(),
+    observation: ensureString(value.observation || value.assessment || value.purpose, 'decision.observation', 'CASE_NARRATIVE_INVALID').trim(),
+    conclusion: ensureString(value.conclusion || value.assessment || value.purpose, 'decision.conclusion', 'CASE_NARRATIVE_INVALID').trim(),
     purpose: ensureString(value.purpose, 'decision.purpose', 'CASE_NARRATIVE_INVALID').trim(),
-    expectedOutcome: ensureString(value.expectedOutcome, 'decision.expectedOutcome', 'CASE_NARRATIVE_INVALID').trim(),
+    expectedOutcome: ensureString(value.expectedOutcome || value.purpose, 'decision.expectedOutcome', 'CASE_NARRATIVE_INVALID').trim(),
     expectationRefs: stringList(value.expectationRefs || [], 'decision.expectationRefs'),
   };
   const known = new Set((context?.expectations || []).map((item) => item.id));
@@ -82,6 +104,7 @@ function normalizeDecision(value, context) {
   if (value.knowledgeReview !== undefined) {
     decision.knowledgeReview = require('./knowledge-review').normalizeKnowledgeReview(value.knowledgeReview);
   }
+  if (value.uncertainties !== undefined) decision.uncertainties = stringList(value.uncertainties, 'decision.uncertainties');
   return decision;
 }
 
@@ -98,10 +121,7 @@ function appendGap(execDir, request, error, fields, options = {}) {
 }
 
 function shouldRecordGap(request, hasContextBefore, acceptedInitialContext) {
-  if (request.operation === 'status') return false;
-  if (request.operation === 'observe' && !hasContextBefore && acceptedInitialContext) return false;
-  return ['observe', 'act', 'knowledge', 'recover', 'finish'].includes(request.operation)
-    && request.decision === undefined;
+  return false;
 }
 
 function recordRequestNarrative(execDir, request, options = {}) {
@@ -111,7 +131,7 @@ function recordRequestNarrative(execDir, request, options = {}) {
   let contextEvent = null;
   if (request.caseContext !== undefined) {
     try {
-      const normalized = normalizeCaseContext(request.caseContext, context);
+      const normalized = normalizeCaseContext(request.caseContext, context, frozenCaseSpec(execDir));
       if (!context || canonicalJson(normalized) !== canonicalJson(context)) {
         const version = contextEvents(execDir).length + 1;
         contextEvent = store.appendEvent(execDir, 'caseContextRecorded', {
@@ -147,6 +167,7 @@ function recordRequestNarrative(execDir, request, options = {}) {
         require('./knowledge-review').recordKnowledgeReview(execDir, decision.knowledgeReview, decisionEvent, options);
       }
     } catch (error) {
+      if (request.operation === 'act') throw error;
       warnings.push(appendGap(execDir, request, error, [error.fieldPath || 'decision'], options));
     }
   } else if (shouldRecordGap(request, hasContextBefore, Boolean(contextEvent && context))) {
@@ -164,13 +185,11 @@ function narrativeStatus(execDir) {
   const gaps = events.filter((event) => event.type === 'narrativeGap');
   const reviewedQueries = new Set(events.filter((event) => event.type === 'knowledgeReviewed').map((event) => event.queryId));
   const hasUnreviewedKnowledge = events.some((event) => event.type === 'knowledgeQueried' && !reviewedQueries.has(event.queryId));
-  let plan = contexts[0] ? {
-    version: 1,
-    reason: contexts[0].reason,
-    items: contexts[0].caseContext.initialPlan,
-  } : null;
+  let plan = null;
   for (const event of events) {
-    if (event.type === 'agentDecisionRecorded' && event.decision?.planUpdate) {
+    if (event.type === 'caseContextRecorded' && event.caseContext?.initialPlan?.length) {
+      plan = { version: (plan?.version || 0) + 1, reason: event.reason, items: event.caseContext.initialPlan };
+    } else if (event.type === 'agentDecisionRecorded' && event.decision?.planUpdate) {
       plan = { version: (plan?.version || 0) + 1, reason: event.decision.planUpdate.reason, items: event.decision.planUpdate.next };
     }
   }
@@ -180,7 +199,7 @@ function narrativeStatus(execDir) {
     latestPlan: plan,
     lastDecision: decisions.at(-1) || null,
     recordingStatus: !context ? 'UNAVAILABLE'
-      : gaps.length || context.initialPlan.length === 0 || hasUnreviewedKnowledge ? 'PARTIAL' : 'COMPLETE',
+      : gaps.length || !(plan?.items || []).length || hasUnreviewedKnowledge ? 'PARTIAL' : 'COMPLETE',
     narrativeGapCount: gaps.length,
   };
 }

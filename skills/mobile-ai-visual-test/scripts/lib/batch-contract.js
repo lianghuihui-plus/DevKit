@@ -10,8 +10,20 @@ const {
   sha256,
 } = require('./contract-utils');
 const { normalizeDeviceBinding } = require('./target-binding');
+const {
+  appProvisioningSha,
+  bootstrapPolicySha,
+  initialStatePreflightSha,
+  initialStateRequirementSha,
+  preparationPolicySha,
+  validateAppProvisioning,
+  validateBootstrapPolicy,
+  validateInitialStatePreflight,
+  validateInitialStateRequirement,
+  validatePreparationPolicy,
+} = require('./app-provisioning');
 
-const BATCH_CONTRACT_SCHEMA_VERSION = 4;
+const BATCH_CONTRACT_SCHEMA_VERSION = 7;
 const PLATFORMS = new Set(['harmony', 'android', 'ios']);
 const EXECUTION_MODES = new Set(['SINGLE', 'BATCH']);
 
@@ -56,6 +68,17 @@ function validateBatchContract(value) {
   if (!EXECUTION_MODES.has(value.mode)) throw contractError('BATCH_CONTRACT_INVALID', 'mode must be SINGLE or BATCH');
   if (value.interactionPolicy !== 'UNATTENDED') throw contractError('BATCH_CONTRACT_INVALID', 'interactionPolicy must be UNATTENDED');
   validateBinding(value.binding);
+  const provisioning = validateAppProvisioning(value.appProvisioning, {
+    platform: value.binding.platform,
+    appId: value.binding.appId,
+    deviceType: value.binding.deviceType,
+  });
+  if (value.appProvisioningSha !== appProvisioningSha(provisioning)) throw contractError('BATCH_CONTRACT_INVALID', 'appProvisioningSha does not match appProvisioning');
+  const bootstrapPolicy = validateBootstrapPolicy(value.bootstrapPolicy);
+  if (value.bootstrapPolicySha !== bootstrapPolicySha(bootstrapPolicy)) throw contractError('BATCH_CONTRACT_INVALID', 'bootstrapPolicySha does not match bootstrapPolicy');
+  if (bootstrapPolicy.mode === 'REINSTALL_FROZEN' && provisioning.mode !== 'ARTIFACT_MANAGED') {
+    throw contractError('BATCH_CONTRACT_INVALID', 'REINSTALL_FROZEN requires ARTIFACT_MANAGED provisioning');
+  }
   const targets = ensureArray(value.targets, 'targets', 'BATCH_CONTRACT_INVALID');
   if (!targets.length) throw contractError('BATCH_CONTRACT_INVALID', 'targets must not be empty');
   const keys = new Set();
@@ -67,6 +90,19 @@ function validateBatchContract(value) {
     ensureString(target.snapshotPath, `targets[${index}].snapshotPath`, 'BATCH_CONTRACT_INVALID');
     ensureString(target.sourceSha, `targets[${index}].sourceSha`, 'BATCH_CONTRACT_INVALID');
     ensureString(target.caseContractSha, `targets[${index}].caseContractSha`, 'BATCH_CONTRACT_INVALID');
+    ensureString(target.caseSpecSha, `targets[${index}].caseSpecSha`, 'BATCH_CONTRACT_INVALID');
+    const policy = validatePreparationPolicy(target.preparationPolicy);
+    if (target.preparationPolicySha !== preparationPolicySha(policy)) throw contractError('BATCH_CONTRACT_INVALID', `targets[${index}].preparationPolicySha does not match preparationPolicy`);
+    const requirement = validateInitialStateRequirement(target.initialStateRequirement);
+    if (target.initialStateRequirementSha !== initialStateRequirementSha(requirement)) throw contractError('BATCH_CONTRACT_INVALID', `targets[${index}].initialStateRequirementSha does not match initialStateRequirement`);
+    if (target.initialStatePreflightSha !== initialStatePreflightSha(target.initialStatePreflight)) throw contractError('BATCH_CONTRACT_INVALID', `targets[${index}].initialStatePreflightSha does not match initialStatePreflight`);
+    validateInitialStatePreflight(target.initialStatePreflight, {
+      requirement,
+      preparationPolicy: policy,
+      appProvisioning: provisioning,
+      platform: value.binding.platform,
+      provisioningOptions: { platform: value.binding.platform, appId: value.binding.appId, deviceType: value.binding.deviceType },
+    });
     if (target.order !== index + 1) throw contractError('BATCH_CONTRACT_INVALID', `targets[${index}].order is invalid`);
     if (keys.has(target.caseKey)) throw contractError('BATCH_CONTRACT_INVALID', `duplicate caseKey: ${target.caseKey}`);
     keys.add(target.caseKey);
@@ -90,6 +126,14 @@ function createBatchContract({ batchId, executionRequest }) {
     mode: executionRequest.mode,
     interactionPolicy: executionRequest.interactionPolicy,
     binding: validateBinding({ ...executionRequest.binding }),
+    appProvisioning: validateAppProvisioning(executionRequest.appProvisioning, {
+      platform: executionRequest.binding.platform,
+      appId: executionRequest.binding.appId,
+      deviceType: executionRequest.binding.deviceType,
+    }),
+    appProvisioningSha: executionRequest.appProvisioningSha,
+    bootstrapPolicy: validateBootstrapPolicy(executionRequest.bootstrapPolicy),
+    bootstrapPolicySha: executionRequest.bootstrapPolicySha,
     targets: executionRequest.targets.map((target) => ({ ...target })),
   };
   value.contractSha = batchContractSha(value);

@@ -14,7 +14,14 @@ const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence
 
 function commitGeneration(execDir, execution, nextGeneration, now) {
   const runtime = readJson(path.join(execDir, 'runtime.json'), null);
-  commitRecoveryGeneration({ sessionRef: runtime?.sessionRef, batchId: execution.batchId, nextGeneration, now });
+  commitRecoveryGeneration({
+    sessionRef: runtime?.sessionRef,
+    batchId: execution.batchId,
+    sessionId: execution.warmSessionId,
+    epoch: execution.warmSessionEpoch,
+    nextGeneration,
+    now,
+  });
   if (execution.warmSessionGeneration === nextGeneration) return execution;
   if (execution.warmSessionGeneration !== nextGeneration - 1) {
     throw contractError('RECOVERY_GENERATION_MISMATCH', 'execution warm session generation is inconsistent with recovery');

@@ -126,6 +126,13 @@ function eventEntry(event, index) {
       };
     case 'appRecovered':
       return { ...base, phase: 'RECOVERY', category: 'RECOVERY', title: 'App 已恢复', summary: event.reason || '已取得恢复后现场', outcome: { status: 'SUCCEEDED', code: null, summary: event.reason || '恢复成功' } };
+    case 'appPreparationRequested':
+      return { ...base, phase: 'PREPARE', category: 'PREPARATION', title: '请求建立 App 初始状态', summary: event.targetState || '', outcome: { status: 'OBSERVED', code: null, summary: 'Runtime 已接受语义化初始状态目标' } };
+    case 'appPreparationCompleted':
+      return { ...base, phase: 'PREPARE', category: 'PREPARATION', title: 'App 初始状态已建立', summary: `${event.targetState || ''}${event.strategy ? ` · ${event.strategy}` : ''}`, outcome: { status: 'SUCCEEDED', code: null, summary: `暖会话已轮换至 ${event.sessionId || '新会话'}` } };
+    case 'appPreparationFailed':
+    case 'appPreparationOutcomeUnknown':
+      return { ...base, phase: 'PREPARE', category: 'PREPARATION', title: 'App 初始状态未建立', summary: event.message || event.code || '', outcome: { status: event.type === 'appPreparationOutcomeUnknown' ? 'UNCERTAIN' : 'FAILED', code: event.internalCode || event.code || null, summary: event.message || '' } };
     case 'recoveryFailed':
     case 'recoveryOutcomeUnknown':
       return { ...base, phase: 'RECOVERY', category: 'RECOVERY', title: 'App 恢复未完成', summary: event.message || event.reason || '', outcome: { status: event.type === 'recoveryFailed' ? 'FAILED' : 'UNCERTAIN', code: event.code || null, summary: event.message || event.reason || '' } };
@@ -267,6 +274,11 @@ function buildExecutionTrace(report) {
     pendingOrUncertainOperation: pendingAction || (lastAction?.outcome?.status === 'UNCERTAIN' ? lastAction : null),
     warmSessionGenerationStart: report.metrics?.warmSessionGenerationStart ?? report.execution?.warmSessionGenerationStart ?? null,
     warmSessionGenerationEnd: report.metrics?.warmSessionGenerationEnd ?? report.execution?.warmSessionGeneration ?? null,
+    warmSessionIdStart: report.metrics?.warmSessionIdStart ?? report.execution?.warmSessionIdStart ?? null,
+    warmSessionIdEnd: report.metrics?.warmSessionIdEnd ?? report.execution?.warmSessionId ?? null,
+    warmSessionEpochStart: report.metrics?.warmSessionEpochStart ?? report.execution?.warmSessionEpochStart ?? null,
+    warmSessionEpochEnd: report.metrics?.warmSessionEpochEnd ?? report.execution?.warmSessionEpoch ?? null,
+    appPreparation: report.metrics?.appPreparation || null,
     executionRecoveryCount: report.metrics?.executionRecoveryCount ?? report.execution?.executionRecoveryCount ?? 0,
     batchRecoveryCountAtStart: report.metrics?.batchRecoveryCountAtStart ?? report.execution?.batchRecoveryCountAtStart ?? 0,
     batchRecoveryCountAtEnd: report.metrics?.batchRecoveryCountAtEnd ?? report.execution?.batchRecoveryCountAtEnd ?? 0,
@@ -287,6 +299,7 @@ function buildExecutionTrace(report) {
       protocolRejections: invocationEnds.filter((entry) => entry.error === true).length,
       inputEffects: { total: 0, statuses: {}, attempts: 0, settledMs: 0 }, knowledge: entries.filter((entry) => entry.category === 'KNOWLEDGE').length,
       recoveries: entries.filter((entry) => entry.category === 'RECOVERY').length,
+      preparations: entries.filter((entry) => entry.category === 'PREPARATION' && entry.outcome?.status === 'SUCCEEDED').length,
     },
     raw: sanitizeOperationValue({ execution: report.execution, result: report.result, metrics: report.metrics, events, invocations }),
   };

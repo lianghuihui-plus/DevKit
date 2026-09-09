@@ -44,6 +44,15 @@ function caseRootFromCaseDir(caseDir) {
   return path.dirname(path.dirname(caseDir));
 }
 
+function canonicalExistingPath(value) {
+  const resolved = path.resolve(value);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 function caseNoNumber(value) {
   const match = String(value || '').trim().match(/^(?:C)?(\d+)$/i);
   return match ? Number(match[1]) : 0;
@@ -270,6 +279,7 @@ function renderIndexForRoot(rootDir) {
 function refreshBatchIndex(rootDir, targetCaseDirs) {
   ensureWorkspaceCaseNumbers(rootDir);
   const targets = new Set(targetCaseDirs.map((caseDir) => path.resolve(caseDir)));
+  const targetIdentities = new Set([...targets].map(canonicalExistingPath));
   const errors = new Map();
   const projections = new Map();
   for (const caseDir of targets) {
@@ -286,8 +296,8 @@ function refreshBatchIndex(rootDir, targetCaseDirs) {
     }
   }
   const cases = collectIndexCases(rootDir, { errors, projections, publishErrors: true });
-  const selected = cases.filter((item) => targets.has(path.resolve(item.caseDir)));
-  if (selected.length !== targets.size || selected.some((item) => item.status === 'REPORT_ERROR')) {
+  const selected = cases.filter((item) => targetIdentities.has(canonicalExistingPath(item.caseDir)));
+  if (selected.length !== targetIdentities.size || selected.some((item) => item.status === 'REPORT_ERROR')) {
     const error = new Error('batch target reports are incomplete');
     error.code = 'REPORT_PUBLICATION_INCOMPLETE';
     throw error;

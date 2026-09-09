@@ -22,6 +22,11 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
     schemaVersion: 2,
     sceneId,
     generation: execution.warmSessionGeneration,
+    warmSessionRef: {
+      sessionId: execution.warmSessionId,
+      epoch: execution.warmSessionEpoch,
+      generation: execution.warmSessionGeneration,
+    },
     capturedAt: observation.time,
     screenshot: {
       ref: view.screenshot.ref,
@@ -100,6 +105,7 @@ function observe(execDir, options = {}) {
   store.appendEvent(execDir, 'sceneObserved', {
     sceneId: scene.sceneId,
     generation: scene.generation,
+    warmSessionRef: scene.warmSessionRef,
     operationId,
     purpose: observation.observationPurpose,
     relatedOperationId: options.relatedOperationId || null,

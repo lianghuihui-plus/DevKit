@@ -79,6 +79,10 @@ fs.unlinkSync(platformReport);
 assert.strictEqual(fs.existsSync(platformReport), false);
 refreshBatchIndex(repairRoot, [repairFixture.caseDir]);
 assert.strictEqual(fs.existsSync(platformReport), true);
+const repairAlias = `${repairRoot}-alias`;
+fs.symlinkSync(repairRoot, repairAlias, 'dir');
+assert.doesNotThrow(() => refreshBatchIndex(repairAlias, [repairFixture.caseDir]));
+fs.unlinkSync(repairAlias);
 
 for (const item of [published, missing, unsettled, emptyPass, changedScene]) fs.rmSync(item.root, { recursive: true, force: true });
 fs.rmSync(reportRoot, { recursive: true, force: true });

@@ -125,7 +125,8 @@ function parseAdapterOutput(result, kind) {
     }
     throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', `${kind} adapter did not return one JSON result`);
   }
-  if (result.status !== 0 && value?.type !== (kind === 'ACTION' ? 'actionResult' : 'observation')) {
+  const expectedType = { ACTION: 'actionResult', OBSERVE: 'observation', PREPARATION: 'appPreparationResult' }[kind];
+  if (result.status !== 0 && value?.type !== expectedType) {
     throw contractError('DEVICE_ADAPTER_FAILED', String(result.stderr || `${kind} adapter exited with ${result.status}`).trim());
   }
   return value;
@@ -259,7 +260,29 @@ function invokeAppRestart(rawBinding, options = {}) {
   };
 }
 
+function invokeAppPreparation(execDir, validated, options = {}) {
+  const binding = resolveTargetBinding(execDir, validated.execution);
+  const command = path.join(path.resolve(__dirname, '../..'), 'scripts', 'platform', 'prepare-app.sh');
+  const args = [...environmentAdapterArgs(binding, 'observe'), '--strategy', validated.strategy];
+  if (validated.provisioning?.mode === 'ARTIFACT_MANAGED') args.push('--artifact', validated.provisioning.artifactPath);
+  const runner = options.runner || defaultRunner;
+  const raw = runner(command, args, {
+    timeoutMs: Math.min(operationTimeoutMs(validated.execution, options.now), 5 * 60 * 1000),
+    kind: 'PREPARATION',
+    binding,
+    preAdapterDelayMs: 0,
+  });
+  const result = parseAdapterOutput(raw, 'PREPARATION');
+  if (!result || result.schemaVersion !== 1 || result.type !== 'appPreparationResult'
+    || result.platform !== binding.platform || result.strategy !== validated.strategy
+    || result.device?.id !== binding.deviceId || result.app?.appId !== binding.appId) {
+    throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'preparation adapter result identity is invalid');
+  }
+  return result;
+}
+
 module.exports = {
+  invokeAppPreparation,
   actionAdapterArgs,
   assertResultBinding,
   defaultRunner,

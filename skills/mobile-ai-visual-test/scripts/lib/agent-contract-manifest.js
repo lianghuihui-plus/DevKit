@@ -15,6 +15,7 @@ const ROLE_ENTRYPOINTS = Object.freeze({
     'scripts/probe-env.sh',
     'scripts/prepare-env.sh',
     'scripts/environment.js',
+    'scripts/app-artifact.js',
     'scripts/execution-request.js',
     'scripts/knowledge.js',
     'scripts/batch.js',
@@ -35,12 +36,15 @@ const ROLE_RESOURCES = Object.freeze({
     'references/failure-policy.md',
     'references/case-format.md',
     'references/agent-runtime.md',
+    'references/knowledge.md',
+    'references/installation.md',
   ]),
 });
 
 const SHARED_IMPLEMENTATION_FILES = new Set([
   'scripts/build-agent-contract.js',
   'scripts/lib/agent-contract-manifest.js',
+  'scripts/lib/app-provisioning.js',
   'scripts/lib/contract-utils.js',
   'scripts/lib/execution-lifecycle.js',
   'scripts/lib/execution-evidence.js',
@@ -61,12 +65,14 @@ const REPORT_ONLY_LIB_FILES = new Set([
 const PLATFORM_ENTRYPOINTS = Object.freeze([
   'scripts/platform/action.sh',
   'scripts/platform/observe.sh',
+  'scripts/platform/prepare-app.sh',
   'scripts/platform/probe-env.sh',
   'scripts/platform/prepare-env.sh',
   'scripts/platform/runtime.sh',
 ]);
 
 const COORDINATOR_ENTRYPOINTS = Object.freeze([
+  'scripts/app-artifact.js',
   'scripts/batch.js',
   'scripts/environment.js',
   'scripts/execution-request.js',
@@ -113,8 +119,9 @@ function implementationGroups(skillRoot, platform) {
   for (const relative of walkFiles(skillRoot, 'scripts/session')) runtime.add(relative);
   for (const relative of [
     'scripts/execution/contracts/case-contract.js',
+    'scripts/execution/contracts/case-spec-contract.js',
     'scripts/lib/action-contract.js',
-    'scripts/lib/action-result.js',
+  'scripts/lib/action-result.js',
     'scripts/lib/action-spatial-evidence.js',
     'scripts/lib/knowledge-query.js',
     'scripts/lib/layout-observation.js',
@@ -142,6 +149,7 @@ function implementationGroups(skillRoot, platform) {
   for (const relative of [
     'scripts/build-agent-contract.js',
     'scripts/execution/contracts/case-contract.js',
+    'scripts/execution/contracts/case-spec-contract.js',
     'scripts/lib/agent-contract-manifest.js',
     'scripts/lib/batch-contract.js',
     'scripts/lib/completion-contract.js',

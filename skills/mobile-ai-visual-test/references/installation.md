@@ -1,6 +1,6 @@
 # 安装教程
 
-> 本文档面向人工环境准备。正式执行以 `workspace -> import-case -> probe/prepare -> 环境确认 -> 显式执行请求 -> batch -> isolated case Agent -> batch commit` 为唯一主链。
+> 本文档面向人工环境准备。正式执行以 `workspace -> import-case -> probe/prepare -> 环境确认 -> 显式执行请求与初始状态预检 -> batch -> isolated case Agent -> reconcile 自动提交与收尾` 为唯一主链。
 
 ## 通用要求
 

@@ -38,6 +38,7 @@ function execute(options) {
     workspaceRoot: options.workspace,
     binding: json(options.bindingJson, '--binding-json'),
     probe: json(options.probeJson, '--probe-json'),
+    appProvisioning: options.appProvisioningJson ? json(options.appProvisioningJson, '--app-provisioning-json') : undefined,
     userConfirmation: options.userConfirmation || fail('--user-confirmation is required'),
   });
 }

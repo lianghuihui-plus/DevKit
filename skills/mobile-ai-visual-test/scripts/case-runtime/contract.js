@@ -1,12 +1,26 @@
 'use strict';
 
 const { contractError, ensureArray, ensureObject, ensureString } = require('../lib/contract-utils');
+const { TARGET_STATES } = require('../lib/app-provisioning');
 
 const VERDICTS = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const RESULT_FIELDS = new Set(['verdict', 'summary', 'checks', 'uncertainties']);
 const CHECK_FIELDS = new Set(['expectationRef', 'status', 'actual', 'sceneRefs', 'knowledgeRefs', 'technicalRefs', 'evidenceBasis']);
 const VERIFICATION_KINDS = new Set(['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE']);
+const DECISION_FIELDS = new Set([
+  'assessment', 'observation', 'conclusion', 'purpose', 'expectedOutcome',
+  'expectationRefs', 'planUpdate', 'knowledgeReview', 'uncertainties',
+]);
+const REQUEST_FIELDS = Object.freeze({
+  prepare: new Set(['operation', 'preparation', 'decision']),
+  observe: new Set(['operation', 'purpose', 'decision']),
+  act: new Set(['operation', 'basedOnSceneId', 'capabilityId', 'visual', 'input', 'observationPolicy', 'decision']),
+  knowledge: new Set(['operation', 'basedOnSceneId', 'query', 'decision']),
+  recover: new Set(['operation', 'basedOnSceneId', 'reason', 'decision']),
+  finish: new Set(['operation', 'basedOnSceneId', 'result', 'decision']),
+  status: new Set(['operation']),
+});
 
 function validateStringArray(value, label) {
   return ensureArray(value, label, 'CASE_NARRATIVE_INVALID')
@@ -37,9 +51,12 @@ function validateCaseContext(value) {
 
 function validateDecision(value) {
   const decision = ensureObject(value, 'decision', 'CASE_NARRATIVE_INVALID');
-  for (const field of ['observation', 'conclusion', 'purpose', 'expectedOutcome']) {
-    ensureString(decision[field], `decision.${field}`, 'CASE_NARRATIVE_INVALID');
+  const unsupported = Object.keys(decision).filter((field) => !DECISION_FIELDS.has(field));
+  if (unsupported.length) throw contractError('CASE_NARRATIVE_INVALID', `decision contains unsupported fields: ${unsupported.join(', ')}`);
+  for (const field of ['assessment', 'observation', 'conclusion', 'expectedOutcome']) {
+    if (decision[field] !== undefined) ensureString(decision[field], `decision.${field}`, 'CASE_NARRATIVE_INVALID');
   }
+  ensureString(decision.purpose, 'decision.purpose', 'CASE_NARRATIVE_INVALID');
   validateStringArray(decision.expectationRefs, 'decision.expectationRefs');
   if (decision.planUpdate !== undefined) {
     const update = ensureObject(decision.planUpdate, 'decision.planUpdate', 'CASE_NARRATIVE_INVALID');
@@ -48,6 +65,7 @@ function validateDecision(value) {
     if (!next.length) throw contractError('CASE_NARRATIVE_INVALID', 'decision.planUpdate.next must contain at least one item', { fieldPath: 'decision.planUpdate.next' });
   }
   if (decision.knowledgeReview !== undefined) require('./knowledge-review').normalizeKnowledgeReview(decision.knowledgeReview);
+  if (decision.uncertainties !== undefined) validateStringArray(decision.uncertainties, 'decision.uncertainties');
   return decision;
 }
 
@@ -110,11 +128,24 @@ function validateCaseResult(value) {
 function validateRuntimeRequest(value) {
   ensureObject(value, 'RuntimeRequest', 'CASE_RUNTIME_REQUEST_INVALID');
   const operation = String(value.operation || '').trim();
-  if (!['observe', 'act', 'knowledge', 'recover', 'finish', 'status'].includes(operation)) {
-    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'operation must be observe, act, knowledge, recover, finish, or status');
+  if (!['prepare', 'observe', 'act', 'knowledge', 'recover', 'finish', 'status'].includes(operation)) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'operation must be prepare, observe, act, knowledge, recover, finish, or status');
   }
+  const unsupportedRequestFields = Object.keys(value).filter((field) => !REQUEST_FIELDS[operation].has(field));
+  if (unsupportedRequestFields.length) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', `${operation} request contains unsupported fields: ${unsupportedRequestFields.join(', ')}`);
+  }
+  if (value.decision !== undefined) validateDecision(value.decision);
   if (value.basedOnSceneId !== undefined) {
     ensureString(value.basedOnSceneId, 'basedOnSceneId', 'CASE_RUNTIME_REQUEST_INVALID');
+  }
+  if (operation === 'prepare') {
+    if (value.basedOnSceneId !== undefined) throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'prepare cannot include basedOnSceneId');
+    const preparation = ensureObject(value.preparation, 'preparation', 'CASE_RUNTIME_REQUEST_INVALID');
+    const unsupported = Object.keys(preparation).filter((field) => field !== 'targetState');
+    if (unsupported.length) throw contractError('CASE_RUNTIME_REQUEST_INVALID', `preparation contains unsupported fields: ${unsupported.join(', ')}`);
+    ensureString(preparation.targetState, 'preparation.targetState', 'CASE_RUNTIME_REQUEST_INVALID');
+    if (!TARGET_STATES.has(preparation.targetState)) throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'preparation.targetState is invalid');
   }
   if (operation === 'act') {
     if (!value.capabilityId && !value.visual) {
@@ -123,8 +154,8 @@ function validateRuntimeRequest(value) {
     if (value.capabilityId && value.visual) {
       throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'act capabilityId and visual are mutually exclusive');
     }
+    if (value.decision === undefined) throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'act requires decision.purpose and decision.expectationRefs');
     if (value.capabilityId !== undefined) ensureString(value.capabilityId, 'capabilityId', 'CASE_RUNTIME_REQUEST_INVALID');
-    if (value.intent !== undefined) ensureString(value.intent, 'intent', 'CASE_RUNTIME_REQUEST_INVALID');
     if (value.observationPolicy !== undefined) {
       const policy = ensureObject(value.observationPolicy, 'observationPolicy', 'CASE_RUNTIME_REQUEST_INVALID');
       const unsupported = Object.keys(policy).filter((field) => field !== 'duringActionAtMs');
@@ -155,6 +186,7 @@ module.exports = {
   CHECK_STATUSES,
   VERIFICATION_KINDS,
   VERDICTS,
+  REQUEST_FIELDS,
   validateCaseContext,
   validateCaseResult,
   validateDecision,

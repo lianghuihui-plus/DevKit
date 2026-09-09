@@ -27,7 +27,7 @@ function currentContract(platform, skillRoot = path.resolve(__dirname, '../..'))
 }
 
 function assertCurrentExecution(execution, options = {}) {
-  if (execution?.schemaVersion !== 7 || execution.runtime !== 'case-runtime') {
+  if (execution?.schemaVersion !== 10 || execution.runtime !== 'case-runtime') {
     const error = new Error('This execution was created by an unsupported protocol and must be run again');
     error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
     throw error;
@@ -122,7 +122,7 @@ function emptyExecutionReport(execDir = null) {
 
 function executionSelection(execDir, workspaceRoot = null) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 7 || execution.runtime !== 'case-runtime') return null;
+  if (execution?.schemaVersion !== 10 || execution.runtime !== 'case-runtime') return null;
   const closure = workspaceRoot && execution.finalized !== true
     ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
     : null;

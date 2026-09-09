@@ -8,6 +8,7 @@ const path = require('path');
 const { roleEntrypoints, roleResources } = require('../lib/agent-contract-manifest');
 const { buildContract } = require('../build-agent-contract');
 const { validateCaseContext, validateDecision, validateRuntimeRequest } = require('../case-runtime/contract');
+const { AGENT_OPERATIONS } = require('../case-runtime/runtime-broker');
 
 const root = path.resolve(__dirname, '../..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
@@ -23,10 +24,16 @@ for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkp
   assert.strictEqual(casePrompt.includes(obsolete), false, `Case Prompt must not expose ${obsolete}`);
 }
 assert.match(casePrompt, /Runtime/);
-assert.match(casePrompt, /完整周期/);
-assert.match(casePrompt, /caseContext/);
+assert.match(casePrompt, /业务执行/);
+assert.match(casePrompt, /Frozen CaseSpec/);
 assert.match(casePrompt, /decision/);
 assert.match(casePrompt, /expectationRef/);
+assert.match(casePrompt, /purpose \+ expectationRefs/);
+assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);
+assert.deepStrictEqual(AGENT_OPERATIONS, ['observe', 'act', 'knowledge', 'recover', 'finish', 'status']);
+for (const hidden of ['CLEAR_APP_DATA', 'REINSTALL_APP', 'artifactPath', 'appiumSessionId']) {
+  assert.strictEqual(casePrompt.includes(hidden), false, `Case Prompt must not expose ${hidden}`);
+}
 const promptRequests = [...casePrompt.matchAll(/```json\s*([\s\S]*?)```/g)].map((match) => JSON.parse(match[1]));
 assert.ok(promptRequests.length >= 3);
 for (const request of promptRequests) assert.doesNotThrow(() => validateRuntimeRequest(request));
@@ -37,13 +44,15 @@ for (const request of promptRequests) {
 assert.throws(() => validateCaseContext({
   summary: '验证目标页面', preconditions: [], expectations: ['目标内容显示'], initialPlan: '观察页面', uncertainties: [],
 }), (error) => error?.code === 'CASE_NARRATIVE_INVALID' && error.fieldPath === 'caseContext.initialPlan');
-assert.throws(() => validateDecision({
-  observation: '目标页已打开', conclusion: '可以继续', purpose: '检查结果', expectationRefs: ['E1'],
-}), (error) => error?.code === 'CASE_NARRATIVE_INVALID' && error.fieldPath === 'decision.expectedOutcome');
+assert.doesNotThrow(() => validateDecision({ purpose: '检查结果', expectationRefs: ['E1'] }));
+assert.throws(() => validateDecision({ expectationRefs: ['E1'] }),
+  (error) => error?.code === 'CASE_NARRATIVE_INVALID' && error.fieldPath === 'decision.purpose');
 
 const mainPrompt = read('SKILL.md');
 assert.match(mainPrompt, /你是本次测试的主 Agent/);
 assert.match(mainPrompt, /WAIT_CASE_AGENT/);
+assert.match(mainPrompt, /NEED_CASE_AGENT/);
+assert.match(mainPrompt, /agentRequired=false/);
 assert.match(mainPrompt, /一个用例只委托一次|创建一个全新的原生 Case Agent/);
 assert.match(mainPrompt, /读取 `prompts\/case-agent\.md`/);
 assert.strictEqual(mainPrompt.includes('allowedDecisions'), false);
@@ -53,9 +62,8 @@ assert.strictEqual(currentReportSource.includes('report.events'), false, 'Render
 for (const obsolete of ['execution-story', 'checkpoint-accordion', 'process-workspace', 'case-plan-workspace']) {
   assert.strictEqual(currentReportSource.includes(obsolete), false, `Renderer must not retain obsolete ${obsolete} UI`);
 }
-for (const artifact of ['binding.snapshot.json', 'case.snapshot.json', 'source.snapshot.md', 'logs/', 'action-spatial-evidence/']) {
+for (const artifact of ['binding.snapshot.json', 'case.snapshot.json', 'case-spec.snapshot.json', 'source.snapshot.md', 'logs/', 'action-spatial-evidence/']) {
   assert.ok(read('docs/architecture.md').includes(artifact), `architecture must list ${artifact}`);
-  assert.ok(read('docs/execution-traceability-design.md').includes(artifact), `traceability design must list ${artifact}`);
 }
 
 for (const name of fs.readdirSync(path.join(root, 'scripts/case-runtime')).filter((item) => item.endsWith('.js'))) {
@@ -66,8 +74,8 @@ const runtimeClient = require('../case-runtime/runtime-client');
 const lifecycle = require('../case-runtime/lifecycle');
 const batchCore = require('../batch/core');
 assert.deepStrictEqual(Object.keys(runtimeClient).sort(), ['main', 'parseRequest', 'run']);
-assert.deepStrictEqual(Object.keys(lifecycle).sort(), ['EXECUTION_SCHEMA_VERSION', 'buildContinuationBrief', 'cancelExecution', 'commitExecution', 'createExecution', 'readCompletion', 'reconcileExecution', 'recordAgentContinuation', 'resumeExecution']);
-assert.strictEqual(batchCore.BATCH_SCHEMA_VERSION, 5);
+assert.deepStrictEqual(Object.keys(lifecycle).sort(), ['EXECUTION_SCHEMA_VERSION', 'buildContinuationBrief', 'cancelExecution', 'commitExecution', 'createExecution', 'establishInitialState', 'readCompletion', 'reconcileExecution', 'recordAgentContinuation', 'resumeExecution']);
+assert.strictEqual(batchCore.BATCH_SCHEMA_VERSION, 8);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeClient, 'createExecution'), false);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(lifecycle, 'act'), false);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(batchCore, 'recoverApp'), false);
@@ -85,8 +93,17 @@ const caseContract = buildContract({ skillRoot: root, role: 'case-executor', pla
 assert.strictEqual(caseContract.implementationFiles.some((file) => file.startsWith('scripts/agent/')), false);
 assert.strictEqual(caseContract.implementationFiles.some((file) => file.startsWith('scripts/batch/')), false);
 assert.strictEqual(caseContract.implementationFiles.includes('scripts/case-runtime/lifecycle.js'), false);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/platform/prepare-app.sh'), true);
+const iosContract = buildContract({ skillRoot: root, role: 'case-executor', platform: 'ios' });
+assert.strictEqual(iosContract.implementationFiles.includes('scripts/platform/adapters/ios/lib/input-service.js'), true);
+assert.strictEqual(iosContract.implementationFiles.includes('scripts/platform/adapters/ios/lib/pointer-actions.js'), true);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/lib/app-provisioning.js'), true);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/execution/contracts/case-spec-contract.js'), true);
 
 const coordinatorContract = buildContract({ skillRoot: root, role: 'batch-coordinator', platform: 'harmony' });
+assert.strictEqual(coordinatorContract.allowedEntrypoints.includes('scripts/app-artifact.js'), true);
+assert.strictEqual(coordinatorContract.requiredResources.includes('references/knowledge.md'), true);
+assert.strictEqual(coordinatorContract.requiredResources.includes('references/installation.md'), true);
 const platformSpecific = /\b(?:codex|spawn_agent|fork_turns|provider|mcp)\b/i;
 for (const relative of new Set([...caseContract.requiredResources, ...coordinatorContract.requiredResources])) {
   assert.strictEqual(platformSpecific.test(read(relative)), false, `${relative} must remain Agent-host neutral`);
@@ -97,6 +114,11 @@ const digestRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-digest-boundaries
 fs.cpSync(root, digestRoot, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
 const harmonyBefore = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
 const androidBefore = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'android' });
+const coordinatorBefore = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
+fs.appendFileSync(path.join(digestRoot, 'references/knowledge.md'), '\nBehavior-bearing knowledge protocol fixture.\n');
+const coordinatorAfterKnowledge = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
+assert.notStrictEqual(coordinatorAfterKnowledge.protocolSha, coordinatorBefore.protocolSha);
+assert.strictEqual(buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' }).protocolSha, harmonyBefore.protocolSha);
 fs.appendFileSync(path.join(digestRoot, 'scripts/report/current-report.js'), '\n// renderer digest boundary fixture\n');
 const afterReport = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
 assert.strictEqual(afterReport.runtimeSha, harmonyBefore.runtimeSha);
@@ -147,7 +169,6 @@ for (const relative of [
   'scripts/agent',
   'scripts/execution/core.js',
   'scripts/batch/internal-recovery.js',
-  'scripts/batch/reconcile-policy.js',
   'scripts/batch/recovery-validation.js',
   'scripts/lib/agent-attempt-lifecycle.js',
   'scripts/lib/agent-driven-contract.js',

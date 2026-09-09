@@ -88,16 +88,17 @@ assert.deepStrictEqual(longPressCapability.input, { durationMs: 'positive-intege
 assert.strictEqual(resolveAction(scene, {
   capabilityId: longPressCapability.id,
   input: { durationMs: 5000 },
-  intent: '验证按住态',
+  decision: { purpose: '验证按住态', expectationRefs: [] },
 }, 'harmony').action.durationMs, 5000);
 assert.strictEqual(resolveAction(scene, {
   visual: { gesture: 'longPress', point: [0.5, 0.9], durationMs: 5000 },
-  intent: '验证按住态',
+  decision: { purpose: '验证按住态', expectationRefs: [] },
 }, 'harmony').action.durationMs, 5000);
 assert.doesNotThrow(() => validateRuntimeRequest({
   operation: 'act',
   visual: { gesture: 'longPress', point: [0.5, 0.9], durationMs: 5000 },
   observationPolicy: { duringActionAtMs: 4000 },
+  decision: { purpose: '验证按住态', expectationRefs: [] },
 }));
 assert.throws(() => validateRuntimeRequest({
   operation: 'act', visual: { gesture: 'longPress', point: [0.5, 0.9] },

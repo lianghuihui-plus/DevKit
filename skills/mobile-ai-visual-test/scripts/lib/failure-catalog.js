@@ -50,6 +50,7 @@ const FAILURE_CATALOG = Object.freeze({
   OBSERVATION_ARTIFACT_CHANGED: { status: 'BLOCKED', label: '截图产物已变化' },
   VISUAL_INPUT_UNVERIFIABLE: { status: 'BLOCKED', label: '视觉输入无法可靠验证' },
   APP_CONTEXT_LOST: { status: 'BLOCKED', label: '应用上下文丢失' },
+  APP_INITIAL_STATE_UNAVAILABLE: { status: 'BLOCKED', label: '无法建立用例要求的 App 初始状态' },
   APP_LEFT_FOREGROUND: { status: 'BLOCKED', label: '应用离开前台' },
   UNKNOWN_POPUP: { status: 'BLOCKED', label: '未知弹窗阻塞' },
   CASE_CONTRACT_INVALID: { status: 'BLOCKED', label: '用例执行契约无效' },

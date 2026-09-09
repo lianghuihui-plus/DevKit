@@ -13,7 +13,7 @@ const PLATFORM_LABELS = Object.freeze({ harmony: 'HarmonyOS', android: 'Android'
 const VERDICT_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', UNKNOWN: '无法判断', CANCELLED: '已取消', NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行', REPORT_ERROR: '报告数据异常' });
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
 const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', CANCELLED: '已取消', TECHNICALLY_BLOCKED: '技术阻塞', STOPPED_BY_BUDGET: '达到时限', INTERRUPTED: '执行中断' });
-const BATCH_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', RUNNING: '执行中', FINALIZING: '收尾中', CANCELLING: '取消收尾中', CANCELLED: '已取消', COMPLETED: '已完成', BLOCKED: '已停止', DEGRADED: '已停止' });
+const BATCH_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', RUNNING: '执行中', FINALIZING: '收尾中', CANCELLING: '取消收尾中', BLOCKING: '阻塞收尾中', CANCELLED: '已取消', COMPLETED: '已完成', BLOCKED: '已停止', DEGRADED: '已停止' });
 const WARM_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', READY: '已就绪', DEGRADED: '已停止', CLOSED: '已关闭' });
 const INTERACTION_POLICY_LABELS = Object.freeze({ UNATTENDED: '无人值守' });
 

@@ -32,6 +32,11 @@ function targets(value) {
   try { return JSON.parse(value); } catch (error) { fail(`--targets-json is invalid JSON: ${error.message}`); }
 }
 
+function jsonOption(value, flag) {
+  if (!value) return undefined;
+  try { return JSON.parse(value); } catch (error) { fail(`${flag} is invalid JSON: ${error.message}`); }
+}
+
 function execute(options) {
   if (options.command === 'status') return loadExecutionRequest(options.workspace, options.batchId);
   if (!options.mode) fail('--mode is required');
@@ -41,6 +46,7 @@ function execute(options) {
     batchId: options.batchId,
     mode: options.mode,
     targets: targets(options.targetsJson),
+    bootstrapPolicy: jsonOption(options.bootstrapPolicyJson, '--bootstrap-policy-json'),
     userInstruction: options.userInstruction,
   });
 }

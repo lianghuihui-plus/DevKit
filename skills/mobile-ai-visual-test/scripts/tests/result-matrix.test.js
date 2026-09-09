@@ -10,6 +10,8 @@ const { buildContract } = require('../build-agent-contract');
 const { createExecution } = require('../case-runtime/lifecycle');
 const { run } = require('../case-runtime/runtime-client');
 const { createCaseContract } = require('../execution/contracts/case-contract');
+const { createCaseSpec } = require('../execution/contracts/case-spec-contract');
+const { createInitialStatePreflight } = require('../lib/app-provisioning');
 const { readExecutionReport } = require('../lib/execution-reader');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestWorkspace } = require('./current-fixture');
@@ -50,6 +52,27 @@ function executeResult(verdict, options = {}) {
   fs.mkdirSync(caseDir, { recursive: true });
   fs.writeFileSync(path.join(caseDir, 'source.md'), source);
   writeJsonAtomic(path.join(caseDir, 'case.json'), caseJson);
+  const caseSpec = createCaseSpec({
+    sourceText: source,
+    spec: {
+      summary: source,
+      preconditions: ['目标 App 已启动'],
+      expectations: [{ text: '目标页面符合用例预期', sourceEvidence: [{ quote: source }] }],
+      ambiguities: [],
+    },
+  });
+  const initialStateRequirement = {
+    schemaVersion: 1,
+    targetState: 'KEEP_EXISTING',
+    rationale: '该结果矩阵用例不要求重置 App 状态',
+  };
+  const preparationPolicy = { schemaVersion: 1, allowedEffects: [], targetAppOnly: true };
+  const initialStatePreflight = createInitialStatePreflight({
+    requirement: initialStateRequirement,
+    preparationPolicy,
+    platform: 'harmony',
+    now: '2026-09-04T02:00:00.000Z',
+  });
   const started = createExecution({
     workspaceRoot: root,
     runtimeDir,
@@ -58,7 +81,11 @@ function executeResult(verdict, options = {}) {
     platform: 'harmony',
     sourceText: source,
     caseJson,
+    caseSpec,
     targetBinding: binding,
+    initialStateRequirement,
+    initialStatePreflight,
+    preparationPolicy,
     runtimeSha: currentContract.runtimeSha,
     adapterSha: currentContract.adapterSha,
     caseProtocolSha: currentContract.protocolSha,
@@ -71,17 +98,9 @@ function executeResult(verdict, options = {}) {
     initialObserve: false,
     now: '2026-09-04T02:00:00.000Z',
   });
-  const caseContext = {
-    summary: source,
-    preconditions: ['目标 App 已启动'],
-    expectations: ['目标页面符合用例预期'],
-    initialPlan: ['观察页面', '判断验证点'],
-    uncertainties: [],
-  };
   let technicalFactRef = null;
   const observed = run(started.execDir, {
     operation: 'observe',
-    caseContext,
     decision: {
       observation: options.technical ? '技术错误后重新取得现场' : '开始检查目标页面',
       conclusion: '当前 Scene 可用于结果判断',

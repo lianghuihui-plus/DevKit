@@ -10,20 +10,21 @@ const {
 } = require('../lib/display-format');
 const { buildExecutionTrace } = require('./execution-trace');
 const { buildExecutionNarrative } = require('./execution-narrative');
+const { renderSourceMarkdown } = require('./source-markdown');
 
 const CATEGORY_LABELS = Object.freeze({
   UNDERSTANDING: '理解', DECISION: '决策', ACTION: '操作', OBSERVATION: '观察', GUARD: '完整性',
-  PROTOCOL: '协议', KNOWLEDGE: '知识', RECOVERY: '恢复', RESULT: '结论',
+  PROTOCOL: '协议', KNOWLEDGE: '知识', PREPARATION: '初始状态', RECOVERY: '恢复', RESULT: '结论',
 });
 const PHASE_LABELS = Object.freeze({
-  UNDERSTAND: '理解用例', EXECUTE: '执行与检查', INVESTIGATE: '调查异常', RECOVERY: '恢复现场', CONCLUDE: '形成结论', FINALIZED: '执行完成', FRAMEWORK_CHECK: '框架校验', UNKNOWN: '未归类',
+  UNDERSTAND: '理解用例', PREPARE: '建立初始状态', EXECUTE: '执行与检查', INVESTIGATE: '调查异常', RECOVERY: '恢复现场', CONCLUDE: '形成结论', FINALIZED: '执行完成', FRAMEWORK_CHECK: '框架校验', UNKNOWN: '未归类',
 });
 const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '未执行', RUNNING: '执行中', CANCELLED: '已取消', ABANDONED: '执行已废弃', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布' });
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
 const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', CANCELLED: '已取消', STOPPED_BY_BUDGET: '达到时限后停止', TECHNICALLY_BLOCKED: '技术阻塞', INTERRUPTED: '执行中断' });
 const OUTCOME_LABELS = Object.freeze({ SUCCEEDED: '成功', OBSERVED: '已记录事实', FAILED: '失败', REJECTED: '已拒绝', UNCERTAIN: '结果待确认', UNKNOWN: '未知' });
 const RETRY_LABELS = Object.freeze({ SAFE: '可安全重试', OBSERVE_FIRST: '先观察现场', AGENT_DECIDES: '由 Agent 判断', UNKNOWN: '未知' });
-const OBSERVATION_PURPOSE_LABELS = Object.freeze({ INITIAL_SCENE: '初始现场', CURRENT_SCENE: '当前现场', POST_ACTION: '操作后', AFTER_UNKNOWN_ACTION: '未知动作后复核', POST_RECOVERY: '恢复后', AFTER_UNKNOWN_RECOVERY: '未知恢复后复核' });
+const OBSERVATION_PURPOSE_LABELS = Object.freeze({ INITIAL_SCENE: '初始现场', APP_PREPARATION_INITIAL_SCENE: '初始状态准备后现场', CURRENT_SCENE: '当前现场', POST_ACTION: '操作后', AFTER_UNKNOWN_ACTION: '未知动作后复核', POST_RECOVERY: '恢复后', AFTER_UNKNOWN_RECOVERY: '未知恢复后复核' });
 const ACTION_FIELD_LABELS = Object.freeze({
   target: '目标', x: '横坐标', y: '纵坐标', coordinateSource: '定位依据', targetBounds: '目标区域',
   coordinateEvidence: '坐标证据', text: '输入内容', mode: '输入方式', durationMs: '长按时长',
@@ -64,68 +65,6 @@ function runtimeTiming(report, field) {
 
 function agentTiming(report, field) {
   return report.metrics?.agentTiming?.[field] ?? null;
-}
-
-function markdownText(value) {
-  return String(value ?? '').replace(/\r\n?/g, '\n');
-}
-
-function renderInlineMarkdown(value) {
-  return escapeHtml(value)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>');
-}
-
-function renderSourceMarkdown(value) {
-  const lines = markdownText(value).split('\n');
-  const html = [];
-  let list = null;
-  let paragraph = [];
-  let code = null;
-  const flushParagraph = () => {
-    if (paragraph.length) html.push(`<p>${renderInlineMarkdown(paragraph.join(' '))}</p>`);
-    paragraph = [];
-  };
-  const closeList = () => {
-    if (list) html.push(`</${list}>`);
-    list = null;
-  };
-  for (const line of lines) {
-    const fence = line.match(/^\s*```/);
-    if (fence) {
-      flushParagraph(); closeList();
-      if (code === null) code = [];
-      else { html.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`); code = null; }
-      continue;
-    }
-    if (code !== null) { code.push(line); continue; }
-    if (!line.trim()) { flushParagraph(); closeList(); continue; }
-    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/);
-    if (heading) {
-      flushParagraph(); closeList();
-      const level = Math.min(heading[1].length + 2, 6);
-      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
-      continue;
-    }
-    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
-    if (ordered || unordered) {
-      flushParagraph();
-      const type = ordered ? 'ol' : 'ul';
-      if (list !== type) { closeList(); html.push(`<${type}>`); list = type; }
-      html.push(`<li>${renderInlineMarkdown((ordered || unordered)[1])}</li>`);
-      continue;
-    }
-    const quote = line.match(/^\s*>\s?(.*)$/);
-    if (quote) { flushParagraph(); closeList(); html.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`); continue; }
-    if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) { flushParagraph(); closeList(); html.push('<hr>'); continue; }
-    paragraph.push(line.trim());
-  }
-  flushParagraph(); closeList();
-  if (code !== null) html.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`);
-  return html.join('');
 }
 
 function actionValue(field, value) {
@@ -345,6 +284,7 @@ function renderRecoveryAnchor(report, anchor) {
       <div><dt>阶段</dt><dd>${escapeHtml(label(PHASE_LABELS, anchor.phase))}</dd></div>
       <div><dt>最后操作</dt><dd>${escapeHtml(anchor.lastCompletedOperation?.operationId || '-')}</dd></div>
       <div><dt>待确认操作</dt><dd>${escapeHtml(anchor.pendingOrUncertainOperation?.operationId || '无')}</dd></div>
+      <div><dt>暖会话</dt><dd>${escapeHtml(anchor.warmSessionIdStart || '-')} - ${escapeHtml(anchor.warmSessionIdEnd || '-')}</dd></div>
       <div><dt>暖会话代次</dt><dd>${escapeHtml(anchor.warmSessionGenerationStart ?? '-')} - ${escapeHtml(anchor.warmSessionGenerationEnd ?? '-')}</dd></div>
       <div><dt>本次 / 批次恢复</dt><dd>${escapeHtml(anchor.executionRecoveryCount)} / ${escapeHtml(anchor.batchRecoveryCountAtStart)}-${escapeHtml(anchor.batchRecoveryCountAtEnd)}</dd></div>
     </dl>

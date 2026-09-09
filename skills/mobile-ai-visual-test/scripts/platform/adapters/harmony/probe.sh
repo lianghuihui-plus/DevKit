@@ -165,6 +165,7 @@ const data = {
       current: displayReadable ? display : null
     },
     actions,
+    preparationStrategies: hasTarget ? ["CLEAR_APP_DATA", "REINSTALL_APP"] : [],
     uitestVersion,
     screenCap,
     dumpLayout,

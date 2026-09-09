@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execute } = require('./runtime-core');
+const { executeAgentRequest } = require('./runtime-broker');
 
 function parseRequest(argv, stdin = '', requestPath = null) {
   if (argv.length) throw Object.assign(new Error('run the bound Runtime command without arguments'), { code: 'CASE_RUNTIME_REQUEST_INVALID' });
@@ -21,7 +21,7 @@ function parseRequest(argv, stdin = '', requestPath = null) {
 }
 
 function run(execDir, request, options = {}) {
-  return execute(path.resolve(execDir), request, options);
+  return executeAgentRequest(path.resolve(execDir), request, options);
 }
 
 function main(argv = process.argv.slice(2), options = {}) {

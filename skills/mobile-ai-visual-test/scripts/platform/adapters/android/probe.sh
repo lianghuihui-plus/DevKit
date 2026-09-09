@@ -126,6 +126,7 @@ console.log(JSON.stringify({
     logs,
     launchApp: hasTarget,
     actions,
+    preparationStrategies: hasTarget ? ["CLEAR_APP_DATA", "REINSTALL_APP"] : [],
     screenCap: screenshot,
     dumpLayout: layout,
     screen,

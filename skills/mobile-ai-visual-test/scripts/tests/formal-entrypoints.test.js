@@ -84,7 +84,19 @@ assert.strictEqual(fs.existsSync(path.join(workspace, 'environment-confirmation.
 const executionRequest = run([
   'scripts/execution-request.js', 'create', '--workspace', workspace, '--batch-id', batchId,
   '--mode', 'single',
-  '--targets-json', JSON.stringify([{ caseKey: imported.caseJson.identity.caseKey, caseDir: imported.caseDir }]),
+  '--targets-json', JSON.stringify([{
+    caseKey: imported.caseJson.identity.caseKey,
+    caseDir: imported.caseDir,
+    caseSpec: {
+      summary: '验证当前页面是否符合用例描述',
+      preconditions: [],
+      expectations: [{
+        text: '当前页面符合用例描述',
+        sourceEvidence: [{ quote: '看一下当前页面是否符合用例描述' }],
+      }],
+      ambiguities: ['原文未给出更具体的验收内容'],
+    },
+  }]),
   '--user-instruction', '单独执行当前导入的用例',
 ]);
 assert.strictEqual(executionRequest.mode, 'SINGLE');

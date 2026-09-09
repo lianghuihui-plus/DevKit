@@ -9,11 +9,32 @@ const {
   inputTextWithFallback,
   normalizedInputValue,
 } = require('../platform/adapters/ios/lib/ios-driver');
+const {
+  doubleTapAction,
+  pointerAction,
+  resolveLongPressExecution,
+  resolveSwipeExecution,
+  swipeAction,
+} = require('../platform/adapters/ios/lib/pointer-actions');
 
 const ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf';
 const target = { appiumServer: 'http://appium.invalid' };
 
 async function main() {
+  assert.strictEqual(pointerAction(10, 20).actions[0].actions.at(-1).type, 'pointerUp');
+  assert.strictEqual(doubleTapAction(10, 20).actions[0].actions.filter((item) => item.type === 'pointerDown').length, 2);
+  assert.strictEqual(swipeAction(0, 0, 100, 200, 500).actions[0].actions[2].duration, 500);
+  assert.strictEqual(resolveSwipeExecution([
+    '--from-x', '0', '--from-y', '100', '--to-x', '0', '--to-y', '0', '--velocity', '500',
+  ]).durationMs > 0, true);
+  assert.deepStrictEqual(resolveLongPressExecution([
+    '--x', '10', '--y', '20', '--duration-ms', '800', '--coordinate-source', 'visual',
+  ]), {
+    x: '10', y: '20', durationMs: 800, coordinateSource: 'visual', captureOut: '', captureRef: '', captureAtMs: 0,
+  });
+  assert.throws(() => resolveLongPressExecution([
+    '--x', '10', '--y', '20', '--duration-ms', '800', '--capture-out', '/tmp/shot.png', '--capture-at-ms', '800',
+  ]), /按压时长内/);
   assert.strictEqual(normalizedInputValue('Account placeholder', 'Account placeholder'), '');
   assert.deepStrictEqual(
     inputEffectFor({ className: 'XCUIElementTypeSecureTextField' }, '123456', '******', 'Password placeholder'),

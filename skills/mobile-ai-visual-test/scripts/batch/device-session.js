@@ -5,6 +5,7 @@ const path = require('path');
 const { environmentAdapterArgs } = require('../lib/execution-environment');
 const { startupDisplayVerified } = require('../lib/startup-display');
 const { normalizeDeviceBinding } = require('../lib/target-binding');
+const { validateInstalledAppIdentity } = require('../lib/app-provisioning');
 
 const SKILL_ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_ADAPTER_TIMEOUT_MS = 60000;
@@ -73,13 +74,46 @@ function normalizeRestartResult(value, binding, stderr = '') {
 }
 
 function restartApp(request) {
-  const binding = normalizeDeviceBinding(request.binding);
+  const binding = normalizeDeviceBinding({ ...request.binding });
+  const platformSessionId = request.platformRuntime?.resource?.session?.sessionId;
+  if (binding.platform === 'ios' && platformSessionId) binding.appiumSessionId = platformSessionId;
   const result = run(path.join(SKILL_ROOT, 'scripts/platform/action.sh'), [
     ...environmentAdapterArgs(binding, 'action'),
     '--type', 'restartApp',
   ], restartTimeoutMs(binding));
   if (!result.value) return { ok: false, coldStartVerified: false, startupDisplayVerified: false, reason: result.reason };
   return normalizeRestartResult(result.value, binding, result.stderr);
+}
+
+function prepareApp(request) {
+  const binding = normalizeDeviceBinding({ ...request.binding });
+  const platformSessionId = request.platformRuntime?.resource?.session?.sessionId;
+  if (binding.platform === 'ios' && platformSessionId) binding.appiumSessionId = platformSessionId;
+  const result = run(path.join(SKILL_ROOT, 'scripts/platform/prepare-app.sh'), [
+    ...environmentAdapterArgs(binding, 'observe'),
+    '--strategy', 'REINSTALL_APP',
+    '--artifact', request.provisioning.artifactPath,
+  ], 5 * 60 * 1000);
+  if (!result.value) {
+    return {
+      ok: false,
+      status: 'FAILED',
+      failureCode: 'APP_ARTIFACT_BOOTSTRAP_FAILED',
+      reason: result.reason || result.stderr || 'artifact-managed bootstrap failed',
+    };
+  }
+  const value = result.value;
+  if (value.schemaVersion !== 1 || value.type !== 'appPreparationResult'
+    || value.platform !== binding.platform || value.strategy !== 'REINSTALL_APP'
+    || value.device?.id !== binding.deviceId || value.app?.appId !== binding.appId) {
+    return {
+      ok: false,
+      status: 'FAILED',
+      failureCode: 'DEVICE_ADAPTER_OUTPUT_INVALID',
+      reason: 'artifact-managed bootstrap returned an invalid preparation result',
+    };
+  }
+  return validateInstalledAppIdentity(value, request.provisioning);
 }
 
 function probeSession(request) {
@@ -126,13 +160,14 @@ function releasePlatformRuntime(request) {
 }
 
 function createDeviceSessionAdapter() {
-  return { acquirePlatformRuntime, probeSession, releasePlatformRuntime, restartApp };
+  return { acquirePlatformRuntime, prepareApp, probeSession, releasePlatformRuntime, restartApp };
 }
 
 module.exports = {
   acquirePlatformRuntime,
   createDeviceSessionAdapter,
   normalizeRestartResult,
+  prepareApp,
   probeSession,
   releasePlatformRuntime,
   restartApp,

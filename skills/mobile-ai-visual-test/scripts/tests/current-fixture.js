@@ -5,9 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const { buildContract } = require('../build-agent-contract');
 const { createCaseContract, validateCaseContract } = require('../execution/contracts/case-contract');
+const { createCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { completionPaths, sha256File, validatePublishedCompletion } = require('../lib/completion-contract');
 const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
 const { confirmEnvironment, createExecutionRequest } = require('../lib/run-control');
+const { appProvisioningSha, defaultAppProvisioning, preparationPolicySha, validatePreparationPolicy } = require('../lib/app-provisioning');
 
 const TEST_WORKSPACE_TYPE = 'mobile-ai-visual-test-test-workspace';
 const FIXTURE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -42,14 +44,34 @@ function createTestExecutionRequest(root, batchId, binding, targets, options = {
     workspaceRoot: root,
     binding,
     probe: { schemaVersion: 1, platform: binding.platform, ready: true, devices: [{ id: binding.deviceId }] },
+    appProvisioning: options.appProvisioning,
     userConfirmation: options.environmentConfirmation || `确认测试环境 ${binding.deviceId}`,
     now,
+  });
+  const frozenTargets = targets.map((target) => {
+    if (target.caseSpec) return target;
+    let caseDir = target.caseDir;
+    if (!caseDir && target.caseNo !== undefined) {
+      const { resolveCaseNo } = require('../lib/case-numbering');
+      caseDir = resolveCaseNo(root, target.caseNo)?.caseDir;
+    }
+    const sourceText = fs.readFileSync(path.join(caseDir, 'source.md'), 'utf8');
+    return {
+      ...target,
+      caseSpec: {
+        summary: sourceText.trim(),
+        preconditions: [],
+        expectations: [{ text: sourceText.trim(), sourceEvidence: [{ quote: sourceText.trim() }] }],
+        ambiguities: [],
+      },
+    };
   });
   return createExecutionRequest({
     workspaceRoot: root,
     batchId,
     mode: options.mode || (targets.length === 1 ? 'SINGLE' : 'BATCH'),
-    targets,
+    targets: frozenTargets,
+    bootstrapPolicy: options.bootstrapPolicy,
     userInstruction: options.userInstruction || `${targets.length === 1 ? '单独' : '批量'}执行测试用例`,
     now,
   });
@@ -86,8 +108,27 @@ function createCurrentFixture(root, options = {}) {
   const startedAt = '2026-08-13T10:00:00.000+08:00';
   const endedAt = '2026-08-13T10:00:05.000+08:00';
   const currentContract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform: 'harmony' });
+  const appProvisioning = defaultAppProvisioning();
+  const preparationPolicy = validatePreparationPolicy();
+  const context = {
+    summary: `理解 ${verdict} 用例`,
+    preconditions: options.includePreparation ? ['目标页面可进入'] : [],
+    expectations: [{ id: 'E1', text: '验证当前报告结果', verificationKind: 'DIRECT_OBSERVATION' }],
+    initialPlan: ['观察当前页面', '执行必要操作', '检查最终结果'],
+    uncertainties: [],
+  };
+  const caseSpec = createCaseSpec({
+    sourceText,
+    spec: {
+      summary: context.summary,
+      preconditions: context.preconditions,
+      expectations: [{ text: context.expectations[0].text, sourceEvidence: [{ quote: sourceText }] }],
+      ambiguities: [],
+    },
+  });
+  writeJson(path.join(execDir, 'case-spec.snapshot.json'), caseSpec);
   const execution = {
-    schemaVersion: 7,
+    schemaVersion: 10,
     runtime: 'case-runtime',
     executionId,
     batchId: `batch-${suffix}`,
@@ -97,11 +138,20 @@ function createCurrentFixture(root, options = {}) {
     caseProtocolSha: currentContract.protocolSha,
     coordinatorProtocolSha: 'agent-protocol-fixture0002',
     contractSha: caseJson.contractSha,
+    caseSpecSha: caseSpec.specSha,
     batchContractSha: `batch-contract-${'a'.repeat(24)}`,
     executionRequestSha: `execution-request-${'a'.repeat(24)}`,
     interactionPolicy: 'UNATTENDED',
     targetBinding: { platform: 'harmony', deviceId: 'fixture-device', appId: 'com.example.fixture', entry: 'EntryAbility' },
     targetBindingSha: 'target-binding-fixture',
+    appProvisioning,
+    appProvisioningSha: appProvisioningSha(appProvisioning),
+    preparationPolicy,
+    preparationPolicySha: preparationPolicySha(preparationPolicy),
+    warmSessionIdStart: 'warm-0001',
+    warmSessionId: 'warm-0001',
+    warmSessionEpochStart: 1,
+    warmSessionEpoch: 1,
     warmSessionGeneration: 1 + (options.recoveryCount || 0),
     warmSessionGenerationStart: 1,
     warmSessionReused: options.warmSessionReused === true,
@@ -142,6 +192,7 @@ function createCurrentFixture(root, options = {}) {
     schemaVersion: 2,
     sceneId,
     generation: execution.warmSessionGeneration,
+    warmSessionRef: { sessionId: execution.warmSessionId, epoch: execution.warmSessionEpoch, generation: execution.warmSessionGeneration },
     capturedAt: sceneId === 'scene-0001' ? '2026-08-13T10:00:01.000+08:00' : '2026-08-13T10:00:03.000+08:00',
     screenshot: { ref: screenshotRef, path: path.join(execDir, screenshotRef), sha256: screenshotSha, width: 1, height: 1 },
     layoutRef,
@@ -213,13 +264,6 @@ function createCurrentFixture(root, options = {}) {
   writeJson(path.join(execDir, 'scenes', 'scene-0001.json'), beforeScene);
   writeJson(path.join(execDir, 'scenes', 'scene-0002.json'), afterScene);
 
-  const context = {
-    summary: `理解 ${verdict} 用例`,
-    preconditions: options.includePreparation ? ['目标页面可进入'] : [],
-    expectations: [{ id: 'E1', text: '验证当前报告结果' }],
-    initialPlan: ['观察当前页面', '执行必要操作', '检查最终结果'],
-    uncertainties: [],
-  };
   const decision = {
     observation: '当前页面显示目标入口', conclusion: '可以执行验证操作',
     purpose: action.type === 'inputText' ? '输入测试内容' : '打开目标并验证结果',
@@ -296,6 +340,8 @@ function createCurrentFixture(root, options = {}) {
     agentTiming: { firstPreparationMs: 500, stepDecisionMs: 900, conclusionPreparationMs: 500, unclassifiedGapMs: 100, stepDecisionIntervals: [] },
     invocationCount: 4, invocationErrorCount: 0,
     warmSessionGenerationStart: 1, warmSessionGenerationEnd: execution.warmSessionGeneration,
+    warmSessionIdStart: execution.warmSessionIdStart, warmSessionIdEnd: execution.warmSessionId,
+    warmSessionEpochStart: execution.warmSessionEpochStart, warmSessionEpochEnd: execution.warmSessionEpoch,
     warmSessionReused: execution.warmSessionReused, executionRecoveryCount: execution.executionRecoveryCount,
     batchRecoveryCountAtStart: 0, batchRecoveryCountAtEnd: execution.batchRecoveryCountAtEnd, timeLimitStopped: false,
     counts: { actions: 1, observations: 2, knowledgeQueries: ['FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(verdict) ? 1 : 0, knowledgeReviews: ['FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(verdict) ? 1 : 0, recoveries: options.recoveryCount || 0, agentContinuations: 0, invocationCorrections: 0, caseContextRevisions: 1, agentDecisions: 2, narrativeGaps: 0 },

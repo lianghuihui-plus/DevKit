@@ -19,4 +19,6 @@ cases/<title>__<caseKey>/
 
 用户通过编号沟通单个或批量执行范围。协调器创建执行请求时提交目标 `caseNo`，框架负责解析为稳定的 `caseKey` 和目录；编号不存在或不匹配时在创建请求前明确报错。
 
-execution 创建时复制 `source.snapshot.md` 和 `case.snapshot.json`。后续修改源文件不会改变进行中的 execution；再次执行应创建新 execution，并使用独立产物。
+执行授权前，主 Agent 还必须基于原文提交 CaseSpec：summary、preconditions、expectations、ambiguities；每个 expectation 至少引用一个原文 quote。框架规范化为稳定 `E1...En` 并冻结 `case-spec.snapshot.json`。Case Agent 不得重新定义这份 oracle。
+
+execution 创建时复制 `source.snapshot.md`、`case.snapshot.json` 和 `case-spec.snapshot.json`。后续修改源文件不会改变进行中的 execution；再次执行应创建新 execution，并使用独立产物。

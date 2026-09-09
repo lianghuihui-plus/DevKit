@@ -217,7 +217,7 @@ function acquireBatchPlatformRuntime(options) {
 
 function releaseBatchPlatformRuntime(options) {
   const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
-  if (!['FINALIZING', 'CANCELLING', 'COMPLETED', 'CANCELLED', 'BLOCKED'].includes(loaded.state.status)) {
+  if (!['FINALIZING', 'CANCELLING', 'BLOCKING', 'COMPLETED', 'CANCELLED', 'BLOCKED'].includes(loaded.state.status)) {
     throw contractError('PLATFORM_RUNTIME_RELEASE_EARLY', 'platform runtime can only be released after the batch reaches a terminal state');
   }
   const paths = runtimePaths(loaded.paths.batchDir);

@@ -12,6 +12,7 @@ const CURRENT_ROOT_FILES = new Set([
   'execution.json',
   'binding.snapshot.json',
   'case.snapshot.json',
+  'case-spec.snapshot.json',
   'source.snapshot.md',
   'events.jsonl',
   'result.json',
@@ -33,7 +34,7 @@ function walkFiles(root, relative = '') {
 
 function executionArtifactFiles(execDir) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 7) {
+  if (execution?.schemaVersion !== 10) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
   return walkFiles(execDir).filter((relative) => {
@@ -45,7 +46,7 @@ function executionArtifactFiles(execDir) {
 }
 
 function requiredArtifactFiles(execution) {
-  if (execution?.schemaVersion !== 7) {
+  if (execution?.schemaVersion !== 10) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
   return [...CURRENT_ROOT_FILES];

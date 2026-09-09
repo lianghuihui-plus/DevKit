@@ -102,35 +102,52 @@ function commitWithDashboard(common, refresh, commit = commitCurrentCase) {
 }
 
 function reconcileWithFinalization(common, current) {
-  const reconciled = reconcileBatch({ ...common, adapter: current.adapter });
-  if (reconciled.action === 'RELEASE_PLATFORM') {
-    const platformRuntimeCleanup = releaseBatchPlatformRuntime({ ...common, adapter: current.adapter });
-    const finalized = recordFinalizationStep({ ...common, step: 'platformReleased', result: platformRuntimeCleanup });
-    return { ...reconciled, state: finalized.state, platformRuntimeCleanup, nextAction: 'PUBLISH_REPORTS' };
-  }
-  if (reconciled.action === 'PUBLISH_REPORTS') {
-    const startedAt = Date.now();
-    let publication;
-    try {
-      const loaded = loadBatch(common.workspaceRoot, common.batchId, common);
-      refreshBatchIndex(common.workspaceRoot, loaded.contract.targets.map((target) => target.caseDir));
-      publication = { status: 'PUBLISHED', durationMs: Date.now() - startedAt };
-    } catch (error) {
-      publication = {
-        status: 'FAILED',
-        errorCode: error.code || 'REPORT_PUBLICATION_FAILED',
-        reason: error.message || String(error),
-        durationMs: Date.now() - startedAt,
-      };
+  const progress = [];
+  for (let transition = 0; transition < 32; transition += 1) {
+    const reconciled = reconcileBatch({ ...common, adapter: current.adapter });
+    progress.push(reconciled.action);
+    if (['START_CASE', 'RESUME_CASE_START'].includes(reconciled.action)) {
+      return { ...reconciled, action: 'NEED_CASE_AGENT', batchAction: reconciled.action, progress };
     }
-    const publicationState = recordPublicationAttempt(common.workspaceRoot, common.batchId, 'batch', publication, { now: common.now });
-    if (publication.status !== 'PUBLISHED') {
-      return { ...reconciled, publication, publicationState, retryable: true };
+    if (reconciled.action === 'COMMIT_CASE') {
+      const committed = commitWithDashboard(common);
+      progress.push('CASE_COMMITTED');
+      if (committed.dashboardRefresh?.status === 'FAILED') progress.push('CASE_REPORT_DEFERRED');
+      continue;
     }
-    const finalized = recordFinalizationStep({ ...common, step: 'reportsPublished', result: publication });
-    return { ...reconciled, state: finalized.state, publication, publicationState, nextAction: 'BATCH_COMPLETE' };
+    if (reconciled.action === 'SETTLE_EXECUTIONS') {
+      recordFinalizationStep({ ...common, step: 'executionsSettled', result: { ok: true } });
+      continue;
+    }
+    if (reconciled.action === 'RELEASE_PLATFORM') {
+      const platformRuntimeCleanup = releaseBatchPlatformRuntime({ ...common, adapter: current.adapter });
+      recordFinalizationStep({ ...common, step: 'platformReleased', result: platformRuntimeCleanup });
+      continue;
+    }
+    if (reconciled.action === 'PUBLISH_REPORTS') {
+      const startedAt = Date.now();
+      let publication;
+      try {
+        const loaded = loadBatch(common.workspaceRoot, common.batchId, common);
+        refreshBatchIndex(common.workspaceRoot, loaded.contract.targets.map((target) => target.caseDir));
+        publication = { status: 'PUBLISHED', durationMs: Date.now() - startedAt };
+      } catch (error) {
+        publication = {
+          status: 'FAILED',
+          errorCode: error.code || 'REPORT_PUBLICATION_FAILED',
+          reason: error.message || String(error),
+          durationMs: Date.now() - startedAt,
+        };
+      }
+      const publicationState = recordPublicationAttempt(common.workspaceRoot, common.batchId, 'batch', publication, { now: common.now });
+      if (publication.status !== 'PUBLISHED') return { ...reconciled, progress, publication, publicationState, retryable: true };
+      recordFinalizationStep({ ...common, step: 'reportsPublished', result: publication });
+      continue;
+    }
+    if (reconciled.action === 'RECONCILE_FATAL') continue;
+    return { ...reconciled, progress };
   }
-  return reconciled;
+  throw Object.assign(new Error('batch reconcile exceeded the deterministic transition limit'), { code: 'BATCH_RECONCILE_LIMIT' });
 }
 
 function cleanupTerminalPlatformRuntime(common, current, result) {

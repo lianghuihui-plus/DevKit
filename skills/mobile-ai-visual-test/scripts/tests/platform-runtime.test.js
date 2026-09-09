@@ -4,6 +4,7 @@
 const assert = require('assert');
 const crypto = require('crypto');
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 const {
@@ -20,7 +21,7 @@ const {
   acquireAppium,
   releaseAppium,
 } = require('../platform/adapters/ios/lib/service-lifecycle');
-const { withSession } = require('../platform/adapters/ios/lib/appium-client');
+const { deleteSession, withSession } = require('../platform/adapters/ios/lib/appium-client');
 const {
   acquireIosRuntime,
   releaseIosRuntime,
@@ -60,7 +61,14 @@ function fixture(name) {
 function terminal(fix) {
   const paths = batchPaths(fix.root, fix.batchId);
   const state = readJson(paths.state);
-  writeJsonAtomic(paths.state, { ...state, status: 'BLOCKED', failureCode: 'TEST_STOP', reason: 'test terminal state' });
+  writeJsonAtomic(paths.state, {
+    ...state,
+    status: 'BLOCKING',
+    cases: state.cases.map((item) => ({ ...item, status: 'SKIPPED' })),
+    failureCode: 'TEST_STOP',
+    reason: 'test terminal state',
+    finalization: { cause: 'BLOCKED', executionsSettled: true, platformReleased: false, reportsPublished: false },
+  });
 }
 
 function common(fix, adapter) {
@@ -158,10 +166,18 @@ try {
   assert.strictEqual(bootstrapped.state.status, 'RUNNING');
   const iosBatchPaths = batchPaths(iosRoot, iosBatchId);
   const iosBatchState = readJson(iosBatchPaths.state);
-  writeJsonAtomic(iosBatchPaths.state, { ...iosBatchState, status: 'BLOCKED', failureCode: 'TEST_STOP', reason: 'test terminal state' });
-  const reconciled = executeBatch({ command: 'reconcile', workspace: iosRoot, batchId: iosBatchId });
-  assert.strictEqual(reconciled.action, 'BATCH_BLOCKED');
-  assert.strictEqual(reconciled.platformRuntimeCleanup.status, 'RELEASED');
+  writeJsonAtomic(iosBatchPaths.state, {
+    ...iosBatchState,
+    status: 'BLOCKING',
+    cases: iosBatchState.cases.map((item) => ({ ...item, status: 'SKIPPED' })),
+    failureCode: 'TEST_STOP',
+    reason: 'test terminal state',
+    finalization: { cause: 'BLOCKED', executionsSettled: false, platformReleased: false, reportsPublished: false },
+  });
+  const finalized = executeBatch({ command: 'reconcile', workspace: iosRoot, batchId: iosBatchId });
+  assert.strictEqual(finalized.action, 'BATCH_BLOCKED');
+  assert.deepStrictEqual(finalized.progress, ['SETTLE_EXECUTIONS', 'RELEASE_PLATFORM', 'PUBLISH_REPORTS', 'BATCH_BLOCKED']);
+  assert.strictEqual(executeBatch({ command: 'reconcile', workspace: iosRoot, batchId: iosBatchId }).action, 'BATCH_BLOCKED');
 } finally {
   if (previousIosFake === undefined) delete process.env.MAVT_IOS_FAKE;
   else process.env.MAVT_IOS_FAKE = previousIosFake;
@@ -170,6 +186,17 @@ try {
 async function verifyIosAdapterSemantics() {
   const previousFake = process.env.MAVT_IOS_FAKE;
   const previousRuntimeDir = process.env.MAVT_IOS_RUNTIME_DIR;
+  const missingSessionServer = http.createServer((_request, response) => {
+    response.writeHead(404, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ value: { error: 'invalid session id' } }));
+  });
+  await new Promise((resolve) => missingSessionServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = missingSessionServer.address();
+    await deleteSession(`http://127.0.0.1:${address.port}`, 'already-deleted-session');
+  } finally {
+    await new Promise((resolve) => missingSessionServer.close(resolve));
+  }
   process.env.MAVT_IOS_FAKE = '1';
   try {
     const acquired = await acquireAppium({ appiumServer: 'http://127.0.0.1:4723' }, 'fake-batch-owner');

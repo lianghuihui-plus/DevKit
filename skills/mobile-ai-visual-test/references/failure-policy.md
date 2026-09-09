@@ -11,8 +11,12 @@
 
 每次动作自动采集新 Scene。动作已经发出但结果未知时，Runtime 记录 `actionOutcomeUnknown` 并优先观察现场，不自动重放。非当前 Scene 的 Capability 返回 `SCENE_CHANGED` 和当前 Scene，不发送动作。
 
+App 初始状态的授权或制品条件不满足时，ExecutionRequest 以 `INITIAL_STATE_PREFLIGHT_FAILED` 拒绝，不调用设备。预检通过但 Lifecycle 实际准备失败时，框架保存 `APP_INITIAL_STATE_UNAVAILABLE` 技术事实，自动生成覆盖全部 expectation 的 BLOCKED CaseResult 并完成 execution，不创建 Case Agent；已经分发但结果未知的清数据或重装不会重放。
+
 截图是必需证据，控件树用于增强定位和状态理解。控件树缺失时 Runtime 保留诊断并继续提供截图；两者冲突时 Case Agent 重新观察或在结论中保留不确定性。
 
 单用例预算为 30 分钟。到达预算后 Runtime 返回 `TIME_LIMIT` 并停止新的设备动作，`knowledge` 和 `finish` 仍可使用，Case Agent 基于现有 Scene 形成可解释结论。
 
 无人值守批次中不等待用户补充账号、验证码、授权或业务解释。单用例能够收口时保存结果并继续下一用例；只有 bootstrap、共享设备、批次存储或平台资源出现批次级技术问题时停止整个批次。
+
+Runtime reconcile 的锁竞争最多持久化重试三次；其他 execution 错误立即归类为 `FATAL_EXECUTION`，事件/批次存储损坏归类为 `FATAL_BATCH`。致命错误不再返回无限 `WAIT_CASE_AGENT`，而是进入统一阻塞收口。CLI reconcile 自动完成 settle、平台释放与报告发布；报告发布失败才返回 `PUBLISH_REPORTS + retryable=true`，且不跳过已完成、取消或阻塞的执行。

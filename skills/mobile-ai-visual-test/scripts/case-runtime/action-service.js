@@ -67,7 +67,7 @@ function act(execDir, request, options = {}) {
     operationId,
     sceneId: scene.sceneId,
     action: redactedAction(resolved.action),
-    intent: request.decision?.purpose || request.intent || null,
+    intent: request.decision?.purpose || null,
     decisionId: request.decisionId || null,
     createdAt: options.now || new Date().toISOString(),
   });
@@ -75,7 +75,7 @@ function act(execDir, request, options = {}) {
     operationId,
     sceneId: scene.sceneId,
     action: redactedAction(resolved.action),
-    intent: request.decision?.purpose || request.intent || null,
+    intent: request.decision?.purpose || null,
     expectedOutcome: request.decision?.expectedOutcome || null,
     decisionId: request.decisionId || null,
   }, options);

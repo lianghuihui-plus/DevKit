@@ -12,13 +12,14 @@ function paths(execDir) {
     root,
     execution: path.join(root, 'execution.json'),
     runtime: path.join(root, 'runtime.json'),
-    brief: path.join(root, 'case-brief.json'),
+    caseSpec: path.join(root, 'case-spec.snapshot.json'),
     events: path.join(root, 'events.jsonl'),
     scenes: path.join(root, 'scenes'),
     currentScene: path.join(root, 'current-scene.json'),
     result: path.join(root, 'result.json'),
     metrics: path.join(root, 'metrics.json'),
     finishDraft: path.join(root, 'transactions', 'finish.draft.json'),
+    preparationDraft: path.join(root, 'transactions', 'preparation.draft.json'),
     transactions: path.join(root, 'transactions'),
     operations: path.join(root, 'operations'),
     runtimeRequest: path.join(root, 'runtime-request.json'),
@@ -28,7 +29,7 @@ function paths(execDir) {
 
 function loadExecution(execDir, options = {}) {
   const execution = readJson(paths(execDir).execution, null);
-  if (!execution || execution.schemaVersion !== 7 || execution.runtime !== 'case-runtime') {
+  if (!execution || execution.schemaVersion !== 10 || execution.runtime !== 'case-runtime') {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
   if (!options.allowFinalized && execution.finalized === true) {
@@ -107,6 +108,7 @@ function technicalResponse(execDir, error, options = {}) {
   try {
     const fact = appendEvent(execDir, 'technicalIssue', {
       code: value.code,
+      ...(error?.internalCode ? { internalCode: error.internalCode } : {}),
       message: value.message,
       operation: options.operation || null,
       decisionId: options.decisionId || null,

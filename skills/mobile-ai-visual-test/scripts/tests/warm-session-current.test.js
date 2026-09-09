@@ -64,10 +64,7 @@ function completeCase(started, index) {
   const at = `2026-09-04T10:00:0${index}.000Z`;
   const observed = run(started.execDir, {
     operation: 'observe',
-    caseContext: {
-      summary: `验证第 ${index} 个暖会话用例`, preconditions: ['批次 App 已启动'],
-      expectations: ['目标页面可见'], initialPlan: ['观察并判断目标页面'], uncertainties: [],
-    },
+    decision: { purpose: `观察第 ${index} 个暖会话用例`, expectationRefs: ['E1'] },
   }, { runner, now: at });
   assert.strictEqual(observed.status, 'SCENE');
   const finished = run(started.execDir, {

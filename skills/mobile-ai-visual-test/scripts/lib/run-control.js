@@ -13,14 +13,29 @@ const {
 } = require('./contract-utils');
 const { validateBinding, bindingSha } = require('./batch-contract');
 const { sourceSha, validateCaseContract } = require('../execution/contracts/case-contract');
+const { createCaseSpec, validateCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { assertWorkspace } = require('./workspace');
 const { atomicWrite, readJson, writeJsonAtomic } = require('./execution-lifecycle');
 const { buildContract } = require('../build-agent-contract');
 const { validateKnowledgeRoots } = require('./knowledge-query');
 const { ensureWorkspaceCaseNumbers, resolveCaseNo } = require('./case-numbering');
+const {
+  appProvisioningSha,
+  bootstrapPolicySha,
+  createInitialStatePreflight,
+  defaultAppProvisioning,
+  initialStatePreflightSha,
+  initialStateRequirementSha,
+  preparationPolicySha,
+  validateAppProvisioning,
+  validateBootstrapPolicy,
+  validateInitialStatePreflight,
+  validateInitialStateRequirement,
+  validatePreparationPolicy,
+} = require('./app-provisioning');
 
-const ENVIRONMENT_CONFIRMATION_SCHEMA_VERSION = 1;
-const EXECUTION_REQUEST_SCHEMA_VERSION = 3;
+const ENVIRONMENT_CONFIRMATION_SCHEMA_VERSION = 2;
+const EXECUTION_REQUEST_SCHEMA_VERSION = 6;
 const EXECUTION_MODES = new Set(['SINGLE', 'BATCH']);
 const INTERACTION_POLICY = 'UNATTENDED';
 
@@ -60,7 +75,7 @@ function validateProbeSelection(probe, binding) {
   return probe;
 }
 
-function validateEnvironmentConfirmation(value) {
+function validateEnvironmentConfirmation(value, options = {}) {
   ensureObject(value, 'environment confirmation', 'ENVIRONMENT_CONFIRMATION_INVALID');
   if (value.schemaVersion !== ENVIRONMENT_CONFIRMATION_SCHEMA_VERSION) {
     throw contractError('ENVIRONMENT_CONFIRMATION_SCHEMA_UNSUPPORTED', `schemaVersion must be ${ENVIRONMENT_CONFIRMATION_SCHEMA_VERSION}`);
@@ -69,6 +84,15 @@ function validateEnvironmentConfirmation(value) {
   if (value.status !== 'CONFIRMED') throw contractError('ENVIRONMENT_CONFIRMATION_INVALID', 'status must be CONFIRMED');
   validateBinding(value.binding);
   if (value.bindingSha !== bindingSha(value.binding)) throw contractError('ENVIRONMENT_CONFIRMATION_INVALID', 'bindingSha does not match binding');
+  const provisioning = validateAppProvisioning(value.appProvisioning, {
+    workspaceRoot: options.workspaceRoot,
+    platform: value.binding.platform,
+    appId: value.binding.appId,
+    deviceType: value.binding.deviceType,
+  });
+  if (value.appProvisioningSha !== appProvisioningSha(provisioning)) {
+    throw contractError('ENVIRONMENT_CONFIRMATION_INVALID', 'appProvisioningSha does not match appProvisioning');
+  }
   ensureString(value.probeSha, 'probeSha', 'ENVIRONMENT_CONFIRMATION_INVALID');
   ensureString(value.userConfirmation, 'userConfirmation', 'ENVIRONMENT_CONFIRMATION_INVALID');
   if (value.userConfirmationSha !== sha256(value.userConfirmation, 'user-confirmation', 24)) {
@@ -85,22 +109,36 @@ function confirmEnvironment(options) {
   const workspace = assertWorkspace(options.workspaceRoot, { allowTest: true });
   const binding = validateBinding({ ...options.binding });
   const probe = validateProbeSelection(options.probe, binding);
+  const appProvisioning = validateAppProvisioning(options.appProvisioning || defaultAppProvisioning(), {
+    workspaceRoot: workspace.root,
+    platform: binding.platform,
+    appId: binding.appId,
+    deviceType: binding.deviceType,
+  });
   const userConfirmation = ensureString(options.userConfirmation, 'userConfirmation', 'ENVIRONMENT_CONFIRMATION_INVALID');
   const confirmedAt = options.now || new Date().toISOString();
-  const seed = canonicalJson({ binding, probeSha: sha256(canonicalJson(probe), 'probe', 24), userConfirmation, confirmedAt });
+  const seed = canonicalJson({
+    binding,
+    appProvisioningSha: appProvisioningSha(appProvisioning),
+    probeSha: sha256(canonicalJson(probe), 'probe', 24),
+    userConfirmation,
+    confirmedAt,
+  });
   const value = {
     schemaVersion: ENVIRONMENT_CONFIRMATION_SCHEMA_VERSION,
     confirmationId: sha256(seed, 'env', 16),
     status: 'CONFIRMED',
     binding,
     bindingSha: bindingSha(binding),
+    appProvisioning,
+    appProvisioningSha: appProvisioningSha(appProvisioning),
     probeSha: sha256(canonicalJson(probe), 'probe', 24),
     userConfirmation,
     userConfirmationSha: sha256(userConfirmation, 'user-confirmation', 24),
     confirmedAt,
   };
   value.confirmationSha = environmentConfirmationSha(value);
-  validateEnvironmentConfirmation(value);
+  validateEnvironmentConfirmation(value, { workspaceRoot: workspace.root });
   writeJsonAtomic(environmentConfirmationPath(workspace.root), value);
   return value;
 }
@@ -109,7 +147,7 @@ function loadEnvironmentConfirmation(workspaceRoot) {
   const workspace = assertWorkspace(workspaceRoot, { allowTest: true });
   const value = readJson(environmentConfirmationPath(workspace.root), null);
   if (!value) throw contractError('ENVIRONMENT_NOT_CONFIRMED', 'environment has not been explicitly confirmed by the user');
-  return validateEnvironmentConfirmation(value);
+  return validateEnvironmentConfirmation(value, { workspaceRoot: workspace.root });
 }
 
 function normalizeExecutionTargetSelectors(workspaceRoot, inputTargets) {
@@ -120,7 +158,11 @@ function normalizeExecutionTargetSelectors(workspaceRoot, inputTargets) {
     if (!target || typeof target !== 'object' || Array.isArray(target)) {
       throw contractError('EXECUTION_REQUEST_TARGET_INVALID', `targets[${index}] must be an object`);
     }
-    if (target.caseNo === undefined) return target;
+    if (target.caseNo === undefined) return {
+      ...target,
+      preparationPolicy: validatePreparationPolicy(target.preparationPolicy),
+      initialStateRequirement: validateInitialStateRequirement(target.initialStateRequirement),
+    };
     const resolved = resolveCaseNo(workspaceRoot, target.caseNo);
     if (!resolved) {
       throw contractError('EXECUTION_REQUEST_TARGET_NOT_FOUND', `targets[${index}].caseNo does not identify a workspace case: ${target.caseNo}`);
@@ -131,7 +173,13 @@ function normalizeExecutionTargetSelectors(workspaceRoot, inputTargets) {
     if (target.caseDir && path.resolve(target.caseDir) !== path.resolve(resolved.caseDir)) {
       throw contractError('EXECUTION_REQUEST_TARGET_MISMATCH', `targets[${index}].caseNo does not match caseDir`);
     }
-    return { caseKey: resolved.caseKey, caseDir: resolved.caseDir };
+    return {
+      caseKey: resolved.caseKey,
+      caseDir: resolved.caseDir,
+      caseSpec: target.caseSpec,
+      preparationPolicy: validatePreparationPolicy(target.preparationPolicy),
+      initialStateRequirement: validateInitialStateRequirement(target.initialStateRequirement),
+    };
   });
 }
 
@@ -172,7 +220,20 @@ function resolveLiveExecutionTargets(workspaceRoot, inputTargets) {
     if (sourceSha(sourceText) !== caseJson.identity.sourceSha) {
       throw contractError('EXECUTION_REQUEST_TARGET_INVALID', `targets[${index}] source.md does not match case.json`);
     }
-    return { caseNo: caseJson.identity.caseNo, caseKey: target.caseKey, caseDir, caseJson, sourceText };
+    if (!target.caseSpec) {
+      throw contractError('CASE_SPEC_REQUIRED', `targets[${index}].caseSpec must be supplied before execution authorization`);
+    }
+    const caseSpec = createCaseSpec({ sourceText, spec: target.caseSpec });
+    return {
+      caseNo: caseJson.identity.caseNo,
+      caseKey: target.caseKey,
+      caseDir,
+      caseJson,
+      sourceText,
+      caseSpec,
+      preparationPolicy: validatePreparationPolicy(target.preparationPolicy),
+      initialStateRequirement: validateInitialStateRequirement(target.initialStateRequirement),
+    };
   });
 }
 
@@ -187,6 +248,13 @@ function snapshotTargetDescriptor(workspaceRoot, batchId, target, index) {
     snapshotPath,
     sourceSha: target.caseJson.identity.sourceSha,
     caseContractSha: target.caseJson.contractSha,
+    caseSpecSha: target.caseSpec.specSha,
+    preparationPolicy: validatePreparationPolicy(target.preparationPolicy),
+    preparationPolicySha: preparationPolicySha(target.preparationPolicy),
+    initialStateRequirement: validateInitialStateRequirement(target.initialStateRequirement),
+    initialStateRequirementSha: initialStateRequirementSha(target.initialStateRequirement),
+    initialStatePreflight: target.initialStatePreflight,
+    initialStatePreflightSha: initialStatePreflightSha(target.initialStatePreflight),
   };
 }
 
@@ -213,6 +281,7 @@ function snapshotTarget(workspaceRoot, batchId, target, descriptor) {
   }
   writeFrozenSnapshotFile(path.join(descriptor.snapshotPath, 'source.snapshot.md'), target.sourceText);
   writeFrozenSnapshotFile(path.join(descriptor.snapshotPath, 'case.snapshot.json'), `${JSON.stringify(target.caseJson, null, 2)}\n`);
+  writeFrozenSnapshotFile(path.join(descriptor.snapshotPath, 'case-spec.snapshot.json'), `${JSON.stringify(target.caseSpec, null, 2)}\n`);
   validateSnapshotTarget(workspaceRoot, batchId, descriptor, descriptor.order - 1);
   return descriptor;
 }
@@ -226,6 +295,20 @@ function validateSnapshotTarget(workspaceRoot, batchId, target, index) {
   ensureString(target.snapshotPath, `targets[${index}].snapshotPath`, 'EXECUTION_REQUEST_INVALID');
   ensureString(target.sourceSha, `targets[${index}].sourceSha`, 'EXECUTION_REQUEST_INVALID');
   ensureString(target.caseContractSha, `targets[${index}].caseContractSha`, 'EXECUTION_REQUEST_INVALID');
+  ensureString(target.caseSpecSha, `targets[${index}].caseSpecSha`, 'EXECUTION_REQUEST_INVALID');
+  const preparationPolicy = validatePreparationPolicy(target.preparationPolicy);
+  if (target.preparationPolicySha !== preparationPolicySha(preparationPolicy)) {
+    throw contractError('EXECUTION_REQUEST_INVALID', `targets[${index}].preparationPolicySha does not match preparationPolicy`);
+  }
+  const initialStateRequirement = validateInitialStateRequirement(target.initialStateRequirement);
+  if (target.initialStateRequirementSha !== initialStateRequirementSha(initialStateRequirement)) {
+    throw contractError('EXECUTION_REQUEST_INVALID', `targets[${index}].initialStateRequirementSha does not match initialStateRequirement`);
+  }
+  if (!target.initialStatePreflight || target.initialStatePreflightSha !== initialStatePreflightSha(target.initialStatePreflight)
+    || target.initialStatePreflight.requirementSha !== target.initialStateRequirementSha
+    || target.initialStatePreflight.preparationPolicySha !== target.preparationPolicySha) {
+    throw contractError('EXECUTION_REQUEST_INVALID', `targets[${index}].initialStatePreflight does not match its frozen target`);
+  }
   const expectedRoot = executionRequestTargetsRoot(workspaceRoot, batchId);
   const resolved = path.resolve(target.snapshotPath);
   const relative = path.relative(expectedRoot, resolved);
@@ -237,6 +320,7 @@ function validateSnapshotTarget(workspaceRoot, batchId, target, index) {
   }
   const sourcePath = path.join(resolved, 'source.snapshot.md');
   const casePath = path.join(resolved, 'case.snapshot.json');
+  const caseSpecPath = path.join(resolved, 'case-spec.snapshot.json');
   if (!fs.existsSync(sourcePath)) throw contractError('EXECUTION_REQUEST_SNAPSHOT_MISSING', `targets[${index}] source snapshot is missing`);
   if (fs.lstatSync(sourcePath).isSymbolicLink() || (fs.existsSync(casePath) && fs.lstatSync(casePath).isSymbolicLink())) {
     throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] snapshot files must not be symbolic links`);
@@ -245,9 +329,15 @@ function validateSnapshotTarget(workspaceRoot, batchId, target, index) {
   if (!caseJson) throw contractError('EXECUTION_REQUEST_SNAPSHOT_MISSING', `targets[${index}] case snapshot is missing`);
   validateCaseContract(caseJson);
   const sourceText = fs.readFileSync(sourcePath, 'utf8');
+  const caseSpec = readJson(caseSpecPath, null);
+  if (!caseSpec) throw contractError('EXECUTION_REQUEST_SNAPSHOT_MISSING', `targets[${index}] CaseSpec snapshot is missing`);
+  validateCaseSpec(caseSpec, { sourceText, sourceSha: target.sourceSha });
   if (sourceSha(sourceText) !== target.sourceSha || caseJson.identity.sourceSha !== target.sourceSha
     || caseJson.contractSha !== target.caseContractSha || caseJson.identity.caseKey !== target.caseKey) {
     throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] frozen snapshot binding changed`);
+  }
+  if (caseSpec.specSha !== target.caseSpecSha) {
+    throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] frozen CaseSpec binding changed`);
   }
   if (target.caseNo !== undefined && caseJson.identity.caseNo !== target.caseNo) {
     throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] caseNo changed`);
@@ -283,12 +373,40 @@ function validateExecutionRequest(value, options = {}) {
   ensureString(value.adapterSha, 'adapterSha', 'EXECUTION_REQUEST_INVALID');
   ensureString(value.coordinatorSha, 'coordinatorSha', 'EXECUTION_REQUEST_INVALID');
   validateBinding(value.binding);
+  const appProvisioning = validateAppProvisioning(value.appProvisioning, {
+    workspaceRoot: options.workspaceRoot,
+    platform: value.binding.platform,
+    appId: value.binding.appId,
+    deviceType: value.binding.deviceType,
+  });
+  if (value.appProvisioningSha !== appProvisioningSha(appProvisioning)) {
+    throw contractError('EXECUTION_REQUEST_INVALID', 'appProvisioningSha does not match appProvisioning');
+  }
+  const bootstrapPolicy = validateBootstrapPolicy(value.bootstrapPolicy);
+  if (value.bootstrapPolicySha !== bootstrapPolicySha(bootstrapPolicy)) {
+    throw contractError('EXECUTION_REQUEST_INVALID', 'bootstrapPolicySha does not match bootstrapPolicy');
+  }
+  if (bootstrapPolicy.mode === 'REINSTALL_FROZEN' && appProvisioning.mode !== 'ARTIFACT_MANAGED') {
+    throw contractError('EXECUTION_REQUEST_INVALID', 'REINSTALL_FROZEN requires ARTIFACT_MANAGED provisioning');
+  }
   const targets = ensureArray(value.targets, 'targets', 'EXECUTION_REQUEST_INVALID');
   if (!targets.length) throw contractError('EXECUTION_REQUEST_INVALID', 'targets must not be empty');
   if (value.mode === 'SINGLE' && targets.length !== 1) throw contractError('EXECUTION_REQUEST_INVALID', 'SINGLE mode requires exactly one target');
   const keys = new Set();
   targets.forEach((target, index) => {
     if (options.workspaceRoot) validateSnapshotTarget(options.workspaceRoot, value.batchId, target, index);
+    validateInitialStatePreflight(target.initialStatePreflight, {
+      requirement: target.initialStateRequirement,
+      preparationPolicy: target.preparationPolicy,
+      appProvisioning,
+      platform: value.binding.platform,
+      provisioningOptions: {
+        workspaceRoot: options.workspaceRoot,
+        platform: value.binding.platform,
+        appId: value.binding.appId,
+        deviceType: value.binding.deviceType,
+      },
+    });
     if (keys.has(target.caseKey)) throw contractError('EXECUTION_REQUEST_INVALID', `duplicate caseKey: ${target.caseKey}`);
     keys.add(target.caseKey);
   });
@@ -306,6 +424,7 @@ function createExecutionRequest(options) {
   ensureWorkspaceCaseNumbers(workspace.root);
   const selectedTargets = normalizeExecutionTargetSelectors(workspace.root, options.targets);
   const environment = loadEnvironmentConfirmation(workspace.root);
+  const bootstrapPolicy = validateBootstrapPolicy(options.bootstrapPolicy);
   const batchId = ensureId(options.batchId, 'batchId', 'EXECUTION_REQUEST_INVALID');
   const mode = String(options.mode || '').trim().toUpperCase();
   if (!EXECUTION_MODES.has(mode)) throw contractError('EXECUTION_REQUEST_INVALID', 'mode must be SINGLE or BATCH');
@@ -314,9 +433,15 @@ function createExecutionRequest(options) {
   const existing = readJson(requestFile, null);
   if (existing) {
     const validated = validateExecutionRequest(existing, { workspaceRoot: workspace.root });
-    const requestedKeys = selectedTargets.map((target) => target.caseKey);
+    const requestedTargets = selectedTargets.map((target, index) => {
+      const frozen = validated.targets[index];
+      const sourceText = frozen ? fs.readFileSync(path.join(frozen.snapshotPath, 'source.snapshot.md'), 'utf8') : '';
+      const caseSpec = target.caseSpec ? createCaseSpec({ sourceText, spec: target.caseSpec }) : null;
+      return { caseKey: target.caseKey, preparationPolicy: target.preparationPolicy, initialStateRequirement: target.initialStateRequirement, caseSpecSha: caseSpec?.specSha || null };
+    });
     if (validated.mode !== mode || validated.userInstruction !== options.userInstruction
-      || canonicalJson(validated.targets.map((target) => target.caseKey)) !== canonicalJson(requestedKeys)) {
+      || canonicalJson(validated.bootstrapPolicy) !== canonicalJson(bootstrapPolicy)
+      || canonicalJson(validated.targets.map((target) => ({ caseKey: target.caseKey, preparationPolicy: target.preparationPolicy, initialStateRequirement: target.initialStateRequirement, caseSpecSha: target.caseSpecSha }))) !== canonicalJson(requestedTargets)) {
       throw contractError('EXECUTION_REQUEST_EXISTS', `batch ${batchId} already has a different execution request`);
     }
     const draft = readJson(draftFile, null);
@@ -329,17 +454,37 @@ function createExecutionRequest(options) {
   const userInstruction = ensureString(options.userInstruction, 'userInstruction', 'EXECUTION_REQUEST_INVALID');
   let draft = readJson(draftFile, null);
   if (draft) {
-    const requestedKeys = selectedTargets.map((target) => target.caseKey);
-    const frozenKeys = (draft.request?.targets || []).map((target) => target.caseKey);
+    const requestedKeys = selectedTargets.map((target, index) => {
+      const frozenInput = draft.snapshotInputs?.[index];
+      const caseSpec = target.caseSpec && frozenInput ? createCaseSpec({ sourceText: frozenInput.sourceText, spec: target.caseSpec }) : null;
+      return { caseKey: target.caseKey, preparationPolicy: target.preparationPolicy, initialStateRequirement: target.initialStateRequirement, caseSpecSha: caseSpec?.specSha || null };
+    });
+    const frozenKeys = (draft.request?.targets || []).map((target) => ({ caseKey: target.caseKey, preparationPolicy: target.preparationPolicy, initialStateRequirement: target.initialStateRequirement, caseSpecSha: target.caseSpecSha }));
     if (draft.schemaVersion !== 1 || !['STARTED', 'SNAPSHOTS_READY'].includes(draft.status)
       || draft.request?.batchId !== batchId || draft.request?.mode !== mode
       || draft.request?.userInstruction !== userInstruction
+      || canonicalJson(draft.request?.bootstrapPolicy) !== canonicalJson(bootstrapPolicy)
       || canonicalJson(requestedKeys) !== canonicalJson(frozenKeys)
       || draft.request?.environmentConfirmationSha !== environment.confirmationSha) {
       throw contractError('EXECUTION_REQUEST_DRAFT_INVALID', 'active execution request draft does not match this request');
     }
   } else {
-    const liveTargets = resolveLiveExecutionTargets(workspace.root, selectedTargets);
+    const liveTargets = resolveLiveExecutionTargets(workspace.root, selectedTargets).map((target) => ({
+      ...target,
+      initialStatePreflight: createInitialStatePreflight({
+        requirement: target.initialStateRequirement,
+        preparationPolicy: target.preparationPolicy,
+        appProvisioning: environment.appProvisioning,
+        platform: environment.binding.platform,
+        provisioningOptions: {
+          workspaceRoot: workspace.root,
+          platform: environment.binding.platform,
+          appId: environment.binding.appId,
+          deviceType: environment.binding.deviceType,
+        },
+        now: options.now,
+      }),
+    }));
     if (mode === 'SINGLE' && liveTargets.length !== 1) throw contractError('EXECUTION_REQUEST_INVALID', 'SINGLE mode requires exactly one target');
     validateKnowledgeRoots([
       path.join(options.skillRoot || path.join(__dirname, '..', '..'), 'knowledge'),
@@ -365,6 +510,15 @@ function createExecutionRequest(options) {
       adapterSha: caseExecutorContract.adapterSha,
       coordinatorSha: coordinatorContract.coordinatorSha,
       binding: validateBinding({ ...environment.binding }),
+      appProvisioning: validateAppProvisioning(environment.appProvisioning, {
+        workspaceRoot: workspace.root,
+        platform: environment.binding.platform,
+        appId: environment.binding.appId,
+        deviceType: environment.binding.deviceType,
+      }),
+      appProvisioningSha: environment.appProvisioningSha,
+      bootstrapPolicy,
+      bootstrapPolicySha: bootstrapPolicySha(bootstrapPolicy),
       targets,
       userInstruction,
       userInstructionSha: sha256(userInstruction, 'user-instruction', 24),
