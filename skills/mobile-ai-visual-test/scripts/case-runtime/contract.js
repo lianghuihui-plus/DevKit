@@ -16,6 +16,7 @@ const REQUEST_FIELDS = Object.freeze({
   prepare: new Set(['operation', 'preparation', 'decision']),
   observe: new Set(['operation', 'purpose', 'decision']),
   act: new Set(['operation', 'basedOnSceneId', 'capabilityId', 'visual', 'input', 'observationPolicy', 'decision']),
+  inspectVisual: new Set(['operation', 'basedOnSceneId', 'decision']),
   knowledge: new Set(['operation', 'basedOnSceneId', 'query', 'decision']),
   recover: new Set(['operation', 'basedOnSceneId', 'reason', 'decision']),
   finish: new Set(['operation', 'basedOnSceneId', 'result', 'decision']),
@@ -128,8 +129,8 @@ function validateCaseResult(value) {
 function validateRuntimeRequest(value) {
   ensureObject(value, 'RuntimeRequest', 'CASE_RUNTIME_REQUEST_INVALID');
   const operation = String(value.operation || '').trim();
-  if (!['prepare', 'observe', 'act', 'knowledge', 'recover', 'finish', 'status'].includes(operation)) {
-    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'operation must be prepare, observe, act, knowledge, recover, finish, or status');
+  if (!['prepare', 'observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status'].includes(operation)) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'operation must be prepare, observe, act, inspectVisual, knowledge, recover, finish, or status');
   }
   const unsupportedRequestFields = Object.keys(value).filter((field) => !REQUEST_FIELDS[operation].has(field));
   if (unsupportedRequestFields.length) {
@@ -165,6 +166,13 @@ function validateRuntimeRequest(value) {
       }
     }
     if (value.visual?.gesture === 'longPress') validateLongPressTiming(value.visual.durationMs, value.observationPolicy);
+  }
+  if (operation === 'inspectVisual') {
+    ensureString(value.basedOnSceneId, 'basedOnSceneId', 'CASE_RUNTIME_REQUEST_INVALID');
+    if (value.decision === undefined) {
+      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'inspectVisual requires decision.purpose, decision.expectationRefs, and decision.observation');
+    }
+    ensureString(value.decision.observation, 'decision.observation', 'CASE_RUNTIME_REQUEST_INVALID');
   }
   if (operation === 'knowledge') ensureString(value.query, 'query', 'CASE_RUNTIME_REQUEST_INVALID');
   if (operation === 'recover') ensureString(value.reason, 'reason', 'CASE_RUNTIME_REQUEST_INVALID');

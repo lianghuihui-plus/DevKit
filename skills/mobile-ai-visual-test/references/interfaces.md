@@ -61,7 +61,9 @@ node scripts/batch.js <init|bootstrap|reconcile|start|commit|status|cancel|teard
 
 ## Case Runtime
 
-Case Agent 把一个 RuntimeRequest JSON 写入 `runtime.requestPath`，再不带参数运行 `runtime.command`。Broker 只允许 `observe`、`act`、`knowledge`、`recover`、`finish` 和 `status`；`prepare` 是 Lifecycle 内部能力，通过 Agent Client 调用会返回 `CASE_RUNTIME_OPERATION_FORBIDDEN`。
+Case Agent 把一个 RuntimeRequest JSON 写入 `runtime.requestPath`，再不带参数运行 `runtime.command`。Broker v2 只允许 `observe`、`act`、`inspectVisual`、`knowledge`、`recover`、`finish` 和 `status`；`prepare` 是 Lifecycle 内部能力，通过 Agent Client 调用会返回 `CASE_RUNTIME_OPERATION_FORBIDDEN`。历史 execution 使用 Broker v1，冻结 allowlist 不含 `inspectVisual` 时仍按旧协议恢复。
+
+Case Brief 的 `runtime.allowedOperations` 是当前 execution 冻结的实际能力列表。Scene 的 `evidenceChannels.visual.attachment.path` 是截图绝对路径，供宿主只读 `view_image` 使用；`evidenceChannels.layout` 表示已内联的控件树通道。Agent 实际查看图片后调用 `inspectVisual`，并在 `decision.observation` 中记录简短的可见事实。新协议 execution 的最终 check 所引用的每个 Scene 都必须存在视觉检查记录，否则 `finish` 返回 `RESULT_INCOMPLETE`。
 
 ```json
 { "operation": "observe", "decision": { "purpose": "建立基线", "expectationRefs": [], "planUpdate": { "reason": "初始计划", "next": ["进入目标页", "逐项验证"] } } }
@@ -71,7 +73,7 @@ Case Agent 把一个 RuntimeRequest JSON 写入 `runtime.requestPath`，再不�
 { "operation": "status" }
 ```
 
-`act` 的 `capabilityId` 与 `visual` 二选一。视觉坐标为 0..1；长按必须提供 `durationMs`。`observationPolicy.duringActionAtMs` 仅适用于长按且满足 `20 <= duringActionAtMs < durationMs`。
+`act` 的 `capabilityId` 与 `visual` 二选一。视觉坐标为 0..1；长按必须提供 `durationMs`。`observationPolicy.duringActionAtMs` 仅适用于长按且满足 `20 <= duringActionAtMs < durationMs`。`inspectVisual` 的 `basedOnSceneId` 引用实际查看的当前或历史 Scene，并包含 `decision.purpose`、`decision.expectationRefs` 和非空 `decision.observation`；响应中的 `scene` 始终保持为当前 Scene，避免后续动作误用历史状态。
 
 每种 operation 使用独立字段白名单，未知字段和旧 `intent` 会被拒绝。`act.decision` 必须包含 `purpose` 与 `expectationRefs`；其余 decision 字段可选，只在确有信息时提交。
 
@@ -85,4 +87,4 @@ Action Result v2 分别公开 `lifecycle`、`command`、`deviceExecution` 和 `o
 
 CaseResult 必须一对一覆盖 Frozen CaseSpec 全部 expectation。PASS/FAIL 引用 Scene；知识引用必须已评估为 `APPLICABLE`；BLOCKED 的 `technicalRefs` 必须指向仍有效且绑定该 expectation 的 Runtime 技术事实。
 
-Runtime 状态包括 `SCENE`、`SCENE_CHANGED`、`RECOVERY_APPLIED`、`KNOWLEDGE`、`COMPLETED`、`RESULT_INCOMPLETE`、`REQUEST_INVALID`、`TIME_LIMIT` 和 `TECHNICAL`。批次 CLI 的业务失败也输出结构化 `TECHNICAL` JSON；只有 CLI 语法错误使用非零退出码。
+Runtime 状态包括 `SCENE`、`VISUAL_INSPECTED`、`SCENE_CHANGED`、`RECOVERY_APPLIED`、`KNOWLEDGE`、`COMPLETED`、`RESULT_INCOMPLETE`、`REQUEST_INVALID`、`TIME_LIMIT` 和 `TECHNICAL`。批次 CLI 的业务失败也输出结构化 `TECHNICAL` JSON；只有 CLI 语法错误使用非零退出码。

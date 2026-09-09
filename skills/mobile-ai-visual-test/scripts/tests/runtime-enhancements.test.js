@@ -109,6 +109,24 @@ assert.throws(() => validateRuntimeRequest({
 }), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID' && /mutually exclusive/.test(error.message));
 assert.throws(() => validateLongPressTiming(5000, { duringActionAtMs: 5000 }),
   (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID');
+assert.doesNotThrow(() => validateRuntimeRequest({
+  operation: 'inspectVisual',
+  basedOnSceneId: 'scene-long-press',
+  decision: {
+    purpose: '记录长按截图视觉检查',
+    expectationRefs: ['E1'],
+    observation: '截图显示长按录音状态',
+  },
+}));
+assert.throws(() => validateRuntimeRequest({
+  operation: 'inspectVisual',
+  basedOnSceneId: 'scene-long-press',
+  decision: { purpose: '记录视觉检查', expectationRefs: ['E1'] },
+}), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID' && /decision\.observation/.test(error.message));
+assert.throws(() => validateRuntimeRequest({
+  operation: 'inspectVisual',
+  decision: { purpose: '记录视觉检查', expectationRefs: ['E1'], observation: '页面正常' },
+}), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID' && /basedOnSceneId/.test(error.message));
 const adapterArgs = actionAdapterArgs({
   platform: 'harmony', deviceId: 'device-1', appId: 'com.example.app', entry: 'EntryAbility',
 }, { type: 'longPress', x: 500, y: 1800, durationMs: 5000 }, {

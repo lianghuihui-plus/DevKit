@@ -58,6 +58,7 @@ function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText,
     runtime: {
       command: shellQuote(runtime.entry),
       requestPath: runtime.requestPath,
+      allowedOperations: runtime.broker.allowedOperations,
       input: 'Write one RuntimeRequest JSON object to requestPath, then run command without arguments.',
     },
     scene,
@@ -84,8 +85,7 @@ function deriveCaseBrief(executionDir) {
   const expectedRequestPath = path.join(resolved, 'runtime-request.json');
   if (!runtime || runtime.executionId !== execution.executionId || runtime.entry !== expectedEntry
     || runtime.requestPath !== expectedRequestPath || !fs.existsSync(expectedEntry)
-    || runtime.broker?.schemaVersion !== 1
-    || JSON.stringify(runtime.broker?.allowedOperations) !== JSON.stringify(require('./runtime-broker').AGENT_OPERATIONS)) {
+    || !require('./runtime-broker').isSupportedBroker(runtime.broker)) {
     throw contractError('CASE_RUNTIME_BINDING_INVALID', 'Case Runtime client does not match the execution');
   }
   return buildCaseBrief(resolved, execution, caseJson, caseSpec, sourceText, runtime, store.readCurrentScene(resolved));
@@ -206,7 +206,7 @@ function createExecution(options) {
         sessionRef: options.sessionRef || null,
         knowledgeRoots: (options.knowledgeRoots || []).map((root) => path.resolve(root)),
         broker: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           allowedOperations: require('./runtime-broker').AGENT_OPERATIONS,
         },
         boundAt: startedAt,

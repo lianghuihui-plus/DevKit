@@ -110,6 +110,16 @@ function executeResult(verdict, options = {}) {
     },
   }, { runner, now: '2026-09-04T02:00:01.000Z' });
   assert.strictEqual(observed.status, 'SCENE');
+  const visualInspection = run(started.execDir, {
+    operation: 'inspectVisual',
+    basedOnSceneId: observed.scene.sceneId,
+    decision: {
+      purpose: '检查结果矩阵现场截图',
+      expectationRefs: ['E1'],
+      observation: `截图中的目标页面表现可用于 ${verdict} 判断`,
+    },
+  }, { now: '2026-09-04T02:00:01.100Z' });
+  assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
 
   if (options.technical) {
     const technical = run(started.execDir, {

@@ -57,13 +57,13 @@ Prompt 明确以下规则：
 - 控件树为空、缺失或冲突时不得推断页面空白，必须查看截图。
 - 系统权限弹窗、Toast、遮罩、浮层、键盘、长按中状态、动画和纯视觉结果必须查看截图。
 - 普通中间 Scene 是否查看仍由 Agent 根据业务判断决定。
-- `view_image` 只允许读取当前 execution 的 Scene 视觉附件，不扩大设备、业务或文件访问边界。
+- `view_image` 只允许读取当前 execution 已保存 Scene 的视觉附件，不扩大设备、业务或文件访问边界。
 
 ## 完成校验
 
-对声明支持 `inspectVisual` 的新 execution，`finish` 校验每个 check 的全部 `sceneRefs` 是否存在对应 `visualInspected` 事件。缺失时返回 `RESULT_INCOMPLETE`，列出需要补查的 Scene，Agent查看并登记后可再次提交。
+对声明支持 `inspectVisual` 的新 execution，`finish` 校验每个 check 的全部 `sceneRefs` 是否存在对应 `visualInspected` 事件。缺失时返回 `RESULT_INCOMPLETE`，列出需要补查的 Scene；`inspectVisual` 允许只读补查已保存的历史 Scene，且响应仍返回当前 Scene，Agent登记后可再次提交。
 
-历史 execution 的 Runtime allowlist 不包含 `inspectVisual`，继续按旧规则读取和收口；新建 execution 使用新 allowlist 并启用校验。
+历史 execution 使用 Broker v1，Runtime allowlist 不包含 `inspectVisual`，继续按旧规则读取和收口；新建 execution 使用 Broker v2 和新 allowlist，并启用视觉完成校验。
 
 ## 测试
 

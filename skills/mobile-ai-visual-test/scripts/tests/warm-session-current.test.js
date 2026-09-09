@@ -67,6 +67,16 @@ function completeCase(started, index) {
     decision: { purpose: `观察第 ${index} 个暖会话用例`, expectationRefs: ['E1'] },
   }, { runner, now: at });
   assert.strictEqual(observed.status, 'SCENE');
+  const visualInspection = run(started.execDir, {
+    operation: 'inspectVisual',
+    basedOnSceneId: observed.scene.sceneId,
+    decision: {
+      purpose: `检查第 ${index} 个暖会话用例截图`,
+      expectationRefs: ['E1'],
+      observation: '截图显示目标页面',
+    },
+  }, { now: at });
+  assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
   const finished = run(started.execDir, {
     operation: 'finish',
     basedOnSceneId: observed.scene.sceneId,

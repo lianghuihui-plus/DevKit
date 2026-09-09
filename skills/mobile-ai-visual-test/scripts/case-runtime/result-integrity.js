@@ -169,6 +169,32 @@ function validateSearchAbsence(execDir, result, execution, expectationCoverage =
   return { searchAbsenceRefs: result.checks.map((check) => check.evidenceBasis?.scrollContextRef).filter(Boolean) };
 }
 
+function validateVisualInspectionCoverage(execDir, result, events, scenesById) {
+  const runtime = readJson(path.join(execDir, 'runtime.json'), null);
+  const required = runtime?.broker?.schemaVersion === 2
+    && runtime.broker.allowedOperations?.includes('inspectVisual') === true;
+  if (!required) return { required: false, inspectedSceneRefs: [] };
+  const inspections = events.filter((event) => event.type === 'visualInspected');
+  const inspected = new Set();
+  for (const event of inspections) {
+    const sceneEvent = scenesById.get(event.sceneId);
+    if (!sceneEvent || event.screenshotRef !== sceneEvent.screenshotRef
+      || event.screenshotSha256 !== sceneEvent.screenshotSha256 || !String(event.observation || '').trim()) {
+      throw contractError('VISUAL_INSPECTION_INVALID', `visual inspection does not match Scene evidence: ${event.sceneId || 'unknown'}`);
+    }
+    inspected.add(event.sceneId);
+  }
+  const cited = [...new Set(result.checks.flatMap((check) => check.sceneRefs || []))];
+  const missing = cited.filter((sceneId) => !inspected.has(sceneId)).map((sceneId) => ({
+    field: `scenes.${sceneId}.visualInspection`,
+    reason: `结论引用的 Scene ${sceneId} 尚未完成截图视觉检查`,
+  }));
+  if (missing.length) {
+    throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult visual inspection is incomplete', { missing });
+  }
+  return { required: true, inspectedSceneRefs: [...inspected].sort() };
+}
+
 function validateScene(execDir, sceneId, event, files, options = {}) {
   const sceneRef = `scenes/${sceneId}.json`;
   const sceneFile = resolveArtifact(execDir, sceneRef);
@@ -314,9 +340,11 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   const refs = [...new Set(result.checks.flatMap((check) => check.sceneRefs || []))];
   const unknown = refs.filter((ref) => !byScene.has(ref));
   if (unknown.length) throw contractError('CASE_RESULT_SCENE_UNKNOWN', `CaseResult references unknown scenes: ${unknown.join(', ')}`);
+  const visualInspectionCoverage = validateVisualInspectionCoverage(execDir, result, events, byScene);
   return {
     files: [...files].sort(), events, result, sceneRefs: refs,
     technicalFacts: technicalFacts(events), expectationCoverage, knowledgeCoverage, searchCoverage,
+    visualInspectionCoverage,
   };
 }
 
@@ -336,6 +364,7 @@ module.exports = {
   validateExpectationCoverage,
   validateKnowledgeClosure,
   validateSearchAbsence,
+  validateVisualInspectionCoverage,
   validateResultIntegrity,
   validateVerdict,
 };

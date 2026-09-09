@@ -63,6 +63,7 @@ function metrics(execution, result, events, endedAt, execDir = null, options = {
     counts: {
       actions: count('actionRequested'),
       observations: count('sceneObserved'),
+      visualInspections: count('visualInspected'),
       knowledgeQueries: count('knowledgeQueried'),
       knowledgeReviews: count('knowledgeReviewed'),
       recoveries: count('appRecovered'),

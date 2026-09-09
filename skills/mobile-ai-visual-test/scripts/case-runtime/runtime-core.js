@@ -120,7 +120,7 @@ function execute(execDir, request, options = {}) {
       code: error.code || 'CASE_RUNTIME_REQUEST_INVALID',
       message: error.message || String(error),
       scene: store.readCurrentScene(execDir),
-      expected: { operation: 'prepare | observe | act | knowledge | recover | finish | status' },
+      expected: { operation: 'prepare | observe | act | inspectVisual | knowledge | recover | finish | status' },
     };
     if (invocation) telemetry.endInvocation(execDir, invocation, response, options);
     return response;
@@ -189,6 +189,7 @@ function execute(execDir, request, options = {}) {
       if (request.operation === 'prepare') response = require('./preparation-service').prepare(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
       else if (request.operation === 'act') response = actionService.act(execDir, enrichedRequest, runtimeOptions);
+      else if (request.operation === 'inspectVisual') response = require('./visual-inspection-service').inspectVisual(execDir, enrichedRequest, options);
       else if (request.operation === 'knowledge') response = knowledgeService.knowledge(execDir, enrichedRequest, options);
       else if (request.operation === 'recover') response = require('./recovery-service').recover(execDir, enrichedRequest, runtimeOptions);
       return {

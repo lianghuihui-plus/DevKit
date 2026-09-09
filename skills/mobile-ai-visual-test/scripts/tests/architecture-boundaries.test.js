@@ -8,7 +8,7 @@ const path = require('path');
 const { roleEntrypoints, roleResources } = require('../lib/agent-contract-manifest');
 const { buildContract } = require('../build-agent-contract');
 const { validateCaseContext, validateDecision, validateRuntimeRequest } = require('../case-runtime/contract');
-const { AGENT_OPERATIONS } = require('../case-runtime/runtime-broker');
+const { AGENT_OPERATIONS, isSupportedBroker } = require('../case-runtime/runtime-broker');
 
 const root = path.resolve(__dirname, '../..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
@@ -29,8 +29,18 @@ assert.match(casePrompt, /Frozen CaseSpec/);
 assert.match(casePrompt, /decision/);
 assert.match(casePrompt, /expectationRef/);
 assert.match(casePrompt, /purpose \+ expectationRefs/);
+assert.match(casePrompt, /evidenceChannels\.visual/);
+assert.match(casePrompt, /evidenceChannels\.layout/);
+assert.match(casePrompt, /view_image/);
+assert.match(casePrompt, /inspectVisual/);
+assert.match(casePrompt, /控件树为空.*不得.*页面空白/);
+assert.match(casePrompt, /系统权限弹窗/);
+assert.match(casePrompt, /长按中状态/);
 assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);
-assert.deepStrictEqual(AGENT_OPERATIONS, ['observe', 'act', 'knowledge', 'recover', 'finish', 'status']);
+assert.deepStrictEqual(AGENT_OPERATIONS, ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
+assert.strictEqual(isSupportedBroker({ schemaVersion: 2, allowedOperations: AGENT_OPERATIONS }), true);
+assert.strictEqual(isSupportedBroker({ schemaVersion: 1, allowedOperations: ['observe', 'act', 'knowledge', 'recover', 'finish', 'status'] }), true);
+assert.strictEqual(isSupportedBroker({ schemaVersion: 1, allowedOperations: AGENT_OPERATIONS }), false);
 for (const hidden of ['CLEAR_APP_DATA', 'REINSTALL_APP', 'artifactPath', 'appiumSessionId']) {
   assert.strictEqual(casePrompt.includes(hidden), false, `Case Prompt must not expose ${hidden}`);
 }

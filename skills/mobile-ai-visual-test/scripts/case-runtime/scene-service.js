@@ -35,6 +35,15 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
       width: view.screenshot.width,
       height: view.screenshot.height,
     },
+    evidenceChannels: {
+      visual: {
+        ...view.evidenceChannels.visual,
+        inspection: { tool: 'view_image', recordOperation: 'inspectVisual', order: 'VIEW_THEN_RECORD' },
+      },
+      layout: { ...view.evidenceChannels.layout, inline: true },
+      policy: view.evidenceChannels.policy,
+      conflictRule: view.evidenceChannels.conflictRule,
+    },
     layoutRef: view.layoutRef,
     layout: view.layout,
     app: view.app,

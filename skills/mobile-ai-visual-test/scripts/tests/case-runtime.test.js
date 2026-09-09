@@ -83,19 +83,28 @@ assert.strictEqual(path.dirname(started.runtime.entry), started.execDir);
 assert.strictEqual(started.brief.runtime.entry, undefined);
 assert.strictEqual(started.brief.runtime.requestPath, path.join(started.execDir, 'runtime-request.json'));
 assert.strictEqual(started.brief.runtime.commands, undefined);
+assert.deepStrictEqual(started.brief.runtime.allowedOperations, ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
 assert.strictEqual(fs.statSync(started.runtime.entry).mode & 0o111, 0o111);
 assert.deepStrictEqual(started.runtime.status, 'READY');
-assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'knowledge', 'recover', 'finish', 'status']);
+assert.strictEqual(started.runtime.broker.schemaVersion, 2);
+assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
 assert.strictEqual(run(started.execDir, { operation: 'prepare', preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' } }).code, 'CASE_RUNTIME_OPERATION_FORBIDDEN');
 assert.strictEqual(started.item.sessionId, undefined);
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
   ...started.runtime,
-  broker: { ...started.runtime.broker, schemaVersion: 2 },
+  broker: { ...started.runtime.broker, schemaVersion: 3 },
 });
 assert.throws(
   () => resumeExecution({ executionDir: started.execDir }),
   (error) => error?.code === 'CASE_RUNTIME_BINDING_INVALID',
 );
+writeJsonAtomic(path.join(started.execDir, 'runtime.json'), started.runtime);
+writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
+  ...started.runtime,
+  broker: { schemaVersion: 1, allowedOperations: ['observe', 'act', 'knowledge', 'recover', 'finish', 'status'] },
+});
+const legacyContinuation = resumeExecution({ executionDir: started.execDir });
+assert.deepStrictEqual(legacyContinuation.brief.runtime.allowedOperations, ['observe', 'act', 'knowledge', 'recover', 'finish', 'status']);
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), started.runtime);
 writeJsonAtomic(path.join(started.execDir, 'case-brief.json'), {
   schemaVersion: 2,
@@ -192,7 +201,60 @@ const first = run(started.execDir, {
 }, { runner, now: T0 });
 assert.strictEqual(first.status, 'SCENE');
 assert.strictEqual(first.scene.sceneId, 'scene-0001');
+assert.strictEqual(first.scene.evidenceChannels.visual.available, true);
+assert.strictEqual(first.scene.evidenceChannels.visual.attachment.mediaType, 'image/png');
+assert.strictEqual(first.scene.evidenceChannels.visual.attachment.path, first.scene.screenshot.path);
+assert.strictEqual(first.scene.evidenceChannels.layout.available, false);
+assert.strictEqual(first.scene.evidenceChannels.layout.inline, true);
+assert.strictEqual(first.scene.evidenceChannels.policy, 'COMBINE_VISUAL_AND_LAYOUT');
 assert.deepStrictEqual(first.narrative.caseContext.expectations.map((item) => item.id), ['E1', 'E2']);
+const firstScenePath = path.join(started.execDir, 'scenes', `${first.scene.sceneId}.json`);
+writeJsonAtomic(firstScenePath, {
+  ...first.scene,
+  evidenceChannels: {
+    ...first.scene.evidenceChannels,
+    visual: {
+      ...first.scene.evidenceChannels.visual,
+      attachment: { ...first.scene.evidenceChannels.visual.attachment, path: path.join(started.execDir, 'wrong.png') },
+    },
+  },
+});
+const mismatchedVisualAttachment = run(started.execDir, {
+  operation: 'inspectVisual',
+  basedOnSceneId: first.scene.sceneId,
+  decision: {
+    purpose: '拒绝不匹配的视觉附件',
+    expectationRefs: ['E1'],
+    observation: '不应登记错误路径的截图',
+  },
+}, { now: T0 });
+assert.strictEqual(mismatchedVisualAttachment.status, 'TECHNICAL');
+assert.strictEqual(mismatchedVisualAttachment.code, 'VISUAL_EVIDENCE_INVALID');
+writeJsonAtomic(firstScenePath, first.scene);
+const firstInspection = run(started.execDir, {
+  operation: 'inspectVisual',
+  basedOnSceneId: first.scene.sceneId,
+  decision: {
+    purpose: '记录首屏截图视觉检查',
+    expectationRefs: ['E1'],
+    observation: '截图显示目标 App 页面',
+  },
+}, { now: T0 });
+assert.strictEqual(firstInspection.status, 'VISUAL_INSPECTED');
+assert.strictEqual(firstInspection.scene.sceneId, first.scene.sceneId);
+assert.strictEqual(firstInspection.visualInspection.sceneId, first.scene.sceneId);
+const duplicateInspection = run(started.execDir, {
+  operation: 'inspectVisual',
+  basedOnSceneId: first.scene.sceneId,
+  decision: {
+    purpose: '重复确认首屏截图',
+    expectationRefs: ['E1'],
+    observation: '截图仍显示目标 App 页面',
+  },
+}, { now: T0 });
+assert.strictEqual(duplicateInspection.status, 'VISUAL_INSPECTED');
+assert.strictEqual(duplicateInspection.idempotent, true);
+assert.strictEqual(duplicateInspection.visualInspection.inspectionId, firstInspection.visualInspection.inspectionId);
 const attemptedOracleRewrite = require('../case-runtime/narrative-service').recordRequestNarrative(started.execDir, {
   operation: 'observe',
   caseContext: { ...caseContext, expectations: ['目标内容正常显示'] },
@@ -321,6 +383,19 @@ const partialNarrative = run(started.execDir, {
 assert.strictEqual(partialNarrative.status, 'SCENE');
 assert.strictEqual(actionInvocationCount, actionInvocationsBeforePartialNarrative + 1);
 assert.strictEqual(partialNarrative.narrative.warnings.length, 0);
+const historicalInspection = run(started.execDir, {
+  operation: 'inspectVisual',
+  basedOnSceneId: first.scene.sceneId,
+  decision: {
+    purpose: '补查历史 Scene 截图',
+    expectationRefs: ['E1'],
+    observation: '历史截图显示目标 App 页面',
+  },
+}, { now: '2026-09-03T10:00:01.050Z' });
+assert.strictEqual(historicalInspection.status, 'VISUAL_INSPECTED');
+assert.strictEqual(historicalInspection.idempotent, true);
+assert.strictEqual(historicalInspection.visualInspection.sceneId, first.scene.sceneId);
+assert.strictEqual(historicalInspection.scene.sceneId, partialNarrative.scene.sceneId);
 const stale = run(started.execDir, {
   operation: 'act', basedOnSceneId: currentSceneId(), capabilityId: wait.id,
   decision: { purpose: '验证过期能力会被拒绝', expectationRefs: ['E1'] },
@@ -339,6 +414,16 @@ const recovered = run(started.execDir, { operation: 'recover', basedOnSceneId: c
 });
 assert.strictEqual(recovered.status, 'SCENE');
 assert.strictEqual(recovered.recovery.generation, 2);
+const recoveredInspection = run(started.execDir, {
+  operation: 'inspectVisual',
+  basedOnSceneId: recovered.scene.sceneId,
+  decision: {
+    purpose: '检查恢复后的截图',
+    expectationRefs: ['E1', 'E2'],
+    observation: '恢复后页面显示目标内容且目标 App 保持前台',
+  },
+}, { now: '2026-09-03T10:00:01.510Z' });
+assert.strictEqual(recoveredInspection.status, 'VISUAL_INSPECTED');
 assert.strictEqual(require('../case-runtime/store').events(started.execDir)
   .find((event) => event.sceneId === recovered.scene.sceneId).relatedOperationId, recovered.recovery.operationId);
 assert.strictEqual(recovered.narrative.warnings.length, 0);
@@ -505,6 +590,29 @@ const result = {
   ],
   uncertainties: [],
 };
+const uninspectedResult = {
+  ...result,
+  checks: result.checks.map((check) => ({
+    ...check,
+    sceneRefs: [spatialAction.scene.sceneId],
+    knowledgeRefs: check.expectationRef === 'E1' ? ['K-runtime-001'] : [],
+  })),
+};
+const finishWithoutVisualInspection = run(started.execDir, {
+  operation: 'finish', basedOnSceneId: currentSceneId(), result: uninspectedResult,
+}, { now: '2026-09-03T10:00:02.000Z' });
+assert.strictEqual(finishWithoutVisualInspection.status, 'RESULT_INCOMPLETE');
+assert.ok(finishWithoutVisualInspection.missing.some((item) => item.field === `scenes.${spatialAction.scene.sceneId}.visualInspection`));
+const timedOutInspection = run(started.execDir, {
+  operation: 'inspectVisual',
+  basedOnSceneId: currentSceneId(),
+  decision: {
+    purpose: '在设备动作超时后补充截图检查',
+    expectationRefs: ['E1', 'E2'],
+    observation: '截图仍可用于已有 Scene 的业务判断',
+  },
+}, { now: '2026-09-03T10:30:00.100Z' });
+assert.strictEqual(timedOutInspection.status, 'VISUAL_INSPECTED');
 const emptyPass = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), result: { ...result, checks: [] } }, { now: '2026-09-03T10:00:01.900Z' });
 assert.strictEqual(emptyPass.code, 'CASE_RESULT_CHECKS_REQUIRED');
 const passWithFail = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), result: {

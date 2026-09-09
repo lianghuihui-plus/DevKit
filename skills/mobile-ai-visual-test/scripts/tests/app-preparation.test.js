@@ -132,6 +132,17 @@ assert.strictEqual(batchState.warmSession.status, 'READY');
 const operation = JSON.parse(fs.readFileSync(path.join(started.execDir, 'operations', 'preparation-0001.json'), 'utf8'));
 assert.strictEqual(operation.strategy, 'CLEAR_APP_DATA');
 
+const visualInspection = run(started.execDir, {
+  operation: 'inspectVisual',
+  basedOnSceneId: prepared.scene.sceneId,
+  decision: {
+    purpose: '检查准备后的首次启动截图',
+    expectationRefs: ['E1'],
+    observation: '首次启动页面可见',
+  },
+}, { now: T0 });
+assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
+
 const finished = run(started.execDir, {
   operation: 'finish',
   basedOnSceneId: prepared.scene.sceneId,
