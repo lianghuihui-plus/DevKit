@@ -19,6 +19,7 @@ const suites = Object.freeze({
   trace: 'tests/execution-trace.test.js',
   narrative: 'tests/execution-narrative.test.js',
   dashboard: 'tests/dashboard.test.js',
+  reportPrototype: 'tests/report-prototype.test.js',
   workspace: 'tests/workspace.test.js',
   control: 'tests/run-control.test.js',
   appProvisioning: 'tests/app-provisioning.test.js',

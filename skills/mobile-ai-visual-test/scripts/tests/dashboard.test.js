@@ -67,6 +67,15 @@ const indexCases = require('../report/report-service').collectIndexCases(root);
 for (const fixture of fixtures) {
   assert.strictEqual(fs.existsSync(path.join(fixture.runtimeDir, 'CONTEXT.html')), true);
   assert.strictEqual(fs.existsSync(path.join(fixture.caseDir, 'CONTEXT.html')), true);
+  const caseContentHtml = fs.readFileSync(path.join(fixture.caseDir, 'CONTEXT.html'), 'utf8');
+  assert.ok(caseContentHtml.includes('用例内容'));
+  assert.ok(caseContentHtml.includes('原始用例'));
+  assert.ok(caseContentHtml.includes('class="product-bar"'));
+  assert.ok(caseContentHtml.includes('class="case-only-meta"'));
+  assert.ok(caseContentHtml.includes('class="case-document full"'));
+  for (const label of ['用例编号', 'caseKey', 'sourceSha', '导入来源']) assert.ok(caseContentHtml.includes(label), label);
+  assert.strictEqual(caseContentHtml.includes('平台执行'), false);
+  assert.strictEqual(caseContentHtml.includes('/platforms/'), false);
 }
 for (const item of indexCases) {
   for (const href of [item.contextHref, ...item.platforms.map((platform) => platform.contextHref)]) {
@@ -78,43 +87,40 @@ assert.match(reportMetadata.reportRendererSha, /^report-renderer-[0-9a-f]{16}$/)
 assert.ok(reportMetadata.rendererFiles.includes('scripts/report/current-report.js'));
 const html = fs.readFileSync(indexPath, 'utf8');
 for (const text of [
-  '运行控制状态',
-  '当前运行',
-  '仅展示最近一次执行批次',
-  '累计 1 个批次',
-  '环境确认',
-  '执行授权',
-  '批次进度',
-  '暖会话',
-  '无人值守',
-  '按最终结论统计',
+  'class="product-bar"',
+  'class="summary-matrix"',
+  'class="matrix-intro"',
+  '用例执行情况',
   '无法判断',
-  '直接证据',
-  '业务决策',
-  '记录缺口',
-  '知识查询',
   '搜索用例编号、名称或标识',
 ]) assert.ok(html.includes(text), text);
-for (const text of ['Unattended agent execution', '>UNATTENDED<', '以最终 verdict 统计', '搜索用例名称或 caseKey']) assert.strictEqual(html.includes(text), false, text);
+for (const text of ['run-control-section', 'control-band', 'outcome-band', 'Agent 执行信号', 'class="case-status"', '执行中']) assert.strictEqual(html.includes(text), false, text);
 assert.ok(html.includes('显示 4 / 4'));
-assert.ok(html.includes('data-case-status="INCONCLUSIVE"'));
+assert.ok(html.includes('data-case-status="INCONCLUSIVE NOT_RUN"'));
 assert.ok(html.includes('batch-dashboard'));
 for (let index = 1; index < indexCases.length; index += 1) {
   assert.ok(html.indexOf(indexCases[index - 1].title) < html.indexOf(indexCases[index].title));
 }
 assert.strictEqual(html.includes('全部步骤通过'), false);
 assert.strictEqual(html.includes('按状态筛选'), false);
-assert.ok(html.includes('查看详情'));
+assert.strictEqual(html.includes('查看详情'), false);
 for (const item of indexCases) {
-  assert.ok(html.includes(`class="case-detail" href="${item.platforms[0].contextHref}"`));
+  assert.ok(html.includes(`class="icon-button" href="${item.contextHref}"`));
 }
+assert.ok(html.includes('查看用例内容'));
+assert.strictEqual((html.match(/class="platform-summary /g) || []).length, 3);
+assert.ok(html.includes('class="summary-counts"'));
+assert.ok(html.includes('25%'));
+assert.ok(html.includes('未执行</small><b>4</b><em>100%</em>'));
+assert.strictEqual((html.match(/class="platform-run /g) || []).length, fixtures.length);
+for (const text of ['三端统计', '平均耗时', '开始时间', '结束时间', '动作 / 观察', '验证点', '恢复']) assert.ok(html.includes(text), text);
 for (const item of indexCases) assert.ok(html.includes(`用例 ${item.caseNo}`));
-assert.ok(html.includes('查看报告'));
-assert.strictEqual(html.includes('>报告</a>'), false);
-for (const text of ['>执行平台</span>', '>结论依据</span>', '>Agent 轨迹</span>', '>耗时</span>', '>执行报告</span>']) assert.ok(html.includes(text), text);
-assert.strictEqual((html.match(/class="case-facts"/g) || []).length, fixtures.length);
-for (const verdict of ['pass', 'fail', 'blocked', 'inconclusive']) assert.strictEqual((html.match(new RegExp(`class="verdict ${verdict}"`, 'g')) || []).length, 1, verdict);
-for (const removed of ['class="platform-run"', 'class="case-outcome"', 'class="case-basis"', '暂无平台执行记录']) assert.strictEqual(html.includes(removed), false, removed);
+assert.ok(html.includes('aria-label="查看执行报告"'));
+assert.strictEqual((html.match(/class="case-common"/g) || []).length, fixtures.length);
+for (const removed of ['class="platform-execution-row"', 'class="case-outcome"', 'class="case-basis"', '暂无平台执行记录']) assert.strictEqual(html.includes(removed), false, removed);
+const filterOrder = ['PASS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE', 'NOT_RUN'].map((value) => html.indexOf(`data-case-filter="${value}"`));
+assert.ok(filterOrder.every((position) => position >= 0));
+assert.deepStrictEqual(filterOrder, filterOrder.slice().sort((a, b) => a - b));
 
 const unrelatedContext = path.join(fixtures[1].caseDir, 'CONTEXT.html');
 const metricsPath = path.join(fixtures[0].execDir, 'metrics.json');
@@ -149,17 +155,17 @@ const multiPlatformHtml = renderCurrentIndexHtml(root, [{
   executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', reason: '不同平台结果需要分别展示。',
   durationMs: 3000, contextHref: 'cases/multi/CONTEXT.html',
   platforms: [
-    { platform: 'harmony', status: 'PASS', verdict: 'PASS', executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', durationMs: 1000, contextHref: 'cases/multi/platforms/harmony/CONTEXT.html', schemaFamily: 'current', currentMetrics: { counts: { agentDecisions: 3, narrativeGaps: 0, knowledgeQueries: 2 }, executionRecoveryCount: 0 } },
-    { platform: 'android', status: 'FAIL', verdict: 'FAIL', executionStatus: 'COMPLETED', verdictBasis: 'TECHNICAL_CONSTRAINT', durationMs: 2000, contextHref: 'cases/multi/platforms/android/CONTEXT.html', schemaFamily: 'current', currentMetrics: { counts: { agentDecisions: 5, narrativeGaps: 1, knowledgeQueries: 4 }, warmSessionReused: true, executionRecoveryCount: 1 } },
+    { platform: 'harmony', status: 'PASS', verdict: 'PASS', executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', durationMs: 1000, coverage: '3/3', contextHref: 'cases/multi/platforms/harmony/CONTEXT.html', schemaFamily: 'current', currentMetrics: { counts: { actions: 3, observations: 4, agentDecisions: 3, narrativeGaps: 0, knowledgeQueries: 2 }, executionRecoveryCount: 0 } },
+    { platform: 'android', status: 'FAIL', verdict: 'FAIL', executionStatus: 'COMPLETED', verdictBasis: 'TECHNICAL_CONSTRAINT', durationMs: 2000, coverage: '2/3', contextHref: 'cases/multi/platforms/android/CONTEXT.html', schemaFamily: 'current', currentMetrics: { counts: { actions: 5, observations: 6, agentDecisions: 5, narrativeGaps: 1, knowledgeQueries: 4 }, warmSessionReused: true, executionRecoveryCount: 1 } },
   ],
 }]);
-assert.strictEqual((multiPlatformHtml.match(/class="platform-breakdown-row"/g) || []).length, 2);
-assert.strictEqual((multiPlatformHtml.match(/class="case-facts"/g) || []).length, 0);
-assert.strictEqual((multiPlatformHtml.match(/class="report-link"/g) || []).length, 2);
-assert.ok(multiPlatformHtml.includes('2 个平台'));
-assert.ok(multiPlatformHtml.includes('平台明细'));
-for (const text of ['平台结果', '结论依据', 'Agent 轨迹', '耗时', '>报告</span>']) assert.ok(multiPlatformHtml.includes(text), text);
-for (const text of ['决策 3 · 知识 2 · 暖状态 首用例 · 恢复 0', '决策 5 · 知识 4 · 暖状态 复用 · 恢复 1', '直接证据', '技术约束', '1 秒', '2 秒']) assert.ok(multiPlatformHtml.includes(text), text);
+assert.strictEqual((multiPlatformHtml.match(/class="platform-run /g) || []).length, 2);
+assert.strictEqual((multiPlatformHtml.match(/class="common-stat"/g) || []).length, 2);
+assert.strictEqual((multiPlatformHtml.match(/aria-label="查看执行报告"/g) || []).length, 2);
+assert.ok(multiPlatformHtml.includes('1 通 · 1 失 · 0 阻 · 0 无法 · 1 未'));
+assert.ok(multiPlatformHtml.includes('查看用例内容'));
+for (const text of ['动作 / 观察', '验证点', '恢复', '耗时', '开始时间', '结束时间']) assert.ok(multiPlatformHtml.includes(text), text);
+for (const text of ['3 / 4', '5 / 6', '3/3', '2/3', '直接证据', '技术约束', '1 秒', '2 秒']) assert.ok(multiPlatformHtml.includes(text), text);
 
 const staleRoot = path.join(temp, 'source-change');
 createTestWorkspace(staleRoot);
@@ -182,7 +188,7 @@ assert.strictEqual(staleSummary.status, 'NEEDS_RERUN');
 assert.strictEqual(staleSummary.verdict, null);
 assert.strictEqual(staleSummary.platforms[0].sourceCurrent, false);
 assert.ok(fs.readFileSync(staleIndexPath, 'utf8').includes('需重新执行'));
-assert.ok(fs.readFileSync(path.join(staleFixture.caseDir, 'CONTEXT.html'), 'utf8').includes('用例原文已更新'));
+assert.ok(fs.readFileSync(path.join(staleFixture.caseDir, 'CONTEXT.html'), 'utf8').includes(updatedSource));
 
 const corruptFixture = createCurrentFixture(root, { verdict: 'PASS', suffix: 'corrupt-dashboard' });
 const corruptExecutionDir = path.join(corruptFixture.runtimeDir, 'executions', 'execution-corrupt-json');

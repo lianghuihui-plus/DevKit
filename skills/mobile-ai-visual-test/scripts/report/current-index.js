@@ -40,6 +40,13 @@ function verdictLabel(value) {
   return VERDICT_LABELS[value] || (value ? '未知结论' : '-');
 }
 
+function dashboardVerdict(item = {}) {
+  const value = effectiveVerdict(item);
+  if (['PASS', 'FAIL', 'BLOCKED'].includes(value)) return value;
+  if (value === 'INCONCLUSIVE' || value === 'UNKNOWN') return 'INCONCLUSIVE';
+  return 'NOT_RUN';
+}
+
 function basisLabel(value) {
   return BASIS_LABELS[value] || (value ? '未知依据' : '-');
 }
@@ -124,13 +131,17 @@ function summarize(cases) {
 }
 
 function platformSummary(cases) {
-  const rows = new Map(['harmony', 'android', 'ios'].map((platform) => [platform, { platform, total: 0, pass: 0, fail: 0, blocked: 0, inconclusive: 0 }]));
+  const rows = new Map(['harmony', 'android', 'ios'].map((platform) => [platform, {
+    platform, total: cases.length, executed: 0, pass: 0, fail: 0, blocked: 0, inconclusive: 0, notRun: cases.length,
+  }]));
   for (const item of cases) {
     for (const platform of item.platforms || []) {
       if (!rows.has(platform.platform)) continue;
       const row = rows.get(platform.platform);
-      const verdict = effectiveVerdict(platform);
-      row.total += 1;
+      const verdict = dashboardVerdict(platform);
+      if (verdict === 'NOT_RUN') continue;
+      row.executed += 1;
+      row.notRun = Math.max(0, row.notRun - 1);
       if (verdict === 'PASS') row.pass += 1;
       if (verdict === 'FAIL') row.fail += 1;
       if (verdict === 'BLOCKED') row.blocked += 1;
@@ -140,85 +151,92 @@ function platformSummary(cases) {
   return [...rows.values()];
 }
 
-function platformActivity(platform) {
-  const metrics = platform.currentMetrics || {};
-  const counts = metrics.counts || {};
-  return `决策 ${counts.agentDecisions || 0} · 知识 ${counts.knowledgeQueries || 0} · 暖状态 ${metrics.warmSessionReused ? '复用' : '首用例'} · 恢复 ${metrics.executionRecoveryCount || 0}`;
+function percentage(count, total) {
+  return total ? `${Math.round((count / total) * 100)}%` : '0%';
 }
 
-function renderPlatformBreakdown(platforms) {
-  if (platforms.length <= 1) return '';
-  const rows = platforms.map((platform) => {
-    const verdict = effectiveVerdict(platform);
-    const basis = basisLabel(platform.verdictBasis);
-    const executionState = executionStatusLabel(platform.executionStatus);
-    return `<div class="platform-breakdown-row">
-      <div class="platform-cell"><span>平台</span><b>${escapeHtml(displayPlatform(platform.platform))}</b></div>
-      <div class="platform-cell"><span>平台结果</span><div class="platform-result"><span class="verdict ${escapeHtml(className(verdict))}">${escapeHtml(verdictLabel(verdict))}</span>${executionState !== '-' ? `<small>${escapeHtml(executionState)}</small>` : ''}</div></div>
-      <div class="platform-cell"><span>结论依据</span><b>${escapeHtml(basis)}</b></div>
-      <div class="platform-cell activity-cell"><span>Agent 轨迹</span><b>${escapeHtml(platformActivity(platform))}</b></div>
-      <div class="platform-cell"><span>耗时</span><b>${escapeHtml(formatDuration(platform.durationMs))}</b></div>
-      <div class="platform-cell report-cell"><span>报告</span><a class="report-link" href="${escapeHtml(platform.contextHref)}">查看报告</a></div>
-    </div>`;
-  }).join('');
-  return `<div class="platform-breakdown"><div class="platform-breakdown-title">平台明细</div>${rows}</div>`;
+function averageDuration(platforms) {
+  const values = platforms.map((platform) => platform.durationMs).filter(Number.isFinite);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+const PLATFORM_ORDER = ['harmony', 'android', 'ios'];
+const PLATFORM_TOKENS = Object.freeze({ harmony: 'OH', android: 'AND', ios: 'iOS' });
+
+function metricValue(value) {
+  return Number.isFinite(value) ? String(value) : '-';
+}
+
+function renderStatus(value) {
+  return `<span class="status ${escapeHtml(className(value))}">${escapeHtml(verdictLabel(value))}</span>`;
+}
+
+function renderPlatformRun(platform) {
+  const verdict = dashboardVerdict(platform);
+  const counts = platform.currentMetrics?.counts || {};
+  const executionState = executionStatusLabel(platform.executionStatus);
+  return `<article class="platform-run ${escapeHtml(platform.platform)}">
+    <div class="run-platform"><span class="platform-token">${escapeHtml(PLATFORM_TOKENS[platform.platform] || '?')}</span><div><b>${escapeHtml(displayPlatform(platform.platform))}</b><small>${escapeHtml(executionState)} · ${escapeHtml(basisLabel(platform.verdictBasis))}</small></div></div>
+    ${renderStatus(verdict)}
+    <dl><div><dt>耗时</dt><dd>${escapeHtml(formatDuration(platform.durationMs))}</dd></div><div><dt>开始时间</dt><dd>${escapeHtml(formatDisplayTime(platform.startedAt))}</dd></div><div><dt>结束时间</dt><dd>${escapeHtml(formatDisplayTime(platform.endedAt))}</dd></div><div><dt>动作 / 观察</dt><dd>${metricValue(counts.actions)} / ${metricValue(counts.observations)}</dd></div><div><dt>验证点</dt><dd>${escapeHtml(platform.coverage || '-')}</dd></div><div><dt>恢复</dt><dd>${metricValue(platform.currentMetrics?.executionRecoveryCount)}</dd></div></dl>
+    <a class="report-button" href="${escapeHtml(platform.contextHref)}" title="查看 ${escapeHtml(displayPlatform(platform.platform))} 执行报告" aria-label="查看执行报告"><span aria-hidden="true">↗</span></a>
+  </article>`;
+}
+
+function casePlatformVerdicts(platforms) {
+  const byPlatform = new Map(platforms.map((platform) => [platform.platform, dashboardVerdict(platform)]));
+  return PLATFORM_ORDER.map((platform) => byPlatform.get(platform) || 'NOT_RUN');
 }
 
 function renderCase(item, index) {
-  const verdict = effectiveVerdict(item);
-  const platforms = item.platforms || [];
-  const executedPlatforms = platforms.filter((platform) => effectiveVerdict(platform) !== 'NOT_RUN');
-  const hasExecution = verdict !== 'NOT_RUN';
-  const hasMultiplePlatforms = executedPlatforms.length > 1;
-  const primary = executedPlatforms.find((platform) => effectiveVerdict(platform) === verdict) || executedPlatforms[0] || null;
-  const detailHref = hasExecution && !hasMultiplePlatforms && primary ? primary.contextHref : item.contextHref;
-  const summary = item.reason || '暂无结论摘要';
-  const executionState = executionStatusLabel(item.executionStatus);
-  const platformValue = executedPlatforms.length > 1
-    ? `${executedPlatforms.length} 个平台`
-    : primary ? displayPlatform(primary.platform) : '-';
-  const basis = basisLabel(item.verdictBasis);
-  const facts = hasExecution && !hasMultiplePlatforms ? `<div class="case-facts">
-    <div class="case-fact"><span>执行平台</span><b>${escapeHtml(platformValue)}</b></div>
-    <div class="case-fact"><span>结论依据</span><b>${escapeHtml(basis)}</b></div>
-    <div class="case-fact activity-fact"><span>Agent 轨迹</span><b>${escapeHtml(primary ? platformActivity(primary) : '-')}</b></div>
-    <div class="case-fact"><span>耗时</span><b>${escapeHtml(formatDuration(item.durationMs))}</b></div>
-    ${primary ? `<div class="case-fact report-fact"><span>执行报告</span><a class="report-link" href="${escapeHtml(primary.contextHref)}">查看报告</a></div>` : ''}
-  </div>` : '';
-  return `<article class="case-row ${escapeHtml(className(verdict))}${hasExecution ? ' executed' : ' not-executed'}" data-case-status="${escapeHtml(verdict)}" data-case-search="${escapeHtml(`${item.caseNo || ''} ${item.title} ${item.caseKey || ''}`.toLowerCase())}">
-    <div class="case-primary">
-      <div class="case-heading"><span>用例 ${escapeHtml(item.caseNo || String(index + 1).padStart(3, '0'))}</span><h3>${escapeHtml(item.title)}</h3></div>
-      <div class="case-actions"><div class="case-status"><span class="verdict ${escapeHtml(className(verdict))}">${escapeHtml(verdictLabel(verdict))}</span>${hasMultiplePlatforms ? `<small>${executedPlatforms.length} 个平台</small>` : hasExecution && executionState !== '-' ? `<small>${escapeHtml(executionState)}</small>` : ''}</div><a class="case-detail" href="${escapeHtml(detailHref)}" aria-label="查看 ${escapeHtml(item.title)} 用例详情">查看详情</a></div>
-      ${hasExecution ? `<p class="case-conclusion">${escapeHtml(summary)}</p>` : ''}
-      <small class="case-identity">${escapeHtml(item.caseKey || '-')} · ${escapeHtml(formatDisplayTime(item.endedAt || item.updatedAt))}</small>
+  const platforms = (item.platforms || []).filter((platform) => dashboardVerdict(platform) !== 'NOT_RUN')
+    .sort((left, right) => PLATFORM_ORDER.indexOf(left.platform) - PLATFORM_ORDER.indexOf(right.platform));
+  const verdicts = casePlatformVerdicts(item.platforms || []);
+  const count = (status) => verdicts.filter((value) => value === status).length;
+  const summary = item.status === 'REPORT_ERROR'
+    ? `报告数据异常：${item.reason || '无法读取执行数据'}`
+    : item.status === 'NEEDS_RERUN'
+      ? `需重新执行：${item.reason || '用例原文已更新'}`
+    : item.sourceSummary || '原始用例内容已收录';
+  const statusValues = [...new Set(verdicts)].join(' ');
+  return `<section class="case-row" data-case-status="${escapeHtml(statusValues)}" data-case-search="${escapeHtml(`${item.caseNo || ''} ${item.title} ${item.caseKey || ''}`.toLowerCase())}">
+    <div class="case-common">
+      <div class="case-order">${String(index + 1).padStart(2, '0')}</div>
+      <div class="case-copy"><span>用例 ${escapeHtml(item.caseNo || String(index + 1).padStart(3, '0'))} · ${escapeHtml(item.caseKey || '-')}</span><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(summary)}</p></div>
+      <div class="common-stats"><span class="common-stat"><small>三端统计</small><b>${count('PASS')} 通 · ${count('FAIL')} 失 · ${count('BLOCKED')} 阻 · ${count('INCONCLUSIVE')} 无法 · ${count('NOT_RUN')} 未</b></span><span class="common-stat"><small>平均耗时</small><b>${escapeHtml(formatDuration(averageDuration(platforms)))}</b></span></div>
+      <a class="icon-button" href="${escapeHtml(item.contextHref)}" title="查看用例内容" aria-label="查看用例内容"><span aria-hidden="true">▤</span></a>
     </div>
-    ${facts}
-    ${renderPlatformBreakdown(executedPlatforms)}
-  </article>`;
+    ${platforms.length ? `<div class="platform-runs">${platforms.map(renderPlatformRun).join('')}</div>` : ''}
+  </section>`;
 }
 
 function renderCurrentIndexHtml(rootDir, cases = []) {
   const control = latestRunControl(rootDir);
   const orderedCases = cases.slice();
-  const stages = controlStage(control);
   const summary = summarize(orderedCases);
   const platforms = platformSummary(orderedCases);
+  const filterCount = (status) => orderedCases.filter((item) => casePlatformVerdicts(item.platforms || []).includes(status)).length;
   const filters = [
     ['ALL', '全部', summary.total],
-    ['PASS', '通过', summary.pass],
-    ['FAIL', '失败', summary.fail],
-    ['BLOCKED', '阻塞', summary.blocked],
-    ['INCONCLUSIVE', '无法判断', summary.inconclusive],
-    ['PENDING_PUBLICATION', '待发布', summary.pendingPublication],
-    ['CANCELLED', '已取消', summary.cancelled],
-    ['NEEDS_RERUN', '需重新执行', summary.needsRerun],
-    ['NOT_RUN', '未执行', summary.notRun - summary.needsRerun],
-    ['REPORT_ERROR', '报告异常', summary.reportError],
+    ['PASS', '通过', filterCount('PASS')],
+    ['FAIL', '失败', filterCount('FAIL')],
+    ['BLOCKED', '阻塞', filterCount('BLOCKED')],
+    ['INCONCLUSIVE', '无法判断', filterCount('INCONCLUSIVE')],
+    ['NOT_RUN', '未执行', filterCount('NOT_RUN')],
   ];
   const batchName = control.latest?.batchId || '暂无批次';
-  const runCountText = control.runCount ? `累计 ${control.runCount} 个批次` : '尚无执行批次';
   const generatedAt = formatDisplayTime(new Date().toISOString());
   const cards = orderedCases.length ? orderedCases.map(renderCase).join('\n') : '<p class="empty">暂无用例。</p>';
+  const platformCards = platforms.map((item) => {
+    const rates = [
+      ['通过', item.pass, 'pass', 'bar-pass'],
+      ['失败', item.fail, 'fail', 'bar-fail'],
+      ['阻塞', item.blocked, 'blocked', 'bar-blocked'],
+      ['无法判断', item.inconclusive, 'inconclusive', 'bar-inconclusive'],
+      ['未执行', item.notRun, 'not-run', 'bar-not-run'],
+    ];
+    return `<article class="platform-summary ${escapeHtml(item.platform)}"><div class="platform-summary-head"><span class="platform-token">${escapeHtml(PLATFORM_TOKENS[item.platform])}</span><b>${escapeHtml(displayPlatform(item.platform))}</b><strong>${item.executed}/${item.total}</strong></div><div class="stacked-bar" aria-hidden="true">${rates.map(([,count,,bar]) => `<i class="${bar}" style="width:${percentage(count,item.total)}"></i>`).join('')}</div><div class="summary-counts">${rates.map(([label,count,tone]) => `<span class="${tone}"><small>${label}</small><b>${count}</b><em>${percentage(count,item.total)}</em></span>`).join('')}</div></article>`;
+  }).join('');
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -226,25 +244,17 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>移动端 AI 视觉测试</title>
   <style>
-    :root{color-scheme:light;--bg:#f3f4f6;--surface:#fff;--surface-soft:#f8fafc;--text:#18202b;--muted:#667085;--line:#d9dee7;--line-strong:#c5ccd8;--accent:#1769aa;--pass:#147a55;--pass-soft:#edf8f3;--fail:#c23b3b;--fail-soft:#fff1f1;--blocked:#9a6515;--blocked-soft:#fff8e8;--inconclusive:#596579;--inconclusive-soft:#f1f3f6;--active:#0f7490;--shadow:0 4px 14px rgba(21,31,45,.06)}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}button,input{font:inherit}main{width:min(1320px,calc(100vw - 32px));margin:0 auto 48px}
-    .topbar{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding:24px 0 18px;border-bottom:1px solid var(--line-strong)}.brand span{display:block;color:var(--active);font-size:12px;font-weight:800;text-transform:uppercase}.brand h1{margin:3px 0 0;font-size:24px;line-height:1.25}.workspace-meta{min-width:0;text-align:right}.workspace-meta b,.workspace-meta span{display:block;overflow-wrap:anywhere}.workspace-meta b{font-size:13px}.workspace-meta span{color:var(--muted);font-size:12px}
-    .control-band{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:0;border:1px solid var(--line);border-radius:8px;background:var(--surface);box-shadow:var(--shadow)}.stage{position:relative;min-width:0;padding:15px 16px;border-right:1px solid var(--line)}.stage:last-child{border-right:0}.stage-head{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:700}.stage-number{display:grid;place-items:center;width:23px;height:23px;border:1px solid var(--line-strong);border-radius:50%;font-size:10px}.stage.ready .stage-number{border-color:var(--pass);color:var(--pass)}.stage.active .stage-number{border-color:var(--active);color:var(--active)}.stage.stopped .stage-number{border-color:var(--fail);color:var(--fail)}.stage strong{display:block;margin-top:8px;font-size:16px}.stage p{min-height:40px;margin:3px 0 0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
-    .section{margin-top:18px}.section-head{display:flex;align-items:end;justify-content:space-between;gap:18px;margin-bottom:9px}.section-head h2{margin:0;font-size:16px}.section-head p{margin:0;color:var(--muted);font-size:12px}.outcome-band{display:grid;grid-template-columns:1.25fr repeat(5,minmax(94px,1fr));border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden}.outcome-main,.outcome-metric{min-height:92px;padding:15px 16px;border-right:1px solid var(--line)}.outcome-metric:last-child{border-right:0}.outcome-main span,.outcome-metric span{display:block;color:var(--muted);font-size:12px}.outcome-main strong{display:block;margin-top:4px;font-size:30px;line-height:1}.outcome-main small{display:block;margin-top:7px;color:var(--muted)}.outcome-metric b{display:block;margin-top:7px;font-size:23px}.outcome-metric.pass b{color:var(--pass)}.outcome-metric.fail b{color:var(--fail)}.outcome-metric.blocked b{color:var(--blocked)}.outcome-metric.inconclusive b{color:var(--inconclusive)}
-    .signal-band{display:grid;grid-template-columns:1.1fr 1fr;border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden}.signals{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:14px 16px;border-right:1px solid var(--line)}.signal{min-width:0;padding-right:12px}.signal span{display:block;color:var(--muted);font-size:11px}.signal b{display:block;margin-top:3px;font-size:18px}.platform-table{padding:10px 16px}.platform-table-head,.platform-table-row{display:grid;grid-template-columns:minmax(90px,1fr) repeat(5,48px);gap:8px;align-items:center}.platform-table-head{color:var(--muted);font-size:10px}.platform-table-row{min-height:27px;border-top:1px solid #edf0f4;font-size:12px}.platform-table-row b{font-size:12px}.platform-table-row span:not(:first-child),.platform-table-head span:not(:first-child){text-align:right}
-    .toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:10px}.filter-group{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line-strong);border-radius:7px;overflow:hidden}.filter-button{min-height:34px;padding:6px 10px;border:0;border-right:1px solid var(--line);background:var(--surface);color:#3f4958;cursor:pointer;font-size:12px;font-weight:700}.filter-button:last-child{border-right:0}.filter-button:hover{background:var(--surface-soft)}.filter-button.active{background:#263342;color:#fff}.filter-button b{margin-left:3px}.search{width:min(300px,100%);height:36px;padding:7px 10px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text)}.search:focus{border-color:var(--accent);outline:2px solid rgba(23,105,170,.12)}.filter-result{color:var(--muted);font-size:12px;white-space:nowrap}
-    .case-list{display:grid;gap:9px}.case-row{position:relative;border:1px solid var(--line);border-radius:8px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden}.case-row[hidden]{display:none}.case-row:before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--inconclusive)}.case-row.pass:before{background:var(--pass)}.case-row.fail:before{background:var(--fail)}.case-row.blocked:before{background:var(--blocked)}.case-primary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 18px;padding:14px 16px 13px 20px}.case-heading{display:flex;align-items:baseline;gap:9px;min-width:0}.case-heading>span{flex:0 0 auto;color:var(--muted);font-size:11px;font-weight:800}.case-heading h3{min-width:0;margin:0;font-size:15px;overflow-wrap:anywhere}.case-actions{display:flex;align-items:flex-start;gap:12px}.case-status{display:flex;align-items:center;gap:7px}.case-status small{color:var(--muted);font-size:10px;white-space:nowrap}.case-conclusion{grid-column:1/-1;margin:2px 0 0;color:#344054;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.case-identity{grid-column:1/-1;color:var(--muted);font-size:11px;overflow-wrap:anywhere}.verdict{display:inline-flex;align-items:center;min-height:26px;padding:3px 8px;border:1px solid var(--line-strong);border-radius:5px;background:var(--inconclusive-soft);color:var(--inconclusive);font-size:12px;font-weight:800}.verdict.pass{border-color:#a9d8c4;background:var(--pass-soft);color:var(--pass)}.verdict.fail{border-color:#efb5b5;background:var(--fail-soft);color:var(--fail)}.verdict.blocked{border-color:#e8cd94;background:var(--blocked-soft);color:var(--blocked)}.case-detail,.report-link{display:inline-flex;align-items:center;justify-content:center;min-height:30px;padding:5px 9px;border:1px solid var(--line-strong);border-radius:6px;background:#fff;font-size:12px;font-weight:800;white-space:nowrap}.case-facts{display:grid;grid-template-columns:120px 130px minmax(200px,1fr) 100px 100px;padding:0 16px 0 20px;border-top:1px solid #edf0f4;background:#fafbfc}.case-fact{min-width:0;padding:10px 12px 11px 0}.case-fact+.case-fact{padding-left:14px;border-left:1px solid #e5e9ef}.case-fact>span{display:block;color:var(--muted);font-size:10px}.case-fact>b{display:block;margin-top:4px;font-size:12px;line-height:1.45;overflow-wrap:anywhere}.report-fact .report-link{margin-top:4px}.platform-breakdown{border-top:1px solid #e1e6ed;padding:0 16px 8px 20px;background:#f7f9fb}.platform-breakdown-title{padding:9px 0 6px;color:var(--muted);font-size:10px;font-weight:800}.platform-breakdown-row{display:grid;grid-template-columns:100px 150px 120px minmax(180px,1fr) 90px 90px;gap:12px;align-items:start;min-height:64px;padding:9px 0;border-top:1px solid #e5e9ef}.platform-cell{min-width:0}.platform-cell>span{display:block;color:var(--muted);font-size:10px}.platform-cell>b{display:block;margin-top:4px;font-size:12px;line-height:1.45;overflow-wrap:anywhere}.platform-result{display:flex;align-items:center;gap:6px;margin-top:4px}.platform-result small{color:var(--muted);font-size:10px}.report-cell .report-link{margin-top:4px}.not-executed .case-primary{min-height:76px;align-content:center}.empty,.filter-empty{margin:0;padding:16px;color:var(--muted);text-align:center}.filter-empty{border:1px dashed var(--line-strong);border-radius:8px;background:var(--surface)}
-    @media(max-width:980px){.control-band{grid-template-columns:repeat(2,minmax(0,1fr))}.stage:nth-child(2){border-right:0}.stage:nth-child(-n+2){border-bottom:1px solid var(--line)}.outcome-band{grid-template-columns:repeat(3,1fr)}.outcome-main{grid-column:1/-1;border-right:0;border-bottom:1px solid var(--line)}.outcome-metric:nth-child(4){border-right:0}.signal-band{grid-template-columns:1fr}.signals{border-right:0;border-bottom:1px solid var(--line)}.case-facts{grid-template-columns:110px 120px minmax(170px,1fr) 88px 94px}}
-    @media(max-width:700px){main{width:calc(100vw - 20px)}.topbar{display:block;padding-top:16px}.workspace-meta{margin-top:9px;text-align:left}.control-band{grid-template-columns:1fr}.stage{border-right:0;border-bottom:1px solid var(--line)}.stage:nth-child(2){border-right:0}.stage:last-child{border-bottom:0}.stage p{min-height:0}.outcome-band{grid-template-columns:repeat(2,1fr)}.outcome-main{grid-column:1/-1}.outcome-metric{border-bottom:1px solid var(--line)}.outcome-metric:nth-child(odd){border-right:0}.outcome-metric:last-child{border-bottom:0}.signals{grid-template-columns:repeat(2,1fr);gap:12px}.platform-table-head,.platform-table-row{grid-template-columns:minmax(74px,1fr) repeat(5,minmax(24px,auto));gap:5px}.toolbar{align-items:stretch;flex-direction:column}.filter-group{display:grid;grid-template-columns:repeat(3,1fr)}.filter-button{border-bottom:1px solid var(--line)}.search{width:100%}.case-primary{grid-template-columns:minmax(0,1fr) auto;gap:8px 10px;padding:13px 12px 12px 17px}.case-heading{grid-column:1/-1}.case-actions{grid-column:1/-1;justify-content:space-between}.case-facts{grid-template-columns:1fr 1fr;padding:0 12px 6px 17px}.case-fact{padding:9px 8px 8px 0}.case-fact+.case-fact{padding-left:0;border-left:0}.activity-fact{grid-column:1/-1}.platform-breakdown{padding:0 12px 8px 17px}.platform-breakdown-row{grid-template-columns:1fr 1fr;gap:12px 18px;padding:11px 0}.activity-cell{grid-column:1/-1}.section-head{display:block}.section-head>p{margin-top:3px}}
+    :root{color-scheme:light;--bg:#f4f6f8;--surface:#fff;--surface-2:#f8fafb;--text:#17212b;--text-2:#3e4b59;--muted:#74808d;--line:#dce2e7;--line-strong:#c6cfd7;--ink:#1d2935;--accent:#0e6873;--accent-soft:#e8f4f4;--pass:#16835c;--pass-soft:#eaf7f1;--fail:#cb4343;--fail-soft:#fff0f0;--blocked:#a4670b;--blocked-soft:#fff6df;--pending:#53657a;--pending-soft:#eef1f5;--harmony:#16808a;--android:#397357;--ios:#475a72;--shadow:0 2px 8px rgba(25,37,50,.05)}
+    *{box-sizing:border-box}html{min-width:320px;background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;letter-spacing:0}button,input{font:inherit;letter-spacing:0}a{color:inherit;text-decoration:none}[hidden]{display:none!important}.product-bar{display:flex;align-items:center;justify-content:space-between;gap:24px;min-height:58px;padding:8px clamp(18px,3vw,48px);border-bottom:1px solid #22313f;background:#17232e;color:#dbe4ea}.product-bar b,.product-bar small{display:block}.product-bar small{color:#8fa0ad;font-size:10px}.product-brand{display:flex;align-items:center;gap:10px}.product-brand>span{display:grid;place-items:center;width:34px;height:34px;border-radius:6px;background:#dff1ef;color:#125d66;font-size:12px;font-weight:900}.product-bar>div{text-align:right}.workspace{width:min(1500px,100%);min-height:calc(100vh - 58px);margin:0 auto;padding:24px clamp(18px,3vw,48px) 60px}.page-head{display:flex;align-items:end;justify-content:space-between;gap:24px;margin-bottom:12px}.eyebrow{color:var(--accent);font-size:11px;font-weight:800}.page-head h1{margin:3px 0 0;font-size:24px;line-height:1.2}.batch-meta{text-align:right}.batch-meta span,.batch-meta b,.batch-meta small{display:block}.batch-meta span,.batch-meta small{color:var(--muted);font-size:10px}.batch-meta b{font-size:12px;overflow-wrap:anywhere}
+    .summary-matrix{display:grid;grid-template-columns:180px repeat(3,minmax(250px,1fr));border:1px solid var(--line);border-radius:7px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden}.matrix-intro{display:flex;flex-direction:column;justify-content:center;padding:15px 18px;border-right:1px solid var(--line)}.matrix-intro span{color:var(--muted);font-size:11px}.matrix-intro strong{margin:1px 0;font-size:30px;line-height:1}.matrix-intro small{color:var(--muted);font-size:10px}.platform-summary{min-width:0;padding:12px 14px;border-right:1px solid var(--line)}.platform-summary:last-child{border-right:0}.platform-summary-head{display:flex;align-items:center;gap:7px}.platform-summary-head b{font-size:12px}.platform-summary-head strong{margin-left:auto;font-size:17px}.platform-token{display:grid;place-items:center;width:30px;height:24px;border:1px solid currentColor;border-radius:4px;color:var(--harmony);font-size:9px;font-weight:900}.android .platform-token{color:var(--android)}.ios .platform-token{color:var(--ios)}.stacked-bar{display:flex;width:100%;height:6px;margin-top:9px;overflow:hidden;background:#e7ebef}.stacked-bar i{display:block;height:100%}.bar-pass{background:var(--pass)}.bar-fail{background:var(--fail)}.bar-blocked{background:#d29736}.bar-inconclusive{background:#8794a3}.bar-not-run{background:#dfe4e8}.summary-counts{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:8px}.summary-counts span{display:grid;grid-template-columns:auto 1fr;column-gap:4px;align-items:baseline;color:var(--muted);font-size:9px}.summary-counts small{grid-column:1/-1}.summary-counts b{color:var(--text);font-size:13px}.summary-counts em{font-size:8px;font-style:normal}
+    .content-section{margin-top:20px}.section-title{display:flex;align-items:end;justify-content:space-between;margin-bottom:9px}.section-title h2{margin:0;font-size:16px}.section-title span,.filter-result{color:var(--muted);font-size:11px}.list-toolbar{display:flex;align-items:center;gap:12px;margin-bottom:10px}.filter-group{display:inline-flex;min-width:0;border:1px solid var(--line-strong);border-radius:6px;background:var(--surface);overflow:hidden}.filter-button{min-height:34px;padding:5px 11px;border:0;border-right:1px solid var(--line);background:transparent;color:var(--text-2);cursor:pointer;font-size:11px}.filter-button:last-child{border-right:0}.filter-button:hover{background:var(--surface-2)}.filter-button.active{background:var(--ink);color:white}.filter-button b{margin-left:5px}.search{width:min(270px,32vw);height:36px;margin-left:auto;padding:0 10px;border:1px solid var(--line-strong);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px}.search:focus{border-color:var(--accent);outline:2px solid #cce4e4}
+    .case-list{display:grid;gap:9px}.case-row{border:1px solid var(--line);border-radius:7px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden}.case-common{display:grid;grid-template-columns:34px minmax(260px,1.6fr) minmax(250px,.9fr) 34px;gap:12px;align-items:center;min-height:74px;padding:10px 12px}.case-order{color:#a0aab4;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}.case-copy{min-width:0}.case-copy span{color:var(--muted);font-size:9px}.case-copy h3{margin:1px 0 2px;font-size:13px;overflow-wrap:anywhere}.case-copy p{margin:0;color:var(--text-2);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.common-stats{display:grid;grid-template-columns:minmax(180px,1fr) 90px;border-left:1px solid var(--line)}.common-stat{min-width:0;padding-left:13px}.common-stat small,.common-stat b{display:block}.common-stat small{color:var(--muted);font-size:8px}.common-stat b{margin-top:2px;font-size:10px;overflow-wrap:anywhere}.icon-button,.report-button{display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid var(--line-strong);border-radius:5px;background:white;color:var(--accent);font-weight:800}.icon-button:hover,.report-button:hover{border-color:var(--accent);background:var(--accent-soft)}.platform-runs{padding:0 12px 7px 58px;border-top:1px solid var(--line);background:var(--surface-2)}.platform-run{position:relative;display:grid;grid-template-columns:150px 70px minmax(480px,1fr) 36px;gap:12px;align-items:center;min-height:64px;padding:8px 0;border-bottom:1px solid var(--line)}.platform-run:last-child{border-bottom:0}.run-platform{display:flex;align-items:center;gap:8px}.run-platform b,.run-platform small{display:block}.run-platform b{font-size:11px}.run-platform small{color:var(--muted);font-size:8px}.status{display:inline-flex;align-items:center;justify-content:center;width:max-content;min-height:23px;padding:2px 7px;border:1px solid var(--line-strong);border-radius:4px;background:var(--pending-soft);color:var(--pending);font-size:9px;font-weight:800}.status.pass{border-color:#a9d8c4;background:var(--pass-soft);color:var(--pass)}.status.fail{border-color:#efb5b5;background:var(--fail-soft);color:var(--fail)}.status.blocked{border-color:#e8cd94;background:var(--blocked-soft);color:var(--blocked)}.platform-run dl{display:grid;grid-template-columns:70px minmax(145px,1fr) minmax(145px,1fr) 80px 65px 55px;margin:0}.platform-run dl div{min-width:0;padding:0 8px;border-left:1px solid var(--line)}.platform-run dt{color:var(--muted);font-size:8px}.platform-run dd{margin:2px 0 0;font:9px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.empty,.filter-empty{margin:0;padding:16px;color:var(--muted);text-align:center}.filter-empty{border:1px dashed var(--line-strong);background:var(--surface)}
+    @media(max-width:1180px){.summary-matrix{grid-template-columns:150px repeat(3,minmax(205px,1fr))}.common-stats{grid-template-columns:1fr;gap:4px}.platform-run{grid-template-columns:150px 70px minmax(350px,1fr) 36px}}
+    @media(max-width:860px){.workspace{padding:16px 12px 40px}.summary-matrix{grid-template-columns:1fr}.matrix-intro,.platform-summary{border-right:0;border-bottom:1px solid var(--line)}.platform-summary:last-child{border-bottom:0}.matrix-intro{flex-direction:row;align-items:baseline;gap:8px}.case-common{grid-template-columns:28px minmax(0,1fr) auto 32px}.common-stats{grid-column:2/-1;grid-row:2;grid-template-columns:1fr 1fr;padding-left:0;border-left:0}.platform-runs{padding-left:42px}.platform-run{grid-template-columns:1fr auto;padding:9px 0}.platform-run dl{grid-column:1/-1}.platform-run .report-button{position:absolute;right:0}.product-bar>div{display:none}}
+    @media(max-width:620px){.workspace{padding-inline:10px}.page-head{align-items:start}.page-head h1{font-size:20px}.batch-meta{max-width:132px}.list-toolbar{align-items:stretch;flex-wrap:wrap}.filter-group{width:100%;overflow-x:auto}.filter-button{flex:1 0 auto;padding-inline:9px}.search{order:2;width:100%;margin-left:0}.case-common{grid-template-columns:24px minmax(0,1fr) auto;gap:8px}.case-common>.icon-button{grid-column:3;grid-row:2;justify-self:end}.common-stats{grid-column:2}.platform-runs{padding-left:34px}.platform-run dl{grid-template-columns:repeat(3,1fr)}}
   </style>
 </head>
-<body><main>
-  <header class="topbar"><div class="brand"><span>Agent 无人值守执行</span><h1>移动端 AI 视觉测试</h1></div><div class="workspace-meta"><b>${escapeHtml(path.basename(rootDir))}</b><span>${escapeHtml(rootDir)} · ${escapeHtml(generatedAt)}</span></div></header>
-  <section class="section run-control-section"><div class="section-head"><div><h2>当前运行</h2><p>仅展示最近一次执行批次的环境、授权和进度</p></div><p>${escapeHtml(batchName)} · ${escapeHtml(runCountText)}</p></div><div class="control-band" aria-label="运行控制状态">${stages.map((stage) => `<div class="stage ${escapeHtml(stage.state)}"><div class="stage-head"><span class="stage-number">${stage.number}</span><span>${escapeHtml(stage.label)}</span></div><strong>${escapeHtml(stage.value)}</strong><p>${escapeHtml(stage.detail)}</p></div>`).join('')}</div></section>
-  <section class="section"><div class="section-head"><div><h2>结果概览</h2><p>按最终结论统计，不按固定步骤归约</p></div><p>${escapeHtml(batchName)}</p></div><div class="outcome-band"><div class="outcome-main"><span>用例总数</span><strong>${summary.total}</strong><small>${summary.total - summary.notRun - summary.reportError} 个已有执行结论</small></div><div class="outcome-metric pass"><span>通过</span><b>${summary.pass}</b></div><div class="outcome-metric fail"><span>失败</span><b>${summary.fail}</b></div><div class="outcome-metric blocked"><span>阻塞</span><b>${summary.blocked}</b></div><div class="outcome-metric inconclusive"><span>无法判断</span><b>${summary.inconclusive}</b></div><div class="outcome-metric"><span>未执行</span><b>${summary.notRun}</b></div></div></section>
-  <section class="section"><div class="section-head"><div><h2>Agent 执行信号</h2><p>结论依据、业务决策、记录完整性与运行恢复</p></div></div><div class="signal-band"><div class="signals"><div class="signal"><span>直接证据</span><b>${summary.directEvidence}</b></div><div class="signal"><span>业务决策</span><b>${summary.agentDecisions}</b></div><div class="signal"><span>记录缺口</span><b>${summary.narrativeGaps}</b></div><div class="signal"><span>知识查询</span><b>${summary.knowledgeQueries}</b></div><div class="signal"><span>暖状态复用</span><b>${summary.warmReuse}</b></div><div class="signal"><span>受控恢复</span><b>${summary.recoveries}</b></div><div class="signal"><span>时限停止</span><b>${summary.timeLimitStops}</b></div></div><div class="platform-table"><div class="platform-table-head"><span>平台</span><span>执行</span><span>通过</span><span>失败</span><span>阻塞</span><span>待定</span></div>${platforms.map((item) => `<div class="platform-table-row"><b>${escapeHtml(displayPlatform(item.platform))}</b><span>${item.total}</span><span>${item.pass}</span><span>${item.fail}</span><span>${item.blocked}</span><span>${item.inconclusive}</span></div>`).join('')}</div></div></section>
-  <section class="section"><div class="section-head"><div><h2>用例结果</h2><p class="filter-result" aria-live="polite">显示 ${summary.total} / ${summary.total}</p></div></div><div class="toolbar"><div class="filter-group" role="group" aria-label="筛选最终结果">${filters.map(([value,label,count],index) => `<button type="button" class="filter-button${index === 0 ? ' active' : ''}" data-case-filter="${value}" aria-pressed="${index === 0 ? 'true' : 'false'}">${label}<b>${count}</b></button>`).join('')}</div><input class="search" type="search" aria-label="搜索用例" placeholder="搜索用例编号、名称或标识"></div><div class="case-list">${cards}</div>${cases.length ? '<p class="filter-empty" hidden>没有符合条件的用例。</p>' : ''}</section>
-</main><script>
+<body><div class="product-shell"><header class="product-bar"><a class="product-brand" href="index.html"><span>MV</span><div><b>MAVT</b><small>移动端 AI 视觉测试</small></div></a><div><b>报告工作区</b><small>${escapeHtml(path.basename(rootDir))}</small></div></header><main class="workspace"><header class="page-head"><div><span class="eyebrow">Dashboard / 最新批次</span><h1>测试执行总览</h1></div><div class="batch-meta"><span>批次</span><b>${escapeHtml(batchName)}</b><small>${escapeHtml(generatedAt)}</small></div></header><section class="summary-matrix"><div class="matrix-intro"><span>三平台执行分布</span><strong>${summary.total}</strong><small>用例总数</small></div>${platformCards}</section><section class="content-section"><div class="section-title"><div><h2>用例执行情况</h2><span>最近一次执行批次</span></div><p class="filter-result" aria-live="polite">显示 ${summary.total} / ${summary.total}</p></div><div class="list-toolbar"><div class="filter-group" role="group" aria-label="筛选用例状态">${filters.map(([value,label,count],index) => `<button type="button" class="filter-button${index===0?' active':''}" data-case-filter="${value}" aria-pressed="${index===0?'true':'false'}">${label}<b>${count}</b></button>`).join('')}</div><input class="search" type="search" aria-label="搜索用例" placeholder="搜索用例编号、名称或标识"></div><div class="case-list">${cards}</div>${cases.length?'<p class="filter-empty" hidden>没有符合条件的用例。</p>':''}</section></main></div><script>
 (() => {
   const buttons = Array.from(document.querySelectorAll('[data-case-filter]'));
   const cards = Array.from(document.querySelectorAll('[data-case-status]'));
@@ -256,7 +266,7 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
     const query = (search?.value || '').trim().toLowerCase();
     let visible = 0;
     for (const card of cards) {
-      const matchesStatus = selected === 'ALL' || card.dataset.caseStatus === selected;
+      const matchesStatus = selected === 'ALL' || (card.dataset.caseStatus || '').split(/\s+/).includes(selected);
       const matchesSearch = !query || (card.dataset.caseSearch || '').includes(query);
       card.hidden = !(matchesStatus && matchesSearch);
       if (!card.hidden) visible += 1;

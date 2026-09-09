@@ -41,6 +41,9 @@ for (const [verdict, fixture] of fixtures) {
   const paths = writeCaseReports(fixture.caseDir, fixture.caseJson, {}, [], report, { platform: 'harmony', skipRootOverview: true });
   const markdown = fs.readFileSync(paths.context, 'utf8');
   const html = fs.readFileSync(paths.contextHtml, 'utf8');
+  const inlineScripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.ok(inlineScripts.length > 0);
+  for (const script of inlineScripts) assert.doesNotThrow(() => new Function(script));
   const metadata = JSON.parse(fs.readFileSync(path.join(path.dirname(paths.context), 'report-metadata.json'), 'utf8'));
   assert.strictEqual(metadata.artifacts['CONTEXT.md'].sha256, crypto.createHash('sha256').update(markdown).digest('hex'));
   assert.strictEqual(metadata.artifacts['CONTEXT.html'].sha256, crypto.createHash('sha256').update(html).digest('hex'));
@@ -50,8 +53,12 @@ for (const [verdict, fixture] of fixtures) {
     assert.ok(markdown.includes(text), text);
   }
   assert.ok(markdown.includes(`执行结论：${{ PASS: '通过', FAIL: '失败', INCONCLUSIVE: '无法判断', BLOCKED: '阻塞' }[verdict]}`));
-  for (const text of ['执行复盘', '原始用例', '用例理解', '初始计划', '执行过程', '最终检查与证据', '证据', '技术信息', '原始数据', 'Runtime 调用 / 格式错误']) {
+  for (const text of ['结果概览', '原始用例', '用例理解', '执行计划', '执行过程', '详细日志', '验证点结果', '执行记录', 'Runtime 请求错误']) {
     assert.ok(html.includes(text), text);
+  }
+  assert.strictEqual((html.match(/role="tab"/g) || []).length, 6);
+  for (const hook of ['class="product-bar"', 'class="report-head"', 'class="report-tabs"', 'class="verdict-banner', 'class="metric-strip"', 'class="summary-columns"', 'class="process-layout"', 'class="step-list"', 'class="step-inspector"', 'class="logs-toolbar"']) {
+    assert.ok(html.includes(hook), hook);
   }
   assert.ok(html.includes('shot-dialog'));
   assert.ok(html.includes('data-shot='));
@@ -60,14 +67,28 @@ for (const [verdict, fixture] of fixtures) {
   assert.ok(html.includes('查看动作落点'));
   assert.ok(html.includes('action-spatial-evidence/action-0001.svg'));
   assert.ok(html.includes('overlaySrc'));
+  assert.ok(html.includes('pointerdown'));
+  assert.ok(html.includes('setPointerCapture'));
   assert.ok(html.includes('输入类动作已脱敏'));
-  assert.strictEqual(html.includes('data-panel="plan-panel"'), false);
+  assert.ok(html.includes('data-panel="plan-panel"'));
   assert.strictEqual(html.includes('data-panel="raw-panel"'), false);
+  assert.ok(html.includes('data-log-filter="KNOWLEDGE"'));
+  assert.ok(html.includes('data-log-search'));
+  assert.ok(html.includes('data-export-logs'));
+  assert.ok(html.includes('data-log-context'));
+  assert.ok(html.includes('data-step="0"'));
+  assert.ok(html.includes('data-step-detail="0"'));
+  assert.strictEqual(html.includes('technical-subtabs'), false);
 
   if (verdict === 'PASS') {
     assert.ok(html.includes('输入文本'));
     assert.ok(html.includes('[已脱敏]'));
     assert.strictEqual(html.includes('不应出现在报告中的输入'), false);
+    assert.ok(html.includes('本次执行未触发知识库查询'));
+  } else {
+    assert.ok(html.includes('class="knowledge-process-status"'));
+    assert.ok(html.includes('知识调查'));
+    assert.ok(html.includes('查询内容'));
   }
   assert.ok(html.includes(fixture.result.summary.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')));
   assert.strictEqual(html.includes('<script>alert("title")</script>'), false);
@@ -104,8 +125,8 @@ const indexPath = renderIndexForRoot(workspace);
 const indexHtml = fs.readFileSync(indexPath, 'utf8');
 const indexMetadata = JSON.parse(fs.readFileSync(path.join(workspace, 'report-metadata.json'), 'utf8'));
 assert.strictEqual(indexMetadata.artifacts['index.html'].sha256, crypto.createHash('sha256').update(indexHtml).digest('hex'));
-  for (const text of ['直接证据', '业务决策', '记录缺口', '知识查询']) assert.ok(indexHtml.includes(text), text);
-  assert.strictEqual(indexHtml.includes('知识支持'), false);
+  for (const text of ['测试执行总览', '三平台执行分布', '用例执行情况']) assert.ok(indexHtml.includes(text), text);
+  assert.strictEqual(indexHtml.includes('Agent 执行信号'), false);
 
 const passFixture = fixtures.get('PASS');
 const passRuntimeDir = path.join(passFixture.caseDir, 'platforms', 'harmony');

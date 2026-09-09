@@ -48,7 +48,7 @@ assert.strictEqual(imported.caseJson.steps, undefined);
 assert.strictEqual(fs.readFileSync(imported.sourcePath, 'utf8'), fs.readFileSync(input, 'utf8'));
 assert.strictEqual(fs.existsSync(imported.contextHtml), true);
 assert.ok(fs.readFileSync(imported.contextHtml, 'utf8').includes('看一下当前页面是否符合用例描述'));
-assert.ok(fs.readFileSync(path.join(workspace, 'index.html'), 'utf8').includes('查看详情'));
+assert.ok(fs.readFileSync(path.join(workspace, 'index.html'), 'utf8').includes('查看用例内容'));
 
 const contract = run(['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony']);
 assert.strictEqual(contract.schemaVersion, 3);

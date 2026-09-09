@@ -62,13 +62,14 @@ const html = renderCurrentContextHtml(secretFixture.caseJson, secretReport);
 assert.strictEqual(html.includes(secret), false);
 assert.ok(html.includes(formatDisplayTime(secretReport.execution.startedAt)));
 assert.strictEqual(html.includes(secretReport.execution.startedAt), false);
-for (const expected of ['执行复盘', '证据', '技术信息', '原始用例', '用例理解', '初始计划', '执行过程', '知识调查与复核', '最终判断', '最终检查与证据', '原始数据', 'shot-dialog', 'previous-shot', 'next-shot', 'data-filter="ACTION"']) {
+for (const expected of ['结果概览', '原始用例', '用例理解', '执行计划', '执行过程', '详细日志', '本次执行未触发知识库查询', '验证点结果', '执行记录', '查看原始数据', 'shot-dialog', 'previous-shot', 'next-shot', 'data-log-filter="ACTION"', 'pointerdown', 'setPointerCapture']) {
   assert.ok(html.includes(expected), expected);
 }
-for (const expected of ['class="case-outcome pass"', 'class="action-kind"', 'class="narrative-step"', 'class="narrative-shots"', '输入测试内容', '页面展示目标结果']) {
+assert.strictEqual((html.match(/role="tab"/g) || []).length, 6);
+for (const expected of ['class="verdict-banner', 'class="action-kind"', 'class="step-detail"', 'class="shot-compare', '输入测试内容', '页面展示目标结果']) {
   assert.ok(html.includes(expected), expected);
 }
-for (const removed of ['data-panel="plan-panel"', 'data-panel="raw-panel"', 'class="story-card', 'class="checkpoint-accordion']) {
+for (const removed of ['data-panel="raw-panel"', 'class="story-card', 'class="checkpoint-accordion']) {
   assert.strictEqual(html.includes(removed), false, removed);
 }
 

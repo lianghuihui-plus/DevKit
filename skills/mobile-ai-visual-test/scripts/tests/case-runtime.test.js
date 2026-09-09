@@ -663,9 +663,8 @@ assert.strictEqual(rendered.status, 'UPDATED');
 const contextHtml = fs.readFileSync(path.join(caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
 assert.match(contextHtml, /目标内容正常显示/);
 assert.match(contextHtml, /页面保持在目标 App/);
-assert.match(contextHtml, /Agent 与调度间隔（估算）/);
-assert.match(contextHtml, /Runtime 调用 \/ 格式错误/);
-for (const text of ['执行复盘', 'Agent 判断', '用例理解', '初始计划', '操作前观察', '操作后的结论', '覆盖 2/2', '证据', '技术信息']) {
+assert.match(contextHtml, /Runtime 请求错误/);
+for (const text of ['结果概览', '理解摘要', '用例理解', '执行计划', '初始计划', '为什么做', '预期效果', '实际效果', '2\/2', '详细日志']) {
   assert.ok(contextHtml.includes(text), text);
 }
 

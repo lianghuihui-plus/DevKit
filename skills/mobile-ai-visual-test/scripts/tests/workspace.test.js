@@ -49,7 +49,7 @@ assert.strictEqual(initialized.marker.type, WORKSPACE_TYPE);
 assert.strictEqual(initialized.marker.initializationState, 'READY');
 for (const name of ['workspace.json', 'cases', 'knowledge', 'index.html', 'report-metadata.json']) assert.ok(fs.existsSync(path.join(empty, name)), name);
 const emptyIndex = fs.readFileSync(path.join(empty, 'index.html'), 'utf8');
-for (const text of ['移动端 AI 视觉测试', '运行控制状态', '环境确认', '执行授权', '暂无用例。', '显示 0 / 0']) {
+for (const text of ['移动端 AI 视觉测试', '测试执行总览', '三平台执行分布', '用例执行情况', '暂无用例。', '显示 0 / 0']) {
   assert.ok(emptyIndex.includes(text), text);
 }
 assert.strictEqual(emptyIndex.includes('暂无测试结果。'), false);
@@ -159,8 +159,8 @@ for (const [inputIndex, [name, content]] of inputs.entries()) {
   const sourceSignal = content.trim().split(/\r?\n/).filter(Boolean).pop().replace(/^\s*#+\s*/, '');
   assert.ok(fs.readFileSync(path.join(imported.caseDir, 'CONTEXT.html'), 'utf8').includes(sourceSignal));
   const indexHtml = fs.readFileSync(path.join(importWorkspace, 'index.html'), 'utf8');
-  assert.ok(indexHtml.includes('查看详情'));
-  assert.ok(indexHtml.includes('not-executed'));
+  assert.ok(indexHtml.includes('查看用例内容'));
+  assert.ok(indexHtml.includes('data-case-filter="NOT_RUN"'));
   assert.strictEqual(indexHtml.includes('暂无平台执行记录'), false);
 }
 

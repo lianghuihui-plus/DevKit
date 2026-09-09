@@ -2,10 +2,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { escapeHtml, formatDisplayTime, formatDuration } = require('../lib/display-format');
+const { escapeHtml } = require('../lib/display-format');
 const { readExecutionReport, selectExecutionDir } = require('../lib/execution-reader');
 const { validateCaseContract } = require('../execution/contracts/case-contract');
 const { renderCurrentContextHtml, renderCurrentContextMarkdown, renderSourceMarkdown } = require('./current-report');
+const { buildExecutionNarrative } = require('./execution-narrative');
 const { renderIndexArtifacts } = require('./index-renderer');
 const { reportRendererInfo } = require('./renderer-manifest');
 const { publishReportBundle } = require('./report-publisher');
@@ -13,12 +14,6 @@ const { assertWorkspace } = require('../lib/workspace');
 const { ensureWorkspaceCaseNumbers } = require('../lib/case-numbering');
 
 const PLATFORM_ORDER = ['android', 'ios', 'harmony'];
-const PLATFORM_LABELS = Object.freeze({ android: 'Android', ios: 'iOS', harmony: 'HarmonyOS' });
-const STATUS_LABELS = Object.freeze({
-  PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', UNKNOWN: '无法判断', INCONCLUSIVE: '无法判断',
-  RUNNING: '执行中', ABANDONED: '执行已废弃', PENDING_PUBLICATION: '待发布', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复',
-  NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行', CANCELLED: '已取消',
-});
 
 function readJson(file, fallback = null) {
   if (!fs.existsSync(file)) return fallback;
@@ -68,6 +63,7 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
   report = report || readLatestExecutionReport(caseDir, { platform });
   if (!report) return null;
   const display = report.display || {};
+  const narrative = buildExecutionNarrative(report);
   currentCase = currentCase || validateCaseContract(readJson(path.join(caseDir, 'case.json')));
   const sourceCurrent = report.execution?.sourceSha === currentCase.identity.sourceSha;
   return {
@@ -84,6 +80,8 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
     reason: sourceCurrent ? display.summary || '' : '用例原文已更新，已有执行结果不再代表当前用例',
     failureCode: sourceCurrent ? display.failureCode || '' : 'CASE_SOURCE_CHANGED',
     currentMetrics: sourceCurrent ? report.metrics || null : null,
+    coverage: sourceCurrent ? `${narrative.coverage.covered}/${narrative.coverage.total}` : '-',
+    recordingStatus: sourceCurrent ? narrative.recordingStatus : 'UNAVAILABLE',
     sourceCurrent,
     schemaFamily: report.schemaFamily,
     contextPath: path.join(caseRuntimeDir(caseDir, platform), 'CONTEXT.html'),
@@ -166,6 +164,9 @@ function collectIndexCases(rootDir, options = {}) {
       try {
         const projection = options.projections?.get(path.resolve(caseDir)) || buildCaseReportProjection(caseDir);
         const caseJson = projection.caseJson;
+        const sourceText = fs.readFileSync(path.join(caseDir, 'source.md'), 'utf8');
+        const sourceSummary = sourceText.split(/\r?\n/).map((line) => line.trim())
+          .find((line) => line && !line.startsWith('#')) || '';
         const platforms = projection.platforms.map((entry) => ({
           ...entry,
           contextHref: path.relative(rootDir, entry.contextPath).replace(/\\/g, '/'),
@@ -176,6 +177,7 @@ function collectIndexCases(rootDir, options = {}) {
           caseNo: caseJson.identity.caseNo || '',
           title: caseJson.identity.title,
           caseKey: caseJson.identity.caseKey,
+          sourceSummary,
           platforms,
           ...aggregate,
           contextHref: path.relative(rootDir, path.join(caseDir, 'CONTEXT.html')).replace(/\\/g, '/'),
@@ -194,16 +196,15 @@ function collectIndexCases(rootDir, options = {}) {
     });
 }
 
-function rootOverview(caseDir, caseJson, suppliedPlatforms = null) {
+function rootOverview(caseDir, caseJson) {
   const sourceFile = path.join(caseDir, 'source.md');
   const source = fs.existsSync(sourceFile) ? fs.readFileSync(sourceFile, 'utf8') : '';
-  const platforms = suppliedPlatforms || collectCasePlatforms(caseDir);
-  const rows = platforms.length ? platforms.map((entry) => `<a class="run" href="${escapeHtml(path.relative(caseDir, entry.contextPath).replace(/\\/g, '/'))}"><span>${escapeHtml(PLATFORM_LABELS[entry.platform])}</span><b>${escapeHtml(STATUS_LABELS[entry.status] || entry.status)}</b><small>${escapeHtml(entry.reason || '查看执行详情')} · ${escapeHtml(formatDuration(entry.durationMs))}</small></a>`).join('') : '<p class="empty">该用例尚未执行。</p>';
   const title = `${caseJson.identity.caseNo ? `${caseJson.identity.caseNo} ` : ''}${caseJson.identity.title}`;
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>:root{--line:#dfe4e9;--muted:#66717d;--accent:#176b70}*{box-sizing:border-box}body{margin:0;background:#f5f7f9;color:#20262d;font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(980px,calc(100% - 32px));margin:28px auto 60px}header{padding:20px 0;border-bottom:1px solid var(--line)}h1{margin:0;font-size:24px;letter-spacing:0}header p{margin:5px 0 0;color:var(--muted)}section{padding:22px 0;border-bottom:1px solid var(--line)}h2{margin:0 0 13px;font-size:16px}.source{padding:16px 18px;border:1px solid var(--line);border-left:4px solid var(--accent);background:#fff;overflow-wrap:anywhere}.source>:first-child{margin-top:0}.source>:last-child{margin-bottom:0}.runs{display:grid;gap:8px}.run{display:grid;grid-template-columns:120px 100px minmax(0,1fr);gap:12px;padding:12px 14px;border:1px solid var(--line);background:#fff;color:inherit;text-decoration:none}.run b{color:var(--accent)}.run small{color:var(--muted)}.empty{color:var(--muted)}@media(max-width:640px){.run{grid-template-columns:1fr}.run>*{display:block}}</style></head><body><main><header><h1>${escapeHtml(title)}</h1><p>${escapeHtml(caseJson.identity.caseKey)}</p></header><section><h2>原始用例</h2><div class="source">${renderSourceMarkdown(source)}</div></section><section><h2>平台执行</h2><div class="runs">${rows}</div></section></main></body></html>`;
-  const markdown = [`# ${title}`, '', `- 用例标识：${caseJson.identity.caseKey}`, '', '## 原始用例', '', source, '', '## 平台执行', ''];
-  if (platforms.length) platforms.forEach((entry) => markdown.push(`- ${PLATFORM_LABELS[entry.platform]}：${STATUS_LABELS[entry.status] || entry.status}，${entry.reason || '-'}`));
-  else markdown.push('- 尚未执行');
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>
+:root{color-scheme:light;--bg:#f4f6f8;--surface:#fff;--surface-2:#f8fafb;--text:#17212b;--text-2:#3e4b59;--muted:#74808d;--line:#dce2e7;--line-strong:#c6cfd7;--accent:#0e6873;--ink:#1d2935}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;letter-spacing:0}a{color:inherit;text-decoration:none}.product-bar{display:flex;align-items:center;justify-content:space-between;gap:24px;min-height:58px;padding:8px clamp(18px,3vw,48px);border-bottom:1px solid #22313f;background:#17232e;color:#dbe4ea}.product-brand{display:flex;align-items:center;gap:10px}.product-brand>span{display:grid;place-items:center;width:34px;height:34px;border-radius:6px;background:#dff1ef;color:#125d66;font-size:12px;font-weight:900}.product-brand b,.product-brand small,.product-bar>div b,.product-bar>div small{display:block}.product-brand small,.product-bar>div small{color:#8fa0ad;font-size:10px}.product-bar>div{text-align:right}.workspace{width:min(1500px,100%);min-height:calc(100vh - 58px);margin:0 auto;padding:24px clamp(18px,3vw,48px) 60px}.case-content-page{max-width:900px;margin:0 auto}.case-content-page>header{display:grid;grid-template-columns:130px 1fr;align-items:center;gap:16px;padding-bottom:18px;border-bottom:1px solid var(--line-strong)}.back-button{display:inline-flex;align-items:center;gap:7px;color:var(--text-2);font-size:11px;font-weight:750}.back-button i{font-style:normal;font-size:17px}.case-content-page header span{color:var(--muted);font-size:10px}.case-content-page header h1{margin:2px 0 0;font-size:21px;overflow-wrap:anywhere}.case-only-meta{display:grid;grid-template-columns:repeat(4,1fr);margin-top:16px;border:1px solid var(--line);background:white}.case-only-meta>span{min-width:0;padding:11px 13px;border-right:1px solid var(--line)}.case-only-meta>span:last-child{border-right:0}.case-only-meta small,.case-only-meta b{display:block}.case-only-meta small{color:var(--muted);font-size:9px}.case-only-meta b{margin-top:2px;font-size:11px;overflow-wrap:anywhere}.case-document.full{margin-top:12px;padding:34px 54px 50px;border:1px solid var(--line);background:white;overflow-wrap:anywhere}.case-document h1{margin:0 0 22px;font-size:20px}.case-document h2{margin:28px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--line);font-size:15px}.case-document h2:first-child{margin-top:0}.case-document h3{margin:20px 0 8px;font-size:14px}.case-document p,.case-document li{color:var(--text-2)}.case-document code{padding:1px 4px;background:var(--surface-2);font-size:12px}.case-document pre{padding:12px;background:var(--ink);color:#e8edf1;overflow:auto}.case-document img{max-width:100%}@media(max-width:620px){.product-bar>div{display:none}.workspace{padding:16px 10px 36px}.case-content-page>header{grid-template-columns:1fr}.case-only-meta{grid-template-columns:1fr 1fr}.case-only-meta>span:nth-child(2){border-right:0}.case-only-meta>span{border-bottom:1px solid var(--line)}.case-document.full{padding:24px 20px}}
+</style></head><body><div class="product-shell"><header class="product-bar"><a class="product-brand" href="../../index.html"><span>MV</span><div><b>MAVT</b><small>移动端 AI 视觉测试</small></div></a><div><b>用例工作区</b><small>只读用例内容</small></div></header><main class="workspace"><div class="case-content-page"><header><a class="back-button" href="../../index.html"><i>←</i>返回总览</a><div><span>用例 ${escapeHtml(caseJson.identity.caseNo || '-')} · 用例内容</span><h1>${escapeHtml(caseJson.identity.title)}</h1></div></header><div class="case-only-meta"><span><small>用例编号</small><b>${escapeHtml(caseJson.identity.caseNo || '-')}</b></span><span><small>caseKey</small><b>${escapeHtml(caseJson.identity.caseKey)}</b></span><span><small>sourceSha</small><b>${escapeHtml(caseJson.identity.sourceSha)}</b></span><span><small>导入来源</small><b>${escapeHtml(caseJson.identity.importSource?.path || '-')}</b></span></div><article class="case-document full"><h2>原始用例</h2>${renderSourceMarkdown(source)}</article></div></main></div></body></html>`;
+  const markdown = [`# ${title}`, '', `- 用例标识：${caseJson.identity.caseKey}`, '', '## 原始用例', '', source];
   return { html, markdown: `${markdown.join('\n')}\n` };
 }
 
