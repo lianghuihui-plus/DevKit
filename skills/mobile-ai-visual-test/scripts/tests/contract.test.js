@@ -75,6 +75,7 @@ expectCode(() => validateCaseResult({ ...result, checks: [{ ...result.checks[0],
 for (const request of [
   { operation: 'observe' },
   { operation: 'knowledge', query: '语音按钮未显示' },
+  { operation: 'knowledge', query: '入口未显示', context: { page: '创作页', operation: '横向滑动入口' } },
   { operation: 'recover', reason: '恢复目标 App' },
   { operation: 'status' },
   { operation: 'prepare', preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' } },
@@ -85,6 +86,7 @@ expectCode(() => validateRuntimeRequest({ operation: 'act' }), 'CASE_RUNTIME_REQ
 expectCode(() => validateRuntimeRequest({ operation: 'unknown' }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'status', extra: true }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'observe', caseContext: {} }), 'CASE_RUNTIME_REQUEST_INVALID');
+expectCode(() => validateRuntimeRequest({ operation: 'knowledge', query: '异常', context: { app: 'com.example.other' } }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'act', capabilityId: 'scene-0001:tap:el-1', intent: 'legacy' }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({
   operation: 'act', capabilityId: 'scene-0001:tap:el-1', decision: { purpose: '进入目标页', expectationRefs: [], extra: true },

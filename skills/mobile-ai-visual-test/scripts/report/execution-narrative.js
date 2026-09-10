@@ -23,6 +23,20 @@ function sceneSummary(event) {
   };
 }
 
+function investigationStatus(expectationRef, report, events, reviews) {
+  const frozen = report.metrics?.knowledgeInvestigation?.byExpectation?.[expectationRef];
+  if (frozen?.status) return frozen;
+  const queries = events.filter((event) => event.type === 'knowledgeQueried'
+    && (event.expectationRefs || []).includes(expectationRef));
+  const conclusions = queries.map((event) => reviews.get(event.queryId)?.conclusion).filter(Boolean);
+  for (const status of ['APPLICABLE_FOUND', 'CONFLICTING', 'INSUFFICIENT', 'NO_APPLICABLE', 'NO_MATCH']) {
+    if (conclusions.includes(status)) {
+      return { required: false, status, queryIds: queries.map((event) => event.queryId), reviewedQueryIds: queries.filter((event) => reviews.has(event.queryId)).map((event) => event.queryId) };
+    }
+  }
+  return { required: false, status: queries.length ? 'MISSING' : 'NOT_REQUIRED', queryIds: queries.map((event) => event.queryId), reviewedQueryIds: [] };
+}
+
 function projectCurrentNarrative(report) {
   const events = Array.isArray(report.events) ? report.events.slice().sort(bySequence) : [];
   const contextEvents = events.filter((event) => event.type === 'caseContextRecorded');
@@ -97,6 +111,7 @@ function projectCurrentNarrative(report) {
     ...check,
     expectation: expectationByRef.get(check.expectationRef)?.text || check.expectation || check.expectationRef || '未命名验证点',
     knowledge: (check.knowledgeRefs || []).map((entryId) => candidatesById.get(entryId) || { entryId }),
+    knowledgeInvestigation: investigationStatus(check.expectationRef, report, events, knowledgeReviews),
     technicalFacts: (check.technicalRefs || []).map((ref) => {
       const fact = technicalByRef.get(ref);
       return fact ? technicalFactView(fact, events, report.execution, check.expectationRef) : {

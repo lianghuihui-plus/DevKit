@@ -7,9 +7,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { collectIndexCases, renderIndexForRoot, writeCaseReports } = require('../report/report-service');
-const { currentDisplayModel, readExecutionReport, selectExecutionDir } = require('../lib/execution-reader');
+const { assertCurrentExecution, currentDisplayModel, readExecutionReport, selectExecutionDir } = require('../lib/execution-reader');
 const { findActiveExecutions } = require('../lib/execution-lifecycle');
 const { createExecutionClosure } = require('../lib/execution-closure');
+const { completionPaths, sha256File } = require('../lib/completion-contract');
+const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
 const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -85,10 +87,12 @@ for (const [verdict, fixture] of fixtures) {
     assert.ok(html.includes('[已脱敏]'));
     assert.strictEqual(html.includes('不应出现在报告中的输入'), false);
     assert.ok(html.includes('本次执行未触发知识库查询'));
+    assert.ok(html.includes('知识调查 · 无需调查'));
   } else {
     assert.ok(html.includes('class="knowledge-process-status"'));
     assert.ok(html.includes('知识调查'));
     assert.ok(html.includes('查询内容'));
+    assert.ok(html.includes('知识调查 · 无匹配候选'));
   }
   assert.ok(html.includes(fixture.result.summary.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')));
   assert.strictEqual(html.includes('<script>alert("title")</script>'), false);
@@ -139,12 +143,6 @@ fs.writeFileSync(path.join(activeDir, 'execution.json'), JSON.stringify({
 }));
 fs.copyFileSync(path.join(passFixture.execDir, 'source.snapshot.md'), path.join(activeDir, 'source.snapshot.md'));
 fs.writeFileSync(path.join(activeDir, 'case.snapshot.json'), JSON.stringify(passFixture.caseJson));
-const unsupportedNewerDir = path.join(passRuntimeDir, 'executions', 'execution-unsupported-newest');
-fs.mkdirSync(unsupportedNewerDir, { recursive: true });
-fs.writeFileSync(path.join(unsupportedNewerDir, 'execution.json'), JSON.stringify({
-  schemaVersion: 99, executionId: 'execution-unsupported-newest', finalized: false,
-  startedAt: '2026-08-19T12:00:00.000Z',
-}));
 assert.strictEqual(selectExecutionDir(passRuntimeDir).state, 'ACTIVE');
 assert.strictEqual(selectExecutionDir(passRuntimeDir).execDir, activeDir);
 assert.deepStrictEqual(findActiveExecutions(workspace).map((entry) => entry.execDir), [activeDir]);
@@ -158,6 +156,17 @@ createExecutionClosure(workspace, activeDir, {
 assert.strictEqual(readExecutionReport(activeDir).display.status, 'ABANDONED');
 assert.strictEqual(selectExecutionDir(passRuntimeDir).state, 'PUBLISHED');
 assert.strictEqual(findActiveExecutions(workspace).length, 0);
+
+const unsupportedNewerDir = path.join(passRuntimeDir, 'executions', 'execution-unsupported-newest');
+fs.mkdirSync(unsupportedNewerDir, { recursive: true });
+fs.writeFileSync(path.join(unsupportedNewerDir, 'execution.json'), JSON.stringify({
+  schemaVersion: 99, executionId: 'execution-unsupported-newest', finalized: false,
+  startedAt: '2026-08-19T12:00:00.000Z',
+}));
+assert.strictEqual(selectExecutionDir(passRuntimeDir).state, 'UNSUPPORTED');
+assert.strictEqual(selectExecutionDir(passRuntimeDir).execDir, unsupportedNewerDir);
+assert.throws(() => readExecutionReport(selectExecutionDir(passRuntimeDir).execDir),
+  (error) => error?.code === 'EXECUTION_SCHEMA_UNSUPPORTED');
 
 const extraArtifact = path.join(passFixture.execDir, 'screenshots', 'extra-after-publication.png');
 fs.writeFileSync(extraArtifact, Buffer.from('not part of the published artifact set'));
@@ -179,23 +188,39 @@ fs.mkdirSync(unsupportedDir);
 fs.writeFileSync(path.join(unsupportedDir, 'execution.json'), JSON.stringify({ schemaVersion: 99, executionId: 'unsupported' }));
 assert.throws(() => readExecutionReport(unsupportedDir), (error) => error?.code === 'EXECUTION_SCHEMA_UNSUPPORTED' && /run again/.test(error.message));
 
-const staleProtocolDir = path.join(temp, 'stale-protocol-execution');
-fs.mkdirSync(staleProtocolDir);
-fs.writeFileSync(path.join(staleProtocolDir, 'execution.json'), JSON.stringify({
-  ...passFixture.execution,
-  executionId: 'stale-protocol-execution',
-  caseProtocolSha: 'agent-protocol-stale000000',
-}));
-assert.throws(() => readExecutionReport(staleProtocolDir), (error) => error?.code === 'AGENT_PROTOCOL_MISMATCH' && /run again/.test(error.message));
+const historicalWorkspace = path.join(temp, 'historical-workspace');
+createTestWorkspace(historicalWorkspace);
+const historicalFixture = createCurrentFixture(historicalWorkspace, { verdict: 'PASS', suffix: 'historical-bindings' });
+const historicalExecutionPath = path.join(historicalFixture.execDir, 'execution.json');
+const historicalExecution = {
+  ...historicalFixture.execution,
+  caseProtocolSha: 'agent-protocol-historical0001',
+  runtimeSha: 'case-runtime-historical0001',
+  adapterSha: 'adapter-historical0001',
+};
+fs.writeFileSync(historicalExecutionPath, `${JSON.stringify(historicalExecution, null, 2)}\n`);
+fs.unlinkSync(path.join(historicalFixture.execDir, 'artifact-manifest.json'));
+buildExecutionArtifactManifest(historicalFixture.execDir, { now: historicalExecution.endedAt });
+const historicalCompletionPath = path.join(historicalFixture.execDir, 'completion.json');
+const historicalCompletion = {
+  ...historicalFixture.completion,
+  runtimeSha: historicalExecution.runtimeSha,
+  adapterSha: historicalExecution.adapterSha,
+  artifactManifestSha256: sha256File(completionPaths(historicalFixture.execDir).artifactManifest),
+};
+fs.writeFileSync(historicalCompletionPath, `${JSON.stringify(historicalCompletion, null, 2)}\n`);
+const historicalReport = readExecutionReport(historicalFixture.execDir);
+assert.strictEqual(historicalReport.display.verdict, 'PASS');
+assert.strictEqual(historicalReport.completionError, null);
 
-const staleRuntimeDir = path.join(temp, 'stale-runtime-execution');
-fs.mkdirSync(staleRuntimeDir);
-fs.writeFileSync(path.join(staleRuntimeDir, 'execution.json'), JSON.stringify({
-  ...passFixture.execution,
-  executionId: 'stale-runtime-execution',
-  runtimeSha: 'case-runtime-stale000000',
-}));
-assert.throws(() => readExecutionReport(staleRuntimeDir), (error) => error?.code === 'AGENT_PROTOCOL_MISMATCH' && /run again/.test(error.message));
+const staleActiveExecution = {
+  ...historicalExecution,
+  finalized: false,
+  lifecycle: 'RUNNING',
+  status: 'RUNNING',
+  endedAt: undefined,
+};
+assert.throws(() => assertCurrentExecution(staleActiveExecution), (error) => error?.code === 'AGENT_PROTOCOL_MISMATCH');
 
 const pendingWorkspace = path.join(temp, 'pending-workspace');
 createTestWorkspace(pendingWorkspace);

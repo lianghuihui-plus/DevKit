@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const telemetry = require('../case-runtime/telemetry');
+const { metrics } = require('../case-runtime/result-service');
 
 const execDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-metrics-'));
 fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ finalized: false }));
@@ -63,6 +64,39 @@ assert.strictEqual(invocationText.includes('invalid secret'), false);
 assert.strictEqual(invocationText.includes('invalid private'), false);
 assert.strictEqual(invocationText.includes('"verdict":"PASS"'), true);
 assert.strictEqual(invocationText.includes('CASE_RUNTIME_REQUEST_INVALID'), true);
+
+const resultMetrics = metrics({
+  executionId: 'execution-investigation-metrics',
+  startedAt: '2026-08-20T10:00:00.000Z',
+  warmSessionGenerationStart: 1,
+  warmSessionGeneration: 1,
+  warmSessionIdStart: 'warm-0001',
+  warmSessionId: 'warm-0001',
+  warmSessionEpochStart: 1,
+  warmSessionEpoch: 1,
+}, {
+  verdict: 'FAIL',
+  checks: [{ expectationRef: 'E1', status: 'FAIL' }],
+}, [], '2026-08-20T10:00:01.000Z', null, {
+  knowledgeCoverage: {
+    investigation: {
+      requiredExpectationRefs: ['E1'],
+      completedExpectationRefs: ['E1'],
+      missingExpectationRefs: [],
+      byExpectation: {
+        E1: { required: true, status: 'NO_MATCH', queryIds: ['knowledge-0001'], reviewedQueryIds: ['knowledge-0001'] },
+      },
+    },
+  },
+});
+assert.deepStrictEqual(resultMetrics.knowledgeInvestigation, {
+  requiredExpectationRefs: ['E1'],
+  completedExpectationRefs: ['E1'],
+  missingExpectationRefs: [],
+  byExpectation: {
+    E1: { required: true, status: 'NO_MATCH', queryIds: ['knowledge-0001'], reviewedQueryIds: ['knowledge-0001'] },
+  },
+});
 
 fs.rmSync(execDir, { recursive: true, force: true });
 console.log('execution-metrics passed');

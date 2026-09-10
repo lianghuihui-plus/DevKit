@@ -17,7 +17,7 @@ const REQUEST_FIELDS = Object.freeze({
   observe: new Set(['operation', 'purpose', 'decision']),
   act: new Set(['operation', 'basedOnSceneId', 'capabilityId', 'visual', 'input', 'observationPolicy', 'decision']),
   inspectVisual: new Set(['operation', 'basedOnSceneId', 'decision']),
-  knowledge: new Set(['operation', 'basedOnSceneId', 'query', 'decision']),
+  knowledge: new Set(['operation', 'basedOnSceneId', 'query', 'context', 'decision']),
   recover: new Set(['operation', 'basedOnSceneId', 'reason', 'decision']),
   finish: new Set(['operation', 'basedOnSceneId', 'result', 'decision']),
   status: new Set(['operation']),
@@ -174,7 +174,15 @@ function validateRuntimeRequest(value) {
     }
     ensureString(value.decision.observation, 'decision.observation', 'CASE_RUNTIME_REQUEST_INVALID');
   }
-  if (operation === 'knowledge') ensureString(value.query, 'query', 'CASE_RUNTIME_REQUEST_INVALID');
+  if (operation === 'knowledge') {
+    ensureString(value.query, 'query', 'CASE_RUNTIME_REQUEST_INVALID');
+    if (value.context !== undefined) {
+      const context = ensureObject(value.context, 'context', 'CASE_RUNTIME_REQUEST_INVALID');
+      const unsupported = Object.keys(context).filter((field) => !['page', 'operation'].includes(field));
+      if (unsupported.length) throw contractError('CASE_RUNTIME_REQUEST_INVALID', `knowledge context contains unsupported fields: ${unsupported.join(', ')}`);
+      for (const field of Object.keys(context)) ensureString(context[field], `context.${field}`, 'CASE_RUNTIME_REQUEST_INVALID');
+    }
+  }
   if (operation === 'recover') ensureString(value.reason, 'reason', 'CASE_RUNTIME_REQUEST_INVALID');
   if (operation === 'finish') validateCaseResult(value.result);
   return value;

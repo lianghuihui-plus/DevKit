@@ -15,7 +15,7 @@ const PLATFORM_LABELS = Object.freeze({ harmony: 'HarmonyOS', android: 'Android'
 const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '未执行' });
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
 const STATUS_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_ASSESSED: '未检查' });
-const KNOWLEDGE_CONCLUSIONS = Object.freeze({ APPLICABLE_FOUND: '已找到适用知识', NO_APPLICABLE: '无适用知识', NO_MATCH: '无匹配候选', CONFLICTING: '候选存在冲突', INSUFFICIENT: '知识依据不足' });
+const KNOWLEDGE_CONCLUSIONS = Object.freeze({ APPLICABLE_FOUND: '已找到适用知识', NO_APPLICABLE: '无适用知识', NO_MATCH: '无匹配候选', CONFLICTING: '候选存在冲突', INSUFFICIENT: '知识依据不足', NOT_REQUIRED: '无需调查', MISSING: '调查未完成' });
 const KNOWLEDGE_ASSESSMENTS = Object.freeze({ APPLICABLE: '适用', NOT_APPLICABLE: '不适用', CONFLICTING: '存在冲突', INSUFFICIENT: '依据不足' });
 const ACTION_VALUE_LABELS = Object.freeze({ layout: '控件树定位', visual: '视觉识别', pixel: '像素定位' });
 
@@ -127,7 +127,7 @@ function renderOutcome(report, trace, narrative) {
     const stepIndex = check.relatedSteps?.[0]?.number ? check.relatedSteps[0].number - 1 : null;
     const refs = (check.knowledge || []).map((item) => `<button type="button" class="knowledge-ref" data-jump-step="${stepIndex ?? 0}">知识依据 · ${escapeHtml(item.entryId || '-')}</button>`).join('');
     const technical = (check.technicalFacts || []).map((fact) => `<details class="technical-fact"><summary>${escapeHtml(fact.code)} · ${fact.state === 'VALID' ? '有效' : '无效'}</summary><p>${escapeHtml(fact.message || '-')}</p><small>${escapeHtml(fact.operation || '-')} · ${escapeHtml(fact.sceneId || '-')} · generation ${escapeHtml(fact.generation ?? '-')}</small></details>`).join('');
-    return `<article class="${rowTone}"><span>${icon(check.status === 'PASS' ? 'check' : 'alert')}</span><div><b>${escapeHtml(check.expectationRef || '-')} · ${escapeHtml(check.expectation)}</b><small>${escapeHtml(check.actual || check.reason || '未记录实际结果')}</small>${refs}${technical}</div>${stepIndex !== null ? `<button type="button" class="check-step-link" data-jump-step="${stepIndex}" aria-label="查看关联步骤">${icon('chevronRight')}</button>` : '<i></i>'}</article>`;
+    return `<article class="${rowTone}"><span>${icon(check.status === 'PASS' ? 'check' : 'alert')}</span><div><b>${escapeHtml(check.expectationRef || '-')} · ${escapeHtml(check.expectation)}</b><small>${escapeHtml(check.actual || check.reason || '未记录实际结果')}</small><small>知识调查 · ${escapeHtml(label(KNOWLEDGE_CONCLUSIONS, check.knowledgeInvestigation?.status, '未记录'))}</small>${refs}${technical}</div>${stepIndex !== null ? `<button type="button" class="check-step-link" data-jump-step="${stepIndex}" aria-label="查看关联步骤">${icon('chevronRight')}</button>` : '<i></i>'}</article>`;
   }).join('') : '<p class="empty-data">尚未形成最终检查。</p>';
   const recording = narrative.recordingStatus === 'COMPLETE' ? ['完整', '无叙事缺口'] : narrative.recordingStatus === 'PARTIAL' ? ['部分缺失', `${narrative.gaps.length} 个记录缺口`] : ['不可用', '未形成叙事记录'];
   const coverage = narrative.coverage.total ? Math.round(narrative.coverage.covered / narrative.coverage.total * 100) : 0;

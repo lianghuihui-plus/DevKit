@@ -11,6 +11,24 @@ const telemetry = require('./telemetry');
 
 const TIME_LIMIT_MS = 30 * 60 * 1000;
 
+function knowledgeInvestigationStatus(execDir) {
+  const runtime = require('../lib/execution-lifecycle').readJson(store.paths(execDir).runtime, null);
+  const events = store.events(execDir);
+  const reviews = new Map(events.filter((event) => event.type === 'knowledgeReviewed')
+    .map((event) => [event.queryId, event]));
+  return {
+    available: runtime?.broker?.allowedOperations?.includes('knowledge') === true,
+    requiredBeforeNegativeConclusion: runtime?.broker?.schemaVersion === 3,
+    pendingReviews: events.filter((event) => event.type === 'knowledgeQueried' && !reviews.has(event.queryId))
+      .map((event) => ({
+        queryId: event.queryId,
+        candidateCount: event.candidateCount || 0,
+        expectationRefs: event.expectationRefs || [],
+      })),
+    reviewedExpectationRefs: [...new Set([...reviews.values()].flatMap((event) => event.expectationRefs || []))].sort(),
+  };
+}
+
 function preparationStatus(execDir, execution) {
   const events = store.events(execDir);
   const completed = events.filter((event) => event.type === 'appPreparationCompleted').at(-1);
@@ -45,6 +63,7 @@ function runtimeStatus(execDir) {
     remainingMs: Math.max(0, TIME_LIMIT_MS - (Date.now() - Date.parse(execution.startedAt))),
     scene: store.readCurrentScene(execDir),
     narrative: narrativeService.narrativeStatus(execDir),
+    knowledgeInvestigation: knowledgeInvestigationStatus(execDir),
     ...(preparation ? { preparation } : {}),
     ...(execution.finalized && execution.status !== 'CANCELLED'
       ? { verdict: require('../lib/execution-lifecycle').readJson(store.paths(execDir).result, null)?.verdict || null } : {}),
@@ -237,6 +256,7 @@ function execute(execDir, request, options = {}) {
         allowFinalized: true,
       });
   }
+  response = { ...response, knowledgeInvestigation: knowledgeInvestigationStatus(execDir) };
   if (invocation) telemetry.endInvocation(execDir, invocation, response, options);
   return response;
 }
@@ -252,4 +272,4 @@ function reconcileExecution(execDir, options = {}) {
   }, options);
 }
 
-module.exports = { TIME_LIMIT_MS, assertSceneBasis, execute, reconcileExecution, recoveryBarrier, runtimeStatus, timeBudget };
+module.exports = { TIME_LIMIT_MS, assertSceneBasis, execute, knowledgeInvestigationStatus, reconcileExecution, recoveryBarrier, runtimeStatus, timeBudget };

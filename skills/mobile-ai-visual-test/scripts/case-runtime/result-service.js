@@ -82,6 +82,9 @@ function metrics(execution, result, events, endedAt, execDir = null, options = {
       applicableEntryIds: [...new Set(knowledgeReviews.flatMap((event) => (event.assessments || [])
         .filter((item) => item.status === 'APPLICABLE').map((item) => item.entryId)))],
     },
+    ...(options.knowledgeCoverage?.investigation
+      ? { knowledgeInvestigation: options.knowledgeCoverage.investigation }
+      : {}),
   };
 }
 
@@ -120,7 +123,10 @@ function finish(execDir, caseResult, options = {}) {
       status: 'PREPARED',
       executionId: execution.executionId,
       result,
-      metrics: metrics(execution, result, store.events(execDir), endedAt, execDir, options),
+      metrics: metrics(execution, result, store.events(execDir), endedAt, execDir, {
+        ...options,
+        knowledgeCoverage: graph.knowledgeCoverage,
+      }),
       endedAt,
     };
     writeJsonAtomic(draftPath, draft);

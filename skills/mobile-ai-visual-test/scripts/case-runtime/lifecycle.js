@@ -38,6 +38,7 @@ function shellQuote(value) {
 
 function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText, runtime, scene = null) {
   const preparation = runtimeCore.runtimeStatus(executionDir).preparation;
+  const allowed = runtime.broker.allowedOperations;
   return {
     schemaVersion: 2,
     case: {
@@ -60,6 +61,15 @@ function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText,
       requestPath: runtime.requestPath,
       allowedOperations: runtime.broker.allowedOperations,
       input: 'Write one RuntimeRequest JSON object to requestPath, then run command without arguments.',
+    },
+    investigationCapabilities: {
+      visual: { available: allowed.includes('inspectVisual'), operation: 'inspectVisual' },
+      layout: { available: true, source: 'scene.evidenceChannels.layout' },
+      knowledge: {
+        available: allowed.includes('knowledge'),
+        operation: 'knowledge',
+        requiredBeforeNegativeConclusion: runtime.broker.schemaVersion === 3,
+      },
     },
     scene,
   };
@@ -206,7 +216,7 @@ function createExecution(options) {
         sessionRef: options.sessionRef || null,
         knowledgeRoots: (options.knowledgeRoots || []).map((root) => path.resolve(root)),
         broker: {
-          schemaVersion: 2,
+          schemaVersion: 3,
           allowedOperations: require('./runtime-broker').AGENT_OPERATIONS,
         },
         boundAt: startedAt,

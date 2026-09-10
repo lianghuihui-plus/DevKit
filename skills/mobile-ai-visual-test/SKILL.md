@@ -38,7 +38,7 @@ description: 当需要基于任意非空文本人工用例，对移动端应用�
 
 ## 角色边界
 
-- Case Agent 直接使用 Case Brief 中预绑定的 Runtime Client，消费 Frozen CaseSpec 并独立完成 `observe`、`act`、`inspectVisual`、`knowledge`、`recover` 和 `finish`；它通过宿主只读 `view_image` 查看 Runtime 明确提供的当前 execution Scene 视觉附件，再用 `inspectVisual` 登记，不能改写验证点，也不接触初始状态准备、平台策略或安装资产。
+- Case Agent 直接使用 Case Brief 中预绑定的 Runtime Client，消费 Frozen CaseSpec 并独立完成 `observe`、`act`、`inspectVisual`、`knowledge`、`recover` 和 `finish`；截图、控件树和知识查询是并列的调查能力，Brief 与 Runtime 响应会持续暴露其可用状态。它通过宿主只读 `view_image` 查看 Runtime 明确提供的当前 execution Scene 视觉附件，再用 `inspectVisual` 登记；异常、无法解释、无法继续或准备形成负向结论时使用知识调查，不能改写验证点，也不接触初始状态准备、平台策略或安装资产。
 - Lifecycle 在委托前根据冻结的 InitialStateRequirement 自动建立起始状态；Case Brief 每次从 execution 快照、Runtime 状态和 Current Scene 派生，不是可写的权威产物。
 - Case Runtime 是确定性本地代码，负责设备调用、证据、事务和恢复；当前边界是职责/协议隔离，不是共享文件系统上的安全沙箱。
 - 主 Agent 接收 Case Agent 的最终摘要，批次和报告使用其已保存的 `result.json`，保持 verdict、checks 和实际表现不变。

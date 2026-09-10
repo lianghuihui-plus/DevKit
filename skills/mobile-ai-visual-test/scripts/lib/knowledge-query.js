@@ -13,6 +13,7 @@ const QUERY_FIELDS = Object.freeze(['platform', 'app', 'version', 'page', 'opera
 const FIELD_WEIGHTS = Object.freeze({ platform: 12, app: 10, version: 8, page: 8, operation: 6, symptom: 6 });
 const LIST_META_FIELDS = new Set(['app', 'platform', 'version', 'page', 'operation', 'conflictsWith']);
 const EXACT_META_FIELDS = new Set(['app', 'platform']);
+const SOFT_CONTEXT_FIELDS = new Set(['page', 'operation']);
 const APP_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+$/;
 const META_FIELDS = Object.freeze({
   app: 'app', platform: 'platform', version: 'version', page: 'page', operation: 'operation',
@@ -247,7 +248,7 @@ function matchScore(entry, query) {
   return { score: metadataScore + lexicalScore, metadataScore, lexicalScore, matched };
 }
 
-function metadataCompatible(entry, query) {
+function metadataCompatible(entry, query, softFields = new Set()) {
   let declaredMatches = 0;
   const mismatches = [];
   for (const field of ['platform', 'app', 'version', 'page', 'operation']) {
@@ -255,7 +256,7 @@ function metadataCompatible(entry, query) {
     const declared = entry.metadata[field];
     const values = Array.isArray(declared) ? declared : [declared];
     if (values.some((value) => metadataValueMatches(field, query[field], value))) declaredMatches += 1;
-    else mismatches.push({ field, query: query[field], declared: values });
+    else if (!softFields.has(field)) mismatches.push({ field, query: query[field], declared: values });
   }
   return { compatible: mismatches.length === 0, declaredMatches, mismatches };
 }
@@ -277,11 +278,15 @@ function isExpired(validUntil, now) {
 
 function queryKnowledge(options) {
   const query = normalizeQuery(options.query || {});
+  const softFields = new Set(options.softFields || []);
+  for (const field of softFields) {
+    if (!SOFT_CONTEXT_FIELDS.has(field)) throw contractError('KNOWLEDGE_QUERY_INVALID', `unsupported soft context field: ${field}`);
+  }
   const now = options.now || new Date();
   const needles = [...QUERY_FIELDS.map((field) => query[field]).filter(Boolean), ...query.keywords];
   const evaluated = loadKnowledgeEntries(options.roots).map((entry) => {
     const match = matchScore(entry, query);
-    const compatibility = metadataCompatible(entry, query);
+    const compatibility = metadataCompatible(entry, query, softFields);
     const candidate = {
       entryId: entry.entryId,
       title: entry.title,

@@ -84,21 +84,38 @@ assert.strictEqual(started.brief.runtime.entry, undefined);
 assert.strictEqual(started.brief.runtime.requestPath, path.join(started.execDir, 'runtime-request.json'));
 assert.strictEqual(started.brief.runtime.commands, undefined);
 assert.deepStrictEqual(started.brief.runtime.allowedOperations, ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
+assert.deepStrictEqual(started.brief.investigationCapabilities, {
+  visual: { available: true, operation: 'inspectVisual' },
+  layout: { available: true, source: 'scene.evidenceChannels.layout' },
+  knowledge: { available: true, operation: 'knowledge', requiredBeforeNegativeConclusion: true },
+});
 assert.strictEqual(fs.statSync(started.runtime.entry).mode & 0o111, 0o111);
 assert.deepStrictEqual(started.runtime.status, 'READY');
-assert.strictEqual(started.runtime.broker.schemaVersion, 2);
+assert.strictEqual(started.runtime.broker.schemaVersion, 3);
 assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
+assert.deepStrictEqual(run(started.execDir, { operation: 'status' }).knowledgeInvestigation, {
+  available: true,
+  requiredBeforeNegativeConclusion: true,
+  pendingReviews: [],
+  reviewedExpectationRefs: [],
+});
 assert.strictEqual(run(started.execDir, { operation: 'prepare', preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' } }).code, 'CASE_RUNTIME_OPERATION_FORBIDDEN');
 assert.strictEqual(started.item.sessionId, undefined);
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
   ...started.runtime,
-  broker: { ...started.runtime.broker, schemaVersion: 3 },
+  broker: { ...started.runtime.broker, schemaVersion: 4 },
 });
 assert.throws(
   () => resumeExecution({ executionDir: started.execDir }),
   (error) => error?.code === 'CASE_RUNTIME_BINDING_INVALID',
 );
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), started.runtime);
+writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
+  ...started.runtime,
+  broker: { ...started.runtime.broker, schemaVersion: 2 },
+});
+assert.deepStrictEqual(resumeExecution({ executionDir: started.execDir }).brief.runtime.allowedOperations,
+  ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
   ...started.runtime,
   broker: { schemaVersion: 1, allowedOperations: ['observe', 'act', 'knowledge', 'recover', 'finish', 'status'] },
@@ -279,6 +296,11 @@ assert.ok(Array.isArray(knowledge.candidates));
 assert.strictEqual(knowledge.candidates[0].entryId, 'K-runtime-001');
 assert.strictEqual(knowledge.context.app, 'com.example.runtime');
 assert.strictEqual(knowledge.filterDiagnostics, null);
+assert.deepStrictEqual(knowledge.knowledgeInvestigation.pendingReviews, [{
+  queryId: knowledge.queryId,
+  candidateCount: 1,
+  expectationRefs: ['E1'],
+}]);
 fs.unlinkSync(runtimeKnowledgePath);
 fs.writeFileSync(path.join(root, 'knowledge', 'K-other-app-001.md'), `# K-other-app-001 其他应用页面规则
 
@@ -368,6 +390,8 @@ const narrativeStatus = run(started.execDir, { operation: 'status' });
 assert.strictEqual(narrativeStatus.narrative.contextVersion, 1);
 assert.strictEqual(narrativeStatus.narrative.latestPlan.version, 2);
 assert.strictEqual(narrativeStatus.narrative.lastDecision.decision.purpose, '等待页面稳定');
+assert.deepStrictEqual(narrativeStatus.knowledgeInvestigation.pendingReviews, []);
+assert.deepStrictEqual(narrativeStatus.knowledgeInvestigation.reviewedExpectationRefs, ['E1', 'E2']);
 const actionInvocationsBeforePartialNarrative = actionInvocationCount;
 const partialNarrative = run(started.execDir, {
   operation: 'act',

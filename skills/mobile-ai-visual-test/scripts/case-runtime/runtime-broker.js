@@ -9,7 +9,7 @@ const AGENT_OPERATIONS = Object.freeze(['observe', 'act', 'inspectVisual', 'know
 
 function isSupportedBroker(broker) {
   if (!broker || typeof broker !== 'object') return false;
-  if (broker.schemaVersion === 2) {
+  if (broker.schemaVersion === 3 || broker.schemaVersion === 2) {
     return JSON.stringify(broker.allowedOperations) === JSON.stringify(AGENT_OPERATIONS);
   }
   if (broker.schemaVersion === 1) {

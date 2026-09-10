@@ -24,6 +24,15 @@ const KNOWLEDGE_FIELD_LABELS = Object.freeze({
   page: '页面',
   operation: '操作',
 });
+const KNOWLEDGE_INVESTIGATION_LABELS = Object.freeze({
+  NOT_REQUIRED: '无需调查',
+  NO_MATCH: '无匹配候选',
+  NO_APPLICABLE: '无适用知识',
+  INSUFFICIENT: '知识依据不足',
+  CONFLICTING: '知识存在冲突',
+  APPLICABLE_FOUND: '已找到适用知识',
+  MISSING: '调查未完成',
+});
 
 function label(mapping, value, empty = '-') {
   return mapping[value] || empty;
@@ -100,7 +109,7 @@ function renderCurrentContextMarkdown(caseJson, report) {
     `- 收口目的：${narrative.finalDecision?.purpose || '未记录'}`,
     '', '## 最终检查', '');
   for (const check of narrative.checks) {
-    lines.push(`- [${check.status}] ${check.expectation}`, `  - 实际结果：${check.actual || check.reason || '未记录'}`, `  - 相关步骤：${(check.relatedSteps || []).map((step) => `步骤 ${step.number}`).join('、') || '无'}`, `  - 现场证据：${(check.sceneRefs || []).join('、') || '无'}`, `  - 知识依据：${(check.knowledgeRefs || []).join('、') || '无'}`);
+    lines.push(`- [${check.status}] ${check.expectation}`, `  - 实际结果：${check.actual || check.reason || '未记录'}`, `  - 知识调查：${KNOWLEDGE_INVESTIGATION_LABELS[check.knowledgeInvestigation?.status] || '未记录'}`, `  - 相关步骤：${(check.relatedSteps || []).map((step) => `步骤 ${step.number}`).join('、') || '无'}`, `  - 现场证据：${(check.sceneRefs || []).join('、') || '无'}`, `  - 知识依据：${(check.knowledgeRefs || []).join('、') || '无'}`);
     if (check.technicalFacts.length) {
       for (const fact of check.technicalFacts) {
         lines.push(`  - 技术事实：${fact.ref} [${fact.state === 'VALID' ? '有效' : '无效'}] ${fact.code} · ${fact.message}`,

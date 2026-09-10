@@ -62,7 +62,7 @@ Nemo 缺失属于已知平台差异。独立验证其他分类，并在采用本
 
 ## 查询与审计
 
-查询可包含 `platform`、`app`、`version`、`page`、`operation`、`symptom` 和 `keywords`。Runtime 始终使用 execution 绑定的 `appId` 作为 `app`，不会使用产品展示名。本地脚本先排除与查询中已声明元数据明确冲突的条目，再优先返回现象或关键词命中的条目；没有词面命中时，只返回至少一个已声明元数据维度匹配的发现候选。每次最多返回 5 条，响应以 `candidateCount` 表示返回数量，并以 `truncated` 表示是否仍有候选被上限截断。分数只用于候选排序。
+查询可包含 `platform`、`app`、`version`、`page`、`operation`、`symptom` 和 `keywords`。Runtime 始终使用 execution 绑定的 platform、`appId` 和可用版本作为硬兼容条件，不会使用产品展示名；Runtime 已确认的 Scene page 同样是硬条件。Case Agent 可通过 `knowledge.context.page` 和 `knowledge.context.operation` 提供召回提示，这两个字段只参与排序和词面召回，不因名称不一致排除候选，也不能覆盖冻结环境或已确认页面。本地脚本先排除与硬条件明确冲突的条目，再优先返回现象或关键词命中的条目；没有词面命中时，只返回至少一个已声明元数据维度匹配的发现候选。每次最多返回 5 条，响应以 `candidateCount` 表示返回数量，并以 `truncated` 表示是否仍有候选被上限截断。分数只用于候选排序。
 
 零候选时，响应和 execution 事件使用 `filterDiagnostics` 记录扫描数量、按字段排除的数量和有限的拒绝示例。该诊断用于说明为什么没有命中，不改变知识候选，也不要求 Case Agent 追加调用。
 
@@ -75,8 +75,8 @@ Nemo 缺失属于已知平台差异。独立验证其他分类，并在采用本
 
 候选评估附在下一次已有 Runtime 请求的 `decision.knowledgeReview` 中，不增加新的操作类型或 Agent 往返。Runtime 随后记录 `knowledgeReviewed`；零候选由 Runtime 自动记录 `NO_MATCH`。有候选时用 `APPLICABLE_FOUND`、`NO_APPLICABLE`、`CONFLICTING` 或 `INSUFFICIENT` 总结本次调查；`NO_APPLICABLE` 需要评估全部候选，过期条目不能评估为 `APPLICABLE`。
 
-只有最终判断实际依赖外部业务规则时才需要知识调查。知识被评估为适用并影响最终检查时，check 使用 `knowledgeRefs` 引用条目 ID；Runtime 校验所有引用均来自当前 execution 已冻结并评估为 `APPLICABLE` 的候选，但不因 verdict 类型机械要求查询。
+知识被评估为适用并影响最终检查时，check 使用 `knowledgeRefs` 引用条目 ID；Runtime 校验所有引用均来自当前 execution 已冻结并评估为 `APPLICABLE` 的候选。正常、无疑问且不依赖 Scene 外信息的 PASS 可以不查询；实际结果与预期不符、截图和控件树无法独立解释、操作失败或无进展、下一步或结论性质无法确定、可能受外部条件影响，或准备形成负向结论时必须调查。Broker v3 会在 finish 对负向检查确定性收口。
 
 已发布报告只使用 execution 中冻结的候选和内容快照，不重新读取当前知识文件；实时知识条目后续修改或删除不会改变既有 execution 的依据。
 
-知识查询由现场需要触发，不是每个结果的固定步骤。直接证据足以判断时可直接形成结论；现象与用例不一致、性质无法判断、存在平台/版本/账号/配置差异、前置或路径异常，或准备形成负向结论时再查询。瞬态加载经重新观察恢复且不影响结论时不需要查询。
+知识查询由现场需要触发，不是每个结果的固定步骤。Scene 证据充分只说明现场事实能够确认，不等于异常事实的解释已经充分；查询无候选或候选不适用时，完成调查后仍按现场证据形成结论。瞬态加载经重新观察恢复且不影响结论时不需要查询。

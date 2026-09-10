@@ -54,14 +54,14 @@ node scripts/batch.js <init|bootstrap|reconcile|start|commit|status|cancel|teard
 
 ## Case Runtime
 
-Case Agent 把一个 RuntimeRequest JSON 写入 `runtime.requestPath`，再不带参数运行 `runtime.command`。Broker v2 只允许 `observe`、`act`、`inspectVisual`、`knowledge`、`recover`、`finish` 和 `status`；`prepare` 是 Lifecycle 内部能力，通过 Agent Client 调用会返回 `CASE_RUNTIME_OPERATION_FORBIDDEN`。历史 execution 使用 Broker v1，冻结 allowlist 不含 `inspectVisual` 时仍按旧协议恢复。
+Case Agent 把一个 RuntimeRequest JSON 写入 `runtime.requestPath`，再不带参数运行 `runtime.command`。Broker v3 只允许 `observe`、`act`、`inspectVisual`、`knowledge`、`recover`、`finish` 和 `status`，并启用负向结论知识调查收口；`prepare` 是 Lifecycle 内部能力，通过 Agent Client 调用会返回 `CASE_RUNTIME_OPERATION_FORBIDDEN`。历史 Broker v1/v2 execution 按冻结 allowlist 和规则恢复，不追溯应用 v3 约束。
 
-Case Brief 的 `runtime.allowedOperations` 是当前 execution 冻结的实际能力列表。Scene 的 `evidenceChannels.visual.attachment.path` 是截图绝对路径，供宿主只读 `view_image` 使用；`evidenceChannels.layout` 表示已内联的控件树通道。Agent 实际查看图片后调用 `inspectVisual`，并在 `decision.observation` 中记录简短的可见事实。新协议 execution 的最终 check 所引用的每个 Scene 都必须存在视觉检查记录，否则 `finish` 返回 `RESULT_INCOMPLETE`。
+Case Brief 的 `runtime.allowedOperations` 是当前 execution 冻结的实际能力列表，`investigationCapabilities` 明确列出 visual、layout 和 knowledge。Scene 的 `evidenceChannels.visual.attachment.path` 是截图绝对路径，供宿主只读 `view_image` 使用；`evidenceChannels.layout` 表示已内联的控件树通道。Agent 实际查看图片后调用 `inspectVisual`，并在 `decision.observation` 中记录简短的可见事实。Runtime 响应的 `knowledgeInvestigation` 提供可用性、强制收口规则、待复核查询和已调查验证点。新协议 execution 的最终 check 所引用的每个 Scene 都必须存在视觉检查记录，否则 `finish` 返回 `RESULT_INCOMPLETE`。
 
 ```json
 { "operation": "observe", "decision": { "purpose": "建立基线", "expectationRefs": [], "planUpdate": { "reason": "初始计划", "next": ["进入目标页", "逐项验证"] } } }
 { "operation": "act", "basedOnSceneId": "scene-0001", "capabilityId": "scene-0001:tap:el-8", "decision": { "purpose": "进入设置", "expectationRefs": ["E1"] } }
-{ "operation": "knowledge", "basedOnSceneId": "scene-0002", "query": "当前页面显示异常", "decision": { "purpose": "查询本地经验", "expectationRefs": ["E2"] } }
+{ "operation": "knowledge", "basedOnSceneId": "scene-0002", "query": "当前页面显示异常", "context": { "page": "设置页", "operation": "保存设置" }, "decision": { "purpose": "查询本地经验", "expectationRefs": ["E2"] } }
 { "operation": "recover", "basedOnSceneId": "scene-0002", "reason": "重新建立 App 起点", "decision": { "purpose": "恢复后继续", "expectationRefs": [] } }
 { "operation": "status" }
 ```
@@ -78,6 +78,6 @@ Action Result v2 分别公开 `lifecycle`、`command`、`deviceExecution` 和 `o
 { "type": "SEARCH_ABSENCE", "sceneRef": "scene-0004", "scrollContextRef": "scroll-context-0001" }
 ```
 
-CaseResult 必须一对一覆盖 Frozen CaseSpec 全部 expectation。PASS/FAIL 引用 Scene；知识引用必须已评估为 `APPLICABLE`；BLOCKED 的 `technicalRefs` 必须指向仍有效且绑定该 expectation 的 Runtime 技术事实。
+CaseResult 必须一对一覆盖 Frozen CaseSpec 全部 expectation。PASS/FAIL 引用 Scene；知识引用必须已评估为 `APPLICABLE`；BLOCKED 的 `technicalRefs` 必须指向仍有效且绑定该 expectation 的 Runtime 技术事实。Broker v3 的 FAIL、INCONCLUSIVE 和无有效技术事实的 BLOCKED 在 finish 前必须完成关联知识调查；`NO_MATCH`、`NO_APPLICABLE`、`INSUFFICIENT` 或 `CONFLICTING` 都可关闭调查而不强制改变 verdict。
 
 Runtime 状态包括 `SCENE`、`VISUAL_INSPECTED`、`SCENE_CHANGED`、`RECOVERY_APPLIED`、`KNOWLEDGE`、`COMPLETED`、`RESULT_INCOMPLETE`、`REQUEST_INVALID`、`TIME_LIMIT` 和 `TECHNICAL`。批次 CLI 的业务失败也输出结构化 `TECHNICAL` JSON；只有 CLI 语法错误使用非零退出码。

@@ -103,6 +103,26 @@ const nemo = queryKnowledge({
 assert.strictEqual(nemo.candidateCount, 1);
 assert.strictEqual(nemo.candidates[0].entryId, 'K-editor-001');
 
+const nemoWithSoftContext = queryKnowledge({
+  roots: [skill, workspace],
+  softFields: ['page', 'operation'],
+  query: {
+    platform: 'harmony', app: 'com.codemao.hos.lunar', page: '创作中心', operation: '横向滑动入口',
+    symptom: 'Kids 可见但没有 Nemo', keywords: ['Nemo', 'Kids'],
+  },
+});
+assert.strictEqual(nemoWithSoftContext.candidateCount, 1);
+assert.strictEqual(nemoWithSoftContext.candidates[0].entryId, 'K-editor-001');
+
+const nemoWithHardPageMismatch = queryKnowledge({
+  roots: [skill, workspace],
+  query: {
+    platform: 'harmony', app: 'com.codemao.hos.lunar', page: '创作中心',
+    symptom: 'Kids 可见但没有 Nemo', keywords: ['Nemo', 'Kids'],
+  },
+});
+assert.strictEqual(nemoWithHardPageMismatch.candidateCount, 0);
+
 const multiApp = queryKnowledge({
   roots: [skill, workspace],
   query: { platform: 'harmony', app: 'com.example.two', keywords: ['游客入口'] },

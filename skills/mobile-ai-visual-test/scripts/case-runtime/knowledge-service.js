@@ -22,13 +22,22 @@ function knowledge(execDir, request, options = {}) {
   const runtime = require('../lib/execution-lifecycle').readJson(path.join(execDir, 'runtime.json'), null);
   const roots = Array.isArray(runtime?.knowledgeRoots) ? runtime.knowledgeRoots.map((root) => path.resolve(root)) : [];
   if (!roots.length || roots.some((root) => !path.isAbsolute(root))) throw new Error('KNOWLEDGE_ROOTS_UNBOUND: runtime knowledge roots are missing');
+  const confirmedPage = scene?.app?.page || null;
+  const hintedPage = request.context?.page || null;
+  const hintedOperation = request.context?.operation || null;
+  const softFields = [
+    ...(!confirmedPage && hintedPage ? ['page'] : []),
+    ...(hintedOperation ? ['operation'] : []),
+  ];
   const result = queryKnowledge({
     roots,
+    softFields,
     query: {
       platform: execution.platform,
       app: appId,
       ...(execution.targetBinding.appVersion ? { version: execution.targetBinding.appVersion } : {}),
-      ...(scene?.app?.page ? { page: scene.app.page } : {}),
+      ...(confirmedPage || hintedPage ? { page: confirmedPage || hintedPage } : {}),
+      ...(hintedOperation ? { operation: hintedOperation } : {}),
       symptom: request.query,
       keywords: keywords([request.query, contextEvent?.caseContext?.summary || '', ...relatedExpectations].join(' ')),
     },
@@ -75,6 +84,8 @@ function knowledge(execDir, request, options = {}) {
       platform: execution.platform,
       app: appId,
       ...(execution.targetBinding.appVersion ? { version: execution.targetBinding.appVersion } : {}),
+      ...(confirmedPage ? { page: confirmedPage } : {}),
+      ...(hintedPage || hintedOperation ? { hints: { ...(hintedPage ? { page: hintedPage } : {}), ...(hintedOperation ? { operation: hintedOperation } : {}) } } : {}),
     },
   }, options);
   if (!candidates.length) require('./knowledge-review').recordNoMatch(execDir, queryEvent, options);
@@ -86,6 +97,8 @@ function knowledge(execDir, request, options = {}) {
       platform: execution.platform,
       app: appId,
       ...(execution.targetBinding.appVersion ? { version: execution.targetBinding.appVersion } : {}),
+      ...(confirmedPage ? { page: confirmedPage } : {}),
+      ...(hintedPage || hintedOperation ? { hints: { ...(hintedPage ? { page: hintedPage } : {}), ...(hintedOperation ? { operation: hintedOperation } : {}) } } : {}),
     },
     candidates,
     truncated: result.truncated,

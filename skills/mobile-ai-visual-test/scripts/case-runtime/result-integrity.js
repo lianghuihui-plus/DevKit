@@ -76,9 +76,20 @@ function validateExpectationCoverage(execDir, result, events, suppliedExecution 
   return { expectations: caseSpec.expectations, coveredExpectationRefs: suppliedRefs, complete: true };
 }
 
-function validateKnowledgeClosure(result, events, execution = null) {
+function investigationConclusion(conclusions) {
+  for (const value of ['APPLICABLE_FOUND', 'CONFLICTING', 'INSUFFICIENT', 'NO_APPLICABLE', 'NO_MATCH']) {
+    if (conclusions.includes(value)) return value;
+  }
+  return null;
+}
+
+function validateKnowledgeClosure(result, events, execution = null, broker = null) {
   const { queries, reviews, applicableByExpectation } = buildKnowledgeIndex(events);
   const missing = [];
+  const investigationRequired = broker?.schemaVersion === 3;
+  const investigationByExpectation = {};
+  const requiredExpectationRefs = [];
+  const completedExpectationRefs = [];
   const technicalByRef = new Map(technicalFacts(events)
     .filter((event) => event.technicalFactRef)
     .map((event) => [event.technicalFactRef, event]));
@@ -121,6 +132,29 @@ function validateKnowledgeClosure(result, events, execution = null) {
         });
       }
     }
+    const requiresInvestigation = investigationRequired && (
+      check.status === 'FAIL'
+      || check.status === 'INCONCLUSIVE'
+      || (check.status === 'BLOCKED' && validTechnicalRefs.length === 0)
+    );
+    const associatedQueries = [...queries.values()].filter((event) => (event.expectationRefs || []).includes(check.expectationRef));
+    const completedReviews = associatedQueries.map((event) => reviews.get(event.queryId)).filter(Boolean);
+    const completed = completedReviews.length > 0;
+    if (requiresInvestigation) requiredExpectationRefs.push(check.expectationRef);
+    if (completed) completedExpectationRefs.push(check.expectationRef);
+    const conclusion = investigationConclusion(completedReviews.map((event) => event.conclusion));
+    investigationByExpectation[check.expectationRef] = {
+      required: requiresInvestigation,
+      status: conclusion || (requiresInvestigation ? 'MISSING' : 'NOT_REQUIRED'),
+      queryIds: associatedQueries.map((event) => event.queryId),
+      reviewedQueryIds: completedReviews.map((event) => event.queryId),
+    };
+    if (requiresInvestigation && !completed) {
+      missing.push({
+        field: `checks.${check.expectationRef}.knowledgeInvestigation`,
+        reason: '负向结论前尚未完成与该验证点关联的知识调查',
+      });
+    }
   }
   if (missing.length) {
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult knowledge investigation is incomplete', { missing });
@@ -130,6 +164,12 @@ function validateKnowledgeClosure(result, events, execution = null) {
     reviewedQueryIds: [...reviews.keys()],
     applicableEntryIds: [...new Set([...applicableByExpectation.values()].flatMap((items) => [...items]))],
     referencedTechnicalFactRefs: [...referencedTechnicalFactRefs],
+    investigation: {
+      requiredExpectationRefs: [...new Set(requiredExpectationRefs)],
+      completedExpectationRefs: [...new Set(completedExpectationRefs)],
+      missingExpectationRefs: [...new Set(requiredExpectationRefs.filter((ref) => !completedExpectationRefs.includes(ref)))],
+      byExpectation: investigationByExpectation,
+    },
   };
 }
 
@@ -171,7 +211,7 @@ function validateSearchAbsence(execDir, result, execution, expectationCoverage =
 
 function validateVisualInspectionCoverage(execDir, result, events, scenesById) {
   const runtime = readJson(path.join(execDir, 'runtime.json'), null);
-  const required = runtime?.broker?.schemaVersion === 2
+  const required = [2, 3].includes(runtime?.broker?.schemaVersion)
     && runtime.broker.allowedOperations?.includes('inspectVisual') === true;
   if (!required) return { required: false, inspectedSceneRefs: [] };
   const inspections = events.filter((event) => event.type === 'visualInspected');
@@ -252,7 +292,8 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   const events = store.events(execDir);
   validateVerdict(result, events);
   const expectationCoverage = validateExpectationCoverage(execDir, result, events, execution);
-  const knowledgeCoverage = validateKnowledgeClosure(result, events, execution);
+  const runtime = readJson(path.join(execDir, 'runtime.json'), null);
+  const knowledgeCoverage = validateKnowledgeClosure(result, events, execution, runtime?.broker || null);
   const searchCoverage = validateSearchAbsence(execDir, result, execution, expectationCoverage);
   const sceneEvents = events.filter((event) => event.type === 'sceneObserved');
   const byScene = new Map(sceneEvents.map((event) => [event.sceneId, event]));

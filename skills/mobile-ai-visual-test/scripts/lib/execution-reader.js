@@ -26,12 +26,17 @@ function currentContract(platform, skillRoot = path.resolve(__dirname, '../..'))
   return currentContracts.get(key);
 }
 
-function assertCurrentExecution(execution, options = {}) {
+function assertExecutionSchema(execution) {
   if (execution?.schemaVersion !== 10 || execution.runtime !== 'case-runtime') {
     const error = new Error('This execution was created by an unsupported protocol and must be run again');
     error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
     throw error;
   }
+  return execution;
+}
+
+function assertCurrentExecution(execution, options = {}) {
+  assertExecutionSchema(execution);
   let contract;
   try {
     contract = options.contract || currentContract(execution.platform, options.skillRoot);
@@ -46,6 +51,10 @@ function assertCurrentExecution(execution, options = {}) {
     throw error;
   }
   return execution;
+}
+
+function assertReadableCompletedExecution(execution) {
+  return assertExecutionSchema(execution);
 }
 
 function currentDisplayModel(result, metrics, execution, events = []) {
@@ -122,7 +131,10 @@ function emptyExecutionReport(execDir = null) {
 
 function executionSelection(execDir, workspaceRoot = null) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 10 || execution.runtime !== 'case-runtime') return null;
+  if (execution?.schemaVersion !== 10 || execution.runtime !== 'case-runtime') {
+    const time = Date.parse(execution?.endedAt || execution?.startedAt || 0) || fs.statSync(execDir).mtimeMs;
+    return { execDir, execution, result: null, completion: null, closure: null, priority: -1, state: 'UNSUPPORTED', time };
+  }
   const closure = workspaceRoot && execution.finalized !== true
     ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
     : null;
@@ -146,21 +158,29 @@ function selectExecutionDir(runtimeDir) {
   const root = path.join(runtimeDir, 'executions');
   if (!fs.existsSync(root)) return null;
   const workspaceRoot = path.resolve(runtimeDir, '../../../..');
-  return fs.readdirSync(root).filter((name) => !name.startsWith('.')).map((name) => path.join(root, name))
+  const candidates = fs.readdirSync(root).filter((name) => !name.startsWith('.')).map((name) => path.join(root, name))
     .filter((execDir) => fs.statSync(execDir).isDirectory() && fs.existsSync(path.join(execDir, 'execution.json')))
-    .map((execDir) => executionSelection(execDir, workspaceRoot)).filter(Boolean)
+    .map((execDir) => executionSelection(execDir, workspaceRoot)).filter(Boolean);
+  const selected = candidates.filter((candidate) => candidate.state !== 'UNSUPPORTED')
     .sort((left, right) => right.priority - left.priority || right.time - left.time || right.execDir.localeCompare(left.execDir))[0] || null;
+  const newestUnsupported = candidates.filter((candidate) => candidate.state === 'UNSUPPORTED')
+    .sort((left, right) => right.time - left.time || right.execDir.localeCompare(left.execDir))[0] || null;
+  return newestUnsupported && (!selected || newestUnsupported.time > selected.time) ? newestUnsupported : selected;
 }
 
 function readExecutionReport(execDir) {
   if (!execDir) return emptyExecutionReport();
   const report = emptyExecutionReport(execDir);
-  report.execution = assertCurrentExecution(readJson(path.join(execDir, 'execution.json'), null));
+  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  const completion = readJson(path.join(execDir, 'completion.json'), null);
+  report.execution = execution?.finalized === true && completion
+    ? assertReadableCompletedExecution(execution)
+    : assertCurrentExecution(execution);
   report.schemaFamily = 'current';
   report.snapshot = readJson(path.join(execDir, 'case.snapshot.json'), null);
   report.rawResult = readJson(path.join(execDir, 'result.json'), null);
   report.metrics = readJson(path.join(execDir, 'metrics.json'), null);
-  report.completion = readJson(path.join(execDir, 'completion.json'), null);
+  report.completion = completion;
   report.events = readJsonl(path.join(execDir, 'events.jsonl'));
   report.closure = require('./execution-closure').executionClosureForDir(execDir);
   const sourcePath = path.join(execDir, 'source.snapshot.md');
@@ -218,6 +238,7 @@ function readExecutionReport(execDir) {
 
 module.exports = {
   assertCurrentExecution,
+  assertReadableCompletedExecution,
   currentDisplayModel,
   emptyExecutionReport,
   finalizationRecoveryDisplayModel,
