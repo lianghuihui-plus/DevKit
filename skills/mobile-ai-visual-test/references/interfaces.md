@@ -5,37 +5,28 @@
 ```bash
 node scripts/workspace.js --cwd <workspace>
 node scripts/import-case.js <input-file> --workspace <workspace>
+node scripts/case-definition.js status --workspace <workspace> --case-no <no>
 scripts/probe-env.sh --platform <harmony|android|ios> [platform options]
 scripts/prepare-env.sh --platform <harmony|android|ios> [platform options]
 node scripts/app-artifact.js register --workspace <workspace> --path <apk|hap|app|ipa> --platform <platform> --app-id <id> --version <version> --build <build> [--device-type <simulator|realDevice>]
 node scripts/environment.js confirm --workspace <workspace> --binding-json '<json>' --probe-json '<json>' [--app-provisioning-json '<json>'] --user-confirmation '<text>'
 node scripts/execution-request.js create --workspace <workspace> --batch-id <id> --mode <single|batch> --targets-json '<targets-json>' [--bootstrap-policy-json '<policy-json>'] --user-instruction '<text>'
-node scripts/batch.js <init|bootstrap|reconcile|start|commit|status|cancel|teardown> --workspace <workspace> --batch-id <id>
+node scripts/batch.js <init|bootstrap|reconcile|start|commit|status|cancel|teardown> --workspace <workspace> --batch-id <id> [--continuation-reason <reason>]
 ```
 
-每个 target 必须在授权前提供 CaseSpec 和初始状态要求。ExecutionRequest 会补齐稳定 ID、哈希和 InitialStatePreflight，并冻结原文、Case Contract、CaseSpec、requirement 与 policy：
+每个 target 只提供用例选择器和 READY CaseDefinition 引用。ExecutionRequest 会验证定义与当前 source/case 的绑定，补齐稳定 ID、哈希和 InitialStatePreflight，并冻结原文、Case Contract、CaseDefinition、CaseSpec、requirement 与 policy：
 
 ```json
 {
   "caseNo": "004",
-  "caseSpec": {
-    "summary": "验证设置保存结果",
-    "preconditions": ["用户已登录"],
-    "expectations": [
-      { "text": "设置入口可用", "verificationKind": "DIRECT_OBSERVATION", "sourceEvidence": [{ "quote": "设置入口可用" }] },
-      { "text": "目标条目存在", "verificationKind": "SEARCH_EXISTENCE", "sourceEvidence": [{ "quote": "目标条目存在" }] }
-    ],
-    "ambiguities": []
-  },
-  "initialStateRequirement": {
-    "schemaVersion": 1,
-    "targetState": "FRESH_INSTALL",
-    "rationale": "用例原文要求卸载并重新安装"
+  "definitionRef": {
+    "definitionId": "definition-...",
+    "definitionSha": "case-definition-..."
   }
 }
 ```
 
-`initialStateRequirement.targetState` 可为 `KEEP_EXISTING`、`APP_LOCAL_STATE_EMPTY` 或 `FRESH_INSTALL`。原文要求卸载并重新安装时固定使用 `FRESH_INSTALL`；Android、HarmonyOS 的实际策略为 `CLEAR_APP_DATA` 并允许 `PREINSTALLED` provisioning；iOS 的实际策略为 `REINSTALL_APP` 并要求 `ARTIFACT_MANAGED` provisioning。调用方不提交单用例 `preparationPolicy`，ExecutionRequest 根据平台和目标状态自动生成并冻结实际副作用。用户的执行指令已经授权用例要求的准备步骤，不再追加授权交互；iOS 缺少安装资产会以 `INITIAL_STATE_PREFLIGHT_FAILED` 提前拒绝，Case Agent 不会启动。
+CaseDefinition 的 `initialStateIntent.targetState` 可为 `KEEP_EXISTING`、`APP_LOCAL_STATE_EMPTY` 或 `FRESH_INSTALL`。Publisher 校验其原文依据；ExecutionRequest 再按平台投影为冻结的 `initialStateRequirement` 和 `preparationPolicy`。Android、HarmonyOS 的 `FRESH_INSTALL` 使用 `CLEAR_APP_DATA` 并允许 `PREINSTALLED` provisioning；iOS 使用 `REINSTALL_APP` 并要求 `ARTIFACT_MANAGED` provisioning。
 
 `bootstrapPolicy` 默认不重装。需要批次开始前重装冻结制品时必须显式提交：
 
@@ -50,34 +41,6 @@ node scripts/batch.js <init|bootstrap|reconcile|start|commit|status|cancel|teard
 
 `app-artifact register` 返回的 manifest 包含 expected identity 和实际提取状态。`UNAVAILABLE` 表示登记环境无法解析，不代表已核验；任何实际重装仍必须返回匹配的 `installedIdentity`。
 
-`batch start` 返回从 execution 快照和 Runtime 当前状态派生的 Case Brief，其中只有原文、Frozen CaseSpec、初始状态结果、目标摘要、可选 Scene 和预绑定 Runtime Client；不存在可写的权威 `case-brief.json`。只有 `agentRequired=true` 才创建 Case Agent。`batch reconcile` 对主 Agent 返回 `BOOTSTRAP`、`NEED_CASE_AGENT`、`WAIT_CASE_AGENT`、可重试的 `PUBLISH_REPORTS` 或三类批次终态，内部自动完成 commit、execution settle、平台释放和报告发布。锁竞争最多等待三次，致命错误进入阻塞收口。
+`batch start` 的主 Agent 可见响应只包含调度字段：`action`、`agentRequired`、`batchId`、`caseKey`、`executionId` 和可选 `handoff`。`handoff` 只包含 schema、ID、绝对路径、SHA-256 与带 claim token 的 `loaderCommand`，不包含 Prompt、Brief、Scene 或 Runtime 绑定正文。Loader 首次读取时在锁内消费 dispatch；同 token 重试幂等，错误 token 或已被 continuation 替换的 Handoff 会被拒绝。
 
-## Case Runtime
-
-Case Agent 把一个 RuntimeRequest JSON 写入 `runtime.requestPath`，再不带参数运行 `runtime.command`。Broker v3 只允许 `observe`、`act`、`inspectVisual`、`knowledge`、`recover`、`finish` 和 `status`，并启用负向结论知识调查收口；`prepare` 是 Lifecycle 内部能力，通过 Agent Client 调用会返回 `CASE_RUNTIME_OPERATION_FORBIDDEN`。历史 Broker v1/v2 execution 按冻结 allowlist 和规则恢复，不追溯应用 v3 约束。
-
-Case Brief 的 `runtime.allowedOperations` 是当前 execution 冻结的实际能力列表，`investigationCapabilities` 明确列出 visual、layout 和 knowledge。Scene 的 `evidenceChannels.visual.attachment.path` 是截图绝对路径，供宿主只读 `view_image` 使用；`evidenceChannels.layout` 表示已内联的控件树通道。Agent 实际查看图片后调用 `inspectVisual`，并在 `decision.observation` 中记录简短的可见事实。Runtime 响应的 `knowledgeInvestigation` 提供可用性、强制收口规则、待复核查询和已调查验证点。新协议 execution 的最终 check 所引用的每个 Scene 都必须存在视觉检查记录，否则 `finish` 返回 `RESULT_INCOMPLETE`。
-
-```json
-{ "operation": "observe", "decision": { "purpose": "建立基线", "expectationRefs": [], "planUpdate": { "reason": "初始计划", "next": ["进入目标页", "逐项验证"] } } }
-{ "operation": "act", "basedOnSceneId": "scene-0001", "capabilityId": "scene-0001:tap:el-8", "decision": { "purpose": "进入设置", "expectationRefs": ["E1"] } }
-{ "operation": "knowledge", "basedOnSceneId": "scene-0002", "query": "当前页面显示异常", "context": { "page": "设置页", "operation": "保存设置" }, "decision": { "purpose": "查询本地经验", "expectationRefs": ["E2"] } }
-{ "operation": "recover", "basedOnSceneId": "scene-0002", "reason": "重新建立 App 起点", "decision": { "purpose": "恢复后继续", "expectationRefs": [] } }
-{ "operation": "status" }
-```
-
-`act` 的 `capabilityId` 与 `visual` 二选一。视觉坐标为 0..1；长按必须提供 `durationMs`。`observationPolicy.duringActionAtMs` 仅适用于长按且满足 `20 <= duringActionAtMs < durationMs`。`inspectVisual` 的 `basedOnSceneId` 引用实际查看的当前或历史 Scene，并包含 `decision.purpose`、`decision.expectationRefs` 和非空 `decision.observation`；响应中的 `scene` 始终保持为当前 Scene，避免后续动作误用历史状态。
-
-每种 operation 使用独立字段白名单，未知字段和旧 `intent` 会被拒绝。`act.decision` 必须包含 `purpose` 与 `expectationRefs`；其余 decision 字段可选，只在确有信息时提交。
-
-Action Result v2 分别公开 `lifecycle`、`command`、`deviceExecution` 和 `observedEffect`。`spatialEvidence` 的当前标注附件为包含操作前底图的 PNG；`DISPATCH_ONLY` 不能证明真实触点，`DEVICE_CONFIRMED` 且 `actual` 非空才表示平台确认。
-
-搜索型验证点的负向 FAIL 只有在滚动上下文 `absenceConclusionSupported=true` 时成立，并提交：
-
-```json
-{ "type": "SEARCH_ABSENCE", "sceneRef": "scene-0004", "scrollContextRef": "scroll-context-0001" }
-```
-
-CaseResult 必须一对一覆盖 Frozen CaseSpec 全部 expectation。PASS/FAIL 引用 Scene；知识引用必须已评估为 `APPLICABLE`；BLOCKED 的 `technicalRefs` 必须指向仍有效且绑定该 expectation 的 Runtime 技术事实。Broker v3 的 FAIL、INCONCLUSIVE 和无有效技术事实的 BLOCKED 在 finish 前必须完成关联知识调查；`NO_MATCH`、`NO_APPLICABLE`、`INSUFFICIENT` 或 `CONFLICTING` 都可关闭调查而不强制改变 verdict。
-
-Runtime 状态包括 `SCENE`、`VISUAL_INSPECTED`、`SCENE_CHANGED`、`RECOVERY_APPLIED`、`KNOWLEDGE`、`COMPLETED`、`RESULT_INCOMPLETE`、`REQUEST_INVALID`、`TIME_LIMIT` 和 `TECHNICAL`。批次 CLI 的业务失败也输出结构化 `TECHNICAL` JSON；只有 CLI 语法错误使用非零退出码。
+正常 `batch reconcile` 返回 `WAIT_CASE_AGENT` 时只包含当前 batch/case/execution 标识及可选重试诊断，不返回 Brief。确认原 Agent 句柄丢失后，使用 `batch start --continuation-reason <reason>` 显式生成递增 Handoff；它沿用原 `executionId`。`batch reconcile` 还会返回 `BOOTSTRAP`、`NEED_CASE_AGENT`、可重试的 `PUBLISH_REPORTS` 或三类批次终态，并在内部自动完成 commit、execution settle、平台释放和报告发布。锁竞争经过有界重试，致命错误进入阻塞收口。

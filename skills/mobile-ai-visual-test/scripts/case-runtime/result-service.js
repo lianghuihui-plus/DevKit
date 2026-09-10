@@ -7,10 +7,12 @@ const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { validateResultIntegrity } = require('./result-integrity');
 const store = require('./store');
 const telemetry = require('./telemetry');
+const { deriveExecutionTiming } = require('../lib/execution-timing');
 
 function metrics(execution, result, events, endedAt, execDir = null, options = {}) {
   const count = (type) => events.filter((event) => event.type === type).length;
   const totalElapsedMs = Math.max(0, Date.parse(endedAt) - Date.parse(execution.startedAt));
+  const executionTiming = deriveExecutionTiming({ ...execution, endedAt });
   const timing = execDir ? telemetry.summarize(execDir, totalElapsedMs, options.openInvocation || null, options) : {
     totalElapsedMs,
     runtimeActiveMs: 0,
@@ -42,6 +44,12 @@ function metrics(execution, result, events, endedAt, execDir = null, options = {
     verdict: result.verdict,
     executionStatus: 'COMPLETED',
     elapsedMs: totalElapsedMs,
+    caseTotalElapsedMs: executionTiming.durationMs,
+    coordinatorPreparationMs: executionTiming.phases.coordinatorPreparationMs,
+    initialStatePreparationMs: executionTiming.phases.initialStatePreparationMs,
+    handoffPreparationMs: executionTiming.phases.handoffPreparationMs,
+    handoffSchedulingMs: executionTiming.phases.handoffSchedulingMs,
+    caseAgentPhaseMs: executionTiming.phases.caseAgentPhaseMs,
     ...timing,
     warmSessionGenerationStart: execution.warmSessionGenerationStart,
     warmSessionGenerationEnd: execution.warmSessionGeneration,

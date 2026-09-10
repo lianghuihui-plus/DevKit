@@ -15,6 +15,7 @@ const {
   startCurrentCase,
 } = require('../batch/core');
 const { createCaseContract } = require('../execution/contracts/case-contract');
+const lifecycle = require('../case-runtime/lifecycle');
 const { findActiveExecutions, readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
 
@@ -38,7 +39,31 @@ const adapter = {
   probeSession: () => ({ ok: true, binding }),
 };
 bootstrapBatch({ workspaceRoot: root, batchId, adapter });
-startCurrentCase({ workspaceRoot: root, batchId });
+const started = startCurrentCase({ workspaceRoot: root, batchId });
+assert.deepStrictEqual(Object.keys(started).sort(), ['action', 'agentRequired', 'batchId', 'caseKey', 'executionId', 'handoff']);
+assert.strictEqual(started.action, 'DELEGATE_CASE_AGENT');
+assert.strictEqual(started.agentRequired, true);
+assert.ok(started.handoff?.path);
+for (const key of ['brief', 'runtime', 'execution', 'scene', 'source', 'execDir', 'state', 'item', 'initialState']) {
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(started, key), false, `start response must not expose ${key}`);
+}
+const repeatedStart = startCurrentCase({ workspaceRoot: root, batchId });
+assert.deepStrictEqual(repeatedStart.handoff, started.handoff);
+const originalResumeExecution = lifecycle.resumeExecution;
+lifecycle.resumeExecution = () => {
+  throw new Error('WAIT_CASE_AGENT must not resume the Case Runtime');
+};
+try {
+  const waiting = reconcileBatch({ workspaceRoot: root, batchId, adapter });
+  assert.deepStrictEqual(waiting, {
+    action: 'WAIT_CASE_AGENT',
+    batchId,
+    caseKey,
+    executionId: started.executionId,
+  });
+} finally {
+  lifecycle.resumeExecution = originalResumeExecution;
+}
 
 const locked = () => {
   const error = new Error('runtime lock is busy');

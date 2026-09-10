@@ -80,6 +80,43 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
   return scene;
 }
 
+function countByKind(values) {
+  return values.reduce((counts, item) => ({ ...counts, [item.kind]: (counts[item.kind] || 0) + 1 }), {});
+}
+
+function projectSceneSummary(scene) {
+  if (!scene) return null;
+  const interactive = (scene.elements || []).filter((element) => element.clickable || element.checkable || element.editable);
+  return {
+    schemaVersion: 3,
+    sceneId: scene.sceneId,
+    generation: scene.generation,
+    warmSessionRef: scene.warmSessionRef,
+    capturedAt: scene.capturedAt,
+    screenshot: scene.screenshot,
+    evidenceChannels: {
+      ...scene.evidenceChannels,
+      layout: { ...scene.evidenceChannels?.layout, inline: false, inspectOperation: 'inspectScene' },
+    },
+    app: scene.app,
+    signals: scene.signals,
+    conflicts: scene.conflicts || [],
+    elementSummary: {
+      total: (scene.elements || []).length,
+      interactive: interactive.length,
+      visibleInteractiveLabels: interactive.slice(0, 8).map((element) => element.text || element.role || element.id),
+    },
+    capabilitySummary: { total: (scene.capabilities || []).length, byKind: countByKind(scene.capabilities || []) },
+    scrollSummary: {
+      containers: (scene.scrollContainers || []).length,
+      contexts: (scene.scrollContexts || []).map(({ id, axis, trackingStatus, coverage, reachedStart, reachedEnd }) => ({ id, axis, trackingStatus, coverage, reachedStart, reachedEnd })),
+    },
+    visual: scene.visual,
+    previousAction: scene.previousAction,
+    inspectScene: { operation: 'inspectScene', views: ['ELEMENTS', 'CAPABILITIES', 'LAYOUT'] },
+  };
+}
+
 function observe(execDir, options = {}) {
   const execution = store.loadExecution(execDir, { allowFinalized: options.allowFinalized === true });
   const previousScene = store.readCurrentScene(execDir);
@@ -125,7 +162,7 @@ function observe(execDir, options = {}) {
     app: scene.app,
     technicalSignals: observation.technicalSignals,
   }, { now: observation.time, allowFinalized: options.allowFinalized === true });
-  return { status: 'SCENE', scene };
+  return { status: 'SCENE', scene: projectSceneSummary(scene) };
 }
 
-module.exports = { observe, sceneFromObservation };
+module.exports = { observe, projectSceneSummary, sceneFromObservation };

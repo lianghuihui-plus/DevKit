@@ -12,9 +12,10 @@ const { createCaseContract } = require('../execution/contracts/case-contract');
 const { buildContract } = require('../build-agent-contract');
 const { run, parseRequest } = require('../case-runtime/runtime-client');
 const { resumeExecution } = require('../case-runtime/lifecycle');
+const { loadAgentHandoff } = require('../batch/agent-handoff');
 const { readExecutionReport } = require('../lib/execution-reader');
 const { refreshCommittedCaseReports } = require('../report/report-service');
-const { writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { acquireFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -23,6 +24,11 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 const T0 = '2026-09-03T10:00:00.000Z';
 const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-case-runtime-')), 'workspace with spaces $literal');
 createTestWorkspace(root);
+const transientLock = path.join(root, 'runs', 'transient-write.lock');
+fs.mkdirSync(path.dirname(transientLock), { recursive: true });
+fs.writeFileSync(transientLock, '');
+assert.throws(() => acquireFileLock(transientLock), (error) => error?.code === 'EXECUTION_LOCKED');
+fs.unlinkSync(transientLock);
 fs.mkdirSync(path.join(root, 'knowledge'));
 const runtimeKnowledgePath = path.join(root, 'knowledge', 'K-runtime-001.md');
 fs.writeFileSync(runtimeKnowledgePath, `# K-runtime-001 页面稳定等待规则
@@ -73,37 +79,64 @@ const adapter = {
 };
 bootstrapBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 });
 
-const started = startCurrentCase({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, executionId: 'execution-runtime-001', now: T0 });
-assert.strictEqual(started.execution.schemaVersion, 10);
+const startedResponse = startCurrentCase({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, executionId: 'execution-runtime-001', now: T0 });
+assert.deepStrictEqual(Object.keys(startedResponse).sort(), ['action', 'agentRequired', 'batchId', 'caseKey', 'executionId', 'handoff']);
+assert.strictEqual(startedResponse.action, 'DELEGATE_CASE_AGENT');
+assert.strictEqual(startedResponse.agentRequired, true);
+const startedExecDir = fs.realpathSync(path.join(caseDir, 'platforms', binding.platform, 'executions', startedResponse.executionId));
+const started = {
+  execDir: startedExecDir,
+  execution: JSON.parse(fs.readFileSync(path.join(startedExecDir, 'execution.json'), 'utf8')),
+  runtime: JSON.parse(fs.readFileSync(path.join(startedExecDir, 'runtime.json'), 'utf8')),
+  brief: loadAgentHandoff({
+    workspaceRoot: root,
+    handoffPath: startedResponse.handoff.path,
+    sha256: startedResponse.handoff.sha256,
+    executionId: startedResponse.executionId,
+    caseProtocolSha: contract.protocolSha,
+  }).brief,
+};
+assert.strictEqual(started.execution.schemaVersion, 11);
+const validationProfile = JSON.parse(fs.readFileSync(path.join(started.execDir, 'validation-profile.snapshot.json'), 'utf8'));
+assert.strictEqual(started.execution.validationProfileSha, validationProfile.profileSha);
 assert.deepStrictEqual(started.brief.case.spec.expectations.map((item) => item.id), ['E1', 'E2']);
 assert.strictEqual(started.request, undefined);
 assert.strictEqual(started.brief.case.source, sourceText);
 assert.strictEqual(started.brief.scene, null);
 assert.strictEqual(path.dirname(started.runtime.entry), started.execDir);
 assert.strictEqual(started.brief.runtime.entry, undefined);
-assert.strictEqual(started.brief.runtime.requestPath, path.join(started.execDir, 'runtime-request.json'));
+assert.strictEqual(started.brief.runtime.requestPath, path.join(started.execDir, 'runtime-request.dispatch-1.json'));
+assert.match(started.brief.runtime.command, /--dispatch-sequence 1$/);
 assert.strictEqual(started.brief.runtime.commands, undefined);
-assert.deepStrictEqual(started.brief.runtime.allowedOperations, ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
+assert.deepStrictEqual(started.brief.runtime.allowedOperations, ['observe', 'act', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
 assert.deepStrictEqual(started.brief.investigationCapabilities, {
   visual: { available: true, operation: 'inspectVisual' },
-  layout: { available: true, source: 'scene.evidenceChannels.layout' },
+  layout: { available: true, operation: 'inspectScene' },
   knowledge: { available: true, operation: 'knowledge', requiredBeforeNegativeConclusion: true },
 });
 assert.strictEqual(fs.statSync(started.runtime.entry).mode & 0o111, 0o111);
 assert.deepStrictEqual(started.runtime.status, 'READY');
-assert.strictEqual(started.runtime.broker.schemaVersion, 3);
-assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
+assert.strictEqual(started.runtime.broker.schemaVersion, 4);
+assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
+assert.strictEqual(started.execution.caseProcessingStartedAt, T0);
+assert.strictEqual(started.execution.handoffReadyAt, T0);
+assert.strictEqual(started.execution.handoffConsumedAt, undefined, 'loader reads the handoff without consuming it');
 assert.deepStrictEqual(run(started.execDir, { operation: 'status' }).knowledgeInvestigation, {
   available: true,
   requiredBeforeNegativeConclusion: true,
   pendingReviews: [],
   reviewedExpectationRefs: [],
 });
+const handoffConsumedAt = JSON.parse(fs.readFileSync(path.join(startedExecDir, 'execution.json'), 'utf8')).handoffConsumedAt;
+assert.ok(handoffConsumedAt, 'first Agent Runtime invocation records handoff consumption');
+run(started.execDir, { operation: 'status' });
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(startedExecDir, 'execution.json'), 'utf8')).handoffConsumedAt, handoffConsumedAt,
+  'handoff consumption anchor is idempotent');
 assert.strictEqual(run(started.execDir, { operation: 'prepare', preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' } }).code, 'CASE_RUNTIME_OPERATION_FORBIDDEN');
-assert.strictEqual(started.item.sessionId, undefined);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(startedResponse, 'item'), false);
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
   ...started.runtime,
-  broker: { ...started.runtime.broker, schemaVersion: 4 },
+  broker: { ...started.runtime.broker, schemaVersion: 5 },
 });
 assert.throws(
   () => resumeExecution({ executionDir: started.execDir }),
@@ -112,7 +145,7 @@ assert.throws(
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), started.runtime);
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
   ...started.runtime,
-  broker: { ...started.runtime.broker, schemaVersion: 2 },
+  broker: { schemaVersion: 2, allowedOperations: ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status'] },
 });
 assert.deepStrictEqual(resumeExecution({ executionDir: started.execDir }).brief.runtime.allowedOperations,
   ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
@@ -127,6 +160,27 @@ writeJsonAtomic(path.join(started.execDir, 'case-brief.json'), {
   schemaVersion: 2,
   case: { source: 'tampered', spec: { summary: 'tampered' } },
 });
+const continuationCount = () => fs.readFileSync(path.join(started.execDir, 'events.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean)
+  .map((line) => JSON.parse(line)).filter((event) => event.type === 'agentContinuation').length;
+const originalLinkSync = fs.linkSync;
+fs.linkSync = (source, destination) => {
+  if (String(destination).includes(`${path.sep}handoffs${path.sep}`)) {
+    throw new Error('simulated immutable handoff write failure');
+  }
+  return originalLinkSync(source, destination);
+};
+try {
+  assert.throws(() => startCurrentCase({
+    workspaceRoot: root,
+    batchId,
+    implementationSha: contract.implementationSha,
+    continuationReason: 'simulated handoff write failure',
+    now: T0,
+  }), /simulated immutable handoff write failure/);
+} finally {
+  fs.linkSync = originalLinkSync;
+}
+assert.strictEqual(continuationCount(), 0);
 const continuation = startCurrentCase({
   workspaceRoot: root,
   batchId,
@@ -134,26 +188,72 @@ const continuation = startCurrentCase({
   continuationReason: 'simulated native handle loss',
   now: T0,
 });
-assert.strictEqual(continuation.execution.executionId, started.execution.executionId);
-assert.strictEqual(continuation.agentContinuation.event.type, 'agentContinuation');
-assert.strictEqual(continuation.brief.mode, 'CONTINUATION');
-assert.strictEqual(continuation.brief.scene, null);
-assert.strictEqual(continuation.brief.resumeState.executionStatus, 'RUNNING');
-assert.strictEqual(continuation.brief.case.source, sourceText);
-assert.strictEqual(continuation.brief.case.spec.summary, frozenCaseSpec.summary);
+assert.deepStrictEqual(Object.keys(continuation).sort(), ['action', 'agentRequired', 'batchId', 'caseKey', 'executionId', 'handoff']);
+assert.strictEqual(continuation.executionId, started.execution.executionId);
+assert.strictEqual(continuation.handoff.path.includes('/2-'), true);
+assert.strictEqual(fs.readFileSync(path.join(started.execDir, 'events.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean)
+  .map((line) => JSON.parse(line)).at(-1).type, 'agentContinuation');
+const continuationBrief = loadAgentHandoff({
+  workspaceRoot: root,
+  handoffPath: continuation.handoff.path,
+  sha256: continuation.handoff.sha256,
+  executionId: continuation.executionId,
+  caseProtocolSha: started.execution.caseProtocolSha,
+}).brief;
+assert.strictEqual(continuationBrief.mode, 'CONTINUATION');
+assert.strictEqual(continuationBrief.continuation.sequence, 2);
+assert.strictEqual(continuationBrief.scene, null);
+assert.strictEqual(continuationBrief.resumeState.executionStatus, 'RUNNING');
+assert.strictEqual(continuationBrief.case.source, sourceText);
+assert.strictEqual(continuationBrief.case.spec.summary, frozenCaseSpec.summary);
+assert.notStrictEqual(continuationBrief.runtime.requestPath, started.brief.runtime.requestPath,
+  'each dispatch must use an isolated Runtime request path');
 writeJsonAtomic(started.brief.runtime.requestPath, { operation: 'status' });
-const clientStatus = JSON.parse(childProcess.execSync(started.brief.runtime.command, { cwd: os.tmpdir(), encoding: 'utf8' }));
+const replacedWriter = JSON.parse(childProcess.execSync(started.brief.runtime.command, { encoding: 'utf8' }));
+assert.strictEqual(replacedWriter.status, 'TECHNICAL');
+assert.strictEqual(replacedWriter.code, 'HANDOFF_REPLACED');
+writeJsonAtomic(continuationBrief.runtime.requestPath, { operation: 'status' });
+assert.strictEqual(JSON.parse(childProcess.execSync(continuationBrief.runtime.command, { encoding: 'utf8' })).status, 'READY');
+const shellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
+const continuationWorker = [
+  `const { startCurrentCase } = require(${JSON.stringify(path.resolve(__dirname, '../batch/core'))});`,
+  `const response = startCurrentCase({ workspaceRoot: ${JSON.stringify(root)}, batchId: ${JSON.stringify(batchId)}, continuationReason: 'simultaneous continuation' });`,
+  'process.stdout.write(JSON.stringify(response));',
+].join(' ');
+const concurrentOutputA = path.join(root, 'continuation-a.json');
+const concurrentOutputB = path.join(root, 'continuation-b.json');
+const concurrent = childProcess.spawnSync('/bin/sh', ['-c', [
+  `${shellQuote(process.execPath)} -e ${shellQuote(continuationWorker)} > ${shellQuote(concurrentOutputA)} & mavt_pid_a=$!`,
+  `${shellQuote(process.execPath)} -e ${shellQuote(continuationWorker)} > ${shellQuote(concurrentOutputB)} & mavt_pid_b=$!`,
+  'wait "$mavt_pid_a"; mavt_status_a=$?',
+  'wait "$mavt_pid_b"; mavt_status_b=$?',
+  '[ "$mavt_status_a" -eq 0 ] && [ "$mavt_status_b" -eq 0 ]',
+].join('; ')], { encoding: 'utf8' });
+assert.strictEqual(concurrent.status, 0, concurrent.stderr);
+const concurrentHandoffs = [concurrentOutputA, concurrentOutputB].map((file) => JSON.parse(fs.readFileSync(file, 'utf8')).handoff);
+assert.deepStrictEqual(concurrentHandoffs.map((handoff) => Number(path.basename(handoff.path).split('-')[0])).sort((a, b) => a - b), [3, 4]);
+assert.strictEqual(continuationCount(), 3);
+const activeHandoff = concurrentHandoffs.find((handoff) => path.basename(handoff.path).startsWith('4-'));
+const activeBrief = loadAgentHandoff({
+  workspaceRoot: root,
+  handoffPath: activeHandoff.path,
+  sha256: activeHandoff.sha256,
+  executionId: started.execution.executionId,
+  caseProtocolSha: started.execution.caseProtocolSha,
+}).brief;
+writeJsonAtomic(activeBrief.runtime.requestPath, { operation: 'status' });
+const clientStatus = JSON.parse(childProcess.execSync(activeBrief.runtime.command, { cwd: os.tmpdir(), encoding: 'utf8' }));
 assert.strictEqual(clientStatus.status, 'READY');
-writeJsonAtomic(started.brief.runtime.requestPath, { operation: 'status' });
-assert.strictEqual(JSON.parse(childProcess.execSync(started.brief.runtime.command, { encoding: 'utf8' })).status, 'READY');
-fs.writeFileSync(started.brief.runtime.requestPath, '{ malformed json');
-const malformedRequest = childProcess.spawnSync(started.runtime.entry, [], { encoding: 'utf8' });
+writeJsonAtomic(activeBrief.runtime.requestPath, { operation: 'status' });
+assert.strictEqual(JSON.parse(childProcess.execSync(activeBrief.runtime.command, { encoding: 'utf8' })).status, 'READY');
+fs.writeFileSync(activeBrief.runtime.requestPath, '{ malformed json');
+const malformedRequest = childProcess.spawnSync(started.runtime.entry, ['--dispatch-sequence', '4'], { encoding: 'utf8' });
 assert.strictEqual(malformedRequest.status, 0);
 assert.strictEqual(JSON.parse(malformedRequest.stdout).status, 'REQUEST_INVALID');
-assert.strictEqual(fs.existsSync(started.brief.runtime.requestPath), false);
-writeJsonAtomic(started.brief.runtime.requestPath, { operation: 'status' });
-assert.strictEqual(JSON.parse(childProcess.execSync(started.brief.runtime.command, { encoding: 'utf8' })).status, 'READY');
-const invalidClientCall = childProcess.spawnSync(started.runtime.entry, ['act'], { encoding: 'utf8' });
+assert.strictEqual(fs.existsSync(activeBrief.runtime.requestPath), false);
+writeJsonAtomic(activeBrief.runtime.requestPath, { operation: 'status' });
+assert.strictEqual(JSON.parse(childProcess.execSync(activeBrief.runtime.command, { encoding: 'utf8' })).status, 'READY');
+const invalidClientCall = childProcess.spawnSync(started.runtime.entry, ['--dispatch-sequence', '4', 'act'], { encoding: 'utf8' });
 assert.strictEqual(invalidClientCall.status, 0);
 assert.strictEqual(JSON.parse(invalidClientCall.stdout).status, 'REQUEST_INVALID');
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'WAIT_CASE_AGENT');
@@ -222,12 +322,23 @@ assert.strictEqual(first.scene.evidenceChannels.visual.available, true);
 assert.strictEqual(first.scene.evidenceChannels.visual.attachment.mediaType, 'image/png');
 assert.strictEqual(first.scene.evidenceChannels.visual.attachment.path, first.scene.screenshot.path);
 assert.strictEqual(first.scene.evidenceChannels.layout.available, false);
-assert.strictEqual(first.scene.evidenceChannels.layout.inline, true);
+assert.strictEqual(first.scene.evidenceChannels.layout.inline, false);
 assert.strictEqual(first.scene.evidenceChannels.policy, 'COMBINE_VISUAL_AND_LAYOUT');
+assert.strictEqual(first.scene.elements, undefined);
+assert.strictEqual(first.scene.capabilities, undefined);
+const observationsBeforeInspection = observationCount;
+const firstCapabilities = run(started.execDir, {
+  operation: 'inspectScene', basedOnSceneId: first.scene.sceneId, view: 'CAPABILITIES', filter: { actionType: 'wait' },
+}, { now: T0 });
+assert.strictEqual(firstCapabilities.status, 'SCENE_INSPECTION');
+assert.strictEqual(firstCapabilities.sceneId, first.scene.sceneId);
+assert.strictEqual(firstCapabilities.items.length, 1);
+assert.strictEqual(observationCount, observationsBeforeInspection);
 assert.deepStrictEqual(first.narrative.caseContext.expectations.map((item) => item.id), ['E1', 'E2']);
 const firstScenePath = path.join(started.execDir, 'scenes', `${first.scene.sceneId}.json`);
+const frozenFirstScene = JSON.parse(fs.readFileSync(firstScenePath, 'utf8'));
 writeJsonAtomic(firstScenePath, {
-  ...first.scene,
+  ...frozenFirstScene,
   evidenceChannels: {
     ...first.scene.evidenceChannels,
     visual: {
@@ -247,7 +358,7 @@ const mismatchedVisualAttachment = run(started.execDir, {
 }, { now: T0 });
 assert.strictEqual(mismatchedVisualAttachment.status, 'TECHNICAL');
 assert.strictEqual(mismatchedVisualAttachment.code, 'VISUAL_EVIDENCE_INVALID');
-writeJsonAtomic(firstScenePath, first.scene);
+writeJsonAtomic(firstScenePath, frozenFirstScene);
 const firstInspection = run(started.execDir, {
   operation: 'inspectVisual',
   basedOnSceneId: first.scene.sceneId,
@@ -260,6 +371,19 @@ const firstInspection = run(started.execDir, {
 assert.strictEqual(firstInspection.status, 'VISUAL_INSPECTED');
 assert.strictEqual(firstInspection.scene.sceneId, first.scene.sceneId);
 assert.strictEqual(firstInspection.visualInspection.sceneId, first.scene.sceneId);
+const firstInspectionDecision = require('../case-runtime/store').events(started.execDir)
+  .find((event) => event.type === 'agentDecisionRecorded' && event.decision?.purpose === '记录首屏截图视觉检查');
+assert.deepStrictEqual(firstInspectionDecision.decisionFieldSources, {
+  assessment: 'NOT_PROVIDED',
+  observation: 'AGENT_AUTHORED',
+  conclusion: 'NOT_PROVIDED',
+  purpose: 'AGENT_AUTHORED',
+  expectedOutcome: 'NOT_PROVIDED',
+  expectationRefs: 'AGENT_AUTHORED',
+  planUpdate: 'NOT_PROVIDED',
+  knowledgeReview: 'NOT_PROVIDED',
+  uncertainties: 'NOT_PROVIDED',
+});
 const duplicateInspection = run(started.execDir, {
   operation: 'inspectVisual',
   basedOnSceneId: first.scene.sceneId,
@@ -272,13 +396,41 @@ const duplicateInspection = run(started.execDir, {
 assert.strictEqual(duplicateInspection.status, 'VISUAL_INSPECTED');
 assert.strictEqual(duplicateInspection.idempotent, true);
 assert.strictEqual(duplicateInspection.visualInspection.inspectionId, firstInspection.visualInspection.inspectionId);
-const attemptedOracleRewrite = require('../case-runtime/narrative-service').recordRequestNarrative(started.execDir, {
+assert.throws(() => require('../case-runtime/narrative-service').recordRequestNarrative(started.execDir, {
   operation: 'observe',
   caseContext: { ...caseContext, expectations: ['目标内容正常显示'] },
-}, { now: T0 });
-assert.ok(attemptedOracleRewrite.warnings.some((item) => item.code === 'CASE_SPEC_IMMUTABLE'));
-assert.deepStrictEqual(attemptedOracleRewrite.caseContext.expectations.map((item) => item.id), ['E1', 'E2']);
+}, { now: T0 }), (error) => error?.code === 'CASE_SPEC_IMMUTABLE');
+assert.deepStrictEqual(
+  require('../case-runtime/narrative-service').latestCaseContext(started.execDir).expectations.map((item) => item.id),
+  ['E1', 'E2'],
+);
 const currentSceneId = () => JSON.parse(fs.readFileSync(path.join(started.execDir, 'current-scene.json'), 'utf8')).sceneId;
+const eventsBeforeInvalidNarrative = require('../case-runtime/store').events(started.execDir).length;
+const invalidVisualNarrative = run(started.execDir, {
+  operation: 'inspectVisual',
+  basedOnSceneId: currentSceneId(),
+  decision: {
+    purpose: '拒绝未知验证点的视觉登记',
+    expectationRefs: ['E999'],
+    observation: '该视觉登记不应落盘',
+  },
+}, { now: T0 });
+assert.strictEqual(invalidVisualNarrative.status, 'REQUEST_INVALID');
+assert.strictEqual(invalidVisualNarrative.code, 'CASE_NARRATIVE_INVALID');
+assert.strictEqual(require('../case-runtime/store').events(started.execDir).length, eventsBeforeInvalidNarrative);
+
+const invalidKnowledgeNarrative = run(started.execDir, {
+  operation: 'knowledge',
+  basedOnSceneId: currentSceneId(),
+  query: '该查询不应执行',
+  decision: {
+    purpose: '拒绝未知验证点的知识查询',
+    expectationRefs: ['E999'],
+  },
+}, { now: T0 });
+assert.strictEqual(invalidKnowledgeNarrative.status, 'REQUEST_INVALID');
+assert.strictEqual(invalidKnowledgeNarrative.code, 'CASE_NARRATIVE_INVALID');
+assert.strictEqual(require('../case-runtime/store').events(started.execDir).length, eventsBeforeInvalidNarrative);
 const knowledge = run(started.execDir, {
   operation: 'knowledge',
   basedOnSceneId: currentSceneId(),
@@ -336,8 +488,29 @@ const knowledgeMissEvent = fs.readFileSync(path.join(started.execDir, 'events.js
   .find((event) => event.type === 'knowledgeQueried' && event.queryId === knowledgeMiss.queryId);
 assert.strictEqual(knowledgeMissEvent.context.app, 'com.example.runtime');
 assert.strictEqual(knowledgeMissEvent.filterDiagnostics.rejected[0].entryId, 'K-other-app-001');
-const wait = first.scene.capabilities.find((item) => item.kind === 'wait');
+const wait = firstCapabilities.items[0];
 assert.ok(wait);
+
+const eventsBeforeInvalidKnowledgeReview = require('../case-runtime/store').events(started.execDir).length;
+const actionsBeforeInvalidKnowledgeReview = actionInvocationCount;
+const invalidKnowledgeReview = run(started.execDir, {
+  operation: 'act',
+  basedOnSceneId: currentSceneId(),
+  capabilityId: wait.id,
+  decision: {
+    purpose: '拒绝引用不存在查询的知识复核',
+    expectationRefs: ['E1'],
+    knowledgeReview: {
+      queryId: 'query-9999',
+      conclusion: 'NO_APPLICABLE',
+      assessments: [],
+    },
+  },
+}, { runner, now: '2026-09-03T10:00:00.450Z' });
+assert.strictEqual(invalidKnowledgeReview.status, 'REQUEST_INVALID');
+assert.strictEqual(invalidKnowledgeReview.code, 'CASE_NARRATIVE_INVALID');
+assert.strictEqual(actionInvocationCount, actionsBeforeInvalidKnowledgeReview);
+assert.strictEqual(require('../case-runtime/store').events(started.execDir).length, eventsBeforeInvalidKnowledgeReview);
 
 const actionInvocationsBeforeSceneGuard = actionInvocationCount;
 const missingSceneBasis = run(started.execDir, {
@@ -393,10 +566,13 @@ assert.strictEqual(narrativeStatus.narrative.lastDecision.decision.purpose, '等
 assert.deepStrictEqual(narrativeStatus.knowledgeInvestigation.pendingReviews, []);
 assert.deepStrictEqual(narrativeStatus.knowledgeInvestigation.reviewedExpectationRefs, ['E1', 'E2']);
 const actionInvocationsBeforePartialNarrative = actionInvocationCount;
+const secondCapabilities = run(started.execDir, {
+  operation: 'inspectScene', basedOnSceneId: second.scene.sceneId, view: 'CAPABILITIES', filter: { actionType: 'wait' },
+}, { now: '2026-09-03T10:00:01.025Z' });
 const partialNarrative = run(started.execDir, {
   operation: 'act',
   basedOnSceneId: currentSceneId(),
-  capabilityId: second.scene.capabilities.find((item) => item.kind === 'wait').id,
+  capabilityId: secondCapabilities.items[0].id,
   decision: {
     observation: '页面仍在目标 App 内',
     conclusion: '继续短暂等待以确认稳定性',
@@ -694,6 +870,14 @@ assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'execut
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'runtime.json'), 'utf8')).status, 'READY');
 assert.strictEqual(actionInvocationCount, actionsBeforePendingRecovery);
 assert.strictEqual(fs.existsSync(path.join(started.execDir, 'transactions', 'action-9000.draft.json')), false);
+const finalizedRetry = startCurrentCase({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, now: T0 });
+assert.deepStrictEqual(finalizedRetry, {
+  action: 'CASE_ALREADY_FINISHED',
+  agentRequired: false,
+  batchId,
+  caseKey,
+  executionId: started.execution.executionId,
+});
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'COMMIT_CASE');
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'runtime.json'), 'utf8')).status, 'COMPLETED');
 assert.strictEqual(fs.existsSync(path.join(started.execDir, 'transactions', 'finish.draft.json')), false);
@@ -752,7 +936,10 @@ for (const [file, count] of hashCounts) {
     assert.strictEqual(count, 1, `${path.relative(started.execDir, file)} must be hashed once per commit`);
   }
 }
-assert.strictEqual(committed.completion.schemaVersion, 3);
+assert.strictEqual(committed.completion.schemaVersion, 4);
+assert.strictEqual(committed.completion.validationProfileSha, validationProfile.profileSha);
+const committedManifest = JSON.parse(fs.readFileSync(path.join(started.execDir, 'artifact-manifest.json'), 'utf8'));
+assert.ok(committedManifest.files.some((entry) => entry.path === 'validation-profile.snapshot.json'));
 assert.strictEqual(committed.completion.verdict, 'PASS');
 assert.strictEqual(committed.state.status, 'FINALIZING');
 assert.deepStrictEqual(committed.state.finalization, { cause: 'COMPLETED', executionsSettled: false, casesCommitted: true, platformReleased: false, reportsPublished: false });
@@ -799,5 +986,12 @@ assert.match(contextHtml, /Runtime 请求错误/);
 for (const text of ['结果概览', '理解摘要', '用例理解', '执行计划', '初始计划', '为什么做', '预期效果', '实际效果', '2\/2', '详细日志']) {
   assert.ok(contextHtml.includes(text), text);
 }
+const validationProfilePath = path.join(started.execDir, 'validation-profile.snapshot.json');
+const frozenValidationProfile = fs.readFileSync(validationProfilePath, 'utf8');
+fs.writeFileSync(validationProfilePath, frozenValidationProfile.replace('NEGATIVE_CHECKS_V1', 'DISABLED'));
+const changedProfileReport = readExecutionReport(started.execDir);
+assert.strictEqual(changedProfileReport.completionError !== null, true);
+assert.strictEqual(changedProfileReport.display.failureCode, 'EXECUTION_COMPLETION_INVALID');
+fs.writeFileSync(validationProfilePath, frozenValidationProfile);
 
 console.log('case runtime tests passed');

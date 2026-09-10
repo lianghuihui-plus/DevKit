@@ -17,6 +17,8 @@ const { createCaseSpec, validateCaseSpec } = require('../execution/contracts/cas
 const { assertWorkspace } = require('./workspace');
 const { atomicWrite, readJson, writeJsonAtomic } = require('./execution-lifecycle');
 const { buildContract } = require('../build-agent-contract');
+const { loadPublishedCaseDefinition } = require('../case/definition-store');
+const { validateCaseDefinition } = require('../execution/contracts/case-definition-contract');
 const { validateKnowledgeRoots } = require('./knowledge-query');
 const { ensureWorkspaceCaseNumbers, resolveCaseNo } = require('./case-numbering');
 const {
@@ -159,11 +161,10 @@ function normalizeExecutionTargetSelectors(workspaceRoot, inputTargets) {
     if (!target || typeof target !== 'object' || Array.isArray(target)) {
       throw contractError('EXECUTION_REQUEST_TARGET_INVALID', `targets[${index}] must be an object`);
     }
-    if (target.caseNo === undefined) return {
-      ...target,
-      ...(target.preparationPolicy == null ? {} : { preparationPolicy: validatePreparationPolicy(target.preparationPolicy) }),
-      initialStateRequirement: validateInitialStateRequirement(target.initialStateRequirement),
-    };
+    if (target.caseSpec !== undefined || target.initialStateRequirement !== undefined || target.preparationPolicy !== undefined) {
+      throw contractError('EXECUTION_REQUEST_TARGET_INVALID', `targets[${index}] must reference a published CaseDefinition instead of supplying execution semantics`);
+    }
+    if (target.caseNo === undefined) return { ...target };
     const resolved = resolveCaseNo(workspaceRoot, target.caseNo);
     if (!resolved) {
       throw contractError('EXECUTION_REQUEST_TARGET_NOT_FOUND', `targets[${index}].caseNo does not identify a workspace case: ${target.caseNo}`);
@@ -177,10 +178,28 @@ function normalizeExecutionTargetSelectors(workspaceRoot, inputTargets) {
     return {
       caseKey: resolved.caseKey,
       caseDir: resolved.caseDir,
-      caseSpec: target.caseSpec,
-      ...(target.preparationPolicy == null ? {} : { preparationPolicy: validatePreparationPolicy(target.preparationPolicy) }),
-      initialStateRequirement: validateInitialStateRequirement(target.initialStateRequirement),
+      definitionRef: target.definitionRef,
     };
+  });
+}
+
+function caseSpecFromDefinition(sourceText, definition) {
+  return createCaseSpec({
+    sourceText,
+    spec: {
+      summary: definition.summary,
+      preconditions: definition.preconditions,
+      expectations: definition.expectations.map(({ text, verificationKind, sourceEvidence }) => ({ text, verificationKind, sourceEvidence })),
+      ambiguities: definition.ambiguities,
+    },
+  });
+}
+
+function initialStateRequirementFromDefinition(definition) {
+  return validateInitialStateRequirement({
+    schemaVersion: 1,
+    targetState: definition.initialStateIntent.targetState,
+    rationale: definition.initialStateIntent.rationale,
   });
 }
 
@@ -221,19 +240,23 @@ function resolveLiveExecutionTargets(workspaceRoot, inputTargets) {
     if (sourceSha(sourceText) !== caseJson.identity.sourceSha) {
       throw contractError('EXECUTION_REQUEST_TARGET_INVALID', `targets[${index}] source.md does not match case.json`);
     }
-    if (!target.caseSpec) {
-      throw contractError('CASE_SPEC_REQUIRED', `targets[${index}].caseSpec must be supplied before execution authorization`);
+    const published = loadPublishedCaseDefinition(caseDir, target.definitionRef || null);
+    if (!target.definitionRef) {
+      throw contractError('CASE_DEFINITION_REF_REQUIRED', `targets[${index}].definitionRef is required for execution authorization`);
     }
-    const caseSpec = createCaseSpec({ sourceText, spec: target.caseSpec });
+    const caseSpec = caseSpecFromDefinition(sourceText, published.definition);
+    const initialStateRequirement = initialStateRequirementFromDefinition(published.definition);
     return {
       caseNo: caseJson.identity.caseNo,
       caseKey: target.caseKey,
       caseDir,
       caseJson,
       sourceText,
+      caseDefinition: published.definition,
       caseSpec,
-      preparationPolicy: validatePreparationPolicy(target.preparationPolicy),
-      initialStateRequirement: validateInitialStateRequirement(target.initialStateRequirement),
+      definitionRef: { definitionId: published.definition.definitionId, definitionSha: published.definition.definitionSha },
+      preparationPolicy: derivePreparationPolicy(loadEnvironmentConfirmation(workspaceRoot).binding.platform, initialStateRequirement.targetState),
+      initialStateRequirement,
     };
   });
 }
@@ -249,6 +272,8 @@ function snapshotTargetDescriptor(workspaceRoot, batchId, target, index) {
     snapshotPath,
     sourceSha: target.caseJson.identity.sourceSha,
     caseContractSha: target.caseJson.contractSha,
+    definitionId: target.caseDefinition.definitionId,
+    definitionSha: target.caseDefinition.definitionSha,
     caseSpecSha: target.caseSpec.specSha,
     preparationPolicy: validatePreparationPolicy(target.preparationPolicy),
     preparationPolicySha: preparationPolicySha(target.preparationPolicy),
@@ -282,6 +307,7 @@ function snapshotTarget(workspaceRoot, batchId, target, descriptor) {
   }
   writeFrozenSnapshotFile(path.join(descriptor.snapshotPath, 'source.snapshot.md'), target.sourceText);
   writeFrozenSnapshotFile(path.join(descriptor.snapshotPath, 'case.snapshot.json'), `${JSON.stringify(target.caseJson, null, 2)}\n`);
+  writeFrozenSnapshotFile(path.join(descriptor.snapshotPath, 'case-definition.snapshot.json'), `${JSON.stringify(target.caseDefinition, null, 2)}\n`);
   writeFrozenSnapshotFile(path.join(descriptor.snapshotPath, 'case-spec.snapshot.json'), `${JSON.stringify(target.caseSpec, null, 2)}\n`);
   validateSnapshotTarget(workspaceRoot, batchId, descriptor, descriptor.order - 1);
   return descriptor;
@@ -296,6 +322,13 @@ function validateSnapshotTarget(workspaceRoot, batchId, target, index) {
   ensureString(target.snapshotPath, `targets[${index}].snapshotPath`, 'EXECUTION_REQUEST_INVALID');
   ensureString(target.sourceSha, `targets[${index}].sourceSha`, 'EXECUTION_REQUEST_INVALID');
   ensureString(target.caseContractSha, `targets[${index}].caseContractSha`, 'EXECUTION_REQUEST_INVALID');
+  if ((target.definitionId == null) !== (target.definitionSha == null)) {
+    throw contractError('EXECUTION_REQUEST_INVALID', `targets[${index}] CaseDefinition binding is incomplete`);
+  }
+  if (target.definitionId != null) {
+    ensureString(target.definitionId, `targets[${index}].definitionId`, 'EXECUTION_REQUEST_INVALID');
+    ensureString(target.definitionSha, `targets[${index}].definitionSha`, 'EXECUTION_REQUEST_INVALID');
+  }
   ensureString(target.caseSpecSha, `targets[${index}].caseSpecSha`, 'EXECUTION_REQUEST_INVALID');
   const preparationPolicy = validatePreparationPolicy(target.preparationPolicy);
   if (target.preparationPolicySha !== preparationPolicySha(preparationPolicy)) {
@@ -322,6 +355,7 @@ function validateSnapshotTarget(workspaceRoot, batchId, target, index) {
   const sourcePath = path.join(resolved, 'source.snapshot.md');
   const casePath = path.join(resolved, 'case.snapshot.json');
   const caseSpecPath = path.join(resolved, 'case-spec.snapshot.json');
+  const caseDefinitionPath = path.join(resolved, 'case-definition.snapshot.json');
   if (!fs.existsSync(sourcePath)) throw contractError('EXECUTION_REQUEST_SNAPSHOT_MISSING', `targets[${index}] source snapshot is missing`);
   if (fs.lstatSync(sourcePath).isSymbolicLink() || (fs.existsSync(casePath) && fs.lstatSync(casePath).isSymbolicLink())) {
     throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] snapshot files must not be symbolic links`);
@@ -330,15 +364,24 @@ function validateSnapshotTarget(workspaceRoot, batchId, target, index) {
   if (!caseJson) throw contractError('EXECUTION_REQUEST_SNAPSHOT_MISSING', `targets[${index}] case snapshot is missing`);
   validateCaseContract(caseJson);
   const sourceText = fs.readFileSync(sourcePath, 'utf8');
+  const caseDefinition = target.definitionId == null ? null : readJson(caseDefinitionPath, null);
+  if (target.definitionId != null && !caseDefinition) throw contractError('EXECUTION_REQUEST_SNAPSHOT_MISSING', `targets[${index}] CaseDefinition snapshot is missing`);
+  if (caseDefinition) validateCaseDefinition(caseDefinition, { sourceText, caseKey: target.caseKey });
   const caseSpec = readJson(caseSpecPath, null);
   if (!caseSpec) throw contractError('EXECUTION_REQUEST_SNAPSHOT_MISSING', `targets[${index}] CaseSpec snapshot is missing`);
   validateCaseSpec(caseSpec, { sourceText, sourceSha: target.sourceSha });
+  if (caseDefinition && canonicalJson(caseSpec) !== canonicalJson(caseSpecFromDefinition(sourceText, caseDefinition))) {
+    throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] CaseSpec does not match its CaseDefinition`);
+  }
   if (sourceSha(sourceText) !== target.sourceSha || caseJson.identity.sourceSha !== target.sourceSha
     || caseJson.contractSha !== target.caseContractSha || caseJson.identity.caseKey !== target.caseKey) {
     throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] frozen snapshot binding changed`);
   }
   if (caseSpec.specSha !== target.caseSpecSha) {
     throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] frozen CaseSpec binding changed`);
+  }
+  if (caseDefinition && (caseDefinition.definitionId !== target.definitionId || caseDefinition.definitionSha !== target.definitionSha)) {
+    throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] frozen CaseDefinition binding changed`);
   }
   if (target.caseNo !== undefined && caseJson.identity.caseNo !== target.caseNo) {
     throw contractError('EXECUTION_REQUEST_SNAPSHOT_CHANGED', `targets[${index}] caseNo changed`);
@@ -424,11 +467,7 @@ function createExecutionRequest(options) {
   const workspace = assertWorkspace(options.workspaceRoot, { allowTest: true });
   ensureWorkspaceCaseNumbers(workspace.root);
   const environment = loadEnvironmentConfirmation(workspace.root);
-  const selectedTargets = normalizeExecutionTargetSelectors(workspace.root, options.targets).map((target) => ({
-    ...target,
-    preparationPolicy: target.preparationPolicy
-      || derivePreparationPolicy(environment.binding.platform, target.initialStateRequirement.targetState),
-  }));
+  const selectedTargets = normalizeExecutionTargetSelectors(workspace.root, options.targets);
   const bootstrapPolicy = validateBootstrapPolicy(options.bootstrapPolicy);
   const batchId = ensureId(options.batchId, 'batchId', 'EXECUTION_REQUEST_INVALID');
   const mode = String(options.mode || '').trim().toUpperCase();
@@ -438,15 +477,14 @@ function createExecutionRequest(options) {
   const existing = readJson(requestFile, null);
   if (existing) {
     const validated = validateExecutionRequest(existing, { workspaceRoot: workspace.root });
-    const requestedTargets = selectedTargets.map((target, index) => {
-      const frozen = validated.targets[index];
-      const sourceText = frozen ? fs.readFileSync(path.join(frozen.snapshotPath, 'source.snapshot.md'), 'utf8') : '';
-      const caseSpec = target.caseSpec ? createCaseSpec({ sourceText, spec: target.caseSpec }) : null;
-      return { caseKey: target.caseKey, preparationPolicy: target.preparationPolicy, initialStateRequirement: target.initialStateRequirement, caseSpecSha: caseSpec?.specSha || null };
-    });
+    const requestedTargets = selectedTargets.map((target) => ({
+      caseKey: target.caseKey,
+      definitionId: target.definitionRef?.definitionId || null,
+      definitionSha: target.definitionRef?.definitionSha || null,
+    }));
     if (validated.mode !== mode || validated.userInstruction !== options.userInstruction
       || canonicalJson(validated.bootstrapPolicy) !== canonicalJson(bootstrapPolicy)
-      || canonicalJson(validated.targets.map((target) => ({ caseKey: target.caseKey, preparationPolicy: target.preparationPolicy, initialStateRequirement: target.initialStateRequirement, caseSpecSha: target.caseSpecSha }))) !== canonicalJson(requestedTargets)) {
+      || canonicalJson(validated.targets.map((target) => ({ caseKey: target.caseKey, definitionId: target.definitionId || null, definitionSha: target.definitionSha || null }))) !== canonicalJson(requestedTargets)) {
       throw contractError('EXECUTION_REQUEST_EXISTS', `batch ${batchId} already has a different execution request`);
     }
     const draft = readJson(draftFile, null);
@@ -459,12 +497,12 @@ function createExecutionRequest(options) {
   const userInstruction = ensureString(options.userInstruction, 'userInstruction', 'EXECUTION_REQUEST_INVALID');
   let draft = readJson(draftFile, null);
   if (draft) {
-    const requestedKeys = selectedTargets.map((target, index) => {
-      const frozenInput = draft.snapshotInputs?.[index];
-      const caseSpec = target.caseSpec && frozenInput ? createCaseSpec({ sourceText: frozenInput.sourceText, spec: target.caseSpec }) : null;
-      return { caseKey: target.caseKey, preparationPolicy: target.preparationPolicy, initialStateRequirement: target.initialStateRequirement, caseSpecSha: caseSpec?.specSha || null };
-    });
-    const frozenKeys = (draft.request?.targets || []).map((target) => ({ caseKey: target.caseKey, preparationPolicy: target.preparationPolicy, initialStateRequirement: target.initialStateRequirement, caseSpecSha: target.caseSpecSha }));
+    const requestedKeys = selectedTargets.map((target) => ({
+      caseKey: target.caseKey,
+      definitionId: target.definitionRef?.definitionId || null,
+      definitionSha: target.definitionRef?.definitionSha || null,
+    }));
+    const frozenKeys = (draft.request?.targets || []).map((target) => ({ caseKey: target.caseKey, definitionId: target.definitionId || null, definitionSha: target.definitionSha || null }));
     if (draft.schemaVersion !== 1 || !['STARTED', 'SNAPSHOTS_READY'].includes(draft.status)
       || draft.request?.batchId !== batchId || draft.request?.mode !== mode
       || draft.request?.userInstruction !== userInstruction

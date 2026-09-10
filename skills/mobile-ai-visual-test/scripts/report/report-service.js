@@ -11,7 +11,8 @@ const { renderIndexArtifacts } = require('./index-renderer');
 const { reportRendererInfo } = require('./renderer-manifest');
 const { publishReportBundle } = require('./report-publisher');
 const { assertWorkspace } = require('../lib/workspace');
-const { ensureWorkspaceCaseNumbers } = require('../lib/case-numbering');
+const { writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { deriveExecutionTiming } = require('../lib/execution-timing');
 
 const PLATFORM_ORDER = ['android', 'ios', 'harmony'];
 
@@ -77,6 +78,8 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
     endedAt: display.endedAt || '',
     updatedAt: display.endedAt || display.startedAt || '',
     durationMs: display.durationMs ?? null,
+    durationBasis: display.durationBasis || 'EXECUTION_LEGACY',
+    phaseDurations: display.phaseDurations || null,
     reason: sourceCurrent ? display.summary || '' : '用例原文已更新，已有执行结果不再代表当前用例',
     failureCode: sourceCurrent ? display.failureCode || '' : 'CASE_SOURCE_CHANGED',
     currentMetrics: sourceCurrent ? report.metrics || null : null,
@@ -208,16 +211,52 @@ function rootOverview(caseDir, caseJson) {
   return { html, markdown: `${markdown.join('\n')}\n` };
 }
 
+function recordCaseReportPublicationTiming(caseDir, report, options = {}) {
+  if (!report?.completion || !report.execution?.batchId || !report.execution?.endedAt) return null;
+  const sidecarPath = path.join(caseRootFromCaseDir(caseDir), 'runs', report.execution.batchId, 'report-publication.json');
+  const sidecar = readJson(sidecarPath, {
+    schemaVersion: 1,
+    batchId: report.execution.batchId,
+    status: 'PENDING',
+    attempts: [],
+    caseTimings: {},
+  });
+  const existing = sidecar.caseTimings?.[report.execution.executionId];
+  if (existing?.caseReportPublishedAt) return existing;
+  const caseReportPublishedAt = options.now || new Date().toISOString();
+  const timing = deriveExecutionTiming(report.execution, report.metrics, { caseReportPublishedAt });
+  const entry = { caseReportPublishedAt, reportPublicationDelayMs: timing.phases.reportPublicationDelayMs };
+  writeJsonAtomic(sidecarPath, {
+    ...sidecar,
+    schemaVersion: 1,
+    attempts: Array.isArray(sidecar.attempts) ? sidecar.attempts : [],
+    caseTimings: { ...(sidecar.caseTimings || {}), [report.execution.executionId]: entry },
+    ...(sidecar.publications ? { publications: sidecar.publications } : {}),
+  });
+  return entry;
+}
+
 function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = null, options = {}) {
   validateCaseContract(caseJson);
   const runtimeDir = caseRuntimeDir(caseDir, options.platform);
+  const publishBundle = options.publishBundle || publishReportBundle;
   let contextMarkdown;
   let contextHtml;
   let executionId = null;
+  let current = null;
+  let snapshot = null;
+  let needsPublicationTiming = false;
   if (options.platform) {
-    const current = report || readLatestExecutionReport(caseDir, options);
+    current = report || readLatestExecutionReport(caseDir, options);
     if (!current || current.schemaFamily !== 'current') throw new Error(`CURRENT_EXECUTION_REQUIRED: ${options.platform}`);
-    const snapshot = current.snapshot ? {
+    const publication = current.execution?.batchId
+      ? readJson(path.join(caseRootFromCaseDir(caseDir), 'runs', current.execution.batchId, 'report-publication.json'), null)
+      : null;
+    const existingPublication = publication?.caseTimings?.[current.execution.executionId]
+      || publication?.publications?.[current.execution.executionId];
+    needsPublicationTiming = Boolean(current.completion && current.execution?.endedAt
+      && !existingPublication?.caseReportPublishedAt);
+    snapshot = current.snapshot ? {
       ...current.snapshot,
       identity: { ...current.snapshot.identity, ...(caseJson.identity.caseNo ? { caseNo: caseJson.identity.caseNo } : {}) },
     } : caseJson;
@@ -229,10 +268,17 @@ function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = 
     contextMarkdown = overview.markdown;
     contextHtml = overview.html;
   }
-  publishReportBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, {
+  const metadata = {
     schemaVersion: 1, scope: options.platform ? 'platform-case' : 'case', platform: options.platform || null,
     executionId, ...reportRendererInfo(),
-  });
+  };
+  publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata);
+  if (needsPublicationTiming && recordCaseReportPublicationTiming(caseDir, current, options)) {
+    current = readExecutionReport(current.latest);
+    contextMarkdown = renderCurrentContextMarkdown(snapshot, current);
+    contextHtml = renderCurrentContextHtml(snapshot, current);
+    publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata);
+  }
   return { context: path.join(runtimeDir, 'CONTEXT.md'), contextHtml: path.join(runtimeDir, 'CONTEXT.html') };
 }
 
@@ -251,7 +297,6 @@ function assertIndexLinks(rootDir, cases) {
 }
 
 function renderIndexForRoot(rootDir) {
-  ensureWorkspaceCaseNumbers(rootDir);
   const casesDir = path.join(rootDir, 'cases');
   const errors = new Map();
   const projections = new Map();
@@ -262,9 +307,10 @@ function renderIndexForRoot(rootDir) {
       try {
         const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
         const projection = buildCaseReportProjection(caseDir, caseJson);
-        projections.set(path.resolve(caseDir), projection);
         writePlatformCaseReports(caseDir, caseJson, projection);
-        writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: projection.platforms });
+        const publishedProjection = buildCaseReportProjection(caseDir, caseJson);
+        projections.set(path.resolve(caseDir), publishedProjection);
+        writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: publishedProjection.platforms });
       } catch (error) {
         const item = reportErrorModel(rootDir, caseDir, error);
         publishReportError(caseDir, item);
@@ -278,7 +324,6 @@ function renderIndexForRoot(rootDir) {
 }
 
 function refreshBatchIndex(rootDir, targetCaseDirs) {
-  ensureWorkspaceCaseNumbers(rootDir);
   const targets = new Set(targetCaseDirs.map((caseDir) => path.resolve(caseDir)));
   const targetIdentities = new Set([...targets].map(canonicalExistingPath));
   const errors = new Map();
@@ -287,9 +332,10 @@ function refreshBatchIndex(rootDir, targetCaseDirs) {
     try {
       const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
       const projection = buildCaseReportProjection(caseDir, caseJson);
-      projections.set(path.resolve(caseDir), projection);
       writePlatformCaseReports(caseDir, caseJson, projection);
-      writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: projection.platforms });
+      const publishedProjection = buildCaseReportProjection(caseDir, caseJson);
+      projections.set(path.resolve(caseDir), publishedProjection);
+      writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: publishedProjection.platforms });
     } catch (error) {
       const item = reportErrorModel(rootDir, caseDir, error);
       publishReportError(caseDir, item);
@@ -309,15 +355,15 @@ function refreshBatchIndex(rootDir, targetCaseDirs) {
 
 function refreshCommittedCaseReports(caseDir, platform) {
   const rootDir = caseRootFromCaseDir(caseDir);
-  ensureWorkspaceCaseNumbers(rootDir);
   let itemError = null;
   const projections = new Map();
   try {
     const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
     const projection = buildCaseReportProjection(caseDir, caseJson);
-    projections.set(path.resolve(caseDir), projection);
     writeCaseReports(caseDir, caseJson, {}, [], projection.reports.get(platform), { platform, skipRootOverview: true });
-    writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: projection.platforms });
+    const publishedProjection = buildCaseReportProjection(caseDir, caseJson);
+    projections.set(path.resolve(caseDir), publishedProjection);
+    writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: publishedProjection.platforms });
   } catch (error) {
     itemError = reportErrorModel(rootDir, caseDir, error);
     publishReportError(caseDir, itemError);

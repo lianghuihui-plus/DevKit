@@ -105,9 +105,18 @@ function acquireFileLock(file, options = {}) {
       return { file, owner: payload };
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      const owner = readJson(file, {});
+      let owner;
+      try {
+        owner = readJson(file, {});
+      } catch {
+        throw contractError('EXECUTION_LOCKED', 'execution lock owner is still being written');
+      }
       if (processIsAlive(owner.pid)) throw contractError('EXECUTION_LOCKED', `execution is locked by process ${owner.pid}`);
-      fs.unlinkSync(file);
+      try {
+        fs.unlinkSync(file);
+      } catch (unlinkError) {
+        if (unlinkError.code !== 'ENOENT') throw unlinkError;
+      }
     }
   }
   throw contractError('EXECUTION_LOCKED', 'execution lock could not be acquired');
@@ -153,7 +162,7 @@ function listExecutionDirs(workspaceRoot) {
 function findActiveExecutions(workspaceRoot) {
   return listExecutionDirs(workspaceRoot).flatMap((execDir) => {
     const execution = readJson(path.join(execDir, 'execution.json'), null);
-    if (execution?.schemaVersion !== 10 || execution.runtime !== 'case-runtime') return [];
+    if (![10, 11].includes(execution?.schemaVersion) || execution.runtime !== 'case-runtime') return [];
     const closure = execution && execution.finalized !== true
       ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
       : null;

@@ -34,6 +34,8 @@ function recordPublicationAttempt(workspaceRoot, batchId, scope, result, options
     status: attempt.status === 'PUBLISHED' && scope === 'batch' ? 'PUBLISHED' : attempt.status === 'FAILED' ? 'RETRY_REQUIRED' : current.status,
     attempts: [...current.attempts, attempt],
     updatedAt: attempt.at,
+    ...(current.caseTimings ? { caseTimings: current.caseTimings } : {}),
+    ...(current.publications ? { publications: current.publications } : {}),
   };
   fs.mkdirSync(path.dirname(statePath(workspaceRoot, batchId)), { recursive: true });
   writeJsonAtomic(statePath(workspaceRoot, batchId), next);

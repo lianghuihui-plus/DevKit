@@ -7,6 +7,11 @@ const { validateCaseSpec } = require('../execution/contracts/case-spec-contract'
 const { validateCaseContext, validateDecision } = require('./contract');
 const store = require('./store');
 
+const DECISION_SOURCE_FIELDS = Object.freeze([
+  'assessment', 'observation', 'conclusion', 'purpose', 'expectedOutcome',
+  'expectationRefs', 'planUpdate', 'knowledgeReview', 'uncertainties',
+]);
+
 function stringList(value, label) {
   return ensureArray(value, label, 'CASE_NARRATIVE_INVALID')
     .map((item, index) => ensureString(item, `${label}[${index}]`, 'CASE_NARRATIVE_INVALID').trim());
@@ -108,6 +113,15 @@ function normalizeDecision(value, context) {
   return decision;
 }
 
+function decisionFieldSources(value) {
+  return Object.fromEntries(DECISION_SOURCE_FIELDS.map((field) => [
+    field,
+    Object.prototype.hasOwnProperty.call(value, field) && value[field] !== undefined
+      ? 'AGENT_AUTHORED'
+      : 'NOT_PROVIDED',
+  ]));
+}
+
 function appendGap(execDir, request, error, fields, options = {}) {
   const missingFields = fields?.length ? fields : [error?.fieldPath || 'narrative'];
   const event = store.appendEvent(execDir, 'narrativeGap', {
@@ -130,45 +144,41 @@ function recordRequestNarrative(execDir, request, options = {}) {
   const hasContextBefore = Boolean(context);
   let contextEvent = null;
   if (request.caseContext !== undefined) {
-    try {
-      const normalized = normalizeCaseContext(request.caseContext, context, frozenCaseSpec(execDir));
-      if (!context || canonicalJson(normalized) !== canonicalJson(context)) {
-        const version = contextEvents(execDir).length + 1;
-        contextEvent = store.appendEvent(execDir, 'caseContextRecorded', {
-          contextVersion: version,
-          reason: version === 1 ? 'INITIAL_UNDERSTANDING' : String(request.caseContext.revisionReason || 'AGENT_UPDATED_CONTEXT'),
-          caseContext: normalized,
-        }, options);
-      }
-      context = normalized;
-      if (contextEvent && normalized.initialPlan.length === 0) {
-        warnings.push(appendGap(execDir, request, {
-          code: 'CASE_INITIAL_PLAN_MISSING',
-          message: 'Agent provided an empty initial execution plan',
-        }, ['caseContext.initialPlan'], options));
-      }
-    } catch (error) {
-      warnings.push(appendGap(execDir, request, error, [error.fieldPath || 'caseContext'], options));
+    const normalized = normalizeCaseContext(request.caseContext, context, frozenCaseSpec(execDir));
+    if (!context || canonicalJson(normalized) !== canonicalJson(context)) {
+      const version = contextEvents(execDir).length + 1;
+      contextEvent = store.appendEvent(execDir, 'caseContextRecorded', {
+        contextVersion: version,
+        reason: version === 1 ? 'INITIAL_UNDERSTANDING' : String(request.caseContext.revisionReason || 'AGENT_UPDATED_CONTEXT'),
+        caseContext: normalized,
+      }, options);
+    }
+    context = normalized;
+    if (contextEvent && normalized.initialPlan.length === 0) {
+      warnings.push(appendGap(execDir, request, {
+        code: 'CASE_INITIAL_PLAN_MISSING',
+        message: 'Agent provided an empty initial execution plan',
+      }, ['caseContext.initialPlan'], options));
     }
   }
 
   let decisionEvent = null;
   if (request.decision !== undefined) {
-    try {
-      const decision = normalizeDecision(request.decision, context);
-      decisionEvent = store.appendEvent(execDir, 'agentDecisionRecorded', {
-        decisionId: store.nextId(execDir, 'decision'),
-        requestedOperation: request.operation,
-        sceneId: store.readCurrentScene(execDir)?.sceneId || null,
-        contextVersion: contextEvents(execDir).at(-1)?.contextVersion || null,
-        decision,
-      }, options);
-      if (decision.knowledgeReview) {
-        require('./knowledge-review').recordKnowledgeReview(execDir, decision.knowledgeReview, decisionEvent, options);
-      }
-    } catch (error) {
-      if (request.operation === 'act') throw error;
-      warnings.push(appendGap(execDir, request, error, [error.fieldPath || 'decision'], options));
+    const fieldSources = decisionFieldSources(request.decision);
+    const decision = normalizeDecision(request.decision, context);
+    if (decision.knowledgeReview) {
+      require('./knowledge-review').validateKnowledgeReview(execDir, decision.knowledgeReview);
+    }
+    decisionEvent = store.appendEvent(execDir, 'agentDecisionRecorded', {
+      decisionId: store.nextId(execDir, 'decision'),
+      requestedOperation: request.operation,
+      sceneId: store.readCurrentScene(execDir)?.sceneId || null,
+      contextVersion: contextEvents(execDir).at(-1)?.contextVersion || null,
+      decision,
+      decisionFieldSources: fieldSources,
+    }, options);
+    if (decision.knowledgeReview) {
+      require('./knowledge-review').recordKnowledgeReview(execDir, decision.knowledgeReview, decisionEvent, options);
     }
   } else if (shouldRecordGap(request, hasContextBefore, Boolean(contextEvent && context))) {
     warnings.push(appendGap(execDir, request, null, [context ? 'decision' : 'caseContext'], options));

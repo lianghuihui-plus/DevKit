@@ -4,6 +4,7 @@ const { validateRuntimeRequest } = require('./contract');
 const actionService = require('./action-service');
 const knowledgeService = require('./knowledge-service');
 const narrativeService = require('./narrative-service');
+const { RUNTIME_OPERATIONS } = require('./runtime-operation-contract');
 const resultService = require('./result-service');
 const sceneService = require('./scene-service');
 const store = require('./store');
@@ -18,7 +19,7 @@ function knowledgeInvestigationStatus(execDir) {
     .map((event) => [event.queryId, event]));
   return {
     available: runtime?.broker?.allowedOperations?.includes('knowledge') === true,
-    requiredBeforeNegativeConclusion: runtime?.broker?.schemaVersion === 3,
+    requiredBeforeNegativeConclusion: [3, 4].includes(runtime?.broker?.schemaVersion),
     pendingReviews: events.filter((event) => event.type === 'knowledgeQueried' && !reviews.has(event.queryId))
       .map((event) => ({
         queryId: event.queryId,
@@ -61,7 +62,7 @@ function runtimeStatus(execDir) {
     executionId: execution.executionId,
     generation: execution.warmSessionGeneration,
     remainingMs: Math.max(0, TIME_LIMIT_MS - (Date.now() - Date.parse(execution.startedAt))),
-    scene: store.readCurrentScene(execDir),
+    scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
     narrative: narrativeService.narrativeStatus(execDir),
     knowledgeInvestigation: knowledgeInvestigationStatus(execDir),
     ...(preparation ? { preparation } : {}),
@@ -117,7 +118,7 @@ function recoveryBarrier(execDir, recoveredTransactions, pendingFinish) {
       ...(item.response?.technicalFactRef ? { technicalFactRef: item.response.technicalFactRef } : {}),
     })),
     ...(pendingFinish ? { recoveredFinish: { status: pendingFinish.status, verdict: pendingFinish.verdict || null } } : {}),
-    scene: store.readCurrentScene(execDir),
+    scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
   };
 }
 
@@ -138,8 +139,8 @@ function execute(execDir, request, options = {}) {
       status: 'REQUEST_INVALID',
       code: error.code || 'CASE_RUNTIME_REQUEST_INVALID',
       message: error.message || String(error),
-      scene: store.readCurrentScene(execDir),
-      expected: { operation: 'prepare | observe | act | inspectVisual | knowledge | recover | finish | status' },
+      scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
+      expected: { operation: RUNTIME_OPERATIONS.join(' | ') },
     };
     if (invocation) telemetry.endInvocation(execDir, invocation, response, options);
     return response;
@@ -170,7 +171,7 @@ function execute(execDir, request, options = {}) {
           code: 'APP_INITIAL_STATE_UNAVAILABLE',
           message: 'The requested App initial state cannot be established in this execution',
           technicalFactRef: preparation?.technicalFactRef || null,
-          scene: store.readCurrentScene(execDir),
+          scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
         };
       }
       assertSceneBasis(execDir, request);
@@ -190,7 +191,7 @@ function execute(execDir, request, options = {}) {
         return { ...recoveredRecovery.response, remainingMs: budget.remainingMs };
       }
       if (budget.exhausted && ['prepare', 'observe', 'act', 'recover'].includes(request.operation)) {
-        return { status: 'TIME_LIMIT', remainingMs: 0, technicalFactRef: budget.technicalFactRef, scene: store.readCurrentScene(execDir) };
+        return { status: 'TIME_LIMIT', remainingMs: 0, technicalFactRef: budget.technicalFactRef, scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)) };
       }
       let response;
       const runtimeOptions = {
@@ -209,6 +210,7 @@ function execute(execDir, request, options = {}) {
       else if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
       else if (request.operation === 'act') response = actionService.act(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'inspectVisual') response = require('./visual-inspection-service').inspectVisual(execDir, enrichedRequest, options);
+      else if (request.operation === 'inspectScene') response = require('./scene-inspection-service').inspectScene(execDir, enrichedRequest, options);
       else if (request.operation === 'knowledge') response = knowledgeService.knowledge(execDir, enrichedRequest, options);
       else if (request.operation === 'recover') response = require('./recovery-service').recover(execDir, enrichedRequest, runtimeOptions);
       return {
@@ -229,14 +231,14 @@ function execute(execDir, request, options = {}) {
         status: 'REQUEST_INVALID',
         code: error.code,
         message: error.message,
-        scene: store.readCurrentScene(execDir),
+        scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
       }
       : error.code === 'CASE_RUNTIME_SCENE_STALE'
       ? {
         status: 'SCENE_CHANGED',
         code: error.code,
         message: error.message,
-        scene: store.readCurrentScene(execDir),
+        scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
       }
       : error.code === 'CASE_RESULT_INCOMPLETE'
       ? {
@@ -244,7 +246,7 @@ function execute(execDir, request, options = {}) {
         code: error.code,
         message: error.message,
         missing: error.missing || [],
-        scene: store.readCurrentScene(execDir),
+            scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
         narrative: narrativeService.narrativeStatus(execDir),
       }
       : store.technicalResponse(execDir, error, {

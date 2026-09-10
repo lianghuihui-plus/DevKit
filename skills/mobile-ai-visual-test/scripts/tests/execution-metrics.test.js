@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const telemetry = require('../case-runtime/telemetry');
 const { metrics } = require('../case-runtime/result-service');
+const { deriveExecutionTiming } = require('../lib/execution-timing');
 
 const execDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-metrics-'));
 fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ finalized: false }));
@@ -95,6 +96,127 @@ assert.deepStrictEqual(resultMetrics.knowledgeInvestigation, {
   missingExpectationRefs: [],
   byExpectation: {
     E1: { required: true, status: 'NO_MATCH', queryIds: ['knowledge-0001'], reviewedQueryIds: ['knowledge-0001'] },
+  },
+});
+assert.deepStrictEqual(Object.fromEntries([
+  'caseTotalElapsedMs', 'coordinatorPreparationMs', 'initialStatePreparationMs',
+  'handoffPreparationMs', 'handoffSchedulingMs', 'caseAgentPhaseMs',
+].map((field) => [field, resultMetrics[field]])), {
+  caseTotalElapsedMs: null,
+  coordinatorPreparationMs: null,
+  initialStatePreparationMs: null,
+  handoffPreparationMs: null,
+  handoffSchedulingMs: null,
+  caseAgentPhaseMs: null,
+});
+const anchoredMetrics = metrics({
+  executionId: 'execution-timing-metrics',
+  startedAt: '2026-08-20T10:00:01.000Z',
+  caseProcessingStartedAt: '2026-08-20T10:00:00.000Z',
+  initialStateCompletedAt: '2026-08-20T10:00:03.000Z',
+  handoffReadyAt: '2026-08-20T10:00:04.000Z',
+  handoffConsumedAt: '2026-08-20T10:00:06.000Z',
+}, { verdict: 'PASS', checks: [] }, [], '2026-08-20T10:00:10.000Z');
+assert.deepStrictEqual(Object.fromEntries([
+  'elapsedMs', 'caseTotalElapsedMs', 'coordinatorPreparationMs', 'initialStatePreparationMs',
+  'handoffPreparationMs', 'handoffSchedulingMs', 'caseAgentPhaseMs',
+].map((field) => [field, anchoredMetrics[field]])), {
+  elapsedMs: 9000,
+  caseTotalElapsedMs: 10000,
+  coordinatorPreparationMs: 1000,
+  initialStatePreparationMs: 2000,
+  handoffPreparationMs: 1000,
+  handoffSchedulingMs: 2000,
+  caseAgentPhaseMs: 4000,
+});
+
+const anchoredTiming = deriveExecutionTiming({
+  startedAt: '2026-08-20T10:00:01.000Z',
+  endedAt: '2026-08-20T10:00:10.000Z',
+  caseProcessingStartedAt: '2026-08-20T10:00:00.000Z',
+  initialStateCompletedAt: '2026-08-20T10:00:03.000Z',
+  handoffReadyAt: '2026-08-20T10:00:04.000Z',
+  handoffConsumedAt: '2026-08-20T10:00:06.000Z',
+}, {}, { caseReportPublishedAt: '2026-08-20T10:00:12.000Z' });
+assert.deepStrictEqual(anchoredTiming, {
+  durationBasis: 'CASE_TOTAL_V1',
+  startedAt: '2026-08-20T10:00:00.000Z',
+  durationMs: 10000,
+  phases: {
+    coordinatorPreparationMs: 1000,
+    initialStatePreparationMs: 2000,
+    handoffPreparationMs: 1000,
+    handoffSchedulingMs: 2000,
+    caseAgentPhaseMs: 4000,
+    reportPublicationDelayMs: 2000,
+  },
+});
+assert.deepStrictEqual(deriveExecutionTiming({
+  startedAt: '2026-08-20T10:00:07.000Z', endedAt: '2026-08-20T10:00:10.000Z',
+  caseProcessingStartedAt: '2026-08-20T10:00:06.000Z',
+  initialStateCompletedAt: '2026-08-20T10:00:08.000Z',
+  autoInitialStateBlocked: true,
+}, {}), {
+  durationBasis: 'CASE_TOTAL_V1',
+  startedAt: '2026-08-20T10:00:06.000Z',
+  durationMs: 4000,
+  phases: {
+    coordinatorPreparationMs: 1000,
+    initialStatePreparationMs: 1000,
+    handoffPreparationMs: null,
+    handoffSchedulingMs: null,
+    caseAgentPhaseMs: null,
+    reportPublicationDelayMs: null,
+  },
+});
+assert.deepStrictEqual(deriveExecutionTiming({ startedAt: '2026-08-20T10:00:01.000Z' }, { elapsedMs: 321 }), {
+  durationBasis: 'EXECUTION_LEGACY',
+  startedAt: '2026-08-20T10:00:01.000Z',
+  durationMs: 321,
+  phases: {
+    coordinatorPreparationMs: null,
+    initialStatePreparationMs: null,
+    handoffPreparationMs: null,
+    handoffSchedulingMs: null,
+    caseAgentPhaseMs: null,
+    reportPublicationDelayMs: null,
+  },
+});
+
+const invalidExplicitPublication = deriveExecutionTiming({
+  startedAt: '2026-08-20T10:00:00.000Z',
+  endedAt: '2026-08-20T10:00:02.000Z',
+}, { elapsedMs: 2000 }, {
+  caseReportPublishedAt: '2026-08-20T10:00:01.000Z',
+  reportPublicationDelayMs: 999,
+});
+assert.strictEqual(invalidExplicitPublication.phases.reportPublicationDelayMs, null);
+assert.strictEqual(deriveExecutionTiming({ endedAt: '2026-08-20T10:00:02.000Z' }, { elapsedMs: 2000 }, {
+  reportPublicationDelayMs: 999,
+}).phases.reportPublicationDelayMs, null);
+assert.strictEqual(deriveExecutionTiming({ startedAt: '2026-08-20T10:00:00.000Z' }, { elapsedMs: 2000 }, {
+  caseReportPublishedAt: '2026-08-20T10:00:03.000Z',
+  reportPublicationDelayMs: 999,
+}).phases.reportPublicationDelayMs, null);
+assert.deepStrictEqual(deriveExecutionTiming({ startedAt: '2026-08-20T10:00:01.000Z' }, {
+  elapsedMs: 321,
+  caseTotalElapsedMs: 654,
+  coordinatorPreparationMs: 10,
+  initialStatePreparationMs: null,
+  handoffPreparationMs: 20,
+  handoffSchedulingMs: null,
+  caseAgentPhaseMs: 30,
+}), {
+  durationBasis: 'CASE_TOTAL_V1',
+  startedAt: '2026-08-20T10:00:01.000Z',
+  durationMs: 654,
+  phases: {
+    coordinatorPreparationMs: 10,
+    initialStatePreparationMs: null,
+    handoffPreparationMs: 20,
+    handoffSchedulingMs: null,
+    caseAgentPhaseMs: 30,
+    reportPublicationDelayMs: null,
   },
 });
 

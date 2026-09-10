@@ -45,6 +45,26 @@ function sanitizeOperationValue(value) {
   return copy;
 }
 
+function decisionField(event, field) {
+  const decision = event?.decision || {};
+  const source = event?.decisionFieldSources?.[field];
+  if (source === 'AGENT_AUTHORED') return decision[field];
+  if (source === 'NOT_PROVIDED') return null;
+  const value = decision[field];
+  return typeof value === 'string' && value && value !== decision.purpose ? value : null;
+}
+
+function projectDecision(event) {
+  const decision = event?.decision || {};
+  return {
+    ...decision,
+    assessment: decisionField(event, 'assessment') || '',
+    observation: decisionField(event, 'observation') || '',
+    conclusion: decisionField(event, 'conclusion') || '',
+    expectedOutcome: decisionField(event, 'expectedOutcome') || '',
+  };
+}
+
 function sceneEntry(report, event, index) {
   const scene = readJson(path.join(report.latest, 'scenes', `${event.sceneId}.json`), null);
   const screenshot = safeRef(event.screenshotRef || scene?.screenshot?.ref);
@@ -111,7 +131,7 @@ function eventEntry(event, index) {
     case 'caseContextRecorded':
       return { ...base, phase: 'UNDERSTAND', category: 'UNDERSTANDING', title: 'Agent 已形成用例理解与初始计划', summary: event.caseContext?.summary || '' };
     case 'agentDecisionRecorded':
-      return { ...base, category: 'DECISION', title: event.decision?.purpose || 'Agent 业务决策', summary: event.decision?.conclusion || '', decisionId: event.decisionId, intent: event.decision?.purpose || null, expectedOutcome: event.decision?.expectedOutcome || null };
+      return { ...base, category: 'DECISION', title: event.decision?.purpose || 'Agent 业务决策', summary: decisionField(event, 'conclusion') || '', decisionId: event.decisionId, intent: event.decision?.purpose || null, expectedOutcome: decisionField(event, 'expectedOutcome') || null };
     case 'knowledgeQueried':
       return { ...base, phase: 'INVESTIGATE', category: 'KNOWLEDGE', title: '查询本地知识', summary: `${event.candidateCount || 0} 个候选`, query: event.query, candidates: event.candidates || [], filterDiagnostics: event.filterDiagnostics || null };
     case 'knowledgeReviewed':
@@ -149,13 +169,8 @@ function eventEntry(event, index) {
 
 function expectationAssessment(report, action) {
   const refs = action.decision?.expectationRefs || [];
-  const sceneRef = action.afterObservation?.sceneId;
-  const checks = (report.result?.checks || []).filter((check) => refs.includes(check.expectationRef));
-  if (!checks.length) return { status: 'NOT_ASSESSED', summary: '该操作未形成独立的最终检查', basis: '最终检查' };
-  const linked = checks.filter((check) => !sceneRef || (check.sceneRefs || []).includes(sceneRef));
-  const selected = linked[0] || checks[0];
-  const status = selected.status === 'PASS' ? 'MATCHED' : selected.status === 'FAIL' ? 'NOT_MATCHED' : 'UNRESOLVED';
-  return { status, summary: selected.actual || '已形成最终检查', basis: linked.length ? '操作后现场与最终检查' : '最终检查' };
+  if (!refs.length) return { status: 'NOT_TARGETED', summary: '该操作未直接推进验证点', basis: '当时关联目标' };
+  return { status: 'TARGETED', summary: refs.join(' · '), basis: '当时关联目标' };
 }
 
 function buildExecutionTrace(report) {
@@ -163,7 +178,7 @@ function buildExecutionTrace(report) {
   const invocations = readJsonl(path.join(report.latest, 'telemetry', 'invocations.jsonl'));
   const invocationStarts = invocations.filter((entry) => entry.phase === 'START');
   const invocationEnds = invocations.filter((entry) => entry.phase === 'END');
-  const decisions = new Map(events.filter((event) => event.type === 'agentDecisionRecorded').map((event) => [event.decisionId, event.decision || {}]));
+  const decisions = new Map(events.filter((event) => event.type === 'agentDecisionRecorded').map((event) => [event.decisionId, projectDecision(event)]));
   const requested = new Map(events.filter((event) => event.type === 'actionRequested').map((event) => [event.operationId, event]));
   const entries = [];
 

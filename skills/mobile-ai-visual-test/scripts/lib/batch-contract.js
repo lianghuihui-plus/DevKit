@@ -90,6 +90,13 @@ function validateBatchContract(value) {
     ensureString(target.snapshotPath, `targets[${index}].snapshotPath`, 'BATCH_CONTRACT_INVALID');
     ensureString(target.sourceSha, `targets[${index}].sourceSha`, 'BATCH_CONTRACT_INVALID');
     ensureString(target.caseContractSha, `targets[${index}].caseContractSha`, 'BATCH_CONTRACT_INVALID');
+    if ((target.definitionId == null) !== (target.definitionSha == null)) {
+      throw contractError('BATCH_CONTRACT_INVALID', `targets[${index}] CaseDefinition binding is incomplete`);
+    }
+    if (target.definitionId != null) {
+      ensureString(target.definitionId, `targets[${index}].definitionId`, 'BATCH_CONTRACT_INVALID');
+      ensureString(target.definitionSha, `targets[${index}].definitionSha`, 'BATCH_CONTRACT_INVALID');
+    }
     ensureString(target.caseSpecSha, `targets[${index}].caseSpecSha`, 'BATCH_CONTRACT_INVALID');
     const policy = validatePreparationPolicy(target.preparationPolicy);
     if (target.preparationPolicySha !== preparationPolicySha(policy)) throw contractError('BATCH_CONTRACT_INVALID', `targets[${index}].preparationPolicySha does not match preparationPolicy`);
@@ -142,6 +149,7 @@ function createBatchContract({ batchId, executionRequest }) {
 
 function assertBatchImplementation(contract, versions = {}) {
   validateBatchContract(contract);
+  if (['READ', 'CANCEL', 'FINALIZE', 'RECONCILE'].includes(versions.compatibilityMode)) return contract;
   for (const field of ['runtimeSha', 'adapterSha', 'coordinatorSha']) {
     if (versions[field] && contract[field] !== versions[field]) {
       throw contractError('BATCH_IMPLEMENTATION_MISMATCH', `batch belongs to a different ${field}`);

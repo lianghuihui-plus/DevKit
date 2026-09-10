@@ -11,6 +11,7 @@ const ROLE_ENTRYPOINTS = Object.freeze({
   'batch-coordinator': Object.freeze([
     'scripts/workspace.js',
     'scripts/import-case.js',
+    'scripts/case-definition.js',
     'scripts/build-agent-contract.js',
     'scripts/probe-env.sh',
     'scripts/prepare-env.sh',
@@ -35,8 +36,6 @@ const ROLE_RESOURCES = Object.freeze({
     'references/environment-probing.md',
     'references/failure-policy.md',
     'references/case-format.md',
-    'references/agent-runtime.md',
-    'references/knowledge.md',
     'references/installation.md',
   ]),
 });
@@ -46,6 +45,7 @@ const SHARED_IMPLEMENTATION_FILES = new Set([
   'scripts/lib/agent-contract-manifest.js',
   'scripts/lib/app-provisioning.js',
   'scripts/lib/contract-utils.js',
+  'scripts/lib/dispatch-lease.js',
   'scripts/lib/execution-lifecycle.js',
   'scripts/lib/execution-evidence.js',
   'scripts/lib/image-evidence.js',
@@ -77,6 +77,7 @@ const COORDINATOR_ENTRYPOINTS = Object.freeze([
   'scripts/environment.js',
   'scripts/execution-request.js',
   'scripts/import-case.js',
+  'scripts/case-definition.js',
   'scripts/knowledge.js',
   'scripts/workspace.js',
   'scripts/probe-env.sh',
@@ -120,8 +121,10 @@ function implementationGroups(skillRoot, platform) {
   for (const relative of [
     'scripts/execution/contracts/case-contract.js',
     'scripts/execution/contracts/case-spec-contract.js',
+    'scripts/execution/contracts/validation-profile-contract.js',
     'scripts/lib/action-contract.js',
-  'scripts/lib/action-result.js',
+    'scripts/lib/execution-timing.js',
+    'scripts/lib/action-result.js',
     'scripts/lib/action-spatial-evidence.js',
     'scripts/lib/knowledge-query.js',
     'scripts/lib/layout-observation.js',
@@ -134,6 +137,7 @@ function implementationGroups(skillRoot, platform) {
   ]) runtime.add(relative);
 
   const coordinator = new Set([...sharedRuntime, ...COORDINATOR_ENTRYPOINTS]);
+  coordinator.add('prompts/case-definition-compiler.md');
   coordinator.add('scripts/case-runtime/lifecycle.js');
   for (const relative of walkFiles(skillRoot, 'scripts/batch')) coordinator.add(relative);
   for (const relative of walkFiles(skillRoot, 'scripts/case')) coordinator.add(relative);
@@ -149,7 +153,9 @@ function implementationGroups(skillRoot, platform) {
   for (const relative of [
     'scripts/build-agent-contract.js',
     'scripts/execution/contracts/case-contract.js',
+    'scripts/execution/contracts/case-definition-contract.js',
     'scripts/execution/contracts/case-spec-contract.js',
+    'scripts/execution/contracts/validation-profile-contract.js',
     'scripts/lib/agent-contract-manifest.js',
     'scripts/lib/batch-contract.js',
     'scripts/lib/completion-contract.js',
@@ -157,6 +163,7 @@ function implementationGroups(skillRoot, platform) {
     'scripts/lib/execution-evidence.js',
     'scripts/lib/execution-evidence-graph.js',
     'scripts/lib/execution-lifecycle.js',
+    'scripts/lib/execution-timing.js',
     'scripts/lib/execution-artifact-manifest.js',
     'scripts/lib/action-spatial-evidence.js',
     'scripts/lib/image-evidence.js',

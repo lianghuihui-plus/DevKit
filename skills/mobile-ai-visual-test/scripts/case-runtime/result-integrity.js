@@ -12,6 +12,7 @@ const { validateCaseResult } = require('./contract');
 const { validateCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { buildKnowledgeIndex } = require('./knowledge-review');
 const store = require('./store');
+const { loadValidationProfile } = require('../execution/contracts/validation-profile-contract');
 
 function aggregateVerdict(checks) {
   const statuses = checks.map((check) => check.status);
@@ -52,7 +53,7 @@ function validateVerdict(result, events) {
 
 function validateExpectationCoverage(execDir, result, events, suppliedExecution = null) {
   const execution = suppliedExecution || readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 10) {
+  if (!execution || ![10, 11].includes(execution.schemaVersion)) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
 
@@ -209,10 +210,12 @@ function validateSearchAbsence(execDir, result, execution, expectationCoverage =
   return { searchAbsenceRefs: result.checks.map((check) => check.evidenceBasis?.scrollContextRef).filter(Boolean) };
 }
 
-function validateVisualInspectionCoverage(execDir, result, events, scenesById) {
+function validateVisualInspectionCoverage(execDir, result, events, scenesById, validationProfile = null) {
   const runtime = readJson(path.join(execDir, 'runtime.json'), null);
-  const required = [2, 3].includes(runtime?.broker?.schemaVersion)
-    && runtime.broker.allowedOperations?.includes('inspectVisual') === true;
+  const required = validationProfile
+    ? validationProfile.visualInspectionPolicy === 'REQUIRED_FOR_REFERENCED_SCENES'
+    : [2, 3].includes(runtime?.broker?.schemaVersion)
+      && runtime.broker.allowedOperations?.includes('inspectVisual') === true;
   if (!required) return { required: false, inspectedSceneRefs: [] };
   const inspections = events.filter((event) => event.type === 'visualInspected');
   const inspected = new Set();
@@ -284,7 +287,7 @@ function validateScene(execDir, sceneId, event, files, options = {}) {
 
 function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 10) {
+  if (!execution || ![10, 11].includes(execution.schemaVersion)) {
     throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
   }
   const result = suppliedResult || readJson(path.join(execDir, 'result.json'), null);
@@ -292,8 +295,10 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   const events = store.events(execDir);
   validateVerdict(result, events);
   const expectationCoverage = validateExpectationCoverage(execDir, result, events, execution);
-  const runtime = readJson(path.join(execDir, 'runtime.json'), null);
-  const knowledgeCoverage = validateKnowledgeClosure(result, events, execution, runtime?.broker || null);
+  const validationProfile = loadValidationProfile(execDir, execution);
+  const runtime = validationProfile ? null : readJson(path.join(execDir, 'runtime.json'), null);
+  const knowledgeCoverage = validateKnowledgeClosure(result, events, execution,
+    validationProfile?.knowledgeClosurePolicy === 'NEGATIVE_CHECKS_V1' ? { schemaVersion: 3 } : runtime?.broker || null);
   const searchCoverage = validateSearchAbsence(execDir, result, execution, expectationCoverage);
   const sceneEvents = events.filter((event) => event.type === 'sceneObserved');
   const byScene = new Map(sceneEvents.map((event) => [event.sceneId, event]));
@@ -381,7 +386,7 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   const refs = [...new Set(result.checks.flatMap((check) => check.sceneRefs || []))];
   const unknown = refs.filter((ref) => !byScene.has(ref));
   if (unknown.length) throw contractError('CASE_RESULT_SCENE_UNKNOWN', `CaseResult references unknown scenes: ${unknown.join(', ')}`);
-  const visualInspectionCoverage = validateVisualInspectionCoverage(execDir, result, events, byScene);
+  const visualInspectionCoverage = validateVisualInspectionCoverage(execDir, result, events, byScene, validationProfile);
   return {
     files: [...files].sort(), events, result, sceneRefs: refs,
     technicalFacts: technicalFacts(events), expectationCoverage, knowledgeCoverage, searchCoverage,

@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { formatDuration } = require('../lib/display-format');
 const { collectIndexCases, renderIndexForRoot, writeCaseReports } = require('../report/report-service');
 const { assertCurrentExecution, currentDisplayModel, readExecutionReport, selectExecutionDir } = require('../lib/execution-reader');
 const { findActiveExecutions } = require('../lib/execution-lifecycle');
@@ -35,6 +36,7 @@ for (const verdict of ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']) {
 for (const [verdict, fixture] of fixtures) {
   const report = readExecutionReport(fixture.execDir);
   assert.strictEqual(report.schemaFamily, 'current');
+  assert.strictEqual(report.readerFamily, 'execution-v10');
   assert.strictEqual(report.display.verdict, verdict);
   assert.strictEqual(report.display.executionStatus, fixture.metrics.executionStatus);
   assert.strictEqual(report.display.summary, fixture.result.summary);
@@ -50,12 +52,19 @@ for (const [verdict, fixture] of fixtures) {
   assert.strictEqual(metadata.artifacts['CONTEXT.md'].sha256, crypto.createHash('sha256').update(markdown).digest('hex'));
   assert.strictEqual(metadata.artifacts['CONTEXT.html'].sha256, crypto.createHash('sha256').update(html).digest('hex'));
   assert.strictEqual(fs.existsSync(path.join(path.dirname(paths.context), 'report-publication.draft.json')), false);
+  const publication = JSON.parse(fs.readFileSync(path.join(workspace, 'runs', report.execution.batchId, 'report-publication.json'), 'utf8'));
+  const publicationTiming = publication.caseTimings[report.execution.executionId];
+  assert.ok(Number.isFinite(publicationTiming.reportPublicationDelayMs));
+  assert.ok(html.includes(formatDuration(publicationTiming.reportPublicationDelayMs)), 'first publication includes its delay');
 
   for (const text of ['## 原始用例', '## Agent 用例理解', '## 初始计划', '## 执行过程', '## 最终检查', '操作前观察', '操作后结论']) {
     assert.ok(markdown.includes(text), text);
   }
+  for (const text of ['时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
+    assert.ok(markdown.includes(text), `markdown ${text}`);
+  }
   assert.ok(markdown.includes(`执行结论：${{ PASS: '通过', FAIL: '失败', INCONCLUSIVE: '无法判断', BLOCKED: '阻塞' }[verdict]}`));
-  for (const text of ['结果概览', '原始用例', '用例理解', '执行计划', '执行过程', '详细日志', '验证点结果', '执行记录', 'Runtime 请求错误']) {
+  for (const text of ['结果概览', '原始用例', '用例理解', '执行计划', '执行过程', '详细日志', '验证点结果', '执行记录', 'Runtime 请求错误', '用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
     assert.ok(html.includes(text), text);
   }
   assert.strictEqual((html.match(/role="tab"/g) || []).length, 6);
@@ -64,7 +73,7 @@ for (const [verdict, fixture] of fixtures) {
   }
   assert.ok(html.includes('shot-dialog'));
   assert.ok(html.includes('data-shot='));
-  assert.ok(html.includes('class="step-expectations"'));
+  assert.ok(html.includes('class="step-expectations"'), verdict);
   assert.ok(html.includes('步骤 1'));
   assert.ok(html.includes('查看动作落点'));
   assert.ok(html.includes('action-spatial-evidence/action-0001.svg'));
@@ -99,6 +108,54 @@ for (const [verdict, fixture] of fixtures) {
   assert.strictEqual(html.includes('<img src=x onerror=alert(1)>'), false);
   assert.strictEqual(html.includes('<b>不是 HTML</b>'), false);
 }
+
+const timingFixture = fixtures.get('PASS');
+const timingExecutionPath = path.join(timingFixture.execDir, 'execution.json');
+const timingExecution = JSON.parse(fs.readFileSync(timingExecutionPath, 'utf8'));
+fs.writeFileSync(timingExecutionPath, JSON.stringify({
+  ...timingExecution,
+  caseProcessingStartedAt: '2026-08-13T09:59:55.000+08:00',
+  initialStateCompletedAt: '2026-08-13T10:00:02.000+08:00',
+  handoffReadyAt: '2026-08-13T10:00:03.000+08:00',
+  handoffConsumedAt: '2026-08-13T10:00:04.000+08:00',
+}, null, 2));
+fs.unlinkSync(path.join(timingFixture.execDir, 'artifact-manifest.json'));
+buildExecutionArtifactManifest(timingFixture.execDir, { now: timingExecution.endedAt });
+const timingCompletionPath = path.join(timingFixture.execDir, 'completion.json');
+fs.writeFileSync(timingCompletionPath, JSON.stringify({
+  ...timingFixture.completion,
+  artifactManifestSha256: sha256File(completionPaths(timingFixture.execDir).artifactManifest),
+}, null, 2));
+fs.mkdirSync(path.join(workspace, 'runs', timingFixture.execution.batchId), { recursive: true });
+fs.writeFileSync(path.join(workspace, 'runs', timingFixture.execution.batchId, 'report-publication.json'), JSON.stringify({
+  schemaVersion: 1,
+  batchId: timingFixture.execution.batchId,
+  status: 'PENDING',
+  attempts: [],
+  caseTimings: {
+    [timingFixture.execution.executionId]: { caseReportPublishedAt: '2026-08-13T10:00:06.000+08:00' },
+  },
+}, null, 2));
+const timingReport = readExecutionReport(timingFixture.execDir);
+assert.strictEqual(timingReport.display.durationBasis, 'CASE_TOTAL_V1');
+assert.strictEqual(timingReport.display.startedAt, '2026-08-13T09:59:55.000+08:00');
+assert.strictEqual(timingReport.display.durationMs, 10000);
+assert.deepStrictEqual(timingReport.display.phaseDurations, {
+  coordinatorPreparationMs: 5000,
+  initialStatePreparationMs: 2000,
+  handoffPreparationMs: 1000,
+  handoffSchedulingMs: 1000,
+  caseAgentPhaseMs: 1000,
+  reportPublicationDelayMs: 1000,
+});
+const persistedTimingDisplay = currentDisplayModel({ verdict: 'PASS', checks: [], summary: 'persisted timing' }, {
+  executionStatus: 'COMPLETED', elapsedMs: 5, caseTotalElapsedMs: 99,
+  coordinatorPreparationMs: 10, initialStatePreparationMs: null, handoffPreparationMs: 20,
+  handoffSchedulingMs: null, caseAgentPhaseMs: 30,
+}, { executionId: 'execution-persisted-timing', startedAt: '2026-08-13T10:00:00.000Z' });
+assert.strictEqual(persistedTimingDisplay.durationBasis, 'CASE_TOTAL_V1');
+assert.strictEqual(persistedTimingDisplay.durationMs, 99);
+assert.strictEqual(persistedTimingDisplay.phaseDurations.caseAgentPhaseMs, 30);
 
 const displayExecution = { executionId: 'execution-display', warmSessionGeneration: 1, startedAt: '2026-08-13T10:00:00.000Z' };
 const blockedWithoutTechnicalFact = currentDisplayModel({ verdict: 'BLOCKED', checks: [], summary: '前置条件不足' },
@@ -186,7 +243,7 @@ assert.strictEqual(damaged.display.executionStatus, 'TECHNICALLY_BLOCKED');
 const unsupportedDir = path.join(temp, 'unsupported-execution');
 fs.mkdirSync(unsupportedDir);
 fs.writeFileSync(path.join(unsupportedDir, 'execution.json'), JSON.stringify({ schemaVersion: 99, executionId: 'unsupported' }));
-assert.throws(() => readExecutionReport(unsupportedDir), (error) => error?.code === 'EXECUTION_SCHEMA_UNSUPPORTED' && /run again/.test(error.message));
+assert.throws(() => readExecutionReport(unsupportedDir), (error) => error?.code === 'EXECUTION_SCHEMA_UNSUPPORTED' && /schema: 99/.test(error.message));
 
 const historicalWorkspace = path.join(temp, 'historical-workspace');
 createTestWorkspace(historicalWorkspace);

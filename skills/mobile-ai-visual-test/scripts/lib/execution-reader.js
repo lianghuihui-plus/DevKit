@@ -5,8 +5,12 @@ const path = require('path');
 const { buildContract } = require('../build-agent-contract');
 const { validatePublishedCompletion } = require('./completion-contract');
 const { referencedTechnicalFacts } = require('./technical-facts');
+const { deriveExecutionTiming } = require('./execution-timing');
+const executionV10 = require('./readers/execution-v10');
+const executionV11 = require('./readers/execution-v11');
 
 const currentContracts = new Map();
+const executionReaders = Object.freeze([executionV10, executionV11]);
 
 function readJson(file, fallback = null) {
   if (!fs.existsSync(file)) return fallback;
@@ -27,12 +31,16 @@ function currentContract(platform, skillRoot = path.resolve(__dirname, '../..'))
 }
 
 function assertExecutionSchema(execution) {
-  if (execution?.schemaVersion !== 10 || execution.runtime !== 'case-runtime') {
-    const error = new Error('This execution was created by an unsupported protocol and must be run again');
-    error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
-    throw error;
-  }
-  return execution;
+  const reader = executionReaders.find((candidate) => candidate.supports(execution));
+  if (reader) return reader.assertSchema(execution);
+  const error = new Error(`unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
+  error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
+  throw error;
+}
+
+function readerFor(execution) {
+  assertExecutionSchema(execution);
+  return executionReaders.find((candidate) => candidate.supports(execution));
 }
 
 function assertCurrentExecution(execution, options = {}) {
@@ -57,7 +65,24 @@ function assertReadableCompletedExecution(execution) {
   return assertExecutionSchema(execution);
 }
 
-function currentDisplayModel(result, metrics, execution, events = []) {
+function timingPublication(execDir, execution) {
+  if (!execution?.batchId) return null;
+  const workspaceRoot = path.resolve(execDir, '../../../../../..');
+  const sidecar = readJson(path.join(workspaceRoot, 'runs', execution.batchId, 'report-publication.json'), null);
+  return sidecar?.caseTimings?.[execution.executionId] || sidecar?.publications?.[execution.executionId] || null;
+}
+
+function displayTiming(execution, metrics, publication = null) {
+  const timing = deriveExecutionTiming(execution, metrics, publication);
+  return {
+    startedAt: timing.startedAt,
+    durationMs: timing.durationMs,
+    durationBasis: timing.durationBasis,
+    phaseDurations: timing.phases,
+  };
+}
+
+function currentDisplayModel(result, metrics, execution, events = [], publication = null) {
   const evidenceBacked = (result?.checks || []).some((check) => (check.sceneRefs || []).length > 0);
   const technicalFact = referencedTechnicalFacts(result, events, execution).at(-1) || null;
   const verdictBasis = result?.verdict === 'BLOCKED'
@@ -72,9 +97,8 @@ function currentDisplayModel(result, metrics, execution, events = []) {
     uncertainties: Array.isArray(result?.uncertainties) ? result.uncertainties : [],
     failureCode: technicalFact?.code || null,
     failedStep: null,
-    startedAt: execution?.startedAt || '',
+    ...displayTiming(execution, metrics, publication),
     endedAt: execution?.endedAt || '',
-    durationMs: metrics?.elapsedMs,
     stepsSummary: '-',
     metrics: metrics || null,
   };
@@ -86,8 +110,8 @@ function pendingCompletionDisplayModel(result, metrics, execution) {
     executionStatus: 'PENDING_PUBLICATION', verdictBasis: null,
     summary: '执行结果已生成，等待框架完成校验和发布', uncertainties: [],
     failureCode: null, failedStep: null,
-    startedAt: execution?.startedAt || '', endedAt: execution?.endedAt || '',
-    durationMs: metrics?.elapsedMs, stepsSummary: '-', metrics: metrics || null,
+    ...displayTiming(execution, metrics), endedAt: execution?.endedAt || '',
+    stepsSummary: '-', metrics: metrics || null,
   };
 }
 
@@ -97,8 +121,8 @@ function finalizationRecoveryDisplayModel(execution, metrics) {
     executionStatus: 'FINALIZATION_RECOVERY_REQUIRED', verdictBasis: null,
     summary: '执行收尾中断，等待框架从冻结草稿恢复', uncertainties: [],
     failureCode: 'RESUME_FINALIZE', failedStep: null,
-    startedAt: execution?.startedAt || '', endedAt: '',
-    durationMs: metrics?.elapsedMs, stepsSummary: '-', metrics: metrics || null,
+    ...displayTiming(execution, metrics), endedAt: '',
+    stepsSummary: '-', metrics: metrics || null,
   };
 }
 
@@ -113,9 +137,8 @@ function invalidCompletionDisplayModel(result, metrics, execution, message) {
     uncertainties: [],
     failureCode: 'EXECUTION_COMPLETION_INVALID',
     failedStep: null,
-    startedAt: execution?.startedAt || '',
+    ...displayTiming(execution, metrics),
     endedAt: execution?.endedAt || '',
-    durationMs: metrics?.elapsedMs,
     stepsSummary: '-',
     metrics: metrics || null,
   };
@@ -131,7 +154,7 @@ function emptyExecutionReport(execDir = null) {
 
 function executionSelection(execDir, workspaceRoot = null) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 10 || execution.runtime !== 'case-runtime') {
+  if (!executionReaders.some((reader) => reader.supports(execution))) {
     const time = Date.parse(execution?.endedAt || execution?.startedAt || 0) || fs.statSync(execDir).mtimeMs;
     return { execDir, execution, result: null, completion: null, closure: null, priority: -1, state: 'UNSUPPORTED', time };
   }
@@ -173,10 +196,12 @@ function readExecutionReport(execDir) {
   const report = emptyExecutionReport(execDir);
   const execution = readJson(path.join(execDir, 'execution.json'), null);
   const completion = readJson(path.join(execDir, 'completion.json'), null);
+  const reader = readerFor(execution);
   report.execution = execution?.finalized === true && completion
     ? assertReadableCompletedExecution(execution)
     : assertCurrentExecution(execution);
   report.schemaFamily = 'current';
+  report.readerFamily = reader.READER_FAMILY;
   report.snapshot = readJson(path.join(execDir, 'case.snapshot.json'), null);
   report.rawResult = readJson(path.join(execDir, 'result.json'), null);
   report.metrics = readJson(path.join(execDir, 'metrics.json'), null);
@@ -194,7 +219,7 @@ function readExecutionReport(execDir) {
       summary: cancelled ? `执行已取消：${report.execution.cancellation?.reason || '用户取消'}`
         : report.closure ? '执行因实现变更被废弃，未形成测试结论' : '用例执行中',
       uncertainties: [], failureCode: cancelled ? null : report.closure?.reasonCode || null, failedStep: null,
-      startedAt: report.execution.startedAt || '', endedAt: report.execution.endedAt || '', durationMs: null, stepsSummary: '-', metrics: null,
+      ...displayTiming(report.execution, report.metrics), endedAt: report.execution.endedAt || '', stepsSummary: '-', metrics: null,
     };
     return report;
   }
@@ -232,7 +257,7 @@ function readExecutionReport(execDir) {
       return report;
     }
   }
-  report.display = currentDisplayModel(report.result, report.metrics, report.execution, report.events);
+  report.display = currentDisplayModel(report.result, report.metrics, report.execution, report.events, timingPublication(execDir, report.execution));
   return report;
 }
 

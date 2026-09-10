@@ -23,6 +23,27 @@ function sceneSummary(event) {
   };
 }
 
+function decisionField(event, field) {
+  const decision = event?.decision || {};
+  const source = event?.decisionFieldSources?.[field];
+  if (source === 'AGENT_AUTHORED') return decision[field];
+  if (source === 'NOT_PROVIDED') return ['expectationRefs', 'uncertainties'].includes(field) ? [] : null;
+  if (['purpose', 'expectationRefs', 'planUpdate', 'knowledgeReview', 'uncertainties'].includes(field)) return decision[field];
+  const value = decision[field];
+  return typeof value === 'string' && value && value !== decision.purpose ? value : null;
+}
+
+function processState({ operation, action, knowledge, recovery, visualInspection, beforeScene, afterScene, technicalIssue }) {
+  if (technicalIssue || action?.status === 'FAILED' || recovery?.status === 'FAILED') return 'ISSUE';
+  if (action && ['UNKNOWN', 'PENDING'].includes(action.status)) return 'UNKNOWN';
+  if (operation === 'act') return action ? 'EXECUTED' : 'UNKNOWN';
+  if (operation === 'knowledge') return knowledge ? 'INVESTIGATED' : 'UNKNOWN';
+  if (operation === 'recover') return recovery?.status === 'SUCCEEDED' ? 'RECOVERED' : 'UNKNOWN';
+  if (operation === 'inspectVisual') return visualInspection ? 'OBSERVED' : 'UNKNOWN';
+  if (operation === 'observe') return afterScene || beforeScene ? 'OBSERVED' : 'UNKNOWN';
+  return 'UNKNOWN';
+}
+
 function investigationStatus(expectationRef, report, events, reviews) {
   const frozen = report.metrics?.knowledgeInvestigation?.byExpectation?.[expectationRef];
   if (frozen?.status) return frozen;
@@ -121,64 +142,62 @@ function projectCurrentNarrative(report) {
       };
     }),
   }));
-  const checkByExpectation = new Map(checks.map((check) => [check.expectationRef, check]));
-
   const steps = executionDecisions.map((event, index) => {
     const decision = event.decision || {};
     const action = actionByDecision.get(event.decisionId) || null;
     const actionResult = action ? resultByOperation.get(action.operationId) || null : null;
     const knowledge = knowledgeByDecision.get(event.decisionId) || null;
     const recovery = recoveryByDecision.get(event.decisionId) || null;
+    const visualInspection = events.find((candidate) => candidate.type === 'visualInspected' && candidate.decisionId === event.decisionId) || null;
+    const technicalIssue = events.find((candidate) => candidate.type === 'technicalIssue' && candidate.decisionId === event.decisionId) || null;
     const operationId = action?.operationId || recovery?.operationId || null;
     const beforeScene = scenes.get(event.sceneId) || null;
     const afterScene = (operationId ? postSceneByOperation.get(operationId) : null)
       || postSceneByDecision.get(event.decisionId)
       || null;
     const decisionIndex = decisions.indexOf(event);
-    const following = decisions.slice(decisionIndex + 1).find((candidate) => !afterScene || candidate.sceneId === afterScene.sceneId) || null;
+    const following = decisions.slice(decisionIndex + 1).find((candidate) => candidate.requestedOperation !== 'finish'
+      && (!afterScene || candidate.sceneId === afterScene.sceneId)) || null;
+    const actionView = action ? {
+      operationId: action.operationId,
+      value: action.action || null,
+      status: actionResult?.type === 'actionOutcomeUnknown'
+        ? 'UNKNOWN'
+        : actionResult?.command?.status === 'REJECTED' || actionResult?.deviceExecution?.status === 'FAILED'
+          ? 'FAILED' : actionResult ? 'OBSERVED' : 'PENDING',
+      result: actionResult ? {
+        lifecycle: actionResult.lifecycle || null,
+        command: actionResult.command || null,
+        deviceExecution: actionResult.deviceExecution || null,
+        observedEffect: actionResult.observedEffect || null,
+        duringActionObservation: actionResult.duringActionObservation || null,
+      } : null,
+      spatialEvidence: actionResult?.spatialEvidenceRef
+        ? projectActionSpatialEvidence(report.latest, actionResult.spatialEvidenceRef, {
+          operationId: actionResult.operationId,
+          actionType: actionResult.action?.type || action.action?.type,
+        })
+        : actionResult?.coordinateAudit || null,
+    } : null;
+    const recoveryView = recovery ? { operationId: recovery.operationId, status: recovery.type === 'appRecovered' ? 'SUCCEEDED' : recovery.type === 'recoveryFailed' ? 'FAILED' : 'UNKNOWN', reason: recovery.reason || recovery.message || '' } : null;
     return {
       number: index + 1,
       decisionId: event.decisionId,
       time: event.time,
       operation: event.requestedOperation,
       sceneId: event.sceneId || null,
-      observation: decision.observation || '',
-      conclusion: decision.conclusion || '',
+      assessment: decisionField(event, 'assessment') || '',
+      observation: decisionField(event, 'observation') || '',
+      conclusion: decisionField(event, 'conclusion') || '',
       purpose: decision.purpose || '',
-      expectedOutcome: decision.expectedOutcome || '',
+      expectedOutcome: decisionField(event, 'expectedOutcome') || '',
       expectationRefs: decision.expectationRefs || [],
-      expectations: (decision.expectationRefs || []).map((ref) => {
-        const check = checkByExpectation.get(ref) || null;
-        return {
-          ref,
-          text: expectationByRef.get(ref)?.text || ref,
-          status: check?.status || 'NOT_ASSESSED',
-          actual: check?.actual || '',
-          sceneRefs: check?.sceneRefs || [],
-        };
-      }),
+      expectationTargets: (decision.expectationRefs || []).map((ref) => ({
+        ref,
+        text: expectationByRef.get(ref)?.text || ref,
+      })),
       planUpdate: decision.planUpdate || null,
-      action: action ? {
-        operationId: action.operationId,
-        value: action.action || null,
-        status: actionResult?.type === 'actionOutcomeUnknown'
-          ? 'UNKNOWN'
-          : actionResult?.command?.status === 'REJECTED' || actionResult?.deviceExecution?.status === 'FAILED'
-            ? 'FAILED' : actionResult ? 'OBSERVED' : 'PENDING',
-        result: actionResult ? {
-          lifecycle: actionResult.lifecycle || null,
-          command: actionResult.command || null,
-          deviceExecution: actionResult.deviceExecution || null,
-          observedEffect: actionResult.observedEffect || null,
-          duringActionObservation: actionResult.duringActionObservation || null,
-        } : null,
-        spatialEvidence: actionResult?.spatialEvidenceRef
-          ? projectActionSpatialEvidence(report.latest, actionResult.spatialEvidenceRef, {
-            operationId: actionResult.operationId,
-            actionType: actionResult.action?.type || action.action?.type,
-          })
-          : actionResult?.coordinateAudit || null,
-      } : null,
+      action: actionView,
       knowledge: knowledge ? {
         queryId: knowledge.queryId,
         query: knowledge.query,
@@ -187,14 +206,29 @@ function projectCurrentNarrative(report) {
         filterDiagnostics: knowledge.filterDiagnostics || null,
         review: knowledgeReviews.get(knowledge.queryId) || null,
       } : null,
-      recovery: recovery ? { operationId: recovery.operationId, status: recovery.type === 'appRecovered' ? 'SUCCEEDED' : recovery.type === 'recoveryFailed' ? 'FAILED' : 'UNKNOWN', reason: recovery.reason || recovery.message || '' } : null,
+      recovery: recoveryView,
+      visualInspection: visualInspection ? {
+        inspectionId: visualInspection.inspectionId,
+        sceneId: visualInspection.sceneId,
+        screenshotRef: visualInspection.screenshotRef,
+      } : null,
       beforeScene: sceneSummary(beforeScene),
       afterScene: sceneSummary(afterScene),
       postAssessment: following && following !== event ? {
-        observation: following.decision?.observation || '',
-        conclusion: following.decision?.conclusion || '',
+        observation: decisionField(following, 'observation') || '',
+        conclusion: decisionField(following, 'conclusion') || '',
         decisionId: following.decisionId,
       } : null,
+      processState: processState({
+        operation: event.requestedOperation,
+        action: actionView,
+        knowledge,
+        recovery: recoveryView,
+        visualInspection,
+        beforeScene,
+        afterScene,
+        technicalIssue,
+      }),
     };
   });
 
@@ -221,7 +255,13 @@ function projectCurrentNarrative(report) {
       decisionId: finalDecisionEvent.decisionId,
       time: finalDecisionEvent.time,
       sceneId: finalDecisionEvent.sceneId || null,
-      ...finalDecisionEvent.decision,
+      purpose: finalDecisionEvent.decision?.purpose || '',
+      assessment: decisionField(finalDecisionEvent, 'assessment') || '',
+      observation: decisionField(finalDecisionEvent, 'observation') || '',
+      conclusion: decisionField(finalDecisionEvent, 'conclusion') || '',
+      expectedOutcome: decisionField(finalDecisionEvent, 'expectedOutcome') || '',
+      expectationRefs: finalDecisionEvent.decision?.expectationRefs || [],
+      uncertainties: decisionField(finalDecisionEvent, 'uncertainties') || [],
     } : null,
     knowledgeInvestigations: events.filter((event) => event.type === 'knowledgeQueried').map((event) => ({
       queryId: event.queryId,

@@ -94,13 +94,23 @@ function completeCase(started, index) {
   return JSON.parse(fs.readFileSync(path.join(started.execDir, 'metrics.json'), 'utf8'));
 }
 
-const first = startCurrentCase({ workspaceRoot: root, batchId, implementationSha: protocol.implementationSha, executionId: 'execution-warm-001', now: '2026-09-04T10:00:01.000Z' });
+const firstResponse = startCurrentCase({ workspaceRoot: root, batchId, implementationSha: protocol.implementationSha, executionId: 'execution-warm-001', now: '2026-09-04T10:00:01.000Z' });
+const firstExecDir = fs.realpathSync(path.join(targets[0].caseDir, 'platforms', binding.platform, 'executions', firstResponse.executionId));
+const first = {
+  execDir: firstExecDir,
+  execution: JSON.parse(fs.readFileSync(path.join(firstExecDir, 'execution.json'), 'utf8')),
+};
 assert.strictEqual(first.execution.warmSessionReused, false);
 const firstMetrics = completeCase(first, 1);
 assert.strictEqual(firstMetrics.warmSessionReused, false);
 commitCurrentCase({ workspaceRoot: root, batchId, implementationSha: protocol.implementationSha, now: '2026-09-04T10:00:01.500Z' });
 
-const second = startCurrentCase({ workspaceRoot: root, batchId, implementationSha: protocol.implementationSha, executionId: 'execution-warm-002', now: '2026-09-04T10:00:02.000Z' });
+const secondResponse = startCurrentCase({ workspaceRoot: root, batchId, implementationSha: protocol.implementationSha, executionId: 'execution-warm-002', now: '2026-09-04T10:00:02.000Z' });
+const secondExecDir = fs.realpathSync(path.join(targets[1].caseDir, 'platforms', binding.platform, 'executions', secondResponse.executionId));
+const second = {
+  execDir: secondExecDir,
+  execution: JSON.parse(fs.readFileSync(path.join(secondExecDir, 'execution.json'), 'utf8')),
+};
 assert.strictEqual(second.execution.warmSessionReused, true);
 assert.strictEqual(appStartCount, 1);
 const secondMetrics = completeCase(second, 2);

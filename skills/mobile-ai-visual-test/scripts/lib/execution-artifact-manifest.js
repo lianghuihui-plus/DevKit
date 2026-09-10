@@ -18,6 +18,7 @@ const CURRENT_ROOT_FILES = new Set([
   'result.json',
   'metrics.json',
 ]);
+const V11_ROOT_FILES = new Set([...CURRENT_ROOT_FILES, 'case-definition.snapshot.json', 'validation-profile.snapshot.json']);
 const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge', 'action-spatial-evidence', 'coordinate-audits', 'scenes', 'operations', 'telemetry']);
 
 function manifestPath(execDir) {
@@ -34,11 +35,12 @@ function walkFiles(root, relative = '') {
 
 function executionArtifactFiles(execDir) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 10) {
-    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (![10, 11].includes(execution?.schemaVersion)) {
+    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
+  const rootFiles = execution.schemaVersion === 11 ? V11_ROOT_FILES : CURRENT_ROOT_FILES;
   return walkFiles(execDir).filter((relative) => {
-    if (CURRENT_ROOT_FILES.has(relative)) return true;
+    if (rootFiles.has(relative)) return true;
     const first = relative.split('/')[0];
     if (EVIDENCE_DIRS.has(first)) return true;
     return false;
@@ -46,10 +48,10 @@ function executionArtifactFiles(execDir) {
 }
 
 function requiredArtifactFiles(execution) {
-  if (execution?.schemaVersion !== 10) {
-    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (![10, 11].includes(execution?.schemaVersion)) {
+    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
-  return [...CURRENT_ROOT_FILES];
+  return [...(execution.schemaVersion === 11 ? V11_ROOT_FILES : CURRENT_ROOT_FILES)];
 }
 
 function assertRequiredArtifacts(execDir, execution) {

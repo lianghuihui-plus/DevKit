@@ -5,9 +5,10 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const vm = require('vm');
 const { initializeBatch } = require('../batch/core');
 const { createCaseContract } = require('../execution/contracts/case-contract');
-const { formatDisplayTime } = require('../lib/display-format');
+const { formatDisplayTime, formatDuration } = require('../lib/display-format');
 const { refreshCommittedCaseReports, renderIndexForRoot } = require('../report/report-service');
 const { renderCurrentIndexHtml } = require('../report/current-index');
 const {
@@ -22,6 +23,34 @@ function expectedLocalTime(value) {
   const date = new Date(value);
   const pad = (part) => String(part).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function runIndexFilters(html) {
+  const script = html.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script, 'dashboard inline script');
+  const listeners = new Map();
+  const buttons = [...html.matchAll(/<button[^>]*data-case-filter="([^"]+)"[^>]*>/g)].map((match) => ({
+    dataset: { caseFilter: match[1] },
+    classList: { toggle() {} },
+    setAttribute() {},
+    addEventListener(type, listener) { listeners.set(`${match[1]}:${type}`, listener); },
+  }));
+  const cards = [...html.matchAll(/<section class="case-row" data-case-status="([^"]*)" data-case-search="([^"]*)">/g)]
+    .map((match) => ({ dataset: { caseStatus: match[1], caseSearch: match[2] }, hidden: false }));
+  const search = { value: '', addEventListener() {} };
+  const result = { textContent: '' };
+  const empty = { hidden: true };
+  const document = {
+    querySelectorAll(selector) { return selector === '[data-case-filter]' ? buttons : cards; },
+    querySelector(selector) { return selector === '.search' ? search : selector === '.filter-result' ? result : empty; },
+  };
+  vm.runInNewContext(script, { document });
+  return {
+    click(status) {
+      listeners.get(`${status}:click`)();
+      return cards.filter((card) => !card.hidden).length;
+    },
+  };
 }
 
 const utcTime = '2026-08-21T06:18:13.721Z';
@@ -61,10 +90,15 @@ for (const fixture of fixtures) {
   assert.strictEqual(fs.existsSync(path.join(fixture.runtimeDir, 'CONTEXT.html')), false);
   assert.strictEqual(fs.existsSync(path.join(fixture.caseDir, 'CONTEXT.html')), false);
 }
+const caseContractsBeforeRender = new Map(fixtures.map((fixture) => [
+  fixture.caseDir,
+  fs.readFileSync(path.join(fixture.caseDir, 'case.json')),
+]));
 
 const indexPath = renderIndexForRoot(root);
 const indexCases = require('../report/report-service').collectIndexCases(root);
 for (const fixture of fixtures) {
+  assert.deepStrictEqual(fs.readFileSync(path.join(fixture.caseDir, 'case.json')), caseContractsBeforeRender.get(fixture.caseDir));
   assert.strictEqual(fs.existsSync(path.join(fixture.runtimeDir, 'CONTEXT.html')), true);
   assert.strictEqual(fs.existsSync(path.join(fixture.caseDir, 'CONTEXT.html')), true);
   const caseContentHtml = fs.readFileSync(path.join(fixture.caseDir, 'CONTEXT.html'), 'utf8');
@@ -86,6 +120,14 @@ const reportMetadata = JSON.parse(fs.readFileSync(path.join(root, 'report-metada
 assert.match(reportMetadata.reportRendererSha, /^report-renderer-[0-9a-f]{16}$/);
 assert.ok(reportMetadata.rendererFiles.includes('scripts/report/current-report.js'));
 const html = fs.readFileSync(indexPath, 'utf8');
+const firstPublication = JSON.parse(fs.readFileSync(path.join(root, 'runs', fixtures[0].execution.batchId, 'report-publication.json'), 'utf8'));
+const firstPublicationTiming = firstPublication.caseTimings[fixtures[0].execution.executionId];
+assert.ok(Number.isFinite(firstPublicationTiming.reportPublicationDelayMs));
+assert.ok(fs.readFileSync(path.join(fixtures[0].runtimeDir, 'CONTEXT.html'), 'utf8')
+  .includes(formatDuration(firstPublicationTiming.reportPublicationDelayMs)), 'case detail includes publication delay');
+const filters = runIndexFilters(html);
+for (const status of ['PASS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE']) assert.strictEqual(filters.click(status), 1, status);
+assert.strictEqual(filters.click('NOT_RUN'), 0, 'NOT_RUN');
 for (const text of [
   'class="product-bar"',
   'class="summary-matrix"',
@@ -96,7 +138,7 @@ for (const text of [
 ]) assert.ok(html.includes(text), text);
 for (const text of ['run-control-section', 'control-band', 'outcome-band', 'Agent 执行信号', 'class="case-status"', '执行中']) assert.strictEqual(html.includes(text), false, text);
 assert.ok(html.includes('显示 4 / 4'));
-assert.ok(html.includes('data-case-status="INCONCLUSIVE NOT_RUN"'));
+assert.ok(html.includes('data-case-status="INCONCLUSIVE"'));
 assert.ok(html.includes('batch-dashboard'));
 for (let index = 1; index < indexCases.length; index += 1) {
   assert.ok(html.indexOf(indexCases[index - 1].title) < html.indexOf(indexCases[index].title));
@@ -113,7 +155,12 @@ assert.ok(html.includes('class="summary-counts"'));
 assert.ok(html.includes('25%'));
 assert.ok(html.includes('未执行</small><b>4</b><em>100%</em>'));
 assert.strictEqual((html.match(/class="platform-run /g) || []).length, fixtures.length);
-for (const text of ['三端统计', '平均耗时', '开始时间', '结束时间', '动作 / 观察', '验证点', '恢复']) assert.ok(html.includes(text), text);
+for (const text of ['三端统计', '平均耗时', '用例总耗时', '开始时间', '结束时间', '动作 / 观察', '验证点', '恢复']) assert.ok(html.includes(text), text);
+for (const text of ['时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
+  assert.strictEqual(html.includes(text), false, `overview must not include ${text}`);
+}
+assert.match(html, /font-variant-numeric:tabular-nums/);
+assert.match(html, /white-space:nowrap/);
 for (const item of indexCases) assert.ok(html.includes(`用例 ${item.caseNo}`));
 assert.ok(html.includes('aria-label="查看执行报告"'));
 assert.strictEqual((html.match(/class="case-common"/g) || []).length, fixtures.length);
@@ -139,7 +186,11 @@ const isolationRoot = path.join(temp, 'incremental-isolation');
 createTestWorkspace(isolationRoot);
 const activeFixture = createCurrentFixture(isolationRoot, { verdict: 'PASS', suffix: 'active-refresh' });
 const brokenFixture = createCurrentFixture(isolationRoot, { verdict: 'FAIL', suffix: 'broken-refresh' });
+const activeCaseBeforeReport = fs.readFileSync(path.join(activeFixture.caseDir, 'case.json'));
+const brokenCaseBeforeReport = fs.readFileSync(path.join(brokenFixture.caseDir, 'case.json'));
 renderIndexForRoot(isolationRoot);
+assert.deepStrictEqual(fs.readFileSync(path.join(activeFixture.caseDir, 'case.json')), activeCaseBeforeReport);
+assert.deepStrictEqual(fs.readFileSync(path.join(brokenFixture.caseDir, 'case.json')), brokenCaseBeforeReport);
 const brokenExecutionDir = path.join(brokenFixture.runtimeDir, 'executions', 'execution-corrupt-json');
 fs.mkdirSync(brokenExecutionDir, { recursive: true });
 fs.writeFileSync(path.join(brokenExecutionDir, 'execution.json'), '{ invalid json');
@@ -155,7 +206,7 @@ const multiPlatformHtml = renderCurrentIndexHtml(root, [{
   executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', reason: '不同平台结果需要分别展示。',
   durationMs: 3000, contextHref: 'cases/multi/CONTEXT.html',
   platforms: [
-    { platform: 'harmony', status: 'PASS', verdict: 'PASS', executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', durationMs: 1000, coverage: '3/3', contextHref: 'cases/multi/platforms/harmony/CONTEXT.html', schemaFamily: 'current', currentMetrics: { counts: { actions: 3, observations: 4, agentDecisions: 3, narrativeGaps: 0, knowledgeQueries: 2 }, executionRecoveryCount: 0 } },
+    { platform: 'harmony', status: 'PASS', verdict: 'PASS', executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', durationBasis: 'CASE_TOTAL_V1', durationMs: 1000, coverage: '3/3', contextHref: 'cases/multi/platforms/harmony/CONTEXT.html', schemaFamily: 'current', phaseDurations: { coordinatorPreparationMs: 100, initialStatePreparationMs: 200, handoffPreparationMs: 100, handoffSchedulingMs: 100, caseAgentPhaseMs: 500, reportPublicationDelayMs: 50 }, currentMetrics: { counts: { actions: 3, observations: 4, agentDecisions: 3, narrativeGaps: 0, knowledgeQueries: 2 }, executionRecoveryCount: 0 } },
     { platform: 'android', status: 'FAIL', verdict: 'FAIL', executionStatus: 'COMPLETED', verdictBasis: 'TECHNICAL_CONSTRAINT', durationMs: 2000, coverage: '2/3', contextHref: 'cases/multi/platforms/android/CONTEXT.html', schemaFamily: 'current', currentMetrics: { counts: { actions: 5, observations: 6, agentDecisions: 5, narrativeGaps: 1, knowledgeQueries: 4 }, warmSessionReused: true, executionRecoveryCount: 1 } },
   ],
 }]);
@@ -164,8 +215,18 @@ assert.strictEqual((multiPlatformHtml.match(/class="common-stat"/g) || []).lengt
 assert.strictEqual((multiPlatformHtml.match(/aria-label="查看执行报告"/g) || []).length, 2);
 assert.ok(multiPlatformHtml.includes('1 通 · 1 失 · 0 阻 · 0 无法 · 1 未'));
 assert.ok(multiPlatformHtml.includes('查看用例内容'));
-for (const text of ['动作 / 观察', '验证点', '恢复', '耗时', '开始时间', '结束时间']) assert.ok(multiPlatformHtml.includes(text), text);
+for (const text of ['动作 / 观察', '验证点', '恢复', '用例总耗时', '开始时间', '结束时间']) assert.ok(multiPlatformHtml.includes(text), text);
+for (const text of ['时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟']) {
+  assert.strictEqual(multiPlatformHtml.includes(text), false, text);
+}
 for (const text of ['3 / 4', '5 / 6', '3/3', '2/3', '直接证据', '技术约束', '1 秒', '2 秒']) assert.ok(multiPlatformHtml.includes(text), text);
+
+const detailHtml = fs.readFileSync(path.join(fixtures[0].runtimeDir, 'CONTEXT.html'), 'utf8');
+for (const text of ['用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙', '开始时间', '结束时间']) {
+  assert.ok(detailHtml.includes(text), `detail must include ${text}`);
+}
+assert.match(detailHtml, /font-variant-numeric:tabular-nums/);
+assert.match(detailHtml, /timing-breakdown dd\{[^}]*white-space:nowrap/);
 
 const staleRoot = path.join(temp, 'source-change');
 createTestWorkspace(staleRoot);

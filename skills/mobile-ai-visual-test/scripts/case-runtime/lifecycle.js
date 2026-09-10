@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { bindingSha } = require('../lib/batch-contract');
-const { contractError } = require('../lib/contract-utils');
+const { canonicalJson, contractError } = require('../lib/contract-utils');
 const {
   appProvisioningSha,
   initialStatePreflightSha,
@@ -15,13 +15,16 @@ const {
   validatePreparationPolicy,
 } = require('../lib/app-provisioning');
 const { sourceSha, validateCaseContract } = require('../execution/contracts/case-contract');
-const { validateCaseSpec } = require('../execution/contracts/case-spec-contract');
+const { createCaseSpec, validateCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { allocateExecutionId, atomicWrite, readJson, writeJsonAtomic, withFileLock } = require('../lib/execution-lifecycle');
 const { assertWorkspace } = require('../lib/workspace');
 const runtimeCore = require('./runtime-core');
 const store = require('./store');
+const { createValidationProfile, PROFILE_FILE } = require('../execution/contracts/validation-profile-contract');
+const { validateCaseDefinition } = require('../execution/contracts/case-definition-contract');
+const { AGENT_OPERATIONS, isSupportedBroker } = require('./runtime-operation-contract');
 
-const EXECUTION_SCHEMA_VERSION = 10;
+const EXECUTION_SCHEMA_VERSION = 11;
 
 function createBoundClient(execDir) {
   const entry = path.join(execDir, 'runtime-client.js');
@@ -36,9 +39,16 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
-function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText, runtime, scene = null) {
+function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText, runtime, scene = null, dispatchSequence = 1) {
   const preparation = runtimeCore.runtimeStatus(executionDir).preparation;
   const allowed = runtime.broker.allowedOperations;
+  const dispatchBound = Boolean(execution.batchId && runtime.sessionRef?.statePath);
+  const requestPath = dispatchBound
+    ? path.join(executionDir, `runtime-request.dispatch-${dispatchSequence}.json`)
+    : runtime.requestPath;
+  const command = dispatchBound
+    ? `${shellQuote(runtime.entry)} --dispatch-sequence ${dispatchSequence}`
+    : shellQuote(runtime.entry);
   return {
     schemaVersion: 2,
     case: {
@@ -57,25 +67,25 @@ function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText,
         ? 'SATISFIED' : preparation?.status || 'PENDING',
     },
     runtime: {
-      command: shellQuote(runtime.entry),
-      requestPath: runtime.requestPath,
+      command,
+      requestPath,
       allowedOperations: runtime.broker.allowedOperations,
       input: 'Write one RuntimeRequest JSON object to requestPath, then run command without arguments.',
     },
     investigationCapabilities: {
       visual: { available: allowed.includes('inspectVisual'), operation: 'inspectVisual' },
-      layout: { available: true, source: 'scene.evidenceChannels.layout' },
+      layout: { available: allowed.includes('inspectScene'), operation: 'inspectScene' },
       knowledge: {
         available: allowed.includes('knowledge'),
         operation: 'knowledge',
-        requiredBeforeNegativeConclusion: runtime.broker.schemaVersion === 3,
+        requiredBeforeNegativeConclusion: [3, 4].includes(runtime.broker.schemaVersion),
       },
     },
-    scene,
+    scene: require('./scene-service').projectSceneSummary(scene),
   };
 }
 
-function deriveCaseBrief(executionDir) {
+function deriveCaseBrief(executionDir, dispatchSequence = 1) {
   const resolved = path.resolve(executionDir);
   const execution = store.loadExecution(resolved, { allowFinalized: true });
   const sourceText = fs.readFileSync(path.join(resolved, 'source.snapshot.md'), 'utf8');
@@ -95,10 +105,10 @@ function deriveCaseBrief(executionDir) {
   const expectedRequestPath = path.join(resolved, 'runtime-request.json');
   if (!runtime || runtime.executionId !== execution.executionId || runtime.entry !== expectedEntry
     || runtime.requestPath !== expectedRequestPath || !fs.existsSync(expectedEntry)
-    || !require('./runtime-broker').isSupportedBroker(runtime.broker)) {
+    || !isSupportedBroker(runtime.broker)) {
     throw contractError('CASE_RUNTIME_BINDING_INVALID', 'Case Runtime client does not match the execution');
   }
-  return buildCaseBrief(resolved, execution, caseJson, caseSpec, sourceText, runtime, store.readCurrentScene(resolved));
+  return buildCaseBrief(resolved, execution, caseJson, caseSpec, sourceText, runtime, store.readCurrentScene(resolved), dispatchSequence);
 }
 
 function createExecution(options) {
@@ -107,6 +117,22 @@ function createExecution(options) {
   const frozenSourceSha = sourceSha(options.sourceText);
   if (frozenSourceSha !== options.caseJson.identity.sourceSha) throw contractError('EXECUTION_SOURCE_CHANGED', 'source text does not match the case contract');
   const caseSpec = validateCaseSpec(options.caseSpec, { sourceText: options.sourceText, sourceSha: frozenSourceSha });
+  const caseDefinition = validateCaseDefinition(options.caseDefinition, {
+    sourceText: options.sourceText,
+    caseKey: options.caseJson.identity.caseKey,
+  });
+  const projectedCaseSpec = createCaseSpec({
+    sourceText: options.sourceText,
+    spec: {
+      summary: caseDefinition.summary,
+      preconditions: caseDefinition.preconditions,
+      expectations: caseDefinition.expectations.map(({ text, verificationKind, sourceEvidence }) => ({ text, verificationKind, sourceEvidence })),
+      ambiguities: caseDefinition.ambiguities,
+    },
+  });
+  if (canonicalJson(projectedCaseSpec) !== canonicalJson(caseSpec)) {
+    throw contractError('CASE_DEFINITION_BINDING_INVALID', 'CaseSpec does not match the frozen CaseDefinition');
+  }
   const appProvisioning = validateAppProvisioning(options.appProvisioning, {
     workspaceRoot: options.workspaceRoot,
     platform: options.platform,
@@ -155,7 +181,10 @@ function createExecution(options) {
       }
       atomicWrite(path.join(stagingDir, 'source.snapshot.md'), options.sourceText);
       writeJsonAtomic(path.join(stagingDir, 'case.snapshot.json'), options.caseJson);
+      writeJsonAtomic(path.join(stagingDir, 'case-definition.snapshot.json'), caseDefinition);
       writeJsonAtomic(path.join(stagingDir, 'case-spec.snapshot.json'), caseSpec);
+      const validationProfile = createValidationProfile();
+      writeJsonAtomic(path.join(stagingDir, PROFILE_FILE), validationProfile);
       const startedAt = options.now || new Date().toISOString();
       const execution = {
         schemaVersion: EXECUTION_SCHEMA_VERSION,
@@ -168,7 +197,10 @@ function createExecution(options) {
         caseProtocolSha: options.caseProtocolSha,
         coordinatorProtocolSha: options.coordinatorProtocolSha,
         contractSha: options.caseJson.contractSha,
+        definitionId: caseDefinition.definitionId,
+        definitionSha: caseDefinition.definitionSha,
         caseSpecSha: caseSpec.specSha,
+        validationProfileSha: validationProfile.profileSha,
         batchContractSha: options.batchContractSha,
         executionRequestSha: options.executionRequestSha,
         interactionPolicy: options.interactionPolicy,
@@ -192,6 +224,7 @@ function createExecution(options) {
         executionRecoveryCount: 0,
         batchRecoveryCountAtStart: options.batchRecoveryCountAtStart || 0,
         batchRecoveryCountAtEnd: options.batchRecoveryCountAtStart || 0,
+        ...(options.caseProcessingStartedAt ? { caseProcessingStartedAt: options.caseProcessingStartedAt } : {}),
         sourceSha: frozenSourceSha,
         startedAt,
         status: 'RUNNING',
@@ -216,8 +249,8 @@ function createExecution(options) {
         sessionRef: options.sessionRef || null,
         knowledgeRoots: (options.knowledgeRoots || []).map((root) => path.resolve(root)),
         broker: {
-          schemaVersion: 3,
-          allowedOperations: require('./runtime-broker').AGENT_OPERATIONS,
+          schemaVersion: 4,
+          allowedOperations: AGENT_OPERATIONS,
         },
         boundAt: startedAt,
       });
@@ -247,20 +280,33 @@ function createExecution(options) {
 
 function establishInitialState({ executionDir, runtimeOptions = {} }) {
   const execution = store.loadExecution(executionDir, { allowFinalized: true });
+  const completeInitialState = () => store.updateExecution(executionDir, (current) => (
+    current.initialStateCompletedAt ? current : {
+      ...current,
+      initialStateCompletedAt: runtimeOptions.now || new Date().toISOString(),
+    }
+  ));
   const requirement = validateInitialStateRequirement(execution.initialStateRequirement);
   if (execution.initialStateRequirementSha !== initialStateRequirementSha(requirement)) {
     throw contractError('INITIAL_STATE_REQUIREMENT_CHANGED', 'execution initial state requirement changed');
   }
   if (execution.finalized || requirement.targetState === 'KEEP_EXISTING') {
+    if (!execution.finalized) completeInitialState();
     return { status: execution.finalized ? execution.status : 'READY', agentRequired: execution.finalized !== true };
   }
   const current = runtimeCore.runtimeStatus(executionDir);
-  if (current.preparation?.status === 'SATISFIED') return { status: 'READY', agentRequired: true, scene: current.scene };
+  if (current.preparation?.status === 'SATISFIED') {
+    completeInitialState();
+    return { status: 'READY', agentRequired: true, scene: current.scene };
+  }
   const prepared = runtimeCore.execute(executionDir, {
     operation: 'prepare',
     preparation: { targetState: requirement.targetState },
   }, runtimeOptions);
-  if (prepared.status === 'SCENE') return { status: 'READY', agentRequired: true, scene: prepared.scene, preparation: prepared.preparation };
+  if (prepared.status === 'SCENE') {
+    completeInitialState();
+    return { status: 'READY', agentRequired: true, scene: prepared.scene, preparation: prepared.preparation };
+  }
   if (prepared.status === 'TECHNICAL' && prepared.code === 'APP_INITIAL_STATE_UNAVAILABLE') {
     const caseSpec = readJson(path.join(executionDir, 'case-spec.snapshot.json'));
     const actual = `Required initial state ${requirement.targetState} could not be established`;
@@ -277,6 +323,8 @@ function establishInitialState({ executionDir, runtimeOptions = {} }) {
       })),
       uncertainties: [prepared.message || actual],
     };
+    completeInitialState();
+    store.updateExecution(executionDir, (current) => ({ ...current, autoInitialStateBlocked: true }));
     const finished = runtimeCore.execute(executionDir, { operation: 'finish', result }, runtimeOptions);
     if (finished.status !== 'COMPLETED') throw contractError('INITIAL_STATE_BLOCKED_RESULT_INVALID', finished.message || 'failed to finalize blocked initial state');
     return { status: 'BLOCKED', agentRequired: false, technicalFactRef: prepared.technicalFactRef || null, result };
@@ -292,8 +340,9 @@ function resumeExecution({ executionDir }) {
 
 function buildContinuationBrief({ executionDir, reason }) {
   const execution = store.loadExecution(executionDir, { allowFinalized: true });
-  const initial = deriveCaseBrief(executionDir);
   const events = store.events(executionDir);
+  const sequence = events.filter((event) => event.type === 'agentContinuation').length + 2;
+  const initial = deriveCaseBrief(executionDir, sequence);
   const narrative = require('./narrative-service').narrativeStatus(executionDir);
   const reviewed = new Set(events.filter((event) => event.type === 'knowledgeReviewed').map((event) => event.queryId));
   const pendingKnowledgeReviews = events.filter((event) => event.type === 'knowledgeQueried' && !reviewed.has(event.queryId))
@@ -310,9 +359,9 @@ function buildContinuationBrief({ executionDir, reason }) {
     mode: 'CONTINUATION',
     continuation: {
       reason: String(reason || 'native Agent handle is unavailable'),
-      sequence: events.filter((event) => event.type === 'agentContinuation').length + 1,
+      sequence,
     },
-    scene: store.readCurrentScene(executionDir),
+    scene: require('./scene-service').projectSceneSummary(store.readCurrentScene(executionDir)),
     resumeState: {
       executionStatus: execution.status,
       remainingMs: status.remainingMs,
@@ -339,6 +388,14 @@ function recordAgentContinuation({ executionDir, reason, now }) {
     reason: String(reason || 'native Agent handle is unavailable'),
   }, { now });
   return { executionId: execution.executionId, event };
+}
+
+function recordTimingAnchor({ executionDir, field, now }) {
+  const allowed = new Set(['handoffReadyAt', 'handoffConsumedAt']);
+  if (!allowed.has(field)) throw contractError('EXECUTION_TIMING_INVALID', `unsupported timing anchor: ${field}`);
+  return store.withRuntimeLock(executionDir, () => store.updateExecution(executionDir, (execution) => (
+    execution[field] ? execution : { ...execution, [field]: now || new Date().toISOString() }
+  )), { now });
 }
 
 function readCompletion({ executionDir }) {
@@ -385,4 +442,4 @@ function cancelExecution({ executionDir, reason, now }) {
   }, { now });
 }
 
-module.exports = { EXECUTION_SCHEMA_VERSION, buildContinuationBrief, cancelExecution, commitExecution, createExecution, establishInitialState, readCompletion, reconcileExecution, recordAgentContinuation, resumeExecution };
+module.exports = { EXECUTION_SCHEMA_VERSION, buildContinuationBrief, cancelExecution, commitExecution, createExecution, establishInitialState, readCompletion, reconcileExecution, recordAgentContinuation, recordTimingAnchor, resumeExecution };

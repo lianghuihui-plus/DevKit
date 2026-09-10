@@ -56,16 +56,32 @@ function knowledgeFilterSummary(value) {
   return parts.join('；');
 }
 
+function optionalDuration(value) {
+  return value === null || value === undefined ? '-' : formatDuration(value);
+}
+
 function renderCurrentContextMarkdown(caseJson, report) {
   const display = report.display || {};
+  const phases = display.phaseDurations || {};
   const narrative = buildExecutionNarrative(report);
   const lines = [
     `# ${caseJson.identity?.caseNo ? `${caseJson.identity.caseNo} · ` : ''}${caseJson.identity?.title || '未命名用例'}`, '',
     `- 执行结论：${label(VERDICT_LABELS, display.verdict || display.status, '未执行')}`,
     `- 执行标识：${report.execution?.executionId || '-'}`,
-    `- 耗时：${formatDuration(display.durationMs)}`,
+    `- 耗时：${optionalDuration(display.durationMs)}`,
+    `- 时长口径：${display.durationBasis || 'EXECUTION_LEGACY'}`,
     `- 验证点覆盖：${narrative.coverage.covered}/${narrative.coverage.total}`,
     `- 执行记录：${{ COMPLETE: '完整', PARTIAL: '部分缺失', UNAVAILABLE: '不可用' }[narrative.recordingStatus] || '不可用'}`, '',
+    '## 耗时分解', '',
+    `- 协调准备：${optionalDuration(phases.coordinatorPreparationMs)}`,
+    `- 初始态准备：${optionalDuration(phases.initialStatePreparationMs)}`,
+    `- 交接准备：${optionalDuration(phases.handoffPreparationMs)}`,
+    `- 交接调度：${optionalDuration(phases.handoffSchedulingMs)}`,
+    `- Agent 阶段：${optionalDuration(phases.caseAgentPhaseMs)}`,
+    `- 报告发布延迟：${optionalDuration(phases.reportPublicationDelayMs)}`,
+    `- Runtime 活跃：${optionalDuration(report.metrics?.runtimeActiveMs)}`,
+    `- Adapter 活跃：${optionalDuration(report.metrics?.adapterActiveMs)}`,
+    `- Agent 与调度间隙：${optionalDuration(report.metrics?.agentAndSchedulingGapMs)}`, '',
     '## 原始用例', '', report.sourceText || '未记录', '',
     '## Agent 用例理解', '', narrative.understanding?.summary || '未记录', '',
     `- 前置条件：${narrative.understanding?.preconditions?.join('；') || '无'}`,
@@ -88,7 +104,8 @@ function renderCurrentContextMarkdown(caseJson, report) {
     lines.push(`${step.number}. ${step.purpose || step.operation}`,
       `   - 操作前观察：${step.observation || '未记录'}`,
       `   - 当时结论：${step.conclusion || '未记录'}`,
-      `   - 关联验证点：${step.expectations.map((item) => `${item.ref} ${item.text} [${item.status}]`).join('；') || '未关联'}`,
+      `   - 当时推进目标：${step.expectationTargets.map((item) => `${item.ref} ${item.text}`).join('；') || '未关联'}`,
+      `   - 过程状态：${step.processState}`,
       `   - 期望结果：${step.expectedOutcome || '未记录'}`,
       `   - 实际操作：${step.action ? actionLabel(step.action.value?.type) : step.operation}`,
       `   - 操作结果：${step.action?.status || step.recovery?.status || (step.knowledge ? `知识候选 ${step.knowledge.candidateCount}` : '-')}`,

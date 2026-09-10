@@ -2,6 +2,7 @@
 
 const { contractError, ensureArray, ensureObject, ensureString } = require('../lib/contract-utils');
 const { TARGET_STATES } = require('../lib/app-provisioning');
+const { OPERATION_CONTRACT, RUNTIME_OPERATIONS } = require('./runtime-operation-contract');
 
 const VERDICTS = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
@@ -12,16 +13,8 @@ const DECISION_FIELDS = new Set([
   'assessment', 'observation', 'conclusion', 'purpose', 'expectedOutcome',
   'expectationRefs', 'planUpdate', 'knowledgeReview', 'uncertainties',
 ]);
-const REQUEST_FIELDS = Object.freeze({
-  prepare: new Set(['operation', 'preparation', 'decision']),
-  observe: new Set(['operation', 'purpose', 'decision']),
-  act: new Set(['operation', 'basedOnSceneId', 'capabilityId', 'visual', 'input', 'observationPolicy', 'decision']),
-  inspectVisual: new Set(['operation', 'basedOnSceneId', 'decision']),
-  knowledge: new Set(['operation', 'basedOnSceneId', 'query', 'context', 'decision']),
-  recover: new Set(['operation', 'basedOnSceneId', 'reason', 'decision']),
-  finish: new Set(['operation', 'basedOnSceneId', 'result', 'decision']),
-  status: new Set(['operation']),
-});
+const REQUEST_FIELDS = Object.freeze(Object.fromEntries(Object.entries(OPERATION_CONTRACT)
+  .map(([operation, definition]) => [operation, new Set(definition.requestFields)])));
 
 function validateStringArray(value, label) {
   return ensureArray(value, label, 'CASE_NARRATIVE_INVALID')
@@ -129,8 +122,8 @@ function validateCaseResult(value) {
 function validateRuntimeRequest(value) {
   ensureObject(value, 'RuntimeRequest', 'CASE_RUNTIME_REQUEST_INVALID');
   const operation = String(value.operation || '').trim();
-  if (!['prepare', 'observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status'].includes(operation)) {
-    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'operation must be prepare, observe, act, inspectVisual, knowledge, recover, finish, or status');
+  if (!RUNTIME_OPERATIONS.includes(operation)) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', `operation must be ${RUNTIME_OPERATIONS.join(', ')}`);
   }
   const unsupportedRequestFields = Object.keys(value).filter((field) => !REQUEST_FIELDS[operation].has(field));
   if (unsupportedRequestFields.length) {
@@ -173,6 +166,26 @@ function validateRuntimeRequest(value) {
       throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'inspectVisual requires decision.purpose, decision.expectationRefs, and decision.observation');
     }
     ensureString(value.decision.observation, 'decision.observation', 'CASE_RUNTIME_REQUEST_INVALID');
+  }
+  if (operation === 'inspectScene') {
+    ensureString(value.basedOnSceneId, 'basedOnSceneId', 'CASE_RUNTIME_REQUEST_INVALID');
+    if (!['ELEMENTS', 'CAPABILITIES', 'LAYOUT'].includes(value.view)) {
+      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'inspectScene.view must be ELEMENTS, CAPABILITIES, or LAYOUT');
+    }
+    if (value.filter !== undefined) {
+      const filter = ensureObject(value.filter, 'filter', 'CASE_RUNTIME_REQUEST_INVALID');
+      const allowed = value.view === 'ELEMENTS'
+        ? new Set(['interactiveOnly', 'textContains', 'role'])
+        : value.view === 'CAPABILITIES' ? new Set(['actionType', 'elementRef']) : new Set();
+      const unsupported = Object.keys(filter).filter((field) => !allowed.has(field));
+      if (unsupported.length) throw contractError('CASE_RUNTIME_REQUEST_INVALID', `inspectScene filter contains unsupported fields: ${unsupported.join(', ')}`);
+      for (const field of ['textContains', 'role', 'actionType', 'elementRef']) {
+        if (filter[field] !== undefined) ensureString(filter[field], `filter.${field}`, 'CASE_RUNTIME_REQUEST_INVALID');
+      }
+      if (filter.interactiveOnly !== undefined && typeof filter.interactiveOnly !== 'boolean') {
+        throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'filter.interactiveOnly must be boolean');
+      }
+    }
   }
   if (operation === 'knowledge') {
     ensureString(value.query, 'query', 'CASE_RUNTIME_REQUEST_INVALID');

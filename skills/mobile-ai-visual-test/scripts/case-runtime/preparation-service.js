@@ -276,7 +276,7 @@ function continuePreparation(execDir, initialDraft, options = {}) {
           epoch: draft.nextEpoch,
           generation: 1,
         },
-        scene: store.readCurrentScene(execDir),
+        scene: require('./scene-service').projectSceneSummary(store.readCurrentScene(execDir)),
       };
     }
     throw contractError('APP_PREPARATION_TRANSACTION_INVALID', `unsupported preparation status: ${draft.status}`);

@@ -64,13 +64,15 @@ assert.strictEqual(narrative.steps[0].action.result.observedEffect.status, 'CHAN
 assert.strictEqual(narrative.steps[0].beforeScene.sceneId, 'scene-0001');
 assert.strictEqual(narrative.steps[0].afterScene.sceneId, 'scene-0002');
 assert.strictEqual(narrative.steps[0].postAssessment.conclusion, '查询本地经验辅助解释');
-assert.deepStrictEqual(narrative.steps[0].expectations[0], {
-  ref: 'E1', text: '目标内容显示', status: 'PASS', actual: '目标内容已显示', sceneRefs: ['scene-0002'],
-});
+assert.deepStrictEqual(narrative.steps[0].expectationTargets, [{ ref: 'E1', text: '目标内容显示' }]);
+assert.strictEqual(narrative.steps[0].expectations, undefined);
+assert.strictEqual(narrative.steps[0].processState, 'EXECUTED');
 assert.strictEqual(narrative.steps[1].knowledge.queryId, 'knowledge-0001');
 assert.strictEqual(narrative.steps[1].knowledge.review.conclusion, 'APPLICABLE_FOUND');
+assert.strictEqual(narrative.steps[1].processState, 'INVESTIGATED');
 assert.strictEqual(narrative.steps[2].recovery.status, 'SUCCEEDED');
 assert.strictEqual(narrative.steps[2].afterScene.sceneId, 'scene-0003');
+assert.strictEqual(narrative.steps[2].processState, 'RECOVERED');
 assert.strictEqual(narrative.finalDecision.conclusion, 'E1 已满足');
 assert.deepStrictEqual(narrative.finalDecision.expectationRefs, ['E1']);
 assert.strictEqual(narrative.checks[0].expectation, '目标内容显示');
@@ -84,7 +86,8 @@ const markdown = renderCurrentContextMarkdown({ identity: { title: '知识支持
 assert.match(markdown, /K-target-001 \[APPLICABLE\]/);
 assert.match(markdown, /知识依据：K-target-001/);
 assert.match(markdown, /## 最终判断/);
-assert.match(markdown, /关联验证点：E1 目标内容显示 \[PASS\]/);
+assert.match(markdown, /当时推进目标：E1 目标内容显示/);
+assert.doesNotMatch(markdown, /当时推进目标：E1 目标内容显示 \[PASS\]/);
 assert.match(markdown, /相关步骤：步骤 1、步骤 2、步骤 3/);
 
 const filterDiagnostics = {
@@ -229,5 +232,34 @@ const observeNarrative = buildExecutionNarrative({
   result: report.result,
 });
 assert.strictEqual(observeNarrative.steps[0].afterScene.sceneId, 'scene-observe-after');
+assert.strictEqual(observeNarrative.steps[0].processState, 'OBSERVED');
+
+const legacyFallbackNarrative = buildExecutionNarrative({
+  execution: { executionId: 'execution-legacy-fallback' },
+  events: [
+    report.events[0],
+    {
+      sequence: 2,
+      type: 'agentDecisionRecorded',
+      decisionId: 'decision-legacy-fallback',
+      requestedOperation: 'observe',
+      sceneId: 'scene-0001',
+      decision: {
+        purpose: '确认目标页面',
+        assessment: '确认目标页面',
+        observation: '确认目标页面',
+        conclusion: '确认目标页面',
+        expectedOutcome: '确认目标页面',
+        expectationRefs: ['E1'],
+      },
+    },
+  ],
+  result: report.result,
+});
+assert.strictEqual(legacyFallbackNarrative.steps[0].purpose, '确认目标页面');
+assert.strictEqual(legacyFallbackNarrative.steps[0].assessment, '');
+assert.strictEqual(legacyFallbackNarrative.steps[0].observation, '');
+assert.strictEqual(legacyFallbackNarrative.steps[0].conclusion, '');
+assert.strictEqual(legacyFallbackNarrative.steps[0].expectedOutcome, '');
 
 console.log('execution narrative passed');

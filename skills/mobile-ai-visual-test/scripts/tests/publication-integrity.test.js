@@ -9,8 +9,10 @@ const {
   buildExecutionArtifactManifest,
   validateExecutionArtifactManifest,
 } = require('../lib/execution-artifact-manifest');
+const { completionPaths, sha256File, validatePublishedCompletion } = require('../lib/completion-contract');
 const { readPublicationState, recordPublicationAttempt } = require('../report/publication-state');
 const { refreshBatchIndex } = require('../report/report-service');
+const { writeCaseReports } = require('../report/report-service');
 const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -63,12 +65,60 @@ const changedScene = fixture('changed-scene');
 fs.appendFileSync(path.join(changedScene.execDir, 'screenshots', 'scene-0001.png'), 'changed');
 expectCode(() => buildExecutionArtifactManifest(changedScene.execDir), 'EXECUTION_ARTIFACT_CHANGED');
 
+const mismatchedBinding = fixture('mismatched-binding');
+const bindingPath = path.join(mismatchedBinding.execDir, 'binding.snapshot.json');
+const wrongBinding = JSON.parse(fs.readFileSync(bindingPath, 'utf8'));
+wrongBinding.bindingSha = 'target-binding-wrong';
+writeJson(bindingPath, wrongBinding);
+const mismatchedManifest = buildExecutionArtifactManifest(mismatchedBinding.execDir);
+const mismatchedPaths = completionPaths(mismatchedBinding.execDir);
+const mismatchedExecution = JSON.parse(fs.readFileSync(mismatchedPaths.execution, 'utf8'));
+const mismatchedResult = JSON.parse(fs.readFileSync(mismatchedPaths.result, 'utf8'));
+const mismatchedMetrics = JSON.parse(fs.readFileSync(mismatchedPaths.metrics, 'utf8'));
+const mismatchedSnapshot = JSON.parse(fs.readFileSync(mismatchedPaths.snapshot, 'utf8'));
+const mismatchedCompletion = {
+  schemaVersion: 3,
+  executionId: mismatchedExecution.executionId,
+  batchId: mismatchedExecution.batchId,
+  caseKey: mismatchedSnapshot.identity.caseKey,
+  platform: mismatchedExecution.platform,
+  completionSource: 'framework',
+  runtimeSha: mismatchedExecution.runtimeSha,
+  adapterSha: mismatchedExecution.adapterSha,
+  contractSha: mismatchedExecution.contractSha,
+  batchContractSha: mismatchedExecution.batchContractSha,
+  metricsSchemaVersion: 3,
+  verdict: mismatchedResult.verdict,
+  executionStatus: mismatchedMetrics.executionStatus,
+  runtimeCompleted: true,
+  resultSha256: sha256File(mismatchedPaths.result),
+  metricsSha256: sha256File(mismatchedPaths.metrics),
+  artifactManifestSha256: sha256File(mismatchedPaths.artifactManifest),
+};
+assert.ok(mismatchedManifest.files.some((entry) => entry.path === 'binding.snapshot.json'));
+expectCode(() => validatePublishedCompletion(mismatchedBinding.execDir, mismatchedCompletion, {
+  execution: mismatchedExecution,
+  result: mismatchedResult,
+  metrics: mismatchedMetrics,
+  snapshot: mismatchedSnapshot,
+}), 'EXECUTION_SNAPSHOT_BINDING_INVALID');
+
 const reportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-retry-'));
+writeJson(path.join(reportRoot, 'runs', 'batch-retry', 'report-publication.json'), {
+  schemaVersion: 1,
+  batchId: 'batch-retry',
+  status: 'PENDING',
+  attempts: [],
+  caseTimings: { 'execution-001': { caseReportPublishedAt: '2026-09-10T10:00:01.000Z', reportPublicationDelayMs: 1000 } },
+  publications: { legacyPublication: { preserved: true } },
+});
 recordPublicationAttempt(reportRoot, 'batch-retry', 'batch', { status: 'FAILED', errorCode: 'REPORT_TEST_FAILED', reason: 'simulated' });
 assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').status, 'RETRY_REQUIRED');
 recordPublicationAttempt(reportRoot, 'batch-retry', 'batch', { status: 'PUBLISHED' });
 assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').status, 'PUBLISHED');
 assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').attempts.length, 2);
+assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').caseTimings['execution-001'].reportPublicationDelayMs, 1000);
+assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').publications.legacyPublication.preserved, true);
 
 const repairRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-repair-'));
 createTestWorkspace(repairRoot);
@@ -84,7 +134,27 @@ fs.symlinkSync(repairRoot, repairAlias, 'dir');
 assert.doesNotThrow(() => refreshBatchIndex(repairAlias, [repairFixture.caseDir]));
 fs.unlinkSync(repairAlias);
 
-for (const item of [published, missing, unsettled, emptyPass, changedScene]) fs.rmSync(item.root, { recursive: true, force: true });
+const failedFirstPublishRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-first-publish-'));
+createTestWorkspace(failedFirstPublishRoot);
+const failedFirstPublishFixture = createCurrentFixture(failedFirstPublishRoot, { verdict: 'PASS', suffix: 'first-publish' });
+assert.throws(() => writeCaseReports(
+  failedFirstPublishFixture.caseDir,
+  failedFirstPublishFixture.caseJson,
+  {},
+  [],
+  null,
+  { platform: 'harmony', publishBundle: () => { throw new Error('simulated first publish failure'); } },
+), /simulated first publish failure/);
+const failedFirstPublishSidecar = path.join(
+  failedFirstPublishRoot,
+  'runs',
+  failedFirstPublishFixture.execution.batchId,
+  'report-publication.json',
+);
+assert.strictEqual(fs.existsSync(failedFirstPublishSidecar), false, 'failed publication must not record caseReportPublishedAt');
+
+for (const item of [published, missing, unsettled, emptyPass, changedScene, mismatchedBinding]) fs.rmSync(item.root, { recursive: true, force: true });
 fs.rmSync(reportRoot, { recursive: true, force: true });
 fs.rmSync(repairRoot, { recursive: true, force: true });
+fs.rmSync(failedFirstPublishRoot, { recursive: true, force: true });
 console.log('publication-integrity passed');

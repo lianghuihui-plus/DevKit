@@ -7,6 +7,7 @@ const { resolveArtifact, sha256File } = require('../lib/execution-evidence');
 const { inspectPng } = require('../lib/image-evidence');
 const { readJson } = require('../lib/execution-lifecycle');
 const store = require('./store');
+const { projectSceneSummary } = require('./scene-service');
 
 function inspectVisual(execDir, request, options = {}) {
   const currentScene = store.readCurrentScene(execDir);
@@ -46,7 +47,7 @@ function inspectVisual(execDir, request, options = {}) {
     expectationRefs: event.expectationRefs || [],
   });
   if (existing) {
-    return { status: 'VISUAL_INSPECTED', scene: currentScene, visualInspection: projection(existing), idempotent: true };
+    return { status: 'VISUAL_INSPECTED', scene: projectSceneSummary(currentScene), visualInspection: projection(existing), idempotent: true };
   }
   const event = store.appendEvent(execDir, 'visualInspected', {
     inspectionId: store.nextId(execDir, 'inspection'),
@@ -57,7 +58,7 @@ function inspectVisual(execDir, request, options = {}) {
     expectationRefs: request.decision.expectationRefs,
     observation: request.decision.observation,
   }, options);
-  return { status: 'VISUAL_INSPECTED', scene: currentScene, visualInspection: projection(event) };
+  return { status: 'VISUAL_INSPECTED', scene: projectSceneSummary(currentScene), visualInspection: projection(event) };
 }
 
 module.exports = { inspectVisual };

@@ -42,23 +42,32 @@ const adapter = {
 };
 bootstrapBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter });
 const started = startCurrentCase({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha });
+const startedExecDir = fs.realpathSync(path.join(caseDir, 'platforms', binding.platform, 'executions', started.executionId));
 assert.strictEqual(findActiveExecutions(root).length, 1);
+
+const upgradedProtocol = {
+  runtimeSha: 'case-runtime-newer',
+  adapterSha: 'platform-adapter-newer',
+  coordinatorSha: 'batch-coordinator-newer',
+  caseProtocolSha: 'agent-protocol-case-newer',
+  coordinatorProtocolSha: 'agent-protocol-coordinator-newer',
+};
 
 const cancelled = cancelBatch({
   workspaceRoot: root,
   batchId,
-  implementationSha: contract.implementationSha,
+  ...upgradedProtocol,
   reason: '用户停止本批执行',
 });
 assert.strictEqual(cancelled.state.status, 'CANCELLING');
 assert.strictEqual(cancelled.state.cases[0].status, 'CANCELLED');
 assert.strictEqual(findActiveExecutions(root).length, 0);
-assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'execution.json'), 'utf8')).status, 'CANCELLED');
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(startedExecDir, 'execution.json'), 'utf8')).status, 'CANCELLED');
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'SETTLE_EXECUTIONS');
 const repeatedCancellation = cancelBatch({
   workspaceRoot: root,
   batchId,
-  implementationSha: contract.implementationSha,
+  ...upgradedProtocol,
   reason: '重复取消不应重置收尾状态',
 });
 assert.strictEqual(repeatedCancellation.idempotent, true);
@@ -75,7 +84,7 @@ assert.throws(() => recordFinalizationStep({
 recordFinalizationStep({
   workspaceRoot: root,
   batchId,
-  implementationSha: contract.implementationSha,
+  ...upgradedProtocol,
   step: 'executionsSettled',
   result: { ok: true },
 });
@@ -83,7 +92,7 @@ assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementation
 recordFinalizationStep({
   workspaceRoot: root,
   batchId,
-  implementationSha: contract.implementationSha,
+  ...upgradedProtocol,
   step: 'platformReleased',
   result: { ok: true },
 });
@@ -100,7 +109,7 @@ assert.ok(fs.existsSync(refreshBatchIndex(root, [caseDir])));
 recordFinalizationStep({
   workspaceRoot: root,
   batchId,
-  implementationSha: contract.implementationSha,
+  ...upgradedProtocol,
   step: 'reportsPublished',
   result: { status: 'PUBLISHED' },
 });

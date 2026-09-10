@@ -61,6 +61,7 @@ function loadBatch(workspaceRoot, batchId, versions = {}) {
       snapshotPath: entry.snapshotPath,
       sourceSha: entry.sourceSha,
       caseContractSha: entry.caseContractSha,
+      ...(entry.definitionId ? { definitionId: entry.definitionId, definitionSha: entry.definitionSha } : {}),
       caseSpecSha: entry.caseSpecSha,
       preparationPolicy: entry.preparationPolicy,
       preparationPolicySha: entry.preparationPolicySha,

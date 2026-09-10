@@ -81,7 +81,7 @@ function validateConclusion(review, queryEvent) {
   }
 }
 
-function recordKnowledgeReview(execDir, rawReview, decisionEvent, options = {}) {
+function validateKnowledgeReview(execDir, rawReview) {
   const review = normalizeKnowledgeReview(rawReview);
   const events = store.events(execDir);
   const queryEvent = events.find((event) => event.type === 'knowledgeQueried' && event.queryId === review.queryId);
@@ -93,8 +93,14 @@ function recordKnowledgeReview(execDir, rawReview, decisionEvent, options = {}) 
     if (canonicalJson(recorded) !== canonicalJson(review)) {
       throw contractError('CASE_NARRATIVE_INVALID', `knowledge query already has a different review: ${review.queryId}`);
     }
-    return existing;
+    return { review, queryEvent, existing };
   }
+  return { review, queryEvent, existing: null };
+}
+
+function recordKnowledgeReview(execDir, rawReview, decisionEvent, options = {}) {
+  const { review, queryEvent, existing } = validateKnowledgeReview(execDir, rawReview);
+  if (existing) return existing;
   return store.appendEvent(execDir, 'knowledgeReviewed', {
     ...review,
     automatic: false,
@@ -164,4 +170,5 @@ module.exports = {
   normalizeKnowledgeReview,
   recordKnowledgeReview,
   recordNoMatch,
+  validateKnowledgeReview,
 };

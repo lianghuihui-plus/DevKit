@@ -68,7 +68,7 @@ function validateCases(state, contract) {
     }
     if (contract?.targets?.[index]) {
       const frozen = contract.targets[index];
-      for (const field of ['order', 'caseNo', 'caseKey', 'caseDir', 'snapshotPath', 'sourceSha', 'caseContractSha', 'caseSpecSha', 'preparationPolicySha', 'initialStateRequirementSha', 'initialStatePreflightSha']) {
+      for (const field of ['order', 'caseNo', 'caseKey', 'caseDir', 'snapshotPath', 'sourceSha', 'caseContractSha', 'definitionId', 'definitionSha', 'caseSpecSha', 'preparationPolicySha', 'initialStateRequirementSha', 'initialStatePreflightSha']) {
         if (canonicalJson(item[field]) !== canonicalJson(frozen[field])) throw invalid(`cases[${index}].${field} does not match the frozen contract`);
       }
       if (canonicalJson(item.preparationPolicy) !== canonicalJson(frozen.preparationPolicy)) {

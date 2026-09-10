@@ -55,7 +55,7 @@ function act(execDir, request, options = {}) {
   const scene = store.readCurrentScene(execDir);
   if (!scene) return sceneService.observe(execDir, options);
   const resolved = resolveAction(scene, request, execution.platform);
-  if (resolved.stale) return { status: 'SCENE_CHANGED', scene };
+  if (resolved.stale) return { status: 'SCENE_CHANGED', scene: sceneService.projectSceneSummary(scene) };
   if (request.observationPolicy && resolved.action.type !== 'longPress') {
     const error = new Error('observationPolicy.duringActionAtMs is only supported for longPress');
     error.code = 'CASE_RUNTIME_REQUEST_INVALID';
@@ -161,17 +161,19 @@ function act(execDir, request, options = {}) {
     },
     decisionId: request.decisionId || null,
   });
+  const observedScene = store.readCurrentScene(execDir);
   const actionResult = completedAction(
     operationId,
     resolved.action,
     sanitizeAdapterActionResult(deviceResult.adapterResult),
     scene,
-    observed.scene,
+    observedScene,
     spatialEvidence,
     duringActionObservation(request, deviceResult),
   );
-  observed.scene.previousAction = actionResult;
-  store.writeScene(execDir, observed.scene);
+  observedScene.previousAction = actionResult;
+  store.writeScene(execDir, observedScene);
+  observed.scene = sceneService.projectSceneSummary(observedScene);
   store.appendEvent(execDir, 'actionCompleted', {
     operationId,
     sceneId: scene.sceneId,

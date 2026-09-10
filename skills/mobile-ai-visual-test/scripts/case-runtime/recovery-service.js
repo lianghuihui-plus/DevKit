@@ -192,7 +192,7 @@ function recover(execDir, request, options = {}) {
     fs.unlinkSync(file);
     return {
       status: 'SCENE',
-      scene: store.readCurrentScene(execDir),
+      scene: require('./scene-service').projectSceneSummary(store.readCurrentScene(execDir)),
       recovery: { operationId: draft.operationId, status: draft.outcome === 'UNKNOWN' ? 'UNKNOWN' : 'SUCCEEDED', generation: execution.warmSessionGeneration },
     };
   }

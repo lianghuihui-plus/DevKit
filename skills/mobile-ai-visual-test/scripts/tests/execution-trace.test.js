@@ -33,7 +33,9 @@ assert.strictEqual(action.spatialEvidenceScreenshot.baseRef, undefined);
 assert.strictEqual(action.actionEffect.status, 'UNCHANGED');
 assert.strictEqual(action.intent, '打开目标并验证结果');
 assert.strictEqual(action.expectedOutcome, '页面展示目标结果');
-assert.strictEqual(action.expectationAssessment.status, 'MATCHED');
+assert.deepStrictEqual(action.expectationAssessment, {
+  status: 'TARGETED', summary: 'E1', basis: '当时关联目标',
+});
 assert.strictEqual(action.agentAnalysis.status, 'EXPLICIT');
 
 const after = trace.entries.find((entry) => entry.sceneId === 'scene-0002');
@@ -72,6 +74,17 @@ for (const expected of ['class="verdict-banner', 'class="action-kind"', 'class="
 for (const removed of ['data-panel="raw-panel"', 'class="story-card', 'class="checkpoint-accordion']) {
   assert.strictEqual(html.includes(removed), false, removed);
 }
+for (const expected of [
+  '.process-layout{display:grid;grid-template-columns:minmax(310px,.72fr) minmax(580px,1.28fr);height:',
+  '.step-list{min-height:0;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain',
+  '.step-inspector{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain',
+  'function revealStepInList(selected)',
+  'selected.getBoundingClientRect()',
+  'list.scrollTop-=listRect.top-selectedRect.top',
+  'list.scrollTop+=selectedRect.bottom-listRect.bottom',
+]) assert.ok(html.includes(expected), expected);
+assert.strictEqual((html.match(/scrollIntoView\(/g) || []).length, 1, 'only the external workspace jump may scroll the page');
+assert.ok(html.includes("document.querySelectorAll('[data-step]').forEach(row=>row.addEventListener('click',()=>selectStep(row.dataset.step)));"));
 
 const degradedFixture = createCurrentFixture(workspace, {
   verdict: 'PASS', suffix: 'trace-layout-degraded', afterLayoutAvailable: false,
@@ -85,7 +98,7 @@ assert.strictEqual(degradedAfter.observation.technicalSignals.layoutCapture.code
 const failedFixture = createCurrentFixture(workspace, { verdict: 'FAIL', suffix: 'trace-fail' });
 const failedReport = readExecutionReport(failedFixture.execDir);
 const failedTrace = buildExecutionTrace(failedReport);
-assert.strictEqual(failedTrace.entries.find((entry) => entry.category === 'ACTION').expectationAssessment.status, 'NOT_MATCHED');
+assert.strictEqual(failedTrace.entries.find((entry) => entry.category === 'ACTION').expectationAssessment.status, 'TARGETED');
 assert.strictEqual(failedTrace.counts.knowledge, 2);
 const failedHtml = renderCurrentContextHtml(failedFixture.caseJson, failedReport);
 assert.ok(failedHtml.includes('FAIL'));
@@ -102,6 +115,28 @@ const protocolTrace = buildExecutionTrace({ latest: protocolDir, events: [], exe
 const protocolEntry = protocolTrace.entries.find((entry) => entry.category === 'PROTOCOL');
 assert.strictEqual(protocolEntry.time, '2026-08-13T10:00:00.100Z');
 assert.strictEqual(protocolEntry.outcome.code, 'CASE_RUNTIME_REQUEST_INVALID');
+
+const legacyDecisionTrace = buildExecutionTrace({
+  latest: protocolDir,
+  execution: {},
+  events: [{
+    sequence: 1,
+    type: 'agentDecisionRecorded',
+    decisionId: 'decision-legacy-fallback',
+    requestedOperation: 'observe',
+    decision: {
+      purpose: '确认目标页面', assessment: '确认目标页面', observation: '确认目标页面',
+      conclusion: '确认目标页面', expectedOutcome: '确认目标页面', expectationRefs: [],
+    },
+  }],
+  result: null,
+  metrics: null,
+  display: {},
+});
+const legacyDecisionEntry = legacyDecisionTrace.entries.find((entry) => entry.category === 'DECISION');
+assert.strictEqual(legacyDecisionEntry.title, '确认目标页面');
+assert.strictEqual(legacyDecisionEntry.summary, '');
+assert.strictEqual(legacyDecisionEntry.expectedOutcome, null);
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('execution-trace passed');

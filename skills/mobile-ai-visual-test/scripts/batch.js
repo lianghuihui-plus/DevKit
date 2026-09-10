@@ -128,7 +128,7 @@ function reconcileWithFinalization(common, current) {
       const startedAt = Date.now();
       let publication;
       try {
-        const loaded = loadBatch(common.workspaceRoot, common.batchId, common);
+        const loaded = loadBatch(common.workspaceRoot, common.batchId, { ...common, compatibilityMode: 'FINALIZE' });
         refreshBatchIndex(common.workspaceRoot, loaded.contract.targets.map((target) => target.caseDir));
         publication = { status: 'PUBLISHED', durationMs: Date.now() - startedAt };
       } catch (error) {
@@ -221,12 +221,12 @@ function execute(options) {
     }
     case 'commit': return cleanupTerminalPlatformRuntime(common, current, commitWithDashboard(common));
     case 'status': {
-      const loaded = loadBatch(options.workspace, options.batchId, common);
+      const loaded = loadBatch(options.workspace, options.batchId, { ...common, compatibilityMode: 'READ' });
       return { ...loaded, platformRuntime: loadBatchPlatformRuntime(common) };
     }
     case 'cancel': return cancelBatch({ ...common, reason: options.reason });
     case 'teardown': {
-      const loaded = loadBatch(options.workspace, options.batchId, common);
+      const loaded = loadBatch(options.workspace, options.batchId, { ...common, compatibilityMode: 'FINALIZE' });
       return {
         ...loaded,
         platformRuntimeCleanup: releaseBatchPlatformRuntime({ ...common, adapter: current.adapter }),

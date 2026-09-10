@@ -4,25 +4,27 @@
 
 本 Skill 基于人工文本用例执行移动端黑盒视觉测试。架构围绕以下目标设计：
 
-1. 执行前冻结独立 CaseSpec 与 InitialStateRequirement，并完成平台副作用/制品 Preflight；Case Agent 负责计划、操作、调查和结论，但不能改写测试 oracle 或准备策略。
-2. 主 Agent 负责环境、授权、批次、委托、提交和报告，不进入单用例执行循环。
+1. Authoring Plane 在生成用例时发布不可变 CaseDefinition；Execution Plane 从定义确定性投影 CaseSpec、InitialStateRequirement 和平台策略。
+2. 主 Agent 负责环境、定义状态、授权、批次、委托和报告，不读取原始用例或进入单用例执行循环。
 3. Case Agent 只接触一页角色 Prompt、派生 Case Brief、当前 Scene 和一个带 operation allowlist 的 Runtime Client。
 4. Runtime 自动处理平台参数、事务、证据、恢复和技术状态。
 5. 批次内复用 App 暖状态，每个用例保持独立 Agent、execution、上下文和证据。
 6. 运行事实与报告展示分离，报告可以从正式产物完整重建。
-7. 所有组件只处理当前协议；其他格式的 execution 需要重新执行，已经生成的静态文件保持原样。
+7. schemaVersion 只用于选择结构 Reader；v10/v11 execution 可同时读取，未知版本只形成单用例 REPORT_ERROR。
 
-本文是当前架构的唯一事实来源；[`execution-traceability-design.md`](execution-traceability-design.md) 和 [`app-state-reset-design.md`](app-state-reset-design.md) 仅保留 ADR 决策摘要。
+本文是当前架构的唯一事实来源。关键方案选择及原因简要记录在 [`design-decisions.md`](design-decisions.md)；实施计划和已被吸收的专项设计不再单独维护。
 
 ## 2. 总体架构
 
 ```mermaid
 flowchart LR
   U["用户"] --> M["主 Agent"]
+  U --> DC["Case Definition Compiler"]
+  DC --> DP["Definition Publisher"]
   M --> W["Workspace / Environment"]
   M --> B["Batch Coordinator"]
   B --> L["Case Runtime Lifecycle / Initial State"]
-  M -->|"一次性委托 Case Brief"| A["Case Agent"]
+  M -->|"不透明 Handoff loaderCommand"| A["Case Agent"]
   A -->|"RuntimeRequest"| RB["Runtime Broker"]
   RB -->|"allowlisted operation"| R["Case Runtime Core"]
   R --> D["Device Port"]
@@ -42,19 +44,19 @@ flowchart LR
 
 主 Agent 读取 `SKILL.md` 以及主流程需要的 references，完成：
 
-1. 校验或初始化 Workspace，导入用例。
+1. 校验或初始化 Workspace，导入用例并确认所选 case 的 CaseDefinition 状态。
 2. 探测环境并取得用户对平台、设备、App 和入口的确认。
-3. 根据原文生成并审核 CaseSpec 与 InitialStateRequirement，再根据用户明确的执行范围创建执行请求；单用例副作用由平台自动派生，独立 bootstrap 策略单独冻结，请求阶段生成 InitialStatePreflight。
+3. 只用 caseNo 和 READY definitionRef 创建执行请求；确定性代码从定义投影 CaseSpec、InitialStateRequirement、平台策略和 InitialStatePreflight。
 4. 初始化 Batch 和暖会话。
-5. 为当前用例创建 Case Runtime，由 Lifecycle 自动建立初始状态；只有 `agentRequired=true` 才一次性委托独立 Case Agent。
+5. 为当前用例创建 Case Runtime，由 Lifecycle 自动建立初始状态；只有 `agentRequired=true` 才使用不透明 Handoff 引用委托独立 Case Agent。
 6. 等待 Case Agent 完成，通过 reconcile 自动校验并提交 execution。
 7. 由 reconcile 自动释放平台资源并发布单用例报告和批次看板。
 
-主 Agent 持有宿主返回的 Agent 句柄。单用例执行期间，Case Agent 直接与 Case Runtime 交互；主 Agent 只等待终态。
+缺少定义时，主 Agent 只把 `compilerHandoff.loaderCommand` 交给隔离的单用例 Compiler，不读取 `source.md`、候选定义或已发布定义正文。主 Agent 持有宿主返回的 Agent 句柄，但不读取 Handoff 正文；单用例执行期间只等待终态。
 
 ### 3.2 Case Agent
 
-Case Agent 只读取 `prompts/case-agent.md` 和 Case Brief。它负责：
+Case Agent 只通过经过完整性校验的 Handoff Loader 获得冻结 Case Prompt 和 Case Brief。它负责：
 
 1. 读取原始用例、Frozen CaseSpec、已建立的初始状态和当前 Scene，自主制定计划；验证点和前置条件不可改写。
 2. 基于当前 Scene 选择操作并自主调整路径。
@@ -67,7 +69,7 @@ Case Agent 不读取主流程文档、Batch 状态、平台脚本、存储实现
 
 ### 3.3 公共资源
 
-原始用例、目标 App 信息和必要的知识结果可以由两个角色使用。角色 Prompt、生命周期入口和实现依赖分别管理，具体清单由 `scripts/lib/agent-contract-manifest.js` 生成并由架构测试固定。
+原始用例只由 Case Definition Compiler 和绑定 execution 的 Case Agent 读取。主 Agent 仅看到 case 元数据、定义引用和调度状态；角色 Prompt、生命周期入口和实现依赖分别管理。
 
 ## 4. 执行生命周期
 
@@ -85,8 +87,9 @@ sequenceDiagram
   B->>R: create execution + establish initial state
   R->>D: optional internal prepare
   alt initial state established
-    B-->>M: agentRequired=true + derived Case Brief
-    M->>A: 一次性委托
+    B-->>M: agentRequired=true + opaque Handoff reference
+    M->>A: 只委托 loaderCommand
+    A->>A: 加载并校验冻结 Prompt + Brief
   else initial state unavailable
     R-->>B: finalized BLOCKED CaseResult
     B-->>M: agentRequired=false
@@ -97,7 +100,7 @@ sequenceDiagram
     D-->>R: 客观结果
     R-->>A: Scene / 结构化状态
     loop Case Agent 自主执行
-      A->>R: act / observe / knowledge / recover + decision
+      A->>R: act / observe / inspectVisual / inspectScene / knowledge / recover
       R-->>A: 新 Scene / 结构化状态
     end
     A->>R: finish + decision + CaseResult
@@ -111,34 +114,37 @@ sequenceDiagram
 
 批次内同一时刻只有一个活跃用例。用例完成后保留 App 暖状态供下一个用例使用，但不共享 Case Agent 上下文和 execution 证据。
 
-Agent 句柄丢失时，Batch 先 reconcile Runtime，再根据最新 Scene、用例理解、计划、未解决技术事实和待复核知识生成 continuation Brief。主 Agent 使用该 Brief 和同一 execution 创建 continuation Agent，不恢复旧动作意图，也不创建第二条业务执行链。
+Agent 句柄丢失时，Batch 先 reconcile Runtime，再根据最新 Scene、用例理解、计划、未解决技术事实和待复核知识生成 continuation Handoff。每个 dispatch 持久化 claim/lease，并绑定独立 Runtime requestPath 与 sequence；同 token 重试幂等，新 continuation 替换旧 dispatch，旧 Runtime command 在读取请求前返回 `HANDOFF_REPLACED`，保证同一 execution 只有一个有效写入者。
 
 ## 5. Case Runtime 接口
 
 ### 5.1 生命周期与 Broker
 
 - `scripts/case-runtime/lifecycle.js`：供 Batch 使用，负责 create、初始状态准备、resume、reconcile、commit 和 completion 读取。
-- `scripts/case-runtime/runtime-client.js`：Case Agent 的唯一入口，经 `runtime-broker.js` 只开放 `observe`、`act`、`knowledge`、`recover`、`finish` 和 `status`。
+- `scripts/case-runtime/runtime-client.js`：Case Agent 的唯一入口，新 execution 开放 `observe`、`act`、`inspectVisual`、`inspectScene`、`knowledge`、`recover`、`finish` 和 `status`。
 - `prepare` 只允许 Lifecycle 调用 Runtime Core，Agent Client 请求该操作会得到 `CASE_RUNTIME_OPERATION_FORBIDDEN`。
 
-Case Brief 提供固定绝对 `runtime.command` 和固定 `runtime.requestPath`。Case Agent 将一个 RuntimeRequest JSON 写入该路径后原样执行命令，不拼装设备、App、平台或脚本参数。Brief 每次从冻结快照、execution、Runtime 和 Current Scene 重新校验并派生，不保存为可变事实源。
+operation、Agent 可见性和 request 字段白名单由 `runtime-operation-contract.js` 单一定义；Validator、Broker、Lifecycle 和 Case Brief 都从该契约派生，Lifecycle 不反向依赖 Broker。
+
+Handoff 中冻结的 Case Brief 提供该 dispatch 专属的固定绝对 `runtime.command` 和 `runtime.requestPath`。Case Agent 将一个 RuntimeRequest JSON 写入该路径后原样执行命令，不拼装设备、App、平台或脚本参数；command 内部已绑定 dispatch sequence，并在每次请求前校验它仍是当前有效写入者。Brief 从冻结快照、execution、Runtime 和 Current Scene 校验并派生，不保存为可变事实源，也不经过主 Agent 模型上下文。
 
 ### 5.2 Scene 与 Capability
 
-`observe` 以及每次动作后的自动观察都会返回 Scene。Scene 包含：
+`observe` 以及每次动作后的自动观察都会持久化完整 Scene，但默认只返回决策所需摘要：
 
 - 稳定 `sceneId` 和包含 `sessionId`、`epoch`、`generation` 的 `warmSessionRef`。
 - 截图、尺寸、内容摘要和可选布局引用。
-- 目标 App 状态、归一化控件、键盘与坐标信号。
-- 基于该 Scene 生成的 Capability 列表。
+- 目标 App 状态、键盘/遮罩信号、控件与 Capability 数量和少量标签。
 - 前一个动作的分层客观结果：生命周期、命令接受状态、设备执行验证和前后 Scene 可观察效果。
 - 可识别单层垂直列表的容器快照与滚动覆盖上下文。
 
-Case Agent 优先选择当前 Capability。截图中的目标无法由控件树表达时，可提交归一化视觉坐标；Runtime 负责像素换算和平台调用，Action Spatial Evidence Service 负责一次性校验、保存并投影动作空间证据。
+完整控件、Capability 和布局仍保存在不可变 Scene 中；Case Agent 用只读 `inspectScene` 按 `ELEMENTS`、`CAPABILITIES` 或 `LAYOUT` 查询，不触发新设备观察。Case Agent 优先选择当前 Capability。截图中的目标无法由控件树表达时，可提交归一化视觉坐标；Runtime 负责像素换算和平台调用。
+
+截图与控件树是并列证据通道。Case Agent 通过宿主视觉工具实际打开 Scene 截图，再用 `inspectVisual` 登记观察；最终 check 引用的 Scene 必须存在对应视觉检查记录。系统弹窗、Toast、遮罩、键盘、动画、长按过程以及控件树缺失或冲突等现场不能只依赖控件树判断。`inspectVisual` 记录是 Agent 的可审计声明，当前共享宿主尚不能证明视觉工具调用本身。
 
 坐标动作只产生一份不可变事实源：`action-spatial-evidence/action-N.json`。同目录 PNG 已包含操作前截图底图和请求、投递、可选真实触点标记，可由 Agent 直接查看；Reader 继续兼容历史 execution 的 SVG。Runtime、事务恢复、事件 Reader、看板和报告共用同一 Reader/Projection，不在消费端重复换算或绘制。事务和事件只保存 `spatialEvidenceRef`，面向 Agent 的 `Scene.previousAction.spatialEvidence` 才展开语义字段及可查看附件。
 
-`act`、`knowledge`、`recover` 和 `finish` 使用 `basedOnSceneId` 绑定作出判断时的 Scene。引用非当前 Scene 时返回 `SCENE_CHANGED` 和最新 Scene，不发送设备动作。
+`act`、`inspectScene`、`knowledge`、`recover` 和 `finish` 使用 `basedOnSceneId` 绑定作出判断时的 Scene。引用非当前 Scene 时返回 `SCENE_CHANGED` 和最新 Scene，不发送设备动作；`inspectVisual` 允许登记已实际查看的历史 Scene。
 
 Runtime 对垂直列表使用共享锚点连接相邻观察，并维护起止边界、连续覆盖、未探索方向和自适应滑动距离；它不规定固定搜索方向或次数。同方向连续无进展才能提升边界置信度，有效移动或方向切换会清除未完成 streak。`SEARCH_EXISTENCE` 验证点形成 FAIL 时，`finish` 强制校验其引用的不可变 Scene 已确认两端且覆盖连续。
 
@@ -146,7 +152,7 @@ Runtime 对垂直列表使用共享锚点连接相邻观察，并维护起止边
 
 ### 5.3 业务语义
 
-执行请求创建前冻结 `case-spec.snapshot.json`：
+Authoring Plane 先发布带原文引用和 `initialStateIntent` 的不可变 CaseDefinition。ExecutionRequest 只接收 `definitionRef`，确定性投影并冻结 `case-definition.snapshot.json` 与 `case-spec.snapshot.json`：
 
 ```json
 {
@@ -173,9 +179,11 @@ Runtime 在 execution 创建时用 CaseSpec 写入首个 `caseContextRecorded` �
 }
 ```
 
-`act` 必须提交上述最小 decision；assessment、observation、conclusion、expectedOutcome、planUpdate 和 uncertainties 都是可选字段。计划变化时可增加 `planUpdate`。Runtime 为报告兼容投影缺省语义，不要求 Agent 为框架格式机械展开判断；旧 `intent`、重复 `caseContext` 和未知字段均被请求白名单拒绝。
+`act` 必须提交上述最小 decision；assessment、observation、conclusion、expectedOutcome、planUpdate 和 uncertainties 都是可选字段。计划变化时可增加 `planUpdate`。Agent 没有提交可选 narrative 字段时可以继续；一旦提交的 decision、expectationRef 或 knowledgeReview 非法，整个请求在设备动作前返回 `REQUEST_INVALID`，不得降级成 warning。
 
 知识候选评估同样附在下一次已有请求的 `decision.knowledgeReview` 中。Runtime 把查询和复核绑定到当前 execution、平台/App、Scene、用例理解版本及相关验证点；零候选自动闭合，不增加操作类型。
+
+知识查询在顺利且证据充分的路径上可选；当实际结果与预期不符、截图和控件树无法解释现场、操作失败或无进展、无法决定下一步，或者准备形成 FAIL、INCONCLUSIVE 及缺少有效 Runtime 技术事实的 BLOCKED 时必须执行。知识只提供待评估的解释和规则，不替代 Scene 事实，也不直接决定 verdict。
 
 ## 6. CaseResult 与运行状态
 
@@ -204,6 +212,7 @@ Runtime 对 CaseResult 执行严格字段校验，并验证：
 - 整体 verdict 与 checks 一致。
 - PASS/FAIL check 至少引用一个有效 Scene。
 - Scene、事件、截图、布局和内容摘要形成一致证据图。
+- 每个最终 check 引用的 Scene 都有对应视觉检查记录。
 - 完整列表不存在结论引用当前 generation、两端已确认且连续覆盖的滚动上下文。
 - 搜索型验证点的不存在结论引用不可变 Scene 中完整、连续的列表覆盖。
 - 知识支持的检查只引用当前 execution 已冻结并评估为 `APPLICABLE` 的条目；直接 Scene 证据不强制查询知识。
@@ -239,7 +248,9 @@ Runtime 自动生成事件 ID、operationId、Scene 关系、时间和 generatio
 execution.json
 binding.snapshot.json
 case.snapshot.json
+case-definition.snapshot.json
 case-spec.snapshot.json
+validation-profile.snapshot.json
 source.snapshot.md
 events.jsonl
 scenes/
@@ -256,18 +267,20 @@ artifact-manifest.json
 completion.json
 ```
 
-当前 Execution schema 为 10。`runtime.json`、`runtime-request.json`、`current-scene.json`、锁文件和 `transactions/*.draft.json` 是运行期文件；`case-brief.json` 不属于运行期或正式产物。正式判断引用 `scenes/` 下不可变 Scene；动作事务和 `actionCompleted` 事件通过 `spatialEvidenceRef` 引用同一动作空间证据。`artifact-manifest.json` 绑定正式证据集合的路径、大小和 SHA。报告发布失败时从这些正式产物幂等重建目标用例、平台和总览报告。
+新 Execution schema 为 11，并把 ValidationProfile、CaseDefinition 和跨文件语义绑定纳入 Manifest/Completion；schema 10 由固定 v10 Reader 继续读取，不回写历史目录。`runtime.json`、`runtime-request.json`、`current-scene.json`、锁文件和事务草稿是运行期文件，不参与已完成结果解释。
 
 Narrative Projector 从事件投影用例理解、计划历史、业务步骤、知识调查、独立最终判断和验证点覆盖。Renderer 只消费 Reader 与 Projector 的 ViewModel，不回写 execution。
+
+看板总览只展示用例总耗时、开始时间和结束时间；协调准备、初始态、交接、Agent、Runtime、Adapter 与报告发布延迟只在用例详情的结果概览展示。两处共用同一 timing projection，时间使用等宽数字且不换行。详情执行过程的步骤列表和右侧检查器保持同高并分别滚动；每一步只展示当时关联的 expectation target，最终 checks 独立展示。
 
 ## 9. 模块与依赖
 
 ```text
 scripts/
-├── batch/                 # 状态契约/仓库、暖会话、reconcile、commit 与 completion
+├── batch/                 # facade 及 initialization/dispatch/completion/finalization/reconcile services
 ├── case-runtime/          # Lifecycle、Broker、Runtime Core、服务、事务与 Store
-├── case/                  # 用例导入
-├── execution/contracts/   # 原始用例与 Frozen CaseSpec 契约
+├── case/                  # 用例导入与 CaseDefinition 发布存储
+├── execution/contracts/   # Case、CaseDefinition、CaseSpec 与 ValidationProfile 契约
 ├── lib/                   # 共享契约、证据、Reader 与运行控制
 ├── platform/
 │   ├── device-port.js     # Runtime 到 Adapter 的端口
@@ -283,7 +296,7 @@ scripts/
 3. Case Runtime 通过 Device Port 调用 Adapter，不依赖 Report。
 4. Adapter 只处理设备能力，不读取 Batch、用例和 verdict。
 5. Store 只处理事实与原子性，不产生业务结论。
-6. Report 通过只读 Reader 使用 execution，不调用 Runtime 或 Adapter。
+6. Report 通过版本化只读 Reader 使用 execution，不调用 Runtime、Adapter 或会回写 `case.json` 的编号修复逻辑。
 7. 修改报告不改变 Runtime 摘要；修改单个平台 Adapter 不改变其他平台摘要。
 
 iOS Adapter 的 `ios-driver.js` 只负责编排 CLI command 与 Appium 调用顺序；输入框发现、整串输入 fallback 和效果核验位于 `input-service.js`，W3C touch action、滑动/长按参数和视觉坐标执行位于 `pointer-actions.js`。报告中的原始用例 Markdown 安全渲染位于 `source-markdown.js`，详情页和用例索引复用同一纯 renderer。

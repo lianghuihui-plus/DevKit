@@ -3,20 +3,14 @@
 const path = require('path');
 const { readJson } = require('../lib/execution-lifecycle');
 const runtimeCore = require('./runtime-core');
+const {
+  AGENT_OPERATIONS,
+  BROKER_OPERATION_SETS,
+  isSupportedBroker,
+} = require('./runtime-operation-contract');
 
-const LEGACY_AGENT_OPERATIONS = Object.freeze(['observe', 'act', 'knowledge', 'recover', 'finish', 'status']);
-const AGENT_OPERATIONS = Object.freeze(['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
-
-function isSupportedBroker(broker) {
-  if (!broker || typeof broker !== 'object') return false;
-  if (broker.schemaVersion === 3 || broker.schemaVersion === 2) {
-    return JSON.stringify(broker.allowedOperations) === JSON.stringify(AGENT_OPERATIONS);
-  }
-  if (broker.schemaVersion === 1) {
-    return JSON.stringify(broker.allowedOperations) === JSON.stringify(LEGACY_AGENT_OPERATIONS);
-  }
-  return false;
-}
+const LEGACY_AGENT_OPERATIONS = BROKER_OPERATION_SETS[1];
+const V3_AGENT_OPERATIONS = BROKER_OPERATION_SETS[3];
 
 function executeAgentRequest(execDir, request, options = {}) {
   const resolved = path.resolve(execDir);
@@ -32,12 +26,15 @@ function executeAgentRequest(execDir, request, options = {}) {
       expected: { operation: AGENT_OPERATIONS.join(' | ') },
     };
   }
+  // Loader validation never reaches this broker; this idempotently marks the first Agent Runtime invocation.
+  require('./lifecycle').recordTimingAnchor({ executionDir: resolved, field: 'handoffConsumedAt', now: options.now });
   return runtimeCore.execute(resolved, request, options);
 }
 
 module.exports = {
   AGENT_OPERATIONS,
   LEGACY_AGENT_OPERATIONS,
+  V3_AGENT_OPERATIONS,
   executeAgentRequest,
   isSupportedBroker,
 };

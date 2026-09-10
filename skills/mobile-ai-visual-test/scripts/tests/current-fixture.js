@@ -10,6 +10,7 @@ const { completionPaths, sha256File, validatePublishedCompletion } = require('..
 const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
 const { confirmEnvironment, createExecutionRequest } = require('../lib/run-control');
 const { appProvisioningSha, defaultAppProvisioning, preparationPolicySha, validatePreparationPolicy } = require('../lib/app-provisioning');
+const { publishCaseDefinition } = require('../case/definition-store');
 
 const TEST_WORKSPACE_TYPE = 'mobile-ai-visual-test-test-workspace';
 const FIXTURE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -49,21 +50,36 @@ function createTestExecutionRequest(root, batchId, binding, targets, options = {
     now,
   });
   const frozenTargets = targets.map((target) => {
-    if (target.caseSpec) return target;
     let caseDir = target.caseDir;
     if (!caseDir && target.caseNo !== undefined) {
       const { resolveCaseNo } = require('../lib/case-numbering');
       caseDir = resolveCaseNo(root, target.caseNo)?.caseDir;
     }
     const sourceText = fs.readFileSync(path.join(caseDir, 'source.md'), 'utf8');
-    return {
-      ...target,
-      caseSpec: {
-        summary: sourceText.trim(),
-        preconditions: [],
-        expectations: [{ text: sourceText.trim(), sourceEvidence: [{ quote: sourceText.trim() }] }],
-        ambiguities: [],
+    const candidate = target.caseSpec || {
+      summary: sourceText.trim(),
+      preconditions: [],
+      expectations: [{ text: sourceText.trim(), sourceEvidence: [{ quote: sourceText.trim() }] }],
+      ambiguities: [],
+    };
+    const published = publishCaseDefinition({
+      caseDir,
+      candidate: {
+        ...candidate,
+        initialStateIntent: target.initialStateRequirement ? {
+          ...target.initialStateRequirement,
+          sourceEvidence: target.initialStateRequirement.targetState === 'KEEP_EXISTING'
+            ? [] : [{ quote: sourceText.trim() }],
+        } : { targetState: 'KEEP_EXISTING', rationale: '测试 fixture 默认保留现有状态', sourceEvidence: [] },
       },
+      compilerProfileSha: 'case-definition-compiler-test',
+      now,
+    });
+    return {
+      caseNo: target.caseNo,
+      caseKey: target.caseKey || published.definition.caseKey,
+      caseDir,
+      definitionRef: { definitionId: published.definition.definitionId, definitionSha: published.definition.definitionSha },
     };
   });
   return createExecutionRequest({

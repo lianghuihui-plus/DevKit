@@ -15,6 +15,7 @@ const { createInitialStatePreflight } = require('../lib/app-provisioning');
 const { readExecutionReport } = require('../lib/execution-reader');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestWorkspace } = require('./current-fixture');
+const { publishCaseDefinition } = require('../case/definition-store');
 
 process.env.MAVT_SELF_TEST = '1';
 
@@ -61,6 +62,18 @@ function executeResult(verdict, options = {}) {
       ambiguities: [],
     },
   });
+  const publishedDefinition = publishCaseDefinition({
+    caseDir,
+    candidate: {
+      summary: caseSpec.summary,
+      preconditions: caseSpec.preconditions,
+      expectations: caseSpec.expectations,
+      ambiguities: caseSpec.ambiguities,
+      initialStateIntent: { targetState: 'KEEP_EXISTING', rationale: '该结果矩阵用例不要求重置 App 状态', sourceEvidence: [] },
+    },
+    compilerProfileSha: 'case-definition-compiler-test',
+    now: '2026-09-04T02:00:00.000Z',
+  });
   const initialStateRequirement = {
     schemaVersion: 1,
     targetState: 'KEEP_EXISTING',
@@ -81,6 +94,7 @@ function executeResult(verdict, options = {}) {
     platform: 'harmony',
     sourceText: source,
     caseJson,
+    caseDefinition: publishedDefinition.definition,
     caseSpec,
     targetBinding: binding,
     initialStateRequirement,
@@ -98,6 +112,9 @@ function executeResult(verdict, options = {}) {
     initialObserve: false,
     now: '2026-09-04T02:00:00.000Z',
   });
+  assert.strictEqual(started.execution.schemaVersion, 11);
+  assert.ok(started.execution.validationProfileSha);
+  assert.strictEqual(readExecutionReport(started.execDir).readerFamily, 'execution-v11');
   let technicalFactRef = null;
   const observed = run(started.execDir, {
     operation: 'observe',

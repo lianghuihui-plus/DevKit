@@ -17,6 +17,8 @@ const {
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { validateBinding } = require('../lib/batch-contract');
 const { createTestWorkspace } = require('./current-fixture');
+const { loadPublishedCaseDefinition, publishCaseDefinition } = require('../case/definition-store');
+const { execute: executeCaseDefinition } = require('../case-definition');
 
 const T0 = '2026-08-18T10:00:00.000Z';
 const T1 = '2026-08-18T10:01:00.000Z';
@@ -40,17 +42,35 @@ function makeCase(root, name) {
   fs.mkdirSync(caseDir, { recursive: true });
   fs.writeFileSync(path.join(caseDir, 'source.md'), sourceText);
   writeJsonAtomic(path.join(caseDir, 'case.json'), caseJson);
-  return {
-    caseKey,
+  const published = publishCaseDefinition({
     caseDir,
-    sourceText,
-    caseSpec: {
+    candidate: {
       summary: sourceText,
       preconditions: [],
       expectations: [{ text: sourceText, sourceEvidence: [{ quote: sourceText }] }],
       ambiguities: [],
+      initialStateIntent: { targetState: 'KEEP_EXISTING', rationale: '原文未要求重置 App 状态', sourceEvidence: [] },
     },
+    compilerProfileSha: 'case-definition-compiler-test',
+    now: T0,
+  });
+  return {
+    caseKey,
+    caseDir,
+    sourceText,
+    definitionRef: { definitionId: published.definition.definitionId, definitionSha: published.definition.definitionSha },
   };
+}
+
+function makeLegacyCase(root, name) {
+  const sourceText = `验证 ${name}`;
+  const caseKey = `ck-${crypto.createHash('sha256').update(name).digest('hex').slice(0, 12)}`;
+  const caseJson = createCaseContract({ caseKey, title: name, sourceText, importPath: `/fixtures/${name}.md` });
+  const caseDir = path.join(root, 'cases', `${name}__${caseKey}`);
+  fs.mkdirSync(caseDir, { recursive: true });
+  fs.writeFileSync(path.join(caseDir, 'source.md'), sourceText);
+  writeJsonAtomic(path.join(caseDir, 'case.json'), caseJson);
+  return { caseKey, caseDir, sourceText };
 }
 
 function probe(binding = BINDING, ready = true) {
@@ -63,6 +83,21 @@ const root = path.join(temp, 'workspace');
 createTestWorkspace(root);
 const first = makeCase(root, 'first');
 const second = makeCase(root, 'second');
+const legacy = makeLegacyCase(root, 'legacy');
+assert.strictEqual(loadPublishedCaseDefinition(first.caseDir).definition.definitionSha, first.definitionRef.definitionSha);
+const compilerInput = executeCaseDefinition({ command: 'load-source', caseDir: first.caseDir });
+assert.strictEqual(compilerInput.caseKey, first.caseKey);
+assert.strictEqual(compilerInput.source, first.sourceText);
+assert.match(compilerInput.compilerPrompt, /Case Definition Compiler/);
+assert.strictEqual(compilerInput.publisher.command, process.execPath);
+assert.deepStrictEqual(compilerInput.publisher.args.slice(1, 3), ['publish', '--case-dir']);
+assert.strictEqual(compilerInput.publisher.candidateArgument, '--candidate-json');
+const legacyStatus = executeCaseDefinition({ command: 'status', caseDir: legacy.caseDir });
+assert.deepStrictEqual(Object.keys(legacyStatus).sort(), ['caseKey', 'compilerHandoff', 'status']);
+assert.strictEqual(legacyStatus.status, 'CASE_DEFINITION_REQUIRED');
+assert.strictEqual(legacyStatus.caseKey, legacy.caseKey);
+assert.match(legacyStatus.compilerHandoff.loaderCommand, /case-definition\.js.*load-source/);
+assert.strictEqual(legacyStatus.compilerHandoff.loaderCommand.includes(legacy.sourceText), false);
 
 expectCode(() => createExecutionRequest({
   workspaceRoot: root,
@@ -99,30 +134,47 @@ assert.strictEqual(environment.binding.deviceId, BINDING.deviceId);
 assert.strictEqual(Object.hasOwn(environment.binding, 'device'), false);
 assert.strictEqual(fs.existsSync(path.join(root, 'runs')), false);
 
+const legacyCaseNo = JSON.parse(fs.readFileSync(path.join(legacy.caseDir, 'case.json'), 'utf8')).identity.caseNo;
+assert.throws(() => createExecutionRequest({
+  workspaceRoot: root,
+  batchId: 'batch-legacy-definition',
+  mode: 'SINGLE',
+  targets: [{ caseNo: legacyCaseNo }],
+  userInstruction: '执行旧用例',
+  now: T0,
+}), (error) => {
+  assert.strictEqual(error?.code, 'CASE_DEFINITION_REQUIRED');
+  assert.deepStrictEqual(Object.keys(error.compilerHandoff), ['loaderCommand']);
+  assert.strictEqual(error.compilerHandoff.loaderCommand.includes(legacy.sourceText), false);
+  return true;
+});
+
 expectCode(() => validateBinding({
   platform: 'android', device: 'fixture-android-device', appId: 'com.example.android', entry: '.MainActivity',
 }), 'BATCH_CONTRACT_INVALID');
 const numberedFirst = JSON.parse(fs.readFileSync(path.join(first.caseDir, 'case.json'), 'utf8'));
 const numberedSecond = JSON.parse(fs.readFileSync(path.join(second.caseDir, 'case.json'), 'utf8'));
 assert.strictEqual(numberedFirst.identity.caseNo, '001');
-assert.strictEqual(numberedSecond.identity.caseNo, '002');
+assert.strictEqual(numberedSecond.identity.caseNo, '003');
 
 const numberedRequest = createExecutionRequest({
   workspaceRoot: root,
   batchId: 'batch-by-case-no',
   mode: 'SINGLE',
-  targets: [{ caseNo: '002', caseSpec: second.caseSpec }],
-  userInstruction: '单独执行用例 002',
+  targets: [{ caseNo: numberedSecond.identity.caseNo, definitionRef: second.definitionRef }],
+  userInstruction: `单独执行用例 ${numberedSecond.identity.caseNo}`,
   now: T0,
 });
 assert.strictEqual(numberedRequest.targets[0].caseKey, second.caseKey);
-assert.strictEqual(numberedRequest.targets[0].caseNo, '002');
+assert.strictEqual(numberedRequest.targets[0].caseNo, numberedSecond.identity.caseNo);
+assert.strictEqual(numberedRequest.targets[0].definitionSha, second.definitionRef.definitionSha);
+assert.strictEqual(fs.existsSync(path.join(numberedRequest.targets[0].snapshotPath, 'case-definition.snapshot.json')), true);
 assert.strictEqual(createExecutionRequest({
   workspaceRoot: root,
   batchId: 'batch-by-case-no',
   mode: 'SINGLE',
-  targets: [{ caseNo: 2, caseSpec: second.caseSpec }],
-  userInstruction: '单独执行用例 002',
+  targets: [{ caseNo: Number(numberedSecond.identity.caseNo), definitionRef: second.definitionRef }],
+  userInstruction: `单独执行用例 ${numberedSecond.identity.caseNo}`,
   now: T1,
 }).requestSha, numberedRequest.requestSha);
 expectCode(() => createExecutionRequest({
@@ -191,7 +243,7 @@ for (const interruptAfter of ['draft', 'snapshot-1', 'request']) {
     workspaceRoot: root,
     batchId: interruptedBatchId,
     mode: 'SINGLE',
-    targets: [{ caseKey: first.caseKey, caseDir: first.caseDir, caseSpec: first.caseSpec }],
+    targets: [{ caseKey: first.caseKey, caseDir: first.caseDir, definitionRef: first.definitionRef }],
     userInstruction: '单个执行冻结恢复用例',
     skillRoot: SKILL_ROOT,
     interruptAfter,
@@ -202,7 +254,7 @@ for (const interruptAfter of ['draft', 'snapshot-1', 'request']) {
     workspaceRoot: root,
     batchId: interruptedBatchId,
     mode: 'SINGLE',
-    targets: [{ caseKey: first.caseKey, caseDir: first.caseDir, caseSpec: first.caseSpec }],
+    targets: [{ caseKey: first.caseKey, caseDir: first.caseDir, definitionRef: first.definitionRef }],
     userInstruction: '单个执行冻结恢复用例',
     skillRoot: SKILL_ROOT,
     now: '2026-08-13T10:05:00.000Z',

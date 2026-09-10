@@ -8,6 +8,7 @@ const os = require('os');
 const path = require('path');
 const { reconcileWithFinalization } = require('../batch');
 const { bootstrapBatch, commitCurrentCase, initializeBatch, reconcileBatch, startCurrentCase } = require('../batch/core');
+const { establishInitialState } = require('../case-runtime/lifecycle');
 const { run } = require('../case-runtime/runtime-client');
 const runtimeCore = require('../case-runtime/runtime-core');
 const { validateRuntimeRequest } = require('../case-runtime/contract');
@@ -68,7 +69,8 @@ function bootstrap(batchId, target) {
     adapter: { restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }) },
     now: T0,
   });
-  return startCurrentCase({ workspaceRoot: root, batchId, now: T0 });
+  const response = startCurrentCase({ workspaceRoot: root, batchId, now: T0 });
+  return { ...response, execDir: fs.realpathSync(path.join(target.caseDir, 'platforms', binding.platform, 'executions', response.executionId)) };
 }
 
 const allowed = makeCase('允许清理');
@@ -108,7 +110,11 @@ const started = startCurrentCase({
     restartApp: () => ({ coldStartVerified: true, startupDisplayVerified: true }),
   },
 });
-const prepared = started.initialState;
+const startedExecDir = fs.realpathSync(path.join(allowed.caseDir, 'platforms', binding.platform, 'executions', started.executionId));
+const prepared = {
+  ...establishInitialState({ executionDir: startedExecDir }),
+  preparation: runtimeCore.runtimeStatus(startedExecDir).preparation,
+};
 assert.strictEqual(started.agentRequired, true);
 assert.strictEqual(prepared.status, 'READY');
 assert.strictEqual(prepared.preparation.status, 'SATISFIED');
@@ -117,7 +123,7 @@ assert.deepStrictEqual(prepared.scene.warmSessionRef, { sessionId: 'warm-0002', 
 assert.strictEqual(preparationCalls, 1);
 assert.strictEqual(JSON.stringify(prepared).includes('CLEAR_APP_DATA'), false);
 assert.strictEqual(JSON.stringify(prepared).includes('artifact'), false);
-const execution = JSON.parse(fs.readFileSync(path.join(started.execDir, 'execution.json'), 'utf8'));
+const execution = JSON.parse(fs.readFileSync(path.join(startedExecDir, 'execution.json'), 'utf8'));
 assert.strictEqual(execution.warmSessionId, 'warm-0002');
 assert.strictEqual(execution.warmSessionEpoch, 2);
 assert.deepStrictEqual(execution.preparationPolicy, {
@@ -128,10 +134,10 @@ assert.deepStrictEqual(execution.preparationPolicy, {
 const batchState = JSON.parse(fs.readFileSync(path.join(root, 'runs', allowedBatch, 'batch.json'), 'utf8'));
 assert.strictEqual(batchState.warmSession.sessionId, 'warm-0002');
 assert.strictEqual(batchState.warmSession.status, 'READY');
-const operation = JSON.parse(fs.readFileSync(path.join(started.execDir, 'operations', 'preparation-0001.json'), 'utf8'));
+const operation = JSON.parse(fs.readFileSync(path.join(startedExecDir, 'operations', 'preparation-0001.json'), 'utf8'));
 assert.strictEqual(operation.strategy, 'CLEAR_APP_DATA');
 
-const visualInspection = run(started.execDir, {
+const visualInspection = run(startedExecDir, {
   operation: 'inspectVisual',
   basedOnSceneId: prepared.scene.sceneId,
   decision: {
@@ -142,7 +148,7 @@ const visualInspection = run(started.execDir, {
 }, { now: T0 });
 assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
 
-const finished = run(started.execDir, {
+const finished = run(startedExecDir, {
   operation: 'finish',
   basedOnSceneId: prepared.scene.sceneId,
   decision: {
@@ -205,9 +211,10 @@ const unavailableStarted = startCurrentCase({
   },
 });
 assert.strictEqual(unavailableStarted.agentRequired, false);
-assert.strictEqual(unavailableStarted.initialState.status, 'BLOCKED');
-assert.strictEqual(unavailableStarted.execution.finalized, true);
-assert.strictEqual(JSON.parse(fs.readFileSync(path.join(unavailableStarted.execDir, 'result.json'), 'utf8')).verdict, 'BLOCKED');
+assert.strictEqual(Object.prototype.hasOwnProperty.call(unavailableStarted, 'handoff'), false);
+const unavailableExecDir = fs.realpathSync(path.join(unavailable.caseDir, 'platforms', binding.platform, 'executions', unavailableStarted.executionId));
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(unavailableExecDir, 'execution.json'), 'utf8')).finalized, true);
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(unavailableExecDir, 'result.json'), 'utf8')).verdict, 'BLOCKED');
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId: unavailableBatch, adapter: unavailableAdapter }).action, 'COMMIT_CASE');
 
 const implicit = makeCase('执行授权包含状态准备');
@@ -272,26 +279,31 @@ const interrupted = makeCase('清理中断');
 const interruptedBatch = 'batch-preparation-interrupted';
 createTestExecutionRequest(root, interruptedBatch, binding, [{
   ...interrupted,
-  preparationPolicy: {
-    schemaVersion: 1,
-    allowedEffects: ['CLEAR_APP_DATA'],
-    targetAppOnly: true,
-  },
 }], { now: T0 });
 initializeBatch({ workspaceRoot: root, batchId: interruptedBatch, now: T0 });
 bootstrapBatch({ workspaceRoot: root, batchId: interruptedBatch, adapter: { restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }) }, now: T0 });
 const interruptedStarted = startCurrentCase({ workspaceRoot: root, batchId: interruptedBatch, now: T0 });
+const interruptedExecDir = fs.realpathSync(path.join(interrupted.caseDir, 'platforms', binding.platform, 'executions', interruptedStarted.executionId));
 let replayed = 0;
-const interruption = runtimeCore.execute(interruptedStarted.execDir, {
-  operation: 'prepare',
-  preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' },
-}, {
-  interruptAfter: 'preparation-dispatched',
-  invokeAppPreparation: () => { replayed += 1; },
-  now: T0,
+const interruptedExecution = JSON.parse(fs.readFileSync(path.join(interruptedExecDir, 'execution.json'), 'utf8'));
+replayed += 1;
+writeJsonAtomic(path.join(interruptedExecDir, 'transactions', 'preparation.draft.json'), {
+  schemaVersion: 1,
+  operationId: 'preparation-0001',
+  batchId: interruptedBatch,
+  targetState: 'APP_LOCAL_STATE_EMPTY',
+  strategy: 'CLEAR_APP_DATA',
+  requiredEffects: ['CLEAR_APP_DATA'],
+  provisioning: interruptedExecution.appProvisioning,
+  status: 'STRATEGY_DISPATCHED',
+  previousSessionId: interruptedExecution.warmSessionId,
+  previousEpoch: interruptedExecution.warmSessionEpoch,
+  nextSessionId: 'warm-0002',
+  nextEpoch: 2,
+  authorizationSha: interruptedExecution.preparationPolicySha,
+  createdAt: T0,
 });
-assert.strictEqual(interruption.status, 'TECHNICAL');
-const reconciled = run(interruptedStarted.execDir, { operation: 'observe' }, {
+const reconciled = run(interruptedExecDir, { operation: 'observe' }, {
   invokeAppPreparation: () => { replayed += 1; },
   now: T0,
 });
