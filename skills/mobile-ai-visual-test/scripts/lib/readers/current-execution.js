@@ -1,7 +1,7 @@
 'use strict';
 
-const SCHEMA_VERSION = 10;
-const READER_FAMILY = 'execution-v10';
+const SCHEMA_VERSION = 11;
+const READER_FAMILY = 'current-execution';
 
 function supports(execution) {
   return execution?.schemaVersion === SCHEMA_VERSION && execution.runtime === 'case-runtime';
@@ -10,7 +10,7 @@ function supports(execution) {
 function assertSchema(execution) {
   if (!supports(execution)) {
     const error = new Error(`unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
-    error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
+    error.code = 'FORMAT_UNSUPPORTED';
     throw error;
   }
   return execution;

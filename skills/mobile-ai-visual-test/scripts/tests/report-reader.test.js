@@ -36,7 +36,7 @@ for (const verdict of ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']) {
 for (const [verdict, fixture] of fixtures) {
   const report = readExecutionReport(fixture.execDir);
   assert.strictEqual(report.schemaFamily, 'current');
-  assert.strictEqual(report.readerFamily, 'execution-v10');
+  assert.strictEqual(report.readerFamily, 'current-execution');
   assert.strictEqual(report.display.verdict, verdict);
   assert.strictEqual(report.display.executionStatus, fixture.metrics.executionStatus);
   assert.strictEqual(report.display.summary, fixture.result.summary);
@@ -223,7 +223,11 @@ fs.writeFileSync(path.join(unsupportedNewerDir, 'execution.json'), JSON.stringif
 assert.strictEqual(selectExecutionDir(passRuntimeDir).state, 'UNSUPPORTED');
 assert.strictEqual(selectExecutionDir(passRuntimeDir).execDir, unsupportedNewerDir);
 assert.throws(() => readExecutionReport(selectExecutionDir(passRuntimeDir).execDir),
-  (error) => error?.code === 'EXECUTION_SCHEMA_UNSUPPORTED');
+  (error) => error?.code === 'FORMAT_UNSUPPORTED');
+const isolatedCases = collectIndexCases(workspace);
+assert.strictEqual(isolatedCases.length, fixtures.size);
+assert.strictEqual(isolatedCases.filter((item) => item.status === 'REPORT_ERROR').length, 1);
+assert.strictEqual(isolatedCases.filter((item) => item.status !== 'REPORT_ERROR').length, fixtures.size - 1);
 
 const extraArtifact = path.join(passFixture.execDir, 'screenshots', 'extra-after-publication.png');
 fs.writeFileSync(extraArtifact, Buffer.from('not part of the published artifact set'));
@@ -243,7 +247,12 @@ assert.strictEqual(damaged.display.executionStatus, 'TECHNICALLY_BLOCKED');
 const unsupportedDir = path.join(temp, 'unsupported-execution');
 fs.mkdirSync(unsupportedDir);
 fs.writeFileSync(path.join(unsupportedDir, 'execution.json'), JSON.stringify({ schemaVersion: 99, executionId: 'unsupported' }));
-assert.throws(() => readExecutionReport(unsupportedDir), (error) => error?.code === 'EXECUTION_SCHEMA_UNSUPPORTED' && /schema: 99/.test(error.message));
+assert.throws(() => readExecutionReport(unsupportedDir), (error) => error?.code === 'FORMAT_UNSUPPORTED' && /schema: 99/.test(error.message));
+
+const previousSchemaDir = path.join(temp, 'previous-schema-execution');
+fs.mkdirSync(previousSchemaDir);
+fs.writeFileSync(path.join(previousSchemaDir, 'execution.json'), JSON.stringify({ schemaVersion: 10, runtime: 'case-runtime', executionId: 'previous-schema' }));
+assert.throws(() => readExecutionReport(previousSchemaDir), (error) => error?.code === 'FORMAT_UNSUPPORTED');
 
 const historicalWorkspace = path.join(temp, 'historical-workspace');
 createTestWorkspace(historicalWorkspace);

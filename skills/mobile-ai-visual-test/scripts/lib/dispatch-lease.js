@@ -91,7 +91,7 @@ function claimDispatch(directory, envelope, options = {}) {
   const paths = statePaths(directory);
   if (!fs.existsSync(paths.state)) registerDispatch(directory, envelope, {
     handoffSha: options.handoffSha,
-    continuationReason: envelope.mode === 'CONTINUATION' ? 'legacy continuation handoff load' : null,
+    continuationReason: envelope.mode === 'CONTINUATION' ? 'continuation handoff load' : null,
     now: options.now,
   });
   return withFileLock(paths.lock, () => {

@@ -6,6 +6,7 @@ const {
   confirmEnvironment,
   loadEnvironmentConfirmation,
 } = require('./lib/run-control');
+const { parseCoordinatorJson, writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function fail(message) {
   const error = new Error(`ENVIRONMENT_CLI_INVALID: ${message}`);
@@ -27,18 +28,13 @@ function parseArgs(argv) {
   return options;
 }
 
-function json(value, label) {
-  if (!value) fail(`${label} is required`);
-  try { return JSON.parse(value); } catch (error) { fail(`${label} is invalid JSON: ${error.message}`); }
-}
-
 function execute(options) {
   if (options.command === 'status') return loadEnvironmentConfirmation(options.workspace);
   return confirmEnvironment({
     workspaceRoot: options.workspace,
-    binding: json(options.bindingJson, '--binding-json'),
-    probe: json(options.probeJson, '--probe-json'),
-    appProvisioning: options.appProvisioningJson ? json(options.appProvisioningJson, '--app-provisioning-json') : undefined,
+    binding: parseCoordinatorJson(options.bindingJson, 'scripts/environment.js', 'confirm', 'bindingJson'),
+    probe: parseCoordinatorJson(options.probeJson, 'scripts/environment.js', 'confirm', 'probeJson'),
+    appProvisioning: parseCoordinatorJson(options.appProvisioningJson, 'scripts/environment.js', 'confirm', 'appProvisioningJson', { required: false }),
     userConfirmation: options.userConfirmation || fail('--user-confirmation is required'),
   });
 }
@@ -48,7 +44,7 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) { process.stderr.write(`${error.message || error}\n`); process.exit(error.exitCode || 2); }
+  try { main(); } catch (error) { writeCoordinatorCliError(error, 'scripts/environment.js', process.argv[2]); process.exit(error.exitCode || 2); }
 }
 
 module.exports = { execute, main, parseArgs };

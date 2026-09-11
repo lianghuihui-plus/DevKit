@@ -60,7 +60,16 @@ function main(argv = process.argv.slice(2), options = {}) {
       code: error.code || (invalid ? 'CASE_RUNTIME_REQUEST_INVALID' : 'CASE_RUNTIME_CLIENT_ERROR'),
       message: error.message || String(error),
       scene: null,
-      ...(invalid ? { expected: 'Write one RuntimeRequest JSON object to the bound requestPath, then run the command without arguments.' } : {}),
+      ...(invalid ? {
+        issues: [{
+          fieldPath: error.name === 'SyntaxError' ? 'requestFile' : 'transport',
+          expected: error.name === 'SyntaxError'
+            ? 'one valid RuntimeRequest JSON object'
+            : 'write one RuntimeRequest JSON object to requestPath, then run command without arguments',
+          code: error.name === 'SyntaxError' ? 'JSON_INVALID' : 'TRANSPORT_INVALID',
+        }],
+        expected: 'Write one RuntimeRequest JSON object to the bound requestPath, then run the command without arguments.',
+      } : {}),
     };
     if (execDir) {
       try {

@@ -1,46 +1,23 @@
 # 接口契约
 
-## 主 Agent CLI
+## Agent-facing 主入口
+
+普通执行只使用一个入口：
 
 ```bash
-node scripts/workspace.js --cwd <workspace>
-node scripts/import-case.js <input-file> --workspace <workspace>
-node scripts/case-definition.js status --workspace <workspace> --case-no <no>
-scripts/probe-env.sh --platform <harmony|android|ios> [platform options]
-scripts/prepare-env.sh --platform <harmony|android|ios> [platform options]
-node scripts/app-artifact.js register --workspace <workspace> --path <apk|hap|app|ipa> --platform <platform> --app-id <id> --version <version> --build <build> [--device-type <simulator|realDevice>]
-node scripts/environment.js confirm --workspace <workspace> --binding-json '<json>' --probe-json '<json>' [--app-provisioning-json '<json>'] --user-confirmation '<text>'
-node scripts/execution-request.js create --workspace <workspace> --batch-id <id> --mode <single|batch> --targets-json '<targets-json>' [--bootstrap-policy-json '<policy-json>'] --user-instruction '<text>'
-node scripts/batch.js <init|bootstrap|reconcile|start|commit|status|cancel|teardown> --workspace <workspace> --batch-id <id> [--continuation-reason <reason>]
+node scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>
 ```
 
-每个 target 只提供用例选择器和 READY CaseDefinition 引用。ExecutionRequest 会验证定义与当前 source/case 的绑定，补齐稳定 ID、哈希和 InitialStatePreflight，并冻结原文、Case Contract、CaseDefinition、CaseSpec、requirement 与 policy：
+首次调用只填写工作空间和用例编号。之后以当前响应中的能力卡、模板和预绑定命令为唯一调用事实源，不在本文维护字段清单。
 
-```json
-{
-  "caseNo": "004",
-  "definitionRef": {
-    "definitionId": "definition-...",
-    "definitionSha": "case-definition-..."
-  }
-}
-```
+Coordinator 只返回 `NEED_USER_CONFIRMATION`、`NEED_COMPILER`、`NEED_CASE_AGENT`、`WAITING`、`COMPLETE` 或 `BLOCKED`。Compiler 和 Case Agent 响应只暴露不透明 `loaderCommand` 与固定 `delegationPrompt`。
 
-CaseDefinition 的 `initialStateIntent.targetState` 可为 `KEEP_EXISTING`、`APP_LOCAL_STATE_EMPTY` 或 `FRESH_INSTALL`。Publisher 校验其原文依据；ExecutionRequest 再按平台投影为冻结的 `initialStateRequirement` 和 `preparationPolicy`。Android、HarmonyOS 的 `FRESH_INSTALL` 使用 `CLEAR_APP_DATA` 并允许 `PREINSTALLED` provisioning；iOS 使用 `REINSTALL_APP` 并要求 `ARTIFACT_MANAGED` provisioning。
+`scripts/workspace.js --cwd <workspace>` 用于校验或初始化 Workspace，并返回四个能力的简明 `coordinatorFacade`。它不再返回底层 CLI 参数 Schema。
 
-`bootstrapPolicy` 默认不重装。需要批次开始前重装冻结制品时必须显式提交：
+## 内部/Authoring 接口
 
-```json
-{
-  "schemaVersion": 1,
-  "mode": "REINSTALL_FROZEN",
-  "allowedEffects": ["UNINSTALL_TARGET_APP", "INSTALL_FROZEN_ARTIFACT"],
-  "targetAppOnly": true
-}
-```
+以下入口由 Coordinator Facade 内部使用，或只在用户明确要求导入、发布定义、维护环境和报告时使用：`import-case.js`、`case-definition.js`、`build-agent-contract.js`、`probe-env.sh`、`prepare-env.sh`、`app-artifact.js`、`environment.js`、`execution-request.js`、`knowledge.js`、`batch.js`、`render-context.js`、`render-index.js`。
 
-`app-artifact register` 返回的 manifest 包含 expected identity 和实际提取状态。`UNAVAILABLE` 表示登记环境无法解析，不代表已核验；任何实际重装仍必须返回匹配的 `installedIdentity`。
+普通执行的主 Agent 不直接调用或读取这些接口的完整契约。Authoring 或维护流程需要调用时，以各入口的机器契约和错误响应为准，不从本文复制参数。
 
-`batch start` 的主 Agent 可见响应只包含调度字段：`action`、`agentRequired`、`batchId`、`caseKey`、`executionId` 和可选 `handoff`。`handoff` 只包含 schema、ID、绝对路径、SHA-256 与带 claim token 的 `loaderCommand`，不包含 Prompt、Brief、Scene 或 Runtime 绑定正文。Loader 首次读取时在锁内消费 dispatch；同 token 重试幂等，错误 token 或已被 continuation 替换的 Handoff 会被拒绝。
-
-正常 `batch reconcile` 返回 `WAIT_CASE_AGENT` 时只包含当前 batch/case/execution 标识及可选重试诊断，不返回 Brief。确认原 Agent 句柄丢失后，使用 `batch start --continuation-reason <reason>` 显式生成递增 Handoff；它沿用原 `executionId`。`batch reconcile` 还会返回 `BOOTSTRAP`、`NEED_CASE_AGENT`、可重试的 `PUBLISH_REPORTS` 或三类批次终态，并在内部自动完成 commit、execution settle、平台释放和报告发布。锁竞争经过有界重试，致命错误进入阻塞收口。
+这些内部接口仍使用完整契约、哈希绑定、快照和双层校验。Facade 的简化不会修改 execution、result、completion 或报告 Reader Schema，已有工作空间与历史结果无需重跑。

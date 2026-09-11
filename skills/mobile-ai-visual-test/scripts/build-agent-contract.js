@@ -5,10 +5,13 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { implementationFiles, implementationGroups, roleEntrypoints, roleResources } = require('./lib/agent-contract-manifest');
+const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function usage() {
-  console.error('Usage: build-agent-contract.js --role <case-executor|batch-coordinator> --platform <harmony|android|ios> [--skill-root <path>] [--verify-sha <sha>]');
-  process.exit(2);
+  const error = new Error('AGENT_CONTRACT_CLI_INVALID: role and platform must match the command contract');
+  error.code = 'AGENT_CONTRACT_CLI_INVALID';
+  error.exitCode = 2;
+  throw error;
 }
 
 function parseArgs(args) {
@@ -27,9 +30,9 @@ function parseArgs(args) {
   return options;
 }
 
-function contractDigest(skillRoot, role, platform, resources, entrypoints) {
+function contractDigest(skillRoot, role, platform, resources, entrypoints, capabilities = null) {
   const hash = crypto.createHash('sha256');
-  hash.update(JSON.stringify({ role, platform, resources, entrypoints }));
+  hash.update(JSON.stringify({ role, platform, resources, entrypoints, capabilities }));
   hash.update('\0', 'utf8');
   for (const relative of resources) {
     const file = path.join(skillRoot, relative);
@@ -41,6 +44,18 @@ function contractDigest(skillRoot, role, platform, resources, entrypoints) {
     hash.update('\0', 'utf8');
   }
   return `agent-protocol-${hash.digest('hex').slice(0, 16)}`;
+}
+
+function coordinatorCapabilities(skillRoot, entrypoints) {
+  const contractModule = path.join(skillRoot, 'scripts/coordinator/agent-facing-contract.js');
+  const resolved = require.resolve(contractModule);
+  delete require.cache[resolved];
+  const agentFacingContract = require(resolved);
+  return {
+    interfaceKind: agentFacingContract.AGENT_FACING_INTERFACE_KIND,
+    entrypoint: entrypoints[0],
+    capabilities: agentFacingContract.capabilityCards(),
+  };
 }
 
 function filesDigest(skillRoot, files, prefix) {
@@ -73,13 +88,14 @@ function implementationDigest(skillRoot, role, platform) {
 function buildContract(options) {
   const resources = roleResources(options.role);
   const entrypoints = roleEntrypoints(options.role);
-  const protocolSha = contractDigest(options.skillRoot, options.role, options.platform, resources, entrypoints);
+  const capabilities = options.role === 'batch-coordinator'
+    ? coordinatorCapabilities(options.skillRoot, entrypoints) : null;
+  const protocolSha = contractDigest(options.skillRoot, options.role, options.platform, resources, entrypoints, capabilities);
   const implementation = implementationDigest(options.skillRoot, options.role, options.platform);
   if (options.verifySha && options.verifySha !== protocolSha) {
     throw new Error(`AGENT_PROTOCOL_MISMATCH: requested ${options.verifySha}, current ${protocolSha}`);
   }
   const value = {
-    schemaVersion: 3,
     name: 'mobile-ai-visual-test',
     root: options.skillRoot,
     role: options.role,
@@ -93,6 +109,9 @@ function buildContract(options) {
     reportRendererSha: implementation.reportRendererSha,
     implementationFiles: implementation.implementationFiles,
   };
+  if (options.role === 'batch-coordinator') {
+    value.coordinatorFacade = capabilities;
+  }
   if (options.verifySha) value.verified = true;
   return value;
 }
@@ -104,8 +123,8 @@ function main() {
 try {
   if (require.main === module) main();
 } catch (error) {
-  console.error(error.message || String(error));
-  process.exit(1);
+  writeCoordinatorCliError(error, 'scripts/build-agent-contract.js');
+  process.exit(error.exitCode || 1);
 }
 
 module.exports = {

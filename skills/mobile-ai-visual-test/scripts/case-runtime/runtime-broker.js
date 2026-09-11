@@ -5,12 +5,9 @@ const { readJson } = require('../lib/execution-lifecycle');
 const runtimeCore = require('./runtime-core');
 const {
   AGENT_OPERATIONS,
-  BROKER_OPERATION_SETS,
   isSupportedBroker,
+  projectAgentCapabilities,
 } = require('./runtime-operation-contract');
-
-const LEGACY_AGENT_OPERATIONS = BROKER_OPERATION_SETS[1];
-const V3_AGENT_OPERATIONS = BROKER_OPERATION_SETS[3];
 
 function executeAgentRequest(execDir, request, options = {}) {
   const resolved = path.resolve(execDir);
@@ -23,7 +20,13 @@ function executeAgentRequest(execDir, request, options = {}) {
       code: 'CASE_RUNTIME_OPERATION_FORBIDDEN',
       message: `${request?.operation || 'unknown'} is not available through the Case Agent Runtime Client`,
       scene: null,
-      expected: { operation: AGENT_OPERATIONS.join(' | ') },
+      issues: [{
+        fieldPath: 'operation',
+        expected: allowed.join(' | '),
+        code: 'OPERATION_FORBIDDEN',
+      }],
+      allowedOperations: allowed,
+      capabilities: projectAgentCapabilities(allowed),
     };
   }
   // Loader validation never reaches this broker; this idempotently marks the first Agent Runtime invocation.
@@ -31,10 +34,25 @@ function executeAgentRequest(execDir, request, options = {}) {
   return runtimeCore.execute(resolved, request, options);
 }
 
+function executeFacadeRequest(execDir, request, options = {}) {
+  if (request?.operation === 'reviewKnowledge') {
+    const resolved = path.resolve(execDir);
+    const runtime = readJson(path.join(resolved, 'runtime.json'), null);
+    if (!isSupportedBroker(runtime?.broker) || !runtime?.agentFacing?.entry || !runtime?.agentFacing?.requestPath) {
+      return {
+        status: 'REQUEST_INVALID', code: 'CASE_RUNTIME_OPERATION_FORBIDDEN',
+        message: 'reviewKnowledge is only available through a bound Agent-facing Facade', scene: null,
+      };
+    }
+    require('./lifecycle').recordTimingAnchor({ executionDir: resolved, field: 'handoffConsumedAt', now: options.now });
+    return runtimeCore.execute(resolved, request, options);
+  }
+  return executeAgentRequest(execDir, request, options);
+}
+
 module.exports = {
   AGENT_OPERATIONS,
-  LEGACY_AGENT_OPERATIONS,
-  V3_AGENT_OPERATIONS,
   executeAgentRequest,
+  executeFacadeRequest,
   isSupportedBroker,
 };

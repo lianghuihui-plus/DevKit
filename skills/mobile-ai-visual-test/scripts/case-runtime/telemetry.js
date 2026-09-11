@@ -59,6 +59,10 @@ function endInvocation(execDir, invocation, response, options = {}) {
     status: response?.status || 'TECHNICAL',
     error: ['TECHNICAL', 'REQUEST_INVALID'].includes(response?.status),
     ...(response?.code ? { code: response.code } : {}),
+    ...(Array.isArray(response?.issues) ? {
+      issueCodes: [...new Set(response.issues.map((item) => item.code).filter(Boolean))],
+      fieldPaths: [...new Set(response.issues.map((item) => item.fieldPath).filter(Boolean))],
+    } : {}),
   });
 }
 

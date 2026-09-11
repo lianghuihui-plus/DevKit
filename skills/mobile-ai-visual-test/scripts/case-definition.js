@@ -5,6 +5,8 @@ const fs = require('fs');
 const path = require('path');
 const { resolveCaseNo } = require('./lib/case-numbering');
 const { loadPublishedCaseDefinition, publishCaseDefinition, readCaseSource, compilerLoaderCommand } = require('./case/definition-store');
+const { caseDefinitionCandidateContract } = require('./execution/contracts/case-definition-contract');
+const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function fail(message) {
   const error = new Error(`CASE_DEFINITION_CLI_INVALID: ${message}`);
@@ -52,6 +54,7 @@ function execute(options) {
         command: process.execPath,
         args: [script, 'publish', '--case-dir', caseDir, '--compiler-profile-sha', 'case-definition-compiler-v1'],
         candidateArgument: '--candidate-json',
+        contract: caseDefinitionCandidateContract(source.sourceText),
       },
     };
   }
@@ -88,7 +91,7 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) { process.stderr.write(`${JSON.stringify({ status: 'ERROR', code: error.code || 'CASE_DEFINITION_FAILED', message: error.message || String(error) })}\n`); process.exit(error.exitCode || 2); }
+  try { main(); } catch (error) { writeCoordinatorCliError(error, 'scripts/case-definition.js', process.argv[2]); process.exit(error.exitCode || 2); }
 }
 
 module.exports = { execute, main, parseArgs };

@@ -7,6 +7,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { commitWithDashboard } = require('../batch');
+const { createCaseDefinition } = require('../execution/contracts/case-definition-contract');
+const { COORDINATOR_CAPABILITIES } = require('../coordinator/agent-facing-contract');
 
 const repo = path.resolve(__dirname, '../..');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-formal-entrypoints-'));
@@ -41,6 +43,11 @@ const initialized = run(['scripts/workspace.js', '--cwd', workspace]);
 assert.strictEqual(initialized.marker.type, 'mobile-ai-visual-test-workspace');
 assert.strictEqual(initialized.initialized, true);
 assert.strictEqual(fs.existsSync(path.join(workspace, 'flows')), false);
+assert.strictEqual(initialized.coordinatorFacade.entrypoint, 'scripts/coordinator-agent.js');
+assert.deepStrictEqual(Object.keys(initialized.coordinatorFacade.capabilities), COORDINATOR_CAPABILITIES);
+assert.strictEqual(initialized.coordinatorCapabilities, undefined);
+assert.strictEqual(JSON.stringify(initialized.coordinatorFacade).includes('definitionRef'), false);
+assert.strictEqual(JSON.stringify(initialized.coordinatorFacade).includes('batchId'), false);
 
 const imported = run(['scripts/import-case.js', input, '--workspace', workspace]);
 assert.strictEqual(imported.caseJson.schemaVersion, 2);
@@ -51,21 +58,78 @@ assert.ok(fs.readFileSync(imported.contextHtml, 'utf8').includes('看一下当�
 assert.ok(fs.readFileSync(path.join(workspace, 'index.html'), 'utf8').includes('查看用例内容'));
 
 const contract = run(['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony']);
-assert.strictEqual(contract.schemaVersion, 3);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(contract, 'schemaVersion'), false);
 assert.strictEqual(contract.profile, undefined);
 assert.deepStrictEqual(contract.requiredResources, [
   'prompts/case-agent.md',
 ]);
-assert.deepStrictEqual(contract.allowedEntrypoints, ['scripts/case-runtime/runtime-client.js']);
+assert.deepStrictEqual(contract.allowedEntrypoints, ['scripts/case-runtime/agent-facing-client.js']);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/build-agent-contract.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/execute-next-work.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/agent/finalize.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/agent/query-knowledge.js'), false);
 const coordinatorContract = run(['scripts/build-agent-contract.js', '--role', 'batch-coordinator', '--platform', 'harmony']);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(coordinatorContract.coordinatorFacade, 'schemaVersion'), false);
 assert.strictEqual(coordinatorContract.requiredResources[0], 'SKILL.md');
-assert.ok(coordinatorContract.requiredResources.includes('references/workflow.md'));
+assert.deepStrictEqual(coordinatorContract.requiredResources, ['SKILL.md']);
 assert.strictEqual(coordinatorContract.requiredResources.includes('prompts/case-agent.md'), false);
+assert.deepStrictEqual(coordinatorContract.allowedEntrypoints, ['scripts/coordinator-agent.js']);
+assert.deepStrictEqual(coordinatorContract.coordinatorFacade.capabilities, initialized.coordinatorFacade.capabilities);
+assert.strictEqual(coordinatorContract.coordinatorCapabilities, undefined);
 assert.strictEqual(fs.existsSync(path.join(repo, 'prompts/main-agent.md')), false);
+
+const invalidEnvironment = childProcess.spawnSync(process.execPath, [
+  'scripts/environment.js', 'confirm', '--workspace', workspace,
+], { cwd: repo, encoding: 'utf8', env: { ...process.env, MAVT_SELF_TEST: '' } });
+assert.strictEqual(invalidEnvironment.status, 2);
+const invalidEnvironmentResponse = JSON.parse(invalidEnvironment.stderr);
+assert.strictEqual(invalidEnvironmentResponse.status, 'REQUEST_INVALID');
+assert.strictEqual(invalidEnvironmentResponse.command, 'scripts/environment.js confirm');
+assert.ok(invalidEnvironmentResponse.issues.length >= 1);
+assert.match(invalidEnvironmentResponse.usage, /--binding-json/);
+assert.ok(Array.isArray(invalidEnvironmentResponse.example));
+
+const invalidBinding = childProcess.spawnSync(process.execPath, [
+  'scripts/environment.js', 'confirm', '--workspace', workspace,
+  '--binding-json', '{}', '--probe-json', '{}', '--user-confirmation', 'invalid fixture',
+], { cwd: repo, encoding: 'utf8', env: { ...process.env, MAVT_SELF_TEST: '' } });
+assert.strictEqual(invalidBinding.status, 2);
+const invalidBindingResponse = JSON.parse(invalidBinding.stderr);
+assert.deepStrictEqual(invalidBindingResponse.issues.map((issue) => issue.fieldPath), [
+  'bindingJson.platform',
+  'bindingJson.deviceId',
+  'bindingJson.appId',
+]);
+
+for (const fixture of [
+  { args: ['scripts/workspace.js'], command: 'scripts/workspace.js' },
+  { args: ['scripts/coordinator-agent.js'], command: 'scripts/coordinator-agent.js prepare' },
+  { args: ['scripts/import-case.js'], command: 'scripts/import-case.js' },
+  { args: ['scripts/case-definition.js', 'unknown'], command: 'scripts/case-definition.js status' },
+  { args: ['scripts/build-agent-contract.js'], command: 'scripts/build-agent-contract.js' },
+  { args: ['scripts/probe-env.sh'], command: 'scripts/probe-env.sh', executable: 'bash' },
+  { args: ['scripts/prepare-env.sh'], command: 'scripts/prepare-env.sh', executable: 'bash' },
+  { args: ['scripts/environment.js', 'unknown'], command: 'scripts/environment.js confirm' },
+  { args: ['scripts/app-artifact.js', 'unknown'], command: 'scripts/app-artifact.js register' },
+  { args: ['scripts/execution-request.js', 'unknown'], command: 'scripts/execution-request.js create' },
+  { args: ['scripts/knowledge.js', 'unknown'], command: 'scripts/knowledge.js validate' },
+  { args: ['scripts/batch.js', 'unknown'], command: 'scripts/batch.js init' },
+  { args: ['scripts/render-context.js'], command: 'scripts/render-context.js' },
+  { args: ['scripts/render-index.js', workspace, '--unknown'], command: 'scripts/render-index.js' },
+]) {
+  const result = childProcess.spawnSync(fixture.executable || process.execPath, fixture.args, {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { ...process.env, MAVT_SELF_TEST: '' },
+  });
+  assert.notStrictEqual(result.status, 0, `${fixture.command} invalid call must fail`);
+  const response = JSON.parse(result.stderr);
+  assert.strictEqual(response.status, 'REQUEST_INVALID');
+  assert.strictEqual(response.command, fixture.command);
+  assert.ok(response.issues.length >= 1);
+  assert.ok(response.usage);
+  assert.ok(response.example.length);
+}
 
 assert.strictEqual(fs.existsSync(path.join(repo, 'scripts/agent')), false);
 
@@ -93,6 +157,17 @@ const compilerInput = run([
 ]);
 assert.strictEqual(compilerInput.source, fs.readFileSync(input, 'utf8'));
 assert.match(compilerInput.compilerPrompt, /Case Definition Compiler/);
+assert.deepStrictEqual(compilerInput.publisher.contract.schema.required,
+  ['summary', 'expectations', 'initialStateIntent']);
+assert.strictEqual(compilerInput.publisher.contract.schema.properties.initialStateIntent
+  .properties.targetState.enum.includes('KEEP_EXISTING'), true);
+assert.doesNotThrow(() => createCaseDefinition({
+  caseKey: compilerInput.caseKey,
+  sourceText: compilerInput.source,
+  candidate: compilerInput.publisher.contract.example,
+  compilerProfileSha: 'case-definition-compiler-contract-test',
+  publishedAt: '2026-09-11T08:00:00.000Z',
+}));
 const publishedDefinition = run([
   'scripts/case-definition.js', 'publish', '--workspace', workspace,
   '--case-no', imported.caseJson.identity.caseNo,

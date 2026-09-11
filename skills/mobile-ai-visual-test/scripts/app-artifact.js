@@ -4,6 +4,7 @@
 const path = require('path');
 const { registerAppArtifact } = require('./lib/app-provisioning');
 const { assertWorkspace } = require('./lib/workspace');
+const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function fail(message) {
   const error = new Error(`APP_ARTIFACT_CLI_INVALID: ${message}`);
@@ -45,7 +46,7 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) { process.stderr.write(`${error.message || error}\n`); process.exit(error.exitCode || 2); }
+  try { main(); } catch (error) { writeCoordinatorCliError(error, 'scripts/app-artifact.js', process.argv[2]); process.exit(error.exitCode || 2); }
 }
 
 module.exports = { execute, main, parseArgs };

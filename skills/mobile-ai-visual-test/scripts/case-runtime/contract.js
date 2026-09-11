@@ -2,7 +2,8 @@
 
 const { contractError, ensureArray, ensureObject, ensureString } = require('../lib/contract-utils');
 const { TARGET_STATES } = require('../lib/app-provisioning');
-const { OPERATION_CONTRACT, RUNTIME_OPERATIONS } = require('./runtime-operation-contract');
+const { validateAgentJson } = require('../lib/agent-json-contract');
+const { AGENT_CONTRACT_DEFINITIONS, OPERATION_CONTRACT, RUNTIME_OPERATIONS } = require('./runtime-operation-contract');
 
 const VERDICTS = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
@@ -125,6 +126,18 @@ function validateRuntimeRequest(value) {
   if (!RUNTIME_OPERATIONS.includes(operation)) {
     throw contractError('CASE_RUNTIME_REQUEST_INVALID', `operation must be ${RUNTIME_OPERATIONS.join(', ')}`);
   }
+  const issues = validateAgentJson(value, OPERATION_CONTRACT[operation].requestSchema, AGENT_CONTRACT_DEFINITIONS);
+  if (issues.length) {
+    const roots = new Set(issues.map((item) => item.fieldPath.split(/[.[]/, 1)[0]));
+    const code = [...roots].every((root) => root === 'decision')
+      ? 'CASE_NARRATIVE_INVALID'
+      : [...roots].every((root) => root === 'result') ? 'CASE_RESULT_INVALID' : 'CASE_RUNTIME_REQUEST_INVALID';
+    throw contractError(code, `${operation} request has ${issues.length} contract issue${issues.length === 1 ? '' : 's'}`, {
+      issues,
+      fieldPath: issues[0].fieldPath,
+      expected: issues[0].expected,
+    });
+  }
   const unsupportedRequestFields = Object.keys(value).filter((field) => !REQUEST_FIELDS[operation].has(field));
   if (unsupportedRequestFields.length) {
     throw contractError('CASE_RUNTIME_REQUEST_INVALID', `${operation} request contains unsupported fields: ${unsupportedRequestFields.join(', ')}`);
@@ -195,6 +208,9 @@ function validateRuntimeRequest(value) {
       if (unsupported.length) throw contractError('CASE_RUNTIME_REQUEST_INVALID', `knowledge context contains unsupported fields: ${unsupported.join(', ')}`);
       for (const field of Object.keys(context)) ensureString(context[field], `context.${field}`, 'CASE_RUNTIME_REQUEST_INVALID');
     }
+  }
+  if (operation === 'reviewKnowledge' && value.decision?.knowledgeReview === undefined) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'reviewKnowledge requires decision.knowledgeReview');
   }
   if (operation === 'recover') ensureString(value.reason, 'reason', 'CASE_RUNTIME_REQUEST_INVALID');
   if (operation === 'finish') validateCaseResult(value.result);

@@ -8,7 +8,7 @@ const os = require('os');
 const path = require('path');
 const { buildContract } = require('../build-agent-contract');
 const { createExecution } = require('../case-runtime/lifecycle');
-const { run } = require('../case-runtime/runtime-client');
+const { run } = require('../case-runtime/agent-facing-client');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { createCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { createInitialStatePreflight } = require('../lib/app-provisioning');
@@ -114,40 +114,21 @@ function executeResult(verdict, options = {}) {
   });
   assert.strictEqual(started.execution.schemaVersion, 11);
   assert.ok(started.execution.validationProfileSha);
-  assert.strictEqual(readExecutionReport(started.execDir).readerFamily, 'execution-v11');
+  assert.strictEqual(readExecutionReport(started.execDir).readerFamily, 'current-execution');
   let technicalFactRef = null;
   const observed = run(started.execDir, {
-    operation: 'observe',
-    decision: {
-      observation: options.technical ? '技术错误后重新取得现场' : '开始检查目标页面',
-      conclusion: '当前 Scene 可用于结果判断',
-      purpose: '确认目标页面表现',
-      expectedOutcome: '获得验证点的客观现场',
-      expectationRefs: ['E1'],
-    },
+    capability: 'observe', purpose: '确认目标页面表现', expectationRefs: ['E1'],
   }, { runner, now: '2026-09-04T02:00:01.000Z' });
   assert.strictEqual(observed.status, 'SCENE');
   const visualInspection = run(started.execDir, {
-    operation: 'inspectVisual',
-    basedOnSceneId: observed.scene.sceneId,
-    decision: {
-      purpose: '检查结果矩阵现场截图',
-      expectationRefs: ['E1'],
-      observation: `截图中的目标页面表现可用于 ${verdict} 判断`,
-    },
+    capability: 'inspect', channel: 'visual', expectationRefs: ['E1'],
+    observation: `截图中的目标页面表现可用于 ${verdict} 判断`,
   }, { now: '2026-09-04T02:00:01.100Z' });
   assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
 
   if (options.technical) {
     const technical = run(started.execDir, {
-      operation: 'observe',
-      decision: {
-        observation: '当前 Scene 仍需刷新才能完成验证',
-        conclusion: '继续采集最终现场',
-        purpose: '获取可用于最终判断的现场',
-        expectedOutcome: '获得最新目标页面截图',
-        expectationRefs: ['E1'],
-      },
+      capability: 'observe', purpose: '获取可用于最终判断的现场', expectationRefs: ['E1'],
     }, {
       now: '2026-09-04T02:00:01.500Z',
       runner: () => { throw Object.assign(new Error('simulated adapter disconnection'), { code: 'ADAPTER_DISCONNECTED' }); },
@@ -159,16 +140,9 @@ function executeResult(verdict, options = {}) {
 
   if (verdict !== 'PASS' && !options.technical) {
     const knowledge = run(started.execDir, {
-      operation: 'knowledge',
-      basedOnSceneId: observed.scene.sceneId,
+      capability: 'knowledge',
       query: `${verdict} 现场是否存在已知解释`,
-      decision: {
-        observation: '现场没有满足目标验证点',
-        conclusion: '需要查询知识后再形成负向结论',
-        purpose: '调查异常现场',
-        expectedOutcome: '确认是否存在适用的业务解释',
-        expectationRefs: ['E1'],
-      },
+      expectationRefs: ['E1'],
     }, { now: '2026-09-04T02:00:01.500Z' });
     assert.strictEqual(knowledge.status, 'KNOWLEDGE');
     assert.strictEqual(knowledge.candidates.length, 0);
@@ -178,20 +152,19 @@ function executeResult(verdict, options = {}) {
     expectationRef: 'E1',
     status: verdict,
     actual: options.technical ? 'Adapter 连接中断，验证点无法继续' : `现场判断为 ${verdict}`,
-    sceneRefs: ['PASS', 'FAIL'].includes(verdict) ? [observed.scene.sceneId] : [],
+    sceneRefs: ['PASS', 'FAIL'].includes(verdict) ? [observed.scene.sceneRef] : [],
     ...(technicalFactRef ? { technicalRefs: [technicalFactRef] } : {}),
   };
   const finished = run(started.execDir, {
-    operation: 'finish',
-    basedOnSceneId: observed.scene.sceneId,
-    decision: {
-      observation: check.actual,
-      conclusion: `E1 最终状态为 ${verdict}`,
-      purpose: '提交最终结论',
-      expectedOutcome: '验证点与结论完整关联',
-      expectationRefs: ['E1'],
-    },
-    result: { verdict, summary: `${verdict} Runtime 结果`, checks: [check], uncertainties: verdict === 'INCONCLUSIVE' ? ['现场不足以可靠判断'] : [] },
+    capability: 'finish', summary: `${verdict} Runtime 结果`,
+    checks: [{
+      expectationRef: check.expectationRef,
+      status: check.status,
+      actual: check.actual,
+      ...(['PASS', 'FAIL'].includes(verdict) ? { evidence: ['current'] } : {}),
+      ...(technicalFactRef ? { technicalRefs: [technicalFactRef] } : {}),
+    }],
+    uncertainties: verdict === 'INCONCLUSIVE' ? ['现场不足以可靠判断'] : [],
   }, { now: '2026-09-04T02:00:02.000Z' });
   assert.strictEqual(finished.status, 'COMPLETED');
   const report = readExecutionReport(started.execDir);
@@ -201,7 +174,7 @@ function executeResult(verdict, options = {}) {
     assert.strictEqual(fact.executionId, started.execution.executionId);
     assert.strictEqual(fact.decisionId !== null, true);
     assert.deepStrictEqual(fact.expectationRefs, ['E1']);
-    assert.strictEqual(fact.sceneId, observed.scene.sceneId);
+    assert.strictEqual(fact.sceneId, observed.scene.sceneRef);
     assert.strictEqual(fact.generation, started.execution.warmSessionGeneration);
   }
   return report;

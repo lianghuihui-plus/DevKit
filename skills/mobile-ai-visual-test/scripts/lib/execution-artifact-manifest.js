@@ -17,9 +17,10 @@ const CURRENT_ROOT_FILES = new Set([
   'events.jsonl',
   'result.json',
   'metrics.json',
+  'case-definition.snapshot.json',
+  'validation-profile.snapshot.json',
 ]);
-const V11_ROOT_FILES = new Set([...CURRENT_ROOT_FILES, 'case-definition.snapshot.json', 'validation-profile.snapshot.json']);
-const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge', 'action-spatial-evidence', 'coordinate-audits', 'scenes', 'operations', 'telemetry']);
+const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge', 'action-spatial-evidence', 'scenes', 'operations', 'telemetry']);
 
 function manifestPath(execDir) {
   return path.join(execDir, MANIFEST_FILE);
@@ -35,12 +36,11 @@ function walkFiles(root, relative = '') {
 
 function executionArtifactFiles(execDir) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (![10, 11].includes(execution?.schemaVersion)) {
-    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
+  if (execution?.schemaVersion !== 11) {
+    throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
-  const rootFiles = execution.schemaVersion === 11 ? V11_ROOT_FILES : CURRENT_ROOT_FILES;
   return walkFiles(execDir).filter((relative) => {
-    if (rootFiles.has(relative)) return true;
+    if (CURRENT_ROOT_FILES.has(relative)) return true;
     const first = relative.split('/')[0];
     if (EVIDENCE_DIRS.has(first)) return true;
     return false;
@@ -48,10 +48,10 @@ function executionArtifactFiles(execDir) {
 }
 
 function requiredArtifactFiles(execution) {
-  if (![10, 11].includes(execution?.schemaVersion)) {
-    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
+  if (execution?.schemaVersion !== 11) {
+    throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
-  return [...(execution.schemaVersion === 11 ? V11_ROOT_FILES : CURRENT_ROOT_FILES)];
+  return [...CURRENT_ROOT_FILES];
 }
 
 function assertRequiredArtifacts(execDir, execution) {

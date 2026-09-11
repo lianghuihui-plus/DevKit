@@ -15,6 +15,69 @@ const { VERIFICATION_KINDS } = require('./case-spec-contract');
 
 const CASE_DEFINITION_SCHEMA_VERSION = 1;
 
+function caseDefinitionCandidateContract(sourceText) {
+  const quote = String(sourceText).split(/\r?\n/).map((line) => line.trim()).find(Boolean) || String(sourceText).trim();
+  const sourceEvidence = {
+    type: 'array', minItems: 1,
+    items: {
+      type: 'object', required: ['quote'], additionalProperties: false,
+      properties: { quote: { type: 'string', minLength: 1 } },
+    },
+  };
+  return {
+    schemaVersion: 1,
+    schema: {
+      type: 'object',
+      required: ['summary', 'expectations', 'initialStateIntent'],
+      additionalProperties: false,
+      properties: {
+        summary: { type: 'string', minLength: 1 },
+        preconditions: { type: 'array', items: { type: 'string', minLength: 1 } },
+        expectations: {
+          type: 'array', minItems: 1,
+          items: {
+            type: 'object', required: ['text', 'sourceEvidence'], additionalProperties: false,
+            properties: {
+              text: { type: 'string', minLength: 1 },
+              verificationKind: { enum: [...VERIFICATION_KINDS] },
+              sourceEvidence,
+            },
+          },
+        },
+        ambiguities: { type: 'array', items: { type: 'string', minLength: 1 } },
+        initialStateIntent: {
+          type: 'object', required: ['targetState', 'rationale'], additionalProperties: false,
+          properties: {
+            targetState: { enum: [...INITIAL_STATE_TARGETS] },
+            rationale: { type: 'string', minLength: 1 },
+            sourceEvidence,
+          },
+        },
+      },
+    },
+    constraints: [
+      'Every sourceEvidence.quote must be an exact continuous substring of source.',
+      'A non-default initialStateIntent.targetState requires at least one sourceEvidence item.',
+      'Do not provide generated ids, hashes, schemaVersion, compilerProfileSha, or publishedAt.',
+    ],
+    example: {
+      summary: '验证原始用例描述的预期结果',
+      preconditions: [],
+      expectations: [{
+        text: quote,
+        verificationKind: 'DIRECT_OBSERVATION',
+        sourceEvidence: [{ quote }],
+      }],
+      ambiguities: [],
+      initialStateIntent: {
+        targetState: 'KEEP_EXISTING',
+        rationale: '原文没有要求重置 App 本地状态',
+        sourceEvidence: [],
+      },
+    },
+  };
+}
+
 function stringList(value, label) {
   return ensureArray(value, label, 'CASE_DEFINITION_INVALID')
     .map((item, index) => ensureString(item, `${label}[${index}]`, 'CASE_DEFINITION_INVALID').trim());
@@ -130,6 +193,7 @@ function createCaseDefinition({ caseKey, sourceText, candidate, compilerProfileS
 module.exports = {
   CASE_DEFINITION_SCHEMA_VERSION,
   caseDefinitionSha,
+  caseDefinitionCandidateContract,
   createCaseDefinition,
   definitionIdentity,
   validateCaseDefinition,

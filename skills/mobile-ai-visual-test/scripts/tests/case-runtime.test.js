@@ -11,7 +11,7 @@ const { bootstrapBatch, commitCurrentCase, initializeBatch, reconcileBatch, reco
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { buildContract } = require('../build-agent-contract');
 const { run, parseRequest } = require('../case-runtime/runtime-client');
-const { resumeExecution } = require('../case-runtime/lifecycle');
+const { buildContinuationBrief, resumeExecution } = require('../case-runtime/lifecycle');
 const { loadAgentHandoff } = require('../batch/agent-handoff');
 const { readExecutionReport } = require('../lib/execution-reader');
 const { refreshCommittedCaseReports } = require('../report/report-service');
@@ -97,6 +97,7 @@ const started = {
   }).brief,
 };
 assert.strictEqual(started.execution.schemaVersion, 11);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(started.brief, 'schemaVersion'), false);
 const validationProfile = JSON.parse(fs.readFileSync(path.join(started.execDir, 'validation-profile.snapshot.json'), 'utf8'));
 assert.strictEqual(started.execution.validationProfileSha, validationProfile.profileSha);
 assert.deepStrictEqual(started.brief.case.spec.expectations.map((item) => item.id), ['E1', 'E2']);
@@ -104,19 +105,30 @@ assert.strictEqual(started.request, undefined);
 assert.strictEqual(started.brief.case.source, sourceText);
 assert.strictEqual(started.brief.scene, null);
 assert.strictEqual(path.dirname(started.runtime.entry), started.execDir);
+assert.strictEqual(path.dirname(started.runtime.agentFacing.entry), started.execDir);
 assert.strictEqual(started.brief.runtime.entry, undefined);
-assert.strictEqual(started.brief.runtime.requestPath, path.join(started.execDir, 'runtime-request.dispatch-1.json'));
+assert.strictEqual(started.brief.runtime.requestPath, path.join(started.execDir, 'agent-request.dispatch-1.json'));
 assert.match(started.brief.runtime.command, /--dispatch-sequence 1$/);
 assert.strictEqual(started.brief.runtime.commands, undefined);
-assert.deepStrictEqual(started.brief.runtime.allowedOperations, ['observe', 'act', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
+assert.strictEqual(started.brief.runtime.allowedOperations, undefined);
+assert.deepStrictEqual(Object.keys(started.brief.runtime.capabilities), ['observe', 'inspect', 'act', 'knowledge', 'recover', 'finish']);
+assert.strictEqual(started.brief.runtime.interfaceKind, 'AGENT_FACING');
+assert.strictEqual(started.brief.runtime.capabilities.prepare, undefined);
+assert.deepStrictEqual(started.brief.runtime.capabilities.recover.required, ['reason']);
+assert.strictEqual(started.brief.runtime.contractDefinitions, undefined);
 assert.deepStrictEqual(started.brief.investigationCapabilities, {
-  visual: { available: true, operation: 'inspectVisual' },
-  layout: { available: true, operation: 'inspectScene' },
-  knowledge: { available: true, operation: 'knowledge', requiredBeforeNegativeConclusion: true },
+  visual: { available: true, capability: 'inspect', channel: 'visual' },
+  layout: { available: true, capability: 'inspect', channels: ['elements', 'capabilities', 'layout'] },
+  knowledge: { available: true, capability: 'knowledge', requiredBeforeNegativeConclusion: true },
 });
+for (const hidden of ['basedOnSceneId', 'capabilityId', 'contractDefinitions', 'allowedOperations', 'decision.knowledgeReview']) {
+  assert.strictEqual(JSON.stringify(started.brief).includes(hidden), false, `v4 Case Brief must not expose ${hidden}`);
+}
 assert.strictEqual(fs.statSync(started.runtime.entry).mode & 0o111, 0o111);
+assert.strictEqual(fs.statSync(started.runtime.agentFacing.entry).mode & 0o111, 0o111);
 assert.deepStrictEqual(started.runtime.status, 'READY');
-assert.strictEqual(started.runtime.broker.schemaVersion, 4);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(started.runtime.broker, 'schemaVersion'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(started.runtime.agentFacing, 'schemaVersion'), false);
 assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
 assert.strictEqual(started.execution.caseProcessingStartedAt, T0);
 assert.strictEqual(started.execution.handoffReadyAt, T0);
@@ -136,25 +148,13 @@ assert.strictEqual(run(started.execDir, { operation: 'prepare', preparation: { t
 assert.strictEqual(Object.prototype.hasOwnProperty.call(startedResponse, 'item'), false);
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
   ...started.runtime,
-  broker: { ...started.runtime.broker, schemaVersion: 5 },
+  broker: { allowedOperations: started.runtime.broker.allowedOperations.slice(0, -1) },
 });
 assert.throws(
   () => resumeExecution({ executionDir: started.execDir }),
   (error) => error?.code === 'CASE_RUNTIME_BINDING_INVALID',
 );
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), started.runtime);
-writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
-  ...started.runtime,
-  broker: { schemaVersion: 2, allowedOperations: ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status'] },
-});
-assert.deepStrictEqual(resumeExecution({ executionDir: started.execDir }).brief.runtime.allowedOperations,
-  ['observe', 'act', 'inspectVisual', 'knowledge', 'recover', 'finish', 'status']);
-writeJsonAtomic(path.join(started.execDir, 'runtime.json'), {
-  ...started.runtime,
-  broker: { schemaVersion: 1, allowedOperations: ['observe', 'act', 'knowledge', 'recover', 'finish', 'status'] },
-});
-const legacyContinuation = resumeExecution({ executionDir: started.execDir });
-assert.deepStrictEqual(legacyContinuation.brief.runtime.allowedOperations, ['observe', 'act', 'knowledge', 'recover', 'finish', 'status']);
 writeJsonAtomic(path.join(started.execDir, 'runtime.json'), started.runtime);
 writeJsonAtomic(path.join(started.execDir, 'case-brief.json'), {
   schemaVersion: 2,
@@ -208,12 +208,12 @@ assert.strictEqual(continuationBrief.case.source, sourceText);
 assert.strictEqual(continuationBrief.case.spec.summary, frozenCaseSpec.summary);
 assert.notStrictEqual(continuationBrief.runtime.requestPath, started.brief.runtime.requestPath,
   'each dispatch must use an isolated Runtime request path');
-writeJsonAtomic(started.brief.runtime.requestPath, { operation: 'status' });
+writeJsonAtomic(started.brief.runtime.requestPath, { capability: 'observe' });
 const replacedWriter = JSON.parse(childProcess.execSync(started.brief.runtime.command, { encoding: 'utf8' }));
 assert.strictEqual(replacedWriter.status, 'TECHNICAL');
 assert.strictEqual(replacedWriter.code, 'HANDOFF_REPLACED');
-writeJsonAtomic(continuationBrief.runtime.requestPath, { operation: 'status' });
-assert.strictEqual(JSON.parse(childProcess.execSync(continuationBrief.runtime.command, { encoding: 'utf8' })).status, 'READY');
+writeJsonAtomic(continuationBrief.runtime.requestPath, { capability: 'unknown' });
+assert.strictEqual(JSON.parse(childProcess.execSync(continuationBrief.runtime.command, { encoding: 'utf8' })).status, 'INPUT_INVALID');
 const shellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 const continuationWorker = [
   `const { startCurrentCase } = require(${JSON.stringify(path.resolve(__dirname, '../batch/core'))});`,
@@ -241,21 +241,21 @@ const activeBrief = loadAgentHandoff({
   executionId: started.execution.executionId,
   caseProtocolSha: started.execution.caseProtocolSha,
 }).brief;
-writeJsonAtomic(activeBrief.runtime.requestPath, { operation: 'status' });
+writeJsonAtomic(activeBrief.runtime.requestPath, { capability: 'observe', unsupported: true });
 const clientStatus = JSON.parse(childProcess.execSync(activeBrief.runtime.command, { cwd: os.tmpdir(), encoding: 'utf8' }));
-assert.strictEqual(clientStatus.status, 'READY');
-writeJsonAtomic(activeBrief.runtime.requestPath, { operation: 'status' });
-assert.strictEqual(JSON.parse(childProcess.execSync(activeBrief.runtime.command, { encoding: 'utf8' })).status, 'READY');
+assert.strictEqual(clientStatus.status, 'INPUT_INVALID');
+writeJsonAtomic(activeBrief.runtime.requestPath, { capability: 'unknown' });
+assert.strictEqual(JSON.parse(childProcess.execSync(activeBrief.runtime.command, { encoding: 'utf8' })).status, 'INPUT_INVALID');
 fs.writeFileSync(activeBrief.runtime.requestPath, '{ malformed json');
-const malformedRequest = childProcess.spawnSync(started.runtime.entry, ['--dispatch-sequence', '4'], { encoding: 'utf8' });
+const malformedRequest = childProcess.spawnSync(started.runtime.agentFacing.entry, ['--dispatch-sequence', '4'], { encoding: 'utf8' });
 assert.strictEqual(malformedRequest.status, 0);
-assert.strictEqual(JSON.parse(malformedRequest.stdout).status, 'REQUEST_INVALID');
+assert.strictEqual(JSON.parse(malformedRequest.stdout).status, 'INPUT_INVALID');
 assert.strictEqual(fs.existsSync(activeBrief.runtime.requestPath), false);
-writeJsonAtomic(activeBrief.runtime.requestPath, { operation: 'status' });
-assert.strictEqual(JSON.parse(childProcess.execSync(activeBrief.runtime.command, { encoding: 'utf8' })).status, 'READY');
-const invalidClientCall = childProcess.spawnSync(started.runtime.entry, ['--dispatch-sequence', '4', 'act'], { encoding: 'utf8' });
+writeJsonAtomic(activeBrief.runtime.requestPath, { capability: 'recover', reason: '' });
+assert.strictEqual(JSON.parse(childProcess.execSync(activeBrief.runtime.command, { encoding: 'utf8' })).status, 'INPUT_INVALID');
+const invalidClientCall = childProcess.spawnSync(started.runtime.agentFacing.entry, ['--dispatch-sequence', '4', 'act'], { encoding: 'utf8' });
 assert.strictEqual(invalidClientCall.status, 0);
-assert.strictEqual(JSON.parse(invalidClientCall.stdout).status, 'REQUEST_INVALID');
+assert.strictEqual(JSON.parse(invalidClientCall.stdout).status, 'INPUT_INVALID');
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'WAIT_CASE_AGENT');
 
 let observationCount = 0;
@@ -326,6 +326,8 @@ assert.strictEqual(first.scene.evidenceChannels.layout.inline, false);
 assert.strictEqual(first.scene.evidenceChannels.policy, 'COMBINE_VISUAL_AND_LAYOUT');
 assert.strictEqual(first.scene.elements, undefined);
 assert.strictEqual(first.scene.capabilities, undefined);
+assert.deepStrictEqual(first.scene.inspectScene, { operation: 'inspectScene' });
+assert.strictEqual(first.scene.inspectScene.views, undefined);
 const observationsBeforeInspection = observationCount;
 const firstCapabilities = run(started.execDir, {
   operation: 'inspectScene', basedOnSceneId: first.scene.sceneId, view: 'CAPABILITIES', filter: { actionType: 'wait' },
@@ -448,11 +450,33 @@ assert.ok(Array.isArray(knowledge.candidates));
 assert.strictEqual(knowledge.candidates[0].entryId, 'K-runtime-001');
 assert.strictEqual(knowledge.context.app, 'com.example.runtime');
 assert.strictEqual(knowledge.filterDiagnostics, null);
-assert.deepStrictEqual(knowledge.knowledgeInvestigation.pendingReviews, [{
-  queryId: knowledge.queryId,
-  candidateCount: 1,
-  expectationRefs: ['E1'],
+assert.strictEqual(knowledge.requiredReview.fieldPath, 'decision.knowledgeReview');
+assert.strictEqual(knowledge.requiredReview.required, true);
+assert.strictEqual(knowledge.requiredReview.template.queryId, knowledge.queryId);
+assert.strictEqual(knowledge.requiredReview.template.conclusion, 'NO_APPLICABLE');
+assert.deepStrictEqual(knowledge.requiredReview.template.assessments, [{
+  entryId: 'K-runtime-001',
+  status: 'NOT_APPLICABLE',
+  reason: '<explain why this candidate is or is not applicable>',
 }]);
+const pendingReviewBrief = buildContinuationBrief({
+  executionDir: started.execDir,
+  reason: 'verify pending knowledge review contract',
+});
+assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].queryId, knowledge.queryId);
+assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].query, '当前页面显示异常');
+assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].candidates[0].entryId, 'K-runtime-001');
+assert.deepStrictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].nextCall.example, {
+  capability: 'knowledge', queryId: knowledge.queryId, conclusion: 'NO_APPLICABLE',
+  assessments: [{
+    entryId: 'K-runtime-001', status: 'NOT_APPLICABLE',
+    reason: '说明该候选对当前现场是否适用',
+  }],
+});
+assert.strictEqual(JSON.stringify(pendingReviewBrief).includes('decision.knowledgeReview'), false);
+assert.strictEqual(knowledge.knowledgeInvestigation.pendingReviews[0].queryId, knowledge.queryId);
+assert.strictEqual(knowledge.knowledgeInvestigation.pendingReviews[0].candidates[0].entryId, 'K-runtime-001');
+assert.deepStrictEqual(knowledge.knowledgeInvestigation.pendingReviews[0].requiredReview, knowledge.requiredReview);
 fs.unlinkSync(runtimeKnowledgePath);
 fs.writeFileSync(path.join(root, 'knowledge', 'K-other-app-001.md'), `# K-other-app-001 其他应用页面规则
 
@@ -482,6 +506,7 @@ const knowledgeMiss = run(started.execDir, {
   },
 }, { now: T0 });
 assert.strictEqual(knowledgeMiss.candidates.length, 0);
+assert.strictEqual(knowledgeMiss.requiredReview, null);
 assert.strictEqual(knowledgeMiss.filterDiagnostics.excludedBy.app, 1);
 const knowledgeMissEvent = fs.readFileSync(path.join(started.execDir, 'events.jsonl'), 'utf8')
   .trim().split(/\r?\n/).map(JSON.parse)
@@ -521,6 +546,19 @@ assert.strictEqual(missingSceneBasis.status, 'REQUEST_INVALID');
 assert.strictEqual(missingSceneBasis.code, 'CASE_RUNTIME_REQUEST_INVALID');
 assert.strictEqual(actionInvocationCount, actionInvocationsBeforeSceneGuard);
 
+const invalidRecover = run(started.execDir, {
+  operation: 'recover', basedOnSceneId: '', reason: 42, unexpected: true,
+}, { now: '2026-09-03T10:00:00.550Z' });
+assert.strictEqual(invalidRecover.status, 'REQUEST_INVALID');
+assert.deepStrictEqual(invalidRecover.issues.map((issue) => issue.fieldPath).sort(), [
+  'basedOnSceneId', 'reason', 'unexpected',
+]);
+assert.deepStrictEqual(invalidRecover.allowedFields,
+  ['operation', 'basedOnSceneId', 'reason', 'decision']);
+assert.deepStrictEqual(invalidRecover.requiredFields,
+  ['operation', 'basedOnSceneId', 'reason']);
+assert.strictEqual(invalidRecover.example.operation, 'recover');
+
 const ambiguousTarget = run(started.execDir, {
   operation: 'act',
   basedOnSceneId: currentSceneId(),
@@ -528,7 +566,8 @@ const ambiguousTarget = run(started.execDir, {
   visual: { gesture: 'tap', point: [0.5, 0.5] },
 }, { runner, now: '2026-09-03T10:00:00.600Z' });
 assert.strictEqual(ambiguousTarget.status, 'REQUEST_INVALID');
-assert.match(ambiguousTarget.message, /mutually exclusive/);
+assert.strictEqual(ambiguousTarget.issues.some((issue) => issue.code === 'EXACTLY_ONE_REQUIRED'), true);
+assert.strictEqual(ambiguousTarget.issues.some((issue) => issue.fieldPath === 'decision' && issue.code === 'REQUIRED'), true);
 assert.strictEqual(actionInvocationCount, actionInvocationsBeforeSceneGuard);
 
 const second = run(started.execDir, {
@@ -936,7 +975,8 @@ for (const [file, count] of hashCounts) {
     assert.strictEqual(count, 1, `${path.relative(started.execDir, file)} must be hashed once per commit`);
   }
 }
-assert.strictEqual(committed.completion.schemaVersion, 4);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(committed.completion, 'schemaVersion'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(committed.completion, 'metricsSchemaVersion'), false);
 assert.strictEqual(committed.completion.validationProfileSha, validationProfile.profileSha);
 const committedManifest = JSON.parse(fs.readFileSync(path.join(started.execDir, 'artifact-manifest.json'), 'utf8'));
 assert.ok(committedManifest.files.some((entry) => entry.path === 'validation-profile.snapshot.json'));

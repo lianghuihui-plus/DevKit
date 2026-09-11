@@ -106,7 +106,7 @@ function actionOutcome(event) {
   if (event.deviceExecution?.status === 'FAILED') {
     return { status: 'FAILED', code: event.deviceExecution.failureCode || null, summary: event.deviceExecution.message || '设备操作效果已确认不符合请求' };
   }
-  if (!event.command) return { status: 'UNCERTAIN', code: null, summary: '旧动作结果缺少分层执行事实' };
+  if (!event.command) return { status: 'UNCERTAIN', code: null, summary: '动作结果缺少分层执行事实' };
   const effect = event.observedEffect?.status || 'UNKNOWN';
   const device = event.deviceExecution?.status || 'UNVERIFIED';
   return {
@@ -203,8 +203,7 @@ function buildExecutionTrace(report) {
             operationId: event.operationId,
             actionType: action?.type,
           }))
-          : sanitizeOperationValue(event.coordinateAudit || null),
-        legacyCoordinateAudit: !event.spatialEvidenceRef && event.coordinateAudit ? true : false,
+          : null,
         retrySafety: retrySafety(action, outcome), raw: sanitizeOperationValue({ event, request, decision }),
       });
       continue;
@@ -259,14 +258,12 @@ function buildExecutionTrace(report) {
   for (const action of actions) {
     action.beforeScreenshot = screenshotByRef.get(action.beforeObservation?.ref) || null;
     action.afterScreenshot = screenshotByRef.get(action.afterObservation?.ref) || null;
-    const annotatedRef = safeRef(action.spatialEvidence?.annotatedScreenshot?.ref
-      || action.spatialEvidence?.overlayRef);
-    if (annotatedRef && (action.spatialEvidence?.annotatedScreenshot || action.beforeScreenshot?.ref)) {
+    const annotatedRef = safeRef(action.spatialEvidence?.annotatedScreenshot?.ref);
+    if (annotatedRef && action.spatialEvidence?.annotatedScreenshot) {
       const spatialScreenshot = {
         id: `action-spatial-evidence-${action.operationId}`,
         index: screenshots.length,
         ref: annotatedRef,
-        ...(action.legacyCoordinateAudit ? { baseRef: action.beforeScreenshot.ref } : {}),
         operationId: action.operationId,
         time: action.time,
         phase: action.phase,

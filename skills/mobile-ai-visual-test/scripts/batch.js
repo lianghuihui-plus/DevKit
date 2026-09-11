@@ -23,6 +23,7 @@ const {
 const { loadExecutionRequest } = require('./lib/run-control');
 const { refreshBatchIndex, refreshCommittedCaseReports } = require('./report/report-service');
 const { recordPublicationAttempt } = require('./report/publication-state');
+const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 const SKILL_ROOT = path.resolve(__dirname, '..');
 const COMMANDS = new Set(['init', 'bootstrap', 'reconcile', 'start', 'commit', 'status', 'cancel', 'teardown']);
@@ -255,7 +256,7 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) { process.stderr.write(`${error.message || error}\n`); process.exit(error.exitCode || 2); }
+  try { main(); } catch (error) { writeCoordinatorCliError(error, 'scripts/batch.js', process.argv[2]); process.exit(error.exitCode || 2); }
 }
 
 module.exports = {

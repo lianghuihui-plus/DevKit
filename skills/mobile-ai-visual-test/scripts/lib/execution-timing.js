@@ -65,7 +65,7 @@ function deriveExecutionTiming(execution = {}, metrics = {}, publication = null)
     const phases = emptyPhases();
     phases.reportPublicationDelayMs = publicationDelay(execution, publication);
     return {
-      durationBasis: 'EXECUTION_LEGACY',
+      durationBasis: 'EXECUTION_TOTAL',
       startedAt: execution.startedAt || '',
       durationMs: Number.isFinite(metrics?.elapsedMs) ? metrics.elapsedMs : null,
       phases,

@@ -6,22 +6,10 @@ const path = require('path');
 
 const ROLE_ENTRYPOINTS = Object.freeze({
   'case-executor': Object.freeze([
-    'scripts/case-runtime/runtime-client.js',
+    'scripts/case-runtime/agent-facing-client.js',
   ]),
   'batch-coordinator': Object.freeze([
-    'scripts/workspace.js',
-    'scripts/import-case.js',
-    'scripts/case-definition.js',
-    'scripts/build-agent-contract.js',
-    'scripts/probe-env.sh',
-    'scripts/prepare-env.sh',
-    'scripts/environment.js',
-    'scripts/app-artifact.js',
-    'scripts/execution-request.js',
-    'scripts/knowledge.js',
-    'scripts/batch.js',
-    'scripts/render-context.js',
-    'scripts/render-index.js',
+    'scripts/coordinator-agent.js',
   ]),
 });
 
@@ -31,12 +19,6 @@ const ROLE_RESOURCES = Object.freeze({
   ]),
   'batch-coordinator': Object.freeze([
     'SKILL.md',
-    'references/workflow.md',
-    'references/interfaces.md',
-    'references/environment-probing.md',
-    'references/failure-policy.md',
-    'references/case-format.md',
-    'references/installation.md',
   ]),
 });
 
@@ -72,6 +54,7 @@ const PLATFORM_ENTRYPOINTS = Object.freeze([
 ]);
 
 const COORDINATOR_ENTRYPOINTS = Object.freeze([
+  'scripts/coordinator-agent.js',
   'scripts/app-artifact.js',
   'scripts/batch.js',
   'scripts/environment.js',
@@ -141,6 +124,7 @@ function implementationGroups(skillRoot, platform) {
   coordinator.add('scripts/case-runtime/lifecycle.js');
   for (const relative of walkFiles(skillRoot, 'scripts/batch')) coordinator.add(relative);
   for (const relative of walkFiles(skillRoot, 'scripts/case')) coordinator.add(relative);
+  for (const relative of walkFiles(skillRoot, 'scripts/coordinator')) coordinator.add(relative);
   for (const relative of walkFiles(skillRoot, 'scripts/execution')) coordinator.add(relative);
   for (const relative of walkFiles(skillRoot, 'scripts/lib')) {
     if (!REPORT_ONLY_LIB_FILES.has(relative)) coordinator.add(relative);

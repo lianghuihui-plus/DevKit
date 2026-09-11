@@ -69,7 +69,7 @@ function renderCurrentContextMarkdown(caseJson, report) {
     `- 执行结论：${label(VERDICT_LABELS, display.verdict || display.status, '未执行')}`,
     `- 执行标识：${report.execution?.executionId || '-'}`,
     `- 耗时：${optionalDuration(display.durationMs)}`,
-    `- 时长口径：${display.durationBasis || 'EXECUTION_LEGACY'}`,
+    `- 时长口径：${display.durationBasis || 'EXECUTION_TOTAL'}`,
     `- 验证点覆盖：${narrative.coverage.covered}/${narrative.coverage.total}`,
     `- 执行记录：${{ COMPLETE: '完整', PARTIAL: '部分缺失', UNAVAILABLE: '不可用' }[narrative.recordingStatus] || '不可用'}`, '',
     '## 耗时分解', '',

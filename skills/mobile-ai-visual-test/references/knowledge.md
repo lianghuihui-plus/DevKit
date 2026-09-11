@@ -75,7 +75,7 @@ Nemo 缺失属于已知平台差异。独立验证其他分类，并在采用本
 
 候选评估附在下一次已有 Runtime 请求的 `decision.knowledgeReview` 中，不增加新的操作类型或 Agent 往返。Runtime 随后记录 `knowledgeReviewed`；零候选由 Runtime 自动记录 `NO_MATCH`。有候选时用 `APPLICABLE_FOUND`、`NO_APPLICABLE`、`CONFLICTING` 或 `INSUFFICIENT` 总结本次调查；`NO_APPLICABLE` 需要评估全部候选，过期条目不能评估为 `APPLICABLE`。
 
-知识被评估为适用并影响最终检查时，check 使用 `knowledgeRefs` 引用条目 ID；Runtime 校验所有引用均来自当前 execution 已冻结并评估为 `APPLICABLE` 的候选。正常、无疑问且不依赖 Scene 外信息的 PASS 可以不查询；实际结果与预期不符、截图和控件树无法独立解释、操作失败或无进展、下一步或结论性质无法确定、可能受外部条件影响，或准备形成负向结论时必须调查。Broker v3 会在 finish 对负向检查确定性收口。
+知识被评估为适用并影响最终检查时，check 使用 `knowledgeRefs` 引用条目 ID；Runtime 校验所有引用均来自当前 execution 已冻结并评估为 `APPLICABLE` 的候选。正常、无疑问且不依赖 Scene 外信息的 PASS 可以不查询；实际结果与预期不符、截图和控件树无法独立解释、操作失败或无进展、下一步或结论性质无法确定、可能受外部条件影响，或准备形成负向结论时必须调查。当前 Result Integrity 会在 finish 对负向检查确定性收口。
 
 已发布报告只使用 execution 中冻结的候选和内容快照，不重新读取当前知识文件；实时知识条目后续修改或删除不会改变既有 execution 的依据。
 

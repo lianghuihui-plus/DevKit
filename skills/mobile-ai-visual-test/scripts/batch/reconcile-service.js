@@ -100,7 +100,7 @@ function reconcileBatch(options) {
       || entry.execution.batchContractSha !== state.contractSha) {
       throw contractError('BATCH_IMPLEMENTATION_MISMATCH', 'active execution belongs to another batch implementation');
     }
-    if ([10, 11].includes(entry.execution.schemaVersion)) {
+    if (entry.execution.schemaVersion === 11) {
       try {
         const reconcileExecution = options.reconcileExecution || caseRuntimeLifecycle.reconcileExecution;
         reconcileExecution({ executionDir: entry.execDir, runtimeOptions: options.runtimeOptions || {} });
@@ -151,7 +151,7 @@ function reconcileBatch(options) {
         executionId: item.executionId,
       };
     }
-    return stopBatch(loaded.paths, state, 'CORRUPTED', 'EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again', { now: options.now });
+    return stopBatch(loaded.paths, state, 'CORRUPTED', 'FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again', { now: options.now });
   }, { now: options.now });
 }
 

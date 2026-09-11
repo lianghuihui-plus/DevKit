@@ -96,17 +96,22 @@ assert.strictEqual(resolveAction(scene, {
 }, 'harmony').action.durationMs, 5000);
 assert.doesNotThrow(() => validateRuntimeRequest({
   operation: 'act',
+  basedOnSceneId: 'scene-long-press',
   visual: { gesture: 'longPress', point: [0.5, 0.9], durationMs: 5000 },
   observationPolicy: { duringActionAtMs: 4000 },
   decision: { purpose: '验证按住态', expectationRefs: [] },
 }));
 assert.throws(() => validateRuntimeRequest({
-  operation: 'act', visual: { gesture: 'longPress', point: [0.5, 0.9] },
+  operation: 'act', basedOnSceneId: 'scene-long-press',
+  visual: { gesture: 'longPress', point: [0.5, 0.9] },
+  decision: { purpose: '验证按住态', expectationRefs: [] },
 }), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID');
 assert.throws(() => validateRuntimeRequest({
-  operation: 'act', capabilityId: longPressCapability.id,
+  operation: 'act', basedOnSceneId: 'scene-long-press', capabilityId: longPressCapability.id,
   visual: { gesture: 'longPress', point: [0.5, 0.9], durationMs: 5000 },
-}), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID' && /mutually exclusive/.test(error.message));
+  decision: { purpose: '验证互斥校验', expectationRefs: [] },
+}), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID'
+  && error.issues?.some((issue) => issue.code === 'EXACTLY_ONE_REQUIRED'));
 assert.throws(() => validateLongPressTiming(5000, { duringActionAtMs: 5000 }),
   (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID');
 assert.doesNotThrow(() => validateRuntimeRequest({
@@ -126,7 +131,8 @@ assert.throws(() => validateRuntimeRequest({
 assert.throws(() => validateRuntimeRequest({
   operation: 'inspectVisual',
   decision: { purpose: '记录视觉检查', expectationRefs: ['E1'], observation: '页面正常' },
-}), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID' && /basedOnSceneId/.test(error.message));
+}), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID'
+  && error.issues?.some((issue) => issue.fieldPath === 'basedOnSceneId'));
 const adapterArgs = actionAdapterArgs({
   platform: 'harmony', deviceId: 'device-1', appId: 'com.example.app', entry: 'EntryAbility',
 }, { type: 'longPress', x: 500, y: 1800, durationMs: 5000 }, {

@@ -31,15 +31,22 @@ function completionPaths(execDir) {
 }
 
 function validateCompletionBinding(value, expected) {
-  if (![3, 4].includes(value?.schemaVersion)) throw new Error('Execution completion protocol is unsupported');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw contractError('FORMAT_UNSUPPORTED', 'Execution completion format is unsupported');
+  }
+  const allowed = new Set([
+    'executionId', 'batchId', 'caseKey', 'platform', 'completionSource', 'runtimeSha', 'adapterSha',
+    'contractSha', 'batchContractSha', 'validationProfileSha', 'verdict', 'executionStatus',
+    'runtimeCompleted', 'resultSha256', 'metricsSha256', 'artifactManifestSha256',
+  ]);
+  if (Object.keys(value).some((field) => !allowed.has(field))) {
+    throw contractError('FORMAT_UNSUPPORTED', 'Execution completion format is unsupported');
+  }
   for (const field of ['executionId', 'batchId', 'caseKey', 'platform', 'completionSource', 'runtimeSha', 'adapterSha', 'contractSha', 'batchContractSha']) {
     if ((value[field] || null) !== (expected[field] || null)) throw new Error(`Execution completion ${field} mismatch`);
   }
-  if (value.metricsSchemaVersion !== 3) throw new Error('Execution completion artifact schema mismatch');
-  if (value.schemaVersion === 4) {
-    if (!/^validation-profile-[0-9a-f]{24}$/.test(value.validationProfileSha || '')) throw new Error('Execution completion validationProfileSha is invalid');
-    if (value.validationProfileSha !== expected.validationProfileSha) throw new Error('Execution completion validationProfileSha mismatch');
-  }
+  if (!/^validation-profile-[0-9a-f]{24}$/.test(value.validationProfileSha || '')) throw new Error('Execution completion validationProfileSha is invalid');
+  if (value.validationProfileSha !== expected.validationProfileSha) throw new Error('Execution completion validationProfileSha mismatch');
   if (value.completionSource !== 'framework' || value.runtimeCompleted !== true) throw new Error('Case Runtime completion state is invalid');
   if (!['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(value.verdict)) throw new Error('Execution completion verdict is invalid');
   if (!['COMPLETED', 'TECHNICALLY_BLOCKED'].includes(value.executionStatus)) throw new Error('Execution completion executionStatus is invalid');
@@ -54,18 +61,17 @@ function validateExecutionSnapshotBindings(execDir, execution, snapshot) {
     validateCaseContract(snapshot);
     const sourceText = fs.readFileSync(path.join(execDir, 'source.snapshot.md'), 'utf8');
     const caseSpec = readJson(path.join(execDir, 'case-spec.snapshot.json'), null);
-    const caseDefinition = execution.schemaVersion === 11
-      ? readJson(path.join(execDir, 'case-definition.snapshot.json'), null) : null;
+    const caseDefinition = readJson(path.join(execDir, 'case-definition.snapshot.json'), null);
     const binding = readJson(path.join(execDir, 'binding.snapshot.json'), null);
     validateCaseSpec(caseSpec, { sourceText, sourceSha: execution.sourceSha });
-    if (execution.schemaVersion === 11) validateCaseDefinition(caseDefinition, { sourceText, caseKey: snapshot.identity.caseKey });
+    validateCaseDefinition(caseDefinition, { sourceText, caseKey: snapshot.identity.caseKey });
     if (snapshot.identity.caseKey == null
       || snapshot.identity.sourceSha !== sourceSha(sourceText)
       || snapshot.identity.sourceSha !== execution.sourceSha
       || snapshot.contractSha !== execution.contractSha
       || caseSpec.specSha !== execution.caseSpecSha
-      || (execution.schemaVersion === 11 && (caseDefinition.definitionId !== execution.definitionId
-        || caseDefinition.definitionSha !== execution.definitionSha))
+      || caseDefinition.definitionId !== execution.definitionId
+      || caseDefinition.definitionSha !== execution.definitionSha
       || binding?.bindingSha !== execution.targetBindingSha
       || binding?.batchContractSha !== execution.batchContractSha
       || canonicalJson(binding?.binding) !== canonicalJson(execution.targetBinding)) {
@@ -79,7 +85,7 @@ function validateExecutionSnapshotBindings(execDir, execution, snapshot) {
 function validatePublishedCompletion(execDir, completion, artifacts) {
   const paths = completionPaths(execDir);
   const { execution, result, metrics, snapshot } = artifacts;
-  if (![10, 11].includes(execution?.schemaVersion) || !execution.finalized || !result || !metrics || !snapshot) {
+  if (execution?.schemaVersion !== 11 || !execution.finalized || !result || !metrics || !snapshot) {
     throw new Error('Execution completion artifacts are incomplete or unsupported');
   }
   validateExecutionSnapshotBindings(execDir, execution, snapshot);
@@ -95,12 +101,7 @@ function validatePublishedCompletion(execDir, completion, artifacts) {
     batchContractSha: execution.batchContractSha,
     validationProfileSha: execution.validationProfileSha,
   });
-  if ((execution.schemaVersion === 11) !== (completion.schemaVersion === 4)) {
-    throw new Error('Execution completion protocol does not match execution schema');
-  }
-  if (execution.schemaVersion === 11) {
-    require('../execution/contracts/validation-profile-contract').loadValidationProfile(execDir, execution);
-  }
+  require('../execution/contracts/validation-profile-contract').loadValidationProfile(execDir, execution);
   if (metrics.schemaVersion !== 3 || metrics.executionId !== execution.executionId) {
     throw new Error('Execution completion artifact binding mismatch');
   }

@@ -1,37 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 platform=""
 args=()
+
+cli_error() {
+  node "$script_dir/../lib/coordinator-interface-contract.js" --error-entrypoint scripts/probe-env.sh --message "$1" >&2
+  exit 2
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --platform) platform="${2:-}"; shift 2 ;;
     --app|--bundle|--entry|--ability)
-      cat >&2 <<'EOF'
-probe-env 只探测平台/设备能力，不接收 --app/--entry/--bundle/--ability。
-目标 App 环境确认请在用户确认后写入 environment confirmation binding；
-目标 App 当前前台状态由 Case Runtime 的 Scene 观察采集。
-EOF
-      exit 2
+      cli_error "probe-env 只探测平台/设备能力，不接收 $1；目标 App 写入 environment confirmation binding"
       ;;
     *) args+=("$1"); shift ;;
   esac
 done
 
 if [[ -z "$platform" ]]; then
-  echo "probe-env 需要显式传 --platform <harmony|android|ios>，不能默认选择平台。" >&2
-  exit 2
+  cli_error "probe-env 需要显式传 --platform <harmony|android|ios>，不能默认选择平台"
 fi
 
-adapter="$(cd "$(dirname "$0")" && pwd)/adapters/${platform}/probe.sh"
+adapter="$script_dir/adapters/${platform}/probe.sh"
 if [[ ! -x "$adapter" ]]; then
-  echo "未找到平台探测适配器: ${platform}" >&2
-  exit 2
+  cli_error "无效 --platform 或未找到平台探测适配器: ${platform}"
 fi
 
-if [[ ${#args[@]} -gt 0 ]]; then
-  exec "$adapter" "${args[@]}"
-else
-  exec "$adapter"
+error_file="$(mktemp "${TMPDIR:-/tmp}/mavt-probe-cli.XXXXXX")"
+trap 'rm -f "$error_file"' EXIT
+set +e
+"$adapter" "${args[@]}" 2>"$error_file"
+status=$?
+set -e
+if [[ $status -eq 2 ]]; then
+  cli_error "$(tr '\n' ' ' < "$error_file")"
 fi
+cat "$error_file" >&2
+exit "$status"

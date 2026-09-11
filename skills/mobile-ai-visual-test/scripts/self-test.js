@@ -33,6 +33,9 @@ const suites = Object.freeze({
   resultMatrix: 'tests/result-matrix.test.js',
   warmSession: 'tests/warm-session-current.test.js',
   boundaries: 'tests/architecture-boundaries.test.js',
+  agentCapabilityContract: 'tests/agent-capability-contract.test.js',
+  agentFacingCaseRuntime: 'tests/agent-facing-case-runtime.test.js',
+  coordinatorAgentFacing: 'tests/coordinator-agent-facing.test.js',
   entrypoints: 'tests/formal-entrypoints.test.js',
 });
 

@@ -6,24 +6,30 @@ const path = require('path');
 const {
   renderIndexForRoot,
 } = require('./report-service');
-const { parseCliArgsOrExit } = require('../lib/cli-args');
 const { assertWorkspace } = require('../lib/workspace');
 
 function usage() {
-  console.error('Usage: render-index.js [workspace-cwd]');
-  process.exit(2);
+  const error = new Error('REPORT_INDEX_CLI_INVALID: expected at most one workspace path');
+  error.code = 'REPORT_INDEX_CLI_INVALID';
+  error.exitCode = 2;
+  throw error;
 }
 
-const parsedArgs = parseCliArgsOrExit(process.argv.slice(2), {
-  context: 'render-index.js',
-  maxPositionals: 1,
-});
-const input = parsedArgs.positionals[0] ? path.resolve(parsedArgs.positionals[0]) : process.cwd();
-const rootDir = assertWorkspace(input).root;
-const casesRoot = path.join(rootDir, 'cases');
+function main(args = process.argv.slice(2)) {
+  if (args.length > 1 || args.some((argument) => argument.startsWith('--'))) usage();
+  const input = args[0] ? path.resolve(args[0]) : process.cwd();
+  const rootDir = assertWorkspace(input).root;
+  const casesRoot = path.join(rootDir, 'cases');
 
-if (!fs.existsSync(casesRoot)) {
-  usage();
+  if (!fs.existsSync(casesRoot)) usage();
+
+  const report = renderIndexForRoot(rootDir);
+  console.log(report);
+  return report;
 }
 
-console.log(renderIndexForRoot(rootDir));
+if (require.main === module) {
+  try { main(); } catch (error) { process.stderr.write(`${error.message || error}\n`); process.exit(error.exitCode || 2); }
+}
+
+module.exports = { main };

@@ -74,13 +74,13 @@ expectCode(() => validateCaseResult({ ...result, checks: [{ ...result.checks[0],
 
 for (const request of [
   { operation: 'observe' },
-  { operation: 'knowledge', query: '语音按钮未显示' },
-  { operation: 'knowledge', query: '入口未显示', context: { page: '创作页', operation: '横向滑动入口' } },
-  { operation: 'recover', reason: '恢复目标 App' },
+  { operation: 'knowledge', basedOnSceneId: 'scene-0001', query: '语音按钮未显示' },
+  { operation: 'knowledge', basedOnSceneId: 'scene-0001', query: '入口未显示', context: { page: '创作页', operation: '横向滑动入口' } },
+  { operation: 'recover', basedOnSceneId: 'scene-0001', reason: '恢复目标 App' },
   { operation: 'status' },
   { operation: 'prepare', preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' } },
-  { operation: 'act', capabilityId: 'scene-0001:tap:el-1', decision: { purpose: '进入目标页', expectationRefs: ['E1'] } },
-  { operation: 'finish', result },
+  { operation: 'act', basedOnSceneId: 'scene-0001', capabilityId: 'scene-0001:tap:el-1', decision: { purpose: '进入目标页', expectationRefs: ['E1'] } },
+  { operation: 'finish', basedOnSceneId: 'scene-0002', result, decision: { purpose: '保存结论', expectationRefs: ['E1'] } },
 ]) assert.doesNotThrow(() => validateRuntimeRequest(request));
 expectCode(() => validateRuntimeRequest({ operation: 'act' }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'unknown' }), 'CASE_RUNTIME_REQUEST_INVALID');
@@ -89,7 +89,23 @@ expectCode(() => validateRuntimeRequest({ operation: 'observe', caseContext: {} 
 expectCode(() => validateRuntimeRequest({ operation: 'knowledge', query: '异常', context: { app: 'com.example.other' } }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'act', capabilityId: 'scene-0001:tap:el-1', intent: 'legacy' }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({
-  operation: 'act', capabilityId: 'scene-0001:tap:el-1', decision: { purpose: '进入目标页', expectationRefs: [], extra: true },
+  operation: 'act', basedOnSceneId: 'scene-0001', capabilityId: 'scene-0001:tap:el-1',
+  decision: { purpose: '进入目标页', expectationRefs: [], extra: true },
 }), 'CASE_NARRATIVE_INVALID');
+
+assert.throws(() => validateRuntimeRequest({
+  operation: 'recover',
+  basedOnSceneId: '',
+  reason: 42,
+  unexpected: true,
+}), (error) => {
+  assert.strictEqual(error.code, 'CASE_RUNTIME_REQUEST_INVALID');
+  assert.deepStrictEqual(error.issues.map((issue) => issue.fieldPath).sort(), [
+    'basedOnSceneId',
+    'reason',
+    'unexpected',
+  ]);
+  return true;
+});
 
 console.log('contract tests passed');

@@ -51,9 +51,8 @@ function createValidationProfile() {
 }
 
 function loadValidationProfile(execDir, execution) {
-  if (execution?.schemaVersion === 10) return null;
   if (execution?.schemaVersion !== 11) {
-    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
+    throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
   const file = path.join(execDir, PROFILE_FILE);
   if (!fs.existsSync(file)) throw contractError('VALIDATION_PROFILE_MISSING', 'validation profile snapshot is missing');

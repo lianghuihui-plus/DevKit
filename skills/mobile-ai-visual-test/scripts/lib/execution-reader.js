@@ -6,11 +6,10 @@ const { buildContract } = require('../build-agent-contract');
 const { validatePublishedCompletion } = require('./completion-contract');
 const { referencedTechnicalFacts } = require('./technical-facts');
 const { deriveExecutionTiming } = require('./execution-timing');
-const executionV10 = require('./readers/execution-v10');
-const executionV11 = require('./readers/execution-v11');
+const currentExecution = require('./readers/current-execution');
 
 const currentContracts = new Map();
-const executionReaders = Object.freeze([executionV10, executionV11]);
+const executionReaders = Object.freeze([currentExecution]);
 
 function readJson(file, fallback = null) {
   if (!fs.existsSync(file)) return fallback;
@@ -34,7 +33,7 @@ function assertExecutionSchema(execution) {
   const reader = executionReaders.find((candidate) => candidate.supports(execution));
   if (reader) return reader.assertSchema(execution);
   const error = new Error(`unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
-  error.code = 'EXECUTION_SCHEMA_UNSUPPORTED';
+  error.code = 'FORMAT_UNSUPPORTED';
   throw error;
 }
 

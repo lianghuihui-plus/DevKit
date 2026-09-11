@@ -4,7 +4,7 @@ const { validateRuntimeRequest } = require('./contract');
 const actionService = require('./action-service');
 const knowledgeService = require('./knowledge-service');
 const narrativeService = require('./narrative-service');
-const { RUNTIME_OPERATIONS } = require('./runtime-operation-contract');
+const { requestCorrection } = require('./runtime-operation-contract');
 const resultService = require('./result-service');
 const sceneService = require('./scene-service');
 const store = require('./store');
@@ -19,13 +19,9 @@ function knowledgeInvestigationStatus(execDir) {
     .map((event) => [event.queryId, event]));
   return {
     available: runtime?.broker?.allowedOperations?.includes('knowledge') === true,
-    requiredBeforeNegativeConclusion: [3, 4].includes(runtime?.broker?.schemaVersion),
+    requiredBeforeNegativeConclusion: true,
     pendingReviews: events.filter((event) => event.type === 'knowledgeQueried' && !reviews.has(event.queryId))
-      .map((event) => ({
-        queryId: event.queryId,
-        candidateCount: event.candidateCount || 0,
-        expectationRefs: event.expectationRefs || [],
-      })),
+      .map((event) => require('./knowledge-review').projectPendingKnowledgeReview(event)),
     reviewedExpectationRefs: [...new Set([...reviews.values()].flatMap((event) => event.expectationRefs || []))].sort(),
   };
 }
@@ -86,7 +82,7 @@ function timeBudget(execDir, execution, now, context = {}) {
 }
 
 function assertSceneBasis(execDir, request) {
-  if (!['act', 'knowledge', 'recover', 'finish'].includes(request.operation)) return;
+  if (!['act', 'knowledge', 'reviewKnowledge', 'recover', 'finish'].includes(request.operation)) return;
   const scene = store.readCurrentScene(execDir);
   if (!scene) return;
   if (!request.basedOnSceneId) {
@@ -140,7 +136,7 @@ function execute(execDir, request, options = {}) {
       code: error.code || 'CASE_RUNTIME_REQUEST_INVALID',
       message: error.message || String(error),
       scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
-      expected: { operation: RUNTIME_OPERATIONS.join(' | ') },
+      ...requestCorrection(operation, error),
     };
     if (invocation) telemetry.endInvocation(execDir, invocation, response, options);
     return response;
@@ -212,6 +208,11 @@ function execute(execDir, request, options = {}) {
       else if (request.operation === 'inspectVisual') response = require('./visual-inspection-service').inspectVisual(execDir, enrichedRequest, options);
       else if (request.operation === 'inspectScene') response = require('./scene-inspection-service').inspectScene(execDir, enrichedRequest, options);
       else if (request.operation === 'knowledge') response = knowledgeService.knowledge(execDir, enrichedRequest, options);
+      else if (request.operation === 'reviewKnowledge') response = {
+        status: 'KNOWLEDGE_REVIEWED',
+        queryId: enrichedRequest.decision.knowledgeReview.queryId,
+        scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
+      };
       else if (request.operation === 'recover') response = require('./recovery-service').recover(execDir, enrichedRequest, runtimeOptions);
       return {
         ...response,
@@ -225,13 +226,17 @@ function execute(execDir, request, options = {}) {
       };
     }, options);
   } catch (error) {
-    const requestInvalid = ['CASE_RUNTIME_REQUEST_INVALID', 'CASE_NARRATIVE_INVALID', 'ACTION_CONTRACT_INVALID'].includes(error.code);
+    const requestInvalid = [
+      'CASE_RUNTIME_REQUEST_INVALID', 'CASE_RUNTIME_VISUAL_ACTION_INVALID',
+      'CASE_NARRATIVE_INVALID', 'CASE_RESULT_INVALID', 'ACTION_CONTRACT_INVALID',
+    ].includes(error.code);
     response = requestInvalid
       ? {
         status: 'REQUEST_INVALID',
         code: error.code,
         message: error.message,
         scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
+        ...requestCorrection(operation, error),
       }
       : error.code === 'CASE_RUNTIME_SCENE_STALE'
       ? {

@@ -23,7 +23,15 @@ const invalid = telemetry.beginInvocation(execDir, 'act', {
   operation: 'act', input: { text: 'invalid secret' }, result: { verdict: 'FAIL', summary: 'invalid private' },
 }, { now: '2026-08-20T10:00:00.800Z', telemetryClock: clock });
 nowMs = 1800;
-telemetry.endInvocation(execDir, invalid, { status: 'REQUEST_INVALID', code: 'CASE_RUNTIME_REQUEST_INVALID' }, {
+telemetry.endInvocation(execDir, invalid, {
+  status: 'REQUEST_INVALID',
+  code: 'CASE_RUNTIME_REQUEST_INVALID',
+  issues: [
+    { fieldPath: 'input.text', expected: 'non-empty string', code: 'TYPE_MISMATCH', received: 'invalid secret' },
+    { fieldPath: 'input.text', expected: 'non-empty string', code: 'TYPE_MISMATCH', received: 'invalid secret' },
+    { fieldPath: 'decision', expected: 'object', code: 'REQUIRED' },
+  ],
+}, {
   now: '2026-08-20T10:00:00.900Z', telemetryClock: clock,
 });
 
@@ -65,6 +73,11 @@ assert.strictEqual(invocationText.includes('invalid secret'), false);
 assert.strictEqual(invocationText.includes('invalid private'), false);
 assert.strictEqual(invocationText.includes('"verdict":"PASS"'), true);
 assert.strictEqual(invocationText.includes('CASE_RUNTIME_REQUEST_INVALID'), true);
+const invocationEntries = invocationText.trim().split(/\r?\n/).map(JSON.parse);
+const invalidEnd = invocationEntries.find((entry) => entry.invocationId === invalid.invocationId && entry.phase === 'END');
+assert.deepStrictEqual(invalidEnd.issueCodes, ['TYPE_MISMATCH', 'REQUIRED']);
+assert.deepStrictEqual(invalidEnd.fieldPaths, ['input.text', 'decision']);
+assert.strictEqual(invocationText.includes('received'), false);
 
 const resultMetrics = metrics({
   executionId: 'execution-investigation-metrics',
@@ -170,7 +183,7 @@ assert.deepStrictEqual(deriveExecutionTiming({
   },
 });
 assert.deepStrictEqual(deriveExecutionTiming({ startedAt: '2026-08-20T10:00:01.000Z' }, { elapsedMs: 321 }), {
-  durationBasis: 'EXECUTION_LEGACY',
+  durationBasis: 'EXECUTION_TOTAL',
   startedAt: '2026-08-20T10:00:01.000Z',
   durationMs: 321,
   phases: {

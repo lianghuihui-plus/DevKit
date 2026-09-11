@@ -4,6 +4,7 @@
 const path = require('path');
 const { assertWorkspace } = require('./lib/workspace');
 const { validateKnowledgeRoots } = require('./lib/knowledge-query');
+const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function parseArgs(argv) {
   if (argv[0] !== 'validate') throw new Error('KNOWLEDGE_CLI_INVALID: command must be validate');
@@ -30,7 +31,7 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) { process.stderr.write(`${error.message || error}\n`); process.exit(error.exitCode || 2); }
+  try { main(); } catch (error) { writeCoordinatorCliError(error, 'scripts/knowledge.js', process.argv[2]); process.exit(error.exitCode || 2); }
 }
 
 module.exports = { main, parseArgs, validateWorkspaceKnowledge };

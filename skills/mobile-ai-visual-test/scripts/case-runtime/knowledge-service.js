@@ -88,7 +88,8 @@ function knowledge(execDir, request, options = {}) {
       ...(hintedPage || hintedOperation ? { hints: { ...(hintedPage ? { page: hintedPage } : {}), ...(hintedOperation ? { operation: hintedOperation } : {}) } } : {}),
     },
   }, options);
-  if (!candidates.length) require('./knowledge-review').recordNoMatch(execDir, queryEvent, options);
+  const knowledgeReview = require('./knowledge-review');
+  if (!candidates.length) knowledgeReview.recordNoMatch(execDir, queryEvent, options);
   return {
     status: 'KNOWLEDGE',
     queryId,
@@ -101,6 +102,7 @@ function knowledge(execDir, request, options = {}) {
       ...(hintedPage || hintedOperation ? { hints: { ...(hintedPage ? { page: hintedPage } : {}), ...(hintedOperation ? { operation: hintedOperation } : {}) } } : {}),
     },
     candidates,
+    requiredReview: knowledgeReview.buildKnowledgeReviewGuidance(queryId, candidates),
     truncated: result.truncated,
     filterDiagnostics: result.filterDiagnostics,
   };

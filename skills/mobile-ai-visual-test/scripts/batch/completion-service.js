@@ -45,7 +45,7 @@ function commitCurrentCase(options) {
     }
     const execDir = path.join(caseRuntimeDir(item.caseDir, loaded.contract.binding.platform), 'executions', item.executionId);
     const execution = readJson(path.join(execDir, 'execution.json'));
-    if (![10, 11].includes(execution?.schemaVersion)) throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
+    if (execution?.schemaVersion !== 11) throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
     if (!execution?.finalized) throw contractError('EXECUTION_NOT_FINALIZED', 'current execution must be finalized before commit');
     if (execution.batchContractSha !== state.contractSha || execution.runtimeSha !== state.runtimeSha
       || execution.adapterSha !== state.adapterSha) {

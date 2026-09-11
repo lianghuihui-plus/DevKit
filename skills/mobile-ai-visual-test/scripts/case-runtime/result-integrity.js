@@ -53,8 +53,8 @@ function validateVerdict(result, events) {
 
 function validateExpectationCoverage(execDir, result, events, suppliedExecution = null) {
   const execution = suppliedExecution || readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || ![10, 11].includes(execution.schemaVersion)) {
-    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (!execution || execution.schemaVersion !== 11) {
+    throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
 
   const sourceText = fs.readFileSync(path.join(execDir, 'source.snapshot.md'), 'utf8');
@@ -84,10 +84,9 @@ function investigationConclusion(conclusions) {
   return null;
 }
 
-function validateKnowledgeClosure(result, events, execution = null, broker = null) {
+function validateKnowledgeClosure(result, events, execution = null) {
   const { queries, reviews, applicableByExpectation } = buildKnowledgeIndex(events);
   const missing = [];
-  const investigationRequired = broker?.schemaVersion === 3;
   const investigationByExpectation = {};
   const requiredExpectationRefs = [];
   const completedExpectationRefs = [];
@@ -133,7 +132,7 @@ function validateKnowledgeClosure(result, events, execution = null, broker = nul
         });
       }
     }
-    const requiresInvestigation = investigationRequired && (
+    const requiresInvestigation = (
       check.status === 'FAIL'
       || check.status === 'INCONCLUSIVE'
       || (check.status === 'BLOCKED' && validTechnicalRefs.length === 0)
@@ -211,11 +210,7 @@ function validateSearchAbsence(execDir, result, execution, expectationCoverage =
 }
 
 function validateVisualInspectionCoverage(execDir, result, events, scenesById, validationProfile = null) {
-  const runtime = readJson(path.join(execDir, 'runtime.json'), null);
-  const required = validationProfile
-    ? validationProfile.visualInspectionPolicy === 'REQUIRED_FOR_REFERENCED_SCENES'
-    : [2, 3].includes(runtime?.broker?.schemaVersion)
-      && runtime.broker.allowedOperations?.includes('inspectVisual') === true;
+  const required = validationProfile?.visualInspectionPolicy === 'REQUIRED_FOR_REFERENCED_SCENES';
   if (!required) return { required: false, inspectedSceneRefs: [] };
   const inspections = events.filter((event) => event.type === 'visualInspected');
   const inspected = new Set();
@@ -287,8 +282,8 @@ function validateScene(execDir, sceneId, event, files, options = {}) {
 
 function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || ![10, 11].includes(execution.schemaVersion)) {
-    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (!execution || execution.schemaVersion !== 11) {
+    throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
   const result = suppliedResult || readJson(path.join(execDir, 'result.json'), null);
   validateCaseResult(result);
@@ -296,9 +291,7 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   validateVerdict(result, events);
   const expectationCoverage = validateExpectationCoverage(execDir, result, events, execution);
   const validationProfile = loadValidationProfile(execDir, execution);
-  const runtime = validationProfile ? null : readJson(path.join(execDir, 'runtime.json'), null);
-  const knowledgeCoverage = validateKnowledgeClosure(result, events, execution,
-    validationProfile?.knowledgeClosurePolicy === 'NEGATIVE_CHECKS_V1' ? { schemaVersion: 3 } : runtime?.broker || null);
+  const knowledgeCoverage = validateKnowledgeClosure(result, events, execution);
   const searchCoverage = validateSearchAbsence(execDir, result, execution, expectationCoverage);
   const sceneEvents = events.filter((event) => event.type === 'sceneObserved');
   const byScene = new Map(sceneEvents.map((event) => [event.sceneId, event]));
@@ -328,19 +321,6 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
     files.add(expectedRef);
     if (evidence.screenshot?.ref) files.add(evidence.screenshot.ref);
     if (evidence.annotatedScreenshotRef) files.add(evidence.annotatedScreenshotRef);
-  }
-  // Schema v7 executions created before spatial evidence remain publishable.
-  for (const event of events.filter((entry) => entry.type === 'actionCompleted'
-    && !entry.spatialEvidenceRef && entry.coordinateAudit?.overlayRef)) {
-    const legacyRef = `coordinate-audits/${event.operationId}.svg`;
-    if (event.coordinateAudit.overlayRef !== legacyRef) {
-      throw contractError('ACTION_COORDINATE_AUDIT_INVALID', `coordinate overlay does not match operation ${event.operationId}`);
-    }
-    const overlay = resolveArtifact(execDir, legacyRef);
-    if (!fs.existsSync(overlay) || !fs.statSync(overlay).isFile()) {
-      throw contractError('ACTION_COORDINATE_AUDIT_MISSING', `coordinate overlay is missing: ${legacyRef}`);
-    }
-    files.add(legacyRef);
   }
   for (const event of events.filter((entry) => entry.type === 'actionCompleted' && entry.duringActionObservation?.screenshotRef)) {
     const ref = event.duringActionObservation.screenshotRef;

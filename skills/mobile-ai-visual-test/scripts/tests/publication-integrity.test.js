@@ -9,7 +9,7 @@ const {
   buildExecutionArtifactManifest,
   validateExecutionArtifactManifest,
 } = require('../lib/execution-artifact-manifest');
-const { completionPaths, sha256File, validatePublishedCompletion } = require('../lib/completion-contract');
+const { completionPaths, sha256File, validateCompletionBinding, validatePublishedCompletion } = require('../lib/completion-contract');
 const { readPublicationState, recordPublicationAttempt } = require('../report/publication-state');
 const { refreshBatchIndex } = require('../report/report-service');
 const { writeCaseReports } = require('../report/report-service');
@@ -77,7 +77,6 @@ const mismatchedResult = JSON.parse(fs.readFileSync(mismatchedPaths.result, 'utf
 const mismatchedMetrics = JSON.parse(fs.readFileSync(mismatchedPaths.metrics, 'utf8'));
 const mismatchedSnapshot = JSON.parse(fs.readFileSync(mismatchedPaths.snapshot, 'utf8'));
 const mismatchedCompletion = {
-  schemaVersion: 3,
   executionId: mismatchedExecution.executionId,
   batchId: mismatchedExecution.batchId,
   caseKey: mismatchedSnapshot.identity.caseKey,
@@ -87,7 +86,7 @@ const mismatchedCompletion = {
   adapterSha: mismatchedExecution.adapterSha,
   contractSha: mismatchedExecution.contractSha,
   batchContractSha: mismatchedExecution.batchContractSha,
-  metricsSchemaVersion: 3,
+  validationProfileSha: mismatchedExecution.validationProfileSha,
   verdict: mismatchedResult.verdict,
   executionStatus: mismatchedMetrics.executionStatus,
   runtimeCompleted: true,
@@ -95,6 +94,7 @@ const mismatchedCompletion = {
   metricsSha256: sha256File(mismatchedPaths.metrics),
   artifactManifestSha256: sha256File(mismatchedPaths.artifactManifest),
 };
+expectCode(() => validateCompletionBinding({ ...mismatchedCompletion, schemaVersion: 4 }, {}), 'FORMAT_UNSUPPORTED');
 assert.ok(mismatchedManifest.files.some((entry) => entry.path === 'binding.snapshot.json'));
 expectCode(() => validatePublishedCompletion(mismatchedBinding.execDir, mismatchedCompletion, {
   execution: mismatchedExecution,

@@ -113,7 +113,7 @@ function projectSceneSummary(scene) {
     },
     visual: scene.visual,
     previousAction: scene.previousAction,
-    inspectScene: { operation: 'inspectScene', views: ['ELEMENTS', 'CAPABILITIES', 'LAYOUT'] },
+    inspectScene: { operation: 'inspectScene' },
   };
 }
 

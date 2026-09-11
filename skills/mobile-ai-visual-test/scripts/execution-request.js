@@ -6,6 +6,7 @@ const {
   createExecutionRequest,
   loadExecutionRequest,
 } = require('./lib/run-control');
+const { parseCoordinatorJson, writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function fail(message) {
   const error = new Error(`EXECUTION_REQUEST_CLI_INVALID: ${message}`);
@@ -28,13 +29,12 @@ function parseArgs(argv) {
 }
 
 function targets(value) {
-  if (!value) fail('--targets-json is required');
-  try { return JSON.parse(value); } catch (error) { fail(`--targets-json is invalid JSON: ${error.message}`); }
+  return parseCoordinatorJson(value, 'scripts/execution-request.js', 'create', 'targetsJson');
 }
 
 function jsonOption(value, flag) {
-  if (!value) return undefined;
-  try { return JSON.parse(value); } catch (error) { fail(`${flag} is invalid JSON: ${error.message}`); }
+  return parseCoordinatorJson(value, 'scripts/execution-request.js', 'create', flag
+    .slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), { required: false });
 }
 
 function execute(options) {
@@ -56,7 +56,7 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) { process.stderr.write(`${error.message || error}\n`); process.exit(error.exitCode || 2); }
+  try { main(); } catch (error) { writeCoordinatorCliError(error, 'scripts/execution-request.js', process.argv[2]); process.exit(error.exitCode || 2); }
 }
 
 module.exports = { execute, main, parseArgs };

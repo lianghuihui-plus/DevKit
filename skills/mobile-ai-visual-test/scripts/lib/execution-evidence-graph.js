@@ -6,8 +6,8 @@ const { readJson } = require('./execution-lifecycle');
 
 function validateExecutionEvidenceGraph(execDir, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (![10, 11].includes(execution?.schemaVersion)) {
-    throw contractError('EXECUTION_SCHEMA_UNSUPPORTED', 'This execution was created by an unsupported protocol and must be run again');
+  if (execution?.schemaVersion !== 11) {
+    throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
   const graph = require('../case-runtime/result-integrity').validateCaseRuntimeEvidenceGraph(execDir, null, options);
   return { ...graph, files: graph.files };

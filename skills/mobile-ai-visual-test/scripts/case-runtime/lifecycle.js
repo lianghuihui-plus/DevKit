@@ -22,7 +22,10 @@ const runtimeCore = require('./runtime-core');
 const store = require('./store');
 const { createValidationProfile, PROFILE_FILE } = require('../execution/contracts/validation-profile-contract');
 const { validateCaseDefinition } = require('../execution/contracts/case-definition-contract');
-const { AGENT_OPERATIONS, isSupportedBroker } = require('./runtime-operation-contract');
+const {
+  AGENT_OPERATIONS,
+  isSupportedBroker,
+} = require('./runtime-operation-contract');
 
 const EXECUTION_SCHEMA_VERSION = 11;
 
@@ -35,22 +38,31 @@ function createBoundClient(execDir) {
   return entry;
 }
 
+function createBoundAgentFacingClient(execDir) {
+  const entry = path.join(execDir, 'agent-facing-client.js');
+  const client = path.resolve(__dirname, 'agent-facing-client.js');
+  const content = `#!/usr/bin/env node\n'use strict';\nrequire(${JSON.stringify(client)}).main(process.argv.slice(2), { execDir: ${JSON.stringify(path.resolve(execDir))} });\n`;
+  atomicWrite(entry, content);
+  fs.chmodSync(entry, 0o755);
+  return entry;
+}
+
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
 function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText, runtime, scene = null, dispatchSequence = 1) {
   const preparation = runtimeCore.runtimeStatus(executionDir).preparation;
-  const allowed = runtime.broker.allowedOperations;
   const dispatchBound = Boolean(execution.batchId && runtime.sessionRef?.statePath);
   const requestPath = dispatchBound
-    ? path.join(executionDir, `runtime-request.dispatch-${dispatchSequence}.json`)
-    : runtime.requestPath;
+    ? path.join(executionDir, `agent-request.dispatch-${dispatchSequence}.json`)
+    : runtime.agentFacing.requestPath;
   const command = dispatchBound
-    ? `${shellQuote(runtime.entry)} --dispatch-sequence ${dispatchSequence}`
-    : shellQuote(runtime.entry);
+    ? `${shellQuote(runtime.agentFacing.entry)} --dispatch-sequence ${dispatchSequence}`
+    : shellQuote(runtime.agentFacing.entry);
+  const fullScene = store.readCurrentScene(executionDir) || scene;
+  const agentContract = require('./agent-facing-contract');
   return {
-    schemaVersion: 2,
     case: {
       caseNo: caseJson.identity.caseNo || caseJson.identity.caseKey,
       caseKey: caseJson.identity.caseKey,
@@ -67,21 +79,18 @@ function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText,
         ? 'SATISFIED' : preparation?.status || 'PENDING',
     },
     runtime: {
+      interfaceKind: agentContract.AGENT_FACING_INTERFACE_KIND,
       command,
       requestPath,
-      allowedOperations: runtime.broker.allowedOperations,
-      input: 'Write one RuntimeRequest JSON object to requestPath, then run command without arguments.',
+      capabilities: agentContract.capabilityCards({ scene: fullScene, caseSpec }),
+      input: 'Write one simplified request JSON to requestPath, then run command without arguments.',
     },
     investigationCapabilities: {
-      visual: { available: allowed.includes('inspectVisual'), operation: 'inspectVisual' },
-      layout: { available: allowed.includes('inspectScene'), operation: 'inspectScene' },
-      knowledge: {
-        available: allowed.includes('knowledge'),
-        operation: 'knowledge',
-        requiredBeforeNegativeConclusion: [3, 4].includes(runtime.broker.schemaVersion),
-      },
+      visual: { available: true, capability: 'inspect', channel: 'visual' },
+      layout: { available: true, capability: 'inspect', channels: ['elements', 'capabilities', 'layout'] },
+      knowledge: { available: true, capability: 'knowledge', requiredBeforeNegativeConclusion: true },
     },
-    scene: require('./scene-service').projectSceneSummary(scene),
+    scene: agentContract.projectScene(fullScene, { caseSpec }),
   };
 }
 
@@ -103,9 +112,16 @@ function deriveCaseBrief(executionDir, dispatchSequence = 1) {
   const runtime = readJson(path.join(resolved, 'runtime.json'), null);
   const expectedEntry = path.join(resolved, 'runtime-client.js');
   const expectedRequestPath = path.join(resolved, 'runtime-request.json');
+  const expectedAgentEntry = path.join(resolved, 'agent-facing-client.js');
+  const expectedAgentRequestPath = path.join(resolved, 'agent-request.json');
+  const invalidAgentFacing = !runtime?.agentFacing || (
+    runtime.agentFacing.entry !== expectedAgentEntry
+    || runtime.agentFacing.requestPath !== expectedAgentRequestPath
+    || !fs.existsSync(expectedAgentEntry)
+  );
   if (!runtime || runtime.executionId !== execution.executionId || runtime.entry !== expectedEntry
     || runtime.requestPath !== expectedRequestPath || !fs.existsSync(expectedEntry)
-    || !isSupportedBroker(runtime.broker)) {
+    || invalidAgentFacing || !isSupportedBroker(runtime.broker)) {
     throw contractError('CASE_RUNTIME_BINDING_INVALID', 'Case Runtime client does not match the execution');
   }
   return buildCaseBrief(resolved, execution, caseJson, caseSpec, sourceText, runtime, store.readCurrentScene(resolved), dispatchSequence);
@@ -240,16 +256,20 @@ function createExecution(options) {
       });
       fs.renameSync(stagingDir, execDir);
       const entry = createBoundClient(execDir);
+      const agentFacingEntry = createBoundAgentFacingClient(execDir);
       writeJsonAtomic(path.join(execDir, 'runtime.json'), {
         schemaVersion: 1,
         executionId,
         status: 'READY',
         entry,
         requestPath: path.join(execDir, 'runtime-request.json'),
+        agentFacing: {
+          entry: agentFacingEntry,
+          requestPath: path.join(execDir, 'agent-request.json'),
+        },
         sessionRef: options.sessionRef || null,
         knowledgeRoots: (options.knowledgeRoots || []).map((root) => path.resolve(root)),
         broker: {
-          schemaVersion: 4,
           allowedOperations: AGENT_OPERATIONS,
         },
         boundAt: startedAt,
@@ -346,22 +366,31 @@ function buildContinuationBrief({ executionDir, reason }) {
   const narrative = require('./narrative-service').narrativeStatus(executionDir);
   const reviewed = new Set(events.filter((event) => event.type === 'knowledgeReviewed').map((event) => event.queryId));
   const pendingKnowledgeReviews = events.filter((event) => event.type === 'knowledgeQueried' && !reviewed.has(event.queryId))
-    .map((event) => ({ queryId: event.queryId, candidateCount: event.candidateCount, expectationRefs: event.expectationRefs || [] }));
+    .map((event) => require('./knowledge-review').projectPendingKnowledgeReview(event));
   const lastAction = events.filter((event) => ['actionCompleted', 'actionOutcomeUnknown'].includes(event.type)).at(-1) || null;
   const technical = require('../lib/technical-facts');
   const unresolvedTechnicalFacts = technical.technicalFacts(events)
     .filter((event) => technical.technicalFactState(event, events, execution).state === 'VALID')
     .map((event) => ({ technicalFactRef: event.technicalFactRef, code: event.code, message: event.message, expectationRefs: event.expectationRefs || [] }));
   const status = runtimeCore.runtimeStatus(executionDir);
+  const projectedPendingReviews = pendingKnowledgeReviews.map((pending) => ({
+    queryId: pending.queryId,
+    query: pending.query,
+    candidateCount: pending.candidateCount,
+    expectationRefs: pending.expectationRefs || [],
+    candidates: pending.candidates || [],
+    nextCall: { example: require('./agent-facing-translator').reviewExample(pending.requiredReview) },
+  }));
   return {
     ...initial,
-    schemaVersion: 2,
     mode: 'CONTINUATION',
     continuation: {
       reason: String(reason || 'native Agent handle is unavailable'),
       sequence,
     },
-    scene: require('./scene-service').projectSceneSummary(store.readCurrentScene(executionDir)),
+    scene: require('./agent-facing-contract').projectScene(store.readCurrentScene(executionDir), {
+      caseSpec: readJson(path.join(executionDir, 'case-spec.snapshot.json'), null),
+    }),
     resumeState: {
       executionStatus: execution.status,
       remainingMs: status.remainingMs,
@@ -371,7 +400,7 @@ function buildContinuationBrief({ executionDir, reason }) {
       latestPlan: narrative.latestPlan,
       lastAction,
       unresolvedTechnicalFacts,
-      pendingKnowledgeReviews,
+      pendingKnowledgeReviews: projectedPendingReviews,
     },
   };
 }

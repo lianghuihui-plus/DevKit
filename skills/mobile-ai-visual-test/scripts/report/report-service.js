@@ -78,7 +78,7 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
     endedAt: display.endedAt || '',
     updatedAt: display.endedAt || display.startedAt || '',
     durationMs: display.durationMs ?? null,
-    durationBasis: display.durationBasis || 'EXECUTION_LEGACY',
+    durationBasis: display.durationBasis || 'EXECUTION_TOTAL',
     phaseDurations: display.phaseDurations || null,
     reason: sourceCurrent ? display.summary || '' : '用例原文已更新，已有执行结果不再代表当前用例',
     failureCode: sourceCurrent ? display.failureCode || '' : 'CASE_SOURCE_CHANGED',

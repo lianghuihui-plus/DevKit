@@ -12,6 +12,46 @@ const store = require('./store');
 const ASSESSMENT_STATUSES = Object.freeze(['APPLICABLE', 'NOT_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT']);
 const REVIEW_CONCLUSIONS = Object.freeze(['APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT', 'NO_MATCH']);
 
+function buildKnowledgeReviewGuidance(queryId, candidates = []) {
+  if (!candidates.length) return null;
+  return {
+    fieldPath: 'decision.knowledgeReview',
+    required: true,
+    instruction: 'Assess every candidate, replace the template statuses and reasons with your actual judgment, and attach the review to the next Runtime request decision.',
+    template: {
+      queryId,
+      conclusion: 'NO_APPLICABLE',
+      assessments: candidates.map((candidate) => ({
+        entryId: candidate.entryId,
+        status: 'NOT_APPLICABLE',
+        reason: '<explain why this candidate is or is not applicable>',
+      })),
+    },
+    allowedConclusions: REVIEW_CONCLUSIONS.filter((item) => item !== 'NO_MATCH'),
+    allowedAssessmentStatuses: [...ASSESSMENT_STATUSES],
+  };
+}
+
+function projectPendingKnowledgeReview(queryEvent) {
+  const candidates = (queryEvent.candidates || []).map((candidate) => ({
+    entryId: candidate.entryId,
+    title: candidate.title,
+    snapshotRef: candidate.snapshotRef,
+    metadata: candidate.metadata,
+    expired: candidate.expired === true,
+    conflictsWith: candidate.conflictsWith || [],
+    snippets: candidate.snippets || [],
+  }));
+  return {
+    queryId: queryEvent.queryId,
+    query: queryEvent.query,
+    candidateCount: candidates.length,
+    expectationRefs: queryEvent.expectationRefs || [],
+    candidates,
+    requiredReview: buildKnowledgeReviewGuidance(queryEvent.queryId, candidates),
+  };
+}
+
 function onlyFields(value, allowed, label) {
   const unsupported = Object.keys(value).filter((field) => !allowed.includes(field));
   if (unsupported.length) {
@@ -167,7 +207,9 @@ module.exports = {
   ASSESSMENT_STATUSES,
   REVIEW_CONCLUSIONS,
   buildKnowledgeIndex,
+  buildKnowledgeReviewGuidance,
   normalizeKnowledgeReview,
+  projectPendingKnowledgeReview,
   recordKnowledgeReview,
   recordNoMatch,
   validateKnowledgeReview,

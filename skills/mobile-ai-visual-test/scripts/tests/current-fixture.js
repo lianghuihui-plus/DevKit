@@ -11,6 +11,7 @@ const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-ma
 const { confirmEnvironment, createExecutionRequest } = require('../lib/run-control');
 const { appProvisioningSha, defaultAppProvisioning, preparationPolicySha, validatePreparationPolicy } = require('../lib/app-provisioning');
 const { publishCaseDefinition } = require('../case/definition-store');
+const { createValidationProfile } = require('../execution/contracts/validation-profile-contract');
 
 const TEST_WORKSPACE_TYPE = 'mobile-ai-visual-test-test-workspace';
 const FIXTURE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -143,8 +144,23 @@ function createCurrentFixture(root, options = {}) {
     },
   });
   writeJson(path.join(execDir, 'case-spec.snapshot.json'), caseSpec);
+  const publishedDefinition = publishCaseDefinition({
+    caseDir,
+    candidate: {
+      summary: caseSpec.summary,
+      preconditions: caseSpec.preconditions,
+      expectations: caseSpec.expectations,
+      ambiguities: caseSpec.ambiguities,
+      initialStateIntent: { targetState: 'KEEP_EXISTING', rationale: '当前报告 fixture 保留现有状态', sourceEvidence: [] },
+    },
+    compilerProfileSha: 'case-definition-compiler-test',
+    now: startedAt,
+  }).definition;
+  const validationProfile = createValidationProfile();
+  writeJson(path.join(execDir, 'case-definition.snapshot.json'), publishedDefinition);
+  writeJson(path.join(execDir, 'validation-profile.snapshot.json'), validationProfile);
   const execution = {
-    schemaVersion: 10,
+    schemaVersion: 11,
     runtime: 'case-runtime',
     executionId,
     batchId: `batch-${suffix}`,
@@ -155,6 +171,9 @@ function createCurrentFixture(root, options = {}) {
     coordinatorProtocolSha: 'agent-protocol-fixture0002',
     contractSha: caseJson.contractSha,
     caseSpecSha: caseSpec.specSha,
+    definitionId: publishedDefinition.definitionId,
+    definitionSha: publishedDefinition.definitionSha,
+    validationProfileSha: validationProfile.profileSha,
     batchContractSha: `batch-contract-${'a'.repeat(24)}`,
     executionRequestSha: `execution-request-${'a'.repeat(24)}`,
     interactionPolicy: 'UNATTENDED',
@@ -319,6 +338,10 @@ function createCurrentFixture(root, options = {}) {
       generationBefore: 1, generationAfter: execution.warmSessionGeneration,
     })] : []),
   ];
+  events.push(event(executionId, events.length + 1, '2026-08-13T10:00:03.300+08:00', 'visualInspected', {
+    sceneId: 'scene-0002', screenshotRef: afterRef, screenshotSha256: screenshotSha,
+    observation: '已查看操作后截图，页面现场可用于最终验证', expectationRefs: ['E1'],
+  }));
   let sequence = events.length + 1;
   if (['FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(verdict)) {
     events.push(event(executionId, sequence++, '2026-08-13T10:00:03.500+08:00', 'knowledgeQueried', {
@@ -367,9 +390,10 @@ function createCurrentFixture(root, options = {}) {
   const artifactManifest = buildExecutionArtifactManifest(execDir, { now: endedAt });
   const paths = completionPaths(execDir);
   const completion = {
-    schemaVersion: 3, executionId, batchId: execution.batchId, caseKey, platform: 'harmony',
+    executionId, batchId: execution.batchId, caseKey, platform: 'harmony',
     completionSource: 'framework', runtimeSha: execution.runtimeSha, adapterSha: execution.adapterSha,
-    contractSha: execution.contractSha, batchContractSha: execution.batchContractSha, metricsSchemaVersion: 3,
+    contractSha: execution.contractSha, batchContractSha: execution.batchContractSha,
+    validationProfileSha: execution.validationProfileSha,
     verdict, executionStatus: execution.executionStatus, runtimeCompleted: true,
     resultSha256: sha256File(paths.result), metricsSha256: sha256File(paths.metrics),
     artifactManifestSha256: sha256File(paths.artifactManifest),

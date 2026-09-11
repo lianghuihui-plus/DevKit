@@ -20,8 +20,6 @@ const directChecks = [
   { expectationRef: 'E1', status: 'PASS', actual: '全部 TAB 已显示', sceneRefs: ['scene-0002'] },
   { expectationRef: 'E2', status: 'PASS', actual: 'Kids TAB 已显示', sceneRefs: ['scene-0002'] },
 ];
-const legacyBroker = { schemaVersion: 2 };
-const investigationBroker = { schemaVersion: 3 };
 const nemoCandidate = { entryId: 'K-editor-001', expired: false };
 const nemoEvents = [
   query('knowledge-0001', ['E3'], [nemoCandidate]),
@@ -39,14 +37,13 @@ const nemoPass = {
 assert.deepStrictEqual(validateKnowledgeClosure(nemoPass, nemoEvents).applicableEntryIds, ['K-editor-001']);
 
 const fail = { verdict: 'FAIL', checks: [{ expectationRef: 'E1', status: 'FAIL', actual: '目标缺失', sceneRefs: ['scene-0002'] }] };
-assert.doesNotThrow(() => validateKnowledgeClosure(fail, [], null, legacyBroker));
-assert.throws(() => validateKnowledgeClosure(fail, [], null, investigationBroker),
+assert.throws(() => validateKnowledgeClosure(fail, []),
   (error) => error.code === 'CASE_RESULT_INCOMPLETE'
     && error.missing.some((item) => item.field === 'checks.E1.knowledgeInvestigation'));
 assert.throws(() => validateKnowledgeClosure({
   verdict: 'INCONCLUSIVE',
   checks: [{ expectationRef: 'E1', status: 'INCONCLUSIVE', actual: '现场不足以判断', sceneRefs: [] }],
-}, [], null, investigationBroker),
+}, []),
 (error) => error.code === 'CASE_RESULT_INCOMPLETE'
   && error.missing.some((item) => item.field === 'checks.E1.knowledgeInvestigation'));
 
@@ -54,7 +51,7 @@ const noMatchEvents = [
   query('knowledge-0002', ['E1']),
   review('knowledge-0002', ['E1'], 'NO_MATCH'),
 ];
-assert.doesNotThrow(() => validateKnowledgeClosure(fail, noMatchEvents, null, investigationBroker));
+assert.doesNotThrow(() => validateKnowledgeClosure(fail, noMatchEvents));
 
 const unrelated = { entryId: 'K-unrelated-001', expired: false };
 const notApplicableEvents = [
@@ -63,7 +60,7 @@ const notApplicableEvents = [
     { entryId: unrelated.entryId, status: 'NOT_APPLICABLE', reason: '条目仅适用于 Android' },
   ]),
 ];
-assert.doesNotThrow(() => validateKnowledgeClosure(fail, notApplicableEvents, null, investigationBroker));
+assert.doesNotThrow(() => validateKnowledgeClosure(fail, notApplicableEvents));
 
 const blocked = { verdict: 'BLOCKED', checks: [{ expectationRef: 'E1', status: 'BLOCKED', actual: '前置账号不满足', sceneRefs: [] }] };
 const execution = { executionId: 'execution-knowledge', warmSessionGeneration: 2 };
@@ -74,8 +71,7 @@ const transientTechnicalEvents = [
   },
   { sequence: 2, executionId: execution.executionId, type: 'sceneObserved', sceneId: 'scene-0002', generation: 2, screenshotRef: 'screenshots/scene-0002.png' },
 ];
-assert.doesNotThrow(() => validateKnowledgeClosure(blocked, transientTechnicalEvents, execution));
-assert.throws(() => validateKnowledgeClosure(blocked, transientTechnicalEvents, execution, investigationBroker),
+assert.throws(() => validateKnowledgeClosure(blocked, transientTechnicalEvents, execution),
   (error) => error.code === 'CASE_RESULT_INCOMPLETE'
     && error.missing.some((item) => item.field === 'checks.E1.knowledgeInvestigation'));
 assert.throws(() => validateKnowledgeClosure({
@@ -108,7 +104,7 @@ const validTechnicalEvent = {
 assert.doesNotThrow(() => validateKnowledgeClosure({
   verdict: 'BLOCKED',
   checks: [{ ...blocked.checks[0], actual: '时间预算耗尽，无法继续验证', technicalRefs: ['technical-fact-0003'] }],
-}, [...transientTechnicalEvents, validTechnicalEvent], execution, investigationBroker));
+}, [...transientTechnicalEvents, validTechnicalEvent], execution));
 assert.throws(() => validateKnowledgeClosure({
   verdict: 'PASS',
   checks: [{ ...directChecks[0], technicalRefs: ['technical-fact-0001'] }],

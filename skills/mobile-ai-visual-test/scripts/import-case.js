@@ -3,6 +3,7 @@
 
 const path = require('path');
 const { importSource } = require('./case/import-source');
+const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function main(argv = process.argv.slice(2)) {
   let input;
@@ -17,7 +18,7 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) { process.stderr.write(`${error.message || error}\n`); process.exit(error.exitCode || 2); }
+  try { main(); } catch (error) { writeCoordinatorCliError(error, 'scripts/import-case.js'); process.exit(error.exitCode || 2); }
 }
 
 module.exports = { main };
