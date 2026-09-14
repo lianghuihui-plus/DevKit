@@ -14,6 +14,7 @@ const {
   recordFinalizationStep,
   startCurrentCase,
 } = require('../batch/core');
+const { reconcileWithFinalization } = require('../batch');
 const { buildContract } = require('../build-agent-contract');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { findActiveExecutions, writeJsonAtomic } = require('../lib/execution-lifecycle');
@@ -77,7 +78,7 @@ assert.throws(() => recordFinalizationStep({
   workspaceRoot: root,
   batchId,
   implementationSha: contract.implementationSha,
-  step: 'reportsPublished',
+  step: 'platformReleased',
   result: { status: 'PUBLISHED' },
 }), (error) => error.code === 'BATCH_FINALIZATION_INVALID');
 
@@ -96,24 +97,34 @@ recordFinalizationStep({
   step: 'platformReleased',
   result: { ok: true },
 });
-assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'PUBLISH_REPORTS');
+assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'BATCH_CANCELLED');
 const repeatedAfterRelease = cancelBatch({
   workspaceRoot: root,
   batchId,
   implementationSha: contract.implementationSha,
 });
 assert.strictEqual(repeatedAfterRelease.idempotent, true);
-assert.strictEqual(repeatedAfterRelease.nextAction, 'PUBLISH_REPORTS');
+assert.strictEqual(repeatedAfterRelease.state.status, 'CANCELLED');
 assert.strictEqual(repeatedAfterRelease.state.finalization.platformReleased, true);
-assert.ok(fs.existsSync(refreshBatchIndex(root, [caseDir])));
-recordFinalizationStep({
-  workspaceRoot: root,
-  batchId,
-  ...upgradedProtocol,
-  step: 'reportsPublished',
-  result: { status: 'PUBLISHED' },
-});
-assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'BATCH_CANCELLED');
+const publicationFailure = new Error('renderer contract is invalid');
+publicationFailure.code = 'REPORT_RENDERER_INVALID';
+const terminalWithDegradedReport = reconcileWithFinalization(
+  { workspaceRoot: root, batchId, implementationSha: contract.implementationSha },
+  { adapter, refreshBatchIndex: () => { throw publicationFailure; } },
+);
+assert.strictEqual(terminalWithDegradedReport.action, 'BATCH_CANCELLED');
+assert.strictEqual(terminalWithDegradedReport.state.status, 'CANCELLED');
+assert.strictEqual(terminalWithDegradedReport.publicationState.status, 'DEGRADED');
+assert.strictEqual(terminalWithDegradedReport.retryable, undefined);
+fs.writeFileSync(path.join(root, 'runs', batchId, 'report-publication.json'), '{ invalid json');
+const terminalWithCorruptedPublicationState = reconcileWithFinalization(
+  { workspaceRoot: root, batchId, implementationSha: contract.implementationSha },
+  { adapter },
+);
+assert.strictEqual(terminalWithCorruptedPublicationState.action, 'BATCH_CANCELLED');
+assert.strictEqual(terminalWithCorruptedPublicationState.state.status, 'CANCELLED');
+assert.strictEqual(terminalWithCorruptedPublicationState.publicationState.status, 'DEGRADED');
+assert.strictEqual(terminalWithCorruptedPublicationState.publicationState.errorCode, 'REPORT_PUBLICATION_STATE_INVALID');
 assert.strictEqual(cancelBatch({
   workspaceRoot: root,
   batchId,

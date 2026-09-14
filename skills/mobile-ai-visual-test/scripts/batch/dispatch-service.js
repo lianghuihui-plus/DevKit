@@ -7,7 +7,7 @@ const { validateAppProvisioning, validateBootstrapPolicy, validateInstalledAppId
 const { appendJsonl, allocateExecutionId, readJson, withFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { markBootstrapFailed, markBootstrapReady } = require('../lib/warm-session-contract');
 const caseRuntimeLifecycle = require('../case-runtime/lifecycle');
-const { createAgentHandoff } = require('./agent-handoff');
+const { createAgentHandoff, loadPreparedAgentHandoff } = require('./agent-handoff');
 const { loadBatch, readBatchState, saveBatch } = require('./state-repository');
 const {
   caseAgentPrompt,
@@ -22,7 +22,9 @@ const {
 
 function assertAdapterResult(result, kind) {
   if (!result || result.ok !== true || result.coldStartVerified !== true || result.startupDisplayVerified !== true) {
-    throw contractError(result?.failureCode || `${kind}_FAILED`, result?.reason || `${kind} did not verify App restart`);
+    const error = contractError(result?.failureCode || `${kind}_FAILED`, result?.reason || `${kind} did not verify App restart`);
+    if (result?.diagnostic) error.diagnostic = result.diagnostic;
+    throw error;
   }
   return result;
 }
@@ -83,10 +85,30 @@ function bootstrapBatch(options) {
       };
       writeJsonAtomic(paths.bootstrapDraft, draft);
     }
+    const platformRuntimeMatches = canonicalJson(draft.platformRuntime) === canonicalJson(runtimeAcquisition);
+    const canRefreshPendingRuntime = draft.platformRuntime?.ok !== true
+      && draft.platformRuntime?.retryable === true;
     if (draft.schemaVersion !== 1 || draft.requestId !== requestId || draft.eventId !== `batch-bootstrap-${state.batchId}`
       || canonicalJson(draft.binding) !== canonicalJson(contract.binding)
-      || canonicalJson(draft.platformRuntime) !== canonicalJson(runtimeAcquisition)) {
+      || (!platformRuntimeMatches && !canRefreshPendingRuntime)) {
       throw contractError('BATCH_BOOTSTRAP_BINDING_MISMATCH', 'bootstrap draft does not match the current batch');
+    }
+    if (!platformRuntimeMatches && canRefreshPendingRuntime) {
+      draft.platformRuntime = runtimeAcquisition;
+      writeJsonAtomic(paths.bootstrapDraft, draft);
+    }
+    if (draft.platformRuntime?.ok !== true && draft.platformRuntime?.retryable === true) {
+      return {
+        action: 'WAIT_PLATFORM_RUNTIME',
+        state,
+        waitFor: draft.platformRuntime.waitFor || 'PLATFORM_RUNTIME',
+        technical: draft.platformRuntime.diagnostic || {
+          code: draft.platformRuntime.failureCode || 'PLATFORM_RUNTIME_ACQUIRE_FAILED',
+          stage: 'PLATFORM_RUNTIME_ACQUIRE',
+          summary: draft.platformRuntime.reason || 'platform runtime acquisition is still in progress',
+          retryable: true,
+        },
+      };
     }
     if (contract.bootstrapPolicy.mode === 'REINSTALL_FROZEN' && !draft.result) {
       let dispatchNow = false;
@@ -162,6 +184,7 @@ function bootstrapBatch(options) {
           startupDisplayVerified: false,
           failureCode: draft.artifactPreparation.result.failureCode || 'APP_ARTIFACT_BOOTSTRAP_FAILED',
           reason: draft.artifactPreparation.result.reason || 'artifact-managed bootstrap failed',
+          ...(draft.artifactPreparation.result.diagnostic ? { diagnostic: draft.artifactPreparation.result.diagnostic } : {}),
         };
       } else if (draft.platformRuntime.ok !== true) {
         draft.result = {
@@ -170,6 +193,7 @@ function bootstrapBatch(options) {
           startupDisplayVerified: false,
           failureCode: draft.platformRuntime.failureCode || 'PLATFORM_RUNTIME_ACQUIRE_FAILED',
           reason: draft.platformRuntime.reason || 'platform runtime acquisition failed',
+          ...(draft.platformRuntime.diagnostic ? { diagnostic: draft.platformRuntime.diagnostic } : {}),
         };
       } else {
         try {
@@ -186,6 +210,7 @@ function bootstrapBatch(options) {
             startupDisplayVerified: false,
             failureCode: error.code || 'ADAPTER_ERROR',
             reason: error.message,
+            ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}),
           };
         }
       }
@@ -202,10 +227,23 @@ function bootstrapBatch(options) {
     }
     const commitTime = draft.recordedAt || options.now || new Date().toISOString();
     if (failure) {
-      const failureCode = failure.code || 'BATCH_BOOTSTRAP_FAILED';
+      const failureCode = failure.code === 'DEVICE_ADAPTER_TIMEOUT'
+        ? 'BATCH_BOOTSTRAP_TIMEOUT' : (failure.code || 'BATCH_BOOTSTRAP_FAILED');
+      const diagnostic = failure.diagnostic
+        ? {
+          ...failure.diagnostic,
+          code: failureCode,
+          ...(failure.diagnostic.code && failure.diagnostic.code !== failureCode
+            ? { causeCode: failure.diagnostic.code } : {}),
+        }
+        : undefined;
       if (state.warmSession.status === 'INITIALIZING') {
         state.warmSession = markBootstrapFailed(state.warmSession, commitTime);
-        stopBatch(paths, state, 'BOOTSTRAP_FAILED', failureCode, failure.message, { now: commitTime, platform: contract.binding.platform });
+        stopBatch(paths, state, 'BOOTSTRAP_FAILED', failureCode, failure.message, {
+          now: commitTime,
+          platform: contract.binding.platform,
+          diagnostic: diagnostic || draft.result?.diagnostic,
+        });
       } else if (state.warmSession.status !== 'DEGRADED' || !['BLOCKING', 'BLOCKED'].includes(state.status)
         || state.failureCode !== failureCode || state.reason !== failure.message) {
         throw contractError('BATCH_BOOTSTRAP_CORRUPTED', 'failed bootstrap draft does not match batch state');
@@ -278,7 +316,6 @@ function startCurrentCase(options) {
     const caseSpec = readJson(path.join(item.snapshotPath, 'case-spec.snapshot.json'));
     const sourceText = fs.readFileSync(path.join(item.snapshotPath, 'source.snapshot.md'), 'utf8');
     const runtimeDir = caseRuntimeDir(item.caseDir, loaded.contract.binding.platform);
-    const platformRuntime = readJson(path.join(loaded.paths.batchDir, 'platform-runtime.json'), null);
     let draft = readJson(loaded.paths.caseStartDraft, null);
     if (!draft) {
       const executionId = options.executionId || allocateExecutionId(runtimeDir, options);
@@ -343,7 +380,6 @@ function startCurrentCase(options) {
           lockPath: loaded.paths.lock,
           eventsPath: loaded.paths.events,
           platformRuntimePath: path.join(loaded.paths.batchDir, 'platform-runtime.json'),
-          platformResource: platformRuntime?.resource || null,
         },
         knowledgeRoots: [
           path.resolve(__dirname, '../..', 'knowledge'),
@@ -405,6 +441,17 @@ function startCurrentCase(options) {
       agentRequired: false,
       ...response,
     });
+  }
+  if (!options.continuationReason) {
+    const preparedHandoff = loadPreparedAgentHandoff({
+      workspaceRoot: options.workspaceRoot,
+      batchId: response.batchId,
+      executionId: response.executionId,
+      caseProtocolSha: loaded.contract.caseProtocolSha,
+    });
+    if (preparedHandoff) {
+      return caseAgentResponse({ action: 'DELEGATE_CASE_AGENT', agentRequired: true, ...response, handoff: preparedHandoff });
+    }
   }
   const delegate = () => {
     let brief;

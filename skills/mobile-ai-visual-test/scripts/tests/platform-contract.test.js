@@ -21,16 +21,36 @@ const {
   validateExecutionEnvironment,
 } = require('../lib/execution-environment');
 const {
+  createDeviceSessionAdapter,
   normalizeRestartResult,
   probeSession,
   restartApp,
   restartTimeoutMs,
+  runtimeTimeoutMs,
   run: runDeviceAdapter,
 } = require('../batch/device-session');
 const { classifyRuntimeDisplay, startupDisplayRequirement } = require('../lib/startup-display');
 
 const platforms = ['harmony', 'android', 'ios'];
 const commonActions = ['launchApp', 'restartApp', 'tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'wait'];
+
+const emptyProbePath = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-empty-probe-path-'));
+const emptyProbeHdc = path.join(emptyProbePath, 'hdc');
+fs.writeFileSync(emptyProbeHdc, '#!/bin/sh\nexit 0\n');
+fs.chmodSync(emptyProbeHdc, 0o755);
+const emptyProbe = childProcess.spawnSync('/bin/bash', [
+  'scripts/platform/probe-env.sh', '--platform', 'harmony',
+], {
+  cwd: path.resolve(__dirname, '../..'),
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    PATH: `${emptyProbePath}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+  },
+});
+fs.rmSync(emptyProbePath, { recursive: true, force: true });
+assert.strictEqual(emptyProbe.status, 0, emptyProbe.stderr);
+assert.strictEqual(JSON.parse(emptyProbe.stdout).platform, 'harmony');
 
 for (const platform of platforms) {
   const constraints = describeActionConstraints(platform, 'formal-execution');
@@ -222,13 +242,35 @@ try {
 }
 
 assert.strictEqual(restartTimeoutMs({ platform: 'android' }), 60000);
-assert.strictEqual(restartTimeoutMs({ platform: 'ios' }), 60000);
-assert.strictEqual(restartTimeoutMs({ platform: 'ios', wdaLaunchTimeout: 180000 }), 195000);
+assert.strictEqual(restartTimeoutMs({ platform: 'ios' }), 240000);
+assert.strictEqual(restartTimeoutMs({ platform: 'ios', wdaLaunchTimeout: 180000 }), 240000);
+assert.strictEqual(runtimeTimeoutMs({ platform: 'android' }, 'acquire'), 60000);
+assert.strictEqual(runtimeTimeoutMs({ platform: 'ios' }, 'acquire'), 210000);
+assert.strictEqual(runtimeTimeoutMs({ platform: 'ios', wdaLaunchTimeout: 180000 }, 'acquire'), 210000);
+assert.strictEqual(runtimeTimeoutMs({ platform: 'ios' }, 'release'), 120000);
+try {
+  childProcess.spawnSync = (command, args, options) => {
+    assert.ok(command.endsWith('/scripts/platform/runtime.sh'));
+    assert.strictEqual(options.timeout, 210000);
+    return {
+      status: 0,
+      stderr: '',
+      stdout: JSON.stringify({ ok: true, status: 'ACTIVE', ownership: 'FRAMEWORK_MANAGED' }),
+    };
+  };
+  const runtime = createDeviceSessionAdapter().acquirePlatformRuntime({
+    binding: { platform: 'ios', deviceId: 'ios-device', appId: 'com.example.ios', wdaLaunchTimeout: 180000 },
+    ownerKey: 'runtime-timeout-test',
+  });
+  assert.strictEqual(runtime.ok, true);
+} finally {
+  childProcess.spawnSync = originalSpawnSync;
+}
 try {
   childProcess.spawnSync = (command, args, options) => {
     assert.ok(command.endsWith('/scripts/platform/action.sh'));
     assert.ok(args.includes('--wda-launch-timeout'));
-    assert.strictEqual(options.timeout, 195000);
+    assert.strictEqual(options.timeout, 240000);
     return {
       status: 0,
       stderr: '',
@@ -255,6 +297,8 @@ try {
   assert.strictEqual(timedOut.ok, false);
   assert.match(timedOut.reason, /^DEVICE_ADAPTER_TIMEOUT:/);
   assert.match(timedOut.reason, /195000ms/);
+  assert.strictEqual(timedOut.timeoutMs, 195000);
+  assert.strictEqual(timedOut.diagnostic.code, 'DEVICE_ADAPTER_TIMEOUT');
 } finally {
   childProcess.spawnSync = originalSpawnSync;
 }

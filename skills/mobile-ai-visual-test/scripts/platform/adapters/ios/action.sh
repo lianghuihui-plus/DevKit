@@ -60,11 +60,16 @@ run_atom() {
       failure_output="$(node -e '
 const { actionResult } = require(process.argv[1]);
 const message = String(process.argv[6] || `iOS ${process.argv[2]} atom exited with ${process.argv[5]}`).trim().slice(0, 4000);
+const failureCode = /invalid session id|session (?:is )?(?:either )?terminated|session[^\n]{0,80}not started/i.test(message)
+  ? "IOS_APPIUM_SESSION_INVALID"
+  : /ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|timed out|network error|fetch failed/i.test(message)
+    ? "IOS_ACTION_TRANSPORT_FAILED"
+    : "IOS_ACTION_FAILED";
 const event = actionResult(process.argv[2], {
   ok: false,
-  failureCode: "IOS_ACTION_FAILED",
+  failureCode,
   message,
-  adapterError: { stage: "atom", exitCode: Number(process.argv[5]), message },
+  adapterError: { stage: "atom", exitCode: Number(process.argv[5]), failureCode, message },
   device: { id: process.argv[3] || null },
   app: { appId: process.argv[4] || null },
 });

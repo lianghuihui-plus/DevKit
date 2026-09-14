@@ -188,6 +188,36 @@ function buildTarget(options = {}) {
   };
 }
 
+function resolveDeviceSelection(target, devices, options = {}) {
+  const available = Array.isArray(devices) ? devices : [];
+  const requestedDeviceType = options.deviceType || '';
+  let selectionRequired = false;
+  let typeMismatch = false;
+  let selected = null;
+
+  if (!target.device) {
+    if (available.length === 1) {
+      selected = available[0];
+      target.device = selected.udid;
+      target.deviceType = selected.deviceType;
+    } else if (available.length > 1) {
+      selectionRequired = true;
+    }
+  } else {
+    selected = available.find((item) => item.udid === target.device) || null;
+    if (selected) {
+      typeMismatch = Boolean(requestedDeviceType && requestedDeviceType !== selected.deviceType);
+      if (!typeMismatch) target.deviceType = selected.deviceType;
+    }
+  }
+
+  return {
+    selected,
+    selectionRequired,
+    typeMismatch,
+  };
+}
+
 module.exports = {
   buildTarget,
   commandExists,
@@ -197,5 +227,6 @@ module.exports = {
   parseArgs,
   parseBoolean,
   run,
+  resolveDeviceSelection,
   validateRestArgs,
 };

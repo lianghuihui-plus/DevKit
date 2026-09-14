@@ -212,6 +212,9 @@ function validateRuntimeRequest(value) {
   if (operation === 'reviewKnowledge' && value.decision?.knowledgeReview === undefined) {
     throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'reviewKnowledge requires decision.knowledgeReview');
   }
+  if (operation === 'recordPlan' && value.decision?.planUpdate === undefined) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'recordPlan requires decision.planUpdate');
+  }
   if (operation === 'recover') ensureString(value.reason, 'reason', 'CASE_RUNTIME_REQUEST_INVALID');
   if (operation === 'finish') validateCaseResult(value.result);
   return value;

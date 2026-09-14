@@ -8,6 +8,7 @@ const path = require('path');
 const appium = require('./appium-client');
 const { localIso } = require('./output');
 const processLifecycle = require('./process-lifecycle');
+const { resolveManagedOwner } = require('./runtime-ownership');
 
 const REGISTRY_SCHEMA_VERSION = 1;
 
@@ -48,11 +49,11 @@ function writeJsonAtomic(file, value) {
   }
 }
 
-function recordMatchesProcess(record, server) {
+function recordMatchesProcess(record, server, dependencies = {}) {
   if (!record || record.schemaVersion !== REGISTRY_SCHEMA_VERSION || record.server !== normalizedServer(server)
     || !Number.isInteger(record.pid) || record.pid <= 0 || record.processGroupId !== record.pid
-    || !record.ownerToken || !processAlive(record.pid)) return false;
-  const command = processCommand(record.pid);
+    || !record.ownerToken || !(dependencies.processAlive || processAlive)(record.pid)) return false;
+  const command = (dependencies.processCommand || processCommand)(record.pid);
   if (!command || !/appium/i.test(command)) return false;
   const url = new URL(record.server);
   const port = url.port || (url.protocol === 'https:' ? '443' : '80');
@@ -110,13 +111,14 @@ function removeRegistryIfOwned(server, ownerToken) {
 }
 
 async function stopManagedRecord(record, options = {}) {
-  return processLifecycle.stopProcessGroup(record, {
+  const stop = options.stopProcessGroup || processLifecycle.stopProcessGroup;
+  return stop(record, {
     ...options,
     label: 'framework-managed Appium process',
   });
 }
 
-async function ensureAppium(target) {
+async function ensureAppium(target, dependencies = {}) {
   if (process.env.MAVT_IOS_FAKE === '1') {
     return {
       ok: true,
@@ -130,9 +132,10 @@ async function ensureAppium(target) {
   }
   const file = registryPath(target.appiumServer);
   const registered = readJson(file, null);
-  const server = await waitForServer(target, 2000);
+  const wait = dependencies.waitForServer || waitForServer;
+  const server = await wait(target, 2000);
   if (server.ok) {
-    if (recordMatchesProcess(registered, target.appiumServer)) {
+    if (recordMatchesProcess(registered, target.appiumServer, dependencies)) {
       return { ok: true, ownership: 'FRAMEWORK_MANAGED', resource: { ...registered } };
     }
     return {
@@ -150,7 +153,7 @@ async function ensureAppium(target) {
       reason: `external Appium server is unavailable: ${normalizedServer(target.appiumServer)}`,
     };
   }
-  if (registered && processAlive(registered.pid)) {
+  if (registered && (dependencies.processAlive || processAlive)(registered.pid)) {
     return {
       ok: false,
       ownership: 'NONE',
@@ -161,13 +164,13 @@ async function ensureAppium(target) {
   if (registered && fs.existsSync(file)) fs.unlinkSync(file);
   let spawned;
   try {
-    spawned = spawnManagedAppium(target);
+    spawned = (dependencies.spawnManagedAppium || spawnManagedAppium)(target);
   } catch (error) {
     return { ok: false, ownership: 'NONE', failureCode: 'IOS_APPIUM_START_FAILED', reason: error.message || String(error) };
   }
-  const ready = await waitForServer(target, 20000);
+  const ready = await wait(target, 20000);
   if (!ready.ok) {
-    await stopManagedRecord(spawned);
+    await stopManagedRecord(spawned, dependencies);
     removeRegistryIfOwned(target.appiumServer, spawned.ownerToken);
     return { ok: false, ownership: 'NONE', failureCode: 'IOS_APPIUM_START_FAILED', reason: ready.reason };
   }
@@ -178,8 +181,23 @@ async function prepareAppium(target) {
   return ensureAppium(target);
 }
 
-async function acquireAppium(target, ownerKey) {
-  const ensured = await ensureAppium(target);
+async function reclaimStaleAppium(target, record, dependencies = {}) {
+  if (!recordMatchesProcess(record, target.appiumServer, dependencies)) {
+    return { ok: false, failureCode: 'IOS_APPIUM_OWNERSHIP_UNKNOWN', reason: 'Appium registry does not match a live isolated process' };
+  }
+  const owner = (dependencies.resolveOwnerStatus || resolveManagedOwner)(record.ownerKey, dependencies);
+  if (owner?.status === 'ACTIVE') return { ok: false, failureCode: 'IOS_APPIUM_SERVICE_IN_USE', owner };
+  if (owner?.status !== 'TERMINAL' && owner?.status !== 'RECLAIMABLE') return { ok: false, failureCode: 'IOS_APPIUM_OWNERSHIP_UNKNOWN', owner };
+  const stopped = await stopManagedRecord(record, dependencies);
+  if (!stopped.ok) {
+    return { ok: false, failureCode: 'IOS_APPIUM_STALE_CLEANUP_FAILED', reason: stopped.reason, owner };
+  }
+  removeRegistryIfOwned(target.appiumServer, record.ownerToken);
+  return { ok: true, owner, stopped };
+}
+
+async function acquireAppium(target, ownerKey, dependencies = {}) {
+  let ensured = await ensureAppium(target, dependencies);
   if (!ensured.ok || ensured.ownership === 'EXTERNAL') {
     return {
       ...ensured,
@@ -191,7 +209,7 @@ async function acquireAppium(target, ownerKey) {
   }
   const file = registryPath(target.appiumServer);
   const record = readJson(file, null);
-  if (!recordMatchesProcess(record, target.appiumServer) || record.ownerToken !== ensured.resource.ownerToken) {
+  if (!recordMatchesProcess(record, target.appiumServer, dependencies) || record.ownerToken !== ensured.resource.ownerToken) {
     return {
       ok: false,
       status: 'ACQUIRE_FAILED',
@@ -201,12 +219,35 @@ async function acquireAppium(target, ownerKey) {
     };
   }
   if (record.ownerKey && record.ownerKey !== ownerKey) {
+    const reclaimed = await reclaimStaleAppium(target, record, dependencies);
+    if (reclaimed.ok) {
+      ensured = await ensureAppium(target, dependencies);
+      if (!ensured.ok || ensured.ownership === 'EXTERNAL') {
+        return { ...ensured, status: ensured.ok ? 'ACTIVE' : 'ACQUIRE_FAILED' };
+      }
+      return acquireAppium(target, ownerKey, dependencies);
+    }
+    const serviceInUse = reclaimed.failureCode === 'IOS_APPIUM_SERVICE_IN_USE';
     return {
       ok: false,
       status: 'ACQUIRE_FAILED',
       ownership: 'NONE',
-      failureCode: 'IOS_APPIUM_SERVICE_IN_USE',
-      reason: 'framework-managed Appium is already owned by another batch',
+      failureCode: reclaimed.failureCode || 'IOS_APPIUM_SERVICE_IN_USE',
+      retryable: serviceInUse,
+      reason: reclaimed.failureCode === 'IOS_APPIUM_OWNERSHIP_UNKNOWN'
+        ? 'framework-managed Appium owner cannot be verified safely'
+        : 'framework-managed Appium is already owned by another batch',
+      diagnostic: {
+        code: reclaimed.failureCode || 'IOS_APPIUM_SERVICE_IN_USE',
+        stage: 'PLATFORM_RUNTIME_ACQUIRE',
+        summary: reclaimed.failureCode === 'IOS_APPIUM_OWNERSHIP_UNKNOWN'
+          ? 'framework-managed Appium owner cannot be verified safely'
+          : 'framework-managed Appium is already owned by another batch',
+        retryable: serviceInUse,
+        owner: reclaimed.owner || null,
+        ...(serviceInUse
+          ? { recovery: { kind: 'WAIT_OR_CANCEL_OWNER_BATCH' } } : {}),
+      },
     };
   }
   record.ownerKey = ownerKey;
@@ -286,4 +327,6 @@ module.exports = {
   registryPath,
   releaseAppium,
   stopManagedRecord,
+  reclaimStaleAppium,
+  resolveManagedOwner,
 };

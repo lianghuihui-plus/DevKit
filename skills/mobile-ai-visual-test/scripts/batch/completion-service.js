@@ -75,7 +75,7 @@ function commitCurrentCase(options) {
       state.currentIndex = draft.caseIndex + 1;
       if (state.currentIndex >= state.cases.length) {
         state.status = 'FINALIZING';
-        state.finalization = { cause: 'COMPLETED', executionsSettled: false, casesCommitted: true, platformReleased: false, reportsPublished: false };
+        state.finalization = { cause: 'COMPLETED', executionsSettled: false, casesCommitted: true, platformReleased: false };
       }
       saveBatch(loaded.paths, state, options.now);
     } else if (item.status !== 'COMPLETED' || item.verdict !== completion.verdict

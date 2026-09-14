@@ -10,30 +10,45 @@
 
 ## 能力
 
-Brief 只提供六个业务能力：`observe`、`inspect`、`act`、`knowledge`、`recover`、`finish`。每项能力卡说明使用场景、必填字段、字段来源和有效示例；当前 Scene 或响应中的 example 是动态字段的事实来源。
+Brief 只提供七个业务能力：`observe`、`inspect`、`plan`、`act`、`knowledge`、`recover`、`finish`。每项能力卡说明使用场景、必填字段、字段来源和有效示例；当前 Scene 或响应中的 example 是动态字段的事实来源。
 
 每次调用只做两件事：
 
 1. 复制当前能力或响应给出的 example，按业务事实修改后，将一个简化 JSON 写入 `runtime.requestPath`。
 2. 原样执行 `runtime.command`，不增加参数。
 
-不要自行发明字段。返回 `INPUT_INVALID` 时只按 `retryWith` 修正一次；返回 `AGENT_INPUT_STALLED` 时停止格式重试并保留现场；返回 `TECHNICAL` 时按技术事实决定恢复或结束，不猜测内部协议。
+请求文件是一次性信封，Runtime 读取后会删除；每次调用都必须新建 `runtime.requestPath`，不要尝试更新上一次已经消费的文件。
+
+不要自行发明字段。返回 `INPUT_INVALID` 时只按 `retryWith` 修正一次；返回 `AGENT_INPUT_STALLED` 时停止格式重试并保留现场；返回 `TECHNICAL` 时先读取 `code`、`stage`、`message` 或 `diagnostic`，有 `nextCall` 或恢复示例时优先按其行动，没有有效恢复且返回 `technicalFallback` 时进入技术兜底模式。
+
+## 技术兜底模式
+
+Case Runtime 是正常执行首选入口，但不是诊断当前 execution 技术异常的唯一手段。进入技术兜底模式后，可以读取当前 execution 和平台日志，检查当前设备、App 进程、连接、端口及 Appium/WDA session，并使用平台原生只读命令定位根因。只处理 `technicalFallback.scope=EXECUTION` 指定的当前执行；因连续失败或证据矛盾主动进入时默认也只处理 `EXECUTION` 范围。当前 App 或 session 的恢复在归属明确且不会重放结果未知动作时才可进行，共享 Appium/WDA、跨批次资源和归属不明进程交由主 Agent 处理。
+
+不得直接修改任何 Execution、Result、Scene 或报告文件，不得借技术兜底改变 Frozen CaseSpec 或业务结论，不得未经用户确认卸载、清数据或修改签名。修复后按 `technicalFallback.resume` 回到当前 Runtime，让框架重新观察、校验和记录；无法安全恢复时保留诊断事实并收口，不把技术问题判为产品 FAIL。
 
 ## 执行
 
 1. 阅读原文和 Frozen CaseSpec，形成简短计划；存在歧义时保留不确定项，不改写验证点。
 2. Brief 已带 Scene 时直接使用；否则调用 `observe`。页面可能在框架外变化时也可重新观察。
-3. 每个 Scene 同时提供截图和结构信息，两者是并列调查能力。`inspect` 的 `elements`、`capabilities`、`layout` 用于理解结构和定位；控件树只增强判断，不能替代截图。
-4. 遇到控件树为空或缺失、截图与控件树冲突、实际结果与用例不符、业务状态异常或当前信息无法解释时，必须查看截图。权限弹窗、Toast、遮罩、浮层、键盘、长按中状态、动画和纯视觉结果也必须查看截图；控件树为空不得据此判断页面空白。
-5. 查看截图时先用 `view_image(scene.screenshot.path)` 打开像素内容，再复制 `scene.inspect.visual.example`，填写事实性的 `observation` 并调用 `inspect`。不得在没有实际打开图片时登记，同一 Scene 不需要重复登记。
-6. 业务动作只复制 `scene.actions[]` 中匹配意图的 example。优先使用控件对应的 `actionRef`；目标只在截图中可见时才使用 `visual:*` 动作，并先完成该 Scene 的视觉登记。长按、输入、等待和视觉手势需要的参数以动作的 `requiredInput` 和 example 为准。
-7. 普通调用的 `expectationRefs` 只关联本次直接推进、检查或解释的验证点；无直接关系的导航和基线观察可以留空。不要为表示“用例仍在执行”而重复填写全部验证点。
-8. 每次动作后检查新 Scene 和 `previousAction`。命令被接受或页面发生变化都不能替代业务判断；应根据实际结果继续、换路、调查知识或恢复。
-9. 截图、控件树和知识库都是可主动选择的常规能力。流程顺利、证据充分且结论不依赖 Scene 外信息时可以不查知识；出现实际结果不符、现场无法解释、操作失败或无效果、重复尝试无进展、无法判断下一步或结论、需要平台/版本/账号/配置规则支撑，或准备形成负向结论时必须调用 `knowledge`。
-10. 知识查询有候选时，复制响应的 `nextCall.example`，只填写每个候选的适用性和理由后再次调用 `knowledge`。不要构造嵌套复核结构。知识只能解释或补充 Scene 事实，不能替代现场证据或修改 Frozen CaseSpec。
-11. App 无法继续交互且确需冷启动时调用 `recover`；恢复后基于新 Scene 重新判断，不沿用旧现场假设。
-12. 证据充分或已无法安全继续时，复制 `scene.finish.example` 调用 `finish`。模板已预填全部 Frozen expectations；每个验证点只保留一个 check，填写当时实际结果和证据。`current` 表示当前 Scene；PASS/FAIL 必须有支持判断且已完成视觉登记的 Scene。整体 verdict 由框架根据 checks 计算。
-13. 返回 `RESULT_INCOMPLETE` 时只按 `missing` 补齐验证点、视觉检查或知识调查；返回 `TIME_LIMIT` 时仍可查看并登记已有截图后收口。完成后只向主 Agent 返回最终摘要。
+3. 初步理解用例和现场后，复制 `plan` 能力示例填写简短的 `items`。首次 `act`、`recover` 或 `finish` 前必须提交计划；实际路径变化时再次调用 `plan`，用完整 `items` 替换当前计划，并用 `reason` 说明调整原因。只写业务计划，不填写内部状态或框架字段。
+4. 每个 Scene 同时提供截图和结构信息，两者是并列调查能力。`inspect` 的 `elements`、`capabilities`、`layout` 用于理解结构和定位；控件树只增强判断，不能替代截图。
+5. 遇到控件树为空或缺失、截图与控件树冲突、实际结果与用例不符、业务状态异常或当前信息无法解释时，必须查看截图。权限弹窗、Toast、遮罩、浮层、键盘、长按中状态、动画和纯视觉结果也必须查看截图；控件树为空不得据此判断页面空白。
+6. 查看截图时先用 `view_image(scene.screenshot.path)` 打开像素内容，再复制 `scene.inspect.visual.example`，填写事实性的 `observation` 并调用 `inspect`。不得在没有实际打开图片时登记，同一 Scene 不需要重复登记。
+7. 业务动作只复制 `scene.actions[]` 中匹配意图的 example。优先使用控件对应的 `actionRef`；目标只在截图中可见时才使用 `visual:*` 动作，并先完成该 Scene 的视觉登记。长按、输入、等待和视觉手势需要的参数以动作的 `requiredInput` 和 example 为准。
+8. 普通调用的 `expectationRefs` 只关联本次直接推进、检查或解释的验证点；无直接关系的导航和基线观察可以留空。不要为表示“用例仍在执行”而重复填写全部验证点。
+9. 每次动作后检查新 Scene 和 `previousAction`。命令被接受或页面发生变化都不能替代业务判断；应根据实际结果继续、换路、调查知识或恢复。
+10. 截图、控件树和知识库都是可主动选择的常规能力。流程顺利、证据充分且结论不依赖 Scene 外信息时可以不查知识；出现实际结果不符、现场无法解释、操作失败或无效果、重复尝试无进展、无法判断下一步或结论、需要平台/版本/账号/配置规则支撑，或准备形成负向结论时必须调用 `knowledge`。
+11. 知识查询有候选时，复制响应的 `nextCall.example`，只填写每个候选的适用性和理由后再次调用 `knowledge`。不要构造嵌套复核结构。知识只能解释或补充 Scene 事实，不能替代现场证据或修改 Frozen CaseSpec。
+12. App 无法继续交互且确需冷启动时调用 `recover`；恢复后基于新 Scene 重新判断，不沿用旧现场假设。
+13. 证据充分或已无法安全继续时，复制 `scene.finish.example` 调用 `finish`。模板已预填全部 Frozen expectations；每个验证点只保留一个 check，填写当时实际结果和证据。`current` 表示当前 Scene；PASS/FAIL 必须有支持判断且已完成视觉登记的 Scene。整体 verdict 由框架根据 checks 计算。
+14. 返回 `RESULT_INCOMPLETE` 时只按 `missing` 补齐验证点、视觉检查或知识调查；返回 `TIME_LIMIT` 时仍可查看并登记已有截图后收口。完成后只向主 Agent 返回最终摘要。
+
+技术错误处理：
+
+- `SCENE_CHANGED` 或明确要求重新观察时，先调用 `observe`，不要继续提交基于旧 Scene 的动作。
+- 操作结果未知时只观察确认，不自动重放可能已生效的动作。
+- Runtime 返回 `retryable=true` 且提供 `nextCall` 时，只按示例恢复一次；没有有效恢复但提供 `technicalFallback` 时可按技术兜底模式调查，仍无法安全恢复再记录技术事实并结束为 `BLOCKED` 或 `INCONCLUSIVE`。
 
 可识别列表会提供滚动上下文。搜索型验证点只有在报告明确支持缺失结论时才能形成“不存在”的 FAIL，否则只能描述已检查区域或形成 INCONCLUSIVE。
 

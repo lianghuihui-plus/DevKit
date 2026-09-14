@@ -6,6 +6,7 @@ const { readJson } = require('../lib/execution-lifecycle');
 const { validateRuntimeRequest } = require('./contract');
 const { aggregateVerdict } = require('./result-integrity');
 const store = require('./store');
+const { attachTechnicalFallback } = require('../lib/technical-fallback');
 const {
   actionRefFor,
   finishTemplate,
@@ -43,10 +44,20 @@ function currentScene(execDir) {
   return store.readCurrentScene(execDir);
 }
 
+function currentPlan(execDir) {
+  return require('./narrative-service').narrativeStatus(execDir).latestPlan;
+}
+
 function contextualIssues(execDir, request, scene) {
   const issues = [];
   if (['inspect', 'act', 'knowledge', 'recover'].includes(request.capability) && !scene) {
     issues.push(issue('capability', '当前没有 Scene，请先使用 observe', 'SCENE_REQUIRED'));
+  }
+  if (['act', 'recover', 'finish'].includes(request.capability) && !currentPlan(execDir)) {
+    issues.push(issue('capability', '首次业务动作或结束前必须先使用 plan 记录执行计划', 'PLAN_REQUIRED'));
+  }
+  if (request.capability === 'plan' && currentPlan(execDir) && !request.reason) {
+    issues.push(issue('reason', '更新执行计划时必须说明路径变化原因', 'REQUIRED'));
   }
   issues.push(...validateExpectationRefs(execDir, request.expectationRefs));
   if (request.capability === 'inspect') {
@@ -148,7 +159,20 @@ function translateAgentFacingRequest(execDir, request) {
     view: { elements: 'ELEMENTS', capabilities: 'CAPABILITIES', layout: 'LAYOUT' }[request.channel],
     ...(request.filter ? { filter: request.filter } : {}),
   };
-  else if (request.capability === 'act') {
+  else if (request.capability === 'plan') {
+    const existing = currentPlan(execDir);
+    translated = {
+      operation: 'recordPlan',
+      decision: {
+        purpose: existing ? '调整执行计划' : '记录执行计划',
+        expectationRefs: [],
+        planUpdate: {
+          reason: request.reason || (existing ? 'PLAN_UPDATED' : 'INITIAL_PLAN'),
+          next: request.items,
+        },
+      },
+    };
+  } else if (request.capability === 'act') {
     const action = projectActions(scene).find((item) => item.actionRef === request.actionRef);
     const internalCapability = (scene.capabilities || []).find((item) => actionRefFor(item) === action.actionRef);
     translated = {
@@ -244,7 +268,7 @@ function projectAgentFacingResponse(execDir, response, request = null) {
       })),
     };
   }
-  return projected;
+  return attachTechnicalFallback(projected, 'EXECUTION', 'USE_CURRENT_RUNTIME');
 }
 
 function finishExample(values = {}) {
@@ -255,6 +279,16 @@ function retryExample(execDir, request = {}) {
   const scene = currentScene(execDir);
   const spec = caseSpec(execDir);
   if (!scene && ['inspect', 'act', 'knowledge', 'recover', 'finish'].includes(request.capability)) return { capability: 'observe' };
+  if (!currentPlan(execDir) && ['act', 'recover', 'finish'].includes(request.capability)) {
+    return { capability: 'plan', items: ['观察当前页面', '执行必要操作', '验证预期结果'] };
+  }
+  if (request.capability === 'plan') {
+    const items = Array.isArray(request.items) && request.items.length
+      ? request.items : ['观察当前页面', '执行必要操作', '验证预期结果'];
+    return currentPlan(execDir)
+      ? { capability: 'plan', reason: request.reason || '说明执行路径变化原因', items }
+      : { capability: 'plan', items };
+  }
   if (request.capability === 'act') {
     const action = projectActions(scene).find((item) => item.actionRef === request.actionRef) || projectActions(scene)[0];
     return action?.example || { capability: 'observe' };

@@ -100,6 +100,8 @@ const first = {
   execDir: firstExecDir,
   execution: JSON.parse(fs.readFileSync(path.join(firstExecDir, 'execution.json'), 'utf8')),
 };
+const firstRuntime = JSON.parse(fs.readFileSync(path.join(firstExecDir, 'runtime.json'), 'utf8'));
+assert.strictEqual(Object.hasOwn(firstRuntime.sessionRef, 'platformResource'), false);
 assert.strictEqual(first.execution.warmSessionReused, false);
 const firstMetrics = completeCase(first, 1);
 assert.strictEqual(firstMetrics.warmSessionReused, false);

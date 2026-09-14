@@ -125,6 +125,10 @@ function executeResult(verdict, options = {}) {
     observation: `截图中的目标页面表现可用于 ${verdict} 判断`,
   }, { now: '2026-09-04T02:00:01.100Z' });
   assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
+  const planned = run(started.execDir, {
+    capability: 'plan', items: ['确认目标页面现场', '完成验证点判断'],
+  }, { now: '2026-09-04T02:00:01.200Z' });
+  assert.strictEqual(planned.status, 'PLAN_RECORDED');
 
   if (options.technical) {
     const technical = run(started.execDir, {

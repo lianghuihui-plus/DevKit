@@ -12,11 +12,13 @@ const {
   writeJsonAtomic,
 } = require('../lib/execution-lifecycle');
 const { loadBatch } = require('./core');
+const { protocolBindings } = require('./service-support');
 
 const SCHEMA_VERSION = 1;
 const ACQUIRED_STATUSES = new Set(['ACTIVE', 'NOT_REQUIRED']);
 const TERMINAL_STATUSES = new Set(['RELEASED', 'RETAINED', 'NOT_REQUIRED']);
 const OWNERSHIPS = new Set(['FRAMEWORK_MANAGED', 'EXTERNAL', 'NONE']);
+const MAX_ACQUIRE_ATTEMPTS = 3;
 
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();
@@ -42,16 +44,6 @@ function ownerKey(workspaceRoot, batchId, contractSha) {
   return `batch-${crypto.createHash('sha256')
     .update(`${path.resolve(workspaceRoot)}\n${batchId}\n${contractSha}`)
     .digest('hex').slice(0, 24)}`;
-}
-
-function protocolBindings(options) {
-  return {
-    caseProtocolSha: options.caseProtocolSha,
-    coordinatorProtocolSha: options.coordinatorProtocolSha,
-    runtimeSha: options.runtimeSha,
-    adapterSha: options.adapterSha,
-    coordinatorSha: options.coordinatorSha,
-  };
 }
 
 function validateAdapterResult(result, operation) {
@@ -83,6 +75,8 @@ function acquisitionFromState(state) {
     ...(state.resource ? { resource: state.resource } : {}),
     ...(state.failureCode ? { failureCode: state.failureCode } : {}),
     ...(state.reason ? { reason: state.reason } : {}),
+    ...(state.retryable !== undefined ? { retryable: state.retryable } : {}),
+    ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
   };
 }
 
@@ -111,6 +105,10 @@ function hasEvent(eventsPath, eventId) {
   });
 }
 
+function waitsForOwnerBatch(result) {
+  return result?.diagnostic?.recovery?.kind === 'WAIT_OR_CANCEL_OWNER_BATCH';
+}
+
 function publishAcquisitionEvent(loaded, state) {
   const eventId = `platform-runtime-acquired-${state.batchId}`;
   if (hasEvent(loaded.paths.events, eventId)) return;
@@ -123,6 +121,7 @@ function publishAcquisitionEvent(loaded, state) {
     status: state.status,
     ownership: state.ownership,
     ...(state.failureCode ? { failureCode: state.failureCode } : {}),
+    ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
   });
 }
 
@@ -140,6 +139,7 @@ function publishReleaseEvent(loaded, state) {
     ownership: state.ownership,
     ...(state.failureCode ? { failureCode: state.failureCode } : {}),
     ...(state.reason ? { reason: state.reason } : {}),
+    ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
   });
 }
 
@@ -173,12 +173,17 @@ function acquireBatchPlatformRuntime(options) {
       || draft.bindingSha !== bindingSha(loaded.contract.binding) || draft.ownerKey !== expectedOwner) {
       throw contractError('PLATFORM_RUNTIME_ACQUIRE_DRAFT_INVALID', 'platform runtime acquire draft does not match the batch');
     }
-    if (!draft.result) {
+    const priorAttempt = Number(draft.attempt || 0);
+    const retryPending = draft.result?.ok === false && draft.result.retryable === true
+      && (waitsForOwnerBatch(draft.result) || priorAttempt < MAX_ACQUIRE_ATTEMPTS);
+    if (!draft.result || retryPending) {
+      draft.attempt = priorAttempt + 1;
       try {
         draft.result = validateAdapterResult(options.adapter.acquirePlatformRuntime({
           binding: loaded.contract.binding,
           ownerKey: expectedOwner,
           batchId: options.batchId,
+          workspaceRoot: options.workspaceRoot,
         }), 'acquire');
       } catch (error) {
         draft.result = {
@@ -193,6 +198,24 @@ function acquireBatchPlatformRuntime(options) {
       writeJsonAtomic(paths.acquireDraft, draft);
     }
     const acquired = draft.result;
+    const waitingForOwner = waitsForOwnerBatch(acquired);
+    if (acquired.ok === false && acquired.retryable === true
+      && (waitingForOwner || Number(draft.attempt || 0) < MAX_ACQUIRE_ATTEMPTS)) {
+      return {
+        ...acquired,
+        status: 'ACQUIRE_PENDING',
+        waitFor: waitingForOwner ? 'OWNER_BATCH_TERMINAL' : 'PLATFORM_RUNTIME',
+        attempt: Number(draft.attempt || 0),
+        ...(!waitingForOwner ? { maxAttempts: MAX_ACQUIRE_ATTEMPTS } : {}),
+      };
+    }
+    const terminalAcquired = acquired.ok === false && acquired.retryable === true
+      ? {
+        ...acquired,
+        retryable: false,
+        diagnostic: acquired.diagnostic ? { ...acquired.diagnostic, retryable: false } : undefined,
+      }
+      : acquired;
     const state = {
       schemaVersion: SCHEMA_VERSION,
       type: 'batchPlatformRuntime',
@@ -200,11 +223,13 @@ function acquireBatchPlatformRuntime(options) {
       platform: loaded.contract.binding.platform,
       bindingSha: draft.bindingSha,
       ownerKey: expectedOwner,
-      status: acquired.ok ? acquired.status : 'ACQUIRE_FAILED',
-      ownership: acquired.ok ? acquired.ownership : 'NONE',
-      ...(acquired.resource ? { resource: acquired.resource } : {}),
-      ...(acquired.failureCode ? { failureCode: acquired.failureCode } : {}),
-      ...(acquired.reason ? { reason: acquired.reason } : {}),
+      status: terminalAcquired.ok ? terminalAcquired.status : 'ACQUIRE_FAILED',
+      ownership: terminalAcquired.ok ? terminalAcquired.ownership : 'NONE',
+      ...(terminalAcquired.resource ? { resource: terminalAcquired.resource } : {}),
+      ...(terminalAcquired.failureCode ? { failureCode: terminalAcquired.failureCode } : {}),
+      ...(terminalAcquired.reason ? { reason: terminalAcquired.reason } : {}),
+      ...(terminalAcquired.retryable !== undefined ? { retryable: terminalAcquired.retryable } : {}),
+      ...(terminalAcquired.diagnostic ? { diagnostic: terminalAcquired.diagnostic } : {}),
       acquiredAt: draft.recordedAt || draft.createdAt,
       updatedAt: draft.recordedAt || draft.createdAt,
     };
@@ -216,7 +241,7 @@ function acquireBatchPlatformRuntime(options) {
 }
 
 function releaseBatchPlatformRuntime(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options, 'FINALIZE'));
   if (!['FINALIZING', 'CANCELLING', 'BLOCKING', 'COMPLETED', 'CANCELLED', 'BLOCKED'].includes(loaded.state.status)) {
     throw contractError('PLATFORM_RUNTIME_RELEASE_EARLY', 'platform runtime can only be released after the batch reaches a terminal state');
   }
@@ -291,7 +316,7 @@ function releaseBatchPlatformRuntime(options) {
 }
 
 function loadBatchPlatformRuntime(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options, 'READ'));
   const state = readJson(runtimePaths(loaded.paths.batchDir).state, null);
   return state ? validateState(state, loaded) : null;
 }

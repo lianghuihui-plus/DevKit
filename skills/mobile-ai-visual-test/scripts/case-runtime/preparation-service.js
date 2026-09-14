@@ -97,16 +97,15 @@ function refreshPlatformSession(execDir, execution, draft) {
   if (!draft.deviceResult?.platformSession) return;
   const runtimePath = store.paths(execDir).runtime;
   const runtime = readJson(runtimePath, null);
-  const resource = commitPlatformSessionRefresh({
+  const platformRuntime = readJson(runtime.sessionRef.platformRuntimePath, null);
+  commitPlatformSessionRefresh({
     sessionRef: runtime.sessionRef,
     batchId: execution.batchId,
-    previousSessionId: runtime.sessionRef.platformResource?.session?.sessionId,
+    previousSessionId: platformRuntime?.resource?.session?.sessionId,
     platformSession: draft.deviceResult.platformSession,
     operationId: draft.operationId,
     now: draft.resultRecordedAt || new Date().toISOString(),
   });
-  runtime.sessionRef.platformResource = resource;
-  writeJsonAtomic(runtimePath, runtime);
 }
 
 function markFailure(execDir, draft, error, options = {}) {
@@ -240,7 +239,11 @@ function continuePreparation(execDir, initialDraft, options = {}) {
     }
     if (draft.status === 'SESSION_ROTATED') {
       const binding = resolveTargetBinding(execDir, execution);
-      const started = (options.restartApp || invokeAppRestart)(binding, options);
+      const started = (options.restartApp || invokeAppRestart)(binding, {
+        ...options,
+        sessionRef: runtime.sessionRef,
+        operationId: draft.operationId,
+      });
       if (!started?.coldStartVerified || !started?.startupDisplayVerified) {
         throw unavailable(started?.failureCode || 'APP_PREPARATION_START_FAILED', started?.reason || 'App start after preparation was not verified');
       }

@@ -159,6 +159,26 @@ const emptyPlan = buildExecutionNarrative({
 });
 assert.strictEqual(emptyPlan.recordingStatus, 'PARTIAL');
 
+const agentAuthoredInitialPlan = buildExecutionNarrative({
+  execution: { executionId: 'execution-agent-plan' },
+  events: [
+    {
+      sequence: 1, time: '2026-09-04T01:00:00.000Z', type: 'caseContextRecorded', contextVersion: 1, reason: 'FROZEN_CASE_SPEC',
+      caseContext: { ...report.events[0].caseContext, initialPlan: [] },
+    },
+    {
+      sequence: 2, time: '2026-09-04T01:00:01.000Z', type: 'agentDecisionRecorded', decisionId: 'decision-plan', requestedOperation: 'recordPlan',
+      decision: { purpose: '记录执行计划', expectationRefs: [], planUpdate: { reason: 'INITIAL_PLAN', next: ['观察首页', '验证目标内容'] } },
+    },
+  ],
+  result: { checks: [] },
+});
+assert.deepStrictEqual(agentAuthoredInitialPlan.initialPlan.items, ['观察首页', '验证目标内容']);
+assert.strictEqual(agentAuthoredInitialPlan.initialPlan.version, 1);
+assert.strictEqual(agentAuthoredInitialPlan.plan.version, 1);
+assert.strictEqual(agentAuthoredInitialPlan.planHistory.length, 1);
+assert.strictEqual(agentAuthoredInitialPlan.recordingStatus, 'COMPLETE');
+
 const understandingRevisionReport = {
   latest: '/tmp/execution-understanding-revision',
   execution: { executionId: 'execution-understanding-revision' },

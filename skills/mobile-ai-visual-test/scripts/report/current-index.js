@@ -10,7 +10,7 @@ const {
 } = require('../lib/display-format');
 
 const PLATFORM_LABELS = Object.freeze({ harmony: 'HarmonyOS', android: 'Android', ios: 'iOS' });
-const VERDICT_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', UNKNOWN: '无法判断', CANCELLED: '已取消', NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行', REPORT_ERROR: '报告数据异常' });
+const VERDICT_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', UNKNOWN: '无法判断', CANCELLED: '已取消', NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行', REPORT_ERROR: '报告数据异常', REPORT_DATA_INVALID: '报告数据异常' });
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
 const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', CANCELLED: '已取消', TECHNICALLY_BLOCKED: '技术阻塞', STOPPED_BY_BUDGET: '达到时限', INTERRUPTED: '执行中断' });
 const BATCH_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', RUNNING: '执行中', FINALIZING: '收尾中', CANCELLING: '取消收尾中', BLOCKING: '阻塞收尾中', CANCELLED: '已取消', COMPLETED: '已完成', BLOCKED: '已停止', DEGRADED: '已停止' });
@@ -175,9 +175,11 @@ function renderPlatformRun(platform) {
   const verdict = dashboardVerdict(platform);
   const counts = platform.currentMetrics?.counts || {};
   const executionState = executionStatusLabel(platform.executionStatus);
+  const unavailable = platform.readability && platform.readability !== 'READABLE';
+  const detail = unavailable ? platform.reason || executionState : `${executionState} · ${basisLabel(platform.verdictBasis)}`;
   return `<article class="platform-run ${escapeHtml(platform.platform)}">
-    <div class="run-platform"><span class="platform-token">${escapeHtml(PLATFORM_TOKENS[platform.platform] || '?')}</span><div><b>${escapeHtml(displayPlatform(platform.platform))}</b><small>${escapeHtml(executionState)} · ${escapeHtml(basisLabel(platform.verdictBasis))}</small></div></div>
-    ${renderStatus(verdict)}
+    <div class="run-platform"><span class="platform-token">${escapeHtml(PLATFORM_TOKENS[platform.platform] || '?')}</span><div><b>${escapeHtml(displayPlatform(platform.platform))}</b><small>${escapeHtml(detail)}</small></div></div>
+    ${renderStatus(unavailable ? platform.status : verdict)}
     <dl><div class="time-metric"><dt>用例总耗时</dt><dd>${escapeHtml(formatDuration(platform.durationMs))}</dd></div><div class="time-metric"><dt>开始时间</dt><dd>${escapeHtml(formatDisplayTime(platform.startedAt))}</dd></div><div class="time-metric"><dt>结束时间</dt><dd>${escapeHtml(formatDisplayTime(platform.endedAt))}</dd></div><div><dt>动作 / 观察</dt><dd>${metricValue(counts.actions)} / ${metricValue(counts.observations)}</dd></div><div><dt>验证点</dt><dd>${escapeHtml(platform.coverage || '-')}</dd></div><div><dt>恢复</dt><dd>${metricValue(platform.currentMetrics?.executionRecoveryCount)}</dd></div></dl>
     <a class="report-button" href="${escapeHtml(platform.contextHref)}" title="查看 ${escapeHtml(displayPlatform(platform.platform))} 执行报告" aria-label="查看执行报告"><span aria-hidden="true">↗</span></a>
   </article>`;
@@ -194,12 +196,14 @@ function caseFilterVerdicts(platforms) {
 }
 
 function renderCase(item, index) {
-  const platforms = (item.platforms || []).filter((platform) => dashboardVerdict(platform) !== 'NOT_RUN')
+  const platforms = (item.platforms || []).filter((platform) => platform.status !== 'NOT_RUN')
     .sort((left, right) => PLATFORM_ORDER.indexOf(left.platform) - PLATFORM_ORDER.indexOf(right.platform));
   const verdicts = casePlatformVerdicts(item.platforms || []);
   const count = (status) => verdicts.filter((value) => value === status).length;
   const summary = item.status === 'REPORT_ERROR'
     ? `报告数据异常：${item.reason || '无法读取执行数据'}`
+    : item.status === 'REPORT_DATA_INVALID'
+      ? `报告数据异常：${item.reason || '当前执行数据损坏'}`
     : item.status === 'NEEDS_RERUN'
       ? `需重新执行：${item.reason || '用例原文已更新'}`
     : item.sourceSummary || '原始用例内容已收录';

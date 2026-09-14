@@ -36,6 +36,18 @@ function activeDispatch(state) {
   return state.dispatches[state.activeDispatchId] || null;
 }
 
+function readActiveDispatch(directory, executionId) {
+  const paths = statePaths(directory);
+  if (!fs.existsSync(paths.state)) return null;
+  const state = validateState(readJson(paths.state, null), executionId);
+  const dispatch = activeDispatch(state);
+  if (!dispatch) return null;
+  if (dispatch.executionId !== executionId || !['PREPARED', 'CONSUMED'].includes(dispatch.status)) {
+    throw contractError('HANDOFF_LEASE_INVALID', 'active dispatch state is invalid');
+  }
+  return JSON.parse(JSON.stringify(dispatch));
+}
+
 function assertActiveDispatch(directory, executionId, sequence) {
   const state = validateState(readJson(statePaths(directory).state, null), executionId);
   const dispatch = activeDispatch(state);
@@ -121,6 +133,7 @@ module.exports = {
   assertActiveDispatch,
   claimDispatch,
   claimTokenFor,
+  readActiveDispatch,
   registerDispatch,
   statePaths,
 };

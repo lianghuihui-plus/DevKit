@@ -13,6 +13,7 @@ const { publishReportBundle } = require('./report-publisher');
 const { assertWorkspace } = require('../lib/workspace');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { deriveExecutionTiming } = require('../lib/execution-timing');
+const { recoverRetryRequiredPublications } = require('./publication-state');
 
 const PLATFORM_ORDER = ['android', 'ios', 'harmony'];
 
@@ -64,8 +65,33 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
   report = report || readLatestExecutionReport(caseDir, { platform });
   if (!report) return null;
   const display = report.display || {};
-  const narrative = buildExecutionNarrative(report);
   currentCase = currentCase || validateCaseContract(readJson(path.join(caseDir, 'case.json')));
+  if (report.readability !== 'READABLE') {
+    return {
+      platform,
+      status: display.status,
+      verdict: null,
+      verdictBasis: null,
+      executionStatus: null,
+      latestExecutionId: report.execution?.executionId || '',
+      startedAt: display.startedAt || '',
+      endedAt: display.endedAt || '',
+      updatedAt: display.endedAt || display.startedAt || '',
+      durationMs: null,
+      durationBasis: 'EXECUTION_TOTAL',
+      phaseDurations: null,
+      reason: display.summary || '',
+      failureCode: display.failureCode || '',
+      currentMetrics: null,
+      coverage: '-',
+      recordingStatus: 'UNAVAILABLE',
+      sourceCurrent: null,
+      readability: report.readability,
+      schemaFamily: report.schemaFamily,
+      contextPath: path.join(caseRuntimeDir(caseDir, platform), 'CONTEXT.html'),
+    };
+  }
+  const narrative = buildExecutionNarrative(report);
   const sourceCurrent = report.execution?.sourceSha === currentCase.identity.sourceSha;
   return {
     platform,
@@ -86,6 +112,7 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
     coverage: sourceCurrent ? `${narrative.coverage.covered}/${narrative.coverage.total}` : '-',
     recordingStatus: sourceCurrent ? narrative.recordingStatus : 'UNAVAILABLE',
     sourceCurrent,
+    readability: report.readability,
     schemaFamily: report.schemaFamily,
     contextPath: path.join(caseRuntimeDir(caseDir, platform), 'CONTEXT.html'),
   };
@@ -125,9 +152,15 @@ function latestSummary(platforms) {
 }
 
 function aggregateCase(platforms) {
-  const status = aggregateStatus(platforms);
-  const statusSource = platforms.find((entry) => entry.status === status) || latestSummary(platforms);
-  const timeSource = latestSummary(platforms) || statusSource;
+  const readable = platforms.filter((entry) => entry.readability === 'READABLE');
+  const considered = readable.length ? readable : platforms;
+  const status = readable.length
+    ? aggregateStatus(readable)
+    : platforms.some((entry) => entry.readability === 'DATA_INVALID')
+      ? 'REPORT_DATA_INVALID'
+      : platforms.some((entry) => entry.readability === 'FORMAT_UNSUPPORTED') ? 'NEEDS_RERUN' : 'NOT_RUN';
+  const statusSource = considered.find((entry) => entry.status === status) || latestSummary(considered);
+  const timeSource = latestSummary(considered) || statusSource;
   return {
     ...(statusSource || {}), status,
     latestExecutionId: timeSource?.latestExecutionId || '',
@@ -135,6 +168,16 @@ function aggregateCase(platforms) {
     endedAt: timeSource?.endedAt || '',
     updatedAt: timeSource?.updatedAt || '',
   };
+}
+
+function unavailablePlatformReport(caseJson, platform, report) {
+  const display = report.display || {};
+  const title = `${caseJson.identity.caseNo ? `${caseJson.identity.caseNo} ` : ''}${caseJson.identity.title}`;
+  const status = display.status === 'NEEDS_RERUN' ? '需重新执行' : '报告数据异常';
+  const reason = display.summary || '执行数据不可读取';
+  const markdown = `# ${title}\n\n- 平台：${platform}\n- 状态：${status}\n- 原因：${reason}\n`;
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} · ${escapeHtml(status)}</title><style>body{margin:0;background:#f5f7f9;color:#20262d;font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(760px,calc(100% - 32px));margin:48px auto;padding:24px;border:1px solid #dfe4e9;border-left:4px solid #b7791f;background:#fff}h1{margin:0 0 18px;font-size:22px}.status{color:#9c640c;font-weight:800}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(platform)}</p><p class="status">${escapeHtml(status)}</p><p>${escapeHtml(reason)}</p></main></body></html>`;
+  return { markdown, html };
 }
 
 function reportErrorModel(rootDir, caseDir, error) {
@@ -214,13 +257,18 @@ function rootOverview(caseDir, caseJson) {
 function recordCaseReportPublicationTiming(caseDir, report, options = {}) {
   if (!report?.completion || !report.execution?.batchId || !report.execution?.endedAt) return null;
   const sidecarPath = path.join(caseRootFromCaseDir(caseDir), 'runs', report.execution.batchId, 'report-publication.json');
-  const sidecar = readJson(sidecarPath, {
-    schemaVersion: 1,
-    batchId: report.execution.batchId,
-    status: 'PENDING',
-    attempts: [],
-    caseTimings: {},
-  });
+  let sidecar;
+  try {
+    sidecar = readJson(sidecarPath, {
+      schemaVersion: 1,
+      batchId: report.execution.batchId,
+      status: 'PENDING',
+      attempts: [],
+      caseTimings: {},
+    });
+  } catch {
+    return null;
+  }
   const existing = sidecar.caseTimings?.[report.execution.executionId];
   if (existing?.caseReportPublishedAt) return existing;
   const caseReportPublishedAt = options.now || new Date().toISOString();
@@ -248,21 +296,33 @@ function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = 
   let needsPublicationTiming = false;
   if (options.platform) {
     current = report || readLatestExecutionReport(caseDir, options);
-    if (!current || current.schemaFamily !== 'current') throw new Error(`CURRENT_EXECUTION_REQUIRED: ${options.platform}`);
-    const publication = current.execution?.batchId
-      ? readJson(path.join(caseRootFromCaseDir(caseDir), 'runs', current.execution.batchId, 'report-publication.json'), null)
-      : null;
-    const existingPublication = publication?.caseTimings?.[current.execution.executionId]
-      || publication?.publications?.[current.execution.executionId];
-    needsPublicationTiming = Boolean(current.completion && current.execution?.endedAt
-      && !existingPublication?.caseReportPublishedAt);
-    snapshot = current.snapshot ? {
-      ...current.snapshot,
-      identity: { ...current.snapshot.identity, ...(caseJson.identity.caseNo ? { caseNo: caseJson.identity.caseNo } : {}) },
-    } : caseJson;
-    contextMarkdown = renderCurrentContextMarkdown(snapshot, current);
-    contextHtml = renderCurrentContextHtml(snapshot, current);
-    executionId = current.execution?.executionId || null;
+    if (!current) throw new Error(`CURRENT_EXECUTION_REQUIRED: ${options.platform}`);
+    if (current.readability !== 'READABLE') {
+      const unavailable = unavailablePlatformReport(caseJson, options.platform, current);
+      contextMarkdown = unavailable.markdown;
+      contextHtml = unavailable.html;
+      executionId = current.execution?.executionId || null;
+    } else {
+      let publication = null;
+      if (current.execution?.batchId) {
+        try {
+          publication = readJson(path.join(caseRootFromCaseDir(caseDir), 'runs', current.execution.batchId, 'report-publication.json'), null);
+        } catch {
+          publication = null;
+        }
+      }
+      const existingPublication = publication?.caseTimings?.[current.execution.executionId]
+        || publication?.publications?.[current.execution.executionId];
+      needsPublicationTiming = Boolean(current.completion && current.execution?.endedAt
+        && !existingPublication?.caseReportPublishedAt);
+      snapshot = current.snapshot ? {
+        ...current.snapshot,
+        identity: { ...current.snapshot.identity, ...(caseJson.identity.caseNo ? { caseNo: caseJson.identity.caseNo } : {}) },
+      } : caseJson;
+      contextMarkdown = renderCurrentContextMarkdown(snapshot, current);
+      contextHtml = renderCurrentContextHtml(snapshot, current);
+      executionId = current.execution?.executionId || null;
+    }
   } else {
     const overview = rootOverview(caseDir, caseJson, options.platforms || null);
     contextMarkdown = overview.markdown;
@@ -320,7 +380,9 @@ function renderIndexForRoot(rootDir) {
   }
   const cases = collectIndexCases(rootDir, { errors, projections, publishErrors: true });
   assertIndexLinks(rootDir, cases);
-  return renderIndexArtifacts(rootDir, cases);
+  const indexPath = renderIndexArtifacts(rootDir, cases);
+  recoverRetryRequiredPublications(rootDir);
+  return indexPath;
 }
 
 function refreshBatchIndex(rootDir, targetCaseDirs) {

@@ -111,8 +111,9 @@ assert.strictEqual(started.brief.runtime.requestPath, path.join(started.execDir,
 assert.match(started.brief.runtime.command, /--dispatch-sequence 1$/);
 assert.strictEqual(started.brief.runtime.commands, undefined);
 assert.strictEqual(started.brief.runtime.allowedOperations, undefined);
-assert.deepStrictEqual(Object.keys(started.brief.runtime.capabilities), ['observe', 'inspect', 'act', 'knowledge', 'recover', 'finish']);
+assert.deepStrictEqual(Object.keys(started.brief.runtime.capabilities), ['observe', 'inspect', 'plan', 'act', 'knowledge', 'recover', 'finish']);
 assert.strictEqual(started.brief.runtime.interfaceKind, 'AGENT_FACING');
+assert.match(started.brief.runtime.input, /每次.*新建.*消费后删除/);
 assert.strictEqual(started.brief.runtime.capabilities.prepare, undefined);
 assert.deepStrictEqual(started.brief.runtime.capabilities.recover.required, ['reason']);
 assert.strictEqual(started.brief.runtime.contractDefinitions, undefined);
@@ -193,6 +194,14 @@ assert.strictEqual(continuation.executionId, started.execution.executionId);
 assert.strictEqual(continuation.handoff.path.includes('/2-'), true);
 assert.strictEqual(fs.readFileSync(path.join(started.execDir, 'events.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean)
   .map((line) => JSON.parse(line)).at(-1).type, 'agentContinuation');
+const resumedPreparedContinuation = startCurrentCase({
+  workspaceRoot: root,
+  batchId,
+  implementationSha: contract.implementationSha,
+  now: T0,
+});
+assert.deepStrictEqual(resumedPreparedContinuation.handoff, continuation.handoff,
+  'retry after a lost response must return the active prepared continuation');
 const continuationBrief = loadAgentHandoff({
   workspaceRoot: root,
   handoffPath: continuation.handoff.path,
@@ -256,7 +265,7 @@ assert.strictEqual(JSON.parse(childProcess.execSync(activeBrief.runtime.command,
 const invalidClientCall = childProcess.spawnSync(started.runtime.agentFacing.entry, ['--dispatch-sequence', '4', 'act'], { encoding: 'utf8' });
 assert.strictEqual(invalidClientCall.status, 0);
 assert.strictEqual(JSON.parse(invalidClientCall.stdout).status, 'INPUT_INVALID');
-assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'WAIT_CASE_AGENT');
+assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'WAIT_EXECUTION_RESULT');
 
 let observationCount = 0;
 let actionInvocationCount = 0;
@@ -982,7 +991,7 @@ const committedManifest = JSON.parse(fs.readFileSync(path.join(started.execDir, 
 assert.ok(committedManifest.files.some((entry) => entry.path === 'validation-profile.snapshot.json'));
 assert.strictEqual(committed.completion.verdict, 'PASS');
 assert.strictEqual(committed.state.status, 'FINALIZING');
-assert.deepStrictEqual(committed.state.finalization, { cause: 'COMPLETED', executionsSettled: false, casesCommitted: true, platformReleased: false, reportsPublished: false });
+assert.deepStrictEqual(committed.state.finalization, { cause: 'COMPLETED', executionsSettled: false, casesCommitted: true, platformReleased: false });
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'SETTLE_EXECUTIONS');
 recordFinalizationStep({
   workspaceRoot: root,
@@ -993,22 +1002,13 @@ recordFinalizationStep({
   now: '2026-09-03T10:00:03.050Z',
 });
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'RELEASE_PLATFORM');
-recordFinalizationStep({
+const finalizedBatch = recordFinalizationStep({
   workspaceRoot: root,
   batchId,
   implementationSha: contract.implementationSha,
   step: 'platformReleased',
   result: { ok: true, status: 'RELEASED' },
   now: '2026-09-03T10:00:03.100Z',
-});
-assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'PUBLISH_REPORTS');
-const finalizedBatch = recordFinalizationStep({
-  workspaceRoot: root,
-  batchId,
-  implementationSha: contract.implementationSha,
-  step: 'reportsPublished',
-  result: { status: 'PUBLISHED' },
-  now: '2026-09-03T10:00:03.200Z',
 });
 assert.strictEqual(finalizedBatch.state.status, 'COMPLETED');
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'BATCH_COMPLETE');

@@ -12,13 +12,17 @@ const {
   confirmEnvironment,
   createExecutionRequest,
   loadEnvironmentConfirmation,
+  loadExecutionRequest,
+  validateEnvironmentConfirmation,
 } = require('../lib/run-control');
 const { readJson, withFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { attachTechnicalFallback } = require('../lib/technical-fallback');
 const { validateCoordinatorRequest } = require('./agent-facing-contract');
 
 const SKILL_ROOT = path.resolve(__dirname, '../..');
 const COMPILER_PROMPT = '你是独立 Case Definition Compiler。执行给定的 loaderCommand，只处理其返回的单个用例原文；按照 Compiler Prompt 生成候选定义，并使用返回的 Publisher 接口发布。不要访问设备、Scene、Batch、历史执行或报告。';
 const CASE_AGENT_PROMPT = '你是独立 Case Agent。执行给定的 loaderCommand，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。';
+const PLATFORMS = Object.freeze(['harmony', 'android', 'ios']);
 
 function coordinatorError(message, issues = [], code = 'COORDINATOR_INPUT_INVALID') {
   const error = new Error(`${code}: ${message}`);
@@ -71,8 +75,18 @@ function allocateBatchId(now = null) {
   return `batch-${stamp}-${crypto.randomBytes(4).toString('hex')}`;
 }
 
-function saveCoordinatorState(state) {
-  writeJsonAtomic(state.statePath, { ...state, updatedAt: state.updatedAt || new Date().toISOString() });
+function stateContent(value) {
+  const { updatedAt, ...content } = value || {};
+  return content;
+}
+
+function saveCoordinatorState(state, now = null) {
+  const previous = readJson(state.statePath, null);
+  const changed = !previous
+    || JSON.stringify(stateContent(previous)) !== JSON.stringify(stateContent(state));
+  if (changed) state.updatedAt = now || new Date().toISOString();
+  else if (previous?.updatedAt) state.updatedAt = previous.updatedAt;
+  if (changed) writeJsonAtomic(state.statePath, state);
   return state;
 }
 
@@ -109,25 +123,52 @@ function publicBase(state) {
   return { statePath: state.statePath, commands: state.commands };
 }
 
-function completedResponse(state, outcome) {
+function reportPublicationResponse(publication = null) {
+  const reportStatus = publication?.status || 'DEGRADED';
+  return {
+    reportStatus,
+    ...(reportStatus === 'PUBLISHED' ? {} : {
+      reportErrorCode: publication?.errorCode || 'REPORT_NOT_PUBLISHED',
+      reportReason: publication?.reason || '本次运行未生成可发布报告',
+    }),
+  };
+}
+
+function completedResponse(state, outcome, publication = state.reportPublication) {
+  const report = reportPublicationResponse(publication);
   return {
     status: 'COMPLETE',
     outcome,
-    reportPath: path.join(state.workspace, 'index.html'),
+    ...report,
+    ...(report.reportStatus === 'PUBLISHED' ? { reportPath: path.join(state.workspace, 'index.html') } : {}),
     ...publicBase(state),
   };
+}
+
+function blockedResponse(state) {
+  const report = reportPublicationResponse(state.reportPublication);
+  const diagnostic = state.terminalFailure?.diagnostic;
+  return attachTechnicalFallback({
+    status: 'BLOCKED',
+    code: state.terminalFailure?.code || 'BATCH_BLOCKED',
+    reason: state.terminalFailure?.reason || '批次已经阻塞',
+    ...(diagnostic ? { diagnostic } : {}),
+    ...report,
+    ...(report.reportStatus === 'PUBLISHED' ? { reportPath: path.join(state.workspace, 'index.html') } : {}),
+    ...publicBase(state),
+  }, 'BATCH', 'PREPARE_NEW_RUN');
 }
 
 function definitionStatus(target) {
   return executeCaseDefinition({ command: 'status', caseDir: target.caseDir });
 }
 
-function nextDefinitionResponse(state) {
+function nextDefinitionResponse(state, options = {}) {
   for (const target of state.targets) {
     const status = definitionStatus(target);
     if (status.status === 'CASE_DEFINITION_REQUIRED') {
       state.phase = 'WAITING_FOR_COMPILER';
-      saveCoordinatorState(state);
+      saveCoordinatorState(state, options.now);
       return {
         status: 'NEED_COMPILER',
         caseNo: target.caseNo,
@@ -141,39 +182,200 @@ function nextDefinitionResponse(state) {
   return null;
 }
 
-function confirmationResponse(state) {
+function selectPlatformChoice(platform) {
+  return {
+    id: `SELECT_${platform.toUpperCase()}`,
+    template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform },
+  };
+}
+
+function buildConfirmationChoices(state, environment) {
+  const confirmChoices = [];
+  if (environment) {
+    confirmChoices.push({
+      id: 'USE_CURRENT',
+      template: {
+        capability: 'confirmRun',
+        decision: 'USE_CURRENT',
+        userInstruction: `确认在当前设备和 App 上执行用例 ${state.targets.map((item) => item.caseNo).join(', ')}`,
+      },
+    });
+  }
+  confirmChoices.push(...PLATFORMS.map(selectPlatformChoice));
+  return confirmChoices;
+}
+
+function confirmationChoicesForState(state) {
   let environment = null;
+  let environmentError = null;
   try {
     environment = loadEnvironmentConfirmation(state.workspace);
   } catch (error) {
-    if (error.code !== 'ENVIRONMENT_NOT_CONFIRMED') throw error;
+    environmentError = error;
   }
+  return { confirmChoices: buildConfirmationChoices(state, environment), environment, environmentError };
+}
+
+function environmentDecisionResponse(state, options = {}, details = {}) {
+  const { confirmChoices, environment, environmentError } = confirmationChoicesForState(state);
   state.environmentConfirmed = Boolean(environment);
-  state.phase = 'WAITING_FOR_CONFIRMATION';
-  if (!environment) {
-    const confirmTemplate = { capability: 'confirmRun', platform: 'harmony' };
-    state.pendingConfirmation = confirmTemplate;
-    saveCoordinatorState(state);
-    return {
-      status: 'NEED_USER_CONFIRMATION',
-      reason: 'SELECT_PLATFORM',
-      confirmTemplate,
-      ...publicBase(state),
-    };
-  }
-  const confirmTemplate = {
-    capability: 'confirmRun',
-    userInstruction: `确认在当前设备和 App 上执行用例 ${state.targets.map((item) => item.caseNo).join(', ')}`,
-  };
-  state.pendingConfirmation = confirmTemplate;
-  saveCoordinatorState(state);
+  state.currentEnvironmentOffer = environment ? JSON.parse(JSON.stringify(environment)) : null;
+  state.phase = 'NEED_ENVIRONMENT_DECISION';
+  state.bindingConfirmationTemplate = null;
+  saveCoordinatorState(state, options.now);
   return {
     status: 'NEED_USER_CONFIRMATION',
-    reason: 'CONFIRM_RUN',
-    binding: environment.binding,
-    confirmTemplate,
+    reason: details.reason || 'CHOOSE_ENVIRONMENT',
+    ...(details.code ? { code: details.code } : {}),
+    ...(environment ? { binding: environment.binding } : {}),
+    ...(details.diagnostics?.length ? { diagnostics: details.diagnostics } : {}),
+    ...(!details.diagnostics?.length && environmentError && environmentError.code !== 'ENVIRONMENT_NOT_CONFIRMED'
+      ? { diagnostics: [{ code: environmentError.code || 'ENVIRONMENT_CONFIRMATION_INVALID', message: environmentError.message || String(environmentError) }] }
+      : {}),
+    confirmChoices,
     ...publicBase(state),
   };
+}
+
+function coordinatorInputRecovery(statePath, command) {
+  if (command !== 'confirm') return {};
+  const state = loadCoordinatorState(statePath);
+  if (state.phase === 'NEED_BINDING_CONFIRMATION' && state.bindingConfirmationTemplate) {
+    return { retryWith: state.bindingConfirmationTemplate };
+  }
+  if (state.phase === 'NEED_ENVIRONMENT_DECISION') {
+    return { confirmChoices: buildConfirmationChoices(state, state.currentEnvironmentOffer) };
+  }
+  return {};
+}
+
+function bindingConfirmationResponse(state, options = {}) {
+  if (!state.bindingConfirmationTemplate || !state.selectedProbe) {
+    return environmentDecisionResponse(state, options, {
+      reason: 'CHOOSE_ENVIRONMENT',
+      code: 'PROBE_REQUIRED',
+      diagnostics: [{ code: 'PROBE_REQUIRED', message: '平台探测结果不可用，请重新选择平台' }],
+    });
+  }
+  saveCoordinatorState(state, options.now);
+  return {
+    status: 'NEED_USER_CONFIRMATION',
+    reason: 'CONFIRM_ENVIRONMENT_AND_RUN',
+    devices: state.selectedProbe.devices,
+    ...(state.selectedProbe.deviceDetected !== undefined ? { deviceDetected: state.selectedProbe.deviceDetected } : {}),
+    ...(state.selectedProbe.executionReady !== undefined ? { executionReady: state.selectedProbe.executionReady } : {}),
+    ...(state.selectedProbe.diagnostics?.length ? { diagnostics: state.selectedProbe.diagnostics } : {}),
+    ...(state.selectedProbe.executionReady === false && state.selectedProbe.platform === 'ios'
+      && state.selectedProbe.diagnostics?.some((item) => item.id === 'iosRealDeviceSigningIncomplete')
+      ? { requiredBindingFields: ['xcodeOrgId', 'xcodeSigningId', 'updatedWDABundleId'] } : {}),
+    confirmTemplate: state.bindingConfirmationTemplate,
+    ...publicBase(state),
+  };
+}
+
+function assertCoordinatorPhase(state, expected, decision) {
+  if (state.phase !== expected) {
+    throw coordinatorError(`${decision} 不适用于当前运行阶段 ${state.phase}`, [{
+      field: 'decision', message: `当前阶段要求 ${expected}`, code: 'DECISION_NOT_ALLOWED',
+    }]);
+  }
+}
+
+function interruptInitialization(options, step) {
+  if (options.interruptAfter !== step) return;
+  const error = new Error(`MAVT_COORDINATOR_INTERRUPTED: ${step}`);
+  error.code = 'MAVT_COORDINATOR_INTERRUPTED';
+  throw error;
+}
+
+function startInitialization(state, environment, userInstruction, options = {}) {
+  const frozen = validateEnvironmentConfirmation(JSON.parse(JSON.stringify(environment)), {
+    workspaceRoot: state.workspace,
+  });
+  state.phase = 'INITIALIZING_RUN';
+  state.environmentConfirmed = true;
+  state.currentEnvironmentOffer = null;
+  state.bindingConfirmationTemplate = null;
+  state.initialization = {
+    userInstruction,
+    environmentFrozen: {
+      confirmationId: frozen.confirmationId,
+      confirmationSha: frozen.confirmationSha,
+      environment: frozen,
+    },
+    executionRequestCreated: null,
+    batchInitialized: null,
+    startedAt: options.now || new Date().toISOString(),
+  };
+  saveCoordinatorState(state, options.now);
+  interruptInitialization(options, 'environmentFrozen');
+  return resumeInitialization(state, options);
+}
+
+function resumeInitialization(state, options = {}) {
+  const initialization = state.initialization;
+  if (!initialization?.environmentFrozen?.environment || !initialization.userInstruction) {
+    throw coordinatorError('运行初始化记录缺失或损坏', [], 'COORDINATOR_INITIALIZATION_INVALID');
+  }
+  const environment = validateEnvironmentConfirmation(
+    JSON.parse(JSON.stringify(initialization.environmentFrozen.environment)),
+    { workspaceRoot: state.workspace },
+  );
+  if (environment.confirmationId !== initialization.environmentFrozen.confirmationId
+    || environment.confirmationSha !== initialization.environmentFrozen.confirmationSha) {
+    throw coordinatorError('冻结环境引用与内容不一致', [], 'COORDINATOR_INITIALIZATION_INVALID');
+  }
+
+  let executionRequest;
+  if (!initialization.executionRequestCreated) {
+    const createRequest = options.createExecutionRequest || createExecutionRequest;
+    executionRequest = createRequest({
+      workspaceRoot: state.workspace,
+      batchId: state.batchId,
+      mode: state.targets.length === 1 ? 'SINGLE' : 'BATCH',
+      targets: state.targets.map((target) => ({ caseNo: target.caseNo, definitionRef: target.definitionRef })),
+      environmentConfirmation: environment,
+      userInstruction: initialization.userInstruction,
+      now: options.now,
+    });
+    initialization.executionRequestCreated = {
+      requestId: executionRequest.requestId,
+      requestSha: executionRequest.requestSha,
+    };
+    saveCoordinatorState(state, options.now);
+    interruptInitialization(options, 'executionRequestCreated');
+  } else {
+    const loadRequest = options.loadExecutionRequest || loadExecutionRequest;
+    executionRequest = loadRequest(state.workspace, state.batchId, { requireCurrentEnvironment: false });
+    if (executionRequest.requestId !== initialization.executionRequestCreated.requestId
+      || executionRequest.requestSha !== initialization.executionRequestCreated.requestSha) {
+      throw coordinatorError('冻结 ExecutionRequest 与初始化记录不一致', [], 'COORDINATOR_INITIALIZATION_INVALID');
+    }
+  }
+
+  const batchExecute = options.batchExecute || executeBatch;
+  const initialized = batchExecute({
+    command: 'init',
+    workspace: state.workspace,
+    batchId: state.batchId,
+    platform: environment.binding.platform,
+    now: options.now,
+  });
+  if (!initialization.batchInitialized) {
+    initialization.batchInitialized = {
+      status: initialized?.state?.status || 'INITIALIZED',
+      contractSha: initialized?.contract?.contractSha || null,
+    };
+    saveCoordinatorState(state, options.now);
+    interruptInitialization(options, 'batchInitialized');
+  } else if (initialization.batchInitialized.contractSha && initialized?.contract?.contractSha
+    && initialization.batchInitialized.contractSha !== initialized.contract.contractSha) {
+    throw coordinatorError('Batch 初始化结果与冻结记录不一致', [], 'COORDINATOR_INITIALIZATION_INVALID');
+  }
+
+  state.phase = 'BATCH_READY';
+  saveCoordinatorState(state, options.now);
+  return { status: 'CONFIRMED', next: 'advanceRun', ...publicBase(state) };
 }
 
 function prepareRun(request, options = {}) {
@@ -213,8 +415,8 @@ function prepareRun(request, options = {}) {
     createdAt: options.now || new Date().toISOString(),
     updatedAt: options.now || new Date().toISOString(),
   };
-  saveCoordinatorState(state);
-  return nextDefinitionResponse(state) || confirmationResponse(state);
+  saveCoordinatorState(state, options.now);
+  return nextDefinitionResponse(state, options) || environmentDecisionResponse(state, options);
 }
 
 function defaultProbeEnvironment(platform) {
@@ -247,96 +449,139 @@ function confirmRun(statePath, request, options = {}) {
   return withFileLock(lockPath, () => {
     const state = loadCoordinatorState(statePath);
     state.lastInvalid = null;
-    if (request.platform) {
+    if (request.decision === 'SELECT_PLATFORM') {
+      assertCoordinatorPhase(state, 'NEED_ENVIRONMENT_DECISION', request.decision);
       const probe = (options.probeEnvironment || defaultProbeEnvironment)(request.platform);
       state.selectedProbe = probe;
-      state.phase = 'WAITING_FOR_CONFIRMATION';
-      state.updatedAt = options.now || new Date().toISOString();
-      if (probe?.ready !== true || !Array.isArray(probe.devices) || !probe.devices.length) {
-        state.pendingConfirmation = { capability: 'confirmRun', platform: request.platform };
-        saveCoordinatorState(state);
-        return {
-          status: 'BLOCKED',
+      if (!Array.isArray(probe?.devices) || !probe.devices.length) {
+        return environmentDecisionResponse(state, options, {
+          reason: 'ENVIRONMENT_NOT_READY',
           code: 'ENVIRONMENT_NOT_READY',
-          reason: probe?.diagnostics?.map((item) => item.message || item.reason || String(item)).join('; ') || '未找到可用设备',
+          diagnostics: probe?.diagnostics?.length
+            ? probe.diagnostics
+            : [{ code: 'DEVICE_NOT_FOUND', message: '未找到可用设备' }],
+        });
+      }
+      const selectedDevice = request.deviceId
+        ? probe.devices.find((device) => deviceId(device) === String(request.deviceId))
+        : (probe.devices.length === 1 ? probe.devices[0] : null);
+      if (!selectedDevice) {
+        state.phase = 'NEED_ENVIRONMENT_DECISION';
+        state.bindingConfirmationTemplate = null;
+        saveCoordinatorState(state, options.now);
+        return {
+          status: 'NEED_USER_CONFIRMATION',
+          reason: 'SELECT_DEVICE',
+          code: request.deviceId ? 'DEVICE_NOT_FOUND' : 'DEVICE_SELECTION_REQUIRED',
+          devices: probe.devices,
+          deviceChoices: probe.devices.map((device) => ({
+            id: `SELECT_DEVICE_${deviceId(device)}`,
+            template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: request.platform, deviceId: deviceId(device) },
+          })),
+          diagnostics: probe.diagnostics || [],
           ...publicBase(state),
         };
       }
+      const confirmationReady = probe.ready === true || probe.confirmationReady === true;
+      if (!confirmationReady) {
+        return environmentDecisionResponse(state, options, {
+          reason: 'ENVIRONMENT_NOT_READY',
+          code: 'ENVIRONMENT_NOT_READY',
+          diagnostics: probe?.diagnostics?.length
+            ? probe.diagnostics
+            : [{ code: 'ENVIRONMENT_NOT_READY', message: 'iOS 设备已发现，但执行环境尚未就绪' }],
+        });
+      }
       const confirmTemplate = {
         capability: 'confirmRun',
+        decision: 'CONFIRM_BINDING',
         userInstruction: `确认在所选设备和 App 上执行用例 ${state.targets.map((item) => item.caseNo).join(', ')}`,
-        binding: bindingTemplate(request.platform, probe.devices[0]),
+        binding: bindingTemplate(request.platform, selectedDevice),
       };
-      state.pendingConfirmation = confirmTemplate;
-      saveCoordinatorState(state);
-      return {
-        status: 'NEED_USER_CONFIRMATION',
-        reason: 'CONFIRM_ENVIRONMENT_AND_RUN',
-        devices: probe.devices,
-        confirmTemplate,
-        ...publicBase(state),
-      };
+      state.phase = 'NEED_BINDING_CONFIRMATION';
+      state.bindingConfirmationTemplate = confirmTemplate;
+      saveCoordinatorState(state, options.now);
+      return bindingConfirmationResponse(state, options);
     }
 
-    let environment;
-    if (request.binding) {
-      if (!state.selectedProbe) {
-        throw coordinatorError('请先使用平台确认模板完成环境探测', [{ field: 'binding', message: '缺少当前平台探测结果', code: 'PROBE_REQUIRED' }]);
+    if (request.decision === 'CONFIRM_BINDING') {
+      assertCoordinatorPhase(state, 'NEED_BINDING_CONFIRMATION', request.decision);
+      let environment;
+      try {
+        environment = confirmEnvironment({
+          workspaceRoot: state.workspace,
+          binding: request.binding,
+          probe: state.selectedProbe,
+          userConfirmation: request.userInstruction,
+          now: options.now,
+        });
+      } catch (error) {
+        if (error.code !== 'IOS_SIGNING_INCOMPLETE') throw error;
+        return {
+          status: 'NEED_USER_CONFIRMATION',
+          reason: 'IOS_SIGNING_REQUIRED',
+          code: error.code,
+          requiredBindingFields: ['xcodeOrgId', 'xcodeSigningId', 'updatedWDABundleId'],
+          diagnostics: [{ code: error.code, message: error.message }],
+          devices: state.selectedProbe.devices,
+          confirmTemplate: state.bindingConfirmationTemplate,
+          ...publicBase(state),
+        };
       }
-      environment = confirmEnvironment({
-        workspaceRoot: state.workspace,
-        binding: request.binding,
-        probe: state.selectedProbe,
-        userConfirmation: request.userInstruction,
-        now: options.now,
-      });
-    } else {
-      environment = loadEnvironmentConfirmation(state.workspace);
+      return startInitialization(state, environment, request.userInstruction, options);
     }
-    state.environmentConfirmed = true;
-    state.pendingConfirmation = null;
-    const createRequest = options.createExecutionRequest || createExecutionRequest;
-    createRequest({
-      workspaceRoot: state.workspace,
-      batchId: state.batchId,
-      mode: state.targets.length === 1 ? 'SINGLE' : 'BATCH',
-      targets: state.targets.map((target) => ({ caseNo: target.caseNo, definitionRef: target.definitionRef })),
-      userInstruction: request.userInstruction,
-      now: options.now,
-    });
-    const batchExecute = options.batchExecute || executeBatch;
-    batchExecute({ command: 'init', workspace: state.workspace, batchId: state.batchId, platform: environment.binding.platform });
-    state.phase = 'BATCH_READY';
-    state.updatedAt = options.now || new Date().toISOString();
-    saveCoordinatorState(state);
-    return { status: 'CONFIRMED', next: 'advanceRun', ...publicBase(state) };
+
+    assertCoordinatorPhase(state, 'NEED_ENVIRONMENT_DECISION', request.decision);
+    let environment;
+    try {
+      if (!state.currentEnvironmentOffer) throw Object.assign(new Error('当前环境不可用，请重新选择平台'), { code: 'ENVIRONMENT_NOT_CONFIRMED' });
+      environment = validateEnvironmentConfirmation(JSON.parse(JSON.stringify(state.currentEnvironmentOffer)), {
+        workspaceRoot: state.workspace,
+      });
+    } catch (error) {
+      return environmentDecisionResponse(state, options, {
+        reason: 'CHOOSE_ENVIRONMENT',
+        code: error.code || 'ENVIRONMENT_CONFIRMATION_INVALID',
+        diagnostics: [{ code: error.code || 'ENVIRONMENT_CONFIRMATION_INVALID', message: error.message || String(error) }],
+      });
+    }
+    return startInitialization(state, environment, request.userInstruction, options);
   }, { now: options.now });
 }
 
-function terminalResponse(state, response) {
+function terminalResponse(state, response, options = {}) {
   if (response.action === 'BATCH_COMPLETE') {
     state.phase = 'COMPLETE';
     state.outcome = 'COMPLETED';
-    saveCoordinatorState(state);
-    return completedResponse(state, 'COMPLETED');
+    state.reportPublication = response.publicationState || null;
+    saveCoordinatorState(state, options.now);
+    return completedResponse(state, 'COMPLETED', response.publicationState);
   }
   if (response.action === 'BATCH_CANCELLED') {
     state.phase = 'COMPLETE';
     state.outcome = 'CANCELLED';
-    saveCoordinatorState(state);
-    return completedResponse(state, 'CANCELLED');
+    state.reportPublication = response.publicationState || null;
+    saveCoordinatorState(state, options.now);
+    return completedResponse(state, 'CANCELLED', response.publicationState);
   }
   if (response.action === 'BATCH_BLOCKED') {
     state.phase = 'BLOCKED';
     state.outcome = 'BLOCKED';
-    saveCoordinatorState(state);
-    return {
-      status: 'BLOCKED',
-      code: response.failureCode || response.code || 'BATCH_BLOCKED',
-      reason: response.reason || response.message || '批次因技术问题阻塞',
-      reportPath: path.join(state.workspace, 'index.html'),
-      ...publicBase(state),
+    state.reportPublication = response.publicationState || null;
+    const code = response.failureCode || response.code || response.state?.failureCode || 'BATCH_BLOCKED';
+    const reason = response.reason || response.message || response.state?.reason || '批次因技术问题阻塞';
+    state.terminalFailure = {
+      code,
+      reason,
+      diagnostic: response.diagnostic || response.state?.diagnostic || {
+        code,
+        stage: 'BATCH',
+        summary: reason,
+        retryable: false,
+      },
     };
+    saveCoordinatorState(state, options.now);
+    return blockedResponse(state);
   }
   return null;
 }
@@ -345,22 +590,36 @@ function advanceBatch(state, options = {}) {
   const batchExecute = options.batchExecute || executeBatch;
   for (let transition = 0; transition < 32; transition += 1) {
     const response = batchExecute({ command: 'reconcile', workspace: state.workspace, batchId: state.batchId });
-    const terminal = terminalResponse(state, response);
+    const terminal = terminalResponse(state, response, options);
     if (terminal) return terminal;
     if (response.action === 'BOOTSTRAP') {
       const bootstrapped = batchExecute({ command: 'bootstrap', workspace: state.workspace, batchId: state.batchId });
-      const bootstrapTerminal = terminalResponse(state, bootstrapped);
+      const bootstrapTerminal = terminalResponse(state, bootstrapped, options);
       if (bootstrapTerminal) return bootstrapTerminal;
+      if (bootstrapped.action === 'WAIT_PLATFORM_RUNTIME') {
+        state.phase = 'WAITING_FOR_PLATFORM_RUNTIME';
+        saveCoordinatorState(state, options.now);
+        return {
+          status: 'WAITING',
+          waitFor: bootstrapped.waitFor,
+          reason: bootstrapped.waitFor === 'OWNER_BATCH_TERMINAL'
+            ? 'PLATFORM_RUNTIME_OWNER_ACTIVE'
+            : 'PLATFORM_RUNTIME_INITIALIZING',
+          diagnostic: bootstrapped.technical,
+          ...(bootstrapped.technical?.recovery ? { recovery: bootstrapped.technical.recovery } : {}),
+          ...publicBase(state),
+        };
+      }
       continue;
     }
     if (response.action === 'NEED_CASE_AGENT') {
       const started = batchExecute({ command: 'start', workspace: state.workspace, batchId: state.batchId });
-      const startTerminal = terminalResponse(state, started);
+      const startTerminal = terminalResponse(state, started, options);
       if (startTerminal) return startTerminal;
       if (started.agentRequired === false) continue;
       if (started.agentRequired === true && started.handoff?.loaderCommand) {
         state.phase = 'WAITING_FOR_CASE_AGENT';
-        saveCoordinatorState(state);
+        saveCoordinatorState(state, options.now);
         return {
           status: 'NEED_CASE_AGENT',
           caseNo: state.targets.find((item) => item.caseKey === started.caseKey)?.caseNo,
@@ -371,13 +630,15 @@ function advanceBatch(state, options = {}) {
       }
       throw coordinatorError('Batch start 未返回有效 Case Agent Loader', [], 'COORDINATOR_ADVANCE_INVALID');
     }
-    if (response.action === 'WAIT_CASE_AGENT') {
+    if (response.action === 'WAIT_EXECUTION_RESULT') {
       state.phase = 'WAITING_FOR_CASE_AGENT';
-      saveCoordinatorState(state);
-      return { status: 'WAITING', reason: 'CASE_AGENT_RUNNING', ...publicBase(state) };
-    }
-    if (response.action === 'PUBLISH_REPORTS' && response.retryable === true) {
-      return { status: 'WAITING', reason: 'REPORT_PUBLICATION_RETRY', ...publicBase(state) };
+      saveCoordinatorState(state, options.now);
+      return {
+        status: 'WAITING',
+        waitFor: 'EXECUTION_RESULT',
+        reason: 'WAIT_EXECUTION_RESULT',
+        ...publicBase(state),
+      };
     }
     throw coordinatorError(`无法处理 Batch 动作 ${response.action || response.status || 'unknown'}`, [], 'COORDINATOR_ADVANCE_INVALID');
   }
@@ -386,11 +647,14 @@ function advanceBatch(state, options = {}) {
 
 function advanceUnlocked(state, options = {}) {
   if (state.phase === 'COMPLETE') return completedResponse(state, state.outcome);
-  if (state.phase === 'BLOCKED') return { status: 'BLOCKED', code: 'BATCH_BLOCKED', reason: '批次已经阻塞', ...publicBase(state) };
-  if (!['BATCH_READY', 'WAITING_FOR_CASE_AGENT'].includes(state.phase)) {
-    const definition = nextDefinitionResponse(state);
+  if (state.phase === 'BLOCKED') return blockedResponse(state);
+  if (state.phase === 'INITIALIZING_RUN') return resumeInitialization(state, options);
+  if (state.phase === 'NEED_BINDING_CONFIRMATION') return bindingConfirmationResponse(state, options);
+  if (state.phase === 'NEED_ENVIRONMENT_DECISION') return environmentDecisionResponse(state, options);
+  if (!['BATCH_READY', 'WAITING_FOR_CASE_AGENT', 'WAITING_FOR_PLATFORM_RUNTIME'].includes(state.phase)) {
+    const definition = nextDefinitionResponse(state, options);
     if (definition) return definition;
-    return confirmationResponse(state);
+    return environmentDecisionResponse(state, options);
   }
   return advanceBatch(state, options);
 }
@@ -400,7 +664,6 @@ function advanceRun(statePath, options = {}) {
   return withFileLock(pathsFor(initial.workspace, initial.batchId).lock, () => {
     const state = loadCoordinatorState(statePath);
     state.lastInvalid = null;
-    state.updatedAt = options.now || new Date().toISOString();
     return advanceUnlocked(state, options);
   }, { now: options.now });
 }
@@ -412,17 +675,17 @@ function cancelRun(statePath, request, options = {}) {
     const state = loadCoordinatorState(statePath);
     state.lastInvalid = null;
     if (state.phase === 'COMPLETE') return completedResponse(state, state.outcome);
-    if (!['BATCH_READY', 'WAITING_FOR_CASE_AGENT', 'CANCELLING'].includes(state.phase)) {
+    if (!['BATCH_READY', 'WAITING_FOR_CASE_AGENT', 'WAITING_FOR_PLATFORM_RUNTIME', 'CANCELLING'].includes(state.phase)) {
       state.phase = 'COMPLETE';
       state.outcome = 'CANCELLED';
-      state.updatedAt = options.now || new Date().toISOString();
-      saveCoordinatorState(state);
+      state.reportPublication = null;
+      saveCoordinatorState(state, options.now);
       return completedResponse(state, 'CANCELLED');
     }
     const batchExecute = options.batchExecute || executeBatch;
     batchExecute({ command: 'cancel', workspace: state.workspace, batchId: state.batchId, reason: request.reason });
     state.phase = 'CANCELLING';
-    saveCoordinatorState(state);
+    saveCoordinatorState(state, options.now);
     return advanceBatch(state, options);
   }, { now: options.now });
 }
@@ -431,6 +694,7 @@ module.exports = {
   advanceRun,
   cancelRun,
   confirmRun,
+  coordinatorInputRecovery,
   loadCoordinatorState,
   prepareRun,
   recordCoordinatorInputFailure,

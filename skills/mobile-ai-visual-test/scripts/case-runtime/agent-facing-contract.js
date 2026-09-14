@@ -3,7 +3,7 @@
 const { validateAgentJson } = require('../lib/agent-json-contract');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
-const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'inspect', 'act', 'knowledge', 'recover', 'finish']);
+const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'inspect', 'plan', 'act', 'knowledge', 'recover', 'finish']);
 const STRING = { type: 'string', minLength: 1 };
 const STRING_ARRAY = { type: 'array', items: STRING };
 const POINT = { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0, maximum: 1 } };
@@ -46,6 +46,11 @@ const SCHEMAS = Object.freeze({
     observation: STRING, expectationRefs: STRING_ARRAY,
     filter: object({ interactiveOnly: { type: 'boolean' }, textContains: STRING, role: STRING, actionType: STRING, elementRef: STRING }, []),
   }, ['capability', 'channel']),
+  plan: object({
+    capability: { const: 'plan' },
+    items: { type: 'array', minItems: 1, items: STRING },
+    reason: STRING,
+  }, ['capability', 'items']),
   act: object({ capability: { const: 'act' }, actionRef: STRING, input: INPUT, purpose: STRING, expectationRefs: STRING_ARRAY }, ['capability', 'actionRef', 'purpose']),
   knowledgeQuery: object({ capability: { const: 'knowledge' }, query: STRING, expectationRefs: STRING_ARRAY }, ['capability', 'query']),
   knowledgeReview: object({
@@ -139,10 +144,11 @@ function capabilityCards({ scene = null, caseSpec = null } = {}) {
   return {
     observe: { useWhen: '没有 Scene，或页面可能已在外部发生变化', required: [], optional: ['purpose', 'expectationRefs'], source: {}, example: { capability: 'observe' }, returns: ['SCENE'] },
     inspect: { useWhen: '需要查看控件树、完整布局，或登记已实际查看的截图事实', required: ['channel'], optional: ['filter', 'observation', 'expectationRefs'], source: { channel: '当前调查意图' }, example: { capability: 'inspect', channel: 'elements' }, returns: ['SCENE_INSPECTION', 'VISUAL_INSPECTED'] },
-    act: { useWhen: '当前 Scene 提供了可执行动作', required: ['actionRef', 'purpose'], optional: ['input', 'expectationRefs'], source: { actionRef: 'scene.actions[].actionRef', input: '对应 action 的 requiredInput/example' }, example: firstAction, returns: ['SCENE', 'SCENE_CHANGED'] },
+    plan: { useWhen: '初步理解现场后、首次 act/recover/finish 前；路径变化时完整替换当前计划，提交全部 items 并填写 reason', required: ['items'], optional: ['reason'], source: {}, example: { capability: 'plan', items: ['观察当前页面', '执行必要操作', '验证预期结果'] }, returns: ['PLAN_RECORDED'] },
+    act: { useWhen: '已有执行计划，且当前 Scene 提供了可执行动作', required: ['actionRef', 'purpose'], optional: ['input', 'expectationRefs'], source: { actionRef: 'scene.actions[].actionRef', input: '对应 action 的 requiredInput/example' }, example: firstAction, returns: ['SCENE', 'SCENE_CHANGED'] },
     knowledge: { useWhen: '现场异常、无法解释、无法决定下一步，或负向结论需要知识支撑', required: ['query'], optional: ['expectationRefs'], source: { queryId: '知识查询响应的 nextCall.example' }, example: { capability: 'knowledge', query: '描述当前无法解释的问题', expectationRefs: [] }, returns: ['KNOWLEDGE', 'KNOWLEDGE_REVIEWED'] },
-    recover: { useWhen: '目标 App 已无法继续交互，需要冷启动恢复', required: ['reason'], optional: [], source: {}, example: { capability: 'recover', reason: '目标 App 无法继续交互' }, returns: ['SCENE', 'RECOVERY_APPLIED'] },
-    finish: { useWhen: '证据足够形成结论，或已无法安全继续', required: ['summary', 'checks'], optional: ['uncertainties'], source: { checks: 'Frozen CaseSpec expectations' }, example: finish, returns: ['COMPLETED', 'RESULT_INCOMPLETE'] },
+    recover: { useWhen: '已有执行计划，且目标 App 已无法继续交互，需要冷启动恢复', required: ['reason'], optional: [], source: {}, example: { capability: 'recover', reason: '目标 App 无法继续交互' }, returns: ['SCENE', 'RECOVERY_APPLIED'] },
+    finish: { useWhen: '已有执行计划，且证据足够形成结论或已无法安全继续', required: ['summary', 'checks'], optional: ['uncertainties'], source: { checks: 'Frozen CaseSpec expectations' }, example: finish, returns: ['COMPLETED', 'RESULT_INCOMPLETE'] },
   };
 }
 

@@ -83,7 +83,7 @@ function initializeBatch(options) {
       currentIndex: 0,
       warmSession: createWarmSession(contract.binding, now),
       cases: targets.map((target) => ({ ...target, status: 'PENDING', executionId: null, runtimePath: null })),
-      finalization: { casesCommitted: false, platformReleased: false, reportsPublished: false },
+      finalization: { casesCommitted: false, platformReleased: false },
       createdAt: now,
       updatedAt: now,
     };

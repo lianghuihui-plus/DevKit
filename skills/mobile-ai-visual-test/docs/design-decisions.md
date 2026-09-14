@@ -14,7 +14,7 @@
 - 状态：Accepted，已实现
 - 决策：主 Agent 只负责编排，Case Agent 负责单用例业务判断，Runtime 负责确定性约束和设备访问；主 Agent 通过不透明 Handoff 引用委托 Case Agent。
 - 原因：通过模型上下文转发完整 Prompt、原始用例和 Scene，会使主 Agent 实际参与理解并增加延迟与上下文消耗。
-- 影响：Case Agent 自行加载并校验 Handoff；dispatch 使用 claim/lease，保证同一 execution 只有一个有效写入者。
+- 影响：Case Agent 自行加载并校验 Handoff；dispatch 使用 claim/lease 保证同一 execution 只有一个有效写入者。框架只报告 `PREPARED`、`CONSUMED` 和 execution 结果事实，不根据 `execution=RUNNING` 推断宿主 Agent 正在运行。
 
 ## D3：截图与控件树是并列证据
 
@@ -44,19 +44,19 @@
 - 原因：业务意图应跨平台稳定，但不同平台达到相同初始状态所需的副作用和资产条件不同。
 - 影响：Lifecycle 在委托 Case Agent 前完成准备；准备失败由框架形成技术性 BLOCKED，不交给 Agent 猜测处理。
 
-## D7：报告只投影正式产物
+## D7：业务终态与报告发布分离
 
 - 状态：Accepted，已实现
-- 决策：报告通过唯一当前 Reader 只读生成；总览只展示总耗时和起止时间，阶段耗时进入用例详情，过程步骤与最终 checks 分开表达。
-- 原因：展示层不得改变执行事实，步骤现场也不应被最终 verdict 反向覆盖。
-- 影响：重建或刷新报告不会回写 execution；单条报告失败按用例隔离。
+- 决策：Execution 收口和平台释放决定 Batch 业务终态，报告随后通过唯一当前 Reader 只读生成；报告状态不反向控制业务状态。
+- 原因：展示失败不等于测试仍在执行，也不应使取消或完成长期停留在等待态。
+- 影响：发布失败只产生 `RETRY_REQUIRED` 或 `DEGRADED`；重建不回写 execution，总览和详情继续使用各自稳定的时间与步骤投影。
 
 ## D8：薄 Agent、厚框架的两层接口
 
 - 状态：Accepted，已实现
-- 决策：主 Agent 只面对四个、Case Agent 只面对六个自描述业务能力；确定性 Facade 把简化输入转换为完整 internal 契约，Prompt 只描述职责和使用时机。
+- 决策：主 Agent 只面对四个、Case Agent 只面对七个自描述业务能力；确定性 Facade 把简化输入转换为完整 internal 契约，Prompt 只描述职责和使用时机。
 - 原因：直接暴露框架 ID、状态机和完整 Schema 会分散 Agent 的业务注意力，也会造成参数猜测和重复失败。
-- 影响：当前有效示例随能力自动交付；框架补齐上下文并严格校验，同一格式错误只允许一次定向修正。
+- 影响：当前有效示例随能力自动交付；`plan` 只接收计划项和可选调整原因，框架补齐内部计划事件及其他上下文并严格校验，同一格式错误只允许一次定向修正。
 
 ## D9：版本属于数据契约而不是代码模块
 
@@ -64,3 +64,30 @@
 - 决策：只有独立持久化根或真实跨进程协议保留一个当前 `schemaVersion`；Broker、Brief、Facade、Coordinator 临时状态和 Completion 子协议不单独编号。
 - 原因：随同一代码发布的内部对象不存在独立演进边界，单独版本只会制造组合矩阵和兼容分支。
 - 影响：内部结构通过类型、必填字段、hash 和 `protocolSha` 校验；引入新版本号必须先证明存在独立发布与读取边界。
+
+## D10：iOS Session 是可替换的 Batch 资源
+
+- 状态：Accepted，已实现
+- 决策：Execution 只保存 `sessionRef`；Device Port 每次从 Batch runtime 取得当前 Appium Session，并在统一锁和 generation 约束下重建或释放。
+- 原因：Agent 调度延迟可能超过 Appium Session 生命周期，冻结 Session 副本会把正常超时误报为截图损坏，并诱发错误重试。
+- 影响：observe 只对明确失效恢复一次；action 发送后的失败不重放，保留结果未知和原始 Session 错误。
+
+## D11：正常流程封装，异常流程受控开放
+
+- 状态：Accepted，已实现
+- 决策：正常执行只使用简化 Facade；无有效恢复、恢复无进展或诊断与现场矛盾时，`technicalFallback` 按 Batch/Execution 范围开放日志和平台诊断，恢复后必须回到 Facade 落盘。
+- 原因：角色隔离不能以丢失根因和恢复手段为代价，框架也无法预先封装所有设备和工具异常。
+- 影响：Agent 可以修复框架尚未覆盖的基础设施问题，但不能直接修改权威状态、结果或不明归属资源；业务执行和状态迁移仍由 Facade/Runtime 完成。
+
+## D12：托管运行时按归属安全回收
+
+- 状态：Accepted，已实现
+- 决策：运行时发现框架注册表中的旧 Appium/WDA 进程时，仅在进程身份、进程组和批次归属均可验证且占用批次已进入终态时自动清理并重试；活动批次返回 `SERVICE_IN_USE`，归属不明返回 `OWNERSHIP_UNKNOWN`。
+- 原因：终态批次的残留资源是确定可恢复的框架故障，不应阻塞后续用例；活动或未知归属的进程可能被其他任务使用，不能由框架擅自终止。
+- 影响：恢复动作留在 Adapter/Runtime 层，Facade 向 Agent 暴露稳定错误码、诊断和等待/取消建议；不符合清理条件的资源保持现场并进入 `BLOCKED`。
+
+## D13：iOS 真机失败不得阻塞批次
+
+- 状态：Accepted，已实现
+- 决策：Bootstrap 使用独立且有上限的 iOS 时间预算；超时后立即进入统一收口流程。平台清理失败不再让业务批次无限停留在 `BLOCKING`，而是记录 `platformCleanupDeferred` 并提交 `BLOCKED`，后续依据归属和清理期限回收资源。
+- 原因：WDA 启动、App 冷启动和进程停止耗时均受真实设备状态影响，单一 60 秒外层 timeout 会把正常慢路径误判为失败，并在异常路径遗留 ACTIVE Runtime。

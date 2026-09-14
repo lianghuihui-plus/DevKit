@@ -277,7 +277,23 @@ confirmEnvironment({
   userConfirmation: '改为使用 device-control-002',
   now: T1,
 });
-expectCode(() => loadExecutionRequest(root, 'batch-ordered'), 'EXECUTION_REQUEST_ENVIRONMENT_CHANGED');
+assert.strictEqual(loadExecutionRequest(root, 'batch-ordered').binding.deviceId, BINDING.deviceId);
+expectCode(() => loadExecutionRequest(root, 'batch-ordered', {
+  requireCurrentEnvironment: true,
+}), 'EXECUTION_REQUEST_ENVIRONMENT_CHANGED');
+
+const frozenEnvironmentRequest = createExecutionRequest({
+  workspaceRoot: root,
+  batchId: 'batch-frozen-environment',
+  mode: 'SINGLE',
+  targets: [first],
+  environmentConfirmation: environment,
+  userInstruction: '使用运行开始时冻结的环境',
+  now: T1,
+});
+assert.strictEqual(frozenEnvironmentRequest.environmentConfirmationId, environment.confirmationId);
+assert.strictEqual(frozenEnvironmentRequest.binding.deviceId, BINDING.deviceId);
+assert.strictEqual(loadExecutionRequest(root, 'batch-frozen-environment').requestSha, frozenEnvironmentRequest.requestSha);
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('run-control passed');

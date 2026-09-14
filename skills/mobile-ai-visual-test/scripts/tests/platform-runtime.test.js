@@ -13,7 +13,8 @@ const {
   runtimePaths,
 } = require('../batch/platform-runtime');
 const { execute: executeBatch } = require('../batch');
-const { batchPaths, initializeBatch } = require('../batch/core');
+const { reconcileWithFinalization } = require('../batch');
+const { batchPaths, bootstrapBatch, initializeBatch } = require('../batch/core');
 const { buildContract } = require('../build-agent-contract');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
@@ -21,9 +22,11 @@ const {
   acquireAppium,
   releaseAppium,
 } = require('../platform/adapters/ios/lib/service-lifecycle');
+const { stopBatch } = require('../batch/service-support');
 const { deleteSession, withSession } = require('../platform/adapters/ios/lib/appium-client');
 const {
   acquireIosRuntime,
+  refreshIosSession,
   releaseIosRuntime,
 } = require('../platform/adapters/ios/lib/runtime-lifecycle');
 const {
@@ -32,6 +35,7 @@ const {
   releaseWda,
 } = require('../platform/adapters/ios/lib/wda-lifecycle');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
+const { markBootstrapFailed } = require('../lib/warm-session-contract');
 
 process.env.MAVT_SELF_TEST = '1';
 const T0 = '2026-08-26T10:00:00.000+08:00';
@@ -67,7 +71,7 @@ function terminal(fix) {
     cases: state.cases.map((item) => ({ ...item, status: 'SKIPPED' })),
     failureCode: 'TEST_STOP',
     reason: 'test terminal state',
-    finalization: { cause: 'BLOCKED', executionsSettled: true, platformReleased: false, reportsPublished: false },
+    finalization: { cause: 'BLOCKED', executionsSettled: true, platformReleased: false },
   });
 }
 
@@ -83,6 +87,144 @@ const noResourceAdapter = {
 assert.strictEqual(acquireBatchPlatformRuntime(common(noResource, noResourceAdapter)).status, 'NOT_REQUIRED');
 terminal(noResource);
 assert.strictEqual(releaseBatchPlatformRuntime(common(noResource, noResourceAdapter)).alreadyFinalized, true);
+
+const diagnosticFixture = fixture('diagnostic-envelope');
+const diagnosticPaths = batchPaths(diagnosticFixture.root, diagnosticFixture.batchId);
+const diagnosticState = readJson(diagnosticPaths.state);
+diagnosticState.warmSession = markBootstrapFailed(diagnosticState.warmSession, T0);
+const diagnosticStop = stopBatch(
+  diagnosticPaths,
+  diagnosticState,
+  'BOOTSTRAP_FAILED',
+  'IOS_WDA_START_TIMEOUT',
+  'WDA 启动超过等待期限',
+  { now: T0, stage: 'WDA_BUILD', retryable: true, attempt: 1, maxAttempts: 3 },
+);
+assert.strictEqual(diagnosticStop.failureCode, 'IOS_WDA_START_TIMEOUT');
+assert.strictEqual(diagnosticStop.stage, 'WDA_BUILD');
+assert.strictEqual(diagnosticStop.retryable, true);
+assert.deepStrictEqual(diagnosticStop.diagnostic, {
+  code: 'IOS_WDA_START_TIMEOUT',
+  stage: 'WDA_BUILD',
+  summary: 'WDA 启动超过等待期限',
+  retryable: true,
+  attempt: 1,
+  maxAttempts: 3,
+});
+
+const pendingFixture = fixture('retryable-acquire');
+let pendingAttempts = 0;
+const retryableAcquireAdapter = {
+  acquirePlatformRuntime: () => {
+    pendingAttempts += 1;
+    if (pendingAttempts === 1) {
+      return {
+        ok: false,
+        status: 'ACQUIRE_FAILED',
+        ownership: 'NONE',
+        failureCode: 'DEVICE_ADAPTER_TIMEOUT',
+        reason: 'WDA 仍在启动',
+        retryable: true,
+        diagnostic: {
+          code: 'DEVICE_ADAPTER_TIMEOUT',
+          stage: 'PLATFORM_RUNTIME_ACQUIRE',
+          summary: 'WDA 仍在启动',
+          retryable: true,
+        },
+      };
+    }
+    return { ok: true, status: 'ACTIVE', ownership: 'FRAMEWORK_MANAGED', resource: { pid: 123 } };
+  },
+};
+const pendingFirst = acquireBatchPlatformRuntime(common(pendingFixture, retryableAcquireAdapter));
+assert.strictEqual(pendingFirst.status, 'ACQUIRE_PENDING');
+assert.strictEqual(pendingFirst.retryable, true);
+assert.strictEqual(fs.existsSync(runtimePaths(batchPaths(pendingFixture.root, pendingFixture.batchId).batchDir).state), false);
+const pendingSecond = acquireBatchPlatformRuntime(common(pendingFixture, retryableAcquireAdapter));
+assert.strictEqual(pendingSecond.status, 'ACTIVE');
+assert.strictEqual(pendingAttempts, 2);
+const pendingBootstrap = bootstrapBatch({
+  workspaceRoot: pendingFixture.root,
+  batchId: pendingFixture.batchId,
+  adapter: { restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }) },
+  platformRuntime: {
+    ok: false,
+    status: 'ACQUIRE_PENDING',
+    ownership: 'NONE',
+    retryable: true,
+    failureCode: 'DEVICE_ADAPTER_TIMEOUT',
+    reason: 'WDA 仍在启动',
+    diagnostic: { code: 'DEVICE_ADAPTER_TIMEOUT', stage: 'PLATFORM_RUNTIME_ACQUIRE', summary: 'WDA 仍在启动', retryable: true },
+  },
+});
+assert.strictEqual(pendingBootstrap.action, 'WAIT_PLATFORM_RUNTIME');
+const readyBootstrap = bootstrapBatch({
+  workspaceRoot: pendingFixture.root,
+  batchId: pendingFixture.batchId,
+  adapter: { restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }) },
+  platformRuntime: pendingSecond,
+});
+assert.strictEqual(readyBootstrap.state.status, 'RUNNING');
+
+const exhaustedFixture = fixture('retryable-acquire-exhausted');
+let exhaustedAttempts = 0;
+const exhaustedAdapter = {
+  acquirePlatformRuntime: () => {
+    exhaustedAttempts += 1;
+    return {
+      ok: false,
+      status: 'ACQUIRE_FAILED',
+      ownership: 'NONE',
+      failureCode: 'DEVICE_ADAPTER_TIMEOUT',
+      reason: '仍未完成',
+      retryable: true,
+      diagnostic: { code: 'DEVICE_ADAPTER_TIMEOUT', stage: 'PLATFORM_RUNTIME_ACQUIRE', summary: '仍未完成', retryable: true },
+    };
+  },
+};
+assert.strictEqual(acquireBatchPlatformRuntime(common(exhaustedFixture, exhaustedAdapter)).status, 'ACQUIRE_PENDING');
+assert.strictEqual(acquireBatchPlatformRuntime(common(exhaustedFixture, exhaustedAdapter)).status, 'ACQUIRE_PENDING');
+const exhausted = acquireBatchPlatformRuntime(common(exhaustedFixture, exhaustedAdapter));
+assert.strictEqual(exhausted.status, 'ACQUIRE_FAILED');
+assert.strictEqual(exhausted.retryable, false);
+assert.strictEqual(exhaustedAttempts, 3);
+
+const ownerWaitFixture = fixture('owner-state-wait');
+let ownerWaitAttempts = 0;
+let ownerTerminal = false;
+const ownerWaitAdapter = {
+  acquirePlatformRuntime: () => {
+    ownerWaitAttempts += 1;
+    if (!ownerTerminal) {
+      return {
+        ok: false,
+        status: 'ACQUIRE_FAILED',
+        ownership: 'NONE',
+        failureCode: 'IOS_APPIUM_SERVICE_IN_USE',
+        reason: 'Appium is owned by an active batch',
+        retryable: true,
+        diagnostic: {
+          code: 'IOS_APPIUM_SERVICE_IN_USE',
+          stage: 'PLATFORM_RUNTIME_ACQUIRE',
+          summary: 'Appium is owned by an active batch',
+          retryable: true,
+          recovery: { kind: 'WAIT_OR_CANCEL_OWNER_BATCH' },
+        },
+      };
+    }
+    return { ok: true, status: 'ACTIVE', ownership: 'FRAMEWORK_MANAGED', resource: { pid: 456 } };
+  },
+};
+for (let attempt = 1; attempt <= 4; attempt += 1) {
+  const waiting = acquireBatchPlatformRuntime(common(ownerWaitFixture, ownerWaitAdapter));
+  assert.strictEqual(waiting.status, 'ACQUIRE_PENDING');
+  assert.strictEqual(waiting.waitFor, 'OWNER_BATCH_TERMINAL');
+  assert.strictEqual(waiting.attempt, attempt);
+  assert.strictEqual(fs.existsSync(runtimePaths(batchPaths(ownerWaitFixture.root, ownerWaitFixture.batchId).batchDir).state), false);
+}
+ownerTerminal = true;
+assert.strictEqual(acquireBatchPlatformRuntime(common(ownerWaitFixture, ownerWaitAdapter)).status, 'ACTIVE');
+assert.strictEqual(ownerWaitAttempts, 5);
 
 const managed = fixture('managed');
 let managedReleaseCalls = 0;
@@ -104,6 +246,17 @@ terminal(managed);
 assert.strictEqual(releaseBatchPlatformRuntime(common(managed, managedAdapter)).status, 'RELEASED');
 assert.strictEqual(releaseBatchPlatformRuntime(common(managed, managedAdapter)).alreadyFinalized, true);
 assert.strictEqual(managedReleaseCalls, 1);
+
+const changedImplementation = fixture('changed-implementation-release');
+acquireBatchPlatformRuntime(common(changedImplementation, managedAdapter));
+terminal(changedImplementation);
+const releasedByCurrentImplementation = releaseBatchPlatformRuntime({
+  ...common(changedImplementation, managedAdapter),
+  runtimeSha: 'case-runtime-current-implementation',
+  adapterSha: 'platform-adapter-current-implementation',
+  coordinatorSha: 'batch-coordinator-current-implementation',
+});
+assert.strictEqual(releasedByCurrentImplementation.status, 'RELEASED');
 
 const external = fixture('external');
 let externalStopAttempted = false;
@@ -144,6 +297,51 @@ assert.strictEqual(releaseBatchPlatformRuntime(common(retry, retryAdapter)).stat
 assert.strictEqual(releaseAttempts, 2);
 assert.strictEqual(readJson(runtimePaths(batchPaths(retry.root, retry.batchId).batchDir).state).status, 'RELEASED');
 
+const deferred = fixture('deferred-cleanup');
+const deferredAdapter = {
+  restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }),
+  probeSession: () => ({ ok: true, binding: BINDING }),
+  acquirePlatformRuntime: ({ ownerKey }) => ({
+    ok: true, status: 'ACTIVE', ownership: 'FRAMEWORK_MANAGED', resource: { ownerKey, ownerToken: 'deferred-token', pid: 6789 },
+  }),
+  releasePlatformRuntime: () => ({
+    ok: false, status: 'RELEASE_FAILED', ownership: 'FRAMEWORK_MANAGED',
+    failureCode: 'TEST_RELEASE_TIMEOUT', reason: 'simulated cleanup timeout',
+  }),
+};
+acquireBatchPlatformRuntime(common(deferred, deferredAdapter));
+bootstrapBatch({ ...common(deferred, deferredAdapter), adapter: deferredAdapter });
+terminal(deferred);
+const deferredResult = reconcileWithFinalization(common(deferred, deferredAdapter), { adapter: deferredAdapter });
+assert.strictEqual(deferredResult.action, 'BATCH_BLOCKED');
+assert.deepStrictEqual(deferredResult.progress, ['RELEASE_PLATFORM', 'PUBLISH_REPORTS', 'BATCH_BLOCKED']);
+assert.strictEqual(readJson(batchPaths(deferred.root, deferred.batchId).state).finalization.platformCleanupDeferred, true);
+
+const bootstrapTimeout = fixture('bootstrap-timeout');
+assert.throws(() => bootstrapBatch({
+  ...common(bootstrapTimeout, {
+    restartApp: () => ({
+      ok: false,
+      coldStartVerified: false,
+      startupDisplayVerified: false,
+      failureCode: 'DEVICE_ADAPTER_TIMEOUT',
+      reason: 'adapter timed out',
+      diagnostic: { code: 'DEVICE_ADAPTER_TIMEOUT', stage: 'BOOTSTRAP_ACTION', retryable: false },
+    }),
+  }),
+  adapter: {
+    restartApp: () => ({
+      ok: false,
+      coldStartVerified: false,
+      startupDisplayVerified: false,
+      failureCode: 'DEVICE_ADAPTER_TIMEOUT',
+      reason: 'adapter timed out',
+      diagnostic: { code: 'DEVICE_ADAPTER_TIMEOUT', stage: 'BOOTSTRAP_ACTION', retryable: false },
+    }),
+  },
+}), /adapter timed out/);
+assert.strictEqual(readJson(batchPaths(bootstrapTimeout.root, bootstrapTimeout.batchId).state).failureCode, 'BATCH_BOOTSTRAP_TIMEOUT');
+
 const iosRoot = path.join(temp, 'ios-cli');
 createTestWorkspace(iosRoot);
 const iosCaseKey = `ck-${crypto.createHash('sha256').update('ios-cli').digest('hex').slice(0, 12)}`;
@@ -172,7 +370,7 @@ try {
     cases: iosBatchState.cases.map((item) => ({ ...item, status: 'SKIPPED' })),
     failureCode: 'TEST_STOP',
     reason: 'test terminal state',
-    finalization: { cause: 'BLOCKED', executionsSettled: false, platformReleased: false, reportsPublished: false },
+    finalization: { cause: 'BLOCKED', executionsSettled: false, platformReleased: false },
   });
   const finalized = executeBatch({ command: 'reconcile', workspace: iosRoot, batchId: iosBatchId });
   assert.strictEqual(finalized.action, 'BATCH_BLOCKED');
@@ -246,6 +444,140 @@ async function verifyIosAdapterSemantics() {
   }
   const wdaProcess = (pid, command = wdaCommand()) => ({ pid, parentPid: 1, processGroupId: pid, command });
 
+  // A framework-owned Appium process from a terminal batch is safe to reclaim.
+  const appiumRuntimeDir = path.join(temp, 'appium-runtime-reclaim');
+  process.env.MAVT_IOS_RUNTIME_DIR = appiumRuntimeDir;
+  const appiumProcesses = new Map();
+  const appiumOld = { pid: 4501, parentPid: 1, processGroupId: 4501, command: 'appium --address 127.0.0.1 --port 4723' };
+  appiumProcesses.set(appiumOld.pid, appiumOld);
+  const appiumRegistry = {
+    schemaVersion: 1,
+    server: 'http://127.0.0.1:4723',
+    pid: appiumOld.pid,
+    processGroupId: appiumOld.processGroupId,
+    ownerToken: 'old-appium-token',
+    ownerKey: 'owner-terminal-batch',
+  };
+  fs.mkdirSync(appiumRuntimeDir, { recursive: true });
+  fs.writeFileSync(path.join(appiumRuntimeDir, path.basename(require('../platform/adapters/ios/lib/service-lifecycle').registryPath('http://127.0.0.1:4723'))), `${JSON.stringify(appiumRegistry)}\n`);
+  let appiumWaits = 0;
+  let appiumStops = 0;
+  const reclaimedAppium = await acquireAppium({ appiumServer: 'http://127.0.0.1:4723' }, 'owner-new-batch', {
+    waitForServer: async () => ({ ok: ++appiumWaits === 1 || appiumWaits >= 3 }),
+    processAlive: (pid) => appiumProcesses.has(pid),
+    processCommand: (pid) => appiumProcesses.get(pid)?.command || '',
+    stopProcessGroup: async (record) => {
+      appiumStops += 1;
+      appiumProcesses.delete(record.pid);
+      return { ok: true, alreadyStopped: false };
+    },
+    resolveOwnerStatus: () => ({ status: 'TERMINAL', batchId: 'batch-terminal' }),
+    spawnManagedAppium: (target) => {
+      const record = {
+        ...appiumRegistry,
+        pid: 4502,
+        processGroupId: 4502,
+        ownerToken: 'new-appium-token',
+        ownerKey: null,
+        server: 'http://127.0.0.1:4723',
+      };
+      appiumProcesses.set(record.pid, { pid: record.pid, parentPid: 1, processGroupId: record.pid, command: 'appium --address 127.0.0.1 --port 4723' });
+      fs.writeFileSync(require('../platform/adapters/ios/lib/service-lifecycle').registryPath(target.appiumServer), `${JSON.stringify(record)}\n`);
+      return record;
+    },
+  });
+  assert.strictEqual(reclaimedAppium.ok, true);
+  assert.strictEqual(reclaimedAppium.resource.ownerKey, 'owner-new-batch');
+  assert.strictEqual(appiumStops, 1);
+
+  // An active owner must remain untouched and surface a structured conflict.
+  const activeRegistry = { ...appiumRegistry, ownerKey: 'owner-active-batch', pid: 4503, processGroupId: 4503 };
+  appiumProcesses.set(4503, { pid: 4503, parentPid: 1, processGroupId: 4503, command: 'appium --address 127.0.0.1 --port 4723' });
+  fs.writeFileSync(require('../platform/adapters/ios/lib/service-lifecycle').registryPath('http://127.0.0.1:4723'), `${JSON.stringify(activeRegistry)}\n`);
+  const activeAppium = await acquireAppium({ appiumServer: 'http://127.0.0.1:4723' }, 'owner-new-batch', {
+    waitForServer: async () => ({ ok: true }),
+    processAlive: (pid) => appiumProcesses.has(pid),
+    processCommand: (pid) => appiumProcesses.get(pid)?.command || '',
+    resolveOwnerStatus: () => ({ status: 'ACTIVE', batchId: 'batch-active' }),
+  });
+  assert.strictEqual(activeAppium.failureCode, 'IOS_APPIUM_SERVICE_IN_USE');
+  assert.strictEqual(activeAppium.retryable, true);
+  assert.strictEqual(activeAppium.diagnostic.retryable, true);
+  assert.strictEqual(appiumProcesses.has(4503), true);
+  const unknownAppium = await acquireAppium({ appiumServer: 'http://127.0.0.1:4723' }, 'owner-new-batch', {
+    waitForServer: async () => ({ ok: true }),
+    processAlive: (pid) => appiumProcesses.has(pid),
+    processCommand: (pid) => appiumProcesses.get(pid)?.command || '',
+    resolveOwnerStatus: () => ({ status: 'UNKNOWN', reason: 'not mapped' }),
+  });
+  assert.strictEqual(unknownAppium.failureCode, 'IOS_APPIUM_OWNERSHIP_UNKNOWN');
+  assert.strictEqual(appiumProcesses.has(4503), true);
+
+  // WDA ownership follows the same terminal/active policy.
+  fs.rmSync(appiumRuntimeDir, { recursive: true, force: true });
+  process.env.MAVT_IOS_RUNTIME_DIR = wdaRuntimeDir;
+  fs.mkdirSync(wdaRuntimeDir, { recursive: true });
+  const wdaStaleHarness = processHarness([wdaProcess(4601)]);
+  const wdaStaleRegistry = {
+    schemaVersion: 1,
+    status: 'ACTIVE',
+    deviceId: target.device,
+    bundleId: target.updatedWDABundleId,
+    pid: 4601,
+    parentPid: 1,
+    processGroupId: 4601,
+    processStartedAt: 'start-4601',
+    claimToken: 'old-wda-token',
+    ownerKey: 'owner-terminal-wda',
+  };
+  fs.writeFileSync(require('../platform/adapters/ios/lib/wda-lifecycle').registryPath(target), `${JSON.stringify(wdaStaleRegistry)}\n`);
+  const reclaimedWda = await acquireWda(target, 'owner-new-wda', {
+    ...wdaStaleHarness.dependencies,
+    resolveOwnerStatus: () => ({ status: 'TERMINAL', batchId: 'batch-terminal-wda' }),
+  });
+  assert.strictEqual(reclaimedWda.ok, true);
+  assert.strictEqual(reclaimedWda.resource.ownerKey, 'owner-new-wda');
+  assert.strictEqual(wdaStaleHarness.processes.has(4601), false);
+
+  fs.rmSync(wdaRuntimeDir, { recursive: true, force: true });
+  fs.mkdirSync(wdaRuntimeDir, { recursive: true });
+  const wdaPendingHarness = processHarness([wdaProcess(4610)]);
+  fs.writeFileSync(require('../platform/adapters/ios/lib/wda-lifecycle').registryPath(target), `${JSON.stringify({
+    ...wdaStaleRegistry,
+    status: 'PENDING',
+    pid: undefined,
+    processGroupId: undefined,
+    processStartedAt: undefined,
+    baselinePids: [],
+    claimToken: 'pending-wda-token',
+    ownerKey: 'owner-terminal-pending-wda',
+  })}\n`);
+  const reclaimedPendingWda = await acquireWda(target, 'owner-new-wda', {
+    ...wdaPendingHarness.dependencies,
+    resolveOwnerStatus: () => ({ status: 'TERMINAL', batchId: 'batch-terminal-pending-wda' }),
+  });
+  assert.strictEqual(reclaimedPendingWda.ok, true);
+  assert.strictEqual(wdaPendingHarness.processes.has(4610), false);
+
+  fs.rmSync(wdaRuntimeDir, { recursive: true, force: true });
+  const wdaActiveHarness = processHarness([wdaProcess(4602)]);
+  fs.mkdirSync(wdaRuntimeDir, { recursive: true });
+  fs.writeFileSync(require('../platform/adapters/ios/lib/wda-lifecycle').registryPath(target), `${JSON.stringify({ ...wdaStaleRegistry, pid: 4602, processGroupId: 4602, ownerKey: 'owner-active-wda', processStartedAt: 'start-4602' })}\n`);
+  const activeWda = await acquireWda(target, 'owner-new-wda', {
+    ...wdaActiveHarness.dependencies,
+    resolveOwnerStatus: () => ({ status: 'ACTIVE', batchId: 'batch-active-wda' }),
+  });
+  assert.strictEqual(activeWda.failureCode, 'IOS_WDA_SERVICE_IN_USE');
+  assert.strictEqual(activeWda.retryable, true);
+  assert.strictEqual(activeWda.diagnostic.retryable, true);
+  assert.strictEqual(wdaActiveHarness.processes.has(4602), true);
+  const unknownWda = await acquireWda(target, 'owner-new-wda', {
+    ...wdaActiveHarness.dependencies,
+    resolveOwnerStatus: () => ({ status: 'UNKNOWN', reason: 'not mapped' }),
+  });
+  assert.strictEqual(unknownWda.failureCode, 'IOS_WDA_OWNERSHIP_UNKNOWN');
+  assert.strictEqual(wdaActiveHarness.processes.has(4602), true);
+
   const externalHarness = processHarness([wdaProcess(4101)]);
   const externalWda = acquireWda(target, 'owner-external-baseline', externalHarness.dependencies);
   assert.strictEqual(externalWda.ownership, 'EXTERNAL');
@@ -272,9 +604,12 @@ async function verifyIosAdapterSemantics() {
     stopProcessGroup: async () => ({ ok: false, reason: 'simulated WDA stop failure' }),
   });
   assert.strictEqual(firstRelease.failureCode, 'IOS_WDA_STOP_FAILED');
-  const historicalClaim = acquireWda(target, 'owner-new-batch', historicalHarness.dependencies);
+  const historicalClaim = await acquireWda(target, 'owner-new-batch', {
+    ...historicalHarness.dependencies,
+    resolveOwnerStatus: () => ({ status: 'TERMINAL', batchId: 'batch-old-wda' }),
+  });
   assert.strictEqual(historicalClaim.ownership, 'FRAMEWORK_MANAGED');
-  assert.strictEqual(historicalClaim.resource.pid, 4301);
+  assert.strictEqual(historicalClaim.status, 'PENDING');
   assert.strictEqual((await releaseWda(historicalClaim.resource, 'owner-new-batch', historicalHarness.dependencies)).status, 'RELEASED');
 
   const order = [];
@@ -307,10 +642,24 @@ async function verifyIosAdapterSemantics() {
   await withSession({ appiumSessionId: composite.resource.session.sessionId }, async ({ sessionId }) => { reusedSessionIds.push(sessionId); });
   await withSession({ appiumSessionId: composite.resource.session.sessionId }, async ({ sessionId }) => { reusedSessionIds.push(sessionId); });
   assert.deepStrictEqual(reusedSessionIds, ['batch-session-001', 'batch-session-001']);
-  const compositeReleased = await releaseIosRuntime({ ...composite, ownerKey: 'owner-composite' }, {
+  const refreshedSessionDeletes = [];
+  const refreshed = await refreshIosSession(target, composite, {
+    createSession: async () => ({ sessionId: 'batch-session-002', capabilities: { platformName: 'iOS' } }),
+    deleteSession: async (_server, sessionId) => { refreshedSessionDeletes.push(sessionId); },
+  });
+  assert.strictEqual(refreshed.platformSession.sessionId, 'batch-session-002');
+  assert.deepStrictEqual(refreshedSessionDeletes, ['batch-session-001']);
+  const refreshedComposite = {
+    ...composite,
+    resource: {
+      ...composite.resource,
+      session: { ...composite.resource.session, ...refreshed.platformSession, generation: 2 },
+    },
+  };
+  const compositeReleased = await releaseIosRuntime({ ...refreshedComposite, ownerKey: 'owner-composite' }, {
     deleteSession: async (_server, sessionId) => {
       sessionDeletes += 1;
-      assert.strictEqual(sessionId, 'batch-session-001');
+      assert.strictEqual(sessionId, 'batch-session-002');
     },
     releaseWda: async () => {
       order.push('wda');

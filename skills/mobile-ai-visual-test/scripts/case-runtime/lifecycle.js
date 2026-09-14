@@ -83,7 +83,7 @@ function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText,
       command,
       requestPath,
       capabilities: agentContract.capabilityCards({ scene: fullScene, caseSpec }),
-      input: 'Write one simplified request JSON to requestPath, then run command without arguments.',
+      input: '每次调用都新建一个简化请求 JSON 到 requestPath，再原样执行 command；请求文件是一次性的，消费后删除。',
     },
     investigationCapabilities: {
       visual: { available: true, capability: 'inspect', channel: 'visual' },

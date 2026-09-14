@@ -8,7 +8,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { canonicalJson } = require('../lib/contract-utils');
-const { createAgentHandoff, loadAgentHandoff } = require('../batch/agent-handoff');
+const { createAgentHandoff, loadAgentHandoff, loadPreparedAgentHandoff } = require('../batch/agent-handoff');
 const { claimDispatch, claimTokenFor } = require('../lib/dispatch-lease');
 
 function expectCode(fn, code) {
@@ -50,6 +50,12 @@ try {
   assert.deepStrictEqual(reused, initial);
   assert.strictEqual(fs.readFileSync(initial.path, 'utf8'), persistedBefore);
 
+  const dispatchStatePath = path.join(path.dirname(initial.path), 'dispatch-state.json');
+  fs.unlinkSync(dispatchStatePath);
+  const recoveredDispatch = createAgentHandoff(common);
+  assert.deepStrictEqual(recoveredDispatch, initial);
+  assert.strictEqual(JSON.parse(fs.readFileSync(dispatchStatePath, 'utf8')).dispatches[initial.handoffId].status, 'PREPARED');
+
   const retried = createAgentHandoff({
     ...common,
     now: '2026-09-10T08:01:00.000Z',
@@ -75,7 +81,6 @@ try {
     now: common.now,
   });
   assert.strictEqual(repeatedClaim.idempotent, true, 'same claim token retry must be idempotent even at the same timestamp');
-  const dispatchStatePath = path.join(path.dirname(initial.path), 'dispatch-state.json');
   const claimedState = JSON.parse(fs.readFileSync(dispatchStatePath, 'utf8'));
   assert.strictEqual(claimedState.dispatches[initial.handoffId].status, 'CONSUMED');
   assert.ok(claimedState.dispatches[initial.handoffId].claimedAt);
@@ -201,6 +206,50 @@ try {
   } finally {
     fs.rmSync(linkedWorkspace, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
+  }
+
+  const preparedLinkedWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-prepared-handoff-linked-'));
+  const preparedOutside = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-prepared-handoff-outside-'));
+  try {
+    const outsideHandoff = createAgentHandoff({ ...common, workspaceRoot: preparedOutside });
+    const linkedParent = path.join(preparedLinkedWorkspace, 'runs', common.batchId, 'handoffs');
+    fs.mkdirSync(linkedParent, { recursive: true });
+    fs.symlinkSync(path.dirname(outsideHandoff.path), path.join(linkedParent, common.executionId));
+    expectCode(() => loadPreparedAgentHandoff({
+      workspaceRoot: preparedLinkedWorkspace,
+      batchId: common.batchId,
+      executionId: common.executionId,
+      caseProtocolSha: common.caseProtocolSha,
+    }), 'HANDOFF_PATH_INVALID');
+  } finally {
+    fs.rmSync(preparedLinkedWorkspace, { recursive: true, force: true });
+    fs.rmSync(preparedOutside, { recursive: true, force: true });
+  }
+
+  const preparedRootLinkedWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-prepared-root-linked-'));
+  const preparedRootOutside = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-prepared-root-outside-'));
+  try {
+    const outsideHandoff = createAgentHandoff({ ...common, workspaceRoot: preparedRootOutside });
+    fs.symlinkSync(path.join(preparedRootOutside, 'runs'), path.join(preparedRootLinkedWorkspace, 'runs'));
+    expectCode(() => loadPreparedAgentHandoff({
+      workspaceRoot: preparedRootLinkedWorkspace,
+      batchId: common.batchId,
+      executionId: common.executionId,
+      caseProtocolSha: common.caseProtocolSha,
+    }), 'HANDOFF_PATH_INVALID');
+    expectCode(() => loadAgentHandoff({
+      workspaceRoot: preparedRootLinkedWorkspace,
+      handoffPath: path.join(
+        preparedRootLinkedWorkspace,
+        'runs', common.batchId, 'handoffs', common.executionId, path.basename(outsideHandoff.path),
+      ),
+      sha256: outsideHandoff.sha256,
+      executionId: common.executionId,
+      caseProtocolSha: common.caseProtocolSha,
+    }), 'HANDOFF_PATH_INVALID');
+  } finally {
+    fs.rmSync(preparedRootLinkedWorkspace, { recursive: true, force: true });
+    fs.rmSync(preparedRootOutside, { recursive: true, force: true });
   }
 
   console.log('agent handoff tests passed');

@@ -26,7 +26,7 @@ const {
 const {
   prepareAppium,
 } = require('./service-lifecycle');
-const { acquireIosRuntime, releaseIosRuntime } = require('./runtime-lifecycle');
+const { acquireIosRuntime, refreshIosSession, releaseIosRuntime } = require('./runtime-lifecycle');
 const { acquireWda, releaseWda } = require('./wda-lifecycle');
 const {
   buildTarget,
@@ -34,6 +34,7 @@ const {
   listAvailableRealDevices,
   listBootedSimulators,
   parseArgs,
+  resolveDeviceSelection,
   run,
   validateRestArgs,
 } = require('./device-target');
@@ -100,6 +101,14 @@ function skippedStartupDisplay() {
   };
 }
 
+function recordObservationError(errors, channel, error, options = {}) {
+  const message = `[${channel}] ${error.message || String(error)}`;
+  if (options.required === true || appium.isInvalidSessionError(error)) {
+    throw new Error(message, { cause: error });
+  }
+  errors.push(message);
+}
+
 async function runProbe(argv) {
   const parsed = parseArgs(argv);
   validateRestArgs(parsed.rest, [], 'iOS probe');
@@ -107,8 +116,10 @@ async function runProbe(argv) {
   const devices = fakeEnabled()
     ? [{ name: 'Fake iPhone', udid: target.device || 'FAKE-IOS-SIMULATOR', state: 'Available', deviceType: target.deviceType }]
     : [...listBootedSimulators(), ...listAvailableRealDevices()];
-  if (!target.device && devices.length === 1) target.device = devices[0].udid;
-  target.deviceType = target.deviceType || 'simulator';
+  const selection = resolveDeviceSelection(target, devices, {
+    deviceType: parsed.deviceType || process.env.MAVT_IOS_DEVICE_TYPE || '',
+  });
+  target.deviceType = target.device ? target.deviceType : null;
   const xcode = fakeEnabled() || commandExists('xcodebuild');
   const simctl = fakeEnabled() || commandExists('xcrun');
   const appiumCli = fakeEnabled() || commandExists('appium');
@@ -151,7 +162,7 @@ async function runProbe(argv) {
     }
   }
 
-  const hasTarget = !!target.device && devices.some((item) => item.udid === target.device && item.deviceType === target.deviceType);
+  const hasTarget = !!selection.selected && !selection.typeMismatch;
   const implemented = xcode && simctl && appiumCli && xcuitestDriver && hasTarget;
   const logsImplemented = implemented && target.deviceType === 'simulator';
   const diagnostics = [];
@@ -170,8 +181,12 @@ async function runProbe(argv) {
   if (appiumCli && !xcuitestDriver) {
     addDiagnostic('iosXcuitestDriverMissing', 'ERROR', '未安装 Appium XCUITest Driver', '执行 appium driver install xcuitest；详见 references/installation.md#ios-模拟器', 'appium driver list --installed');
   }
-  if (!target.device) {
-    addDiagnostic('iosDeviceMissing', 'ERROR', '未发现可用 iOS 设备', '启动一个 iOS 模拟器，或为真机传入 --device <udid> --device-type realDevice；详见 references/installation.md#ios-真机', 'xcrun simctl list devices booted');
+  if (!devices.length) {
+    addDiagnostic('iosDeviceMissing', 'ERROR', '未发现可用 iOS 设备', '启动一个 iOS 模拟器，或连接可用真机；详见 references/installation.md#ios-真机', 'xcrun simctl list devices booted');
+  } else if (selection.selectionRequired) {
+    addDiagnostic('iosDeviceSelectionRequired', 'ERROR', '发现多台 iOS 设备，必须明确选择目标设备', '在确认 binding 中填写目标 deviceId；不要默认使用第一台设备', 'xcrun xcdevice list --timeout 10');
+  } else if (selection.typeMismatch) {
+    addDiagnostic('iosDeviceTypeMismatch', 'ERROR', '指定的 iOS 设备类型与实际探测结果不一致', '使用探测结果中的 deviceType；真机为 realDevice，模拟器为 simulator', 'xcrun xcdevice list --timeout 10');
   } else if (!hasTarget) {
     addDiagnostic('iosDeviceUnavailable', 'ERROR', '指定的 iOS 设备当前不可用', '确认设备已解锁、通过 USB 连接并启用 Developer Mode；模拟器需处于 Booted 状态', 'xcrun xcdevice list --timeout 10');
   }
@@ -189,6 +204,9 @@ async function runProbe(argv) {
   if (appiumServer && !wda) {
     addDiagnostic('iosWdaNotReady', 'WARN', 'WDA 当前不可确认', 'prepare-env 会创建 Appium session 验证 WDA；真机首次运行可能需要信任开发者证书', 'scripts/prepare-env.sh --platform ios');
   }
+  const errorDiagnostics = diagnostics.filter((item) => item.level === 'ERROR');
+  const confirmationReady = hasTarget && errorDiagnostics.every((item) => item.id === 'iosRealDeviceSigningIncomplete');
+  const executionReady = errorDiagnostics.length === 0;
   writeJson({
     schemaVersion: 1,
     type: 'environmentProbe',
@@ -196,7 +214,11 @@ async function runProbe(argv) {
     device: target.device || null,
     devices: devices.map((item) => ({ id: item.udid, serial: item.udid, name: item.name || item.udid, deviceType: item.deviceType })),
     targets: devices.map((item) => item.udid),
-    ready: !diagnostics.some((item) => item.level === 'ERROR'),
+    ready: executionReady,
+    deviceDetected: devices.length > 0,
+    deviceSelectionRequired: selection.selectionRequired,
+    confirmationReady,
+    executionReady,
     diagnostics,
     capabilities: {
       connector: 'appium-xcuitest',
@@ -276,7 +298,7 @@ async function runPrepare(argv) {
     wdaOk = true;
   } else if (serverReady && target.device && target.appId) {
     const prepareOwnerKey = `environment-prepare-${process.pid}-${Date.now()}`;
-    const preparedWda = acquireWda(target, prepareOwnerKey);
+    const preparedWda = await acquireWda(target, prepareOwnerKey);
     try {
       await appium.withSession(target, async () => {}, { timeoutMs: 180000 });
       wdaOk = true;
@@ -324,6 +346,16 @@ async function runRuntime(argv) {
       throw new Error(`iOS runtime release 的 --runtime-json 无效: ${error.message}`);
     }
     result = await releaseIosRuntime(runtime);
+  } else if (operation === 'refresh-session') {
+    const raw = optionValue(parsed.rest, '--runtime-json');
+    if (!raw) throw new Error('iOS runtime refresh-session 需要 --runtime-json');
+    let runtime;
+    try {
+      runtime = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`iOS runtime refresh-session 的 --runtime-json 无效: ${error.message}`);
+    }
+    result = await refreshIosSession(target, runtime);
   } else {
     throw new Error(`iOS runtime 不支持的 operation: ${operation || 'missing'}`);
   }
@@ -456,7 +488,7 @@ async function runObserve(argv) {
         const shot = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/screenshot`);
         decodeBase64Png(shot.value, screenshotPath);
       } catch (error) {
-        errors.push(`[screenshot] ${error.message}`);
+        recordObservationError(errors, 'screenshot', error, { required: true });
       }
       try {
         const source = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/source`);
@@ -466,25 +498,25 @@ async function runObserve(argv) {
         const viewport = sourceViewport(source.value);
         if (viewport) screen = `${viewport.width}x${viewport.height}`;
       } catch (error) {
-        errors.push(`[layout] ${error.message}`);
+        recordObservationError(errors, 'layout', error);
       }
       try {
         const active = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/execute/sync`, { script: 'mobile: activeAppInfo', args: [] });
         if (active.value) foreground = active.value;
       } catch (error) {
-        errors.push(`[foreground] ${error.message}`);
+        recordObservationError(errors, 'foreground', error);
       }
       try {
         const keyboard = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/execute/sync`, { script: 'mobile: isKeyboardShown', args: [] });
         keyboardShown = keyboard.value === true;
       } catch (error) {
-        errors.push(`[keyboard] ${error.message}`);
+        recordObservationError(errors, 'keyboard', error);
       }
       try {
         const rect = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/window/rect`);
         windowRect = rect.value || null;
       } catch (error) {
-        errors.push(`[windowRect] ${error.message}`);
+        recordObservationError(errors, 'windowRect', error);
       }
     }, { autoLaunch: false });
     if (target.deviceType === 'simulator' && target.device) {
@@ -885,5 +917,6 @@ module.exports = {
   inputEffectFor,
   inputTextWithFallback,
   normalizedInputValue,
+  recordObservationError,
   runRuntime,
 };

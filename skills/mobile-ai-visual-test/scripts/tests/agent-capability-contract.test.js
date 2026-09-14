@@ -31,8 +31,7 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const INTERNAL_FIELDS = new Set([
   'batchId', 'executionId', 'definitionRef', 'sceneId', 'basedOnSceneId',
   'requestPath', 'command', 'token', 'claimToken', 'sequence', 'runtimeSha',
-  'adapterSha', 'coordinatorSha', 'protocolSha', 'capabilityId', 'operation',
-  'decision',
+    'adapterSha', 'coordinatorSha', 'protocolSha', 'capabilityId', 'operation',
 ]);
 
 function visit(value, callback, pathParts = []) {
@@ -70,7 +69,7 @@ assertExamples(coordinatorCards, validateCoordinatorRequest);
 
 const caseCards = caseCapabilityCards();
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
-assert.ok(AGENT_FACING_CAPABILITIES.length <= 6, 'Case Agent active capability budget is 6');
+assert.ok(AGENT_FACING_CAPABILITIES.length <= 7, 'Case Agent active capability budget is 7');
 assert.deepStrictEqual(Object.keys(caseCards), AGENT_FACING_CAPABILITIES);
 assertExamples(caseCards, validateAgentFacingRequest, { forbidPaths: true });
 
@@ -88,5 +87,17 @@ for (const prompt of ['SKILL.md', 'prompts/case-agent.md']) {
   assert.strictEqual(source.includes('requestSchema'), false, `${prompt} must not copy request schemas`);
   assert.strictEqual(/```json[\s\S]*?```/.test(source), false, `${prompt} must not embed request JSON manuals`);
 }
+assert.match(read('SKILL.md'), /confirmChoices/);
+assert.match(read('SKILL.md'), /INITIALIZING_RUN/);
+assert.match(read('SKILL.md'), /OWNER_BATCH_TERMINAL/);
+assert.match(read('SKILL.md'), /技术兜底模式/);
+assert.match(read('SKILL.md'), /读取.*日志/);
+assert.match(read('SKILL.md'), /主动进入.*默认.*BATCH/);
+assert.match(read('SKILL.md'), /不得直接修改.*Batch.*Execution.*Result/);
+assert.match(read('prompts/case-agent.md'), /技术兜底模式/);
+assert.match(read('prompts/case-agent.md'), /读取.*日志/);
+assert.match(read('prompts/case-agent.md'), /主动进入.*默认.*EXECUTION/);
+assert.match(read('prompts/case-agent.md'), /不得直接修改.*Execution.*Result/);
+assert.strictEqual(read('SKILL.md').includes('不能自己调用 Appium、WDA、xcodebuild 或读取内部日志'), false);
 
 console.log('agent capability contract tests passed');

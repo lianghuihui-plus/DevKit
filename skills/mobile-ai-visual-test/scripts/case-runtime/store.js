@@ -99,10 +99,20 @@ function withRuntimeLock(execDir, callback, options = {}) {
 }
 
 function technicalResponse(execDir, error, options = {}) {
+  const code = error?.code || 'CASE_RUNTIME_ERROR';
+  const message = error?.message || String(error);
+  const diagnostic = error?.diagnostic || {
+    code,
+    ...(options.operation ? { stage: String(options.operation).toUpperCase() } : {}),
+    summary: message,
+    retryable: error?.retryable === true,
+    ...(error?.actionOutcomeUnknown ? { recovery: { kind: 'OBSERVE_FIRST', nextCall: { capability: 'observe' } } } : {}),
+  };
   const value = {
     status: 'TECHNICAL',
-    code: error?.code || 'CASE_RUNTIME_ERROR',
-    message: error?.message || String(error),
+    code,
+    message,
+    diagnostic,
     scene: readCurrentScene(execDir),
   };
   try {

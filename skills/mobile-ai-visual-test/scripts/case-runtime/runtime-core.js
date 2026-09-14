@@ -202,7 +202,8 @@ function execute(execDir, request, options = {}) {
         decision: narrative.decisionEvent?.decision || undefined,
         decisionId: narrative.decisionEvent?.decisionId || null,
       };
-      if (request.operation === 'prepare') response = require('./preparation-service').prepare(execDir, enrichedRequest, runtimeOptions);
+      if (request.operation === 'recordPlan') response = { status: 'PLAN_RECORDED', plan: narrative.latestPlan };
+      else if (request.operation === 'prepare') response = require('./preparation-service').prepare(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
       else if (request.operation === 'act') response = actionService.act(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'inspectVisual') response = require('./visual-inspection-service').inspectVisual(execDir, enrichedRequest, options);

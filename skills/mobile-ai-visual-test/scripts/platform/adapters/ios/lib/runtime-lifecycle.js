@@ -34,9 +34,13 @@ function forwardingResource(target, wdaResult, dependencies = {}) {
 }
 
 async function acquireIosRuntime(target, ownerKey, dependencies = {}) {
-  const appiumResult = await (dependencies.acquireAppium || acquireAppium)(target, ownerKey);
+  const appiumResult = await (dependencies.acquireAppium || acquireAppium)(
+    target,
+    ownerKey,
+    dependencies.appiumDependencies || dependencies,
+  );
   if (!appiumResult.ok) return appiumResult;
-  const wdaResult = (dependencies.acquireWda || wdaLifecycle.acquireWda)(
+  const wdaResult = await (dependencies.acquireWda || wdaLifecycle.acquireWda)(
     target,
     ownerKey,
     dependencies.wdaDependencies,
@@ -88,9 +92,52 @@ async function acquireIosRuntime(target, ownerKey, dependencies = {}) {
         server: target.appiumServer,
         ownership: 'FRAMEWORK_MANAGED',
         capabilities: session.capabilities || {},
+        generation: 1,
       },
     },
   };
+}
+
+async function refreshIosSession(target, runtime, dependencies = {}) {
+  const previous = runtime?.resource?.session;
+  if (!previous?.sessionId) {
+    return {
+      ok: false,
+      status: 'ACQUIRE_FAILED',
+      ownership: runtime?.ownership || 'NONE',
+      failureCode: 'IOS_APPIUM_SESSION_UNAVAILABLE',
+      reason: 'batch Appium session is unavailable',
+    };
+  }
+  try {
+    const createSession = dependencies.createSession || (process.env.MAVT_IOS_FAKE === '1'
+      ? async () => ({ sessionId: `fake-session-refreshed-${Date.now()}`, capabilities: { platformName: 'iOS' } })
+      : appiumClient.createSession);
+    const replacement = await createSession(target, { autoLaunch: false, timeoutMs: 180000 });
+    const deleteSession = dependencies.deleteSession || (process.env.MAVT_IOS_FAKE === '1'
+      ? async () => {}
+      : appiumClient.deleteSession);
+    await deleteSession(previous.server || target.appiumServer, previous.sessionId).catch(() => {});
+    return {
+      ok: true,
+      status: 'ACTIVE',
+      ownership: runtime.ownership || previous.ownership || 'FRAMEWORK_MANAGED',
+      platformSession: {
+        sessionId: replacement.sessionId,
+        server: target.appiumServer,
+        ownership: 'FRAMEWORK_MANAGED',
+        capabilities: replacement.capabilities || {},
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'ACQUIRE_FAILED',
+      ownership: runtime?.ownership || previous.ownership || 'FRAMEWORK_MANAGED',
+      failureCode: 'IOS_APPIUM_SESSION_REFRESH_FAILED',
+      reason: error.message || String(error),
+    };
+  }
 }
 
 async function releaseIosRuntime(runtime, dependencies = {}) {
@@ -191,5 +238,6 @@ module.exports = {
   forwardingResource,
   overallOwnership,
   overallReleaseStatus,
+  refreshIosSession,
   releaseIosRuntime,
 };

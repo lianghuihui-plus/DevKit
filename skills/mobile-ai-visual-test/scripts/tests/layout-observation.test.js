@@ -31,6 +31,23 @@ assert.strictEqual(listProjection.scrollContainers[0].axis, 'VERTICAL');
 assert.strictEqual(listProjection.scrollContainers[0].items.length, 2);
 assert.notStrictEqual(listProjection.scrollContainers[0].items[0].anchorKey, listProjection.scrollContainers[0].items[1].anchorKey);
 
+const iosTable = parseLayout(`<?xml version="1.0"?><AppiumAUT><XCUIElementTypeApplication width="834" height="1194"><XCUIElementTypeWindow visible="true" x="0" y="0" width="1194" height="834"><XCUIElementTypeTable visible="true" x="80" y="0" width="1114" height="834"><XCUIElementTypeOther name="体验课" visible="true" x="80" y="238" width="1114" height="54"><XCUIElementTypeStaticText value="体验课" name="体验课" label="体验课" visible="true" x="134" y="253" width="48" height="24"/></XCUIElementTypeOther><XCUIElementTypeCell visible="true" x="80" y="292" width="1114" height="542"><XCUIElementTypeStaticText value="自动化测试课包" name="自动化测试课包" label="自动化测试课包" visible="true" x="164" y="307" width="112" height="24"/><XCUIElementTypeStaticText value="自动化专用课程" name="自动化专用课程" label="自动化专用课程" visible="true" x="782" y="387" width="323" height="26"/></XCUIElementTypeCell></XCUIElementTypeTable></XCUIElementTypeWindow></XCUIElementTypeApplication></AppiumAUT>`);
+const iosTableProjection = projectLayout(iosTable, 'ios-table-observation', { width: 1194, height: 834 });
+assert.strictEqual(iosTableProjection.scrollContainers.length, 1);
+assert.strictEqual(iosTableProjection.scrollContainers[0].role, 'XCUIElementTypeTable');
+assert.ok(iosTableProjection.scrollContainers[0].items.length >= 2);
+assert.ok(iosTableProjection.scrollContainers[0].items.some((item) => item.role === 'XCUIElementTypeStaticText'));
+
+const iosCollection = parseLayout(`<?xml version="1.0"?><AppiumAUT><XCUIElementTypeApplication><XCUIElementTypeWindow visible="true" x="0" y="0" width="390" height="844"><XCUIElementTypeCollectionView visible="true" x="0" y="100" width="390" height="600"><XCUIElementTypeCell visible="true" x="0" y="100" width="390" height="120"/><XCUIElementTypeCell visible="true" x="0" y="220" width="390" height="120"/></XCUIElementTypeCollectionView></XCUIElementTypeWindow></XCUIElementTypeApplication></AppiumAUT>`);
+assert.strictEqual(projectLayout(iosCollection, 'ios-collection', { width: 390, height: 844 }).scrollContainers.length, 1);
+
+const iosScrollView = parseLayout(`<?xml version="1.0"?><AppiumAUT><XCUIElementTypeApplication><XCUIElementTypeWindow visible="true" x="0" y="0" width="390" height="844"><XCUIElementTypeScrollView visible="true" x="0" y="100" width="390" height="600"><XCUIElementTypeStaticText value="唯一内容" name="唯一内容" label="唯一内容" visible="true" x="20" y="120" width="100" height="30"/></XCUIElementTypeScrollView></XCUIElementTypeWindow></XCUIElementTypeApplication></AppiumAUT>`);
+assert.strictEqual(projectLayout(iosScrollView, 'ios-scroll-view', { width: 390, height: 844 }).scrollContainers.length, 1);
+
+const nestedIosScroll = parseLayout(`<?xml version="1.0"?><AppiumAUT><XCUIElementTypeApplication><XCUIElementTypeWindow visible="true" x="0" y="0" width="390" height="844"><XCUIElementTypeScrollView visible="true" x="0" y="100" width="390" height="600"><XCUIElementTypeTable visible="true" x="0" y="100" width="390" height="600"><XCUIElementTypeCell visible="true" x="0" y="100" width="390" height="120"><XCUIElementTypeStaticText value="课程 A" name="课程 A" label="课程 A" visible="true" x="20" y="120" width="100" height="30"/></XCUIElementTypeCell></XCUIElementTypeTable></XCUIElementTypeScrollView></XCUIElementTypeWindow></XCUIElementTypeApplication></AppiumAUT>`);
+const nestedIosProjection = projectLayout(nestedIosScroll, 'nested-ios-scroll', { width: 390, height: 844 });
+assert.deepStrictEqual(nestedIosProjection.scrollContainers.map((item) => item.role), ['XCUIElementTypeTable']);
+
 const android = parseLayout(`<?xml version="1.0"?><hierarchy rotation="0"><node class="android.widget.FrameLayout" bounds="[0,0][1080,2400]" visible="true"><node class="android.widget.EditText" resource-id="account" text="abc" bounds="[20,40][500,120]" focused="true" enabled="true"/></node></hierarchy>`);
 const androidView = projectLayout(android, 'android-observation', { width: 1080, height: 2400 });
 assert.strictEqual(android.usable, true);

@@ -32,7 +32,11 @@ fi
 error_file="$(mktemp "${TMPDIR:-/tmp}/mavt-probe-cli.XXXXXX")"
 trap 'rm -f "$error_file"' EXIT
 set +e
-"$adapter" "${args[@]}" 2>"$error_file"
+if [[ ${#args[@]} -gt 0 ]]; then
+  "$adapter" "${args[@]}" 2>"$error_file"
+else
+  "$adapter" 2>"$error_file"
+fi
 status=$?
 set -e
 if [[ $status -eq 2 ]]; then

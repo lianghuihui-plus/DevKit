@@ -62,7 +62,7 @@ function projectCurrentNarrative(report) {
   const events = Array.isArray(report.events) ? report.events.slice().sort(bySequence) : [];
   const contextEvents = events.filter((event) => event.type === 'caseContextRecorded');
   const decisions = events.filter((event) => event.type === 'agentDecisionRecorded');
-  const executionDecisions = decisions.filter((event) => event.requestedOperation !== 'finish');
+  const executionDecisions = decisions.filter((event) => !['finish', 'recordPlan'].includes(event.requestedOperation));
   const finalDecisionEvent = latest(decisions.filter((event) => event.requestedOperation === 'finish'));
   const gaps = events.filter((event) => event.type === 'narrativeGap');
   const latestContextEvent = latest(contextEvents);
@@ -86,7 +86,7 @@ function projectCurrentNarrative(report) {
 
   let planVersion = 0;
   const planHistory = [];
-  if (firstContextEvent) {
+  if (firstContextEvent?.caseContext?.initialPlan?.length) {
     planVersion = 1;
     planHistory.push({
       version: planVersion,
@@ -115,13 +115,13 @@ function projectCurrentNarrative(report) {
     reason: event.reason,
     caseContext: event.caseContext,
   }));
-  const initialPlan = firstContextEvent ? {
-    version: 1,
+  const initialPlan = planHistory[0] || (firstContextEvent ? {
+    version: null,
     time: firstContextEvent.time,
     reason: firstContextEvent.reason,
-    items: firstContextEvent.caseContext.initialPlan || [],
+    items: [],
     decisionId: null,
-  } : null;
+  } : null);
 
   const expectations = context?.expectations || [];
   const expectationByRef = new Map(expectations.map((item) => [item.id, item]));

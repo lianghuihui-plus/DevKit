@@ -9,6 +9,18 @@ const caseRuntimeLifecycle = require('../case-runtime/lifecycle');
 const { loadBatch, readBatchState, saveBatch } = require('./state-repository');
 const { caseRuntimeDir, currentCase, protocolBindings } = require('./service-support');
 
+function commitBusinessTerminal(state, now = null) {
+  const platformSettled = state.finalization?.platformReleased === true
+    || state.finalization?.platformCleanupDeferred === true;
+  if (state.finalization?.executionsSettled !== true || !platformSettled) return false;
+  const terminalStatus = state.finalization.cause;
+  if (!['COMPLETED', 'CANCELLED', 'BLOCKED'].includes(terminalStatus)) return false;
+  state.status = terminalStatus;
+  const field = { CANCELLED: 'cancelledAt', BLOCKED: 'blockedAt', COMPLETED: 'completedAt' }[terminalStatus];
+  state[field] = state[field] || now || new Date().toISOString();
+  return true;
+}
+
 function recordFinalizationStep(options) {
   const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options, 'FINALIZE'));
   return withFileLock(loaded.paths.lock, () => {
@@ -26,22 +38,22 @@ function recordFinalizationStep(options) {
       if (state.finalization.executionsSettled !== true) throw contractError('BATCH_FINALIZATION_INVALID', 'executions must be settled before platform release');
       if (options.result?.ok !== true) throw contractError('PLATFORM_RUNTIME_RELEASE_FAILED', options.result?.reason || 'platform runtime release failed');
       state.finalization.platformReleased = true;
+      delete state.finalization.platformCleanupDeferred;
       if (state.warmSession.status !== 'CLOSED') state.warmSession = markClosed(state.warmSession, options.now || new Date().toISOString());
-    } else if (options.step === 'reportsPublished') {
-      if (state.finalization.platformReleased !== true) {
-        throw contractError('BATCH_FINALIZATION_INVALID', 'platform must be released before report publication');
-      }
-      if (options.result?.status !== 'PUBLISHED') throw contractError('REPORT_PUBLICATION_FAILED', options.result?.reason || 'report publication failed');
-      state.finalization.reportsPublished = true;
+    } else if (options.step === 'platformCleanupDeferred') {
+      if (state.finalization.executionsSettled !== true) throw contractError('BATCH_FINALIZATION_INVALID', 'executions must be settled before deferring platform cleanup');
+      state.finalization.platformCleanupDeferred = true;
+      state.finalization.platformCleanup = {
+        status: 'DEFERRED',
+        ...(options.result?.failureCode ? { failureCode: options.result.failureCode } : {}),
+        ...(options.result?.reason ? { reason: options.result.reason } : {}),
+        ...(options.result?.diagnostic ? { diagnostic: options.result.diagnostic } : {}),
+      };
+      if (state.warmSession.status !== 'CLOSED') state.warmSession = markClosed(state.warmSession, options.now || new Date().toISOString());
     } else {
       throw contractError('BATCH_FINALIZATION_INVALID', `unknown finalization step: ${options.step}`);
     }
-    if (state.finalization.executionsSettled && state.finalization.platformReleased && state.finalization.reportsPublished) {
-      const terminalStatus = state.finalization?.cause || (state.status === 'CANCELLING' ? 'CANCELLED' : 'COMPLETED');
-      state.status = terminalStatus;
-      const field = { CANCELLED: 'cancelledAt', BLOCKED: 'blockedAt', COMPLETED: 'completedAt' }[terminalStatus];
-      state[field] = options.now || new Date().toISOString();
-    }
+    commitBusinessTerminal(state, options.now);
     saveBatch(loaded.paths, state, options.now);
     return { state, finalization: state.finalization };
   }, { now: options.now });
@@ -66,7 +78,7 @@ function cancelBatch(options) {
     if (state.status === 'CANCELLED') return { action: 'BATCH_CANCELLED', state, idempotent: true };
     if (state.status === 'CANCELLING') {
       const nextAction = state.finalization?.executionsSettled !== true ? 'SETTLE_EXECUTIONS'
-        : state.finalization?.platformReleased === true ? 'PUBLISH_REPORTS' : 'RELEASE_PLATFORM';
+        : 'RELEASE_PLATFORM';
       return { action: 'CANCELLING', state, cancelledExecutions: [], nextAction, idempotent: true };
     }
     if (state.status === 'COMPLETED') throw contractError('BATCH_ALREADY_COMPLETED', 'a completed batch cannot be cancelled');
@@ -92,7 +104,9 @@ function cancelBatch(options) {
     const archivedDrafts = archiveBatchDrafts(loaded.paths);
     state.status = 'CANCELLING';
     state.reason = reason;
-    state.finalization = { cause: 'CANCELLED', executionsSettled: false, casesCommitted: false, executionTerminated: true, platformReleased: false, reportsPublished: false };
+    state.stoppedAt = state.stoppedAt || options.now || new Date().toISOString();
+    state.cleanupDeadlineAt = new Date(Date.parse(state.stoppedAt) + 120000).toISOString();
+    state.finalization = { cause: 'CANCELLED', executionsSettled: false, casesCommitted: false, executionTerminated: true, platformReleased: false };
     saveBatch(loaded.paths, state, options.now);
     appendJsonl(loaded.paths.events, {
       schemaVersion: 1,
@@ -107,4 +121,4 @@ function cancelBatch(options) {
   }, { now: options.now });
 }
 
-module.exports = { cancelBatch, recordFinalizationStep };
+module.exports = { cancelBatch, commitBusinessTerminal, recordFinalizationStep };

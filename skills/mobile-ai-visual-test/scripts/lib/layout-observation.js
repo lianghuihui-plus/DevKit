@@ -115,6 +115,32 @@ function roleFor(node) {
   return String(node.attributes.type || node.attributes.class || node.tag || 'unknown');
 }
 
+function isDescendant(entry, container) {
+  return entry.path.length > container.path.length
+    && container.path.every((part, index) => entry.path[index] === part);
+}
+
+function isScrollContainer(entry) {
+  if (!entry.visible || !entry.bounds) return false;
+  if (/^XCUIElementType(?:Table|CollectionView|ScrollView)$/i.test(entry.role)) return true;
+  return entry.scrollable && /list/i.test(entry.role);
+}
+
+function scrollItemsFor(states, container) {
+  const descendants = states.filter((entry) => entry.visible && entry.bounds && isDescendant(entry, container));
+  const directItems = descendants.filter((entry) => entry.path.length === container.path.length + 1
+    && (/listitem/i.test(entry.role) || /XCUIElementTypeCell$/i.test(entry.role)));
+  if (!/^XCUIElementType/i.test(container.role) || directItems.length > 1) return directItems;
+
+  // Some iOS apps expose a whole viewport as one Cell. Its labelled descendants
+  // are the stable anchors that remain comparable across consecutive snapshots.
+  const contentRoots = directItems.length ? directItems : [container];
+  const semanticItems = descendants.filter((entry) => entry.hasOwnText
+    && contentRoots.some((root) => entry === root || isDescendant(entry, root))
+    && !/XCUIElementType(?:Image|Other)$/i.test(entry.role));
+  return semanticItems.length ? semanticItems : directItems;
+}
+
 function secureLength(value) {
   const text = String(value || '');
   if (!text) return 0;
@@ -255,13 +281,11 @@ function projectLayout(parsed, observationRef, screenshot = {}, adapterSignals =
       stateKey: entry.stateKey,
       depth: entry.depth,
     }));
-  const scrollContainers = states
-    .filter((entry) => entry.scrollable && entry.visible && entry.bounds && /list/i.test(entry.role))
+  const scrollContainerStates = states.filter(isScrollContainer);
+  const scrollContainers = scrollContainerStates
+    .filter((container) => !scrollContainerStates.some((candidate) => candidate !== container && isDescendant(candidate, container)))
     .map((container) => {
-      const items = states.filter((entry) => entry.visible && entry.bounds
-        && entry.path.length === container.path.length + 1
-        && container.path.every((part, index) => entry.path[index] === part)
-        && /listitem/i.test(entry.role));
+      const items = scrollItemsFor(states, container);
       if (!items.length) return null;
       const exteriorSelection = states.filter((entry) => entry.selected
         && !container.path.every((part, index) => entry.path[index] === part))

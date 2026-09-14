@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { localIso } = require('./output');
 const processLifecycle = require('./process-lifecycle');
+const { resolveManagedOwner } = require('./runtime-ownership');
 
 const REGISTRY_SCHEMA_VERSION = 1;
 
@@ -112,6 +113,55 @@ function activeRecord(identity, processInfo, ownerKey, claimToken, dependencies 
   };
 }
 
+async function reclaimStaleWda(identity, registered, dependencies = {}) {
+  if (!recordMatchesProcess(registered, identity, dependencies)) {
+    return { ok: false, failureCode: 'IOS_WDA_OWNERSHIP_UNKNOWN', reason: 'WDA registry does not match a live isolated process' };
+  }
+  const owner = (dependencies.resolveOwnerStatus || resolveManagedOwner)(registered.ownerKey, dependencies);
+  if (owner?.status === 'ACTIVE') return { ok: false, failureCode: 'IOS_WDA_SERVICE_IN_USE', owner };
+  if (owner?.status !== 'TERMINAL' && owner?.status !== 'RECLAIMABLE') return { ok: false, failureCode: 'IOS_WDA_OWNERSHIP_UNKNOWN', owner };
+  const stop = dependencies.stopProcessGroup || processLifecycle.stopProcessGroup;
+  const stopped = await stop(registered, {
+    label: 'framework-managed WDA process',
+    processAlive: dependencies.processAlive || processLifecycle.processAlive,
+    ...(dependencies.signalProcessGroup ? { signalProcessGroup: dependencies.signalProcessGroup } : {}),
+    ...(dependencies.sleep ? { sleep: dependencies.sleep } : {}),
+    ...(dependencies.graceMs !== undefined ? { graceMs: dependencies.graceMs } : {}),
+  });
+  if (!stopped.ok) return { ok: false, failureCode: 'IOS_WDA_STALE_CLEANUP_FAILED', reason: stopped.reason, owner };
+  removeRegistryIfClaimed(identity, registered.claimToken);
+  return { ok: true, owner, stopped };
+}
+
+async function reclaimStalePendingWda(identity, registered, processes, dependencies = {}) {
+  const owner = (dependencies.resolveOwnerStatus || resolveManagedOwner)(registered.ownerKey, dependencies);
+  if (owner?.status === 'ACTIVE') return { ok: false, failureCode: 'IOS_WDA_SERVICE_IN_USE', owner };
+  if (owner?.status !== 'TERMINAL' && owner?.status !== 'RECLAIMABLE') return { ok: false, failureCode: 'IOS_WDA_OWNERSHIP_UNKNOWN', owner };
+  const baseline = new Set((registered.baselinePids || []).filter((pid) => Number.isInteger(pid)));
+  const candidates = processes.filter((item) => !baseline.has(item.pid));
+  if (candidates.length !== 1 || candidates[0].processGroupId !== candidates[0].pid) {
+    return {
+      ok: false,
+      failureCode: 'IOS_WDA_OWNERSHIP_UNKNOWN',
+      owner,
+      reason: candidates.length
+        ? `WDA pending claim has ${candidates.length} non-baseline matching processes`
+        : 'WDA pending claim has no uniquely attributable matching process',
+    };
+  }
+  const stop = dependencies.stopProcessGroup || processLifecycle.stopProcessGroup;
+  const stopped = await stop(candidates[0], {
+    label: 'framework-managed WDA process',
+    processAlive: dependencies.processAlive || processLifecycle.processAlive,
+    ...(dependencies.signalProcessGroup ? { signalProcessGroup: dependencies.signalProcessGroup } : {}),
+    ...(dependencies.sleep ? { sleep: dependencies.sleep } : {}),
+    ...(dependencies.graceMs !== undefined ? { graceMs: dependencies.graceMs } : {}),
+  });
+  if (!stopped.ok) return { ok: false, failureCode: 'IOS_WDA_STALE_CLEANUP_FAILED', reason: stopped.reason, owner };
+  removeRegistryIfClaimed(identity, registered.claimToken);
+  return { ok: true, owner, stopped };
+}
+
 function acquireWda(target, ownerKey, dependencies = {}) {
   if (process.env.MAVT_IOS_FAKE === '1') {
     return {
@@ -137,7 +187,55 @@ function acquireWda(target, ownerKey, dependencies = {}) {
     ? processes.find((item) => item.pid === registered.pid)
     : null;
   const claimToken = crypto.randomBytes(16).toString('hex');
+  if (!registeredProcess && registered?.status === 'PENDING' && registered.ownerKey && registered.ownerKey !== ownerKey) {
+    return reclaimStalePendingWda(identity, registered, processes, dependencies).then((reclaimed) => {
+      if (!reclaimed.ok) {
+        const serviceInUse = reclaimed.failureCode === 'IOS_WDA_SERVICE_IN_USE';
+        return {
+          ok: false,
+          status: 'ACQUIRE_FAILED',
+          ownership: 'NONE',
+          failureCode: reclaimed.failureCode || 'IOS_WDA_OWNERSHIP_UNKNOWN',
+          retryable: serviceInUse,
+          reason: reclaimed.reason || 'framework-managed WDA pending claim cannot be recovered safely',
+          diagnostic: {
+            code: reclaimed.failureCode || 'IOS_WDA_OWNERSHIP_UNKNOWN',
+            stage: 'PLATFORM_RUNTIME_ACQUIRE',
+            summary: reclaimed.reason || 'framework-managed WDA pending claim cannot be recovered safely',
+            retryable: serviceInUse,
+            owner: reclaimed.owner || null,
+            ...(serviceInUse ? { recovery: { kind: 'WAIT_OR_CANCEL_OWNER_BATCH' } } : {}),
+          },
+        };
+      }
+      return acquireWda(target, ownerKey, dependencies);
+    });
+  }
   if (registeredProcess) {
+    if (registered.ownerKey && registered.ownerKey !== ownerKey) {
+      return reclaimStaleWda(identity, registered, dependencies).then((reclaimed) => {
+        if (!reclaimed.ok) {
+          const serviceInUse = reclaimed.failureCode === 'IOS_WDA_SERVICE_IN_USE';
+          return {
+            ok: false,
+            status: 'ACQUIRE_FAILED',
+            ownership: 'NONE',
+            failureCode: reclaimed.failureCode || 'IOS_WDA_SERVICE_IN_USE',
+            retryable: serviceInUse,
+            reason: reclaimed.reason || 'framework-managed WDA is already owned by another batch',
+            diagnostic: {
+              code: reclaimed.failureCode || 'IOS_WDA_SERVICE_IN_USE',
+              stage: 'PLATFORM_RUNTIME_ACQUIRE',
+              summary: reclaimed.reason || 'framework-managed WDA is already owned by another batch',
+              retryable: serviceInUse,
+              owner: reclaimed.owner || null,
+              ...(serviceInUse ? { recovery: { kind: 'WAIT_OR_CANCEL_OWNER_BATCH' } } : {}),
+            },
+          };
+        }
+        return acquireWda(target, ownerKey, dependencies);
+      });
+    }
     const record = activeRecord(identity, registeredProcess, ownerKey, claimToken, dependencies);
     writeJsonAtomic(file, record);
     return {
@@ -296,5 +394,7 @@ module.exports = {
   recordMatchesProcess,
   registryPath,
   releaseWda,
+  reclaimStaleWda,
+  reclaimStalePendingWda,
   wdaIdentity,
 };

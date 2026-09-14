@@ -9,33 +9,68 @@ const { validateInstalledAppIdentity } = require('../lib/app-provisioning');
 
 const SKILL_ROOT = path.resolve(__dirname, '../..');
 const DEFAULT_ADAPTER_TIMEOUT_MS = 60000;
-const IOS_RESTART_OVERHEAD_MS = 15000;
+const IOS_DEFAULT_WDA_LAUNCH_TIMEOUT_MS = 180000;
+const IOS_MIN_RUNTIME_TIMEOUT_MS = 210000;
+const IOS_MIN_RESTART_TIMEOUT_MS = 240000;
+const IOS_RELEASE_TIMEOUT_MS = 120000;
+const IOS_RESTART_OVERHEAD_MS = 60000;
+const IOS_MAX_OPERATION_TIMEOUT_MS = 360000;
 
-function run(command, args, timeout) {
+function run(command, args, timeout, env = process.env) {
+  const startedAt = Date.now();
   const result = childProcess.spawnSync(command, args, {
     cwd: SKILL_ROOT,
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
     timeout,
+    env,
   });
   const stdout = String(result.stdout || '').trim();
   const stderr = String(result.stderr || '').trim();
+  const elapsedMs = Date.now() - startedAt;
   if (result.error?.code === 'ETIMEDOUT') {
-    return { ok: false, reason: `DEVICE_ADAPTER_TIMEOUT: adapter did not finish within ${timeout}ms${stderr ? `; ${stderr}` : ''}` };
+    return {
+      ok: false,
+      failureCode: 'DEVICE_ADAPTER_TIMEOUT',
+      reason: `DEVICE_ADAPTER_TIMEOUT: adapter did not finish within ${timeout}ms${stderr ? `; ${stderr}` : ''}`,
+      timeoutMs: timeout,
+      elapsedMs,
+      diagnostic: {
+        code: 'DEVICE_ADAPTER_TIMEOUT',
+        stage: 'ADAPTER_PROCESS',
+        summary: `adapter did not finish within ${timeout}ms`,
+        timeoutMs: timeout,
+        elapsedMs,
+        retryable: false,
+        ...(stderr ? { stderr: stderr.slice(-4000) } : {}),
+      },
+    };
   }
   if (result.error) {
-    return { ok: false, reason: `DEVICE_ADAPTER_EXECUTION_FAILED: ${stderr || result.error.message}` };
+    return {
+      ok: false,
+      failureCode: 'DEVICE_ADAPTER_EXECUTION_FAILED',
+      reason: `DEVICE_ADAPTER_EXECUTION_FAILED: ${stderr || result.error.message}`,
+    };
   }
   if (!stdout) {
     const termination = result.signal ? `; signal=${result.signal}` : '';
     const status = result.status === null || result.status === undefined ? '' : `; status=${result.status}`;
-    return { ok: false, reason: `DEVICE_ADAPTER_OUTPUT_EMPTY: adapter returned no JSON result${status}${termination}${stderr ? `; ${stderr}` : ''}` };
+    return {
+      ok: false,
+      failureCode: 'DEVICE_ADAPTER_OUTPUT_EMPTY',
+      reason: `DEVICE_ADAPTER_OUTPUT_EMPTY: adapter returned no JSON result${status}${termination}${stderr ? `; ${stderr}` : ''}`,
+    };
   }
   let value;
   try {
     value = JSON.parse(stdout);
   } catch {
-    return { ok: false, reason: `DEVICE_ADAPTER_OUTPUT_INVALID: adapter did not return one JSON result${stderr ? `; ${stderr}` : ''}` };
+    return {
+      ok: false,
+      failureCode: 'DEVICE_ADAPTER_OUTPUT_INVALID',
+      reason: `DEVICE_ADAPTER_OUTPUT_INVALID: adapter did not return one JSON result${stderr ? `; ${stderr}` : ''}`,
+    };
   }
   return { status: result.status, stderr, value };
 }
@@ -43,8 +78,19 @@ function run(command, args, timeout) {
 function restartTimeoutMs(binding) {
   if (binding?.platform !== 'ios') return DEFAULT_ADAPTER_TIMEOUT_MS;
   const configured = Number(binding.wdaLaunchTimeout);
-  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_ADAPTER_TIMEOUT_MS;
-  return Math.max(DEFAULT_ADAPTER_TIMEOUT_MS, Math.ceil(configured) + IOS_RESTART_OVERHEAD_MS);
+  const wdaTimeout = Number.isFinite(configured) && configured > 0
+    ? Math.ceil(configured) : IOS_DEFAULT_WDA_LAUNCH_TIMEOUT_MS;
+  return Math.min(IOS_MAX_OPERATION_TIMEOUT_MS, Math.max(IOS_MIN_RESTART_TIMEOUT_MS, wdaTimeout + IOS_RESTART_OVERHEAD_MS));
+}
+
+function runtimeTimeoutMs(binding, operation = 'acquire') {
+  if (binding?.platform !== 'ios') return DEFAULT_ADAPTER_TIMEOUT_MS;
+  if (operation === 'release') return IOS_RELEASE_TIMEOUT_MS;
+  if (operation !== 'acquire') return DEFAULT_ADAPTER_TIMEOUT_MS;
+  const configured = Number(binding.wdaLaunchTimeout);
+  const wdaTimeout = Number.isFinite(configured) && configured > 0
+    ? Math.ceil(configured) : IOS_DEFAULT_WDA_LAUNCH_TIMEOUT_MS;
+  return Math.min(IOS_MAX_OPERATION_TIMEOUT_MS, Math.max(IOS_MIN_RUNTIME_TIMEOUT_MS, wdaTimeout + 30000));
 }
 
 function normalizeRestartResult(value, binding, stderr = '') {
@@ -81,7 +127,14 @@ function restartApp(request) {
     ...environmentAdapterArgs(binding, 'action'),
     '--type', 'restartApp',
   ], restartTimeoutMs(binding));
-  if (!result.value) return { ok: false, coldStartVerified: false, startupDisplayVerified: false, reason: result.reason };
+  if (!result.value) return {
+    ok: false,
+    coldStartVerified: false,
+    startupDisplayVerified: false,
+    failureCode: result.failureCode || 'DEVICE_ADAPTER_EXECUTION_FAILED',
+    reason: result.reason,
+    ...(result.diagnostic ? { diagnostic: { ...result.diagnostic, stage: 'BOOTSTRAP_ACTION' } } : {}),
+  };
   return normalizeRestartResult(result.value, binding, result.stderr);
 }
 
@@ -138,14 +191,35 @@ function runPlatformRuntime(operation, request) {
   ];
   if (operation === 'acquire') args.push('--owner-key', request.ownerKey);
   if (operation === 'release') args.push('--runtime-json', JSON.stringify(request.runtime));
-  const result = run(path.join(SKILL_ROOT, 'scripts/platform/runtime.sh'), args, 30000);
+  const runtimeEnv = operation === 'acquire'
+    ? {
+      ...process.env,
+      MAVT_IOS_RUNTIME_WORKSPACE_ROOT: request.workspaceRoot || '',
+      MAVT_IOS_RUNTIME_BATCH_ID: request.batchId || '',
+    }
+    : process.env;
+  const result = run(
+    path.join(SKILL_ROOT, 'scripts/platform/runtime.sh'),
+    args,
+    runtimeTimeoutMs(binding, operation),
+    runtimeEnv,
+  );
   if (!result.value) {
+    const failureCode = result.failureCode || (operation === 'acquire'
+      ? 'PLATFORM_RUNTIME_ACQUIRE_FAILED' : 'PLATFORM_RUNTIME_RELEASE_FAILED');
     return {
       ok: false,
       status: operation === 'acquire' ? 'ACQUIRE_FAILED' : 'RELEASE_FAILED',
       ownership: request.runtime?.ownership || 'NONE',
-      failureCode: operation === 'acquire' ? 'PLATFORM_RUNTIME_ACQUIRE_FAILED' : 'PLATFORM_RUNTIME_RELEASE_FAILED',
+      failureCode,
       reason: result.reason || result.stderr || `platform runtime ${operation} failed`,
+      retryable: failureCode === 'DEVICE_ADAPTER_TIMEOUT',
+      diagnostic: {
+        code: failureCode,
+        stage: operation === 'acquire' ? 'PLATFORM_RUNTIME_ACQUIRE' : 'PLATFORM_RUNTIME_RELEASE',
+        summary: result.reason || result.stderr || `platform runtime ${operation} failed`,
+        retryable: failureCode === 'DEVICE_ADAPTER_TIMEOUT',
+      },
     };
   }
   return result.value;
@@ -172,5 +246,6 @@ module.exports = {
   releasePlatformRuntime,
   restartApp,
   restartTimeoutMs,
+  runtimeTimeoutMs,
   run,
 };

@@ -4,11 +4,13 @@ const fs = require('fs');
 const path = require('path');
 const { canonicalJson, contractError } = require('../lib/contract-utils');
 const { findActiveExecutions, readJson, withFileLock } = require('../lib/execution-lifecycle');
+const { readActiveDispatch } = require('../lib/dispatch-lease');
 const { markDegraded } = require('../lib/warm-session-contract');
 const caseRuntimeLifecycle = require('../case-runtime/lifecycle');
 const { RECONCILE_RETRY_LIMIT, classifyReconcileError } = require('./reconcile-policy');
 const { loadBatch, readBatchState, saveBatch } = require('./state-repository');
 const { caseRuntimeDir, currentCase, protocolBindings, stopBatch } = require('./service-support');
+const { commitBusinessTerminal } = require('./finalization-service');
 
 function probeWarmSession(state, contract, adapter, now) {
   const probe = adapter.probeSession({ binding: contract.binding });
@@ -36,23 +38,28 @@ function reconcileBatch(options) {
     if (state.warmSession.status === 'INITIALIZING') return { action: 'BOOTSTRAP', state };
     if (fs.existsSync(loaded.paths.caseStartDraft)) return { action: 'RESUME_CASE_START', state, draft: readJson(loaded.paths.caseStartDraft) };
     if (fs.existsSync(loaded.paths.caseCommitDraft)) return { action: 'COMMIT_CASE', state, draft: readJson(loaded.paths.caseCommitDraft) };
+    if (['BLOCKING', 'CANCELLING', 'FINALIZING'].includes(state.status) && commitBusinessTerminal(state, options.now)) {
+      saveBatch(loaded.paths, state, options.now);
+      return {
+        action: { BLOCKED: 'BATCH_BLOCKED', CANCELLED: 'BATCH_CANCELLED', COMPLETED: 'BATCH_COMPLETE' }[state.status],
+        state,
+        recovered: true,
+      };
+    }
     if (state.status === 'BLOCKING') {
       if (state.finalization?.executionsSettled !== true) return { action: 'SETTLE_EXECUTIONS', state };
       if (state.finalization.platformReleased !== true) return { action: 'RELEASE_PLATFORM', state };
-      if (state.finalization.reportsPublished !== true) return { action: 'PUBLISH_REPORTS', state };
       return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_FINALIZATION_INVALID', 'blocked finalization checklist was not committed', { now: options.now });
     }
     if (state.status === 'CANCELLING') {
       if (state.finalization.executionsSettled !== true) return { action: 'SETTLE_EXECUTIONS', state };
       if (state.finalization.platformReleased !== true) return { action: 'RELEASE_PLATFORM', state };
-      if (state.finalization.reportsPublished !== true) return { action: 'PUBLISH_REPORTS', state };
       return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_FINALIZATION_INVALID', 'cancelled batch finalization was not committed', { now: options.now });
     }
     if (state.status === 'FINALIZING') {
       if (state.finalization?.casesCommitted !== true) return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_FINALIZATION_INVALID', 'finalizing batch has uncommitted cases', { now: options.now });
       if (state.finalization.executionsSettled !== true) return { action: 'SETTLE_EXECUTIONS', state };
       if (state.finalization.platformReleased !== true) return { action: 'RELEASE_PLATFORM', state };
-      if (state.finalization.reportsPublished !== true) return { action: 'PUBLISH_REPORTS', state };
       return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_FINALIZATION_INVALID', 'completed finalization checklist was not committed', { now: options.now });
     }
     const requireDeviceSession = () => {
@@ -123,7 +130,7 @@ function reconcileBatch(options) {
         saveBatch(loaded.paths, state, options.now);
         if (classified.classification === 'RETRYABLE' && count < RECONCILE_RETRY_LIMIT) {
           return {
-            action: 'WAIT_CASE_AGENT',
+            action: 'WAIT_EXECUTION_RESULT',
             batchId: state.batchId,
             caseKey: item.caseKey,
             executionId: item.executionId,
@@ -144,8 +151,9 @@ function reconcileBatch(options) {
         return stopBatch(loaded.paths, state, 'CORRUPTED', 'CASE_RUNTIME_MISSING', 'active execution has no valid Case Runtime binding', { now: options.now });
       }
       if (entry.execution.finalized === true) return { action: 'COMMIT_CASE', state, execDir: entry.execDir };
+      const dispatch = readActiveDispatch(path.join(loaded.paths.batchDir, 'handoffs', item.executionId), item.executionId);
       return {
-        action: 'WAIT_CASE_AGENT',
+        action: dispatch?.status === 'CONSUMED' ? 'WAIT_EXECUTION_RESULT' : 'NEED_CASE_AGENT',
         batchId: state.batchId,
         caseKey: item.caseKey,
         executionId: item.executionId,

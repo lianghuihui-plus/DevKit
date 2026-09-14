@@ -35,13 +35,13 @@ function executeAgentRequest(execDir, request, options = {}) {
 }
 
 function executeFacadeRequest(execDir, request, options = {}) {
-  if (request?.operation === 'reviewKnowledge') {
+  if (['reviewKnowledge', 'recordPlan'].includes(request?.operation)) {
     const resolved = path.resolve(execDir);
     const runtime = readJson(path.join(resolved, 'runtime.json'), null);
     if (!isSupportedBroker(runtime?.broker) || !runtime?.agentFacing?.entry || !runtime?.agentFacing?.requestPath) {
       return {
         status: 'REQUEST_INVALID', code: 'CASE_RUNTIME_OPERATION_FORBIDDEN',
-        message: 'reviewKnowledge is only available through a bound Agent-facing Facade', scene: null,
+        message: `${request.operation} is only available through a bound Agent-facing Facade`, scene: null,
       };
     }
     require('./lifecycle').recordTimingAnchor({ executionDir: resolved, field: 'handoffConsumedAt', now: options.now });

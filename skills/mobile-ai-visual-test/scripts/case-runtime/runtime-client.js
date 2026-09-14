@@ -60,6 +60,12 @@ function main(argv = process.argv.slice(2), options = {}) {
       code: error.code || (invalid ? 'CASE_RUNTIME_REQUEST_INVALID' : 'CASE_RUNTIME_CLIENT_ERROR'),
       message: error.message || String(error),
       scene: null,
+      ...(!invalid ? { diagnostic: error.diagnostic || {
+        code: error.code || 'CASE_RUNTIME_CLIENT_ERROR',
+        stage: 'RUNTIME_CLIENT',
+        summary: error.message || String(error),
+        retryable: error.retryable === true,
+      } } : {}),
       ...(invalid ? {
         issues: [{
           fieldPath: error.name === 'SyntaxError' ? 'requestFile' : 'transport',

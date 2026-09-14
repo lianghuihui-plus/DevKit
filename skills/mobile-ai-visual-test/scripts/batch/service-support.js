@@ -55,6 +55,15 @@ function hasBatchEvent(eventsPath, predicate) {
 
 function stopBatch(paths, state, action, failureCode, reason, options = {}) {
   const time = options.now || new Date().toISOString();
+  const cleanupDeadline = new Date(Date.parse(time) + 120000).toISOString();
+  const diagnostic = options.diagnostic || {
+    code: failureCode,
+    stage: options.stage || action,
+    summary: reason,
+    retryable: options.retryable === true,
+    ...(options.attempt !== undefined ? { attempt: options.attempt } : {}),
+    ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
+  };
   if (!['BLOCKING', 'BLOCKED'].includes(state.status)) {
     const activeItem = currentCase(state);
     const settledExecutions = [];
@@ -72,13 +81,14 @@ function stopBatch(paths, state, action, failureCode, reason, options = {}) {
     state.status = 'BLOCKING';
     state.failureCode = failureCode;
     state.reason = reason;
+    state.diagnostic = diagnostic;
     state.stoppedAt = time;
+    state.cleanupDeadlineAt = cleanupDeadline;
     state.finalization = {
       cause: 'BLOCKED',
       executionsSettled: false,
       settledExecutions,
       platformReleased: false,
-      reportsPublished: false,
     };
     if (options.stopContext) state.stopContext = options.stopContext;
     if (state.warmSession?.status !== 'CLOSED' && state.warmSession?.status !== 'DEGRADED') {
@@ -96,11 +106,24 @@ function stopBatch(paths, state, action, failureCode, reason, options = {}) {
       action,
       failureCode: state.failureCode || failureCode,
       reason: state.reason || reason,
+      diagnostic: state.diagnostic || diagnostic,
       ...(state.stopContext ? { stopContext: state.stopContext } : {}),
       ...(options.executions ? { executions: options.executions } : {}),
     });
   }
-  return { action, state, reason: state.reason || reason, nextAction: state.status === 'BLOCKING' ? 'SETTLE_EXECUTIONS' : 'BATCH_BLOCKED', ...(options.executions ? { executions: options.executions } : {}) };
+  return {
+    action,
+    state,
+    failureCode: state.failureCode || failureCode,
+    reason: state.reason || reason,
+    ...(state.diagnostic || diagnostic ? { diagnostic: state.diagnostic || diagnostic } : {}),
+    ...(state.diagnostic?.stage || diagnostic.stage ? { stage: state.diagnostic?.stage || diagnostic.stage } : {}),
+    ...(state.diagnostic?.retryable !== undefined || diagnostic.retryable !== undefined
+      ? { retryable: state.diagnostic?.retryable ?? diagnostic.retryable }
+      : {}),
+    nextAction: state.status === 'BLOCKING' ? 'SETTLE_EXECUTIONS' : 'BATCH_BLOCKED',
+    ...(options.executions ? { executions: options.executions } : {}),
+  };
 }
 
 function protocolBindings(options, compatibilityMode) {

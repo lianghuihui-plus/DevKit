@@ -8,6 +8,15 @@ function normalizeServer(server) {
   return String(server || process.env.MAVT_IOS_APPIUM_SERVER || 'http://127.0.0.1:4723').replace(/\/+$/, '');
 }
 
+function isInvalidSessionError(error) {
+  const text = [
+    error?.message,
+    error?.response?.value?.error,
+    error?.response?.value?.message,
+  ].filter(Boolean).join('\n');
+  return /invalid session id|session (?:is )?(?:either )?terminated|session[^\n]{0,80}not started/i.test(text);
+}
+
 function request(server, method, endpoint, body, timeoutMs = 120000) {
   const base = normalizeServer(server);
   const url = new URL(endpoint, base);
@@ -115,6 +124,7 @@ async function withSession(target, fn, options = {}) {
 module.exports = {
   createSession,
   deleteSession,
+  isInvalidSessionError,
   normalizeServer,
   request,
   sessionCapabilities,

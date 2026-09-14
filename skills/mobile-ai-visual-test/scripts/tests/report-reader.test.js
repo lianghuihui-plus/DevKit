@@ -191,6 +191,20 @@ assert.strictEqual(indexMetadata.artifacts['index.html'].sha256, crypto.createHa
 
 const passFixture = fixtures.get('PASS');
 const passRuntimeDir = path.join(passFixture.caseDir, 'platforms', 'harmony');
+const oldCancelledDir = path.join(passRuntimeDir, 'executions', 'execution-cancelled-older');
+fs.mkdirSync(oldCancelledDir, { recursive: true });
+fs.writeFileSync(path.join(oldCancelledDir, 'execution.json'), JSON.stringify({
+  ...passFixture.execution,
+  executionId: 'execution-cancelled-older',
+  status: 'CANCELLED',
+  lifecycle: 'CANCELLED',
+  finalized: true,
+  startedAt: '2026-08-12T10:00:00.000+08:00',
+  endedAt: '2026-08-12T10:01:00.000+08:00',
+}));
+assert.strictEqual(selectExecutionDir(passRuntimeDir).state, 'PUBLISHED');
+assert.strictEqual(selectExecutionDir(passRuntimeDir).execDir, passFixture.execDir);
+
 const activeDir = path.join(passRuntimeDir, 'executions', 'execution-active-newer');
 fs.mkdirSync(activeDir, { recursive: true });
 fs.writeFileSync(path.join(activeDir, 'execution.json'), JSON.stringify({
@@ -220,14 +234,16 @@ fs.writeFileSync(path.join(unsupportedNewerDir, 'execution.json'), JSON.stringif
   schemaVersion: 99, executionId: 'execution-unsupported-newest', finalized: false,
   startedAt: '2026-08-19T12:00:00.000Z',
 }));
-assert.strictEqual(selectExecutionDir(passRuntimeDir).state, 'UNSUPPORTED');
+assert.strictEqual(selectExecutionDir(passRuntimeDir).readability, 'FORMAT_UNSUPPORTED');
 assert.strictEqual(selectExecutionDir(passRuntimeDir).execDir, unsupportedNewerDir);
-assert.throws(() => readExecutionReport(selectExecutionDir(passRuntimeDir).execDir),
-  (error) => error?.code === 'FORMAT_UNSUPPORTED');
+const unsupportedNewestReport = readExecutionReport(selectExecutionDir(passRuntimeDir).execDir);
+assert.strictEqual(unsupportedNewestReport.readability, 'FORMAT_UNSUPPORTED');
+assert.strictEqual(unsupportedNewestReport.display.status, 'NEEDS_RERUN');
+assert.strictEqual(unsupportedNewestReport.display.failureCode, 'FORMAT_UNSUPPORTED');
 const isolatedCases = collectIndexCases(workspace);
 assert.strictEqual(isolatedCases.length, fixtures.size);
-assert.strictEqual(isolatedCases.filter((item) => item.status === 'REPORT_ERROR').length, 1);
-assert.strictEqual(isolatedCases.filter((item) => item.status !== 'REPORT_ERROR').length, fixtures.size - 1);
+assert.strictEqual(isolatedCases.filter((item) => item.status === 'REPORT_ERROR').length, 0);
+assert.strictEqual(isolatedCases.find((item) => item.caseKey === passFixture.caseJson.identity.caseKey).status, 'NEEDS_RERUN');
 
 const extraArtifact = path.join(passFixture.execDir, 'screenshots', 'extra-after-publication.png');
 fs.writeFileSync(extraArtifact, Buffer.from('not part of the published artifact set'));
@@ -247,12 +263,28 @@ assert.strictEqual(damaged.display.executionStatus, 'TECHNICALLY_BLOCKED');
 const unsupportedDir = path.join(temp, 'unsupported-execution');
 fs.mkdirSync(unsupportedDir);
 fs.writeFileSync(path.join(unsupportedDir, 'execution.json'), JSON.stringify({ schemaVersion: 99, executionId: 'unsupported' }));
-assert.throws(() => readExecutionReport(unsupportedDir), (error) => error?.code === 'FORMAT_UNSUPPORTED' && /schema: 99/.test(error.message));
+const unsupportedReport = readExecutionReport(unsupportedDir);
+assert.strictEqual(unsupportedReport.readability, 'FORMAT_UNSUPPORTED');
+assert.strictEqual(unsupportedReport.execution.schemaVersion, 99);
+assert.strictEqual(unsupportedReport.display.status, 'NEEDS_RERUN');
 
 const previousSchemaDir = path.join(temp, 'previous-schema-execution');
 fs.mkdirSync(previousSchemaDir);
 fs.writeFileSync(path.join(previousSchemaDir, 'execution.json'), JSON.stringify({ schemaVersion: 10, runtime: 'case-runtime', executionId: 'previous-schema' }));
-assert.throws(() => readExecutionReport(previousSchemaDir), (error) => error?.code === 'FORMAT_UNSUPPORTED');
+const previousSchemaReport = readExecutionReport(previousSchemaDir);
+assert.strictEqual(previousSchemaReport.readability, 'FORMAT_UNSUPPORTED');
+assert.strictEqual(previousSchemaReport.display.summary, '历史结果格式不支持，需要重跑');
+
+const invalidRuntimeDir = path.join(temp, 'invalid-runtime');
+const invalidExecutionDir = path.join(invalidRuntimeDir, 'executions', 'invalid-execution');
+fs.mkdirSync(invalidExecutionDir, { recursive: true });
+fs.writeFileSync(path.join(invalidExecutionDir, 'execution.json'), '{ invalid json');
+const invalidSelection = selectExecutionDir(invalidRuntimeDir);
+assert.strictEqual(invalidSelection.readability, 'DATA_INVALID');
+assert.strictEqual(invalidSelection.execDir, invalidExecutionDir);
+const invalidReport = readExecutionReport(invalidExecutionDir);
+assert.strictEqual(invalidReport.readability, 'DATA_INVALID');
+assert.strictEqual(invalidReport.display.status, 'REPORT_DATA_INVALID');
 
 const historicalWorkspace = path.join(temp, 'historical-workspace');
 createTestWorkspace(historicalWorkspace);

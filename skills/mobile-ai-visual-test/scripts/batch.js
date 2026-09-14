@@ -22,7 +22,7 @@ const {
 } = require('./batch/platform-runtime');
 const { loadExecutionRequest } = require('./lib/run-control');
 const { refreshBatchIndex, refreshCommittedCaseReports } = require('./report/report-service');
-const { recordPublicationAttempt } = require('./report/publication-state');
+const { readPublicationState, recordPublicationAttempt } = require('./report/publication-state');
 const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 const SKILL_ROOT = path.resolve(__dirname, '..');
@@ -96,16 +96,83 @@ function refreshCommittedDashboard(committed, refresh = refreshCommittedCaseRepo
 function commitWithDashboard(common, refresh, commit = commitCurrentCase) {
   const committed = commit(common);
   const dashboardRefresh = refreshCommittedDashboard(committed, refresh);
-  const publicationState = common.workspaceRoot && common.batchId
-    ? recordPublicationAttempt(common.workspaceRoot, common.batchId, 'case', dashboardRefresh, { now: common.now })
-    : null;
+  let publicationState = null;
+  if (common.workspaceRoot && common.batchId) {
+    try {
+      publicationState = recordPublicationAttempt(common.workspaceRoot, common.batchId, 'case', dashboardRefresh, { now: common.now });
+    } catch (error) {
+      publicationState = degradedPublicationState(common, error);
+    }
+  }
   return { ...committed, dashboardRefresh, ...(publicationState ? { publicationState } : {}) };
+}
+
+function publicationErrorCode(error) {
+  return error?.code || String(error?.message || error).match(/^([A-Z][A-Z0-9_]+)/)?.[1] || 'REPORT_PUBLICATION_FAILED';
+}
+
+function degradedPublicationState(common, error, code = 'REPORT_PUBLICATION_STATE_INVALID') {
+  return {
+    schemaVersion: 1,
+    batchId: common.batchId,
+    status: 'DEGRADED',
+    errorCode: code,
+    reason: error?.message || String(error),
+    classification: 'PERMANENT',
+  };
+}
+
+function publishTerminalReports(common, current) {
+  let existing;
+  try {
+    existing = readPublicationState(common.workspaceRoot, common.batchId);
+  } catch (error) {
+    return { publicationState: degradedPublicationState(common, error), publicationAttempted: false };
+  }
+  if ((Array.isArray(existing.attempts) ? existing.attempts : []).some((attempt) => attempt.scope === 'batch')) {
+    return { publicationState: existing, publicationAttempted: false };
+  }
+  const startedAt = Date.now();
+  let publication;
+  try {
+    const loaded = loadBatch(common.workspaceRoot, common.batchId, { ...common, compatibilityMode: 'FINALIZE' });
+    const refresh = current.refreshBatchIndex || refreshBatchIndex;
+    refresh(common.workspaceRoot, loaded.contract.targets.map((target) => target.caseDir));
+    publication = { status: 'PUBLISHED', durationMs: Date.now() - startedAt };
+  } catch (error) {
+    publication = {
+      status: 'FAILED',
+      errorCode: publicationErrorCode(error),
+      reason: error.message || String(error),
+      durationMs: Date.now() - startedAt,
+    };
+  }
+  try {
+    return {
+      publication,
+      publicationState: recordPublicationAttempt(common.workspaceRoot, common.batchId, 'batch', publication, { now: common.now }),
+      publicationAttempted: true,
+    };
+  } catch (error) {
+    return {
+      publication,
+      publicationState: degradedPublicationState(common, error),
+      publicationAttempted: true,
+    };
+  }
 }
 
 function reconcileWithFinalization(common, current) {
   const progress = [];
+  let platformRuntimeCleanup = null;
   for (let transition = 0; transition < 32; transition += 1) {
     const reconciled = reconcileBatch({ ...common, adapter: current.adapter });
+    if (['BATCH_COMPLETE', 'BATCH_CANCELLED', 'BATCH_BLOCKED'].includes(reconciled.action)) {
+      const reportPublication = publishTerminalReports(common, current);
+      if (reportPublication.publicationAttempted) progress.push('PUBLISH_REPORTS');
+      progress.push(reconciled.action);
+      return { ...reconciled, progress, ...(platformRuntimeCleanup ? { platformRuntimeCleanup } : {}), ...reportPublication };
+    }
     progress.push(reconciled.action);
     if (['START_CASE', 'RESUME_CASE_START'].includes(reconciled.action)) {
       return { ...reconciled, action: 'NEED_CASE_AGENT', batchAction: reconciled.action, progress };
@@ -121,28 +188,23 @@ function reconcileWithFinalization(common, current) {
       continue;
     }
     if (reconciled.action === 'RELEASE_PLATFORM') {
-      const platformRuntimeCleanup = releaseBatchPlatformRuntime({ ...common, adapter: current.adapter });
-      recordFinalizationStep({ ...common, step: 'platformReleased', result: platformRuntimeCleanup });
-      continue;
-    }
-    if (reconciled.action === 'PUBLISH_REPORTS') {
-      const startedAt = Date.now();
-      let publication;
+      let cleanupResult;
       try {
-        const loaded = loadBatch(common.workspaceRoot, common.batchId, { ...common, compatibilityMode: 'FINALIZE' });
-        refreshBatchIndex(common.workspaceRoot, loaded.contract.targets.map((target) => target.caseDir));
-        publication = { status: 'PUBLISHED', durationMs: Date.now() - startedAt };
+        cleanupResult = releaseBatchPlatformRuntime({ ...common, adapter: current.adapter });
       } catch (error) {
-        publication = {
-          status: 'FAILED',
-          errorCode: error.code || 'REPORT_PUBLICATION_FAILED',
+        cleanupResult = {
+          ok: false,
+          status: 'RELEASE_FAILED',
+          failureCode: error.code || 'PLATFORM_RUNTIME_RELEASE_FAILED',
           reason: error.message || String(error),
-          durationMs: Date.now() - startedAt,
         };
       }
-      const publicationState = recordPublicationAttempt(common.workspaceRoot, common.batchId, 'batch', publication, { now: common.now });
-      if (publication.status !== 'PUBLISHED') return { ...reconciled, progress, publication, publicationState, retryable: true };
-      recordFinalizationStep({ ...common, step: 'reportsPublished', result: publication });
+      platformRuntimeCleanup = cleanupResult;
+      if (cleanupResult.ok === true) {
+        recordFinalizationStep({ ...common, step: 'platformReleased', result: cleanupResult });
+      } else {
+        recordFinalizationStep({ ...common, step: 'platformCleanupDeferred', result: cleanupResult });
+      }
       continue;
     }
     if (reconciled.action === 'RECONCILE_FATAL') continue;
@@ -153,6 +215,7 @@ function reconcileWithFinalization(common, current) {
 
 function cleanupTerminalPlatformRuntime(common, current, result) {
   if (!['COMPLETED', 'CANCELLED', 'BLOCKED'].includes(result?.state?.status)) return result;
+  if (result?.platformRuntimeCleanup) return result;
   try {
     return {
       ...result,
@@ -209,9 +272,10 @@ function execute(options) {
         }));
       } catch (error) {
         try {
-          cleanupTerminalPlatformRuntime(common, current, loadBatch(options.workspace, options.batchId, common));
+          const loaded = loadBatch(options.workspace, options.batchId, { ...common, compatibilityMode: 'FINALIZE' });
+          if (loaded.state.status === 'BLOCKING') return reconcileWithFinalization(common, current);
         } catch {
-          // Preserve the bootstrap error; cleanup state records its own failure when possible.
+          // Preserve the bootstrap error when state recovery cannot be started.
         }
         throw error;
       }

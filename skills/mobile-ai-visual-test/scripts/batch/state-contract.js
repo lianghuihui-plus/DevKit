@@ -22,14 +22,16 @@ function requireBoolean(value, field) {
 
 function validateFinalization(state) {
   const finalization = ensureObject(state.finalization, 'finalization', 'BATCH_STATE_INVALID');
-  for (const field of ['platformReleased', 'reportsPublished']) requireBoolean(finalization[field], `finalization.${field}`);
+  requireBoolean(finalization.platformReleased, 'finalization.platformReleased');
   if (state.status === 'INITIALIZING' || state.status === 'RUNNING') {
-    if (finalization.platformReleased || finalization.reportsPublished) throw invalid('active batch cannot contain completed finalization steps');
+    if (finalization.platformReleased) throw invalid('active batch cannot contain completed finalization steps');
     return;
   }
   requireBoolean(finalization.executionsSettled, 'finalization.executionsSettled');
+  if (finalization.platformCleanupDeferred !== undefined) {
+    requireBoolean(finalization.platformCleanupDeferred, 'finalization.platformCleanupDeferred');
+  }
   if (finalization.platformReleased && !finalization.executionsSettled) throw invalid('platform release requires settled executions');
-  if (finalization.reportsPublished && !finalization.platformReleased) throw invalid('report publication requires platform release');
   const expectedCause = {
     FINALIZING: 'COMPLETED', COMPLETED: 'COMPLETED',
     CANCELLING: 'CANCELLED', CANCELLED: 'CANCELLED',
@@ -37,8 +39,9 @@ function validateFinalization(state) {
   }[state.status];
   if (finalization.cause !== expectedCause) throw invalid(`finalization.cause must be ${expectedCause} for ${state.status}`);
   if (expectedCause === 'COMPLETED' && finalization.casesCommitted !== true) throw invalid('completed finalization requires all cases committed');
+  const platformSettled = finalization.platformReleased || finalization.platformCleanupDeferred;
   if (TERMINAL_STATUSES.has(state.status)
-    && (!finalization.executionsSettled || !finalization.platformReleased || !finalization.reportsPublished)) {
+    && (!finalization.executionsSettled || !platformSettled)) {
     throw invalid('terminal batch requires a completed finalization checklist');
   }
 }

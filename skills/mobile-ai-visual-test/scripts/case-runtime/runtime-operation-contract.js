@@ -292,6 +292,23 @@ const OPERATION_CONTRACT = deepFreeze({
     })],
     responses: ['KNOWLEDGE_REVIEWED', 'SCENE_CHANGED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
+  recordPlan: defineOperation({
+    agentAccessible: false,
+    summary: 'Record an Agent-authored execution plan without touching the device.',
+    whenToUse: ['Agent-facing Facade only; never exposed as a Case Agent internal operation.'],
+    requestSchema: operationSchema('recordPlan', {
+      decision: { $ref: 'decision' },
+    }, ['operation', 'decision']),
+    constraints: ['decision.planUpdate is required.'],
+    examples: [example('record-agent-plan', {
+      operation: 'recordPlan',
+      decision: {
+        ...decision('记录执行计划'),
+        planUpdate: { reason: 'INITIAL_PLAN', next: ['观察当前页面', '执行必要操作', '验证预期结果'] },
+      },
+    })],
+    responses: ['PLAN_RECORDED', 'REQUEST_INVALID', 'TECHNICAL'],
+  }),
   recover: defineOperation({
     agentAccessible: true,
     summary: 'Cold-start the target App and capture a new Scene after an unrecoverable interaction state.',

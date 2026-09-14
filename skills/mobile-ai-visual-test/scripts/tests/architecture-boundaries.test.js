@@ -32,7 +32,7 @@ const coordinatorCapabilities = capabilityCards();
 assert.strictEqual(COORDINATOR_INTERFACE_KIND, 'AGENT_FACING');
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
 assert.ok(COORDINATOR_CAPABILITIES.length <= 4, 'Main Agent active capability budget is 4');
-assert.ok(AGENT_FACING_CAPABILITIES.length <= 6, 'Case Agent active capability budget is 6');
+assert.ok(AGENT_FACING_CAPABILITIES.length <= 7, 'Case Agent active capability budget is 7');
 assert.deepStrictEqual(Object.keys(coordinatorCapabilities), COORDINATOR_CAPABILITIES);
 assert.strictEqual(JSON.stringify(coordinatorCapabilities).includes('definitionRef'), false);
 assert.strictEqual(JSON.stringify(coordinatorCapabilities).includes('batchId'), false);
@@ -45,8 +45,8 @@ assert.match(casePrompt, /业务执行/);
 assert.match(casePrompt, /Frozen CaseSpec/);
 assert.match(casePrompt, /expectationRef/);
 assert.match(casePrompt, /view_image/);
-assert.match(casePrompt, /六个业务能力/);
-assert.match(casePrompt, /observe.*inspect.*act.*knowledge.*recover.*finish/);
+assert.match(casePrompt, /七个业务能力/);
+assert.match(casePrompt, /observe.*inspect.*plan.*act.*knowledge.*recover.*finish/);
 assert.match(casePrompt, /当前 Scene 或响应中的 example/);
 assert.match(casePrompt, /retryWith/);
 assert.match(casePrompt, /AGENT_INPUT_STALLED/);
@@ -79,6 +79,7 @@ for (const hidden of ['CLEAR_APP_DATA', 'REINSTALL_APP', 'artifactPath', 'appium
 }
 const promptRequests = [...casePrompt.matchAll(/```json\s*([\s\S]*?)```/g)].map((match) => JSON.parse(match[1]));
 assert.strictEqual(promptRequests.length, 0, 'Runtime request schemas belong in runtime.capabilities, not the prompt');
+assert.match(casePrompt, /请求文件.*一次性.*每次调用.*新建/);
 for (const request of promptRequests) assert.doesNotThrow(() => validateRuntimeRequest(request));
 for (const request of promptRequests) {
   if (request.caseContext) assert.doesNotThrow(() => validateCaseContext(request.caseContext));
@@ -104,6 +105,8 @@ assert.match(mainPrompt, /loaderCommand/);
 assert.strictEqual(mainPrompt.includes('根据原文整理并审核'), false);
 assert.strictEqual(mainPrompt.includes('caseNo + definitionRef'), false);
 assert.match(mainPrompt, /prepareRun.*confirmRun.*advanceRun.*cancelRun/);
+assert.match(mainPrompt, /进程仍在运行.*继续等待.*不得重复执行/);
+assert.strictEqual(mainPrompt.includes('可重试的报告发布'), false, 'report publication must not keep a run WAITING');
 assert.strictEqual(mainPrompt.includes('coordinatorCapabilities'), false);
 assert.strictEqual(mainPrompt.includes('batch bootstrap'), false);
 assert.strictEqual(mainPrompt.includes('batch start'), false);

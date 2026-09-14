@@ -251,6 +251,62 @@ assert.strictEqual(staleSummary.platforms[0].sourceCurrent, false);
 assert.ok(fs.readFileSync(staleIndexPath, 'utf8').includes('需重新执行'));
 assert.ok(fs.readFileSync(path.join(staleFixture.caseDir, 'CONTEXT.html'), 'utf8').includes(updatedSource));
 
+const historicalIsolationRoot = path.join(temp, 'historical-platform-isolation');
+createTestWorkspace(historicalIsolationRoot);
+const currentIosFixture = createCurrentFixture(historicalIsolationRoot, {
+  verdict: 'PASS', suffix: 'current-ios-with-history', platform: 'ios',
+});
+const oldHarmonyDir = path.join(
+  currentIosFixture.caseDir,
+  'platforms',
+  'harmony',
+  'executions',
+  'execution-schema-10',
+);
+fs.mkdirSync(oldHarmonyDir, { recursive: true });
+const oldHarmonyExecution = `${JSON.stringify({
+  schemaVersion: 10,
+  runtime: 'case-runtime',
+  executionId: 'execution-schema-10',
+  platform: 'harmony',
+  startedAt: '2026-08-12T09:00:00.000Z',
+  endedAt: '2026-08-12T09:01:00.000Z',
+  finalized: true,
+}, null, 2)}\n`;
+fs.writeFileSync(path.join(oldHarmonyDir, 'execution.json'), oldHarmonyExecution);
+const historicalIndex = renderIndexForRoot(historicalIsolationRoot);
+const historicalProjection = require('../report/report-service').collectIndexCases(historicalIsolationRoot)[0];
+assert.strictEqual(historicalProjection.status, 'PASS');
+assert.strictEqual(historicalProjection.platforms.length, 2);
+assert.strictEqual(historicalProjection.platforms.find((item) => item.platform === 'ios').status, 'PASS');
+const historicalHarmony = historicalProjection.platforms.find((item) => item.platform === 'harmony');
+assert.strictEqual(historicalHarmony.status, 'NEEDS_RERUN');
+assert.strictEqual(historicalHarmony.readability, 'FORMAT_UNSUPPORTED');
+assert.strictEqual(historicalHarmony.reason, '历史结果格式不支持，需要重跑');
+assert.ok(fs.readFileSync(historicalIndex, 'utf8').includes('历史结果格式不支持，需要重跑'));
+assert.strictEqual(fs.readFileSync(path.join(oldHarmonyDir, 'execution.json'), 'utf8'), oldHarmonyExecution);
+
+const historyOnlyRoot = path.join(temp, 'history-only');
+createTestWorkspace(historyOnlyRoot);
+const historyOnlyFixture = createCurrentFixture(historyOnlyRoot, { verdict: 'PASS', suffix: 'history-only' });
+const historyOnlyExecutionPath = path.join(historyOnlyFixture.execDir, 'execution.json');
+const historyOnlyExecution = `${JSON.stringify({
+  schemaVersion: 10,
+  runtime: 'case-runtime',
+  executionId: historyOnlyFixture.execution.executionId,
+  platform: 'harmony',
+  startedAt: historyOnlyFixture.execution.startedAt,
+  endedAt: historyOnlyFixture.execution.endedAt,
+  finalized: true,
+}, null, 2)}\n`;
+fs.writeFileSync(historyOnlyExecutionPath, historyOnlyExecution);
+const historyOnlyIndex = renderIndexForRoot(historyOnlyRoot);
+const historyOnlySummary = require('../report/report-service').collectIndexCases(historyOnlyRoot)[0];
+assert.strictEqual(historyOnlySummary.status, 'NEEDS_RERUN');
+assert.strictEqual(historyOnlySummary.reportErrorCode, undefined);
+assert.ok(fs.readFileSync(historyOnlyIndex, 'utf8').includes('需重新执行'));
+assert.strictEqual(fs.readFileSync(historyOnlyExecutionPath, 'utf8'), historyOnlyExecution);
+
 const corruptFixture = createCurrentFixture(root, { verdict: 'PASS', suffix: 'corrupt-dashboard' });
 const corruptExecutionDir = path.join(corruptFixture.runtimeDir, 'executions', 'execution-corrupt-json');
 fs.mkdirSync(corruptExecutionDir, { recursive: true });
@@ -260,8 +316,11 @@ const isolatedHtml = fs.readFileSync(isolatedIndexPath, 'utf8');
 const isolatedMetadata = JSON.parse(fs.readFileSync(path.join(root, 'report-metadata.json'), 'utf8'));
 assert.ok(isolatedHtml.includes('报告数据异常'));
 assert.ok(isolatedHtml.includes(corruptFixture.caseJson.identity.title));
-assert.ok(fs.readFileSync(path.join(corruptFixture.caseDir, 'CONTEXT.html'), 'utf8').includes('报告数据异常'));
-assert.strictEqual(isolatedMetadata.reportErrors.length, 1);
+assert.ok(fs.readFileSync(path.join(corruptFixture.runtimeDir, 'CONTEXT.html'), 'utf8').includes('报告数据异常'));
+assert.ok(fs.readFileSync(path.join(corruptFixture.caseDir, 'CONTEXT.html'), 'utf8').includes('原始用例'));
+assert.strictEqual(require('../report/report-service').collectIndexCases(root)
+  .find((item) => item.caseKey === corruptFixture.caseJson.identity.caseKey).status, 'REPORT_DATA_INVALID');
+assert.strictEqual(isolatedMetadata.reportErrors.length, 0);
 for (const fixture of fixtures) assert.strictEqual(fs.existsSync(path.join(fixture.runtimeDir, 'CONTEXT.html')), true);
 
 fs.rmSync(temp, { recursive: true, force: true });

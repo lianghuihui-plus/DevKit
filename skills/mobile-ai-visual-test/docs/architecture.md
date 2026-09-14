@@ -6,11 +6,13 @@
 
 1. Authoring Plane 在生成用例时发布不可变 CaseDefinition；Execution Plane 从定义确定性投影 CaseSpec、InitialStateRequirement 和平台策略。
 2. 主 Agent 负责环境、定义状态、授权、批次、委托和报告，不读取原始用例或进入单用例执行循环。
-3. Case Agent 只接触一页角色 Prompt、派生 Case Brief、当前 Scene 和六个业务能力组成的 Agent-facing Facade。
+3. Case Agent 只接触一页角色 Prompt、派生 Case Brief、当前 Scene 和七个业务能力组成的 Agent-facing Facade。
 4. Runtime 自动处理平台参数、事务、证据、恢复和技术状态。
 5. 批次内复用 App 暖状态，每个用例保持独立 Agent、execution、上下文和证据。
-6. 运行事实与报告展示分离，报告可以从正式产物完整重建。
-7. 框架只解释当前格式；旧格式不迁移、不降级，按用例返回 `FORMAT_UNSUPPORTED`，不能阻断其他用例展示。
+6. 运行初始化冻结到当前 Coordinator run 并可从持久化步骤恢复，不依赖随后变化的工作空间默认环境。
+7. Execution、平台释放、Batch 业务终态与报告发布是独立事实；报告可以从正式产物完整重建，发布失败不阻塞业务终态。
+8. 框架只解释当前格式；旧格式不迁移、不降级，按 execution 隔离为 `FORMAT_UNSUPPORTED`，不能阻断其他平台或用例展示。
+9. iOS Appium Session 是 Batch runtime 中可替换的动态资源，Execution 只持有访问权威状态的引用。
 
 本文是当前架构的唯一事实来源。关键方案选择及原因简要记录在 [`design-decisions.md`](design-decisions.md)；实施计划和已被吸收的专项设计不再单独维护。
 
@@ -28,7 +30,7 @@ flowchart LR
   CI --> B["Batch Coordinator"]
   B --> L["Case Runtime Lifecycle / Initial State"]
   M -->|"不透明 Handoff loaderCommand"| A["Case Agent"]
-  A --> AF["Case Facade<br/>6 个业务能力"]
+  A --> AF["Case Facade<br/>7 个业务能力"]
   AF --> AT["Case Translator"]
   AT --> RI["Internal Runtime Contract"]
   RI --> RB["Runtime Broker"]
@@ -57,14 +59,18 @@ flowchart LR
 
 Coordinator Facade 内部确定性完成 Workspace 校验、定义状态、环境探测、ExecutionRequest、Batch 初始化、暖会话、Runtime 创建、reconcile、commit、资源释放和报告发布。主 Agent 不选择或拼装这些内部命令。
 
-缺少定义时，主 Agent 只把 `compilerHandoff.loaderCommand` 交给隔离的单用例 Compiler，不读取 `source.md`、候选定义或已发布定义正文。主 Agent 持有宿主返回的 Agent 句柄，但不读取 Handoff 正文；单用例执行期间只等待终态。
+环境选择响应提供互斥的完整模板；用户确认后，Coordinator 把环境和授权冻结到当前 run，并依次持久化 `environmentFrozen`、`executionRequestCreated`、`batchInitialized`。`advanceRun` 从首个缺失步骤恢复 `INITIALIZING_RUN`，已完成步骤只校验身份，不重新创建。工作空间级 `environment-confirmation.json` 只作为后续新运行的默认环境，不能改变已冻结运行。
+
+缺少定义时，主 Agent 只把 `compilerHandoff.loaderCommand` 交给隔离的单用例 Compiler，不读取 `source.md`、候选定义或已发布定义正文。主 Agent 持有宿主返回的 Agent 句柄，但不读取 Handoff 正文；单用例执行期间等待该 Agent 返回，再推进 Coordinator。
+
+Coordinator 不具备观察宿主 Agent 是否存在或仍在运行的能力，只读取持久化 dispatch 和 execution：没有 Handoff 或 active dispatch 为 `PREPARED` 时返回 `NEED_CASE_AGENT`，并通过幂等 `start` 恢复或重发同一个 Loader；active dispatch 为 `CONSUMED` 且 execution 未完成时返回 `WAITING / WAIT_EXECUTION_RESULT`。`execution=RUNNING` 本身不能推导 `CASE_AGENT_RUNNING`。
 
 ### 3.2 Case Agent
 
-Case Agent 只通过经过完整性校验的 Handoff Loader 获得冻结 Case Prompt 和 Case Brief。Brief 提供 `observe`、`inspect`、`act`、`knowledge`、`recover`、`finish` 六个能力。它负责：
+Case Agent 只通过经过完整性校验的 Handoff Loader 获得冻结 Case Prompt 和 Case Brief。Brief 提供 `observe`、`inspect`、`plan`、`act`、`knowledge`、`recover`、`finish` 七个能力。它负责：
 
 1. 读取原始用例、Frozen CaseSpec、已建立的初始状态和当前 Scene，自主制定计划；验证点和前置条件不可改写。
-2. 基于当前 Scene 选择操作并自主调整路径。
+2. 通过 `plan` 提交业务执行计划，基于当前 Scene 选择操作并在路径变化时更新计划。
 3. 复制当前 Scene 或响应中的有效示例，只填写业务动作、目的、直接关联验证点、观察或结论。
 4. 现场存在差异或判断不确定时查询知识，并复核候选是否适用；必要时恢复 App。
 5. 为全部验证点形成 check，并提交 CaseResult。
@@ -82,7 +88,7 @@ Agent-facing Facade 与内部严格契约是两层独立接口：
 
 1. 主 Agent 的 `coordinatorFacade` 标记为 `AGENT_FACING`，最多四个业务能力；`coordinator-agent.js` 自动补齐 batch、definition、environment、request 和报告参数。完整 `coordinator-interface-contract.js` 标记为 `INTERNAL`，只供确定性代码和 Authoring 工具使用。
 2. Case Definition Compiler 的 Loader 响应自动携带 `publisher.contract`，其 Schema、条件约束和示例由正式 CaseDefinition 约束投影。
-3. Case Agent 的 `runtime` 标记为 `AGENT_FACING`，最多六个业务能力；Agent-facing Translator 注入 execution、当前 Scene、operation、decision 和候选绑定。完整 `runtime-operation-contract.js` 标记为 `INTERNAL`，仅供 Validator、Broker 和 Lifecycle 使用。
+3. Case Agent 的 `runtime` 标记为 `AGENT_FACING`，最多七个业务能力；Agent-facing Translator 注入 execution、当前 Scene、operation、decision 和候选绑定。完整 `runtime-operation-contract.js` 标记为 `INTERNAL`，仅供 Validator、Broker 和 Lifecycle 使用。
 
 Prompt 只规定职责、能力使用时机、证据要求和复制当前示例的调用纪律，不复制请求 Schema。Facade 校验失败返回 `INPUT_INVALID` 和一次可直接使用的 `retryWith`；同一格式第二次失败返回 `AGENT_INPUT_STALLED`，禁止逐字段无限试错。Translator 之后仍由内部契约进行最终严格校验。角色之间不转发契约正文，主 Agent 不读取 Case Agent 的 Runtime 契约或 Compiler Candidate。
 
@@ -112,7 +118,7 @@ sequenceDiagram
   end
   opt NEED_CASE_AGENT
     loop Case Agent 自主执行
-      A->>F: observe / inspect / act / knowledge / recover
+      A->>F: observe / inspect / plan / act / knowledge / recover
       F->>R: translated internal request
       R->>D: 观察或操作
       D-->>R: 客观结果
@@ -132,13 +138,17 @@ sequenceDiagram
 
 批次内同一时刻只有一个活跃用例。用例完成后保留 App 暖状态供下一个用例使用，但不共享 Case Agent 上下文和 execution 证据。
 
+Coordinator 的 `WAITING` 表示平台 Runtime 尚未结束，或已领取 Handoff 的 execution 尚未写入结果；它不声称宿主 Case Agent 仍然存在。条件已落盘，重复 `advanceRun` 会重新检查同一 Batch，不创建第二个写入者。`BLOCKED` 只表示运行已完成阻塞收口且不能自动推进，重复 `advanceRun` 必须返回相同的错误码、原因和报告状态。环境未就绪返回新的环境选择，不进入 `WAITING` 或 `BLOCKED`。
+
+Batch 在 execution 全部收口且平台资源释放后立即提交 `COMPLETED`、`CANCELLED` 或 `BLOCKED`。报告发布随后独立记录为 `PUBLISHED`、`RETRY_REQUIRED` 或 `DEGRADED`；业务终态不会因报告失败变回等待态，也不会在未发布时返回旧 `reportPath`。临时发布错误按同一错误指纹最多重试三次，永久错误直接降级。
+
 Agent 句柄丢失时，Batch 先 reconcile Runtime，再根据最新 Scene、用例理解、计划、未解决技术事实和待复核知识生成 continuation Handoff。每个 dispatch 持久化 claim/lease，并绑定独立 Runtime requestPath 与 sequence；同 token 重试幂等，新 continuation 替换旧 dispatch，旧 Runtime command 在读取请求前返回 `HANDOFF_REPLACED`，保证同一 execution 只有一个有效写入者。
 
 ## 5. Case Agent 与 Runtime 接口
 
 ### 5.1 生命周期与 Broker
 
-- `scripts/case-runtime/agent-facing-client.js`：新 execution 的 Case Agent 唯一入口，只接受六个业务能力。
+- `scripts/case-runtime/agent-facing-client.js`：新 execution 的 Case Agent 唯一入口，只接受七个业务能力。
 - `scripts/case-runtime/agent-facing-contract.js`：定义 Agent-facing 字段、能力卡、当前有效示例和 Scene 投影。
 - `scripts/case-runtime/agent-facing-translator.js`：确定性解析 `actionRef`、注入当前 Scene 与 decision 外壳，并转换为内部请求。
 - `scripts/case-runtime/runtime-operation-contract.js` 与 `runtime-client.js`：当前内部严格契约和内部入口，不向 Case Agent 交付。
@@ -190,7 +200,7 @@ Authoring Plane 先发布带原文引用和 `initialStateIntent` 的不可变 Ca
 }
 ```
 
-Runtime 在 execution 创建时用 CaseSpec 写入首个 `caseContextRecorded` 事件。Case Agent 不重复提交验证点；`act` 只填写当前动作示例中的 `actionRef`、`purpose`、必要 input 和直接关联的 `expectationRefs`。Translator 把这些业务字段转换为内部 operation 与 decision，自动绑定当前 Scene。Agent 不填写 assessment、planUpdate、operation 或任何框架标识。
+Runtime 在 execution 创建时用 CaseSpec 写入首个 `caseContextRecorded` 事件。Case Agent 不重复提交验证点；初步理解现场后用 `plan.items` 提交业务计划，首次 `act`、`recover` 或 `finish` 前必须已有计划，路径变化时用完整 `items` 替换当前计划并填写 `reason`。Translator 把计划转换为内部 `planUpdate` 事件，把其他业务字段转换为内部 operation 与 decision，并自动绑定当前 Scene。Agent 不填写 assessment、planUpdate、operation 或任何框架标识。
 
 知识查询和候选评估统一使用 Agent-facing `knowledge`。查询响应直接返回当前候选对应的 `nextCall.example`；Agent 只填写适用性与理由，Translator 生成内部 review 结构并绑定 execution、平台/App、Scene 和相关验证点。零候选由 Runtime 自动闭合。
 
@@ -280,6 +290,8 @@ completion.json
 
 当前 Execution schema 为 11，并把 ValidationProfile、CaseDefinition 和跨文件语义绑定纳入 Manifest/Completion。Reader 只接受这一格式；其他 schema 返回 `FORMAT_UNSUPPORTED`，旧目录不迁移、不删除。`runtime.json`、`runtime-request.json`、`current-scene.json`、锁文件和事务草稿是运行期文件，不参与已完成结果解释。
 
+执行目录选择层先区分 `READABLE`、`FORMAT_UNSUPPORTED` 和 `DATA_INVALID`。只有 `READABLE` 进入当前 Reader；旧格式只从 `execution.json` 外层投影最小标识并显示“历史结果格式不支持，需要重跑”。隔离边界是 `case -> platform -> execution`：存在当前格式平台时，用例业务状态只由当前结果计算；全部平台都只有旧格式时显示 `NEEDS_RERUN`；单个平台损坏不能隐藏其他平台或其他用例。全量报告重建扫描所有用例，但不改写任何历史 execution。
+
 版本号只属于可独立落盘、跨进程或供框架外读取的正式数据根，例如 Workspace、CaseDefinition、ExecutionRequest、Batch、Execution Bundle 和平台 Driver 响应。Broker、Case Brief、Agent-facing Facade、Coordinator 临时状态、输入纠错状态和 Completion 子产物不维护独立数字版本；它们通过 `type`、严格字段、hash、父级 Manifest 或 `protocolSha` 识别当前结构。
 
 Narrative Projector 从事件投影用例理解、计划历史、业务步骤、知识调查、独立最终判断和验证点覆盖。Renderer 只消费 Reader 与 Projector 的 ViewModel，不回写 execution。
@@ -301,7 +313,7 @@ scripts/
 │   ├── device-port.js     # Runtime 到 Adapter 的端口
 │   └── adapters/          # HarmonyOS / Android / iOS 实现
 ├── report/                # Narrative、Trace、详情页与看板
-└── session/               # 暖会话状态
+└── session/               # 暖会话状态与 iOS 动态 Session 服务
 ```
 
 依赖方向：
@@ -315,11 +327,21 @@ scripts/
 7. Report 通过版本化只读 Reader 使用 execution，不调用 Runtime、Adapter 或会回写 `case.json` 的编号修复逻辑。
 8. 修改报告不改变 Runtime 摘要；修改单个平台 Adapter 不改变其他平台摘要。
 
-iOS Adapter 的 `ios-driver.js` 只负责编排 CLI command 与 Appium 调用顺序；输入框发现、整串输入 fallback 和效果核验位于 `input-service.js`，W3C touch action、滑动/长按参数和视觉坐标执行位于 `pointer-actions.js`。报告中的原始用例 Markdown 安全渲染位于 `source-markdown.js`，详情页和用例索引复用同一纯 renderer。
+iOS Adapter 的 `ios-driver.js` 只负责编排 CLI command 与 Appium 调用顺序；输入框发现、整串输入 fallback 和效果核验位于 `input-service.js`，W3C touch action、滑动/长按参数和视觉坐标执行位于 `pointer-actions.js`。Runtime acquire 的等待期限按 iOS `wdaLaunchTimeout` 和平台开销动态计算，不使用固定 30 秒上限。`ios-session-service.js` 通过 Execution 的 `sessionRef` 在 Batch lock 内读取当前 Session、识别 `invalid session id`、按 generation 重建并提交权威状态；Batch release 使用同一把锁。observe 可在明确失效后重建并重试一次，action 发送后的 Session/传输错误不自动重放，只记录 `actionOutcomeUnknown`。Adapter 的原始 Session 错误必须保留，只有成功返回观察后发现截图文件缺失或损坏才归类为截图产物错误。Appium/WDA 注册表通过 `runtime-ownership.js` 解析占用批次：终态且身份明确的框架进程由 Adapter 回收后重试，活动占用返回等待/取消建议，未知归属不自动清理。报告中的原始用例 Markdown 安全渲染位于 `source-markdown.js`，详情页和用例索引复用同一纯 renderer。
 
 `scripts/tests/agent-capability-contract.test.js` 固定 Agent-facing 能力数量、示例字段预算和 internal 分类；`scripts/tests/architecture-boundaries.test.js` 与 `scripts/build-agent-contract.js` 固定角色资源、入口和实现摘要边界。
 
 ## 10. 故障边界
+
+### 10.0 Agent-facing 技术诊断与恢复
+
+所有 Adapter、Runtime、Batch 和 Coordinator 的技术错误在交付给 Agent 前统一投影为诊断对象。诊断至少包含稳定 `code`、发生阶段 `stage`、可读 `summary` 和 `retryable`；可恢复错误附带由 Facade 生成的 `recovery` 或 `nextCall`，包括允许的能力和当前有效示例。
+
+Facade 是正常执行入口，不是异常诊断的权限边界。技术错误或技术性 `BLOCKED` 没有有效恢复时，响应附加紧凑的 `technicalFallback={mode,scope,resume}`；恢复连续失败、状态长期无进展，或诊断与现场证据不一致时，Agent 也可主动进入兜底。`scope=BATCH` 允许主 Agent 调查共享设备、进程、端口、Appium/WDA 和平台工具；`scope=EXECUTION` 允许 Case Agent 调查当前 execution、App 和 session；主动进入时分别使用其角色默认范围。两者均可读取相关日志，但不得直接修改 Batch、Execution、Result、Scene 或报告，不得清理活动批次或归属不明资源，也不得未经确认执行卸载、清数据或改签名。
+
+技术兜底只修复基础设施。修复后 Agent 必须按 `resume` 回到 Coordinator Facade 或 Case Runtime，让框架重新探测、校验和持久化；兜底命令不产生状态迁移、业务判断或测试结果。已有 `recovery`/`nextCall` 的响应不附加通用兜底，避免同时提供两套动作。
+
+主 Agent 继续只使用 `prepareRun`、`confirmRun`、`advanceRun`、`cancelRun`。平台初始化尚未结束时返回带 `waitFor=PLATFORM_RUNTIME` 的 `WAITING`，由 `advanceRun` 恢复持久化初始化；真正无法恢复时才返回 `BLOCKED`，并保留原始 `failureCode`、`reason` 和诊断对象。Case Agent 的 Runtime 技术错误使用相同诊断字段；`SCENE_CHANGED` 必须重新观察，操作结果未知时禁止自动重放。
 
 - 产品表现与预期不一致：由 Case Agent 基于 Scene 判断并写入 checks。
 - 证据不足或前置条件不成立：Case Agent 使用 INCONCLUSIVE 或 BLOCKED，并说明 uncertainties。
@@ -327,9 +349,10 @@ iOS Adapter 的 `ios-driver.js` 只负责编排 CLI command 与 Appium 调用顺
 - Agent-facing 请求格式错误：第一次返回 `INPUT_INVALID` 和完整 `retryWith`，同一格式第二次返回 `AGENT_INPUT_STALLED`；Translator 之后的内部契约错误返回 `REQUEST_INVALID` 并写入 Telemetry。
 - 完成态校验失败：Reader 不发布业务 Result，以独立技术状态展示失败原因。
 - Runtime 或 Adapter 实现摘要变化：未完成 execution 通过 closure 结束，新批次创建新的 execution。
-- 正常完成：最后一个 execution 完成后，CLI reconcile 自动 commit，并依次执行内部 `SETTLE_EXECUTIONS -> RELEASE_PLATFORM -> PUBLISH_REPORTS`，返回 `BATCH_COMPLETE`。
-- 用户取消：Lifecycle 将活动 execution 写为 `CANCELLED`，CLI reconcile 自动完成三段收尾并返回 `BATCH_CANCELLED`；`teardown` 只释放资源。
-- 批次级阻塞：Batch 先终止活动 execution 并进入 `BLOCKING`，CLI reconcile 自动完成三段收尾并返回 `BATCH_BLOCKED`；已完成、取消、阻塞和跳过的目标均保留在批次状态与报告中。
+- 正常完成：最后一个 execution 完成后，CLI reconcile 自动 commit，完成 `SETTLE_EXECUTIONS -> RELEASE_PLATFORM` 后提交 `COMPLETED`，再尝试发布报告并返回 `BATCH_COMPLETE`。
+- 用户取消：Lifecycle 将活动 execution 写为 `CANCELLED`，完成 execution 收口和平台释放后提交 `CANCELLED` 并返回 `BATCH_CANCELLED`；`teardown` 只释放资源。
+- 批次级阻塞：Batch 先终止活动 execution 并进入 `BLOCKING`，完成 execution 收口和平台释放后提交 `BLOCKED` 并返回 `BATCH_BLOCKED`；已完成、取消、阻塞和跳过的目标均保留在批次状态与报告中。
+- 报告发布异常：终态响应保留业务 outcome，并独立返回 `reportStatus`、错误码和原因；`RETRY_REQUIRED` 可由后续报告刷新消费，`DEGRADED` 不再自动推进。
 - Runtime reconcile 错误：只有锁竞争属于 `RETRYABLE`，最多重试三次；存储/事务损坏和其他执行错误分别归类为 `FATAL_BATCH`、`FATAL_EXECUTION` 并进入阻塞收口。
 
 ### 10.1 Bootstrap、身份与隔离
@@ -340,7 +363,7 @@ iOS Adapter 的 `ios-driver.js` 只负责编排 CLI command 与 Appium 调用顺
 
 制品登记把 CLI 的 `appId/version/build` 作为 expected identity；能够解析 APK、HAP/APP 或 iOS `.app` 时保存提取工具、版本和实际 identity，不能解析时明确记录 `UNAVAILABLE`。任何实际重装都必须在安装后由 Adapter 返回 `installedIdentity`，并与冻结期望完全一致，否则以 `APP_ARTIFACT_IDENTITY_MISMATCH` 阻止暖会话 READY。
 
-Case Brief 只公开原文、Frozen CaseSpec、初始状态结果、目标摘要、六个 Agent-facing 能力和预绑定 transport。完整 Runtime operation allowlist 与内部请求结构不进入 Case Agent 上下文。协议隔离不是操作系统级安全沙箱，共享 Shell/文件系统环境下仍不能宣称强能力隔离。安全边界还需宿主工具权限、独立进程和文件系统访问控制。
+Case Brief 只公开原文、Frozen CaseSpec、初始状态结果、目标摘要、七个 Agent-facing 能力和预绑定 transport。完整 Runtime operation allowlist 与内部请求结构不进入 Case Agent 上下文。协议隔离不是操作系统级安全沙箱，共享 Shell/文件系统环境下仍不能宣称强能力隔离。安全边界还需宿主工具权限、独立进程和文件系统访问控制。
 
 技术异常不会被报告为产品 FAIL，业务 Result 也不会被框架运行状态覆盖。
 
@@ -355,9 +378,15 @@ Case Brief 只公开原文、Frozen CaseSpec、初始状态结果、目标摘要
 - reconcile 有限重试、自动 commit，以及 completed/cancelled/blocked 三类统一报告收口。
 - 理解、计划调整、每步决策、知识、恢复和 finish 的 Narrative 投影。
 - 调用耗时、格式错误、暖状态 generation 和恢复次数。
-- 主 Agent 不超过四个、Case Agent 不超过六个活跃能力，Agent-facing 示例不泄漏内部 ID、路径绑定、token、sequence、hash、operation 或 decision 外壳。
+- 主 Agent 不超过四个、Case Agent 不超过七个活跃能力，Agent-facing 示例不泄漏内部 ID、路径绑定、token、sequence、hash、operation 或 decision 外壳。
 - 批次串行、暖会话复用、completion、报告发布和增量刷新。
 - HarmonyOS、Android、iOS Adapter 契约与输入、布局、坐标行为。
+- 真实 Coordinator CLI、系统 `/bin/bash`、已有环境切平台、初始化中断恢复、`WAITING`/`BLOCKED` 可重入、取消时报告降级和旧格式隔离的无设备组合流程。
+- iOS 延迟 Session 的 observe 单次恢复、action 不重放、generation 并发保护，以及 Session 错误根因保留。
 - 主 Agent、Case Agent、Runtime Broker/Core、Batch State Repository、Adapter 和 Report 的依赖边界。
 
 真实设备用例作为独立验收，不属于无设备自动化回归。验收时重点检查 Runtime 调用格式错误、耗时分布、业务步骤完整性、验证点覆盖、证据关联和暖会话复用。
+
+### iOS 真机 Bootstrap 超时与收口
+
+iOS Runtime acquire 与 Bootstrap restartApp 使用独立的 bounded deadline：未配置 `wdaLaunchTimeout` 时分别使用 210 秒和 240 秒预算，配置后按 WDA 启动预算加平台开销计算并设置硬上限；内部 Appium 请求使用当前操作的剩余时间。Bootstrap 失败会在同一命令中执行 execution 收口、Runtime 释放和报告发布；资源释放超过期限时记录 `platformCleanupDeferred`，关闭 Warm Session 并提交 `BLOCKED`，后续 reconcile 或新批次 acquire 按 ownerKey 回收残留资源。`BLOCKING/CANCELLING` 批次写入 `cleanupDeadlineAt`，超过期限且无活动 Execution 时标记为 `RECLAIMABLE`，活动批次仍保持 `ACTIVE`。

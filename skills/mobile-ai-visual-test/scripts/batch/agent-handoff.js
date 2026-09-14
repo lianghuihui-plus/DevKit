@@ -63,6 +63,22 @@ function ensureHandoffDirectory(input) {
   return current;
 }
 
+function resolveExistingHandoffDirectory(input) {
+  let current = input.workspaceRoot;
+  for (const segment of ['runs', input.batchId, 'handoffs', input.executionId]) {
+    const next = path.join(current, segment);
+    if (!fs.existsSync(next)) return null;
+    const stat = fs.lstatSync(next);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw contractError('HANDOFF_PATH_INVALID', `handoff directory component is not a real directory: ${segment}`);
+    }
+    const real = fs.realpathSync(next);
+    assertWithin(input.workspaceRoot, real);
+    current = real;
+  }
+  return current;
+}
+
 function publicReference(envelope, handoffPath, sha256) {
   const bootstrap = path.resolve(__dirname, '..', 'case-agent-bootstrap.js');
   const loaderCommand = [
@@ -168,13 +184,20 @@ function existingSequenceHandoff(input) {
   if (envelope.batchId !== input.batchId || envelope.mode !== input.mode || envelope.sequence !== input.sequence) {
     throw contractError('HANDOFF_BINDING_INVALID', 'existing handoff does not match the requested batch, mode, or sequence');
   }
-  return publicReference(envelope, handoffPath, sha256);
+  return { envelope, handoff: publicReference(envelope, handoffPath, sha256) };
 }
 
 function createAgentHandoff(options) {
   const input = validateInput(options);
   const existing = existingSequenceHandoff(input);
-  if (existing) return existing;
+  if (existing) {
+    require('../lib/dispatch-lease').registerDispatch(path.dirname(existing.handoff.path), existing.envelope, {
+      handoffSha: existing.handoff.sha256,
+      continuationReason: options.continuationReason,
+      now: options.now,
+    });
+    return existing.handoff;
+  }
   const payload = {
     schemaVersion: HANDOFF_SCHEMA_VERSION,
     handoffId: '',
@@ -200,6 +223,29 @@ function createAgentHandoff(options) {
     now: options.now,
   });
   return publicReference(envelope, handoffPath, sha256);
+}
+
+function loadPreparedAgentHandoff(options) {
+  const requestedRoot = path.resolve(ensureString(options.workspaceRoot, 'workspaceRoot', 'HANDOFF_PATH_INVALID'));
+  if (!fs.existsSync(requestedRoot)) throw contractError('HANDOFF_PATH_INVALID', 'workspace root does not exist');
+  const workspaceRoot = fs.realpathSync(requestedRoot);
+  const batchId = ensureId(options.batchId, 'batchId', 'HANDOFF_INVALID');
+  const executionId = ensureId(options.executionId, 'executionId', 'HANDOFF_INVALID');
+  const caseProtocolSha = ensureString(options.caseProtocolSha, 'caseProtocolSha', 'HANDOFF_INVALID');
+  const directory = resolveExistingHandoffDirectory({ workspaceRoot, batchId, executionId });
+  if (!directory) return null;
+  const dispatch = require('../lib/dispatch-lease').readActiveDispatch(directory, executionId);
+  if (!dispatch || dispatch.status !== 'PREPARED') return null;
+  const handoffPath = path.join(directory, `${dispatch.sequence}-${dispatch.handoffSha}.json`);
+  if (!fs.existsSync(handoffPath)) throw contractError('HANDOFF_INTEGRITY_INVALID', 'prepared handoff file does not exist');
+  if (fs.lstatSync(handoffPath).isSymbolicLink()) throw contractError('HANDOFF_PATH_INVALID', 'prepared handoff file must not be a symbolic link');
+  const realHandoffPath = fs.realpathSync(handoffPath);
+  assertWithin(directory, realHandoffPath);
+  const envelope = validateEnvelope(readEnvelope(realHandoffPath), dispatch.handoffSha, { executionId, caseProtocolSha });
+  if (envelope.batchId !== batchId || envelope.handoffId !== dispatch.dispatchId || envelope.sequence !== dispatch.sequence) {
+    throw contractError('HANDOFF_BINDING_INVALID', 'prepared handoff does not match its active dispatch');
+  }
+  return publicReference(envelope, realHandoffPath, dispatch.handoffSha);
 }
 
 function loadAgentHandoff(options) {
@@ -232,4 +278,5 @@ module.exports = {
   HANDOFF_SCHEMA_VERSION,
   createAgentHandoff,
   loadAgentHandoff,
+  loadPreparedAgentHandoff,
 };

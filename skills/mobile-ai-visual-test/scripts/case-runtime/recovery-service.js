@@ -152,7 +152,12 @@ function recover(execDir, request, options = {}) {
   if (draft.status === 'PREPARED') {
     draft.status = 'DISPATCHED';
     writeJsonAtomic(file, draft);
-    const restart = options.restartApp || (() => invokeAppRestart(resolveTargetBinding(execDir, execution), options));
+    const runtime = readJson(path.join(execDir, 'runtime.json'), null);
+    const restart = options.restartApp || (() => invokeAppRestart(resolveTargetBinding(execDir, execution), {
+      ...options,
+      sessionRef: runtime?.sessionRef,
+      operationId: draft.operationId,
+    }));
     const adapterStartedAt = Date.now();
     let result;
     try {

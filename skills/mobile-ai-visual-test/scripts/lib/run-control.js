@@ -15,7 +15,12 @@ const { validateBinding, bindingSha } = require('./batch-contract');
 const { sourceSha, validateCaseContract } = require('../execution/contracts/case-contract');
 const { createCaseSpec, validateCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { assertWorkspace } = require('./workspace');
-const { atomicWrite, readJson, writeJsonAtomic } = require('./execution-lifecycle');
+const {
+  atomicWrite,
+  readJson,
+  withFileLock,
+  writeJsonAtomic,
+} = require('./execution-lifecycle');
 const { buildContract } = require('../build-agent-contract');
 const { loadPublishedCaseDefinition } = require('../case/definition-store');
 const { validateCaseDefinition } = require('../execution/contracts/case-definition-contract');
@@ -46,6 +51,10 @@ function environmentConfirmationPath(workspaceRoot) {
   return path.join(path.resolve(workspaceRoot), 'environment-confirmation.json');
 }
 
+function environmentConfirmationLockPath(workspaceRoot) {
+  return path.join(path.resolve(workspaceRoot), '.environment-confirmation.lock');
+}
+
 function executionRequestPath(workspaceRoot, batchId) {
   ensureId(batchId, 'batchId', 'EXECUTION_REQUEST_INVALID');
   return path.join(path.resolve(workspaceRoot), 'runs', batchId, 'execution-request.json');
@@ -69,12 +78,21 @@ function environmentConfirmationSha(value) {
 
 function validateProbeSelection(probe, binding) {
   ensureObject(probe, 'probe', 'ENVIRONMENT_CONFIRMATION_INVALID');
-  if (probe.ready !== true) throw contractError('ENVIRONMENT_NOT_READY', 'environment probe must be ready before confirmation');
+  if (probe.ready !== true && probe.confirmationReady !== true) {
+    throw contractError('ENVIRONMENT_NOT_READY', 'environment probe must be ready before confirmation');
+  }
   if (probe.platform !== binding.platform) throw contractError('ENVIRONMENT_CONFIRMATION_INVALID', 'probe platform does not match binding');
   const devices = ensureArray(probe.devices, 'probe.devices', 'ENVIRONMENT_CONFIRMATION_INVALID');
   const selected = devices.some((device) => [device?.id, device?.serial, device?.udid, device?.name]
     .filter(Boolean).some((value) => String(value) === String(binding.deviceId)));
   if (!selected) throw contractError('ENVIRONMENT_CONFIRMATION_INVALID', 'confirmed device is not present in the probe result');
+  if (probe.executionReady === false && binding.platform === 'ios' && binding.deviceType === 'realDevice') {
+    const missing = ['xcodeOrgId', 'xcodeSigningId', 'updatedWDABundleId']
+      .filter((field) => !String(binding[field] || '').trim());
+    if (missing.length) {
+      throw contractError('IOS_SIGNING_INCOMPLETE', `iOS 真机确认缺少签名字段: ${missing.join(', ')}`);
+    }
+  }
   return probe;
 }
 
@@ -110,40 +128,42 @@ function validateEnvironmentConfirmation(value, options = {}) {
 
 function confirmEnvironment(options) {
   const workspace = assertWorkspace(options.workspaceRoot, { allowTest: true });
-  const binding = validateBinding({ ...options.binding });
-  const probe = validateProbeSelection(options.probe, binding);
-  const appProvisioning = validateAppProvisioning(options.appProvisioning || defaultAppProvisioning(), {
-    workspaceRoot: workspace.root,
-    platform: binding.platform,
-    appId: binding.appId,
-    deviceType: binding.deviceType,
-  });
-  const userConfirmation = ensureString(options.userConfirmation, 'userConfirmation', 'ENVIRONMENT_CONFIRMATION_INVALID');
-  const confirmedAt = options.now || new Date().toISOString();
-  const seed = canonicalJson({
-    binding,
-    appProvisioningSha: appProvisioningSha(appProvisioning),
-    probeSha: sha256(canonicalJson(probe), 'probe', 24),
-    userConfirmation,
-    confirmedAt,
-  });
-  const value = {
-    schemaVersion: ENVIRONMENT_CONFIRMATION_SCHEMA_VERSION,
-    confirmationId: sha256(seed, 'env', 16),
-    status: 'CONFIRMED',
-    binding,
-    bindingSha: bindingSha(binding),
-    appProvisioning,
-    appProvisioningSha: appProvisioningSha(appProvisioning),
-    probeSha: sha256(canonicalJson(probe), 'probe', 24),
-    userConfirmation,
-    userConfirmationSha: sha256(userConfirmation, 'user-confirmation', 24),
-    confirmedAt,
-  };
-  value.confirmationSha = environmentConfirmationSha(value);
-  validateEnvironmentConfirmation(value, { workspaceRoot: workspace.root });
-  writeJsonAtomic(environmentConfirmationPath(workspace.root), value);
-  return value;
+  return withFileLock(environmentConfirmationLockPath(workspace.root), () => {
+    const binding = validateBinding({ ...options.binding });
+    const probe = validateProbeSelection(options.probe, binding);
+    const appProvisioning = validateAppProvisioning(options.appProvisioning || defaultAppProvisioning(), {
+      workspaceRoot: workspace.root,
+      platform: binding.platform,
+      appId: binding.appId,
+      deviceType: binding.deviceType,
+    });
+    const userConfirmation = ensureString(options.userConfirmation, 'userConfirmation', 'ENVIRONMENT_CONFIRMATION_INVALID');
+    const confirmedAt = options.now || new Date().toISOString();
+    const seed = canonicalJson({
+      binding,
+      appProvisioningSha: appProvisioningSha(appProvisioning),
+      probeSha: sha256(canonicalJson(probe), 'probe', 24),
+      userConfirmation,
+      confirmedAt,
+    });
+    const value = {
+      schemaVersion: ENVIRONMENT_CONFIRMATION_SCHEMA_VERSION,
+      confirmationId: sha256(seed, 'env', 16),
+      status: 'CONFIRMED',
+      binding,
+      bindingSha: bindingSha(binding),
+      appProvisioning,
+      appProvisioningSha: appProvisioningSha(appProvisioning),
+      probeSha: sha256(canonicalJson(probe), 'probe', 24),
+      userConfirmation,
+      userConfirmationSha: sha256(userConfirmation, 'user-confirmation', 24),
+      confirmedAt,
+    };
+    value.confirmationSha = environmentConfirmationSha(value);
+    validateEnvironmentConfirmation(value, { workspaceRoot: workspace.root });
+    writeJsonAtomic(environmentConfirmationPath(workspace.root), value);
+    return value;
+  }, { now: options.now });
 }
 
 function loadEnvironmentConfirmation(workspaceRoot) {
@@ -203,7 +223,7 @@ function initialStateRequirementFromDefinition(definition) {
   });
 }
 
-function resolveLiveExecutionTargets(workspaceRoot, inputTargets) {
+function resolveLiveExecutionTargets(workspaceRoot, inputTargets, platform = null) {
   const normalizedTargets = normalizeExecutionTargetSelectors(workspaceRoot, inputTargets);
   const casesRoot = fs.realpathSync(path.join(workspaceRoot, 'cases'));
   const keys = new Set();
@@ -255,7 +275,10 @@ function resolveLiveExecutionTargets(workspaceRoot, inputTargets) {
       caseDefinition: published.definition,
       caseSpec,
       definitionRef: { definitionId: published.definition.definitionId, definitionSha: published.definition.definitionSha },
-      preparationPolicy: derivePreparationPolicy(loadEnvironmentConfirmation(workspaceRoot).binding.platform, initialStateRequirement.targetState),
+      preparationPolicy: derivePreparationPolicy(
+        platform || loadEnvironmentConfirmation(workspaceRoot).binding.platform,
+        initialStateRequirement.targetState,
+      ),
       initialStateRequirement,
     };
   });
@@ -466,7 +489,9 @@ function validateExecutionRequest(value, options = {}) {
 function createExecutionRequest(options) {
   const workspace = assertWorkspace(options.workspaceRoot, { allowTest: true });
   ensureWorkspaceCaseNumbers(workspace.root);
-  const environment = loadEnvironmentConfirmation(workspace.root);
+  const environment = options.environmentConfirmation === undefined
+    ? loadEnvironmentConfirmation(workspace.root)
+    : validateEnvironmentConfirmation(JSON.parse(JSON.stringify(options.environmentConfirmation)), { workspaceRoot: workspace.root });
   const selectedTargets = normalizeExecutionTargetSelectors(workspace.root, options.targets);
   const bootstrapPolicy = validateBootstrapPolicy(options.bootstrapPolicy);
   const batchId = ensureId(options.batchId, 'batchId', 'EXECUTION_REQUEST_INVALID');
@@ -483,6 +508,8 @@ function createExecutionRequest(options) {
       definitionSha: target.definitionRef?.definitionSha || null,
     }));
     if (validated.mode !== mode || validated.userInstruction !== options.userInstruction
+      || validated.environmentConfirmationId !== environment.confirmationId
+      || validated.environmentConfirmationSha !== environment.confirmationSha
       || canonicalJson(validated.bootstrapPolicy) !== canonicalJson(bootstrapPolicy)
       || canonicalJson(validated.targets.map((target) => ({ caseKey: target.caseKey, definitionId: target.definitionId || null, definitionSha: target.definitionSha || null }))) !== canonicalJson(requestedTargets)) {
       throw contractError('EXECUTION_REQUEST_EXISTS', `batch ${batchId} already has a different execution request`);
@@ -512,7 +539,7 @@ function createExecutionRequest(options) {
       throw contractError('EXECUTION_REQUEST_DRAFT_INVALID', 'active execution request draft does not match this request');
     }
   } else {
-    const liveTargets = resolveLiveExecutionTargets(workspace.root, selectedTargets).map((target) => ({
+    const liveTargets = resolveLiveExecutionTargets(workspace.root, selectedTargets, environment.binding.platform).map((target) => ({
       ...target,
       initialStatePreflight: createInitialStatePreflight({
         requirement: target.initialStateRequirement,
@@ -592,7 +619,7 @@ function loadExecutionRequest(workspaceRoot, batchId, options = {}) {
   if (!value) throw contractError('EXECUTION_REQUEST_REQUIRED', `batch ${batchId} has no explicit execution request`);
   const request = validateExecutionRequest(value, { workspaceRoot: workspace.root });
   if (request.batchId !== batchId) throw contractError('EXECUTION_REQUEST_INVALID', 'execution request batchId mismatch');
-  if (options.requireCurrentEnvironment !== false) {
+  if (options.requireCurrentEnvironment === true) {
     const environment = loadEnvironmentConfirmation(workspace.root);
     if (environment.confirmationId !== request.environmentConfirmationId || environment.confirmationSha !== request.environmentConfirmationSha
       || canonicalJson(validateBinding(environment.binding)) !== canonicalJson(validateBinding(request.binding))) {

@@ -38,9 +38,16 @@ const SCHEMAS = Object.freeze({
   }, ['capability', 'workspace', 'caseNos']),
   confirmRun: {
     oneOf: [
-      object({ capability: { const: 'confirmRun' }, platform: { enum: ['harmony', 'android', 'ios'] } }, ['capability', 'platform']),
-      object({ capability: { const: 'confirmRun' }, userInstruction: STRING }, ['capability', 'userInstruction']),
-      object({ capability: { const: 'confirmRun' }, userInstruction: STRING, binding: BINDING }, ['capability', 'userInstruction', 'binding']),
+      object({
+        capability: { const: 'confirmRun' }, decision: { const: 'USE_CURRENT' }, userInstruction: STRING,
+      }, ['capability', 'decision', 'userInstruction']),
+      object({
+        capability: { const: 'confirmRun' }, decision: { const: 'SELECT_PLATFORM' },
+        platform: { enum: ['harmony', 'android', 'ios'] }, deviceId: STRING,
+      }, ['capability', 'decision', 'platform']),
+      object({
+        capability: { const: 'confirmRun' }, decision: { const: 'CONFIRM_BINDING' }, userInstruction: STRING, binding: BINDING,
+      }, ['capability', 'decision', 'userInstruction', 'binding']),
     ],
   },
   advanceRun: object({ capability: { const: 'advanceRun' } }, ['capability']),
@@ -71,11 +78,11 @@ function capabilityCards() {
     },
     confirmRun: {
       useWhen: '当前响应要求选择平台或确认设备、App 和执行授权',
-      required: ['当前 confirmTemplate 中预填的字段'],
-      optional: [],
-      source: { request: '当前响应的 confirmTemplate' },
-      example: { capability: 'confirmRun', platform: 'harmony' },
-      returns: ['NEED_USER_CONFIRMATION', 'CONFIRMED', 'BLOCKED'],
+      required: ['当前 confirmChoices 所选 template 或 confirmTemplate 中预填的字段'],
+      optional: ['iOS 发现多台设备时，按 deviceChoices[].template.deviceId 选择目标设备', 'iOS 真机未就绪时，补齐 requiredBindingFields 中的签名字段'],
+      source: { request: '当前响应的 confirmChoices[].template 或 confirmTemplate' },
+      example: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'harmony' },
+      returns: ['NEED_USER_CONFIRMATION', 'IOS_SIGNING_REQUIRED', 'SELECT_DEVICE', 'CONFIRMED'],
     },
     advanceRun: {
       useWhen: '执行已准备好，或 Case Agent、Compiler、等待步骤已经结束',
@@ -83,7 +90,7 @@ function capabilityCards() {
       optional: [],
       source: { request: '原样执行当前响应的 commands.advance' },
       example: { capability: 'advanceRun' },
-      returns: ['NEED_COMPILER', 'NEED_USER_CONFIRMATION', 'NEED_CASE_AGENT', 'WAITING', 'COMPLETE', 'BLOCKED'],
+      returns: ['NEED_COMPILER', 'NEED_USER_CONFIRMATION', 'NEED_CASE_AGENT', 'WAITING', 'TECHNICAL', 'COMPLETE', 'BLOCKED'],
     },
     cancelRun: {
       useWhen: '用户明确要求停止当前批次',

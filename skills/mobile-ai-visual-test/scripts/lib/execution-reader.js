@@ -67,7 +67,12 @@ function assertReadableCompletedExecution(execution) {
 function timingPublication(execDir, execution) {
   if (!execution?.batchId) return null;
   const workspaceRoot = path.resolve(execDir, '../../../../../..');
-  const sidecar = readJson(path.join(workspaceRoot, 'runs', execution.batchId, 'report-publication.json'), null);
+  let sidecar;
+  try {
+    sidecar = readJson(path.join(workspaceRoot, 'runs', execution.batchId, 'report-publication.json'), null);
+  } catch {
+    return null;
+  }
   return sidecar?.caseTimings?.[execution.executionId] || sidecar?.publications?.[execution.executionId] || null;
 }
 
@@ -145,17 +150,46 @@ function invalidCompletionDisplayModel(result, metrics, execution, message) {
 
 function emptyExecutionReport(execDir = null) {
   return {
-    latest: execDir, schemaFamily: null, execution: null, snapshot: null, sourceText: '',
+    latest: execDir, readability: null, schemaFamily: null, execution: null, snapshot: null, sourceText: '',
     rawResult: null, result: null, metrics: null, events: [], completion: null,
     completionError: null, display: null,
   };
 }
 
 function executionSelection(execDir, workspaceRoot = null) {
-  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  let execution;
+  try {
+    execution = readJson(path.join(execDir, 'execution.json'), null);
+  } catch (error) {
+    return {
+      execDir,
+      execution: null,
+      result: null,
+      completion: null,
+      closure: null,
+      priority: -1,
+      state: 'DATA_INVALID',
+      readability: 'DATA_INVALID',
+      errorCode: 'REPORT_DATA_INVALID',
+      reason: error.message || String(error),
+      time: fs.statSync(execDir).mtimeMs,
+    };
+  }
   if (!executionReaders.some((reader) => reader.supports(execution))) {
     const time = Date.parse(execution?.endedAt || execution?.startedAt || 0) || fs.statSync(execDir).mtimeMs;
-    return { execDir, execution, result: null, completion: null, closure: null, priority: -1, state: 'UNSUPPORTED', time };
+    return {
+      execDir,
+      execution,
+      result: null,
+      completion: null,
+      closure: null,
+      priority: -1,
+      state: 'FORMAT_UNSUPPORTED',
+      readability: 'FORMAT_UNSUPPORTED',
+      errorCode: 'FORMAT_UNSUPPORTED',
+      reason: '历史结果格式不支持，需要重跑',
+      time,
+    };
   }
   const closure = workspaceRoot && execution.finalized !== true
     ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
@@ -173,7 +207,7 @@ function executionSelection(execDir, workspaceRoot = null) {
   } else if (result && !completion) { priority = 3; state = 'FINALIZED_PENDING_COMPLETION'; }
   else if (completion) { priority = 2; state = 'PUBLISHED'; }
   const time = Date.parse(execution.endedAt || execution.startedAt || 0) || fs.statSync(execDir).mtimeMs;
-  return { execDir, execution, result, completion, closure, priority, state, time };
+  return { execDir, execution, result, completion, closure, priority, state, readability: 'READABLE', time };
 }
 
 function selectExecutionDir(runtimeDir) {
@@ -183,32 +217,82 @@ function selectExecutionDir(runtimeDir) {
   const candidates = fs.readdirSync(root).filter((name) => !name.startsWith('.')).map((name) => path.join(root, name))
     .filter((execDir) => fs.statSync(execDir).isDirectory() && fs.existsSync(path.join(execDir, 'execution.json')))
     .map((execDir) => executionSelection(execDir, workspaceRoot)).filter(Boolean);
-  const selected = candidates.filter((candidate) => candidate.state !== 'UNSUPPORTED')
-    .sort((left, right) => right.priority - left.priority || right.time - left.time || right.execDir.localeCompare(left.execDir))[0] || null;
-  const newestUnsupported = candidates.filter((candidate) => candidate.state === 'UNSUPPORTED')
+  const selected = candidates.filter((candidate) => candidate.readability === 'READABLE')
+    .sort((left, right) => Number(right.state !== 'ABANDONED') - Number(left.state !== 'ABANDONED')
+      || right.time - left.time || right.priority - left.priority || right.execDir.localeCompare(left.execDir))[0] || null;
+  const newestUnavailable = candidates.filter((candidate) => candidate.readability !== 'READABLE')
     .sort((left, right) => right.time - left.time || right.execDir.localeCompare(left.execDir))[0] || null;
-  return newestUnsupported && (!selected || newestUnsupported.time > selected.time) ? newestUnsupported : selected;
+  return newestUnavailable && (!selected || newestUnavailable.time > selected.time) ? newestUnavailable : selected;
+}
+
+function unavailableExecutionReport(selection) {
+  const report = emptyExecutionReport(selection.execDir);
+  const execution = selection.execution && typeof selection.execution === 'object'
+    ? {
+      schemaVersion: selection.execution.schemaVersion,
+      executionId: selection.execution.executionId || path.basename(selection.execDir),
+      platform: selection.execution.platform || null,
+      startedAt: selection.execution.startedAt || '',
+      endedAt: selection.execution.endedAt || '',
+      finalized: selection.execution.finalized === true,
+    }
+    : { executionId: path.basename(selection.execDir), platform: null, startedAt: '', endedAt: '' };
+  report.readability = selection.readability;
+  report.schemaFamily = selection.readability === 'FORMAT_UNSUPPORTED' ? 'unsupported' : 'invalid';
+  report.execution = execution;
+  report.display = {
+    status: selection.readability === 'FORMAT_UNSUPPORTED' ? 'NEEDS_RERUN' : 'REPORT_DATA_INVALID',
+    verdict: null,
+    executionStatus: null,
+    verdictBasis: null,
+    summary: selection.readability === 'FORMAT_UNSUPPORTED'
+      ? '历史结果格式不支持，需要重跑'
+      : `当前执行数据损坏：${selection.reason || '无法读取 execution.json'}`,
+    uncertainties: [],
+    failureCode: selection.errorCode,
+    failedStep: null,
+    startedAt: execution.startedAt,
+    endedAt: execution.endedAt,
+    durationMs: null,
+    durationBasis: 'EXECUTION_TOTAL',
+    phaseDurations: null,
+    stepsSummary: '-',
+    metrics: null,
+  };
+  return report;
 }
 
 function readExecutionReport(execDir) {
   if (!execDir) return emptyExecutionReport();
+  const selection = executionSelection(execDir);
+  if (selection.readability !== 'READABLE') return unavailableExecutionReport(selection);
   const report = emptyExecutionReport(execDir);
-  const execution = readJson(path.join(execDir, 'execution.json'), null);
-  const completion = readJson(path.join(execDir, 'completion.json'), null);
-  const reader = readerFor(execution);
-  report.execution = execution?.finalized === true && completion
-    ? assertReadableCompletedExecution(execution)
-    : assertCurrentExecution(execution);
-  report.schemaFamily = 'current';
-  report.readerFamily = reader.READER_FAMILY;
-  report.snapshot = readJson(path.join(execDir, 'case.snapshot.json'), null);
-  report.rawResult = readJson(path.join(execDir, 'result.json'), null);
-  report.metrics = readJson(path.join(execDir, 'metrics.json'), null);
-  report.completion = completion;
-  report.events = readJsonl(path.join(execDir, 'events.jsonl'));
-  report.closure = require('./execution-closure').executionClosureForDir(execDir);
-  const sourcePath = path.join(execDir, 'source.snapshot.md');
-  report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
+  try {
+    const execution = selection.execution;
+    const completion = readJson(path.join(execDir, 'completion.json'), null);
+    const reader = readerFor(execution);
+    report.execution = execution?.finalized === true && completion
+      ? assertReadableCompletedExecution(execution)
+      : assertCurrentExecution(execution);
+    report.readability = 'READABLE';
+    report.schemaFamily = 'current';
+    report.readerFamily = reader.READER_FAMILY;
+    report.snapshot = readJson(path.join(execDir, 'case.snapshot.json'), null);
+    report.rawResult = readJson(path.join(execDir, 'result.json'), null);
+    report.metrics = readJson(path.join(execDir, 'metrics.json'), null);
+    report.completion = completion;
+    report.events = readJsonl(path.join(execDir, 'events.jsonl'));
+    report.closure = require('./execution-closure').executionClosureForDir(execDir);
+    const sourcePath = path.join(execDir, 'source.snapshot.md');
+    report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
+  } catch (error) {
+    return unavailableExecutionReport({
+      ...selection,
+      readability: 'DATA_INVALID',
+      errorCode: error.code || 'REPORT_DATA_INVALID',
+      reason: error.message || String(error),
+    });
+  }
 
   if (!report.rawResult) {
     const cancelled = report.execution.status === 'CANCELLED';
@@ -268,5 +352,6 @@ module.exports = {
   finalizationRecoveryDisplayModel,
   pendingCompletionDisplayModel,
   readExecutionReport,
+  executionSelection,
   selectExecutionDir,
 };

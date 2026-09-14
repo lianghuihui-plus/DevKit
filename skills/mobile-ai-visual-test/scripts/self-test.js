@@ -9,6 +9,9 @@ const suites = Object.freeze({
   contract: 'tests/contract.test.js',
   platform: 'tests/platform-contract.test.js',
   platformRuntime: 'tests/platform-runtime.test.js',
+  iosProbe: 'tests/ios-probe.test.js',
+  iosSessionLifecycle: 'tests/ios-session-lifecycle.test.js',
+  iosRuntimeOwnership: 'tests/ios-runtime-ownership.test.js',
   iosInput: 'tests/ios-input.test.js',
   layout: 'tests/layout-observation.test.js',
   androidLayout: 'tests/android-layout-capture.test.js',
@@ -36,6 +39,7 @@ const suites = Object.freeze({
   agentCapabilityContract: 'tests/agent-capability-contract.test.js',
   agentFacingCaseRuntime: 'tests/agent-facing-case-runtime.test.js',
   coordinatorAgentFacing: 'tests/coordinator-agent-facing.test.js',
+  executionFlowCombination: 'tests/execution-flow-combination.test.js',
   entrypoints: 'tests/formal-entrypoints.test.js',
 });
 

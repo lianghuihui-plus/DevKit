@@ -10,9 +10,10 @@ const {
   validateExecutionArtifactManifest,
 } = require('../lib/execution-artifact-manifest');
 const { completionPaths, sha256File, validateCompletionBinding, validatePublishedCompletion } = require('../lib/completion-contract');
-const { readPublicationState, recordPublicationAttempt } = require('../report/publication-state');
-const { refreshBatchIndex } = require('../report/report-service');
+const { classifyPublicationFailure, readPublicationState, recordPublicationAttempt } = require('../report/publication-state');
+const { refreshBatchIndex, renderIndexForRoot } = require('../report/report-service');
 const { writeCaseReports } = require('../report/report-service');
+const { commitWithDashboard } = require('../batch');
 const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -113,12 +114,72 @@ writeJson(path.join(reportRoot, 'runs', 'batch-retry', 'report-publication.json'
   publications: { legacyPublication: { preserved: true } },
 });
 recordPublicationAttempt(reportRoot, 'batch-retry', 'batch', { status: 'FAILED', errorCode: 'REPORT_TEST_FAILED', reason: 'simulated' });
-assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').status, 'RETRY_REQUIRED');
+assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').status, 'DEGRADED');
 recordPublicationAttempt(reportRoot, 'batch-retry', 'batch', { status: 'PUBLISHED' });
 assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').status, 'PUBLISHED');
 assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').attempts.length, 2);
 assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').caseTimings['execution-001'].reportPublicationDelayMs, 1000);
 assert.strictEqual(readPublicationState(reportRoot, 'batch-retry').publications.legacyPublication.preserved, true);
+
+assert.strictEqual(classifyPublicationFailure({ errorCode: 'EXECUTION_LOCKED' }).classification, 'TRANSIENT');
+assert.strictEqual(classifyPublicationFailure({ errorCode: 'REPORT_ARTIFACT_MISSING' }).classification, 'PERMANENT');
+assert.strictEqual(classifyPublicationFailure({ errorCode: 'FORMAT_UNSUPPORTED' }).classification, 'DISPLAYABLE');
+const displayable = recordPublicationAttempt(reportRoot, 'batch-displayable', 'batch', {
+  status: 'FAILED', errorCode: 'FORMAT_UNSUPPORTED', reason: 'historical execution',
+});
+assert.strictEqual(displayable.status, 'PENDING');
+assert.strictEqual(displayable.attempts[0].status, 'DISPLAYABLE');
+
+const corruptedCommitPublicationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-corrupted-commit-publication-'));
+fs.mkdirSync(path.join(corruptedCommitPublicationRoot, 'runs', 'batch-corrupted-commit'), { recursive: true });
+fs.writeFileSync(path.join(corruptedCommitPublicationRoot, 'runs', 'batch-corrupted-commit', 'report-publication.json'), '{ invalid json');
+const committedWithDegradedPublication = commitWithDashboard(
+  { workspaceRoot: corruptedCommitPublicationRoot, batchId: 'batch-corrupted-commit' },
+  () => ({ status: 'UPDATED' }),
+  () => ({ item: { caseDir: '/fixture/case' }, completion: { platform: 'harmony' } }),
+);
+assert.strictEqual(committedWithDegradedPublication.dashboardRefresh.status, 'UPDATED');
+assert.strictEqual(committedWithDegradedPublication.publicationState.status, 'DEGRADED');
+assert.strictEqual(committedWithDegradedPublication.publicationState.errorCode, 'REPORT_PUBLICATION_STATE_INVALID');
+
+const corruptedTimingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-corrupted-publication-timing-'));
+createTestWorkspace(corruptedTimingRoot);
+const corruptedTimingFixture = createCurrentFixture(corruptedTimingRoot, { verdict: 'PASS', suffix: 'corrupted-timing' });
+const corruptedTimingSidecar = path.join(
+  corruptedTimingRoot,
+  'runs',
+  corruptedTimingFixture.execution.batchId,
+  'report-publication.json',
+);
+fs.mkdirSync(path.dirname(corruptedTimingSidecar), { recursive: true });
+fs.writeFileSync(corruptedTimingSidecar, '{ invalid json');
+assert.doesNotThrow(() => renderIndexForRoot(corruptedTimingRoot));
+assert.strictEqual(require('../report/report-service').collectIndexCases(corruptedTimingRoot)[0].status, 'PASS');
+assert.strictEqual(fs.readFileSync(corruptedTimingSidecar, 'utf8'), '{ invalid json');
+for (const expected of ['RETRY_REQUIRED', 'RETRY_REQUIRED', 'DEGRADED']) {
+  recordPublicationAttempt(reportRoot, 'batch-transient', 'batch', {
+    status: 'FAILED', errorCode: 'EXECUTION_LOCKED', reason: 'same lock contention',
+  });
+  assert.strictEqual(readPublicationState(reportRoot, 'batch-transient').status, expected);
+}
+const capped = recordPublicationAttempt(reportRoot, 'batch-transient', 'batch', {
+  status: 'FAILED', errorCode: 'EXECUTION_LOCKED', reason: 'same lock contention',
+});
+assert.strictEqual(capped.status, 'DEGRADED');
+assert.strictEqual(capped.attempts.at(-1).retryCount, 4);
+
+const retryRecoveryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-retry-recovery-'));
+createTestWorkspace(retryRecoveryRoot);
+createCurrentFixture(retryRecoveryRoot, { verdict: 'PASS', suffix: 'retry-recovery' });
+recordPublicationAttempt(retryRecoveryRoot, 'batch-retry-recovery', 'batch', {
+  status: 'FAILED', errorCode: 'EXECUTION_LOCKED', reason: 'temporary report lock',
+});
+recordPublicationAttempt(retryRecoveryRoot, 'batch-degraded', 'batch', {
+  status: 'FAILED', errorCode: 'REPORT_ARTIFACT_MISSING', reason: 'permanent missing artifact',
+});
+renderIndexForRoot(retryRecoveryRoot);
+assert.strictEqual(readPublicationState(retryRecoveryRoot, 'batch-retry-recovery').status, 'PUBLISHED');
+assert.strictEqual(readPublicationState(retryRecoveryRoot, 'batch-degraded').status, 'DEGRADED');
 
 const repairRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-repair-'));
 createTestWorkspace(repairRoot);
@@ -157,4 +218,7 @@ for (const item of [published, missing, unsettled, emptyPass, changedScene, mism
 fs.rmSync(reportRoot, { recursive: true, force: true });
 fs.rmSync(repairRoot, { recursive: true, force: true });
 fs.rmSync(failedFirstPublishRoot, { recursive: true, force: true });
+fs.rmSync(retryRecoveryRoot, { recursive: true, force: true });
+fs.rmSync(corruptedCommitPublicationRoot, { recursive: true, force: true });
+fs.rmSync(corruptedTimingRoot, { recursive: true, force: true });
 console.log('publication-integrity passed');

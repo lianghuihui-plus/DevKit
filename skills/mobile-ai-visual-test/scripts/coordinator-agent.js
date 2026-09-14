@@ -3,10 +3,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const { attachTechnicalFallback } = require('./lib/technical-fallback');
 const {
   advanceRun,
   cancelRun,
   confirmRun,
+  coordinatorInputRecovery,
   loadCoordinatorState,
   prepareRun,
   recordCoordinatorInputFailure,
@@ -87,7 +89,7 @@ function commandHelp(command = 'prepare') {
   };
 }
 
-function errorResponse(error, command, retryWith = null, stalled = false) {
+function errorResponse(error, command, retryWith = null, stalled = false, confirmChoices = null) {
   if (stalled) {
     return {
       status: 'AGENT_INPUT_STALLED',
@@ -98,27 +100,39 @@ function errorResponse(error, command, retryWith = null, stalled = false) {
     };
   }
   const inputInvalid = error.code === 'COORDINATOR_INPUT_INVALID' || error.name === 'SyntaxError';
-  return {
+  const diagnostic = error.diagnostic || {
+    code: error.code || 'COORDINATOR_AGENT_FAILED',
+    stage: 'COORDINATOR',
+    summary: error.message || String(error),
+    retryable: false,
+  };
+  return attachTechnicalFallback({
     status: inputInvalid ? 'REQUEST_INVALID' : 'TECHNICAL',
     code: error.code || 'COORDINATOR_AGENT_FAILED',
     command: `scripts/coordinator-agent.js ${COMMANDS.has(command) ? command : 'prepare'}`,
     message: error.message || String(error),
     issues: error.issues?.length ? error.issues : [{ field: 'arguments', message: error.message || String(error), code: error.code || 'INVALID_ARGUMENT' }],
-    ...(retryWith ? { retryWith } : {}),
+    ...(!inputInvalid ? { diagnostic } : {}),
+    ...(inputInvalid && retryWith ? { retryWith } : {}),
+    ...(inputInvalid && confirmChoices?.length ? { confirmChoices } : {}),
     ...commandHelp(COMMANDS.has(command) ? command : 'prepare'),
-  };
+  }, 'BATCH', 'RETRY_CURRENT_COMMAND');
 }
 
 function retryWithFor(argv) {
+  return recoveryFor(argv).retryWith || null;
+}
+
+function recoveryFor(argv) {
   const command = argv[0];
-  if (command === 'cancel') return { capability: 'cancelRun', reason: '说明取消原因' };
-  if (command !== 'confirm') return null;
+  if (command === 'cancel') return { retryWith: { capability: 'cancelRun', reason: '说明取消原因' } };
+  if (command !== 'confirm') return {};
   const stateIndex = argv.indexOf('--state');
-  if (stateIndex < 0 || !argv[stateIndex + 1]) return null;
+  if (stateIndex < 0 || !argv[stateIndex + 1]) return {};
   try {
-    return loadCoordinatorState(path.resolve(argv[stateIndex + 1])).pendingConfirmation || null;
+    return coordinatorInputRecovery(path.resolve(argv[stateIndex + 1]), command);
   } catch {
-    return null;
+    return {};
   }
 }
 
@@ -137,6 +151,13 @@ function recordInputFailureFor(argv, error) {
 
 function main(argv = process.argv.slice(2), options = {}) {
   const parsed = parseArgs(argv);
+  if (!options.returnOnly && parsed.command === 'advance') {
+    process.stderr.write(`${JSON.stringify({
+      event: 'COORDINATOR_COMMAND_STARTED',
+      capability: 'advanceRun',
+      message: '命令正在执行；若宿主返回进程句柄，请继续等待同一进程，不要重复调用',
+    })}\n`);
+  }
   const response = execute(parsed, options);
   if (options.returnOnly) return response;
   process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
@@ -148,11 +169,17 @@ if (require.main === module) {
     main();
   } catch (error) {
     const argv = process.argv.slice(2);
-    const retryWith = retryWithFor(argv);
+    const recovery = recoveryFor(argv);
     const stalled = recordInputFailureFor(argv, error);
-    process.stderr.write(`${JSON.stringify(errorResponse(error, process.argv[2], retryWith, stalled), null, 2)}\n`);
+    process.stderr.write(`${JSON.stringify(errorResponse(
+      error,
+      process.argv[2],
+      recovery.retryWith,
+      stalled,
+      recovery.confirmChoices,
+    ), null, 2)}\n`);
     process.exit(error.exitCode || 2);
   }
 }
 
-module.exports = { consumeRequest, errorResponse, execute, main, parseArgs, recordInputFailureFor, retryWithFor };
+module.exports = { consumeRequest, errorResponse, execute, main, parseArgs, recordInputFailureFor, recoveryFor, retryWithFor };

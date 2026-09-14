@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { assertActiveDispatch } = require('../lib/dispatch-lease');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { attachTechnicalFallback } = require('../lib/technical-fallback');
 const { executeFacadeRequest } = require('./runtime-broker');
 const {
   projectAgentFacingResponse,
@@ -26,7 +27,7 @@ function parseRequest(argv, stdin = '', requestPath = null) {
       if (fs.existsSync(claimedPath)) fs.unlinkSync(claimedPath);
     }
   }
-  throw Object.assign(new Error('先将一个简化请求 JSON 写入 requestPath，再原样执行 command'), { code: 'AGENT_INPUT_INVALID' });
+  throw Object.assign(new Error('请求文件是一次性的；请为本次调用重新创建简化请求 JSON 到 requestPath，再原样执行 command'), { code: 'AGENT_INPUT_INVALID' });
 }
 
 function statePath(execDir) {
@@ -87,23 +88,35 @@ function run(execDir, request, options = {}) {
     internal = translateAgentFacingRequest(resolved, request);
   } catch (error) {
     if (error.code === 'AGENT_INPUT_INVALID') return invalidResponse(resolved, request, error.issues || []);
-    return {
+    return attachTechnicalFallback({
       status: 'TECHNICAL',
       code: error.code || 'FACADE_TRANSLATION_ERROR',
       message: error.message || String(error),
+      diagnostic: error.diagnostic || {
+        code: error.code || 'FACADE_TRANSLATION_ERROR',
+        stage: 'FACADE_TRANSLATION',
+        summary: error.message || String(error),
+        retryable: false,
+      },
       scene: projectAgentFacingResponse(resolved, { status: 'READY' }).scene,
-    };
+    }, 'EXECUTION', 'USE_CURRENT_RUNTIME');
   }
   clearInvalidState(resolved);
   const executeRequest = options.executeRequest || executeFacadeRequest;
   const response = executeRequest(resolved, internal, options);
   if (response?.status === 'REQUEST_INVALID') {
-    return {
+    return attachTechnicalFallback({
       status: 'TECHNICAL',
       code: 'FACADE_TRANSLATION_ERROR',
       message: `Facade 生成的内部请求未通过 Runtime：${response.message || response.code || 'unknown error'}`,
+      diagnostic: response.diagnostic || {
+        code: 'FACADE_TRANSLATION_ERROR',
+        stage: 'FACADE_TRANSLATION',
+        summary: response.message || response.code || 'unknown error',
+        retryable: false,
+      },
       scene: projectAgentFacingResponse(resolved, { status: 'READY' }).scene,
-    };
+    }, 'EXECUTION', 'USE_CURRENT_RUNTIME');
   }
   return projectAgentFacingResponse(resolved, response, request);
 }
@@ -147,12 +160,12 @@ function main(argv = process.argv.slice(2), options = {}) {
     if (!response) response = run(execDir, request, options);
   } catch (error) {
     const inputInvalid = ['AGENT_INPUT_INVALID', 'SyntaxError'].includes(error.code || error.name);
-    response = {
+    response = attachTechnicalFallback({
       status: inputInvalid ? 'INPUT_INVALID' : 'TECHNICAL',
       code: inputInvalid ? 'AGENT_INPUT_INVALID' : (error.code || 'AGENT_FACING_CLIENT_ERROR'),
       message: error.message || String(error),
       issues: inputInvalid ? [{ field: error.name === 'SyntaxError' ? 'requestFile' : 'transport', message: error.message, code: error.name === 'SyntaxError' ? 'JSON_INVALID' : 'TRANSPORT_INVALID' }] : undefined,
-    };
+    }, 'EXECUTION', 'USE_CURRENT_RUNTIME');
   }
   if (options.returnOnly) return response;
   process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);

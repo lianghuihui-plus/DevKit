@@ -180,6 +180,7 @@ assert.deepStrictEqual(autoFinalized.progress, [
   'BATCH_COMPLETE',
 ]);
 assert.strictEqual(autoFinalized.state.status, 'COMPLETED');
+assert.strictEqual(autoFinalized.publicationState.status, 'PUBLISHED');
 
 const unavailable = makeCase('自动准备失败');
 const unavailableBatch = 'batch-preparation-unavailable';

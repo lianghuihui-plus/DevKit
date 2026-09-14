@@ -12,6 +12,11 @@ const { createActionSpatialEvidence } = require('../lib/action-spatial-evidence'
 const { validateAdapterActionResult } = require('../lib/action-result');
 const { startupDisplayVerified } = require('../lib/startup-display');
 const { normalizeDeviceBinding } = require('../lib/target-binding');
+const {
+  failureText,
+  isIosSessionOrTransportFailure,
+  withCurrentIosSession,
+} = require('../session/ios-session-service');
 
 const ACTION_ARGUMENTS = Object.freeze({
   type: '--type',
@@ -47,14 +52,7 @@ function resolveTargetBinding(execDir, execution) {
     || bindingSha(validateBinding(snapshot.binding)) !== execution.targetBindingSha) {
     throw contractError('DEVICE_BINDING_MISMATCH', 'execution target does not match its frozen binding snapshot');
   }
-  const binding = { ...execution.targetBinding };
-  if (binding.platform === 'ios') {
-    const runtime = JSON.parse(fs.readFileSync(path.join(execDir, 'runtime.json'), 'utf8'));
-    const session = runtime?.sessionRef?.platformResource?.session;
-    if (!session?.sessionId) throw contractError('IOS_APPIUM_SESSION_UNAVAILABLE', 'batch Appium session is unavailable');
-    binding.appiumSessionId = session.sessionId;
-  }
-  return binding;
+  return { ...execution.targetBinding };
 }
 
 function actionAdapterArgs(binding, action, options = {}) {
@@ -173,112 +171,169 @@ function validateObservationArtifacts(execDir, result) {
 
 function invokeDeviceOperation(execDir, validated, kind, options = {}) {
   const { execution } = validated.context;
-  const binding = resolveTargetBinding(execDir, execution);
-  const skillRoot = path.resolve(__dirname, '../..');
-  const command = path.join(skillRoot, 'scripts', 'platform', kind === 'ACTION' ? 'action.sh' : 'observe.sh');
-  const args = kind === 'ACTION'
-    ? actionAdapterArgs(binding, validated.action, validated.request?.observationPolicy?.duringActionAtMs !== undefined ? {
-      captureOut: path.resolve(execDir),
-      captureLabel: `${validated.operationId}-during`,
-      captureAtMs: Number(validated.request.observationPolicy.duringActionAtMs),
-    } : {})
-    : observationAdapterArgs(binding, execDir, validated.operationId);
-  const runner = options.runner || defaultRunner;
-  const preAdapterDelayMs = kind === 'OBSERVE' && validated.request?.purpose === 'POST_ACTION'
-    ? Math.max(0, Number(options.preAdapterDelayMs) || 0) : 0;
-  const adapterStartedAt = Date.now();
-  let rawResult;
-  try {
-    rawResult = runner(command, args, {
-      timeoutMs: operationTimeoutMs(execution, options.now),
-      kind,
-      binding,
-      preAdapterDelayMs,
-    });
-  } finally {
-    if (typeof options.onAdapterSpan === 'function') {
-      options.onAdapterSpan({
-        name: 'adapter',
+  const frozenBinding = resolveTargetBinding(execDir, execution);
+  const invoke = (binding) => {
+    const skillRoot = path.resolve(__dirname, '../..');
+    const command = path.join(skillRoot, 'scripts', 'platform', kind === 'ACTION' ? 'action.sh' : 'observe.sh');
+    const args = kind === 'ACTION'
+      ? actionAdapterArgs(binding, validated.action, validated.request?.observationPolicy?.duringActionAtMs !== undefined ? {
+        captureOut: path.resolve(execDir),
+        captureLabel: `${validated.operationId}-during`,
+        captureAtMs: Number(validated.request.observationPolicy.duringActionAtMs),
+      } : {})
+      : observationAdapterArgs(binding, execDir, validated.operationId);
+    const runner = options.runner || defaultRunner;
+    const preAdapterDelayMs = kind === 'OBSERVE' && validated.request?.purpose === 'POST_ACTION'
+      ? Math.max(0, Number(options.preAdapterDelayMs) || 0) : 0;
+    const adapterStartedAt = Date.now();
+    let rawResult;
+    try {
+      rawResult = runner(command, args, {
+        timeoutMs: operationTimeoutMs(execution, options.now),
         kind,
-        purpose: validated.request?.purpose || null,
-        action: validated.action?.type || null,
-        durationMs: Date.now() - adapterStartedAt,
-        postActionSettleMs: preAdapterDelayMs,
-        explicitWaitMs: validated.action?.type === 'wait' ? Number(validated.action.ms) || 0 : 0,
+        binding,
+        preAdapterDelayMs,
+      });
+    } finally {
+      if (typeof options.onAdapterSpan === 'function') {
+        options.onAdapterSpan({
+          name: 'adapter',
+          kind,
+          purpose: validated.request?.purpose || null,
+          action: validated.action?.type || null,
+          durationMs: Date.now() - adapterStartedAt,
+          postActionSettleMs: preAdapterDelayMs,
+          explicitWaitMs: validated.action?.type === 'wait' ? Number(validated.action.ms) || 0 : 0,
+        });
+      }
+    }
+    const adapterResult = parseAdapterOutput(rawResult, kind);
+    assertResultBinding(adapterResult, binding, kind);
+    if (kind === 'ACTION' && adapterResult.action !== validated.action.type) {
+      throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'action adapter result does not match the requested action');
+    }
+    if (kind === 'ACTION' && binding.platform === 'ios' && isIosSessionOrTransportFailure(adapterResult)) {
+      throw contractError('IOS_ACTION_OUTCOME_UNKNOWN', failureText(adapterResult) || 'iOS action transport outcome is unknown', {
+        actionOutcomeUnknown: true,
+        adapterResult,
       });
     }
-  }
-  const adapterResult = parseAdapterOutput(rawResult, kind);
-  assertResultBinding(adapterResult, binding, kind);
-  if (kind === 'ACTION' && adapterResult.action !== validated.action.type) {
-    throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'action adapter result does not match the requested action');
-  }
-  let duringActionEvidence = null;
-  if (kind === 'ACTION' && validated.request?.observationPolicy?.duringActionAtMs !== undefined) {
-    const capture = adapterResult.duringActionCapture;
-    if (!capture?.artifacts?.screenshot) {
-      throw contractError('DURING_ACTION_OBSERVATION_MISSING', 'adapter did not return the requested during-action screenshot');
+    let duringActionEvidence = null;
+    if (kind === 'ACTION' && validated.request?.observationPolicy?.duringActionAtMs !== undefined) {
+      const capture = adapterResult.duringActionCapture;
+      if (!capture?.artifacts?.screenshot) {
+        throw contractError('DURING_ACTION_OBSERVATION_MISSING', 'adapter did not return the requested during-action screenshot');
+      }
+      duringActionEvidence = validateObservationArtifacts(execDir, {
+        artifacts: { screenshot: capture.artifacts.screenshot, layout: null, logs: [] },
+        app: adapterResult.app,
+      });
     }
-    duringActionEvidence = validateObservationArtifacts(execDir, {
-      artifacts: { screenshot: capture.artifacts.screenshot, layout: null, logs: [] },
-      app: adapterResult.app,
-    });
-  }
-  const spatialEvidenceRef = kind === 'ACTION'
-    ? createActionSpatialEvidence(execDir, validated, adapterResult)
-    : null;
-  return {
-    binding,
-    adapterResult,
-    ...(spatialEvidenceRef ? { spatialEvidenceRef } : {}),
-    ...(duringActionEvidence ? { duringActionEvidence } : {}),
-    postActionSettleMs: preAdapterDelayMs,
-    ...(kind === 'OBSERVE' ? { evidence: validateObservationArtifacts(execDir, adapterResult) } : {}),
+    const spatialEvidenceRef = kind === 'ACTION'
+      ? createActionSpatialEvidence(execDir, validated, adapterResult)
+      : null;
+    return {
+      binding,
+      adapterResult,
+      ...(spatialEvidenceRef ? { spatialEvidenceRef } : {}),
+      ...(duringActionEvidence ? { duringActionEvidence } : {}),
+      postActionSettleMs: preAdapterDelayMs,
+      ...(kind === 'OBSERVE' ? { evidence: validateObservationArtifacts(execDir, adapterResult) } : {}),
+    };
   };
+  if (frozenBinding.platform !== 'ios') return invoke(frozenBinding);
+  const runtime = JSON.parse(fs.readFileSync(path.join(execDir, 'runtime.json'), 'utf8'));
+  return withCurrentIosSession(runtime.sessionRef, kind, (session) => invoke({
+    ...frozenBinding,
+    appiumSessionId: session.sessionId,
+    appiumSessionCapabilities: session.capabilities || {},
+  }), {
+    binding: frozenBinding,
+    runner: options.runner || defaultRunner,
+    timeoutMs: operationTimeoutMs(execution, options.now),
+    now: options.now,
+    operationId: validated.operationId,
+  });
 }
 
 function invokeAppRestart(rawBinding, options = {}) {
   const binding = normalizeDeviceBinding(rawBinding);
-  const command = path.join(path.resolve(__dirname, '../..'), 'scripts', 'platform', 'action.sh');
-  const runner = options.runner || defaultRunner;
-  const adapterResult = parseAdapterOutput(runner(command, [
-    ...environmentAdapterArgs(binding, 'action'), '--type', 'restartApp',
-  ], {
-    timeoutMs: Number.isInteger(options.timeoutMs) ? options.timeoutMs : 60000,
-    kind: 'ACTION',
-    binding,
-    preAdapterDelayMs: 0,
-  }), 'ACTION');
-  assertResultBinding(adapterResult, binding, 'ACTION');
-  if (adapterResult.action !== 'restartApp') throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'restart adapter result does not match restartApp');
-  const display = startupDisplayVerified(binding.startupDisplayPolicy, adapterResult.startupDisplay, binding.deviceFormFactor, { platform: binding.platform });
-  return {
-    ...adapterResult,
-    coldStartVerified: adapterResult.command?.status === 'ACCEPTED' && adapterResult.coldStartVerified === true,
-    startupDisplayVerified: display.verified,
-    startupDisplayValidation: { required: display.required, reason: display.reason, errors: display.validation.errors },
+  const invoke = (activeBinding) => {
+    const command = path.join(path.resolve(__dirname, '../..'), 'scripts', 'platform', 'action.sh');
+    const runner = options.runner || defaultRunner;
+    const adapterResult = parseAdapterOutput(runner(command, [
+      ...environmentAdapterArgs(activeBinding, 'action'), '--type', 'restartApp',
+    ], {
+      timeoutMs: Number.isInteger(options.timeoutMs) ? options.timeoutMs : 60000,
+      kind: 'ACTION',
+      binding: activeBinding,
+      preAdapterDelayMs: 0,
+    }), 'ACTION');
+    assertResultBinding(adapterResult, activeBinding, 'ACTION');
+    if (adapterResult.action !== 'restartApp') throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'restart adapter result does not match restartApp');
+    if (activeBinding.platform === 'ios' && isIosSessionOrTransportFailure(adapterResult)) {
+      throw contractError('IOS_ACTION_OUTCOME_UNKNOWN', failureText(adapterResult) || 'iOS restart outcome is unknown', {
+        actionOutcomeUnknown: true,
+        adapterResult,
+      });
+    }
+    const display = startupDisplayVerified(activeBinding.startupDisplayPolicy, adapterResult.startupDisplay, activeBinding.deviceFormFactor, { platform: activeBinding.platform });
+    return {
+      ...adapterResult,
+      coldStartVerified: adapterResult.command?.status === 'ACCEPTED' && adapterResult.coldStartVerified === true,
+      startupDisplayVerified: display.verified,
+      startupDisplayValidation: { required: display.required, reason: display.reason, errors: display.validation.errors },
+    };
   };
+  if (binding.platform !== 'ios' || !options.sessionRef) return invoke(binding);
+  return withCurrentIosSession(options.sessionRef, 'ACTION', (session) => invoke({
+    ...binding,
+    appiumSessionId: session.sessionId,
+    appiumSessionCapabilities: session.capabilities || {},
+  }), {
+    binding,
+    runner: options.runner || defaultRunner,
+    timeoutMs: options.timeoutMs,
+    now: options.now,
+    operationId: options.operationId,
+  });
 }
 
 function invokeAppPreparation(execDir, validated, options = {}) {
   const binding = resolveTargetBinding(execDir, validated.execution);
-  const command = path.join(path.resolve(__dirname, '../..'), 'scripts', 'platform', 'prepare-app.sh');
-  const args = [...environmentAdapterArgs(binding, 'observe'), '--strategy', validated.strategy];
-  if (validated.provisioning?.mode === 'ARTIFACT_MANAGED') args.push('--artifact', validated.provisioning.artifactPath);
-  const runner = options.runner || defaultRunner;
-  const raw = runner(command, args, {
-    timeoutMs: Math.min(operationTimeoutMs(validated.execution, options.now), 5 * 60 * 1000),
-    kind: 'PREPARATION',
+  const invoke = (activeBinding) => {
+    const command = path.join(path.resolve(__dirname, '../..'), 'scripts', 'platform', 'prepare-app.sh');
+    const args = [...environmentAdapterArgs(activeBinding, 'observe'), '--strategy', validated.strategy];
+    if (validated.provisioning?.mode === 'ARTIFACT_MANAGED') args.push('--artifact', validated.provisioning.artifactPath);
+    const runner = options.runner || defaultRunner;
+    const raw = runner(command, args, {
+      timeoutMs: Math.min(operationTimeoutMs(validated.execution, options.now), 5 * 60 * 1000),
+      kind: 'PREPARATION',
+      binding: activeBinding,
+      preAdapterDelayMs: 0,
+    });
+    const result = parseAdapterOutput(raw, 'PREPARATION');
+    if (!result || result.schemaVersion !== 1 || result.type !== 'appPreparationResult'
+      || result.platform !== activeBinding.platform || result.strategy !== validated.strategy
+      || result.device?.id !== activeBinding.deviceId || result.app?.appId !== activeBinding.appId) {
+      throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'preparation adapter result identity is invalid');
+    }
+    return result;
+  };
+  if (binding.platform !== 'ios') return invoke(binding);
+  const runtime = JSON.parse(fs.readFileSync(path.join(execDir, 'runtime.json'), 'utf8'));
+  return withCurrentIosSession(runtime.sessionRef, 'ACTION', (session) => invoke({
+    ...binding,
+    appiumSessionId: session.sessionId,
+    appiumSessionCapabilities: session.capabilities || {},
+  }), {
     binding,
-    preAdapterDelayMs: 0,
+    runner: options.runner || defaultRunner,
+    timeoutMs: Math.min(operationTimeoutMs(validated.execution, options.now), 5 * 60 * 1000),
+    now: options.now,
+    operationId: validated.operationId,
+    replacementFromResult: (result) => result.platformSession || null,
   });
-  const result = parseAdapterOutput(raw, 'PREPARATION');
-  if (!result || result.schemaVersion !== 1 || result.type !== 'appPreparationResult'
-    || result.platform !== binding.platform || result.strategy !== validated.strategy
-    || result.device?.id !== binding.deviceId || result.app?.appId !== binding.appId) {
-    throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'preparation adapter result identity is invalid');
-  }
-  return result;
 }
 
 module.exports = {

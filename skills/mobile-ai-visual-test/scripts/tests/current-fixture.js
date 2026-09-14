@@ -101,6 +101,7 @@ function event(executionId, sequence, time, type, payload = {}) {
 function createCurrentFixture(root, options = {}) {
   assertTestRoot(root);
   const verdict = options.verdict || 'PASS';
+  const platform = options.platform || 'harmony';
   const suffix = String(options.suffix || verdict).toLowerCase();
   const executionId = `execution-current-${suffix}`;
   const sourceText = options.sourceText || `验证当前报告 ${verdict}`;
@@ -114,7 +115,7 @@ function createCurrentFixture(root, options = {}) {
   validateCaseContract(caseJson);
 
   const caseDir = path.join(root, 'cases', `${suffix}__${caseKey}`);
-  const runtimeDir = path.join(caseDir, 'platforms', 'harmony');
+  const runtimeDir = path.join(caseDir, 'platforms', platform);
   const execDir = path.join(runtimeDir, 'executions', executionId);
   fs.mkdirSync(execDir, { recursive: true });
   fs.writeFileSync(path.join(caseDir, 'source.md'), sourceText);
@@ -124,7 +125,7 @@ function createCurrentFixture(root, options = {}) {
 
   const startedAt = '2026-08-13T10:00:00.000+08:00';
   const endedAt = '2026-08-13T10:00:05.000+08:00';
-  const currentContract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform: 'harmony' });
+  const currentContract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform });
   const appProvisioning = defaultAppProvisioning();
   const preparationPolicy = validatePreparationPolicy();
   const context = {
@@ -164,7 +165,7 @@ function createCurrentFixture(root, options = {}) {
     runtime: 'case-runtime',
     executionId,
     batchId: `batch-${suffix}`,
-    platform: 'harmony',
+    platform,
     runtimeSha: currentContract.runtimeSha,
     adapterSha: currentContract.adapterSha,
     caseProtocolSha: currentContract.protocolSha,
@@ -177,7 +178,7 @@ function createCurrentFixture(root, options = {}) {
     batchContractSha: `batch-contract-${'a'.repeat(24)}`,
     executionRequestSha: `execution-request-${'a'.repeat(24)}`,
     interactionPolicy: 'UNATTENDED',
-    targetBinding: { platform: 'harmony', deviceId: 'fixture-device', appId: 'com.example.fixture', entry: 'EntryAbility' },
+    targetBinding: { platform, deviceId: 'fixture-device', appId: 'com.example.fixture', entry: 'EntryAbility' },
     targetBindingSha: 'target-binding-fixture',
     appProvisioning,
     appProvisioningSha: appProvisioningSha(appProvisioning),
@@ -390,7 +391,7 @@ function createCurrentFixture(root, options = {}) {
   const artifactManifest = buildExecutionArtifactManifest(execDir, { now: endedAt });
   const paths = completionPaths(execDir);
   const completion = {
-    executionId, batchId: execution.batchId, caseKey, platform: 'harmony',
+    executionId, batchId: execution.batchId, caseKey, platform,
     completionSource: 'framework', runtimeSha: execution.runtimeSha, adapterSha: execution.adapterSha,
     contractSha: execution.contractSha, batchContractSha: execution.batchContractSha,
     validationProfileSha: execution.validationProfileSha,
