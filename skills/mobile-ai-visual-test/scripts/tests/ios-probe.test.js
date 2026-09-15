@@ -6,6 +6,7 @@ const childProcess = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { parseDevicectlInstalledIdentity } = require('../platform/adapters/ios/lib/ios-driver');
 
 const root = path.resolve(__dirname, '../..');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-ios-probe-'));
@@ -49,6 +50,13 @@ function probe(args = []) {
 }
 
 try {
+  assert.deepStrictEqual(parseDevicectlInstalledIdentity({
+    result: {
+      apps: [{ bundleIdentifier: 'arena.codemao.cn', version: '5.2.7', bundleVersion: '1' }],
+    },
+  }, 'arena.codemao.cn'), { appId: 'arena.codemao.cn', version: '5.2.7', build: '1' });
+  assert.strictEqual(parseDevicectlInstalledIdentity({ result: { apps: [] } }, 'arena.codemao.cn'), null);
+
   const discovered = probe();
   assert.strictEqual(discovered.deviceDetected, true);
   assert.strictEqual(discovered.device, null);

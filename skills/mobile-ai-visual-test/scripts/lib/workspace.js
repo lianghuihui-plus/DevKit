@@ -52,8 +52,14 @@ function workspaceEntries(root) {
   return fs.readdirSync(root).filter((name) => name !== '.DS_Store');
 }
 
+function ensureWorkspaceDirectories(root) {
+  for (const relative of ['cases', 'knowledge', path.join('app-packages', 'ios')]) {
+    fs.mkdirSync(path.join(root, relative), { recursive: true });
+  }
+}
+
 function completeInitialization(root, marker, options = {}) {
-  for (const name of ['cases', 'knowledge']) fs.mkdirSync(path.join(root, name), { recursive: true });
+  ensureWorkspaceDirectories(root);
   renderIndexArtifacts(root, [], { generatedAt: options.now });
   if (options.interruptAfterArtifacts === true) throw new Error('MAVT_WORKSPACE_INIT_INTERRUPTED: after-artifacts');
   const ready = { ...marker, initializationState: 'READY', updatedAt: options.now || marker.updatedAt || marker.createdAt };
@@ -90,6 +96,7 @@ function ensureWorkspace(cwd = process.cwd(), options = {}) {
     const completed = completeInitialization(root, marker, options);
     return { root, marker: completed, initialized: true, resumedInitialization: true };
   }
+  ensureWorkspaceDirectories(root);
   return { root, marker, initialized: false };
 }
 

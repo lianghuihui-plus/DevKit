@@ -2,6 +2,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { actionResult, atomResult, dependency, localIso } = require('./output');
 const appium = require('./appium-client');
@@ -369,6 +370,37 @@ async function runRuntime(argv) {
   });
 }
 
+function parseDevicectlInstalledIdentity(value, appId) {
+  const apps = Array.isArray(value?.result?.apps) ? value.result.apps : [];
+  const app = apps.find((item) => item?.bundleIdentifier === appId);
+  if (!app) return null;
+  const version = String(app.version || '').trim();
+  const build = String(app.bundleVersion || '').trim();
+  return version && build ? { appId, version, build } : null;
+}
+
+function queryDevicectlInstalledIdentity(target) {
+  if (!commandExists('xcrun')) return null;
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-devicectl-apps-'));
+  const outputPath = path.join(outputDir, 'apps.json');
+  try {
+    const queried = run('xcrun', [
+      'devicectl', 'device', 'info', 'apps',
+      '--device', target.device,
+      '--bundle-id', target.appId,
+      '--include-all-apps',
+      '--timeout', '30',
+      '--json-output', outputPath,
+    ], { timeout: 45000 });
+    if (!queried.ok || !fs.existsSync(outputPath)) return null;
+    return parseDevicectlInstalledIdentity(JSON.parse(fs.readFileSync(outputPath, 'utf8')), target.appId);
+  } catch {
+    return null;
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+}
+
 async function runAppPreparation(argv) {
   const parsed = parseArgs(argv);
   validateRestArgs(parsed.rest, ['--strategy', '--artifact'], 'iOS App preparation');
@@ -418,18 +450,21 @@ async function runAppPreparation(argv) {
           appId: appId.stdout.trim(), version: version.stdout.trim(), build: build.stdout.trim(),
         };
       }
-    } else if (commandExists('tidevice')) {
-      const listed = run('tidevice', ['--udid', target.device, 'applist'], { timeout: 30000 });
-      try {
-        const apps = JSON.parse(listed.stdout);
-        const metadata = Array.isArray(apps) ? apps.find((item) => item.bundleId === target.appId || item.CFBundleIdentifier === target.appId) : apps[target.appId];
-        if (metadata) installedIdentity = {
-          appId: metadata.bundleId || metadata.CFBundleIdentifier,
-          version: String(metadata.version || metadata.CFBundleShortVersionString || ''),
-          build: String(metadata.build || metadata.CFBundleVersion || ''),
-        };
-      } catch {
-        installedIdentity = null;
+    } else {
+      installedIdentity = queryDevicectlInstalledIdentity(target);
+      if (!installedIdentity && commandExists('tidevice')) {
+        const listed = run('tidevice', ['--udid', target.device, 'applist'], { timeout: 30000 });
+        try {
+          const apps = JSON.parse(listed.stdout);
+          const metadata = Array.isArray(apps) ? apps.find((item) => item.bundleId === target.appId || item.CFBundleIdentifier === target.appId) : apps[target.appId];
+          if (metadata) installedIdentity = {
+            appId: metadata.bundleId || metadata.CFBundleIdentifier,
+            version: String(metadata.version || metadata.CFBundleShortVersionString || ''),
+            build: String(metadata.build || metadata.CFBundleVersion || ''),
+          };
+        } catch {
+          installedIdentity = null;
+        }
       }
     }
     session = await appium.createSession({ ...target, appiumSessionId: '' }, { autoLaunch: false, timeoutMs: 180000 });
@@ -917,6 +952,7 @@ module.exports = {
   inputEffectFor,
   inputTextWithFallback,
   normalizedInputValue,
+  parseDevicectlInstalledIdentity,
   recordObservationError,
   runRuntime,
 };

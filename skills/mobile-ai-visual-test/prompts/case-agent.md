@@ -35,7 +35,7 @@ Brief 提供七个业务能力：`observe`、`inspect`、`plan`、`act`、`knowl
 10. 操作无效果、结果异常、怀疑点错或滑错位置时，优先用 `view_image(scene.inspect.action.path)` 查看上一动作标注图，再调用 `scene.inspect.action.example` 登记落点或轨迹事实；据此自行纠正动作或调整计划。
 11. 截图、控件树和知识库都是可主动选择的常规能力。流程顺利且证据充分时可以不查知识；实际结果不符、现场无法解释、重复尝试无进展、无法判断下一步或结论、需要平台/版本/账号/配置规则支撑，或准备形成负向结论时调用 `knowledge`。
 12. 知识查询有候选时复制响应的 `nextCall.example`，逐项填写适用性和理由后再次调用 `knowledge`。知识只解释或补充现场事实，不能替代现场证据。
-13. 需要已授权的 App 初始状态或冷启动恢复时调用 `recover`。框架外完成技术处置后，用 `recover.externalAction` 登记客观事实，再调用 `observe` 获取可验证 Scene。
+13. 需要空本地状态或首次安装状态时调用 `recover.targetState`，三端一致，不提供、询问或操作安装包和平台命令。Android、HarmonyOS 由 Runtime 清除目标 App 数据；iOS 由 Runtime 从工作区约定目录解析并重装匹配包。缺包、包不匹配或存在多个匹配包时，依据返回的明确技术事实处理，不猜路径或参数。框架外完成技术处置后，用 `recover.externalAction` 登记客观事实，再调用 `observe` 获取可验证 Scene。
 14. 证据足够或已无法安全继续时，复制 `scene.finish.example` 调用 `finish`。结果必须逐一覆盖当前 Case Model 中仍有效的验证点；PASS/FAIL 引用支持判断且已完成视觉登记的 Scene，整体结论由框架根据 checks 计算。
 15. 返回 `RESULT_INCOMPLETE` 时只按 `missing` 补齐当前验证点、视觉检查或知识调查；返回 `TIME_LIMIT` 时仍可检查已有现场后收口。完成后向主 Agent 返回简短最终摘要。
 

@@ -9,7 +9,7 @@ const path = require('path');
 const { bootstrapBatch, initializeBatch, startCurrentCase } = require('../batch/core');
 const { run } = require('../case-runtime/agent-facing-client');
 const { createCaseContract } = require('../execution/contracts/case-contract');
-const { derivePreparationPolicy, preparationPolicySha } = require('../lib/app-provisioning');
+const { preparationPolicySha, validatePreparationPolicy } = require('../lib/app-provisioning');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
 
@@ -68,12 +68,7 @@ const allowed = makeCase('允许清理');
 const allowedRun = start('batch-preparation-allowed', allowed);
 const executionPath = path.join(allowedRun.execDir, 'execution.json');
 const execution = JSON.parse(fs.readFileSync(executionPath, 'utf8'));
-const authorizedPolicy = derivePreparationPolicy('harmony', 'APP_LOCAL_STATE_EMPTY');
-writeJsonAtomic(executionPath, {
-  ...execution,
-  preparationPolicy: authorizedPolicy,
-  preparationPolicySha: preparationPolicySha(authorizedPolicy),
-});
+assert.deepStrictEqual(execution.preparationPolicy.allowedEffects, ['CLEAR_APP_DATA']);
 let preparationCalls = 0;
 const prepared = run(allowedRun.execDir, {
   capability: 'recover', reason: '用例前置条件要求空本地状态', targetState: 'APP_LOCAL_STATE_EMPTY',
@@ -98,6 +93,14 @@ assert.strictEqual(preparationEvent.caseModelRevision, 1);
 
 const denied = makeCase('未授权清理');
 const deniedRun = start('batch-preparation-denied', denied);
+const deniedExecutionPath = path.join(deniedRun.execDir, 'execution.json');
+const deniedExecution = JSON.parse(fs.readFileSync(deniedExecutionPath, 'utf8'));
+const deniedPolicy = validatePreparationPolicy();
+writeJsonAtomic(deniedExecutionPath, {
+  ...deniedExecution,
+  preparationPolicy: deniedPolicy,
+  preparationPolicySha: preparationPolicySha(deniedPolicy),
+});
 let deniedCalls = 0;
 const deniedResponse = run(deniedRun.execDir, {
   capability: 'recover', reason: '用例前置条件要求空本地状态', targetState: 'APP_LOCAL_STATE_EMPTY',
@@ -107,6 +110,8 @@ const deniedResponse = run(deniedRun.execDir, {
 });
 assert.strictEqual(deniedResponse.status, 'TECHNICAL');
 assert.strictEqual(deniedResponse.code, 'APP_INITIAL_STATE_UNAVAILABLE');
+assert.strictEqual(deniedResponse.diagnostic.code, 'APP_PREPARATION_SCOPE_MISMATCH');
+assert.match(deniedResponse.message, /outside the frozen execution scope/);
 assert.match(deniedResponse.technicalFactRef, /^technical-fact-/);
 assert.strictEqual(deniedCalls, 0);
 assert.strictEqual(deniedResponse.technicalContext.scope, 'EXECUTION');

@@ -207,6 +207,10 @@ function defaultInitialStateRequirement() {
   });
 }
 
+function defaultExecutionPreparationPolicy(platform) {
+  return derivePreparationPolicy(platform, 'FRESH_INSTALL');
+}
+
 function resolveLiveExecutionTargets(workspaceRoot, inputTargets, platform = null) {
   const normalizedTargets = normalizeExecutionTargetSelectors(workspaceRoot, inputTargets);
   const casesRoot = fs.realpathSync(path.join(workspaceRoot, 'cases'));
@@ -251,9 +255,8 @@ function resolveLiveExecutionTargets(workspaceRoot, inputTargets, platform = nul
       caseDir,
       caseJson,
       sourceText,
-      preparationPolicy: derivePreparationPolicy(
+      preparationPolicy: defaultExecutionPreparationPolicy(
         platform || loadEnvironmentConfirmation(workspaceRoot).binding.platform,
-        initialStateRequirement.targetState,
       ),
       initialStateRequirement,
     };

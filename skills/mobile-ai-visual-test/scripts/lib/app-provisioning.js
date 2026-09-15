@@ -29,6 +29,10 @@ function artifactRoot(workspaceRoot) {
   return path.join(path.resolve(workspaceRoot), '.mavt', 'app-artifacts');
 }
 
+function workspacePackageRoot(workspaceRoot, platform) {
+  return path.join(path.resolve(workspaceRoot), 'app-packages', String(platform || '').toLowerCase());
+}
+
 function contentDigest(target) {
   const resolved = path.resolve(target);
   const stat = fs.lstatSync(resolved);
@@ -67,6 +71,33 @@ function runInspection(command, args) {
   return String(result.stdout || '').trim() || null;
 }
 
+function inspectIosIpaIdentity(sourcePath) {
+  const names = runInspection('unzip', ['-Z1', sourcePath]);
+  const plistEntry = names?.split(/\r?\n/).find((name) => /^Payload\/[^/]+\.app\/Info\.plist$/.test(name));
+  if (!plistEntry) return null;
+  const extracted = childProcess.spawnSync('unzip', ['-p', sourcePath, plistEntry], {
+    timeout: 20000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (extracted.status !== 0 || !extracted.stdout?.length) return null;
+  const converted = childProcess.spawnSync('plutil', ['-convert', 'json', '-o', '-', '-'], {
+    input: extracted.stdout,
+    encoding: 'utf8',
+    timeout: 20000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (converted.status !== 0) return null;
+  try {
+    const plist = JSON.parse(converted.stdout);
+    const appId = String(plist.CFBundleIdentifier || '').trim();
+    const version = String(plist.CFBundleShortVersionString || '').trim();
+    const build = String(plist.CFBundleVersion || '').trim();
+    return appId && version && build ? { appId, version, build } : null;
+  } catch {
+    return null;
+  }
+}
+
 function nestedValue(value, keys) {
   if (!value || typeof value !== 'object') return null;
   for (const key of keys) if (value[key] !== undefined && value[key] !== null) return String(value[key]);
@@ -92,6 +123,10 @@ function inspectArtifactIdentity(options) {
       const build = runInspection('plutil', ['-extract', 'CFBundleVersion', 'raw', '-o', '-', plist]);
       if (appId && version && build) return { status: 'VERIFIED', identity: { appId, version, build }, tool: 'plutil', toolVersion: runInspection('plutil', ['-help']) ? 'system' : 'unknown' };
     }
+  }
+  if (options.platform === 'ios' && options.format === 'IPA') {
+    const identity = inspectIosIpaIdentity(options.sourcePath);
+    if (identity) return { status: 'VERIFIED', identity, tool: 'unzip+plutil', toolVersion: 'system' };
   }
   if (options.platform === 'android' && options.format === 'APK') {
     const appId = runInspection('apkanalyzer', ['manifest', 'application-id', options.sourcePath]);
@@ -429,6 +464,63 @@ function registerAppArtifact(options) {
   return validated;
 }
 
+function workspacePackageCandidates(workspaceRoot, platform, deviceType) {
+  const root = workspacePackageRoot(workspaceRoot, platform);
+  if (!fs.existsSync(root)) return { root, candidates: [] };
+  if (!fs.statSync(root).isDirectory()) {
+    throw contractError('IOS_INSTALL_ARTIFACT_INVALID', `workspace package path is not a directory: ${root}`);
+  }
+  const candidates = fs.readdirSync(root, { withFileTypes: true })
+    .filter((entry) => !entry.name.startsWith('.'))
+    .map((entry) => path.join(root, entry.name))
+    .filter((entry) => {
+      const format = path.extname(entry).slice(1).toUpperCase();
+      if (platform !== 'ios') return FORMATS[platform]?.has(format);
+      if (deviceType === 'simulator') return format === 'APP' && fs.statSync(entry).isDirectory();
+      return (format === 'APP' && fs.statSync(entry).isDirectory()) || (format === 'IPA' && fs.statSync(entry).isFile());
+    });
+  return { root, candidates };
+}
+
+function resolveWorkspaceAppProvisioning(options) {
+  const workspaceRoot = path.resolve(ensureString(options.workspaceRoot, 'workspaceRoot', 'IOS_INSTALL_ARTIFACT_INVALID'));
+  const platform = ensureString(options.platform, 'platform', 'IOS_INSTALL_ARTIFACT_INVALID').toLowerCase();
+  if (platform !== 'ios') throw contractError('IOS_INSTALL_ARTIFACT_INVALID', 'workspace App package discovery currently belongs to iOS reinstall');
+  const appId = ensureString(options.appId, 'appId', 'IOS_INSTALL_ARTIFACT_INVALID');
+  const deviceType = ensureString(options.deviceType, 'deviceType', 'IOS_INSTALL_ARTIFACT_INVALID');
+  const { root, candidates } = workspacePackageCandidates(workspaceRoot, platform, deviceType);
+  const inspected = candidates.map((sourcePath) => ({
+    sourcePath,
+    format: inferFormat(sourcePath),
+    inspection: inspectArtifactIdentity({ sourcePath, platform, deviceType, format: inferFormat(sourcePath) }),
+  }));
+  const matches = inspected.filter((item) => item.inspection.status === 'VERIFIED' && item.inspection.identity.appId === appId);
+  if (!matches.length) {
+    throw contractError('IOS_INSTALL_ARTIFACT_NOT_FOUND', `no compatible package for ${appId} was found in ${root}`, {
+      expectedDirectory: root,
+      inspectedPackages: inspected.map((item) => path.basename(item.sourcePath)),
+    });
+  }
+  if (matches.length > 1) {
+    throw contractError('IOS_INSTALL_ARTIFACT_AMBIGUOUS', `multiple compatible packages for ${appId} were found in ${root}`, {
+      expectedDirectory: root,
+      matchingPackages: matches.map((item) => path.basename(item.sourcePath)),
+    });
+  }
+  const selected = matches[0];
+  return registerAppArtifact({
+    workspaceRoot,
+    sourcePath: selected.sourcePath,
+    platform,
+    format: selected.format,
+    deviceType,
+    appId: selected.inspection.identity.appId,
+    version: selected.inspection.identity.version,
+    build: selected.inspection.identity.build,
+    now: options.now,
+  });
+}
+
 module.exports = {
   APP_PROVISIONING_SCHEMA_VERSION,
   BOOTSTRAP_MODES,
@@ -452,10 +544,12 @@ module.exports = {
   initialStateRequirementSha,
   initialStateStrategy,
   registerAppArtifact,
+  resolveWorkspaceAppProvisioning,
   validateAppProvisioning,
   validateBootstrapPolicy,
   validateInstalledAppIdentity,
   validatePreparationPolicy,
   validateInitialStatePreflight,
   validateInitialStateRequirement,
+  workspacePackageRoot,
 };

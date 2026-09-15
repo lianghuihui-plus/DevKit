@@ -50,6 +50,12 @@ node scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <01
 - 主 Agent 持有 Case Agent 的真实运行句柄；框架只记录 Handoff 的准备、领取及 execution 是否完成，不虚构 Agent 运行状态。
 - 一个用例只保留一个有效写入者；正常 `WAITING` 不创建新 Case Agent。
 
+## App 初始状态
+
+Case Agent 通过统一的 `recover.targetState` 表达需要空本地状态或首次安装状态，平台差异由 Runtime 处理。Android、HarmonyOS 清除目标 App 数据；iOS 仅在 Case Agent 确实请求该状态时，从工作区 `app-packages/ios` 自动查找与 Bundle ID 和设备类型匹配的 `.app` 或 `.ipa`，校验并冻结后卸载、重装目标 App。
+
+主 Agent 不读取用例来预判重装，不询问、登记或向 Case Agent 传递安装包。目录中没有唯一可用安装包时，Runtime 向 Case Agent 返回明确技术事实；放入该约定目录表示允许在已确认的目标 App 上按需重装，不表示每条用例都自动重装。
+
 ## 技术异常
 
 `technicalContext` 提供已知事实、日志入口、资源事实和回到框架的 `resume` 示例。它是排障帮助，不是新的状态门，也不禁止主 Agent 使用其他可用工具。
@@ -57,7 +63,7 @@ node scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <01
 当确定性恢复失败、状态长期无进展、Coordinator 无输出、资源锁与批次终态矛盾，或设备发现、Appium、WDA、Xcode 状态与诊断不一致时，可以在当前批次职责和已有授权内读取日志，使用 Shell 或平台原生工具调查并恢复共享设备、进程、端口与自动化服务。
 
 - 只处理当前批次或已确认终态批次拥有的资源，不终止活动批次或归属不明的进程。
-- 未经用户确认，不执行卸载、清数据、改变签名等有业务影响的动作。
+- 技术排障未经用户确认，不执行额外卸载、清数据、改变签名等有业务影响的动作；`recover.targetState` 只使用 execution 已授权的目标 App 状态能力。
 - 不直接修改 Batch、Execution、Result、Scene、事件或报告文件来伪造恢复。
 - 基础设施恢复后，执行 `technicalContext.resume` 或当前 `commands.advance` 回到 Facade，由框架重新探测并落盘。
 - 技术排障不代替 Case Agent 的用例理解、设备操作和业务判断。

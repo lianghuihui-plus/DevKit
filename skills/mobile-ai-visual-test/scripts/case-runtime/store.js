@@ -102,9 +102,9 @@ function withRuntimeLock(execDir, callback, options = {}) {
 
 function technicalResponse(execDir, error, options = {}) {
   const code = error?.code || 'CASE_RUNTIME_ERROR';
-  const message = error?.message || String(error);
+  const message = error?.internalMessage || error?.message || String(error);
   const diagnostic = error?.diagnostic || {
-    code,
+    code: error?.internalCode || code,
     ...(options.operation ? { stage: String(options.operation).toUpperCase() } : {}),
     summary: message,
     retryable: error?.retryable === true,

@@ -47,7 +47,7 @@ const initialized = ensureWorkspace(empty, { now: '2026-08-13T10:00:00.000Z' });
 assert.strictEqual(initialized.initialized, true);
 assert.strictEqual(initialized.marker.type, WORKSPACE_TYPE);
 assert.strictEqual(initialized.marker.initializationState, 'READY');
-for (const name of ['workspace.json', 'cases', 'knowledge', 'index.html', 'report-metadata.json']) assert.ok(fs.existsSync(path.join(empty, name)), name);
+for (const name of ['workspace.json', 'cases', 'knowledge', 'app-packages/ios', 'index.html', 'report-metadata.json']) assert.ok(fs.existsSync(path.join(empty, name)), name);
 const emptyIndex = fs.readFileSync(path.join(empty, 'index.html'), 'utf8');
 for (const text of ['移动端 AI 视觉测试', '测试执行总览', '三平台执行分布', '用例执行情况', '暂无用例。', '显示 0 / 0']) {
   assert.ok(emptyIndex.includes(text), text);
@@ -77,6 +77,7 @@ write(path.join(valid, 'workspace.json'), JSON.stringify({ schemaVersion: 1, typ
 write(path.join(valid, 'custom.txt'), 'preserve');
 assert.strictEqual(ensureWorkspace(valid).initialized, false);
 assert.strictEqual(fs.readFileSync(path.join(valid, 'custom.txt'), 'utf8'), 'preserve');
+assert.ok(fs.statSync(path.join(valid, 'app-packages', 'ios')).isDirectory());
 
 for (const [name, marker] of [
   ['broken-json', '{'],

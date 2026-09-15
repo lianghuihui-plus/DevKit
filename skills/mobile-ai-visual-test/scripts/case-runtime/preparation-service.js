@@ -8,6 +8,7 @@ const {
   appProvisioningSha,
   initialStateStrategy,
   preparationPolicySha,
+  resolveWorkspaceAppProvisioning,
   validateAppProvisioning,
   validateInstalledAppIdentity,
   validatePreparationPolicy,
@@ -41,7 +42,7 @@ function workspaceRoot(runtime) {
 function resolveStrategy(execution, runtime, targetState) {
   const policy = validatePreparationPolicy(execution.preparationPolicy);
   if (execution.preparationPolicySha !== preparationPolicySha(policy)) throw contractError('PREPARATION_POLICY_CHANGED', 'frozen preparation policy changed');
-  const provisioning = validateAppProvisioning(execution.appProvisioning, {
+  let provisioning = validateAppProvisioning(execution.appProvisioning, {
     workspaceRoot: workspaceRoot(runtime),
     platform: execution.platform,
     appId: execution.targetBinding.appId,
@@ -52,7 +53,16 @@ function resolveStrategy(execution, runtime, targetState) {
   const missing = requiredEffects.filter((effect) => !policy.allowedEffects.includes(effect));
   if (missing.length) throw unavailable('APP_PREPARATION_SCOPE_MISMATCH', `preparation effects are outside the frozen execution scope: ${missing.join(', ')}`);
   if (strategy === 'REINSTALL_APP' && provisioning.mode !== 'ARTIFACT_MANAGED') {
-    throw unavailable('APP_INSTALL_ARTIFACT_UNAVAILABLE', 'reinstall requires a frozen installation artifact');
+    try {
+      provisioning = resolveWorkspaceAppProvisioning({
+        workspaceRoot: workspaceRoot(runtime),
+        platform: execution.platform,
+        appId: execution.targetBinding.appId,
+        deviceType: execution.targetBinding.deviceType,
+      });
+    } catch (error) {
+      throw unavailable(error.code || 'IOS_INSTALL_ARTIFACT_INVALID', error.message || String(error));
+    }
   }
   return { strategy, provisioning, requiredEffects };
 }

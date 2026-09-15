@@ -2,6 +2,7 @@
 'use strict';
 
 const assert = require('assert');
+const childProcess = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -12,13 +13,16 @@ const { createCaseContract } = require('../execution/contracts/case-contract');
 const {
   appProvisioningSha,
   createInitialStatePreflight,
+  defaultAppProvisioning,
   initialStateStrategy,
+  resolveWorkspaceAppProvisioning,
   validateBootstrapPolicy,
   preparationPolicySha,
   registerAppArtifact,
   validateAppProvisioning,
   validatePreparationPolicy,
   validateInitialStatePreflight,
+  workspacePackageRoot,
 } = require('../lib/app-provisioning');
 const { resolveStrategy } = require('../case-runtime/preparation-service');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
@@ -219,6 +223,102 @@ const iosStrategy = resolveStrategy({
   sessionRef: { statePath: path.join(root, 'runs', 'fixture-batch', 'batch.json') },
 }, 'FRESH_INSTALL');
 assert.strictEqual(iosStrategy.strategy, 'REINSTALL_APP');
+
+const packageRoot = workspacePackageRoot(root, 'ios');
+assert.strictEqual(packageRoot, path.join(root, 'app-packages', 'ios'));
+assert.throws(() => resolveWorkspaceAppProvisioning({
+  workspaceRoot: root,
+  platform: 'ios',
+  appId: 'com.example.workspace-package',
+  deviceType: 'simulator',
+}), (error) => error?.code === 'IOS_INSTALL_ARTIFACT_NOT_FOUND' && error.message.includes(packageRoot));
+fs.mkdirSync(packageRoot, { recursive: true });
+function writeIosApp(name, appId, version = '6.0.0', build = '600') {
+  const target = path.join(packageRoot, `${name}.app`);
+  fs.mkdirSync(target);
+  fs.writeFileSync(path.join(target, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>${appId}</string>
+<key>CFBundleShortVersionString</key><string>${version}</string>
+<key>CFBundleVersion</key><string>${build}</string>
+</dict></plist>\n`);
+  return target;
+}
+writeIosApp('Unrelated', 'com.example.unrelated');
+const workspaceApp = writeIosApp('WorkspacePackage', 'com.example.workspace-package');
+const discovered = resolveWorkspaceAppProvisioning({
+  workspaceRoot: root,
+  platform: 'ios',
+  appId: 'com.example.workspace-package',
+  deviceType: 'simulator',
+  now: registration.now,
+});
+assert.strictEqual(discovered.mode, 'ARTIFACT_MANAGED');
+assert.strictEqual(discovered.appId, 'com.example.workspace-package');
+assert.strictEqual(discovered.version, '6.0.0');
+assert.strictEqual(discovered.build, '600');
+assert.notStrictEqual(discovered.artifactPath, workspaceApp);
+assert.ok(discovered.artifactPath.startsWith(path.join(root, '.mavt', 'app-artifacts')));
+writeIosApp('WorkspacePackageDuplicate', 'com.example.workspace-package');
+assert.throws(() => resolveWorkspaceAppProvisioning({
+  workspaceRoot: root,
+  platform: 'ios',
+  appId: 'com.example.workspace-package',
+  deviceType: 'simulator',
+}), (error) => error?.code === 'IOS_INSTALL_ARTIFACT_AMBIGUOUS');
+
+const lazyApp = writeIosApp('LazyRuntimePackage', 'com.example.lazy-runtime', '7.0.0', '700');
+assert.ok(fs.existsSync(lazyApp));
+const preinstalled = defaultAppProvisioning();
+const lazyStrategy = resolveStrategy({
+  platform: 'ios',
+  targetBinding: { appId: 'com.example.lazy-runtime', deviceType: 'simulator' },
+  appProvisioning: preinstalled,
+  appProvisioningSha: appProvisioningSha(preinstalled),
+  preparationPolicy: reinstallPolicy,
+  preparationPolicySha: preparationPolicySha(reinstallPolicy),
+}, {
+  sessionRef: { statePath: path.join(root, 'runs', 'lazy-runtime-batch', 'batch.json') },
+}, 'FRESH_INSTALL');
+assert.strictEqual(lazyStrategy.provisioning.mode, 'ARTIFACT_MANAGED');
+assert.strictEqual(lazyStrategy.provisioning.appId, 'com.example.lazy-runtime');
+assert.throws(() => resolveStrategy({
+  platform: 'ios',
+  targetBinding: { appId: 'com.example.missing-runtime', deviceType: 'simulator' },
+  appProvisioning: preinstalled,
+  appProvisioningSha: appProvisioningSha(preinstalled),
+  preparationPolicy: reinstallPolicy,
+  preparationPolicySha: preparationPolicySha(reinstallPolicy),
+}, {
+  sessionRef: { statePath: path.join(root, 'runs', 'missing-runtime-batch', 'batch.json') },
+}, 'FRESH_INSTALL'), (error) => error?.code === 'APP_INITIAL_STATE_UNAVAILABLE'
+  && error.internalCode === 'IOS_INSTALL_ARTIFACT_NOT_FOUND'
+  && error.internalMessage.includes(packageRoot));
+
+const ipaBuildRoot = path.join(temp, 'ipa-build');
+const ipaApp = path.join(ipaBuildRoot, 'Payload', 'RealDevice.app');
+fs.mkdirSync(ipaApp, { recursive: true });
+fs.writeFileSync(path.join(ipaApp, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.example.real-device</string>
+<key>CFBundleShortVersionString</key><string>8.0.0</string>
+<key>CFBundleVersion</key><string>800</string>
+</dict></plist>\n`);
+const ipaPath = path.join(packageRoot, 'RealDevice.ipa');
+const zipped = childProcess.spawnSync('/usr/bin/zip', ['-qry', ipaPath, 'Payload'], { cwd: ipaBuildRoot, encoding: 'utf8' });
+assert.strictEqual(zipped.status, 0, zipped.stderr);
+const ipaProvisioning = resolveWorkspaceAppProvisioning({
+  workspaceRoot: root,
+  platform: 'ios',
+  appId: 'com.example.real-device',
+  deviceType: 'realDevice',
+  now: registration.now,
+});
+assert.strictEqual(ipaProvisioning.format, 'IPA');
+assert.strictEqual(ipaProvisioning.version, '8.0.0');
+assert.strictEqual(ipaProvisioning.build, '800');
 
 const source = '验证冻结制品从批次启动开始生效';
 const caseKey = `ck-${crypto.createHash('sha256').update(source).digest('hex').slice(0, 12)}`;

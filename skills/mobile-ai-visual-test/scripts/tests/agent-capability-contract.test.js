@@ -94,10 +94,14 @@ assert.match(read('SKILL.md'), /技术异常/);
 assert.match(read('SKILL.md'), /读取.*日志/);
 assert.match(read('SKILL.md'), /不直接修改.*Batch.*Execution.*Result/);
 assert.match(read('SKILL.md'), /technicalContext.*不是新的状态门/);
+assert.match(read('SKILL.md'), /app-packages\/ios/);
+assert.match(read('SKILL.md'), /主 Agent.*不.*询问.*安装包/);
 assert.match(read('prompts/case-agent.md'), /技术异常/);
 assert.match(read('prompts/case-agent.md'), /(读取|使用).*日志/);
 assert.match(read('prompts/case-agent.md'), /不得直接.*修改.*Execution.*Result/);
 assert.match(read('prompts/case-agent.md'), /首选能力.*不是排他的工具边界/);
+assert.match(read('prompts/case-agent.md'), /recover\.targetState.*三端一致/);
+assert.match(read('prompts/case-agent.md'), /不.*提供.*安装包/);
 assert.strictEqual(read('SKILL.md').includes('不能自己调用 Appium、WDA、xcodebuild 或读取内部日志'), false);
 
 console.log('agent capability contract tests passed');
