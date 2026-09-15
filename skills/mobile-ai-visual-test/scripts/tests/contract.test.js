@@ -55,6 +55,7 @@ for (const request of [
   { operation: 'knowledge', basedOnSceneId: 'scene-0001', query: '语音按钮未显示' },
   { operation: 'knowledge', basedOnSceneId: 'scene-0001', query: '入口未显示', context: { page: '创作页', operation: '横向滑动入口' } },
   { operation: 'recover', basedOnSceneId: 'scene-0001', reason: '恢复目标 App' },
+  { operation: 'recover', reason: '登记 Scene 建立前的技术处置', externalAction: { summary: '已恢复设备连接' } },
   { operation: 'status' },
   { operation: 'prepare', preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' } },
   { operation: 'act', basedOnSceneId: 'scene-0001', capabilityId: 'scene-0001:tap:el-1', decision: { purpose: '进入目标页', expectationRefs: ['E1'] } },
@@ -64,6 +65,7 @@ expectCode(() => validateRuntimeRequest({ operation: 'act' }), 'CASE_RUNTIME_REQ
 expectCode(() => validateRuntimeRequest({ operation: 'unknown' }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'status', extra: true }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'observe', caseContext: {} }), 'CASE_RUNTIME_REQUEST_INVALID');
+expectCode(() => validateRuntimeRequest({ operation: 'recover', reason: '恢复目标 App' }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'knowledge', query: '异常', context: { app: 'com.example.other' } }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'act', capabilityId: 'scene-0001:tap:el-1', intent: 'legacy' }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({

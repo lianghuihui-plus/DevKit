@@ -29,25 +29,47 @@ function runIndexFilters(html) {
   const script = html.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'dashboard inline script');
   const listeners = new Map();
-  const buttons = [...html.matchAll(/<button[^>]*data-case-filter="([^"]+)"[^>]*>/g)].map((match) => ({
+  const statusButtons = [...html.matchAll(/<button[^>]*data-case-filter="([^"]+)"[^>]*>/g)].map((match) => ({
     dataset: { caseFilter: match[1] },
     classList: { toggle() {} },
     setAttribute() {},
-    addEventListener(type, listener) { listeners.set(`${match[1]}:${type}`, listener); },
+    addEventListener(type, listener) { listeners.set(`status:${match[1]}:${type}`, listener); },
   }));
-  const cards = [...html.matchAll(/<section class="case-row" data-case-status="([^"]*)" data-case-search="([^"]*)">/g)]
-    .map((match) => ({ dataset: { caseStatus: match[1], caseSearch: match[2] }, hidden: false }));
+  const platformButtons = [...html.matchAll(/<button[^>]*data-platform-filter="([^"]+)"[^>]*>/g)].map((match) => ({
+    dataset: { platformFilter: match[1] },
+    classList: { toggle() {} },
+    setAttribute() {},
+    addEventListener(type, listener) { listeners.set(`platform:${match[1]}:${type}`, listener); },
+  }));
+  const attribute = (tag, name) => tag.match(new RegExp(`${name}="([^"]*)"`))?.[1] || '';
+  const cards = [...html.matchAll(/<section class="case-row"[^>]*>/g)].map((match) => ({
+    dataset: {
+      caseStatus: attribute(match[0], 'data-case-status'),
+      casePlatforms: attribute(match[0], 'data-case-platforms'),
+      caseResults: attribute(match[0], 'data-case-results'),
+      caseSearch: attribute(match[0], 'data-case-search'),
+    },
+    hidden: false,
+  }));
   const search = { value: '', addEventListener() {} };
   const result = { textContent: '' };
   const empty = { hidden: true };
   const document = {
-    querySelectorAll(selector) { return selector === '[data-case-filter]' ? buttons : cards; },
+    querySelectorAll(selector) {
+      if (selector === '[data-case-filter]') return statusButtons;
+      if (selector === '[data-platform-filter]') return platformButtons;
+      return cards;
+    },
     querySelector(selector) { return selector === '.search' ? search : selector === '.filter-result' ? result : empty; },
   };
   vm.runInNewContext(script, { document });
   return {
-    click(status) {
-      listeners.get(`${status}:click`)();
+    clickStatus(status) {
+      listeners.get(`status:${status}:click`)();
+      return cards.filter((card) => !card.hidden).length;
+    },
+    clickPlatform(platform) {
+      listeners.get(`platform:${platform}:click`)();
       return cards.filter((card) => !card.hidden).length;
     },
   };
@@ -126,8 +148,11 @@ assert.ok(Number.isFinite(firstPublicationTiming.reportPublicationDelayMs));
 assert.ok(fs.readFileSync(path.join(fixtures[0].runtimeDir, 'CONTEXT.html'), 'utf8')
   .includes(formatDuration(firstPublicationTiming.reportPublicationDelayMs)), 'case detail includes publication delay');
 const filters = runIndexFilters(html);
-for (const status of ['PASS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE']) assert.strictEqual(filters.click(status), 1, status);
-assert.strictEqual(filters.click('NOT_RUN'), 0, 'NOT_RUN');
+for (const status of ['PASS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE']) assert.strictEqual(filters.clickStatus(status), 1, status);
+assert.strictEqual(filters.clickStatus('NOT_RUN'), 0, 'NOT_RUN');
+assert.strictEqual(filters.clickStatus('ALL'), 4, 'ALL status');
+assert.strictEqual(filters.clickPlatform('harmony'), 4, 'HarmonyOS platform');
+assert.strictEqual(filters.clickPlatform('android'), 0, 'Android platform');
 for (const text of [
   'class="product-bar"',
   'class="summary-matrix"',
@@ -168,6 +193,10 @@ for (const removed of ['class="platform-execution-row"', 'class="case-outcome"',
 const filterOrder = ['PASS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE', 'NOT_RUN'].map((value) => html.indexOf(`data-case-filter="${value}"`));
 assert.ok(filterOrder.every((position) => position >= 0));
 assert.deepStrictEqual(filterOrder, filterOrder.slice().sort((a, b) => a - b));
+const platformFilterOrder = ['ALL', 'harmony', 'android', 'ios'].map((value) => html.indexOf(`data-platform-filter="${value}"`));
+assert.ok(platformFilterOrder.every((position) => position >= 0));
+assert.deepStrictEqual(platformFilterOrder, platformFilterOrder.slice().sort((a, b) => a - b));
+assert.ok(html.includes('aria-label="筛选执行平台"'));
 
 const unrelatedContext = path.join(fixtures[1].caseDir, 'CONTEXT.html');
 const metricsPath = path.join(fixtures[0].execDir, 'metrics.json');
@@ -220,6 +249,36 @@ for (const text of ['时长口径', '协调准备', '初始态准备', '交接�
   assert.strictEqual(multiPlatformHtml.includes(text), false, text);
 }
 for (const text of ['3 / 4', '5 / 6', '3/3', '2/3', '直接证据', '技术约束', '1 秒', '2 秒']) assert.ok(multiPlatformHtml.includes(text), text);
+
+const combinedFilterHtml = renderCurrentIndexHtml(root, [
+  {
+    caseNo: '91', title: '鸿蒙通过安卓失败', caseKey: 'ck-combined-a', contextHref: 'cases/a/CONTEXT.html',
+    platforms: [
+      { platform: 'harmony', status: 'PASS', verdict: 'PASS', contextHref: 'cases/a/platforms/harmony/CONTEXT.html' },
+      { platform: 'android', status: 'FAIL', verdict: 'FAIL', contextHref: 'cases/a/platforms/android/CONTEXT.html' },
+    ],
+  },
+  {
+    caseNo: '92', title: '鸿蒙失败苹果通过', caseKey: 'ck-combined-b', contextHref: 'cases/b/CONTEXT.html',
+    platforms: [
+      { platform: 'harmony', status: 'FAIL', verdict: 'FAIL', contextHref: 'cases/b/platforms/harmony/CONTEXT.html' },
+      { platform: 'ios', status: 'PASS', verdict: 'PASS', contextHref: 'cases/b/platforms/ios/CONTEXT.html' },
+    ],
+  },
+  {
+    caseNo: '93', title: '苹果失败', caseKey: 'ck-combined-c', contextHref: 'cases/c/CONTEXT.html',
+    platforms: [
+      { platform: 'ios', status: 'FAIL', verdict: 'FAIL', contextHref: 'cases/c/platforms/ios/CONTEXT.html' },
+    ],
+  },
+]);
+const combinedFilters = runIndexFilters(combinedFilterHtml);
+assert.strictEqual(combinedFilters.clickStatus('FAIL'), 3, 'FAIL across all platforms');
+assert.strictEqual(combinedFilters.clickPlatform('harmony'), 1, 'FAIL + HarmonyOS');
+assert.strictEqual(combinedFilters.clickPlatform('ios'), 1, 'FAIL + iOS');
+assert.strictEqual(combinedFilters.clickStatus('PASS'), 1, 'PASS + iOS');
+assert.strictEqual(combinedFilters.clickPlatform('ALL'), 2, 'PASS across all platforms');
+assert.strictEqual(combinedFilters.clickStatus('ALL'), 3, 'all statuses and platforms');
 
 const detailHtml = fs.readFileSync(path.join(fixtures[0].runtimeDir, 'CONTEXT.html'), 'utf8');
 for (const text of ['用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙', '开始时间', '结束时间']) {

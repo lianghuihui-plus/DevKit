@@ -99,13 +99,19 @@ function operationTimeoutMs(execution, now = new Date()) {
 
 function parseAdapterOutput(result, kind) {
   if (result?.error) {
-    throw contractError('DEVICE_ADAPTER_FAILED', `${kind} adapter could not run: ${result.error.message || result.error}`, {
-      adapterDiagnostics: {
-        status: result.status ?? null,
-        signal: result.signal || null,
-        stderr: String(result.stderr || '').trim().slice(0, 4000),
+    const outcomeUnknown = kind === 'PREPARATION'
+      && (result.error.code === 'ETIMEDOUT' || !!result.signal || /timed out/i.test(result.error.message || ''));
+    throw contractError(
+      outcomeUnknown ? 'APP_PREPARATION_OUTCOME_UNKNOWN' : 'DEVICE_ADAPTER_FAILED',
+      `${kind} adapter could not run: ${result.error.message || result.error}`,
+      {
+        adapterDiagnostics: {
+          status: result.status ?? null,
+          signal: result.signal || null,
+          stderr: String(result.stderr || '').trim().slice(0, 4000),
+        },
       },
-    });
+    );
   }
   let value;
   try {

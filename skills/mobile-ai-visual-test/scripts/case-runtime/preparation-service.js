@@ -70,7 +70,7 @@ function resolveStrategy(execution, runtime, targetState) {
 function validatePhase(execDir) {
   const forbidden = new Set([
     'actionRequested', 'knowledgeQueried', 'appRecovered', 'caseFinished',
-    'appPreparationCompleted', 'appPreparationFailed', 'appPreparationOutcomeUnknown',
+    'appPreparationCompleted', 'appPreparationOutcomeUnknown',
   ]);
   if (store.events(execDir).some((event) => forbidden.has(event.type))) {
     throw contractError('APP_PREPARATION_PHASE_INVALID', 'prepare must be the first business operation in an execution');
@@ -100,7 +100,46 @@ function updateExecutionSession(execDir, draft) {
     appStateResetDuringPreparation: true,
     preparationTargetState: draft.targetState,
     preparationStrategy: draft.strategy,
+    preparationFailed: false,
+    preparationFailureCode: null,
   }));
+}
+
+const NON_RECOVERABLE_PREPARATION_CODES = new Set([
+  'APP_PREPARATION_SCOPE_MISMATCH',
+  'PREPARATION_POLICY_CHANGED',
+  'APP_PROVISIONING_CHANGED',
+  'APP_INSTALL_ARTIFACT_UNAVAILABLE',
+  'APP_INSTALL_ARTIFACT_INVALID',
+  'APP_INSTALL_ARTIFACT_MISMATCH',
+  'IOS_INSTALL_ARTIFACT_INVALID',
+]);
+
+const EXTERNAL_VERIFICATION_REQUIRED_CODES = new Set([
+  'APP_PREPARATION_OUTCOME_UNKNOWN',
+  'APP_PREPARATION_OUTCOME_UNKNOWN_AFTER_INTERRUPTION',
+]);
+
+function preparationRecoveryState(execDir) {
+  const events = store.events(execDir);
+  const failures = events.filter((event) => event.type === 'appPreparationFailed');
+  const failed = failures.at(-1) || null;
+  if (!failed) return null;
+  const externalAction = events.filter((event) => event.type === 'externalActionDeclared'
+    && event.sequence > failed.sequence).at(-1) || null;
+  const internalCode = failed.internalCode || failed.code || 'APP_STATE_RESET_FAILED';
+  const recoverable = !NON_RECOVERABLE_PREPARATION_CODES.has(internalCode);
+  const directRetry = recoverable && !EXTERNAL_VERIFICATION_REQUIRED_CODES.has(internalCode);
+  return {
+    targetState: failed.targetState || null,
+    code: failed.code || 'APP_INITIAL_STATE_UNAVAILABLE',
+    internalCode,
+    message: failed.message || 'The requested App initial state cannot be established in this execution',
+    recoverable,
+    retryAllowed: recoverable && (!!externalAction || (directRetry && failures.length === 1)),
+    requiresExternalAction: recoverable && !externalAction && (!directRetry || failures.length > 1),
+    failureCount: failures.length,
+  };
 }
 
 function refreshPlatformSession(execDir, execution, draft) {
@@ -379,4 +418,4 @@ function recoverPendingPreparation(execDir, options = {}) {
   }
 }
 
-module.exports = { prepare, recoverPendingPreparation, resolveStrategy, validatePhase };
+module.exports = { prepare, preparationRecoveryState, recoverPendingPreparation, resolveStrategy, validatePhase };

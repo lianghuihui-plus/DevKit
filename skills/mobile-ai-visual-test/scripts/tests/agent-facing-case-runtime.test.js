@@ -9,6 +9,7 @@ const { validateRuntimeRequest } = require('../case-runtime/contract');
 const {
   AGENT_FACING_CAPABILITIES,
   capabilityCards,
+  projectInitialState,
   projectScene,
   validateAgentFacingRequest,
 } = require('../case-runtime/agent-facing-contract');
@@ -81,7 +82,34 @@ writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 writeJsonAtomic(path.join(execDir, 'scenes', `${scene.sceneId}.json`), scene);
 
 assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'inspect', 'plan', 'act', 'knowledge', 'recover', 'finish']);
-const cards = capabilityCards({ scene, caseModel: null });
+const initialState = projectInitialState({
+  platform: 'ios',
+  initialStateRequirement: { targetState: 'KEEP_EXISTING' },
+  preparationPolicy: {
+    allowedEffects: ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'],
+  },
+});
+assert.deepStrictEqual(initialState, {
+  automaticPreparation: 'NONE',
+  currentAppState: 'UNVERIFIED',
+  availablePreparation: [
+    {
+      targetState: 'APP_LOCAL_STATE_EMPTY',
+      meaning: '目标 App 本地状态为空',
+      authorized: true,
+      platformEffect: '卸载并使用工作区冻结制品重装目标 App',
+    },
+    {
+      targetState: 'FRESH_INSTALL',
+      meaning: '目标 App 处于首次安装状态',
+      authorized: true,
+      platformEffect: '卸载并使用工作区冻结制品重装目标 App',
+    },
+  ],
+});
+assert.strictEqual(JSON.stringify(initialState).includes('KEEP_EXISTING'), false);
+
+const cards = capabilityCards({ scene, caseModel: null, initialState });
 assert.deepStrictEqual(Object.keys(cards), AGENT_FACING_CAPABILITIES);
 for (const card of Object.values(cards)) {
   assert.ok(card.useWhen);
@@ -96,6 +124,16 @@ assert.strictEqual(JSON.stringify(cards).includes('operation'), false);
 assert.match(cards.plan.useWhen, /本次用例理解/);
 assert.doesNotMatch(cards.act.useWhen, /已有执行计划/);
 assert.doesNotMatch(cards.recover.useWhen, /已有执行计划/);
+assert.deepStrictEqual(cards.recover.modes.map((item) => item.mode), [
+  'ESTABLISH_APP_LOCAL_STATE', 'ESTABLISH_FRESH_INSTALL', 'RESTART_APP', 'RECORD_EXTERNAL_ACTION',
+]);
+for (const mode of cards.recover.modes) {
+  assert.ok(mode.useWhen);
+  assert.deepStrictEqual(validateAgentFacingRequest(mode.example), []);
+}
+assert.strictEqual(cards.recover.modes[0].authorized, true);
+assert.strictEqual(cards.recover.modes[1].authorized, true);
+assert.strictEqual(cards.recover.modes[1].example.targetState, 'FRESH_INSTALL');
 assert.match(cards.finish.useWhen, /本次用例理解/);
 assert.ok(validateAgentFacingRequest({ capability: 'plan', items: [] })
   .some((item) => item.field === 'understanding' && item.code === 'REQUIRED'));

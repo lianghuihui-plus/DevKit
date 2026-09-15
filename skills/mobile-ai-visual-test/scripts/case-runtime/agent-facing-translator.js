@@ -51,7 +51,7 @@ function currentPlan(execDir) {
 function contextualIssues(execDir, request, scene) {
   const issues = [];
   if ((['inspect', 'act', 'knowledge'].includes(request.capability)
-    || (request.capability === 'recover' && !request.targetState)) && !scene) {
+    || (request.capability === 'recover' && !request.targetState && !request.externalAction)) && !scene) {
     issues.push(issue('capability', '当前没有 Scene，请先使用 observe', 'SCENE_REQUIRED'));
   }
   if (request.capability === 'finish' && !currentPlan(execDir)) {
@@ -214,7 +214,9 @@ function translateAgentFacingRequest(execDir, request) {
   };
   else if (request.capability === 'recover') translated = {
     operation: request.targetState ? 'prepare' : 'recover',
-    ...(request.targetState ? { preparation: { targetState: request.targetState } } : { basedOnSceneId: scene.sceneId, reason: request.reason }),
+    ...(request.targetState
+      ? { preparation: { targetState: request.targetState } }
+      : { ...(scene ? { basedOnSceneId: scene.sceneId } : {}), reason: request.reason }),
     ...(request.externalAction ? { externalAction: request.externalAction } : {}),
   };
   else if (request.capability === 'finish') {
@@ -261,6 +263,35 @@ function reviewExample(requiredReview) {
   };
 }
 
+function preparationNextCall(execDir, response, model) {
+  if (response.code !== 'APP_INITIAL_STATE_UNAVAILABLE'
+    && response.status !== 'EXTERNAL_ACTION_RECORDED') return null;
+  const recovery = require('./preparation-service').preparationRecoveryState(execDir);
+  if (!recovery?.targetState) return null;
+  if (recovery.retryAllowed) {
+    return {
+      reason: 'RETRY_APP_INITIAL_STATE',
+      example: {
+        capability: 'recover',
+        reason: '重新建立用例要求的 App 初始状态',
+        targetState: recovery.targetState,
+      },
+    };
+  }
+  if (recovery.requiresExternalAction) {
+    return {
+      reason: 'RECORD_TECHNICAL_RECOVERY',
+      example: {
+        capability: 'recover',
+        reason: '完成当前 execution 范围内的技术处置后登记事实',
+        externalAction: { summary: '说明已完成的技术处置及结果' },
+      },
+    };
+  }
+  if (!model) return null;
+  return { reason: 'CLOSE_UNRECOVERABLE_INITIAL_STATE', example: finishTemplate(model) };
+}
+
 function projectAgentFacingResponse(execDir, response, request = null) {
   const projected = { ...response };
   delete projected.allowedOperations;
@@ -273,7 +304,9 @@ function projectAgentFacingResponse(execDir, response, request = null) {
   if (projected.action) projected.action = projectPreviousAction(projected.action, model);
   const nextReview = reviewExample(response.requiredReview);
   if (nextReview) projected.nextCall = { reason: 'REVIEW_KNOWLEDGE_CANDIDATES', example: nextReview };
-  if (response.status === 'EXTERNAL_ACTION_RECORDED') {
+  const preparationRecovery = preparationNextCall(execDir, response, model);
+  if (preparationRecovery) projected.nextCall = preparationRecovery;
+  else if (response.status === 'EXTERNAL_ACTION_RECORDED') {
     projected.nextCall = { reason: 'VERIFY_EXTERNAL_ACTION_WITH_NEW_SCENE', example: { capability: 'observe' } };
   }
   if (projected.knowledgeInvestigation) {

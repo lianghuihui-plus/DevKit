@@ -14,7 +14,7 @@ scripts/probe-env.sh --platform <platform>
 
 执行请求绑定环境确认摘要。设备、App、平台或入口发生变化时重新确认环境，已有但尚未初始化的执行请求自动失效，必须基于新确认创建新的 batchId 和请求。
 
-在 batch bootstrap 前运行 `scripts/prepare-env.sh` 完成平台必要依赖。默认 `bootstrapPolicy=KEEP_EXISTING`，安装包存在也不会在批次启动时安装；`recover.targetState` 是用例内唯一的按需准备入口。Runtime 在准备事务开始时冻结 iOS 包内容和身份，在卸载前完成全部静态检查；安装后必须读取并匹配 `installedIdentity`，真机优先使用 Xcode `devicectl`，旧环境可回退 `tidevice`。结果未知、身份不符或安装失败时不重放并按技术问题收口。无人值守执行开始后不下载制品、不安装依赖、不修改 adapter、不切换设备。
+在 batch bootstrap 前运行 `scripts/prepare-env.sh` 完成平台必要依赖。默认 `bootstrapPolicy=KEEP_EXISTING`，安装包存在也不会在批次启动时安装；`recover.targetState` 是用例内唯一的按需准备入口。Runtime 在准备事务开始时冻结 iOS 包内容和身份，在卸载前完成全部静态检查；真机用 Xcode `devicectl`、模拟器用 `simctl` 确认 `INSTALLED / NOT_INSTALLED / UNKNOWN`，Appium/WDA `app_state` 只表示运行态，不作为安装事实。安装后必须读取并匹配 `installedIdentity`，旧真机环境可回退 `tidevice` 读取身份。结果未知、身份不符或安装失败时不重放并按技术问题收口。无人值守执行开始后不下载制品、不安装依赖、不修改 adapter、不切换设备。
 
 iOS `prepare-env` 会复用可连接的外部 Appium，或启动并登记框架托管的本地 Appium。WDA 验证使用临时所有权记录；验证结束即释放本次准备阶段启动的 WDA，既有外部 WDA 保留。登记只用于后续批次认领和安全关闭，不构成执行授权；未进入批次时可再次运行环境准备复核。框架不得关闭无精确所有权记录的外部 Appium 或 WDA。
 

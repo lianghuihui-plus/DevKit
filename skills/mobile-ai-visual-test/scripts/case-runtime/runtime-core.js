@@ -160,12 +160,26 @@ function execute(execDir, request, options = {}) {
           ? resultService.finish(execDir, request.result, { ...options, openInvocation: invocation })
           : runtimeStatus(execDir);
       }
-      if (latestExecution.preparationFailed && !['finish', 'status'].includes(request.operation)) {
+      const preparationRecovery = require('./preparation-service').preparationRecoveryState(execDir);
+      const retriesPreparation = request.operation === 'prepare'
+        && preparationRecovery?.retryAllowed === true
+        && request.preparation?.targetState === preparationRecovery.targetState;
+      const recordsExternalRecovery = request.operation === 'recover' && !!request.externalAction;
+      if (latestExecution.preparationFailed
+        && !['finish', 'status'].includes(request.operation)
+        && !retriesPreparation
+        && !recordsExternalRecovery) {
         const preparation = preparationStatus(execDir, latestExecution);
         return {
           status: 'TECHNICAL',
           code: 'APP_INITIAL_STATE_UNAVAILABLE',
-          message: 'The requested App initial state cannot be established in this execution',
+          message: preparationRecovery?.message || 'The requested App initial state cannot be established in this execution',
+          diagnostic: {
+            code: preparationRecovery?.internalCode || 'APP_STATE_RESET_FAILED',
+            stage: 'PREPARE',
+            summary: preparationRecovery?.message || 'The requested App initial state cannot be established in this execution',
+            retryable: preparationRecovery?.retryAllowed === true,
+          },
           technicalFactRef: preparation?.technicalFactRef || null,
           scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
         };

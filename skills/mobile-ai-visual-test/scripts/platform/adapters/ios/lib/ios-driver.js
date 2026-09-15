@@ -41,6 +41,12 @@ const {
 } = require('./device-target');
 const { scaleVisualPoint, sourceViewport } = require('./screen-space');
 
+const IOS_INSTALLATION_STATUS = Object.freeze({
+  INSTALLED: 'INSTALLED',
+  NOT_INSTALLED: 'NOT_INSTALLED',
+  UNKNOWN: 'UNKNOWN',
+});
+
 const ATOM_OPTIONS = Object.freeze({
   'screenshot': ['--out'],
   'dump-tree': ['--out'],
@@ -379,26 +385,129 @@ function parseDevicectlInstalledIdentity(value, appId) {
   return version && build ? { appId, version, build } : null;
 }
 
-function queryDevicectlInstalledIdentity(target) {
-  if (!commandExists('xcrun')) return null;
+function installationState(status, source, identity = null, detail = '') {
+  return {
+    status,
+    source,
+    identity,
+    ...(detail ? { detail } : {}),
+  };
+}
+
+function parseDevicectlInstallation(value, appId) {
+  if (!Array.isArray(value?.result?.apps)) {
+    return installationState(IOS_INSTALLATION_STATUS.UNKNOWN, 'DEVICECTL');
+  }
+  const app = value.result.apps.find((item) => item?.bundleIdentifier === appId);
+  if (!app) return installationState(IOS_INSTALLATION_STATUS.NOT_INSTALLED, 'DEVICECTL');
+  return installationState(
+    IOS_INSTALLATION_STATUS.INSTALLED,
+    'DEVICECTL',
+    parseDevicectlInstalledIdentity(value, appId),
+  );
+}
+
+function queryDevicectlInstallation(target, options = {}) {
+  const runner = options.run || run;
+  const hasCommand = options.commandExists || commandExists;
+  if (!hasCommand('xcrun')) {
+    return installationState(IOS_INSTALLATION_STATUS.UNKNOWN, 'DEVICECTL', null, 'xcrun is unavailable');
+  }
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-devicectl-apps-'));
   const outputPath = path.join(outputDir, 'apps.json');
   try {
-    const queried = run('xcrun', [
+    const queried = runner('xcrun', [
       'devicectl', 'device', 'info', 'apps',
       '--device', target.device,
       '--bundle-id', target.appId,
       '--include-all-apps',
-      '--timeout', '30',
+      '--timeout', '15',
       '--json-output', outputPath,
-    ], { timeout: 45000 });
-    if (!queried.ok || !fs.existsSync(outputPath)) return null;
-    return parseDevicectlInstalledIdentity(JSON.parse(fs.readFileSync(outputPath, 'utf8')), target.appId);
-  } catch {
-    return null;
+    ], { timeout: 25000 });
+    if (!queried.ok || !fs.existsSync(outputPath)) {
+      return installationState(
+        IOS_INSTALLATION_STATUS.UNKNOWN,
+        'DEVICECTL',
+        null,
+        String(queried.stderr || 'devicectl did not return JSON').trim().slice(0, 1000),
+      );
+    }
+    return parseDevicectlInstallation(JSON.parse(fs.readFileSync(outputPath, 'utf8')), target.appId);
+  } catch (error) {
+    return installationState(IOS_INSTALLATION_STATUS.UNKNOWN, 'DEVICECTL', null, error.message || String(error));
   } finally {
     fs.rmSync(outputDir, { recursive: true, force: true });
   }
+}
+
+function simulatorIdentity(target, appPath, runner = run) {
+  const plist = appPath ? path.join(appPath, 'Info.plist') : '';
+  if (!plist || !fs.existsSync(plist)) return null;
+  const appId = runner('plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', plist], { timeout: 10000 });
+  const version = runner('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', plist], { timeout: 10000 });
+  const build = runner('plutil', ['-extract', 'CFBundleVersion', 'raw', '-o', '-', plist], { timeout: 10000 });
+  if (!appId.ok || !version.ok || !build.ok || appId.stdout.trim() !== target.appId) return null;
+  return { appId: appId.stdout.trim(), version: version.stdout.trim(), build: build.stdout.trim() };
+}
+
+function querySimulatorInstallation(target, options = {}) {
+  const runner = options.run || run;
+  const container = runner('xcrun', ['simctl', 'get_app_container', target.device, target.appId, 'app'], { timeout: 20000 });
+  if (container.ok && container.stdout.trim()) {
+    return installationState(
+      IOS_INSTALLATION_STATUS.INSTALLED,
+      'SIMCTL',
+      simulatorIdentity(target, container.stdout.trim(), runner),
+    );
+  }
+  const detail = String(container.stderr || '').trim();
+  if (/no such app|not installed|could not find|failed to lookup|no app container/i.test(detail)) {
+    return installationState(IOS_INSTALLATION_STATUS.NOT_INSTALLED, 'SIMCTL');
+  }
+  return installationState(IOS_INSTALLATION_STATUS.UNKNOWN, 'SIMCTL', null, detail || 'simctl did not return an App container');
+}
+
+function queryNativeAppInstallation(target, options = {}) {
+  return target.deviceType === 'simulator'
+    ? querySimulatorInstallation(target, options)
+    : queryDevicectlInstallation(target, options);
+}
+
+async function waitForNativeInstallationState(target, expected, options = {}) {
+  const queryInstallation = options.queryInstallation || queryNativeAppInstallation;
+  const pause = options.sleep || sleep;
+  const timeoutMs = Number(options.timeoutMs || 60000);
+  const started = Date.now();
+  let last = installationState(IOS_INSTALLATION_STATUS.UNKNOWN, 'NATIVE');
+  do {
+    last = await queryInstallation(target);
+    if (last?.status === expected) return last;
+    if (Date.now() - started >= timeoutMs) break;
+    await pause(500);
+  } while (Date.now() - started < timeoutMs);
+  throw new Error(`iOS native installation state did not become ${expected}: last status=${last?.status || 'UNKNOWN'}, source=${last?.source || 'UNKNOWN'}${last?.detail ? `, detail=${last.detail}` : ''}`);
+}
+
+async function performIosReinstall(target, sessionId, artifact, options = {}) {
+  const client = options.appiumClient || appium;
+  const queryInstallation = options.queryInstallation || queryNativeAppInstallation;
+  const waitOptions = {
+    queryInstallation,
+    sleep: options.sleep,
+    timeoutMs: options.timeoutMs,
+  };
+  const before = await queryInstallation(target);
+  if (before?.status !== IOS_INSTALLATION_STATUS.NOT_INSTALLED) {
+    await client.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/remove_app`, { bundleId: target.appId });
+    await waitForNativeInstallationState(target, IOS_INSTALLATION_STATUS.NOT_INSTALLED, waitOptions);
+  }
+  await client.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/install_app`, { appPath: path.resolve(artifact) }, 300000);
+  return waitForNativeInstallationState(target, IOS_INSTALLATION_STATUS.INSTALLED, waitOptions);
+}
+
+function queryDevicectlInstalledIdentity(target) {
+  const installation = queryDevicectlInstallation(target);
+  return installation.status === IOS_INSTALLATION_STATUS.INSTALLED ? installation.identity : null;
 }
 
 async function runAppPreparation(argv) {
@@ -427,19 +536,14 @@ async function runAppPreparation(argv) {
         appId: '',
         appiumSessionId: '',
       }, { autoLaunch: false, timeoutMs: 180000 });
-      const stateBefore = await queryAppState(target, maintenanceSession.sessionId);
-      if (stateBefore !== 0) {
-        await appium.request(target.appiumServer, 'POST', `/session/${maintenanceSession.sessionId}/appium/device/remove_app`, { bundleId: target.appId });
-        await waitForAppState(target, maintenanceSession.sessionId, (state) => state === 0, 'not installed', 30000);
-      }
-      await appium.request(target.appiumServer, 'POST', `/session/${maintenanceSession.sessionId}/appium/device/install_app`, { appPath: path.resolve(artifact) }, 300000);
-      await waitForAppState(target, maintenanceSession.sessionId, (state) => state !== 0, 'installed', 30000);
+      const installation = await performIosReinstall(target, maintenanceSession.sessionId, artifact);
+      installedIdentity = installation.identity;
     } finally {
       if (maintenanceSession?.sessionId) {
         await appium.deleteSession(target.appiumServer, maintenanceSession.sessionId).catch(() => {});
       }
     }
-    if (target.deviceType === 'simulator') {
+    if (!installedIdentity && target.deviceType === 'simulator') {
       const container = run('xcrun', ['simctl', 'get_app_container', target.device, target.appId, 'app'], { timeout: 20000 });
       const plist = container.ok ? path.join(container.stdout.trim(), 'Info.plist') : '';
       if (plist && fs.existsSync(plist)) {
@@ -450,7 +554,7 @@ async function runAppPreparation(argv) {
           appId: appId.stdout.trim(), version: version.stdout.trim(), build: build.stdout.trim(),
         };
       }
-    } else {
+    } else if (!installedIdentity) {
       installedIdentity = queryDevicectlInstalledIdentity(target);
       if (!installedIdentity && commandExists('tidevice')) {
         const listed = run('tidevice', ['--udid', target.device, 'applist'], { timeout: 30000 });
@@ -608,28 +712,25 @@ async function runObserve(argv) {
   });
 }
 
-async function queryAppState(target, sessionId) {
-  const response = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/app_state`, { bundleId: target.appId });
-  return response.value;
-}
-
-async function waitForAppState(target, sessionId, predicate, label, timeoutMs = 6000) {
+async function waitForRuntimeAppState(target, sessionId, predicate, label, options = {}) {
+  const client = options.appiumClient || appium;
+  const pause = options.sleep || sleep;
+  const timeoutMs = Number(options.timeoutMs || 6000);
   const started = Date.now();
   let lastState = null;
   let lastError = null;
   while (Date.now() - started < timeoutMs) {
     try {
-      lastState = await queryAppState(target, sessionId);
-      if (predicate(lastState)) {
-        return { ok: true, state: lastState };
-      }
+      const response = await client.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/app_state`, { bundleId: target.appId });
+      lastState = response.value;
+      if (predicate(lastState)) return { ok: true, state: lastState };
     } catch (error) {
       lastError = error;
     }
-    await sleep(300);
+    await pause(300);
   }
   const detail = lastError ? lastError.message : `last state=${lastState}`;
-  throw new Error(`iOS app state did not become ${label}: ${detail}`);
+  throw new Error(`iOS app runtime state did not become ${label}: ${detail}`);
 }
 
 async function runAtom(atom, argv) {
@@ -770,9 +871,9 @@ async function runAtom(atom, argv) {
     if (!target.appId) throw new Error('restart-app 需要 --app 或 --bundle');
     await appium.withSession(target, async ({ sessionId }) => {
       await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/terminate_app`, { bundleId: target.appId });
-      const stopped = await waitForAppState(target, sessionId, (state) => Number(state) <= 1, 'not running after terminate_app');
+      const stopped = await waitForRuntimeAppState(target, sessionId, (state) => Number(state) <= 1, 'not running after terminate_app');
       await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/appium/device/activate_app`, { bundleId: target.appId });
-      const foreground = await waitForAppState(target, sessionId, (state) => Number(state) === 4, 'foreground after activate_app');
+      const foreground = await waitForRuntimeAppState(target, sessionId, (state) => Number(state) === 4, 'foreground after activate_app');
       writeJson(actionResult('restartApp', {
         restart: true,
         coldStartVerified: true,
@@ -947,12 +1048,17 @@ if (require.main === module) {
 }
 
 module.exports = {
+  IOS_INSTALLATION_STATUS,
   appiumElementId,
   findEditableElement,
   inputEffectFor,
   inputTextWithFallback,
   normalizedInputValue,
   parseDevicectlInstalledIdentity,
+  parseDevicectlInstallation,
+  performIosReinstall,
+  queryNativeAppInstallation,
   recordObservationError,
   runRuntime,
+  waitForRuntimeAppState,
 };

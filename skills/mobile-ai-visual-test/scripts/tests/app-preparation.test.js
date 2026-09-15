@@ -115,7 +115,66 @@ assert.match(deniedResponse.message, /outside the frozen execution scope/);
 assert.match(deniedResponse.technicalFactRef, /^technical-fact-/);
 assert.strictEqual(deniedCalls, 0);
 assert.strictEqual(deniedResponse.technicalContext.scope, 'EXECUTION');
-assert.deepStrictEqual(deniedResponse.technicalContext.resume, { capability: 'observe' });
+assert.notDeepStrictEqual(deniedResponse.technicalContext.resume, { capability: 'observe' });
+assert.strictEqual(deniedResponse.nextCall.reason, 'CLOSE_UNRECOVERABLE_INITIAL_STATE');
+assert.deepStrictEqual(deniedResponse.technicalContext.resume, deniedResponse.nextCall.example);
+
+const retryable = makeCase('准备失败后恢复');
+const retryableRun = start('batch-preparation-retryable', retryable);
+let retryableCalls = 0;
+const invokeRetryablePreparation = (_execDir, request) => {
+  retryableCalls += 1;
+  if (retryableCalls <= 2) {
+    const error = new Error('native installation verification temporarily unavailable');
+    error.code = 'DEVICE_ADAPTER_FAILED';
+    throw error;
+  }
+  return {
+    schemaVersion: 1,
+    type: 'appPreparationResult',
+    platform: 'harmony',
+    strategy: request.strategy,
+    ok: true,
+    status: 'SUCCEEDED',
+    device: { id: binding.deviceId },
+    app: { appId: binding.appId },
+  };
+};
+const firstFailure = run(retryableRun.execDir, {
+  capability: 'recover', reason: '用例要求空本地状态', targetState: 'APP_LOCAL_STATE_EMPTY',
+}, { now: T0, runner: observeRunner, invokeAppPreparation: invokeRetryablePreparation });
+assert.strictEqual(firstFailure.status, 'TECHNICAL');
+assert.strictEqual(firstFailure.nextCall.reason, 'RETRY_APP_INITIAL_STATE');
+assert.deepStrictEqual(firstFailure.nextCall.example, {
+  capability: 'recover', reason: '重新建立用例要求的 App 初始状态', targetState: 'APP_LOCAL_STATE_EMPTY',
+});
+assert.deepStrictEqual(firstFailure.technicalContext.resume, firstFailure.nextCall.example);
+
+const secondFailure = run(retryableRun.execDir, firstFailure.nextCall.example, {
+  now: T0, runner: observeRunner, invokeAppPreparation: invokeRetryablePreparation,
+});
+assert.strictEqual(secondFailure.status, 'TECHNICAL');
+assert.strictEqual(secondFailure.nextCall.reason, 'RECORD_TECHNICAL_RECOVERY');
+assert.strictEqual(secondFailure.nextCall.example.capability, 'recover');
+assert.ok(secondFailure.nextCall.example.externalAction);
+
+const externalRecovery = run(retryableRun.execDir, {
+  ...secondFailure.nextCall.example,
+  externalAction: { summary: '已恢复当前 execution 的设备安装态查询能力', tool: 'platform-native-tool' },
+}, { now: T0, runner: observeRunner, invokeAppPreparation: invokeRetryablePreparation });
+assert.strictEqual(externalRecovery.status, 'EXTERNAL_ACTION_RECORDED', JSON.stringify(externalRecovery));
+assert.strictEqual(externalRecovery.nextCall.reason, 'RETRY_APP_INITIAL_STATE');
+
+const recoveredPreparation = run(retryableRun.execDir, externalRecovery.nextCall.example, {
+  now: T0,
+  runner: observeRunner,
+  invokeAppPreparation: invokeRetryablePreparation,
+  restartApp: () => ({ coldStartVerified: true, startupDisplayVerified: true }),
+});
+assert.strictEqual(recoveredPreparation.status, 'SCENE');
+assert.strictEqual(recoveredPreparation.preparation.status, 'SATISFIED');
+assert.strictEqual(retryableCalls, 3);
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(retryableRun.execDir, 'execution.json'), 'utf8')).preparationFailed, false);
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('app preparation passed');

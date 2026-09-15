@@ -28,7 +28,7 @@ Case Agent 读取原始用例和当前 Scene，使用 `plan` 形成 Case Model�
 
 截图与控件树是并列能力。视觉现场先用 `view_image` 查看，再用 `inspect(channel=visual)` 登记；操作异常时可查看上一动作落点标注图，并用 `inspect(channel=action)` 登记客观坐标事实。框架不判断是否命中业务目标。
 
-Case Agent 可以用 `recover.targetState` 请求 execution 已授权的目标 App 状态，或用 `recover.externalAction` 登记框架外技术处置。Android、HarmonyOS 在底层清数据；iOS 按需从 `app-packages/ios` 唯一匹配、校验并冻结安装包后重装。Agent 不处理平台安装参数；框架外声明不是业务证据，必须再 `observe` 获取可验证 Scene。
+Case Agent 可以用 `recover.targetState` 请求 execution 已授权的目标 App 状态，或用 `recover.externalAction` 登记框架外技术处置。Android、HarmonyOS 在底层清数据；iOS 按需从 `app-packages/ios` 唯一匹配、校验并冻结安装包后重装。Agent 不处理平台安装参数；一般框架外声明后重新 `observe`，初始态准备失败则按 Runtime 返回的 `nextCall` 重试准备并由新 Scene 验证。
 
 `finish` 必须逐一覆盖当前 Case Model 中有效的验证点，并引用真实 Scene、知识或技术事实。Runtime 完成证据完整性校验后，主 Agent 才能 commit；聊天摘要不是批次事实来源。
 

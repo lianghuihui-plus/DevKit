@@ -126,6 +126,25 @@ assert.match(started.brief.runtime.input, /每次.*新建.*消费后删除/);
 assert.strictEqual(started.brief.runtime.capabilities.prepare, undefined);
 assert.deepStrictEqual(started.brief.runtime.capabilities.recover.required, ['reason']);
 assert.deepStrictEqual(started.brief.runtime.capabilities.recover.optional, ['targetState', 'externalAction']);
+assert.deepStrictEqual(started.brief.initialState, {
+  automaticPreparation: 'NONE',
+  currentAppState: 'UNVERIFIED',
+  availablePreparation: [
+    {
+      targetState: 'APP_LOCAL_STATE_EMPTY',
+      meaning: '目标 App 本地状态为空',
+      authorized: true,
+      platformEffect: '清除目标 App 数据并冷启动',
+    },
+    {
+      targetState: 'FRESH_INSTALL',
+      meaning: '目标 App 处于首次安装状态',
+      authorized: true,
+      platformEffect: '清除目标 App 数据并冷启动',
+    },
+  ],
+});
+assert.strictEqual(JSON.stringify(started.brief.initialState).includes('KEEP_EXISTING'), false);
 assert.strictEqual(started.brief.runtime.contractDefinitions, undefined);
 assert.deepStrictEqual(started.brief.investigationCapabilities, {
   visual: { available: true, capability: 'inspect', channel: 'visual' },
@@ -569,7 +588,7 @@ assert.deepStrictEqual(invalidRecover.issues.map((issue) => issue.fieldPath).sor
 assert.deepStrictEqual(invalidRecover.allowedFields,
   ['operation', 'basedOnSceneId', 'reason', 'decision', 'externalAction']);
 assert.deepStrictEqual(invalidRecover.requiredFields,
-  ['operation', 'basedOnSceneId', 'reason']);
+  ['operation', 'reason']);
 assert.strictEqual(invalidRecover.example.operation, 'recover');
 
 const ambiguousTarget = run(started.execDir, {

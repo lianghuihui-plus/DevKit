@@ -341,7 +341,8 @@ const OPERATION_CONTRACT = deepFreeze({
         type: 'object', additionalProperties: false, required: ['summary'],
         properties: { summary: STRING, tool: STRING },
       },
-    }, ['operation', 'basedOnSceneId', 'reason']),
+    }, ['operation', 'reason']),
+    constraints: ['basedOnSceneId is required for App restart recovery; externalAction may be recorded before the first Scene exists.'],
     examples: [example('recover-app', {
       operation: 'recover', basedOnSceneId: 'scene-0001', reason: '目标 App 卡死且当前交互无法继续',
       decision: decision('恢复目标 App 后重新判断现场', ['E1']),

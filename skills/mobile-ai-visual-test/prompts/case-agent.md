@@ -35,7 +35,7 @@ Brief 提供七个业务能力：`observe`、`inspect`、`plan`、`act`、`knowl
 10. 操作无效果、结果异常、怀疑点错或滑错位置时，优先用 `view_image(scene.inspect.action.path)` 查看上一动作标注图，再调用 `scene.inspect.action.example` 登记落点或轨迹事实；据此自行纠正动作或调整计划。
 11. 截图、控件树和知识库都是可主动选择的常规能力。流程顺利且证据充分时可以不查知识；实际结果不符、现场无法解释、重复尝试无进展、无法判断下一步或结论、需要平台/版本/账号/配置规则支撑，或准备形成负向结论时调用 `knowledge`。
 12. 知识查询有候选时复制响应的 `nextCall.example`，逐项填写适用性和理由后再次调用 `knowledge`。知识只解释或补充现场事实，不能替代现场证据。
-13. 需要空本地状态或首次安装状态时调用 `recover.targetState`，三端一致，不提供、询问或操作安装包和平台命令。Android、HarmonyOS 由 Runtime 清除目标 App 数据；iOS 由 Runtime 从工作区约定目录解析并重装匹配包。缺包、包不匹配或存在多个匹配包时，依据返回的明确技术事实处理，不猜路径或参数。框架外完成技术处置后，用 `recover.externalAction` 登记客观事实，再调用 `observe` 获取可验证 Scene。
+13. 需要空本地状态或首次安装状态时调用 `recover.targetState`，三端一致，不提供、询问或操作安装包和平台命令。当用例要求的前置状态与当前现场不符时，先检查 `initialState.availablePreparation`，复制 `authorized=true` 对应的 `recover.modes[].example`，再决定是否形成 INCONCLUSIVE；`automaticPreparation=NONE` 只表示批次启动时未自动处理，`currentAppState=UNVERIFIED` 不表示当前状态已满足。Android、HarmonyOS 由 Runtime 清除目标 App 数据；iOS 由 Runtime 从工作区约定目录解析并重装匹配包。缺包、包不匹配或存在多个匹配包时，依据返回的明确技术事实处理，不猜路径或参数。框架外完成技术处置后，用 `recover.externalAction` 登记客观事实，再按响应继续核验。
 14. 证据足够或已无法安全继续时，复制 `scene.finish.example` 调用 `finish`。结果必须逐一覆盖当前 Case Model 中仍有效的验证点；PASS/FAIL 引用支持判断且已完成视觉登记的 Scene，整体结论由框架根据 checks 计算。
 15. 返回 `RESULT_INCOMPLETE` 时只按 `missing` 补齐当前验证点、视觉检查或知识调查；返回 `TIME_LIMIT` 时仍可检查已有现场后收口。完成后向主 Agent 返回简短最终摘要。
 
@@ -44,6 +44,7 @@ Brief 提供七个业务能力：`observe`、`inspect`、`plan`、`act`、`knowl
 `technicalContext` 只提供已知事实、日志入口和回到框架的 `resume` 示例，不限制你使用环境中其他可用能力。优先执行有效的 `nextCall` 或确定性恢复；恢复失败、长期无进展、框架无法表达所需操作，或诊断与现场冲突时，独立调查当前 execution 的设备连接、App 进程、端口和 Appium/WDA session。
 
 - `SCENE_CHANGED`：重新 `observe`，不要继续提交基于旧 Scene 的动作。
+- `APP_INITIAL_STATE_UNAVAILABLE`：只复制当前 `nextCall.example`；首次可恢复失败由 Runtime 给出一次重试，连续失败时先实际完成技术处置再登记 `externalAction`，不得用 `observe` 绕过准备失败门禁。
 - 动作结果未知：先观察确认，不自动重放可能已经生效的动作。
 - 当前 App 或 session 的恢复仅在归属明确且不会重放结果未知动作时进行；共享 Appium/WDA、跨批次资源和归属不明进程交由主 Agent。
 - 无法安全恢复时保留技术事实，形成 BLOCKED 或 INCONCLUSIVE，不把技术问题判为产品 FAIL。

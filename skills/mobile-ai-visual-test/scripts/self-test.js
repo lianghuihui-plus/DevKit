@@ -10,6 +10,7 @@ const suites = Object.freeze({
   platform: 'tests/platform-contract.test.js',
   platformRuntime: 'tests/platform-runtime.test.js',
   iosProbe: 'tests/ios-probe.test.js',
+  iosAppPreparation: 'tests/ios-app-preparation.test.js',
   iosSessionLifecycle: 'tests/ios-session-lifecycle.test.js',
   iosRuntimeOwnership: 'tests/ios-runtime-ownership.test.js',
   iosInput: 'tests/ios-input.test.js',

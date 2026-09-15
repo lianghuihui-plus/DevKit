@@ -1,6 +1,7 @@
 'use strict';
 
 const { validateAgentJson } = require('../lib/agent-json-contract');
+const { initialStateStrategy } = require('../lib/app-provisioning');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
 const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'inspect', 'plan', 'act', 'knowledge', 'recover', 'finish']);
@@ -176,7 +177,67 @@ function projectPreviousAction(previousAction, caseModel) {
   };
 }
 
-function capabilityCards({ scene = null, caseModel = null } = {}) {
+const PREPARATION_TARGETS = Object.freeze([
+  { targetState: 'APP_LOCAL_STATE_EMPTY', meaning: '目标 App 本地状态为空' },
+  { targetState: 'FRESH_INSTALL', meaning: '目标 App 处于首次安装状态' },
+]);
+
+function projectInitialState(execution, preparation = null) {
+  const automaticTarget = execution?.initialStateRequirement?.targetState;
+  const allowedEffects = new Set(execution?.preparationPolicy?.allowedEffects || []);
+  return {
+    automaticPreparation: automaticTarget && automaticTarget !== 'KEEP_EXISTING'
+      ? automaticTarget : 'NONE',
+    currentAppState: preparation?.status === 'SATISFIED' && preparation.targetState
+      ? preparation.targetState : 'UNVERIFIED',
+    availablePreparation: PREPARATION_TARGETS.map(({ targetState, meaning }) => {
+      const strategy = initialStateStrategy(execution?.platform, targetState);
+      return {
+        targetState,
+        meaning,
+        authorized: strategy.requiredEffects.every((effect) => allowedEffects.has(effect)),
+        platformEffect: strategy.strategy === 'REINSTALL_APP'
+          ? '卸载并使用工作区冻结制品重装目标 App'
+          : '清除目标 App 数据并冷启动',
+      };
+    }),
+  };
+}
+
+function recoverModes(initialState = null) {
+  const available = new Map((initialState?.availablePreparation || [])
+    .map((item) => [item.targetState, item]));
+  const stateMode = (mode, targetState, useWhen, reason) => ({
+    mode,
+    useWhen,
+    authorized: available.get(targetState)?.authorized ?? null,
+    ...(available.get(targetState)?.platformEffect
+      ? { platformEffect: available.get(targetState).platformEffect } : {}),
+    example: { capability: 'recover', reason, targetState },
+  });
+  return [
+    stateMode('ESTABLISH_APP_LOCAL_STATE', 'APP_LOCAL_STATE_EMPTY',
+      '用例要求目标 App 不保留既有本地状态', '用例前置条件要求目标 App 本地状态为空'),
+    stateMode('ESTABLISH_FRESH_INSTALL', 'FRESH_INSTALL',
+      '用例要求首次安装或等价首次启动状态', '用例前置条件要求首次安装状态'),
+    {
+      mode: 'RESTART_APP',
+      useWhen: '目标 App 卡死、失去响应或需要冷启动恢复',
+      example: { capability: 'recover', reason: '目标 App 无法继续交互，需要冷启动恢复' },
+    },
+    {
+      mode: 'RECORD_EXTERNAL_ACTION',
+      useWhen: '框架外技术处置已经实际完成，需要登记客观事实',
+      example: {
+        capability: 'recover',
+        reason: '登记已完成的框架外技术处置',
+        externalAction: { summary: '说明已经实际完成的技术处置及结果', tool: '说明使用的工具' },
+      },
+    },
+  ];
+}
+
+function capabilityCards({ scene = null, caseModel = null, initialState = null } = {}) {
   const firstAction = projectActions(scene)[0]?.example || {
     capability: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] }, purpose: '点击截图中的目标', expectationRefs: [],
   };
@@ -204,7 +265,18 @@ function capabilityCards({ scene = null, caseModel = null } = {}) {
     },
     act: { useWhen: '当前 Scene 提供了可执行动作', required: ['actionRef', 'purpose'], optional: ['input', 'expectationRefs'], source: { actionRef: 'scene.actions[].actionRef', input: '对应 action 的 requiredInput/example' }, example: firstAction, returns: ['SCENE', 'SCENE_CHANGED'] },
     knowledge: { useWhen: '现场异常、无法解释、无法决定下一步，或负向结论需要知识支撑', required: ['query'], optional: ['expectationRefs'], source: { queryId: '知识查询响应的 nextCall.example' }, example: { capability: 'knowledge', query: '描述当前无法解释的问题', expectationRefs: [] }, returns: ['KNOWLEDGE', 'KNOWLEDGE_REVIEWED'] },
-    recover: { useWhen: '需要在已授权范围内建立初始 App 状态、冷启动恢复，或登记框架外技术处置', required: ['reason'], optional: ['targetState', 'externalAction'], source: {}, example: { capability: 'recover', reason: '目标 App 无法继续交互' }, returns: ['SCENE', 'RECOVERY_APPLIED', 'EXTERNAL_ACTION_RECORDED'] },
+    recover: {
+      useWhen: '需要建立用例前置 App 状态、冷启动恢复，或登记框架外技术处置；从 modes 选择对应的完整 example',
+      required: ['reason'],
+      optional: ['targetState', 'externalAction'],
+      source: {
+        targetState: 'initialState.availablePreparation 中 authorized=true 的 targetState',
+        externalAction: '仅登记已经实际完成的框架外技术处置',
+      },
+      example: { capability: 'recover', reason: '目标 App 无法继续交互，需要冷启动恢复' },
+      modes: recoverModes(initialState),
+      returns: ['SCENE', 'RECOVERY_APPLIED', 'EXTERNAL_ACTION_RECORDED'],
+    },
     finish: { useWhen: '已形成本次用例理解与计划，且证据足够形成结论或已无法安全继续', required: ['summary', 'checks'], optional: ['uncertainties'], source: { checks: '当前 Case Model 的 ACTIVE 验证点' }, example: finish, returns: ['COMPLETED', 'RESULT_INCOMPLETE'] },
   };
 }
@@ -257,6 +329,7 @@ module.exports = {
   actionRefFor,
   capabilityCards,
   finishTemplate,
+  projectInitialState,
   projectPreviousAction,
   projectActions,
   projectScene,

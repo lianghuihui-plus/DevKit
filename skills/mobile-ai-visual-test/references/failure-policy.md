@@ -15,7 +15,7 @@
 
 截图与控件树是并列证据。控件树为空、缺失或冲突时不得推断页面空白；系统权限弹窗、Toast、遮罩、浮层、键盘、长按过程、动画和纯视觉结果必须通过 `view_image` 检查并登记。最终 PASS/FAIL 引用的 Scene 必须有视觉检查记录。
 
-需要 App 初始状态时，Case Agent 只能请求 execution 已授权的准备策略；未授权时 Runtime 在调用清理命令前返回 `APP_INITIAL_STATE_UNAVAILABLE`。未知结果的清数据或重装不重放。
+需要 App 初始状态时，Case Agent 只能请求 execution 已授权的准备策略；未授权时 Runtime 在调用清理命令前返回 `APP_INITIAL_STATE_UNAVAILABLE`。iOS 的卸载与安装通过原生工具确认三态安装态，不用 WDA 运行态代替安装事实；失败后只按 `nextCall` 重试或登记已完成的外部处置，不能用 `observe` 绕过门禁。未知结果的清数据或重装不重放。
 
 单用例预算为 30 分钟。预算结束后 Runtime 停止新的设备动作，但允许 Case Agent 检查已有 Scene、查询知识并 finish。无人值守批次不等待账号、验证码或业务解释；单用例可收口时继续下一条，只有共享平台与批次级故障停止批次。
 

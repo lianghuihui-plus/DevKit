@@ -61,6 +61,7 @@ function buildCaseBrief(executionDir, execution, caseJson, sourceText, runtime, 
   const fullScene = store.readCurrentScene(executionDir) || scene;
   const agentContract = require('./agent-facing-contract');
   const caseModel = require('./case-model-service').current(executionDir);
+  const initialState = agentContract.projectInitialState(execution, preparation);
   return {
     case: {
       caseNo: caseJson.identity.caseNo || caseJson.identity.caseKey,
@@ -71,16 +72,12 @@ function buildCaseBrief(executionDir, execution, caseJson, sourceText, runtime, 
       platform: execution.platform,
       app: execution.targetBinding.appName || execution.targetBinding.appId,
     },
-    initialState: {
-      targetState: execution.initialStateRequirement.targetState,
-      status: execution.initialStateRequirement.targetState === 'KEEP_EXISTING'
-        ? 'SATISFIED' : preparation?.status || 'PENDING',
-    },
+    initialState,
     runtime: {
       interfaceKind: agentContract.AGENT_FACING_INTERFACE_KIND,
       command,
       requestPath,
-      capabilities: agentContract.capabilityCards({ scene: fullScene, caseModel }),
+      capabilities: agentContract.capabilityCards({ scene: fullScene, caseModel, initialState }),
       input: '每次调用都新建一个简化请求 JSON 到 requestPath，再原样执行 command；请求文件是一次性的，消费后删除。',
     },
     investigationCapabilities: {

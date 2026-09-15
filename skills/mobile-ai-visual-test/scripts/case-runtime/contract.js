@@ -217,6 +217,9 @@ function validateRuntimeRequest(value) {
   }
   if (operation === 'recover') {
     ensureString(value.reason, 'reason', 'CASE_RUNTIME_REQUEST_INVALID');
+    if (value.externalAction === undefined) {
+      ensureString(value.basedOnSceneId, 'basedOnSceneId', 'CASE_RUNTIME_REQUEST_INVALID');
+    }
     if (value.externalAction !== undefined) {
       const action = ensureObject(value.externalAction, 'externalAction', 'CASE_RUNTIME_REQUEST_INVALID');
       const unsupported = Object.keys(action).filter((field) => !['summary', 'tool'].includes(field));

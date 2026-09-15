@@ -175,9 +175,9 @@ technicalContext = scope + code + summary + logRefs + resourceFacts + resume
 
 ## 9. 初始状态与平台资源
 
-ExecutionRequest 的默认初始状态仍为 `KEEP_EXISTING`，因此不会主动清理；同时冻结仅限目标 App 的平台等价 preparation policy。Case Agent 根据原文和现场通过 `recover.targetState` 请求状态：Android、HarmonyOS 清数据，iOS 从 `app-packages/ios` 解析唯一匹配包并在事务中冻结后重装。包缺失、无效、身份不符或冲突均在卸载前以 `APP_INITIAL_STATE_UNAVAILABLE` 和具体诊断返回。
+ExecutionRequest 的默认初始状态仍为 `KEEP_EXISTING`，因此不会主动清理；同时冻结仅限目标 App 的平台等价 preparation policy。Case Agent 根据原文和现场通过 `recover.targetState` 请求状态：Android、HarmonyOS 清数据，iOS 从 `app-packages/ios` 解析唯一匹配包并在事务中冻结后重装。iOS 真机通过 `devicectl`、模拟器通过 `simctl` 查询三态安装事实，WDA `app_state` 不参与卸载和安装成功判定。包缺失、无效、身份不符或冲突均在卸载前以 `APP_INITIAL_STATE_UNAVAILABLE` 和具体诊断返回。
 
-App Provisioning 描述环境或准备事务实际使用的 App 来源，Bootstrap Policy 只描述显式批次级物理安装。任何实际重装都校验冻结制品及安装后 identity。未知结果的清数据、重装和动作均不重放。
+App Provisioning 描述环境或准备事务实际使用的 App 来源，Bootstrap Policy 只描述显式批次级物理安装。任何实际重装都校验冻结制品及安装后 identity。明确失败允许一次受控重试；连续失败要求 Agent 先实际处置并用 `recover.externalAction` 登记，随后重试原目标状态，成功后才解除 preparation 门禁。未知结果的清数据、重装和动作均不重放。
 
 iOS Appium Session 是 Batch runtime 的可替换资源，Execution 只保存 `sessionRef`。observe 对明确 `invalid session id` 可在统一锁内重建并重试一次；action 发出后的 Session 错误只记录结果未知。Runtime 只回收身份、进程组和终态批次归属都可验证的托管资源。
 
