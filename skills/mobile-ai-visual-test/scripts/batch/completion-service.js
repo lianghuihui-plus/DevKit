@@ -73,7 +73,22 @@ function commitCurrentCase(options) {
       if (state.currentIndex !== draft.caseIndex) throw contractError('BATCH_CASE_COMMIT_CORRUPTED', 'currentIndex changed before case commit');
       Object.assign(item, { status: 'COMPLETED', verdict: completion.verdict, executionStatus: completion.executionStatus, endedAt: execution.endedAt });
       state.currentIndex = draft.caseIndex + 1;
-      if (state.currentIndex >= state.cases.length) {
+      if (state.cancellationRequested) {
+        for (const pending of state.cases.filter((entry) => entry.status === 'PENDING')) pending.status = 'SKIPPED';
+        state.status = 'CANCELLING';
+        state.reason = state.cancellationRequested.reason;
+        state.stoppedAt = state.stoppedAt || state.cancellationRequested.requestedAt;
+        state.cleanupDeadlineAt = state.cleanupDeadlineAt
+          || new Date(Date.parse(state.stoppedAt) + 120000).toISOString();
+        state.finalization = {
+          cause: 'CANCELLED',
+          executionsSettled: false,
+          casesCommitted: false,
+          executionTerminated: true,
+          platformReleased: false,
+        };
+        delete state.cancellationRequested;
+      } else if (state.currentIndex >= state.cases.length) {
         state.status = 'FINALIZING';
         state.finalization = { cause: 'COMPLETED', executionsSettled: false, casesCommitted: true, platformReleased: false };
       }

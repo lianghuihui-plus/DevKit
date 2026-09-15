@@ -26,7 +26,7 @@ function buildCapabilities(scene, platform) {
     if (element.clickable || element.checkable || element.editable) kinds.push('tap');
     if (element.checkable) kinds.push('toggle');
     if (element.clickable) kinds.push('doubleTap', 'longPress');
-    if (element.editable && platform === 'harmony') kinds.push('inputText');
+    if (element.editable) kinds.push('inputText');
     for (const kind of kinds) {
       values.push({
         id: capabilityId(scene.sceneId, kind, element.id),
@@ -46,7 +46,11 @@ function buildCapabilities(scene, platform) {
     && entry.trackingStatus === 'TRACKING' && Array.isArray(entry.bounds));
   if (horizontalContext) globals.splice(2, 0, ['swipeLeft', '在已识别横向容器内向左滚动'], ['swipeRight', '在已识别横向容器内向右滚动']);
   if (platform === 'ios' && scene.signals?.keyboard?.shown) globals.push(['dismissKeyboard', '收起键盘']);
-  if (platform !== 'harmony' && scene.signals?.focusedElement) globals.push(['inputText', '向当前焦点输入文本']);
+  const hasTargetedInput = values.some((capability) => capability.kind === 'inputText');
+  if (platform !== 'harmony' && !hasTargetedInput
+    && (scene.signals?.focusedElement || scene.signals?.keyboard?.shown)) {
+    globals.push(['inputText', '向当前焦点输入文本']);
+  }
   for (const [kind, label] of globals) {
     values.push({ id: capabilityId(scene.sceneId, kind), kind, label, ...(kind === 'inputText' ? { input: 'text' } : {}) });
   }
@@ -86,10 +90,6 @@ function elementAction(scene, capability, input, intent, platform) {
   if (capability.kind === 'inputText') {
     base.text = String(input?.text ?? input ?? '');
     base.mode = input?.mode || 'replace';
-    if (platform !== 'harmony') {
-      delete base.x; delete base.y; delete base.coordinateSource;
-      delete base.coordinateArtifactRef; delete base.coordinateEvidence; delete base.targetBounds;
-    }
   }
   return base;
 }

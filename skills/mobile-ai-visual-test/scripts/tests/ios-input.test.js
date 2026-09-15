@@ -93,6 +93,38 @@ async function main() {
     appium.request = originalRequest;
   }
 
+  const targetSelectionCalls = [];
+  appium.request = async (server, method, endpoint, body) => {
+    targetSelectionCalls.push({ method, endpoint, body });
+    if (endpoint.endsWith('/element/active')) return { value: null };
+    if (method === 'POST' && endpoint.endsWith('/elements')) {
+      if (body.value === 'XCUIElementTypeTextField') {
+        return { value: [{ [ELEMENT_KEY]: 'account-field' }, { [ELEMENT_KEY]: 'nickname-field' }] };
+      }
+      return { value: [] };
+    }
+    if (endpoint.endsWith('/rect')) {
+      return endpoint.includes('/account-field/')
+        ? { value: { x: 100, y: 180, width: 400, height: 100 } }
+        : { value: { x: 100, y: 360, width: 400, height: 100 } };
+    }
+    if (endpoint.includes('/attribute/')) {
+      const name = endpoint.slice(endpoint.lastIndexOf('/') + 1);
+      if (name === 'enabled' || name === 'visible') return { value: true };
+      if (name === 'focused') return { value: false };
+    }
+    throw new Error(`unexpected Appium request: ${method} ${endpoint}`);
+  };
+  try {
+    const editable = await findEditableElement(target, 'session-2', { x: 300, y: 230 });
+    assert.deepStrictEqual(editable, {
+      elementId: 'account-field', className: 'XCUIElementTypeTextField', selection: 'target-point',
+    });
+    assert.strictEqual(targetSelectionCalls.filter((call) => call.endpoint.endsWith('/rect')).length, 2);
+  } finally {
+    appium.request = originalRequest;
+  }
+
   console.log('ios-input passed');
 }
 

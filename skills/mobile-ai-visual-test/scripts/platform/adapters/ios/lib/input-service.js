@@ -23,7 +23,26 @@ async function getElementAttribute(target, sessionId, elementId, name) {
   }
 }
 
-async function findEditableElement(target, sessionId) {
+async function getElementRect(target, sessionId, elementId) {
+  try {
+    const response = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/element/${elementId}/rect`);
+    const value = response.value || {};
+    const rect = {
+      x: Number(value.x), y: Number(value.y), width: Number(value.width), height: Number(value.height),
+    };
+    return Object.values(rect).every(Number.isFinite) ? rect : null;
+  } catch {
+    return null;
+  }
+}
+
+function containsPoint(rect, point) {
+  return rect && point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))
+    && Number(point.x) >= rect.x && Number(point.x) <= rect.x + rect.width
+    && Number(point.y) >= rect.y && Number(point.y) <= rect.y + rect.height;
+}
+
+async function findEditableElement(target, sessionId, intendedPoint) {
   let activeElementId = null;
   try {
     const active = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/element/active`);
@@ -43,10 +62,18 @@ async function findEditableElement(target, sessionId) {
         focused: await getElementAttribute(target, sessionId, elementId, 'focused'),
         visible: await getElementAttribute(target, sessionId, elementId, 'visible'),
         enabled: await getElementAttribute(target, sessionId, elementId, 'enabled'),
+        rect: intendedPoint ? await getElementRect(target, sessionId, elementId) : null,
       });
     }
   }
   if (!candidates.length) throw new Error('No editable XCUI element found. Tap/focus an input field before inputText.');
+  if (intendedPoint) {
+    const atTarget = candidates.filter((item) => containsPoint(item.rect, intendedPoint)
+      && !falseyAttribute(item.visible) && !falseyAttribute(item.enabled));
+    if (atTarget.length === 1) {
+      return { elementId: atTarget[0].elementId, className: atTarget[0].className, selection: 'target-point' };
+    }
+  }
   const active = candidates.filter((item) => item.elementId === activeElementId && !falseyAttribute(item.enabled));
   if (active.length === 1) return { elementId: active[0].elementId, className: active[0].className, selection: 'active-element' };
   const focused = candidates.filter((item) => truthyAttribute(item.focused) && !falseyAttribute(item.enabled));

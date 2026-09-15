@@ -104,6 +104,9 @@ assert.match(read('prompts/case-agent.md'), /recover\.targetState.*三端一致/
 assert.match(read('prompts/case-agent.md'), /不.*提供.*安装包/);
 assert.match(read('prompts/case-agent.md'), /前置状态.*当前现场不符.*availablePreparation.*INCONCLUSIVE/);
 assert.match(read('prompts/case-agent.md'), /APP_INITIAL_STATE_UNAVAILABLE.*nextCall.*不得.*observe/);
+assert.match(read('prompts/case-agent.md'), /目标级.*inputText.*优先/);
+assert.match(read('prompts/case-agent.md'), /不要.*逐个点击软键盘/);
+assert.match(read('SKILL.md'), /目标级.*inputText/);
 assert.match(read('references/failure-policy.md'), /APP_INITIAL_STATE_UNAVAILABLE.*原生.*安装态.*nextCall/);
 assert.strictEqual(read('SKILL.md').includes('不能自己调用 Appium、WDA、xcodebuild 或读取内部日志'), false);
 

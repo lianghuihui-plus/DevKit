@@ -131,5 +131,41 @@ assert.strictEqual(cancelBatch({
   implementationSha: contract.implementationSha,
 }).idempotent, true);
 
+const deferredRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-batch-cancel-finalized-'));
+createTestWorkspace(deferredRoot);
+const deferredCaseText = '取消前已完成但尚未提交的用例。';
+const deferredCaseKey = `ck-${crypto.createHash('sha256').update(deferredCaseText).digest('hex').slice(0, 12)}`;
+const deferredCaseJson = createCaseContract({ caseKey: deferredCaseKey, title: '取消前完成测试', sourceText: deferredCaseText, importPath: '/fixture/deferred-cancel.txt' });
+const deferredCaseDir = path.join(deferredRoot, 'cases', `deferred__${deferredCaseKey}`);
+fs.mkdirSync(deferredCaseDir, { recursive: true });
+fs.writeFileSync(path.join(deferredCaseDir, 'source.md'), deferredCaseText);
+writeJsonAtomic(path.join(deferredCaseDir, 'case.json'), deferredCaseJson);
+const deferredBatchId = 'batch-cancel-finalized';
+const deferredBinding = { platform: 'harmony', deviceId: 'deferred-device', appId: 'com.example.deferred', appName: 'Deferred', entry: 'EntryAbility' };
+createTestExecutionRequest(deferredRoot, deferredBatchId, deferredBinding, [{ caseKey: deferredCaseKey, caseDir: deferredCaseDir }]);
+initializeBatch({ workspaceRoot: deferredRoot, batchId: deferredBatchId, implementationSha: contract.implementationSha });
+bootstrapBatch({ workspaceRoot: deferredRoot, batchId: deferredBatchId, implementationSha: contract.implementationSha, adapter });
+const deferredStarted = startCurrentCase({ workspaceRoot: deferredRoot, batchId: deferredBatchId, implementationSha: contract.implementationSha });
+const deferredExecDir = path.join(deferredCaseDir, 'platforms', deferredBinding.platform, 'executions', deferredStarted.executionId);
+const deferredExecution = JSON.parse(fs.readFileSync(path.join(deferredExecDir, 'execution.json'), 'utf8'));
+writeJsonAtomic(path.join(deferredExecDir, 'execution.json'), {
+  ...deferredExecution,
+  status: 'FINISHED', lifecycle: 'FINALIZED', finalized: true, executionStatus: 'COMPLETED',
+  endedAt: '2026-09-15T10:00:00.000Z',
+});
+writeJsonAtomic(path.join(deferredExecDir, 'result.json'), { verdict: 'PASS', summary: '已完成结果' });
+const deferredCancel = cancelBatch({
+  workspaceRoot: deferredRoot,
+  batchId: deferredBatchId,
+  ...upgradedProtocol,
+  reason: '完成当前用例后取消剩余用例',
+});
+assert.strictEqual(deferredCancel.action, 'CANCELLATION_PENDING_COMMIT');
+assert.strictEqual(deferredCancel.state.status, 'RUNNING');
+assert.strictEqual(deferredCancel.state.cases[0].status, 'RUNNING');
+assert.strictEqual(deferredCancel.state.cancellationRequested.reason, '完成当前用例后取消剩余用例');
+assert.strictEqual(reconcileBatch({ workspaceRoot: deferredRoot, batchId: deferredBatchId, implementationSha: contract.implementationSha, adapter }).action, 'COMMIT_CASE');
+fs.rmSync(deferredRoot, { recursive: true, force: true });
+
 fs.rmSync(root, { recursive: true, force: true });
 console.log('batch cancellation passed');

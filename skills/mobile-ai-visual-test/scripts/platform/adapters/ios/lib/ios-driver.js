@@ -58,7 +58,7 @@ const ATOM_OPTIONS = Object.freeze({
   'double-tap': ['--x', '--y', '--interval-ms', '--coordinate-source'],
   'long-press': ['--x', '--y', '--duration-ms', '--coordinate-source', '--capture-out', '--capture-ref', '--capture-at-ms'],
   'swipe': ['--from-x', '--from-y', '--to-x', '--to-y', '--velocity', '--coordinate-source'],
-  'input-text': ['--x', '--y', '--text', '--mode'],
+  'input-text': ['--x', '--y', '--text', '--mode', '--coordinate-source'],
   'dismiss-keyboard': [],
   'keyevent': ['--key'],
 });
@@ -744,9 +744,6 @@ async function runAtom(atom, argv) {
   const sessionOptions = { autoLaunch: false };
   const swipeExecution = atom === 'swipe' ? resolveSwipeExecution(rest) : null;
   const longPressExecution = atom === 'long-press' ? resolveLongPressExecution(rest) : null;
-  if (atom === 'input-text' && (optionValue(rest, '--x') || optionValue(rest, '--y'))) {
-    throw new Error('iOS inputText 只向已聚焦输入框输入文本，不接受 --x/--y；请先调用 tap 聚焦目标输入框。');
-  }
   if (fakeEnabled()) {
     if (['screenshot', 'dump-tree'].includes(atom)) {
       const out = optionValue(rest, '--out');
@@ -775,7 +772,7 @@ async function runAtom(atom, argv) {
     const fakeInputExpected = fakeInputMode === 'append' ? `${process.env.MAVT_IOS_FAKE_INPUT_VALUE || ''}${fakeInputText}` : fakeInputText;
     const fakeCoordinateSource = optionValue(rest, '--coordinate-source', 'layout');
     const fakeViewport = { width: 393, height: 852 };
-    const fakePoint = ['tap', 'double-tap', 'long-press'].includes(atom)
+    const fakePoint = ['tap', 'double-tap', 'long-press', 'input-text'].includes(atom) && optionValue(rest, '--x') !== ''
       ? {
         x: Number(optionValue(rest, '--x')),
         y: Number(optionValue(rest, '--y')),
@@ -793,6 +790,7 @@ async function runAtom(atom, argv) {
     writeJson(actionResult(atom === 'launch-app' ? 'launchApp' : atom === 'restart-app' ? 'restartApp' : atom === 'double-tap' ? 'doubleTap' : atom === 'long-press' ? 'longPress' : atom === 'input-text' ? 'inputText' : atom === 'dismiss-keyboard' ? 'dismissKeyboard' : atom === 'keyevent' ? optionValue(rest, '--key', 'keyevent') : atom, {
       inputMethod: atom === 'input-text' ? (fakeInputMode === 'replace' ? 'wda-clear-set-value' : 'wda-read-compose-set-value') : undefined,
       inputMode: fakeInputMode,
+      inputTarget: atom === 'input-text' ? (fakePoint ? 'target-point' : 'current-focus') : undefined,
       inputEffect: atom === 'input-text' ? { status: 'VERIFIED', expectedText: fakeInputExpected, actualText: fakeInputExpected } : undefined,
       restart: atom === 'restart-app' ? true : undefined,
       coldStartVerified: atom === 'restart-app' ? true : undefined,
@@ -984,13 +982,26 @@ async function runAtom(atom, argv) {
   if (atom === 'input-text') {
     const text = optionValue(rest, '--text');
     const mode = optionValue(rest, '--mode', 'replace');
+    const x = optionValue(rest, '--x');
+    const y = optionValue(rest, '--y');
+    const coordinateSource = optionValue(rest, '--coordinate-source', 'layout');
     if (!text) throw new Error('inputText 需要 --text');
     if (!['replace', 'append'].includes(mode)) throw new Error('inputText --mode 仅支持 replace/append');
+    if ((x === '') !== (y === '')) throw new Error('inputText 的 --x 和 --y 必须成对提供');
     let event;
     try {
       await appium.withSession(target, async ({ sessionId }) => {
-        const editable = await findEditableElement(target, sessionId);
-        event = actionResult('inputText', await inputTextWithFallback(target, sessionId, editable, text, mode));
+        let executed;
+        if (x !== '') {
+          executed = await executablePoint(target, sessionId, { x, y }, coordinateSource);
+          await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/actions`, pointerAction(executed.x, executed.y));
+          await appium.request(target.appiumServer, 'DELETE', `/session/${sessionId}/actions`, {});
+        }
+        const editable = await findEditableElement(target, sessionId, executed);
+        event = actionResult('inputText', {
+          ...await inputTextWithFallback(target, sessionId, editable, text, mode),
+          ...(executed ? { executedPoint: executed } : {}),
+        });
       }, sessionOptions);
     } catch (error) {
       event = actionResult('inputText', {

@@ -132,7 +132,7 @@ function describeActionConstraints(platform, scope = 'case-business') {
       defaultMode: INPUT_TEXT_DEFAULT_MODE,
       ...(normalizedPlatform === 'harmony'
         ? { coordinates: 'required' }
-        : { coordinates: 'forbidden', focusedFieldRequired: true }),
+        : { coordinates: 'optional-target', focusedFieldFallback: true }),
     },
     longPress: {
       durationMs: 'required-positive-integer',
@@ -224,9 +224,6 @@ function validateActionExecution(action, options = {}) {
   if (action.type === 'inputText') {
     if (platform === 'harmony' && (!finiteNumber(action.x) || !finiteNumber(action.y))) {
       fail(context, 'HarmonyOS inputText requires executable x and y coordinates', { field: 'x,y' });
-    }
-    if (['android', 'ios'].includes(platform) && (action.x !== undefined || action.y !== undefined)) {
-      fail(context, `${platform} inputText targets the focused field and does not accept x or y`, { field: 'x,y', received: [action.x, action.y] });
     }
   }
   const hasCoordinates = action.type === 'swipe'

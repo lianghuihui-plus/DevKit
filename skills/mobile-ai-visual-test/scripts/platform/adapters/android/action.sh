@@ -95,6 +95,19 @@ run_atom() {
   normalize_action "$output" "$action"
 }
 
+run_targeted_input() {
+  "$atoms_dir/tap.sh" "${device_args[@]}" --x "$x" --y "$y" >/dev/null
+  local output
+  output="$("$atoms_dir/input-text.sh" "${device_args[@]}" --text "$text" --mode "$mode")"
+  output="$(node -e '
+const event = JSON.parse(process.argv[1]);
+event.executedPoint = { x: Number(process.argv[2]), y: Number(process.argv[3]) };
+event.inputTarget = "target-point";
+console.log(JSON.stringify(event));
+' "$output" "$x" "$y")"
+  normalize_action "$output" "$type"
+}
+
 attach_during_capture() {
   node -e '
 const event = JSON.parse(process.argv[1]);
@@ -151,11 +164,11 @@ case "$type" in
     fi
     ;;
   inputText)
-    if [[ -n "$x" || -n "$y" ]]; then
-      echo "Android inputText 只向当前焦点输入文本，不接受 --x/--y；请先调用 tap 聚焦输入框，再调用 inputText。" >&2
-      exit 2
+    if [[ -n "$x" && -n "$y" ]]; then
+      run_targeted_input
+    else
+      run_atom "$type" "$atoms_dir/input-text.sh" "${device_args[@]}" --text "$text" --mode "$mode"
     fi
-    run_atom "$type" "$atoms_dir/input-text.sh" "${device_args[@]}" --text "$text" --mode "$mode"
     ;;
   swipe)
     swipe_duration_ms="$(node -e '

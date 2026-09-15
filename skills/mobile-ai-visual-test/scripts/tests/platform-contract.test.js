@@ -125,6 +125,39 @@ assert.ok(harmonyLongPress.timing.completionBarrierWaitMs >= 0);
 assert.ok(harmonyLongPress.timing.adapterElapsedMs >= 25);
 assert.strictEqual(harmonyLongPress.deviceExecution.verification, 'REQUEST_ECHO');
 assert.deepStrictEqual(harmonyLongPress.deviceExecution.dispatchedPoint, { x: 120, y: 240 });
+
+const fakeAdbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-android-targeted-input-'));
+const fakeAdbLog = path.join(fakeAdbDir, 'adb.log');
+const fakeAdb = path.join(fakeAdbDir, 'adb');
+fs.writeFileSync(fakeAdb, `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$MAVT_FAKE_ADB_LOG"
+case "$*" in
+  *"shell pm path mavt.android.ime"*) echo "package:/data/app/mavt.android.ime/base.apk" ;;
+  *"shell ime list -s"*) echo "mavt.android.ime/.MavtInputMethodService" ;;
+  *"shell settings get secure default_input_method"*) echo "com.example/.OriginalIme" ;;
+  *"shell dumpsys input_method"*) echo "editorInfo: inputType=1 fieldId (viewId)=42" ;;
+  *"shell am broadcast"*) echo "Broadcast completed: result=-1" ;;
+esac
+`);
+fs.chmodSync(fakeAdb, 0o755);
+const androidTargetedInput = JSON.parse(run('./scripts/platform/adapters/android/action.sh', [
+  '--device', 'android-device', '--app', 'com.example.android', '--type', 'inputText',
+  '--x', '120', '--y', '240', '--text', 'account-value', '--mode', 'replace',
+], { env: { ...process.env, PATH: `${fakeAdbDir}:${process.env.PATH}`, MAVT_FAKE_ADB_LOG: fakeAdbLog } }));
+assert.strictEqual(androidTargetedInput.action, 'inputText');
+assert.strictEqual(androidTargetedInput.inputTarget, 'target-point');
+assert.deepStrictEqual(androidTargetedInput.deviceExecution.dispatchedPoint, { x: 120, y: 240 });
+const androidInputCommands = fs.readFileSync(fakeAdbLog, 'utf8').trim().split('\n');
+const androidTapIndex = androidInputCommands.findIndex((line) => line.includes('shell input tap 120 240'));
+const androidBroadcastIndex = androidInputCommands.findIndex((line) => line.includes('shell am broadcast'));
+assert.ok(androidTapIndex >= 0 && androidBroadcastIndex > androidTapIndex, 'Android target input should focus before text dispatch');
+const androidFocusedInput = JSON.parse(run('./scripts/platform/adapters/android/action.sh', [
+  '--device', 'android-device', '--app', 'com.example.android', '--type', 'inputText',
+  '--text', 'focused-value', '--mode', 'replace',
+], { env: { ...process.env, PATH: `${fakeAdbDir}:${process.env.PATH}`, MAVT_FAKE_ADB_LOG: fakeAdbLog } }));
+assert.strictEqual(androidFocusedInput.inputTarget, 'current-focus');
+assert.strictEqual(androidFocusedInput.deviceExecution.dispatchedPoint, undefined);
+fs.rmSync(fakeAdbDir, { recursive: true, force: true });
 run('./scripts/platform/adapters/harmony/atoms/long-press.sh', [
   '--device', 'harmony-device', '--x', '120', '--y', '240', '--duration-ms', '1025',
 ], { env: { ...process.env, PATH: `${fakeHdcDir}:${process.env.PATH}`, MAVT_HDC_ARGS_OUT: fakeHdcLog } });
@@ -154,8 +187,17 @@ assert.strictEqual(harmonyExcessiveDuration.status, 2);
 assert.match(harmonyExcessiveDuration.stderr, /61000/);
 
 assert.strictEqual(describeActionConstraints('harmony').inputText.coordinates, 'required');
-assert.strictEqual(describeActionConstraints('android').inputText.coordinates, 'forbidden');
-assert.strictEqual(describeActionConstraints('ios').inputText.focusedFieldRequired, true);
+assert.strictEqual(describeActionConstraints('android').inputText.coordinates, 'optional-target');
+assert.strictEqual(describeActionConstraints('ios').inputText.coordinates, 'optional-target');
+for (const platform of ['android', 'ios']) {
+  assert.strictEqual(validateActionExecution({
+    type: 'inputText', x: 120, y: 240, text: 'account-value', mode: 'replace',
+    coordinateSource: 'layout', coordinateEvidence: '控件树 bounds', coordinateArtifactRef: 'layouts/current.xml',
+  }, { platform, scope: 'case-business' }).x, 120);
+  assert.strictEqual(validateActionExecution({
+    type: 'inputText', text: 'focused-value', mode: 'replace',
+  }, { platform, scope: 'case-business' }).text, 'focused-value');
+}
 assert.ok(describeActionConstraints('ios').actionTypes.includes('dismissKeyboard'));
 assert.ok(!describeActionConstraints('android').actionTypes.includes('dismissKeyboard'));
 assert.strictEqual(validateActionExecution({
@@ -353,6 +395,24 @@ assert.deepStrictEqual(iosLayoutTap.deviceExecution.dispatchedPoint, {
   y: 240,
   viewport: { width: 393, height: 852 },
 });
+
+const iosTargetedInput = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
+  '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'inputText',
+  '--x', '120', '--y', '240', '--text', 'account-value', '--mode', 'replace',
+], { env: { ...process.env, MAVT_IOS_FAKE: '1' } }));
+assert.strictEqual(iosTargetedInput.action, 'inputText');
+assert.strictEqual(iosTargetedInput.inputTarget, 'target-point');
+assert.deepStrictEqual(iosTargetedInput.deviceExecution.dispatchedPoint, {
+  x: 120,
+  y: 240,
+  viewport: { width: 393, height: 852 },
+});
+const iosFocusedInput = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
+  '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'inputText',
+  '--text', 'focused-value', '--mode', 'replace',
+], { env: { ...process.env, MAVT_IOS_FAKE: '1' } }));
+assert.strictEqual(iosFocusedInput.inputTarget, 'current-focus');
+assert.strictEqual(iosFocusedInput.deviceExecution.dispatchedPoint, undefined);
 
 const iosDoubleTap = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
   '--device', 'ios-device', '--app', 'com.example.ios', '--type', 'doubleTap',

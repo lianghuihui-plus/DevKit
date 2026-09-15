@@ -59,8 +59,9 @@ function recordFinalizationStep(options) {
   }, { now: options.now });
 }
 
-function archiveBatchDrafts(paths) {
-  const drafts = [paths.bootstrapDraft, paths.caseStartDraft, paths.caseCommitDraft].filter((file) => fs.existsSync(file));
+function archiveBatchDrafts(paths, options = {}) {
+  const drafts = [paths.bootstrapDraft, paths.caseStartDraft, ...(options.preserveCaseCommit ? [] : [paths.caseCommitDraft])]
+    .filter((file) => fs.existsSync(file));
   if (!drafts.length) return [];
   const target = path.join(paths.batchDir, 'cancelled-transactions');
   fs.mkdirSync(target, { recursive: true });
@@ -95,7 +96,29 @@ function cancelBatch(options) {
       const execution = execDir ? readJson(path.join(execDir, 'execution.json'), null) : null;
       const result = execDir ? readJson(path.join(execDir, 'result.json'), null) : null;
       if (execution?.finalized === true && execution.status !== 'CANCELLED' && result?.verdict) {
-        Object.assign(item, { status: 'COMPLETED', verdict: result.verdict, executionStatus: execution.executionStatus || 'COMPLETED', endedAt: execution.endedAt });
+        if (state.cancellationRequested) {
+          return { action: 'CANCELLATION_PENDING_COMMIT', state, cancelledExecutions: [], nextAction: 'COMMIT_CASE', idempotent: true };
+        }
+        state.cancellationRequested = {
+          reason,
+          requestedAt: options.now || new Date().toISOString(),
+        };
+        state.reason = reason;
+        state.stoppedAt = state.stoppedAt || options.now || new Date().toISOString();
+        state.cleanupDeadlineAt = new Date(Date.parse(state.stoppedAt) + 120000).toISOString();
+        const archivedDrafts = archiveBatchDrafts(loaded.paths, { preserveCaseCommit: true });
+        saveBatch(loaded.paths, state, options.now);
+        appendJsonl(loaded.paths.events, {
+          schemaVersion: 1,
+          eventId: `batch-cancel-requested-${state.batchId}`,
+          time: options.now || new Date().toISOString(),
+          type: 'batchCancellationRequested',
+          reason,
+          cancelledExecutions: [],
+          archivedDrafts,
+          deferredCaseCommit: true,
+        });
+        return { action: 'CANCELLATION_PENDING_COMMIT', state, cancelledExecutions: [], nextAction: 'COMMIT_CASE' };
       } else {
         Object.assign(item, { status: 'CANCELLED', executionStatus: 'CANCELLED', endedAt: options.now || new Date().toISOString() });
       }

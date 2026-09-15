@@ -82,7 +82,7 @@ function localIso(date = new Date()) {
   const pad = (value, size = 2) => String(value).padStart(size, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
-const event = {schemaVersion:1,type:"actionResult",platform:"android",time:localIso(),action:"inputText",ok:true,inputMethod:process.argv[1],inputMode:process.argv[3],inputEffect:{status:"UNVERIFIABLE",expectedText:process.argv[4],reason:"Android input connection does not expose a stable post-write value"}};
+const event = {schemaVersion:1,type:"actionResult",platform:"android",time:localIso(),action:"inputText",ok:true,inputMethod:process.argv[1],inputMode:process.argv[3],inputTarget:"current-focus",inputEffect:{status:"UNVERIFIABLE",expectedText:process.argv[4],reason:"Android input connection does not expose a stable post-write value"}};
 if (preInputState) {
   event.preInputState = preInputState;
   event.inputStateUsage = "diagnostic_only";

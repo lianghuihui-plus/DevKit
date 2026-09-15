@@ -76,6 +76,7 @@ iOS 真机用 `devicectl`、模拟器用 `simctl` 核验安装事实，不使用
 - 主 Agent 不向 Case Agent 转述原文、截图路径、控件树、知识内容或自己的业务判断。
 - Handoff 只绑定唯一 execution、协议摘要和写入所有权，并直接向 Case Agent 提供原始用例、当前 Scene、已有 Case Model 及预绑定 Runtime Client。
 - Case Agent 自己生成和修订本次用例理解、验证点与计划；修订只要求记录理由，不由主 Agent 审批。
+- 三端输入由 Case Runtime 统一发布目标级 `inputText`，Case Agent 复制 Scene 动作即可完成目标聚焦和整段输入；无目标焦点输入只是 Scene 无法识别输入控件时的兜底。
 - Handoff 与职责隔离不是操作系统安全沙箱。正常流程优先使用框架；技术异常时两个 Agent 都可在各自职责和授权范围内独立调查，随后回到框架核验与持久化。
 
 固定委托文本由 Facade 响应提供，保持独立角色语义：“你是独立 Case Agent。执行给定的 `loaderCommand`，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。”

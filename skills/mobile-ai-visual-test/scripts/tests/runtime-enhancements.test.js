@@ -84,6 +84,39 @@ const scene = {
 };
 scene.capabilities = buildCapabilities(scene, 'harmony');
 assert.strictEqual(scene.capabilities.some((item) => ['swipeLeft', 'swipeRight'].includes(item.kind)), false);
+const editableScene = {
+  ...scene,
+  sceneId: 'scene-editable-input',
+  signals: { keyboard: { shown: true }, focusedElement: null },
+  elements: [{
+    id: 'account-field', text: '账号', role: 'XCUIElementTypeTextField', bounds: [100, 200, 500, 280],
+    clickable: false, checkable: false, editable: true, enabled: true, visible: true,
+  }],
+};
+for (const platform of ['android', 'ios', 'harmony']) {
+  const capabilities = buildCapabilities(editableScene, platform);
+  const inputCapabilities = capabilities.filter((item) => item.kind === 'inputText');
+  assert.strictEqual(inputCapabilities.length, 1, `${platform} should expose one target-scoped inputText capability`);
+  assert.strictEqual(inputCapabilities[0].target, 'account-field');
+  const inputAction = resolveAction({ ...editableScene, capabilities }, {
+    capabilityId: inputCapabilities[0].id,
+    input: { text: 'account-value', mode: 'replace' },
+    decision: { purpose: '输入账号', expectationRefs: [] },
+  }, platform).action;
+  assert.deepStrictEqual([inputAction.x, inputAction.y], [300, 240]);
+  assert.strictEqual(inputAction.coordinateSource, 'layout');
+}
+const keyboardOnlyScene = {
+  ...scene,
+  sceneId: 'scene-keyboard-only',
+  signals: { keyboard: { shown: true }, focusedElement: null },
+  elements: [],
+};
+for (const platform of ['android', 'ios']) {
+  const inputCapabilities = buildCapabilities(keyboardOnlyScene, platform).filter((item) => item.kind === 'inputText');
+  assert.strictEqual(inputCapabilities.length, 1, `${platform} should expose one focused-field fallback`);
+  assert.strictEqual(inputCapabilities[0].target, undefined);
+}
 const horizontalScene = {
   ...scene,
   sceneId: 'scene-horizontal',
