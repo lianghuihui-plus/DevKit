@@ -40,9 +40,11 @@ function buildCapabilities(scene, platform) {
   }
   const globals = [
     ['swipeUp', '向上滚动'], ['swipeDown', '向下滚动'],
-    ['swipeLeft', '向左滚动'], ['swipeRight', '向右滚动'],
     ['back', '返回上一页'], ['home', '返回系统桌面'], ['wait', '等待页面稳定'],
   ];
+  const horizontalContext = (scene.scrollContexts || []).find((entry) => entry.axis === 'HORIZONTAL'
+    && entry.trackingStatus === 'TRACKING' && Array.isArray(entry.bounds));
+  if (horizontalContext) globals.splice(2, 0, ['swipeLeft', '在已识别横向容器内向左滚动'], ['swipeRight', '在已识别横向容器内向右滚动']);
   if (platform === 'ios' && scene.signals?.keyboard?.shown) globals.push(['dismissKeyboard', '收起键盘']);
   if (platform !== 'harmony' && scene.signals?.focusedElement) globals.push(['inputText', '向当前焦点输入文本']);
   for (const [kind, label] of globals) {
@@ -94,9 +96,9 @@ function elementAction(scene, capability, input, intent, platform) {
 
 function globalAction(scene, capability, input, intent) {
   const { width, height } = scene.screenshot;
-  const x1 = Math.round(width * 0.2); const x2 = Math.round(width * 0.8);
-  const y1 = Math.round(height * 0.25); const y2 = Math.round(height * 0.75);
   const verticalContext = (scene.scrollContexts || []).find((entry) => entry.axis === 'VERTICAL'
+    && entry.trackingStatus === 'TRACKING' && Array.isArray(entry.bounds));
+  const horizontalContext = (scene.scrollContexts || []).find((entry) => entry.axis === 'HORIZONTAL'
     && entry.trackingStatus === 'TRACKING' && Array.isArray(entry.bounds));
   const verticalBounds = verticalContext?.bounds || [0, 0, width, height];
   const verticalCenterX = Math.round((verticalBounds[0] + verticalBounds[2]) / 2);
@@ -105,15 +107,22 @@ function globalAction(scene, capability, input, intent) {
     Number(verticalContext?.suggestedSwipeDistance) || Math.round((verticalBounds[3] - verticalBounds[1]) * 0.5),
     Math.round((verticalBounds[3] - verticalBounds[1]) * 0.75),
   ));
+  const horizontalBounds = horizontalContext?.bounds;
+  const horizontalCenterX = horizontalBounds ? Math.round((horizontalBounds[0] + horizontalBounds[2]) / 2) : null;
+  const horizontalCenterY = horizontalBounds ? Math.round((horizontalBounds[1] + horizontalBounds[3]) / 2) : null;
+  const horizontalDistance = horizontalBounds ? Math.max(1, Math.min(
+    Number(horizontalContext?.suggestedSwipeDistance) || Math.round((horizontalBounds[2] - horizontalBounds[0]) * 0.5),
+    Math.round((horizontalBounds[2] - horizontalBounds[0]) * 0.75),
+  )) : null;
   const swipe = {
     swipeUp: [verticalCenterX, verticalCenterY + Math.round(verticalDistance / 2), verticalCenterX, verticalCenterY - Math.round(verticalDistance / 2)],
     swipeDown: [verticalCenterX, verticalCenterY - Math.round(verticalDistance / 2), verticalCenterX, verticalCenterY + Math.round(verticalDistance / 2)],
-    swipeLeft: [x2, Math.round(height / 2), x1, Math.round(height / 2)],
-    swipeRight: [x1, Math.round(height / 2), x2, Math.round(height / 2)],
+    swipeLeft: horizontalBounds ? [horizontalCenterX + Math.round(horizontalDistance / 2), horizontalCenterY, horizontalCenterX - Math.round(horizontalDistance / 2), horizontalCenterY] : null,
+    swipeRight: horizontalBounds ? [horizontalCenterX - Math.round(horizontalDistance / 2), horizontalCenterY, horizontalCenterX + Math.round(horizontalDistance / 2), horizontalCenterY] : null,
   }[capability.kind];
   if (swipe) return {
     type: 'swipe', fromX: swipe[0], fromY: swipe[1], toX: swipe[2], toY: swipe[3], velocity: 600,
-    ...coordinateMetadata(scene, 'visual', ['swipeUp', 'swipeDown'].includes(capability.kind) ? verticalBounds : [0, 0, width, height], intent),
+    ...coordinateMetadata(scene, 'visual', ['swipeUp', 'swipeDown'].includes(capability.kind) ? verticalBounds : horizontalBounds, intent),
     ...(intent ? { reason: intent } : {}),
   };
   if (capability.kind === 'inputText') return {

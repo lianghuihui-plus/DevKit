@@ -5,7 +5,6 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { execute: executeBatch } = require('../batch');
-const { execute: executeCaseDefinition } = require('../case-definition');
 const { assertWorkspace } = require('../lib/workspace');
 const { resolveCaseNo } = require('../lib/case-numbering');
 const {
@@ -16,11 +15,10 @@ const {
   validateEnvironmentConfirmation,
 } = require('../lib/run-control');
 const { readJson, withFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { attachTechnicalFallback } = require('../lib/technical-fallback');
+const { attachTechnicalContext } = require('../lib/technical-context');
 const { validateCoordinatorRequest } = require('./agent-facing-contract');
 
 const SKILL_ROOT = path.resolve(__dirname, '../..');
-const COMPILER_PROMPT = '你是独立 Case Definition Compiler。执行给定的 loaderCommand，只处理其返回的单个用例原文；按照 Compiler Prompt 生成候选定义，并使用返回的 Publisher 接口发布。不要访问设备、Scene、Batch、历史执行或报告。';
 const CASE_AGENT_PROMPT = '你是独立 Case Agent。执行给定的 loaderCommand，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。';
 const PLATFORMS = Object.freeze(['harmony', 'android', 'ios']);
 
@@ -148,7 +146,7 @@ function completedResponse(state, outcome, publication = state.reportPublication
 function blockedResponse(state) {
   const report = reportPublicationResponse(state.reportPublication);
   const diagnostic = state.terminalFailure?.diagnostic;
-  return attachTechnicalFallback({
+  return attachTechnicalContext({
     status: 'BLOCKED',
     code: state.terminalFailure?.code || 'BATCH_BLOCKED',
     reason: state.terminalFailure?.reason || '批次已经阻塞',
@@ -156,30 +154,9 @@ function blockedResponse(state) {
     ...report,
     ...(report.reportStatus === 'PUBLISHED' ? { reportPath: path.join(state.workspace, 'index.html') } : {}),
     ...publicBase(state),
-  }, 'BATCH', 'PREPARE_NEW_RUN');
-}
-
-function definitionStatus(target) {
-  return executeCaseDefinition({ command: 'status', caseDir: target.caseDir });
-}
-
-function nextDefinitionResponse(state, options = {}) {
-  for (const target of state.targets) {
-    const status = definitionStatus(target);
-    if (status.status === 'CASE_DEFINITION_REQUIRED') {
-      state.phase = 'WAITING_FOR_COMPILER';
-      saveCoordinatorState(state, options.now);
-      return {
-        status: 'NEED_COMPILER',
-        caseNo: target.caseNo,
-        loaderCommand: status.compilerHandoff.loaderCommand,
-        delegationPrompt: COMPILER_PROMPT,
-        ...publicBase(state),
-      };
-    }
-    target.definitionRef = status.definitionRef;
-  }
-  return null;
+  }, 'COORDINATOR', { capability: 'advanceRun' }, {
+    resourceFacts: [`batch=${state.batchId}`, `state=${state.statePath}`],
+  });
 }
 
 function selectPlatformChoice(platform) {
@@ -333,7 +310,7 @@ function resumeInitialization(state, options = {}) {
       workspaceRoot: state.workspace,
       batchId: state.batchId,
       mode: state.targets.length === 1 ? 'SINGLE' : 'BATCH',
-      targets: state.targets.map((target) => ({ caseNo: target.caseNo, definitionRef: target.definitionRef })),
+      targets: state.targets.map((target) => ({ caseNo: target.caseNo })),
       environmentConfirmation: environment,
       userInstruction: initialization.userInstruction,
       now: options.now,
@@ -394,7 +371,7 @@ function prepareRun(request, options = {}) {
       return null;
     }
     seen.add(resolved.caseKey);
-    return { caseNo: resolved.caseNo, caseKey: resolved.caseKey, caseDir: resolved.caseDir, definitionRef: null };
+    return { caseNo: resolved.caseNo, caseKey: resolved.caseKey, caseDir: resolved.caseDir };
   }).filter(Boolean);
   if (issues.length) throw coordinatorError('用例选择无效', issues);
 
@@ -416,7 +393,7 @@ function prepareRun(request, options = {}) {
     updatedAt: options.now || new Date().toISOString(),
   };
   saveCoordinatorState(state, options.now);
-  return nextDefinitionResponse(state, options) || environmentDecisionResponse(state, options);
+  return environmentDecisionResponse(state, options);
 }
 
 function defaultProbeEnvironment(platform) {
@@ -652,8 +629,6 @@ function advanceUnlocked(state, options = {}) {
   if (state.phase === 'NEED_BINDING_CONFIRMATION') return bindingConfirmationResponse(state, options);
   if (state.phase === 'NEED_ENVIRONMENT_DECISION') return environmentDecisionResponse(state, options);
   if (!['BATCH_READY', 'WAITING_FOR_CASE_AGENT', 'WAITING_FOR_PLATFORM_RUNTIME'].includes(state.phase)) {
-    const definition = nextDefinitionResponse(state, options);
-    if (definition) return definition;
     return environmentDecisionResponse(state, options);
   }
   return advanceBatch(state, options);

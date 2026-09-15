@@ -90,14 +90,14 @@ for (const prompt of ['SKILL.md', 'prompts/case-agent.md']) {
 assert.match(read('SKILL.md'), /confirmChoices/);
 assert.match(read('SKILL.md'), /INITIALIZING_RUN/);
 assert.match(read('SKILL.md'), /OWNER_BATCH_TERMINAL/);
-assert.match(read('SKILL.md'), /技术兜底模式/);
+assert.match(read('SKILL.md'), /技术异常/);
 assert.match(read('SKILL.md'), /读取.*日志/);
-assert.match(read('SKILL.md'), /主动进入.*默认.*BATCH/);
-assert.match(read('SKILL.md'), /不得直接修改.*Batch.*Execution.*Result/);
-assert.match(read('prompts/case-agent.md'), /技术兜底模式/);
-assert.match(read('prompts/case-agent.md'), /读取.*日志/);
-assert.match(read('prompts/case-agent.md'), /主动进入.*默认.*EXECUTION/);
-assert.match(read('prompts/case-agent.md'), /不得直接修改.*Execution.*Result/);
+assert.match(read('SKILL.md'), /不直接修改.*Batch.*Execution.*Result/);
+assert.match(read('SKILL.md'), /technicalContext.*不是新的状态门/);
+assert.match(read('prompts/case-agent.md'), /技术异常/);
+assert.match(read('prompts/case-agent.md'), /(读取|使用).*日志/);
+assert.match(read('prompts/case-agent.md'), /不得直接.*修改.*Execution.*Result/);
+assert.match(read('prompts/case-agent.md'), /首选能力.*不是排他的工具边界/);
 assert.strictEqual(read('SKILL.md').includes('不能自己调用 Appium、WDA、xcodebuild 或读取内部日志'), false);
 
 console.log('agent capability contract tests passed');

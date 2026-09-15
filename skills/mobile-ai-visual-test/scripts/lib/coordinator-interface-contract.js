@@ -90,16 +90,10 @@ const TARGETS_SCHEMA = {
   minItems: 1,
   items: {
     type: 'object',
-    required: ['caseNo', 'definitionRef'],
+    required: ['caseNo'],
     additionalProperties: false,
     properties: {
       caseNo: STRING,
-      definitionRef: {
-        type: 'object',
-        required: ['definitionId', 'definitionSha'],
-        additionalProperties: false,
-        properties: { definitionId: STRING, definitionSha: STRING },
-      },
     },
   },
 };
@@ -169,22 +163,6 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
       { name: 'input-file', required: true, description: 'Path to the source test-case file' },
     ])],
   },
-  'scripts/case-definition.js': {
-    summary: 'Inspect, load, or publish an immutable CaseDefinition',
-    commands: [
-      command('status', 'Check whether a case has a published definition', 'node scripts/case-definition.js status (--case-dir <case-dir> | --workspace <workspace> --case-no <no>)', {
-        caseDir: flag(false, 'Case directory', { value: '<case-dir>' }), workspace: flag(false, 'Workspace path', { value: '<workspace>' }), caseNo: flag(false, 'Display case number', { value: '<no>' }),
-      }, ['node', 'scripts/case-definition.js', 'status', '--workspace', '<workspace>', '--case-no', '<no>'], ['READY', 'CASE_DEFINITION_REQUIRED']),
-      command('load-source', 'Load one source and its publisher contract for an isolated Compiler', 'node scripts/case-definition.js load-source (--case-dir <case-dir> | --workspace <workspace> --case-no <no>)', {
-        caseDir: flag(false, 'Case directory', { value: '<case-dir>' }), workspace: flag(false, 'Workspace path', { value: '<workspace>' }), caseNo: flag(false, 'Display case number', { value: '<no>' }),
-      }, ['node', 'scripts/case-definition.js', 'load-source', '--case-dir', '<case-dir>'], ['source, Compiler Prompt, and publisher contract']),
-      command('publish', 'Publish a compiler candidate using the contract returned by load-source', 'node scripts/case-definition.js publish --case-dir <case-dir> --compiler-profile-sha <sha> --candidate-json <json>', {
-        caseDir: flag(true, 'Case directory supplied by the Loader', { value: '<case-dir>' }),
-        compilerProfileSha: flag(false, 'Compiler profile digest', { value: '<sha>' }),
-        candidateJson: flag(true, 'Candidate matching publisher.contract', { value: '<json>', contractSource: 'load-source.publisher.contract' }),
-      }, ['node', 'scripts/case-definition.js', 'publish', '--case-dir', '<case-dir>', '--compiler-profile-sha', '<sha>', '--candidate-json', '<publisher.contract.example>'], ['published CaseDefinition']),
-    ],
-  },
   'scripts/build-agent-contract.js': {
     summary: 'Build and optionally verify the role-scoped Agent protocol and implementation digests',
     commands: [command(null, 'Build an Agent contract', 'node scripts/build-agent-contract.js --role <case-executor|batch-coordinator> --platform <harmony|android|ios> [--skill-root <path>] [--verify-sha <sha>]', {
@@ -241,10 +219,10 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
       command('create', 'Freeze authorized targets and execution policies', 'node scripts/execution-request.js create --workspace <workspace> --batch-id <id> --mode <single|batch> --targets-json <json> [--bootstrap-policy-json <json>] --user-instruction <text>', {
         ...commonBatchFlags,
         mode: flag(true, 'Execution cardinality', { value: '<single|batch>', enum: ['single', 'batch'] }),
-        targetsJson: flag(true, 'Non-empty target list using published definition references', { value: '<json>', jsonSchema: TARGETS_SCHEMA }),
+        targetsJson: flag(true, 'Non-empty target list using workspace case numbers', { value: '<json>', jsonSchema: TARGETS_SCHEMA }),
         bootstrapPolicyJson: flag(false, 'Batch-level App bootstrap authorization; omit for KEEP_EXISTING', { value: '<json>', jsonSchema: BOOTSTRAP_POLICY_SCHEMA }),
         userInstruction: flag(true, 'The user instruction authorizing this execution', { value: '<text>' }),
-      }, ['node', 'scripts/execution-request.js', 'create', '--workspace', '<workspace>', '--batch-id', '<batch-id>', '--mode', 'single', '--targets-json', '[{"caseNo":"004","definitionRef":{"definitionId":"<id>","definitionSha":"<sha>"}}]', '--user-instruction', '<instruction>'], ['frozen execution request']),
+      }, ['node', 'scripts/execution-request.js', 'create', '--workspace', '<workspace>', '--batch-id', '<batch-id>', '--mode', 'single', '--targets-json', '[{"caseNo":"004"}]', '--user-instruction', '<instruction>'], ['frozen execution request']),
       command('status', 'Read an execution request', 'node scripts/execution-request.js status --workspace <workspace> --batch-id <id>', commonBatchFlags,
         ['node', 'scripts/execution-request.js', 'status', '--workspace', '<workspace>', '--batch-id', '<batch-id>'], ['current execution request']),
     ],

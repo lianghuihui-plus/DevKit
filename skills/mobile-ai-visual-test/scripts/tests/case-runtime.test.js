@@ -14,6 +14,7 @@ const { run, parseRequest } = require('../case-runtime/runtime-client');
 const { buildContinuationBrief, resumeExecution } = require('../case-runtime/lifecycle');
 const { loadAgentHandoff } = require('../batch/agent-handoff');
 const { readExecutionReport } = require('../lib/execution-reader');
+const { buildExecutionNarrative } = require('../report/execution-narrative');
 const { refreshCommittedCaseReports } = require('../report/report-service');
 const { acquireFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
@@ -71,7 +72,7 @@ const frozenCaseSpec = {
   ambiguities: [],
 };
 const contract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform: 'harmony' });
-createTestExecutionRequest(root, batchId, binding, [{ caseKey, caseDir, caseSpec: frozenCaseSpec }], { now: T0 });
+createTestExecutionRequest(root, batchId, binding, [{ caseKey, caseDir }], { now: T0 });
 initializeBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, now: T0 });
 const adapter = {
   restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }),
@@ -96,11 +97,19 @@ const started = {
     caseProtocolSha: contract.protocolSha,
   }).brief,
 };
+require('../case-runtime/case-model-service').revise(started.execDir, {
+  understanding: frozenCaseSpec.summary,
+  preconditions: frozenCaseSpec.preconditions,
+  verificationPoints: frozenCaseSpec.expectations.map((item) => ({ text: item.text })),
+  items: ['观察当前页面', '执行必要操作', '验证实际结果'],
+  uncertainties: frozenCaseSpec.ambiguities,
+}, { now: T0 });
 assert.strictEqual(started.execution.schemaVersion, 11);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(started.brief, 'schemaVersion'), false);
 const validationProfile = JSON.parse(fs.readFileSync(path.join(started.execDir, 'validation-profile.snapshot.json'), 'utf8'));
 assert.strictEqual(started.execution.validationProfileSha, validationProfile.profileSha);
-assert.deepStrictEqual(started.brief.case.spec.expectations.map((item) => item.id), ['E1', 'E2']);
+assert.strictEqual(started.brief.caseModel, null);
+assert.strictEqual(started.brief.case.spec, undefined);
 assert.strictEqual(started.request, undefined);
 assert.strictEqual(started.brief.case.source, sourceText);
 assert.strictEqual(started.brief.scene, null);
@@ -116,6 +125,7 @@ assert.strictEqual(started.brief.runtime.interfaceKind, 'AGENT_FACING');
 assert.match(started.brief.runtime.input, /每次.*新建.*消费后删除/);
 assert.strictEqual(started.brief.runtime.capabilities.prepare, undefined);
 assert.deepStrictEqual(started.brief.runtime.capabilities.recover.required, ['reason']);
+assert.deepStrictEqual(started.brief.runtime.capabilities.recover.optional, ['targetState', 'externalAction']);
 assert.strictEqual(started.brief.runtime.contractDefinitions, undefined);
 assert.deepStrictEqual(started.brief.investigationCapabilities, {
   visual: { available: true, capability: 'inspect', channel: 'visual' },
@@ -214,7 +224,7 @@ assert.strictEqual(continuationBrief.continuation.sequence, 2);
 assert.strictEqual(continuationBrief.scene, null);
 assert.strictEqual(continuationBrief.resumeState.executionStatus, 'RUNNING');
 assert.strictEqual(continuationBrief.case.source, sourceText);
-assert.strictEqual(continuationBrief.case.spec.summary, frozenCaseSpec.summary);
+assert.strictEqual(continuationBrief.caseModel.understanding, frozenCaseSpec.summary);
 assert.notStrictEqual(continuationBrief.runtime.requestPath, started.brief.runtime.requestPath,
   'each dispatch must use an isolated Runtime request path');
 writeJsonAtomic(started.brief.runtime.requestPath, { capability: 'observe' });
@@ -322,7 +332,6 @@ const first = run(started.execDir, {
   decision: {
     purpose: '建立当前页面基线',
     expectationRefs: [],
-    planUpdate: { reason: '初始计划', next: caseContext.initialPlan },
   },
 }, { runner, now: T0 });
 assert.strictEqual(first.status, 'SCENE');
@@ -391,7 +400,6 @@ assert.deepStrictEqual(firstInspectionDecision.decisionFieldSources, {
   purpose: 'AGENT_AUTHORED',
   expectedOutcome: 'NOT_PROVIDED',
   expectationRefs: 'AGENT_AUTHORED',
-  planUpdate: 'NOT_PROVIDED',
   knowledgeReview: 'NOT_PROVIDED',
   uncertainties: 'NOT_PROVIDED',
 });
@@ -407,10 +415,6 @@ const duplicateInspection = run(started.execDir, {
 assert.strictEqual(duplicateInspection.status, 'VISUAL_INSPECTED');
 assert.strictEqual(duplicateInspection.idempotent, true);
 assert.strictEqual(duplicateInspection.visualInspection.inspectionId, firstInspection.visualInspection.inspectionId);
-assert.throws(() => require('../case-runtime/narrative-service').recordRequestNarrative(started.execDir, {
-  operation: 'observe',
-  caseContext: { ...caseContext, expectations: ['目标内容正常显示'] },
-}, { now: T0 }), (error) => error?.code === 'CASE_SPEC_IMMUTABLE');
 assert.deepStrictEqual(
   require('../case-runtime/narrative-service').latestCaseContext(started.execDir).expectations.map((item) => item.id),
   ['E1', 'E2'],
@@ -563,7 +567,7 @@ assert.deepStrictEqual(invalidRecover.issues.map((issue) => issue.fieldPath).sor
   'basedOnSceneId', 'reason', 'unexpected',
 ]);
 assert.deepStrictEqual(invalidRecover.allowedFields,
-  ['operation', 'basedOnSceneId', 'reason', 'decision']);
+  ['operation', 'basedOnSceneId', 'reason', 'decision', 'externalAction']);
 assert.deepStrictEqual(invalidRecover.requiredFields,
   ['operation', 'basedOnSceneId', 'reason']);
 assert.strictEqual(invalidRecover.example.operation, 'recover');
@@ -578,6 +582,15 @@ assert.strictEqual(ambiguousTarget.status, 'REQUEST_INVALID');
 assert.strictEqual(ambiguousTarget.issues.some((issue) => issue.code === 'EXACTLY_ONE_REQUIRED'), true);
 assert.strictEqual(ambiguousTarget.issues.some((issue) => issue.fieldPath === 'decision' && issue.code === 'REQUIRED'), true);
 assert.strictEqual(actionInvocationCount, actionInvocationsBeforeSceneGuard);
+
+require('../case-runtime/case-model-service').revise(started.execDir, {
+  understanding: frozenCaseSpec.summary,
+  preconditions: frozenCaseSpec.preconditions,
+  verificationPoints: [{ ref: 'E1', text: frozenCaseSpec.expectations[0].text }, { ref: 'E2', text: frozenCaseSpec.expectations[1].text }],
+  items: ['等待稳定', '完成两个验证点'],
+  uncertainties: [],
+  reason: '当前页面已是目标页，无需导航',
+}, { now: '2026-09-03T10:00:00.900Z' });
 
 const second = run(started.execDir, {
   operation: 'act',
@@ -597,7 +610,6 @@ const second = run(started.execDir, {
         reason: '当前为 HarmonyOS 目标 App，等待稳定后复核符合条目建议',
       }],
     },
-    planUpdate: { reason: '当前页面已是目标页，无需导航', next: ['等待稳定', '完成两个验证点'] },
   },
 }, { runner, now: '2026-09-03T10:00:01.000Z' });
 assert.strictEqual(second.status, 'SCENE');
@@ -608,7 +620,7 @@ assert.strictEqual(second.action.observedEffect.status, 'UNCHANGED');
 assert.strictEqual(second.scene.sceneId, 'scene-0002');
 assert.strictEqual(observationCount, 2);
 const narrativeStatus = run(started.execDir, { operation: 'status' });
-assert.strictEqual(narrativeStatus.narrative.contextVersion, 1);
+assert.strictEqual(narrativeStatus.narrative.contextVersion, 2);
 assert.strictEqual(narrativeStatus.narrative.latestPlan.version, 2);
 assert.strictEqual(narrativeStatus.narrative.lastDecision.decision.purpose, '等待页面稳定');
 assert.deepStrictEqual(narrativeStatus.knowledgeInvestigation.pendingReviews, []);
@@ -758,7 +770,6 @@ const afterAutomaticRecovery = run(started.execDir, {
   decision: {
     purpose: '确认自动恢复后的页面状态',
     expectationRefs: ['E1', 'E2'],
-    planUpdate: { reason: '恢复后按当前现场收敛执行计划', next: ['确认恢复后的页面状态', '完成两个验证点'] },
   },
 }, {
   runner,
@@ -770,16 +781,23 @@ const afterAutomaticRecovery = run(started.execDir, {
 });
 assert.strictEqual(afterAutomaticRecovery.status, 'RECOVERY_APPLIED');
 assert.strictEqual(afterAutomaticRecovery.requiresReassessment, true);
+require('../case-runtime/case-model-service').revise(started.execDir, {
+  understanding: frozenCaseSpec.summary,
+  preconditions: frozenCaseSpec.preconditions,
+  verificationPoints: [{ ref: 'E1', text: frozenCaseSpec.expectations[0].text }, { ref: 'E2', text: frozenCaseSpec.expectations[1].text }],
+  items: ['确认恢复后的页面状态', '完成两个验证点'],
+  uncertainties: [],
+  reason: '恢复后按当前现场收敛执行计划',
+}, { now: '2026-09-03T10:00:01.910Z' });
 const afterRecoveryObserve = run(started.execDir, {
   operation: 'observe',
   decision: {
     purpose: '观察恢复后的页面',
     expectationRefs: ['E1', 'E2'],
-    planUpdate: { reason: '恢复后按当前现场收敛执行计划', next: ['确认恢复后的页面状态', '完成两个验证点'] },
   },
 }, { runner, now: '2026-09-03T10:00:01.925Z' });
 assert.strictEqual(afterRecoveryObserve.status, 'SCENE');
-assert.strictEqual(afterRecoveryObserve.narrative.contextVersion, 1);
+assert.strictEqual(afterRecoveryObserve.narrative.contextVersion, 3);
 assert.strictEqual(afterRecoveryObserve.narrative.latestPlan.version, 3);
 assert.deepStrictEqual(afterRecoveryObserve.narrative.latestPlan.items, ['确认恢复后的页面状态', '完成两个验证点']);
 assert.deepStrictEqual(afterRecoveryObserve.narrative.caseContext.expectations.map((item) => item.id), ['E1', 'E2']);
@@ -804,9 +822,10 @@ assert.strictEqual(spatialAction.status, 'SCENE');
 assert.strictEqual(spatialAction.action.spatialEvidence.certainty, 'DISPATCH_ONLY');
 assert.deepStrictEqual(spatialAction.action.spatialEvidence.requested.point, { x: 0, y: 0 });
 assert.deepStrictEqual(spatialAction.action.spatialEvidence.dispatched.point, { x: 0, y: 0 });
-assert.strictEqual(spatialAction.action.spatialEvidence.actual, null);
+assert.strictEqual(spatialAction.action.spatialEvidence.deviceActual, null);
 assert.strictEqual(spatialAction.action.spatialEvidence.annotatedScreenshot.attachment.mediaType, 'image/png');
-assert.strictEqual(fs.existsSync(spatialAction.action.spatialEvidence.annotatedScreenshot.absolutePath), true);
+assert.strictEqual(spatialAction.action.spatialEvidence.annotatedScreenshot.tool, 'view_image');
+assert.strictEqual(fs.existsSync(spatialAction.action.spatialEvidence.annotatedScreenshot.path), true);
 const spatialOperationId = spatialAction.action.operationId;
 const spatialEvent = require('../case-runtime/store').events(started.execDir)
   .find((event) => event.type === 'actionCompleted' && event.operationId === spatialOperationId);
@@ -817,6 +836,26 @@ const spatialOperation = JSON.parse(fs.readFileSync(path.join(started.execDir, '
 assert.strictEqual(spatialOperation.spatialEvidenceRef, spatialEvent.spatialEvidenceRef);
 assert.strictEqual(spatialOperation.actionResult.spatialEvidenceRef, spatialEvent.spatialEvidenceRef);
 assert.strictEqual(spatialOperation.actionResult.spatialEvidence, undefined);
+const spatialInspection = run(started.execDir, {
+  operation: 'inspectScene',
+  basedOnSceneId: currentSceneId(),
+  view: 'ACTION',
+  observation: '标注落点位于目标区域左上方，需要调整后续操作位置',
+  expectationRefs: ['E1'],
+}, { now: '2026-09-03T10:00:01.960Z' });
+assert.strictEqual(spatialInspection.status, 'ACTION_SPATIAL_INSPECTED');
+const spatialInspectionEvent = require('../case-runtime/store').events(started.execDir)
+  .find((event) => event.type === 'actionSpatialInspected' && event.operationId === spatialOperationId);
+assert.strictEqual(spatialInspectionEvent.caseModelRevision, 3);
+const revisedAfterSpatialInspection = require('../case-runtime/case-model-service').revise(started.execDir, {
+  understanding: frozenCaseSpec.summary,
+  preconditions: frozenCaseSpec.preconditions,
+  verificationPoints: [{ ref: 'E1', text: frozenCaseSpec.expectations[0].text }, { ref: 'E2', text: frozenCaseSpec.expectations[1].text }],
+  items: ['根据落点标注修正操作位置', '完成两个验证点'],
+  uncertainties: [],
+  reason: '上一动作标注图显示落点偏离目标区域',
+}, { now: '2026-09-03T10:00:01.970Z' });
+assert.strictEqual(revisedAfterSpatialInspection.caseModel.revision, 4);
 
 const timedOut = run(started.execDir, { operation: 'observe' }, { runner, now: '2026-09-03T10:30:00.000Z' });
 assert.strictEqual(timedOut.status, 'TIME_LIMIT');
@@ -932,6 +971,7 @@ assert.strictEqual(fs.existsSync(path.join(started.execDir, 'transactions', 'fin
 const finished = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), decision: finishDecision, result }, { now: '2026-09-03T10:00:02.500Z' });
 assert.strictEqual(finished.status, 'COMPLETED');
 assert.strictEqual(finished.idempotent, true);
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'result.json'), 'utf8')).caseModelRevision, 4);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'metrics.json'), 'utf8')).elapsedMs, 2000);
 assert.strictEqual(run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), decision: finishDecision, result }).idempotent, true);
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'COMMIT_CASE');
@@ -945,7 +985,7 @@ assert.ok(runtimeMetrics.invocationErrorCount > 0);
 assert.ok(runtimeMetrics.knowledgeUsage.queryIds.includes(knowledge.queryId));
 assert.ok(runtimeMetrics.knowledgeUsage.reviewedQueryIds.includes(knowledge.queryId));
 assert.ok(runtimeMetrics.knowledgeUsage.applicableEntryIds.includes('K-runtime-001'));
-assert.strictEqual(runtimeMetrics.counts.caseContextRevisions, 1);
+assert.strictEqual(runtimeMetrics.counts.caseContextRevisions, 4);
 assert.ok(runtimeMetrics.counts.agentDecisions >= 3);
 assert.strictEqual(runtimeMetrics.totalElapsedMs, runtimeMetrics.runtimeActiveMs + runtimeMetrics.agentAndSchedulingGapMs);
 assert.strictEqual(runtimeMetrics.agentAndSchedulingGapMs,
@@ -1015,8 +1055,14 @@ assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementation
 const report = readExecutionReport(started.execDir);
 assert.strictEqual(report.schemaFamily, 'current');
 assert.strictEqual(report.display.verdict, 'PASS');
-assert.ok(report.events.some((event) => event.type === 'caseContextRecorded'));
+assert.ok(report.events.some((event) => event.type === 'caseModelRevised'));
+assert.ok(report.events.some((event) => event.type === 'actionSpatialInspected'));
 assert.ok(report.events.some((event) => event.type === 'agentDecisionRecorded'));
+const reportNarrative = buildExecutionNarrative(report);
+assert.strictEqual(reportNarrative.contextVersion, 4);
+assert.strictEqual(reportNarrative.understandingHistory.length, 4);
+assert.strictEqual(reportNarrative.plan.reason, '上一动作标注图显示落点偏离目标区域');
+assert.ok(reportNarrative.steps.some((step) => step.action?.spatialInspection?.observation === '标注落点位于目标区域左上方，需要调整后续操作位置'));
 const rendered = refreshCommittedCaseReports(caseDir, 'harmony');
 assert.strictEqual(rendered.status, 'UPDATED');
 const contextHtml = fs.readFileSync(path.join(caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');

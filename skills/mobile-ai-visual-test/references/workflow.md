@@ -3,42 +3,39 @@
 ## 批次状态机
 
 ```text
-workspace -> import -> CaseDefinition compile/publish -> probe -> optional artifact registration -> environment confirmation
--> definitionRef selection -> execution/bootstrap authorization + preflight
--> request -> init -> bootstrap -> NEED_CASE_AGENT -> start + initial-state establishment
--> delegate once -> WAIT_EXECUTION_RESULT -> reconcile auto-commit -> next case
--> FINALIZING -> deterministic finalization -> BATCH_COMPLETE
+workspace -> import -> probe -> optional artifact registration -> environment confirmation
+-> execution authorization -> request -> init -> bootstrap -> NEED_CASE_AGENT
+-> delegate once -> WAIT_EXECUTION_RESULT -> reconcile/commit -> next case
+-> FINALIZING -> release platform -> publish report -> BATCH_COMPLETE
 
-cancel -> CANCELLING -> deterministic finalization -> BATCH_CANCELLED
-fatal -> BLOCKING -> deterministic finalization -> BATCH_BLOCKED
+cancel -> CANCELLING -> finalization -> BATCH_CANCELLED
+fatal -> BLOCKING -> finalization -> BATCH_BLOCKED
 ```
 
-CaseDefinition 发布、环境确认和执行授权是三个独立动作。定义阶段只处理单个用例原文并冻结业务验证点与平台无关初始状态意图；执行阶段根据 `definitionRef` 确定性投影 CaseSpec、平台策略和 InitialStatePreflight，主 Agent 不读取原文或定义正文。`appProvisioning` 只冻结 App 来源；`bootstrapPolicy` 决定批次启动是否执行与用例无关的物理重装。
+Coordinator 从用例编号解析当前 `case.json` 和 `source.md`，为新 execution 冻结 `case.snapshot.json`、`source.snapshot.md`、环境、App、初始状态策略和协议摘要。它不理解原始用例，也不生成验证点或执行计划。
 
-主 Agent 循环处理 `batch reconcile`：
+主 Agent 通过 Facade 推进：
 
-- `BOOTSTRAP`：建立暖会话；只有执行配置明确选择 `REINSTALL_FROZEN` 且冻结制品可用时才安装。
-- `NEED_CASE_AGENT`：调用 `batch start`。Lifecycle 先自动建立冻结的初始状态；`agentRequired=true` 时只把返回的 `handoff.loaderCommand` 交给不继承主 Agent 上下文的新 Case Agent，主 Agent 不读取 Handoff 正文；`false` 时直接继续 reconcile。未领取的同一 Handoff 会幂等返回相同 Loader。
-- `WAIT_EXECUTION_RESULT`：Handoff 已领取但 execution 尚未完成；只等待持久化结果，不推断宿主 Case Agent 仍在运行，也不进入它的观察、动作或恢复循环。
-- `PUBLISH_REPORTS` 且 `retryable=true`：自动发布失败，稍后重试 reconcile，不重跑用例。
-- `BATCH_COMPLETE` / `BATCH_CANCELLED` / `BATCH_BLOCKED`：execution、平台资源和报告均已收口。
+- `NEED_CASE_AGENT`：将不透明 Handoff Loader 交给一个不继承主 Agent 上下文的新 Case Agent。
+- `WAIT_EXECUTION_RESULT`：只等待持久化结果，不推断 Case Agent 是否仍在运行。
+- `COMPLETE` / `BLOCKED`：报告终态；报告发布状态与 Batch 业务终态分离。
 
-`COMMIT_CASE`、`SETTLE_EXECUTIONS`、`RELEASE_PLATFORM` 和 `PUBLISH_REPORTS` 仍是 Batch 内部可审计 checkpoint，但 `scripts/batch.js reconcile` 会在一次调用中自动推进，主 Agent 不逐段编排。返回的 `progress` 保留本次已完成迁移。
-
-Runtime reconcile 只把 `EXECUTION_LOCKED` 视为可重试，并把次数写入 batch state；第三次仍失败时升级为 `FATAL_EXECUTION`。事件存储损坏等错误为 `FATAL_BATCH`。两者都进入 `BLOCKING`，不会无限返回 `WAIT_EXECUTION_RESULT`。
-
-同一批次固定平台、设备、App、入口、App Provisioning、Bootstrap Policy 和有序目标。用例间复用当前 App 暖状态，但 Case Agent、Frozen CaseSpec、execution 上下文和证据相互独立。
+Handoff 绑定唯一 execution、dispatch sequence 和写入所有权，并直接向 Case Agent 提供原始用例、当前 Scene、已有 Case Model 与预绑定 Runtime Client。主 Agent 不读取或转述这些内容。Agent 句柄丢失时，Batch 先 reconcile，再生成 continuation Handoff；新 dispatch 替换旧 dispatch。
 
 ## 单用例
 
-Case Agent 在独立上下文中执行 Handoff Loader，再从返回的冻结 Case Prompt 和 Case Brief 读取原文、Frozen CaseSpec、初始状态结果和当前 Scene，自主规划业务路径；它不能修改验证点，也不能请求准备 App。Lifecycle 在委托前按 `initialStateRequirement` 执行内部 prepare；失败时自动生成覆盖全部 expectation 的 BLOCKED CaseResult，因此无需创建 Case Agent。
+Case Agent 读取原始用例和当前 Scene，使用 `plan` 形成 Case Model：用例理解、前置条件、验证点、计划和不确定项。revision 1 不需要理由；后续可改写、新增、合并或取消，并提交完整新版本与非空理由。所有动作、检查、知识查询和结果自动绑定当时 revision。
 
-Runtime 对动作、准备、恢复和 finish 做事务保护。已发送但结果未知的副作用不自动重放；恢复改变 Agent 可见事实时返回 `RECOVERY_APPLIED` 并停止旧请求。Agent 句柄丢失时，Batch 先 reconcile，再显式生成同一 execution 的 continuation Handoff；Handoff 的持久化 claim/lease 保证只有最新 dispatch 可写，正常等待不会产生 continuation。
+截图与控件树是并列能力。视觉现场先用 `view_image` 查看，再用 `inspect(channel=visual)` 登记；操作异常时可查看上一动作落点标注图，并用 `inspect(channel=action)` 登记客观坐标事实。框架不判断是否命中业务目标。
 
-CaseResult 必须逐一覆盖 Frozen CaseSpec。Runtime 完成证据完整性校验后，主 Agent 才能 commit；Case Agent 的聊天摘要不是批次事实来源。
+Case Agent 可以用 `recover.targetState` 请求已授权的 App 状态，或用 `recover.externalAction` 登记框架外技术处置。Runtime 不扩大 execution 的准备权限；框架外声明不是业务证据，必须再 `observe` 获取可验证 Scene。
 
-## 技术兜底
+`finish` 必须逐一覆盖当前 Case Model 中有效的验证点，并引用真实 Scene、知识或技术事实。Runtime 完成证据完整性校验后，主 Agent 才能 commit；聊天摘要不是批次事实来源。
 
-正常流程始终通过 Coordinator Facade 或 Case Runtime Facade。技术异常先使用响应提供的确定性恢复；没有有效恢复、恢复无进展或现场与诊断矛盾时，`technicalFallback` 才开放受控诊断。`scope=BATCH` 由主 Agent 调查共享设备和平台 Runtime，`scope=EXECUTION` 由 Case Agent 调查当前执行和 session；任何一方都不能直接修改 Batch、Execution、Result、Scene 或报告。
+## 技术异常
 
-兜底处理只修复基础设施，不替代状态迁移。完成后按 `resume` 返回原 Facade：`RETRY_CURRENT_COMMAND` 重试当前 Coordinator 命令，`PREPARE_NEW_RUN` 为已终态阻塞创建新运行，`USE_CURRENT_RUNTIME` 继续当前 Case Runtime。框架重新探测并形成权威记录后，流程才算恢复。
+Facade 和 Runtime 是正常首选路径，不是排他能力边界。异常响应的 `technicalContext` 提供范围、错误码、日志入口、资源事实和返回框架的 `resume` 示例。
+
+主 Agent 处理批次级设备、资源锁、Appium/WDA 和 Coordinator 异常；Case Agent 处理当前 execution 的 App、session、Scene 与动作异常。两者都可以在职责和授权范围内使用 Shell 或平台原生工具，但不能直接修改 Batch、Execution、Result、Scene、事件或报告，也不能处置活动批次或归属不明资源。
+
+问题缓解后必须回到 `advanceRun`、`observe` 或 `recover`，由框架重新核对现场并持久化。

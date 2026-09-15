@@ -7,7 +7,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { commitWithDashboard } = require('../batch');
-const { createCaseDefinition } = require('../execution/contracts/case-definition-contract');
 const { COORDINATOR_CAPABILITIES } = require('../coordinator/agent-facing-contract');
 
 const repo = path.resolve(__dirname, '../..');
@@ -105,7 +104,6 @@ for (const fixture of [
   { args: ['scripts/workspace.js'], command: 'scripts/workspace.js' },
   { args: ['scripts/coordinator-agent.js'], command: 'scripts/coordinator-agent.js prepare' },
   { args: ['scripts/import-case.js'], command: 'scripts/import-case.js' },
-  { args: ['scripts/case-definition.js', 'unknown'], command: 'scripts/case-definition.js status' },
   { args: ['scripts/build-agent-contract.js'], command: 'scripts/build-agent-contract.js' },
   { args: ['scripts/probe-env.sh'], command: 'scripts/probe-env.sh', executable: 'bash' },
   { args: ['scripts/prepare-env.sh'], command: 'scripts/prepare-env.sh', executable: 'bash' },
@@ -145,59 +143,10 @@ assert.strictEqual(environment.status, 'CONFIRMED');
 assert.strictEqual(fs.existsSync(path.join(workspace, 'runs')), false);
 assert.strictEqual(fs.existsSync(path.join(workspace, 'environment-confirmation.json')), true);
 
-const definitionStatus = run([
-  'scripts/case-definition.js', 'status', '--workspace', workspace,
-  '--case-no', imported.caseJson.identity.caseNo,
-]);
-assert.strictEqual(definitionStatus.status, 'CASE_DEFINITION_REQUIRED');
-assert.deepStrictEqual(Object.keys(definitionStatus.compilerHandoff), ['loaderCommand']);
-const compilerInput = run([
-  'scripts/case-definition.js', 'load-source', '--workspace', workspace,
-  '--case-no', imported.caseJson.identity.caseNo,
-]);
-assert.strictEqual(compilerInput.source, fs.readFileSync(input, 'utf8'));
-assert.match(compilerInput.compilerPrompt, /Case Definition Compiler/);
-assert.deepStrictEqual(compilerInput.publisher.contract.schema.required,
-  ['summary', 'expectations', 'initialStateIntent']);
-assert.strictEqual(compilerInput.publisher.contract.schema.properties.initialStateIntent
-  .properties.targetState.enum.includes('KEEP_EXISTING'), true);
-assert.doesNotThrow(() => createCaseDefinition({
-  caseKey: compilerInput.caseKey,
-  sourceText: compilerInput.source,
-  candidate: compilerInput.publisher.contract.example,
-  compilerProfileSha: 'case-definition-compiler-contract-test',
-  publishedAt: '2026-09-11T08:00:00.000Z',
-}));
-const publishedDefinition = run([
-  'scripts/case-definition.js', 'publish', '--workspace', workspace,
-  '--case-no', imported.caseJson.identity.caseNo,
-  '--compiler-profile-sha', 'case-definition-compiler-formal-test',
-  '--candidate-json', JSON.stringify({
-    summary: '验证当前页面是否符合用例描述',
-    preconditions: [],
-    expectations: [{
-      text: '当前页面符合用例描述',
-      sourceEvidence: [{ quote: '看一下当前页面是否符合用例描述' }],
-    }],
-    ambiguities: ['原文未给出更具体的验收内容'],
-    initialStateIntent: {
-      targetState: 'KEEP_EXISTING',
-      rationale: '原文未要求重置 App 状态',
-      sourceEvidence: [],
-    },
-  }),
-]);
-
 const executionRequest = run([
   'scripts/execution-request.js', 'create', '--workspace', workspace, '--batch-id', batchId,
   '--mode', 'single',
-  '--targets-json', JSON.stringify([{
-    caseNo: imported.caseJson.identity.caseNo,
-    definitionRef: {
-      definitionId: publishedDefinition.definition.definitionId,
-      definitionSha: publishedDefinition.definition.definitionSha,
-    },
-  }]),
+  '--targets-json', JSON.stringify([{ caseNo: imported.caseJson.identity.caseNo }]),
   '--user-instruction', '单独执行当前导入的用例',
 ]);
 assert.strictEqual(executionRequest.mode, 'SINGLE');

@@ -10,12 +10,10 @@ const { buildContract } = require('../build-agent-contract');
 const { createExecution } = require('../case-runtime/lifecycle');
 const { run } = require('../case-runtime/agent-facing-client');
 const { createCaseContract } = require('../execution/contracts/case-contract');
-const { createCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { createInitialStatePreflight } = require('../lib/app-provisioning');
 const { readExecutionReport } = require('../lib/execution-reader');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestWorkspace } = require('./current-fixture');
-const { publishCaseDefinition } = require('../case/definition-store');
 
 process.env.MAVT_SELF_TEST = '1';
 
@@ -53,27 +51,6 @@ function executeResult(verdict, options = {}) {
   fs.mkdirSync(caseDir, { recursive: true });
   fs.writeFileSync(path.join(caseDir, 'source.md'), source);
   writeJsonAtomic(path.join(caseDir, 'case.json'), caseJson);
-  const caseSpec = createCaseSpec({
-    sourceText: source,
-    spec: {
-      summary: source,
-      preconditions: ['目标 App 已启动'],
-      expectations: [{ text: '目标页面符合用例预期', sourceEvidence: [{ quote: source }] }],
-      ambiguities: [],
-    },
-  });
-  const publishedDefinition = publishCaseDefinition({
-    caseDir,
-    candidate: {
-      summary: caseSpec.summary,
-      preconditions: caseSpec.preconditions,
-      expectations: caseSpec.expectations,
-      ambiguities: caseSpec.ambiguities,
-      initialStateIntent: { targetState: 'KEEP_EXISTING', rationale: '该结果矩阵用例不要求重置 App 状态', sourceEvidence: [] },
-    },
-    compilerProfileSha: 'case-definition-compiler-test',
-    now: '2026-09-04T02:00:00.000Z',
-  });
   const initialStateRequirement = {
     schemaVersion: 1,
     targetState: 'KEEP_EXISTING',
@@ -94,8 +71,6 @@ function executeResult(verdict, options = {}) {
     platform: 'harmony',
     sourceText: source,
     caseJson,
-    caseDefinition: publishedDefinition.definition,
-    caseSpec,
     targetBinding: binding,
     initialStateRequirement,
     initialStatePreflight,
@@ -115,6 +90,15 @@ function executeResult(verdict, options = {}) {
   assert.strictEqual(started.execution.schemaVersion, 11);
   assert.ok(started.execution.validationProfileSha);
   assert.strictEqual(readExecutionReport(started.execDir).readerFamily, 'current-execution');
+  const planned = run(started.execDir, {
+    capability: 'plan',
+    understanding: source,
+    preconditions: ['目标 App 已启动'],
+    verificationPoints: [{ text: '目标页面符合用例预期' }],
+    items: ['确认目标页面现场', '完成验证点判断'],
+    uncertainties: [],
+  }, { now: '2026-09-04T02:00:00.500Z' });
+  assert.strictEqual(planned.status, 'CASE_MODEL_RECORDED');
   let technicalFactRef = null;
   const observed = run(started.execDir, {
     capability: 'observe', purpose: '确认目标页面表现', expectationRefs: ['E1'],
@@ -125,11 +109,6 @@ function executeResult(verdict, options = {}) {
     observation: `截图中的目标页面表现可用于 ${verdict} 判断`,
   }, { now: '2026-09-04T02:00:01.100Z' });
   assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
-  const planned = run(started.execDir, {
-    capability: 'plan', items: ['确认目标页面现场', '完成验证点判断'],
-  }, { now: '2026-09-04T02:00:01.200Z' });
-  assert.strictEqual(planned.status, 'PLAN_RECORDED');
-
   if (options.technical) {
     const technical = run(started.execDir, {
       capability: 'observe', purpose: '获取可用于最终判断的现场', expectationRefs: ['E1'],

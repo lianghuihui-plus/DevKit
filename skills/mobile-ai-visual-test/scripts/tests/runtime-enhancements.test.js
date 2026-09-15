@@ -83,6 +83,22 @@ const scene = {
   }],
 };
 scene.capabilities = buildCapabilities(scene, 'harmony');
+assert.strictEqual(scene.capabilities.some((item) => ['swipeLeft', 'swipeRight'].includes(item.kind)), false);
+const horizontalScene = {
+  ...scene,
+  sceneId: 'scene-horizontal',
+  scrollContexts: [{ id: 'scroll-horizontal-1', axis: 'HORIZONTAL', trackingStatus: 'TRACKING', bounds: [100, 600, 900, 1000], suggestedSwipeDistance: 400 }],
+};
+horizontalScene.capabilities = buildCapabilities(horizontalScene, 'harmony');
+const swipeLeftCapability = horizontalScene.capabilities.find((item) => item.kind === 'swipeLeft');
+assert.ok(swipeLeftCapability);
+const boundedSwipe = resolveAction(horizontalScene, {
+  capabilityId: swipeLeftCapability.id,
+  decision: { purpose: '在已识别容器中向左滚动', expectationRefs: [] },
+}, 'harmony').action;
+assert.deepStrictEqual(boundedSwipe.targetBounds, [100, 600, 900, 1000]);
+assert.strictEqual(boundedSwipe.fromY, 800);
+assert.strictEqual(boundedSwipe.toY, 800);
 const longPressCapability = scene.capabilities.find((item) => item.kind === 'longPress');
 assert.deepStrictEqual(longPressCapability.input, { durationMs: 'positive-integer' });
 assert.strictEqual(resolveAction(scene, {

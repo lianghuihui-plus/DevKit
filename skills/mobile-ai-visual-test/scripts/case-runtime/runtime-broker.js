@@ -35,7 +35,7 @@ function executeAgentRequest(execDir, request, options = {}) {
 }
 
 function executeFacadeRequest(execDir, request, options = {}) {
-  if (['reviewKnowledge', 'recordPlan'].includes(request?.operation)) {
+  if (['reviewKnowledge', 'recordCaseModel', 'prepare'].includes(request?.operation)) {
     const resolved = path.resolve(execDir);
     const runtime = readJson(path.join(resolved, 'runtime.json'), null);
     if (!isSupportedBroker(runtime?.broker) || !runtime?.agentFacing?.entry || !runtime?.agentFacing?.requestPath) {

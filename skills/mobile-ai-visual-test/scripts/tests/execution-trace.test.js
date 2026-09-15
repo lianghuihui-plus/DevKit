@@ -26,11 +26,11 @@ assert.strictEqual(trace.screenshots.length, 3);
 const action = trace.entries.find((entry) => entry.category === 'ACTION');
 assert.strictEqual(action.beforeScreenshot.ref, 'screenshots/scene-0001.png');
 assert.strictEqual(action.afterScreenshot.ref, 'screenshots/scene-0002.png');
-assert.strictEqual(action.spatialEvidence.consistency, 'MATCHED');
+assert.strictEqual(action.spatialEvidence.coordinateTransform, 'MATCHED');
 assert.strictEqual(action.spatialEvidence.certainty, 'DISPATCH_ONLY');
 assert.strictEqual(action.spatialEvidenceScreenshot.ref, 'action-spatial-evidence/action-0001.svg');
 assert.strictEqual(action.spatialEvidenceScreenshot.baseRef, undefined);
-assert.strictEqual(action.actionEffect.status, 'UNCHANGED');
+assert.strictEqual(action.screenComparison.status, 'IDENTICAL');
 assert.strictEqual(action.intent, '打开目标并验证结果');
 assert.strictEqual(action.expectedOutcome, '页面展示目标结果');
 assert.deepStrictEqual(action.expectationAssessment, {

@@ -7,12 +7,12 @@ const { AGENT_CONTRACT_DEFINITIONS, OPERATION_CONTRACT, RUNTIME_OPERATIONS } = r
 
 const VERDICTS = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
 const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
-const RESULT_FIELDS = new Set(['verdict', 'summary', 'checks', 'uncertainties']);
+const RESULT_FIELDS = new Set(['verdict', 'summary', 'checks', 'uncertainties', 'caseModelRevision']);
 const CHECK_FIELDS = new Set(['expectationRef', 'status', 'actual', 'sceneRefs', 'knowledgeRefs', 'technicalRefs', 'evidenceBasis']);
 const VERIFICATION_KINDS = new Set(['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE']);
 const DECISION_FIELDS = new Set([
   'assessment', 'observation', 'conclusion', 'purpose', 'expectedOutcome',
-  'expectationRefs', 'planUpdate', 'knowledgeReview', 'uncertainties',
+  'expectationRefs', 'knowledgeReview', 'uncertainties',
 ]);
 const REQUEST_FIELDS = Object.freeze(Object.fromEntries(Object.entries(OPERATION_CONTRACT)
   .map(([operation, definition]) => [operation, new Set(definition.requestFields)])));
@@ -53,12 +53,6 @@ function validateDecision(value) {
   }
   ensureString(decision.purpose, 'decision.purpose', 'CASE_NARRATIVE_INVALID');
   validateStringArray(decision.expectationRefs, 'decision.expectationRefs');
-  if (decision.planUpdate !== undefined) {
-    const update = ensureObject(decision.planUpdate, 'decision.planUpdate', 'CASE_NARRATIVE_INVALID');
-    ensureString(update.reason, 'decision.planUpdate.reason', 'CASE_NARRATIVE_INVALID');
-    const next = validateStringArray(update.next, 'decision.planUpdate.next');
-    if (!next.length) throw contractError('CASE_NARRATIVE_INVALID', 'decision.planUpdate.next must contain at least one item', { fieldPath: 'decision.planUpdate.next' });
-  }
   if (decision.knowledgeReview !== undefined) require('./knowledge-review').normalizeKnowledgeReview(decision.knowledgeReview);
   if (decision.uncertainties !== undefined) validateStringArray(decision.uncertainties, 'decision.uncertainties');
   return decision;
@@ -76,6 +70,9 @@ function validateCaseResult(value) {
   ensureOnlyFields(value, RESULT_FIELDS, 'CaseResult');
   if (!VERDICTS.includes(value.verdict)) throw contractError('CASE_RESULT_INVALID', `verdict must be one of ${VERDICTS.join(', ')}`);
   ensureString(value.summary, 'summary', 'CASE_RESULT_INVALID');
+  if (value.caseModelRevision !== undefined && (!Number.isInteger(value.caseModelRevision) || value.caseModelRevision < 1)) {
+    throw contractError('CASE_RESULT_INVALID', 'caseModelRevision must be a positive integer');
+  }
   ensureArray(value.checks, 'checks', 'CASE_RESULT_INVALID').forEach((check, index) => {
     ensureObject(check, `checks[${index}]`, 'CASE_RESULT_INVALID');
     ensureOnlyFields(check, CHECK_FIELDS, `checks[${index}]`);
@@ -182,8 +179,14 @@ function validateRuntimeRequest(value) {
   }
   if (operation === 'inspectScene') {
     ensureString(value.basedOnSceneId, 'basedOnSceneId', 'CASE_RUNTIME_REQUEST_INVALID');
-    if (!['ELEMENTS', 'CAPABILITIES', 'LAYOUT'].includes(value.view)) {
-      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'inspectScene.view must be ELEMENTS, CAPABILITIES, or LAYOUT');
+    if (!['ELEMENTS', 'CAPABILITIES', 'LAYOUT', 'ACTION'].includes(value.view)) {
+      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'inspectScene.view must be ELEMENTS, CAPABILITIES, LAYOUT, or ACTION');
+    }
+    if (value.view === 'ACTION') {
+      ensureString(value.observation, 'observation', 'CASE_RUNTIME_REQUEST_INVALID');
+      if (value.expectationRefs !== undefined) validateStringArray(value.expectationRefs, 'expectationRefs');
+    } else if (value.observation !== undefined || value.expectationRefs !== undefined) {
+      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'inspectScene observation and expectationRefs are only supported for ACTION');
     }
     if (value.filter !== undefined) {
       const filter = ensureObject(value.filter, 'filter', 'CASE_RUNTIME_REQUEST_INVALID');
@@ -212,10 +215,16 @@ function validateRuntimeRequest(value) {
   if (operation === 'reviewKnowledge' && value.decision?.knowledgeReview === undefined) {
     throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'reviewKnowledge requires decision.knowledgeReview');
   }
-  if (operation === 'recordPlan' && value.decision?.planUpdate === undefined) {
-    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'recordPlan requires decision.planUpdate');
+  if (operation === 'recover') {
+    ensureString(value.reason, 'reason', 'CASE_RUNTIME_REQUEST_INVALID');
+    if (value.externalAction !== undefined) {
+      const action = ensureObject(value.externalAction, 'externalAction', 'CASE_RUNTIME_REQUEST_INVALID');
+      const unsupported = Object.keys(action).filter((field) => !['summary', 'tool'].includes(field));
+      if (unsupported.length) throw contractError('CASE_RUNTIME_REQUEST_INVALID', `externalAction contains unsupported fields: ${unsupported.join(', ')}`);
+      ensureString(action.summary, 'externalAction.summary', 'CASE_RUNTIME_REQUEST_INVALID');
+      if (action.tool !== undefined) ensureString(action.tool, 'externalAction.tool', 'CASE_RUNTIME_REQUEST_INVALID');
+    }
   }
-  if (operation === 'recover') ensureString(value.reason, 'reason', 'CASE_RUNTIME_REQUEST_INVALID');
   if (operation === 'finish') validateCaseResult(value.result);
   return value;
 }

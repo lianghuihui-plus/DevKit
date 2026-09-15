@@ -29,6 +29,8 @@ const ASSESSMENT = object({
   reason: STRING,
 }, ['entryId', 'status', 'reason']);
 
+const EXTERNAL_ACTION = object({ summary: STRING, tool: STRING }, ['summary']);
+
 const CHECK = object({
   expectationRef: STRING,
   status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'] },
@@ -39,18 +41,24 @@ const CHECK = object({
   evidenceBasis: object({ type: { const: 'SEARCH_ABSENCE' }, sceneRef: STRING, scrollContextRef: STRING }, ['type', 'sceneRef', 'scrollContextRef']),
 }, ['expectationRef', 'status', 'actual']);
 
+const VERIFICATION_POINT = object({ ref: STRING, text: STRING }, ['text']);
+
 const SCHEMAS = Object.freeze({
   observe: object({ capability: { const: 'observe' }, purpose: STRING, expectationRefs: STRING_ARRAY }, ['capability']),
   inspect: object({
-    capability: { const: 'inspect' }, channel: { enum: ['visual', 'elements', 'capabilities', 'layout'] },
+    capability: { const: 'inspect' }, channel: { enum: ['visual', 'action', 'elements', 'capabilities', 'layout'] },
     observation: STRING, expectationRefs: STRING_ARRAY,
     filter: object({ interactiveOnly: { type: 'boolean' }, textContains: STRING, role: STRING, actionType: STRING, elementRef: STRING }, []),
   }, ['capability', 'channel']),
   plan: object({
     capability: { const: 'plan' },
+    understanding: STRING,
+    preconditions: STRING_ARRAY,
+    verificationPoints: { type: 'array', minItems: 1, items: VERIFICATION_POINT },
     items: { type: 'array', minItems: 1, items: STRING },
+    uncertainties: STRING_ARRAY,
     reason: STRING,
-  }, ['capability', 'items']),
+  }, ['capability', 'understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties']),
   act: object({ capability: { const: 'act' }, actionRef: STRING, input: INPUT, purpose: STRING, expectationRefs: STRING_ARRAY }, ['capability', 'actionRef', 'purpose']),
   knowledgeQuery: object({ capability: { const: 'knowledge' }, query: STRING, expectationRefs: STRING_ARRAY }, ['capability', 'query']),
   knowledgeReview: object({
@@ -58,7 +66,11 @@ const SCHEMAS = Object.freeze({
     conclusion: { enum: ['APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT'] },
     assessments: { type: 'array', items: ASSESSMENT },
   }, ['capability', 'queryId', 'conclusion', 'assessments']),
-  recover: object({ capability: { const: 'recover' }, reason: STRING }, ['capability', 'reason']),
+  recover: object({
+    capability: { const: 'recover' }, reason: STRING,
+    targetState: { enum: ['APP_LOCAL_STATE_EMPTY', 'FRESH_INSTALL'] },
+    externalAction: EXTERNAL_ACTION,
+  }, ['capability', 'reason']),
   finish: object({ capability: { const: 'finish' }, summary: STRING, checks: { type: 'array', minItems: 1, items: CHECK }, uncertainties: STRING_ARRAY }, ['capability', 'summary', 'checks']),
 });
 
@@ -119,12 +131,12 @@ function projectActions(scene) {
   return [...capabilities, ...visualActionExamples(scene)];
 }
 
-function finishTemplate(caseSpec) {
+function finishTemplate(caseModel) {
   return {
     capability: 'finish',
     summary: '简要说明本用例的最终结果',
-    checks: (caseSpec?.expectations || []).map((item) => ({
-      expectationRef: item.id,
+    checks: (caseModel?.verificationPoints || []).map((item) => ({
+      expectationRef: item.ref,
       status: 'INCONCLUSIVE',
       actual: '说明该验证点的实际结果',
       evidence: ['current'],
@@ -133,26 +145,71 @@ function finishTemplate(caseSpec) {
   };
 }
 
-function capabilityCards({ scene = null, caseSpec = null } = {}) {
+function screenComparison(effect) {
+  const status = effect?.status === 'CHANGED' ? 'DIFFERENT'
+    : effect?.status === 'UNCHANGED' ? 'IDENTICAL' : 'UNAVAILABLE';
+  return {
+    status,
+    beforeSceneRef: effect?.beforeSceneRef || null,
+    afterSceneRef: effect?.afterSceneRef || null,
+  };
+}
+
+function projectPreviousAction(previousAction, caseModel) {
+  if (!previousAction) return null;
+  const { observedEffect, ...facts } = previousAction;
+  const spatialEvidence = facts.spatialEvidence ? {
+    ...facts.spatialEvidence,
+    inspect: {
+      example: {
+        capability: 'inspect',
+        channel: 'action',
+        observation: '描述标注图中实际看到的落点或轨迹事实',
+        expectationRefs: (caseModel?.verificationPoints || []).map((item) => item.ref),
+      },
+    },
+  } : null;
+  return {
+    ...facts,
+    screenComparison: screenComparison(observedEffect),
+    ...(spatialEvidence ? { spatialEvidence } : {}),
+  };
+}
+
+function capabilityCards({ scene = null, caseModel = null } = {}) {
   const firstAction = projectActions(scene)[0]?.example || {
     capability: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] }, purpose: '点击截图中的目标', expectationRefs: [],
   };
-  const finish = finishTemplate(caseSpec);
+  const finish = finishTemplate(caseModel);
   if (!finish.checks.length) {
     finish.checks.push({ expectationRef: 'E1', status: 'INCONCLUSIVE', actual: '说明该验证点的实际结果', evidence: ['current'] });
   }
   return {
     observe: { useWhen: '没有 Scene，或页面可能已在外部发生变化', required: [], optional: ['purpose', 'expectationRefs'], source: {}, example: { capability: 'observe' }, returns: ['SCENE'] },
-    inspect: { useWhen: '需要查看控件树、完整布局，或登记已实际查看的截图事实', required: ['channel'], optional: ['filter', 'observation', 'expectationRefs'], source: { channel: '当前调查意图' }, example: { capability: 'inspect', channel: 'elements' }, returns: ['SCENE_INSPECTION', 'VISUAL_INSPECTED'] },
-    plan: { useWhen: '初步理解现场后、首次 act/recover/finish 前；路径变化时完整替换当前计划，提交全部 items 并填写 reason', required: ['items'], optional: ['reason'], source: {}, example: { capability: 'plan', items: ['观察当前页面', '执行必要操作', '验证预期结果'] }, returns: ['PLAN_RECORDED'] },
-    act: { useWhen: '已有执行计划，且当前 Scene 提供了可执行动作', required: ['actionRef', 'purpose'], optional: ['input', 'expectationRefs'], source: { actionRef: 'scene.actions[].actionRef', input: '对应 action 的 requiredInput/example' }, example: firstAction, returns: ['SCENE', 'SCENE_CHANGED'] },
+    inspect: { useWhen: '需要查看控件树、完整布局、当前截图，或上一动作的落点标注图', required: ['channel'], optional: ['filter', 'observation', 'expectationRefs'], source: { channel: '当前调查意图' }, example: { capability: 'inspect', channel: 'elements' }, returns: ['SCENE_INSPECTION', 'VISUAL_INSPECTED', 'ACTION_SPATIAL_INSPECTED'] },
+    plan: {
+      useWhen: '形成或调整本次用例理解、前置条件、验证点和执行计划；第二版起填写 reason',
+      required: ['understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties'],
+      optional: ['reason'],
+      source: {},
+      example: {
+        capability: 'plan',
+        understanding: '说明本次用例要验证的业务目标',
+        preconditions: [],
+        verificationPoints: [{ text: '说明一个可验证的实际结果' }],
+        items: ['观察当前页面', '执行必要操作', '验证实际结果'],
+        uncertainties: [],
+      },
+      returns: ['CASE_MODEL_RECORDED'],
+    },
+    act: { useWhen: '当前 Scene 提供了可执行动作', required: ['actionRef', 'purpose'], optional: ['input', 'expectationRefs'], source: { actionRef: 'scene.actions[].actionRef', input: '对应 action 的 requiredInput/example' }, example: firstAction, returns: ['SCENE', 'SCENE_CHANGED'] },
     knowledge: { useWhen: '现场异常、无法解释、无法决定下一步，或负向结论需要知识支撑', required: ['query'], optional: ['expectationRefs'], source: { queryId: '知识查询响应的 nextCall.example' }, example: { capability: 'knowledge', query: '描述当前无法解释的问题', expectationRefs: [] }, returns: ['KNOWLEDGE', 'KNOWLEDGE_REVIEWED'] },
-    recover: { useWhen: '已有执行计划，且目标 App 已无法继续交互，需要冷启动恢复', required: ['reason'], optional: [], source: {}, example: { capability: 'recover', reason: '目标 App 无法继续交互' }, returns: ['SCENE', 'RECOVERY_APPLIED'] },
-    finish: { useWhen: '已有执行计划，且证据足够形成结论或已无法安全继续', required: ['summary', 'checks'], optional: ['uncertainties'], source: { checks: 'Frozen CaseSpec expectations' }, example: finish, returns: ['COMPLETED', 'RESULT_INCOMPLETE'] },
+    recover: { useWhen: '需要在已授权范围内建立初始 App 状态、冷启动恢复，或登记框架外技术处置', required: ['reason'], optional: ['targetState', 'externalAction'], source: {}, example: { capability: 'recover', reason: '目标 App 无法继续交互' }, returns: ['SCENE', 'RECOVERY_APPLIED', 'EXTERNAL_ACTION_RECORDED'] },
+    finish: { useWhen: '已形成本次用例理解与计划，且证据足够形成结论或已无法安全继续', required: ['summary', 'checks'], optional: ['uncertainties'], source: { checks: '当前 Case Model 的 ACTIVE 验证点' }, example: finish, returns: ['COMPLETED', 'RESULT_INCOMPLETE'] },
   };
 }
 
-function projectScene(scene, { caseSpec = null } = {}) {
+function projectScene(scene, { caseModel = null } = {}) {
   if (!scene) return null;
   return {
     sceneRef: scene.sceneId,
@@ -175,15 +232,22 @@ function projectScene(scene, { caseSpec = null } = {}) {
     app: scene.app,
     signals: scene.signals,
     conflicts: scene.conflicts || [],
-    previousAction: scene.previousAction || null,
+    previousAction: projectPreviousAction(scene.previousAction, caseModel),
     actions: projectActions(scene),
     inspect: {
       visual: { tool: 'view_image', path: scene.screenshot?.path || null, example: { capability: 'inspect', channel: 'visual', observation: '描述截图中实际看到的事实', expectationRefs: [] } },
+      ...(scene.previousAction?.spatialEvidence ? { action: {
+        tool: 'view_image',
+        path: scene.previousAction.spatialEvidence.annotatedScreenshot?.path || null,
+        example: projectPreviousAction(scene.previousAction, caseModel).spatialEvidence.inspect.example,
+      } } : {}),
       elements: { example: { capability: 'inspect', channel: 'elements' } },
       capabilities: { example: { capability: 'inspect', channel: 'capabilities' } },
       layout: { example: { capability: 'inspect', channel: 'layout' } },
     },
-    finish: { example: finishTemplate(caseSpec) },
+    caseModel,
+    plan: { example: capabilityCards({ scene, caseModel }).plan.example },
+    finish: { example: finishTemplate(caseModel) },
   };
 }
 
@@ -193,6 +257,7 @@ module.exports = {
   actionRefFor,
   capabilityCards,
   finishTemplate,
+  projectPreviousAction,
   projectActions,
   projectScene,
   validateAgentFacingRequest,

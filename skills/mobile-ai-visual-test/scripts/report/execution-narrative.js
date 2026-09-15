@@ -11,6 +11,27 @@ function latest(items) {
   return items.slice().sort(bySequence).at(-1) || null;
 }
 
+function modelContext(event) {
+  if (!event) return null;
+  return {
+    summary: event.understanding,
+    preconditions: event.preconditions || [],
+    expectations: (event.verificationPoints || []).filter((item) => item.status !== 'CANCELLED').map((item) => ({
+      id: item.ref,
+      text: item.text,
+      verificationKind: 'DIRECT_OBSERVATION',
+    })),
+    initialPlan: event.items || [],
+    uncertainties: event.uncertainties || [],
+  };
+}
+
+function modelForEvent(models, event) {
+  const explicitRevision = Number(event?.caseModelRevision || 0);
+  if (explicitRevision) return models.find((model) => model.revision === explicitRevision) || null;
+  return models.filter((model) => Number(model.sequence || 0) <= Number(event?.sequence || 0)).at(-1) || null;
+}
+
 function sceneSummary(event) {
   if (!event) return null;
   return {
@@ -60,14 +81,15 @@ function investigationStatus(expectationRef, report, events, reviews) {
 
 function projectCurrentNarrative(report) {
   const events = Array.isArray(report.events) ? report.events.slice().sort(bySequence) : [];
-  const contextEvents = events.filter((event) => event.type === 'caseContextRecorded');
+  const modelEvents = events.filter((event) => event.type === 'caseModelRevised');
+  const legacyContextEvents = events.filter((event) => event.type === 'caseContextRecorded');
   const decisions = events.filter((event) => event.type === 'agentDecisionRecorded');
   const executionDecisions = decisions.filter((event) => !['finish', 'recordPlan'].includes(event.requestedOperation));
   const finalDecisionEvent = latest(decisions.filter((event) => event.requestedOperation === 'finish'));
   const gaps = events.filter((event) => event.type === 'narrativeGap');
-  const latestContextEvent = latest(contextEvents);
-  const firstContextEvent = contextEvents[0] || null;
-  const context = latestContextEvent?.caseContext || null;
+  const latestModel = latest(modelEvents);
+  const latestLegacyContext = latest(legacyContextEvents);
+  const context = modelContext(latestModel) || latestLegacyContext?.caseContext || null;
   const scenes = new Map(events.filter((event) => event.type === 'sceneObserved').map((event) => [event.sceneId, event]));
   const requestedActions = events.filter((event) => event.type === 'actionRequested');
   const actionResults = events.filter((event) => ['actionCompleted', 'actionOutcomeUnknown'].includes(event.type));
@@ -84,44 +106,24 @@ function projectCurrentNarrative(report) {
   const recoveryByDecision = new Map(events.filter((event) => ['appRecovered', 'recoveryFailed', 'recoveryOutcomeUnknown'].includes(event.type) && event.decisionId)
     .map((event) => [event.decisionId, event]));
 
-  let planVersion = 0;
-  const planHistory = [];
-  if (firstContextEvent?.caseContext?.initialPlan?.length) {
-    planVersion = 1;
-    planHistory.push({
-      version: planVersion,
-      time: firstContextEvent.time,
-      reason: firstContextEvent.reason,
-      items: firstContextEvent.caseContext.initialPlan,
-      decisionId: null,
-    });
-  }
-  for (const event of events) {
-    if (event.type === 'agentDecisionRecorded' && event.decision?.planUpdate) {
-      planVersion += 1;
-      planHistory.push({
-        version: planVersion,
-        time: event.time,
-        reason: event.decision.planUpdate.reason,
-        items: event.decision.planUpdate.next,
-        decisionId: event.decisionId,
-      });
+  const planHistory = modelEvents.length ? modelEvents.map((event) => ({
+    version: event.revision, time: event.time, reason: event.reason, items: event.items || [], decisionId: null,
+  })) : [];
+  if (!modelEvents.length) {
+    const firstContext = legacyContextEvents[0] || null;
+    if (firstContext?.caseContext?.initialPlan?.length) {
+      planHistory.push({ version: 1, time: firstContext.time, reason: firstContext.reason, items: firstContext.caseContext.initialPlan, decisionId: null });
+    }
+    for (const event of decisions.filter((item) => item.decision?.planUpdate)) {
+      planHistory.push({ version: planHistory.length + 1, time: event.time, reason: event.decision.planUpdate.reason, items: event.decision.planUpdate.next, decisionId: event.decisionId });
     }
   }
-
-  const understandingHistory = contextEvents.map((event) => ({
-    version: event.contextVersion,
-    time: event.time,
-    reason: event.reason,
-    caseContext: event.caseContext,
+  const understandingHistory = modelEvents.length ? modelEvents.map((event) => ({
+    version: event.revision, time: event.time, reason: event.reason, caseContext: modelContext(event), retiredVerificationRefs: event.retiredVerificationRefs || [],
+  })) : legacyContextEvents.map((event) => ({
+    version: event.contextVersion, time: event.time, reason: event.reason, caseContext: event.caseContext,
   }));
-  const initialPlan = planHistory[0] || (firstContextEvent ? {
-    version: null,
-    time: firstContextEvent.time,
-    reason: firstContextEvent.reason,
-    items: [],
-    decisionId: null,
-  } : null);
+  const initialPlan = planHistory[0] || null;
 
   const expectations = context?.expectations || [];
   const expectationByRef = new Map(expectations.map((item) => [item.id, item]));
@@ -144,8 +146,12 @@ function projectCurrentNarrative(report) {
   }));
   const steps = executionDecisions.map((event, index) => {
     const decision = event.decision || {};
+    const stepModel = modelForEvent(modelEvents, event);
+    const stepExpectations = new Map((stepModel?.verificationPoints || context?.expectations || []).map((item) => [item.ref || item.id, item]));
     const action = actionByDecision.get(event.decisionId) || null;
     const actionResult = action ? resultByOperation.get(action.operationId) || null : null;
+    const spatialInspection = action ? latest(events.filter((candidate) => candidate.type === 'actionSpatialInspected'
+      && candidate.operationId === action.operationId)) : null;
     const knowledge = knowledgeByDecision.get(event.decisionId) || null;
     const recovery = recoveryByDecision.get(event.decisionId) || null;
     const visualInspection = events.find((candidate) => candidate.type === 'visualInspected' && candidate.decisionId === event.decisionId) || null;
@@ -169,7 +175,12 @@ function projectCurrentNarrative(report) {
         lifecycle: actionResult.lifecycle || null,
         command: actionResult.command || null,
         deviceExecution: actionResult.deviceExecution || null,
-        observedEffect: actionResult.observedEffect || null,
+        screenComparison: actionResult.observedEffect ? {
+          status: actionResult.observedEffect.status === 'CHANGED' ? 'DIFFERENT'
+            : actionResult.observedEffect.status === 'UNCHANGED' ? 'IDENTICAL' : 'UNAVAILABLE',
+          beforeSceneRef: actionResult.observedEffect.beforeSceneRef || null,
+          afterSceneRef: actionResult.observedEffect.afterSceneRef || null,
+        } : null,
         duringActionObservation: actionResult.duringActionObservation || null,
       } : null,
       spatialEvidence: actionResult?.spatialEvidenceRef
@@ -178,6 +189,12 @@ function projectCurrentNarrative(report) {
           actionType: actionResult.action?.type || action.action?.type,
         })
         : actionResult?.coordinateAudit || null,
+      spatialInspection: spatialInspection ? {
+        observation: spatialInspection.observation,
+        time: spatialInspection.time,
+        caseModelRevision: spatialInspection.caseModelRevision || null,
+        expectationRefs: spatialInspection.expectationRefs || [],
+      } : null,
     } : null;
     const recoveryView = recovery ? { operationId: recovery.operationId, status: recovery.type === 'appRecovered' ? 'SUCCEEDED' : recovery.type === 'recoveryFailed' ? 'FAILED' : 'UNKNOWN', reason: recovery.reason || recovery.message || '' } : null;
     return {
@@ -194,9 +211,10 @@ function projectCurrentNarrative(report) {
       expectationRefs: decision.expectationRefs || [],
       expectationTargets: (decision.expectationRefs || []).map((ref) => ({
         ref,
-        text: expectationByRef.get(ref)?.text || ref,
+        text: stepExpectations.get(ref)?.text || ref,
       })),
-      planUpdate: decision.planUpdate || null,
+      caseModelRevision: stepModel?.revision || null,
+      planUpdate: modelEvents.length ? null : decision.planUpdate || null,
       action: actionView,
       knowledge: knowledge ? {
         queryId: knowledge.queryId,
@@ -244,7 +262,8 @@ function projectCurrentNarrative(report) {
   return {
     available: Boolean(context),
     recordingStatus,
-    contextVersion: latestContextEvent?.contextVersion || null,
+    contextVersion: latestModel?.revision || latestLegacyContext?.contextVersion || null,
+    caseModel: latestModel,
     understanding: context,
     understandingHistory,
     initialPlan,

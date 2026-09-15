@@ -7,7 +7,6 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { publishCaseDefinition } = require('../case/definition-store');
 const { confirmRun } = require('../coordinator/agent-facing-service');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
@@ -40,7 +39,7 @@ function submit(response, capability, request) {
   return runCoordinator([capability, '--state', response.statePath]);
 }
 
-function createDefinedCase(caseNo) {
+function createCase(caseNo) {
   const source = `验证组合流程用例 ${caseNo}`;
   const caseKey = `ck-${crypto.createHash('sha256').update(source).digest('hex').slice(0, 12)}`;
   const caseDir = path.join(workspace, 'cases', `${caseNo}__${caseKey}`);
@@ -53,19 +52,7 @@ function createDefinedCase(caseNo) {
     sourceText: source,
     importPath: `/fixtures/${caseNo}.md`,
   }));
-  const published = publishCaseDefinition({
-    caseDir,
-    compilerProfileSha: 'execution-flow-combination-test',
-    now: '2026-09-14T08:00:00.000Z',
-    candidate: {
-      summary: source,
-      preconditions: [],
-      expectations: [{ text: source, sourceEvidence: [{ quote: source }] }],
-      ambiguities: [],
-      initialStateIntent: { targetState: 'KEEP_EXISTING', rationale: '组合测试保留现有状态', sourceEvidence: [] },
-    },
-  });
-  return { caseNo, caseKey, caseDir, definitionRef: published.definition };
+  return { caseNo, caseKey, caseDir };
 }
 
 try {
@@ -77,7 +64,7 @@ try {
   assert.strictEqual(probe.platform, 'ios');
   assert.strictEqual(probe.devices[0].id, 'FAKE-IOS-SIMULATOR');
 
-  const current = createDefinedCase('014');
+  const current = createCase('014');
   confirmEnvironment({
     workspaceRoot: workspace,
     binding: { platform: 'harmony', deviceId: 'harmony-existing', appId: 'com.example.existing', entry: 'EntryAbility' },
@@ -147,7 +134,7 @@ try {
   assert.strictEqual(cancelledAgain.outcome, 'CANCELLED');
   assert.strictEqual(cancelledAgain.reportStatus, 'DEGRADED');
 
-  const historical = createDefinedCase('099');
+  const historical = createCase('099');
   const oldExecutionDir = path.join(historical.caseDir, 'platforms', 'harmony', 'executions', 'execution-schema-10');
   fs.mkdirSync(oldExecutionDir, { recursive: true });
   const oldExecution = `${JSON.stringify({

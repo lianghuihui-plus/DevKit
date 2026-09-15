@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { attachTechnicalFallback } = require('./lib/technical-fallback');
+const { attachTechnicalContext } = require('./lib/technical-context');
 const {
   advanceRun,
   cancelRun,
@@ -106,7 +106,7 @@ function errorResponse(error, command, retryWith = null, stalled = false, confir
     summary: error.message || String(error),
     retryable: false,
   };
-  return attachTechnicalFallback({
+  return attachTechnicalContext({
     status: inputInvalid ? 'REQUEST_INVALID' : 'TECHNICAL',
     code: error.code || 'COORDINATOR_AGENT_FAILED',
     command: `scripts/coordinator-agent.js ${COMMANDS.has(command) ? command : 'prepare'}`,
@@ -116,7 +116,7 @@ function errorResponse(error, command, retryWith = null, stalled = false, confir
     ...(inputInvalid && retryWith ? { retryWith } : {}),
     ...(inputInvalid && confirmChoices?.length ? { confirmChoices } : {}),
     ...commandHelp(COMMANDS.has(command) ? command : 'prepare'),
-  }, 'BATCH', 'RETRY_CURRENT_COMMAND');
+  }, 'COORDINATOR', retryWith || { capability: command === 'advance' ? 'advanceRun' : 'prepareRun' });
 }
 
 function retryWithFor(argv) {

@@ -90,14 +90,6 @@ function validateBatchContract(value) {
     ensureString(target.snapshotPath, `targets[${index}].snapshotPath`, 'BATCH_CONTRACT_INVALID');
     ensureString(target.sourceSha, `targets[${index}].sourceSha`, 'BATCH_CONTRACT_INVALID');
     ensureString(target.caseContractSha, `targets[${index}].caseContractSha`, 'BATCH_CONTRACT_INVALID');
-    if ((target.definitionId == null) !== (target.definitionSha == null)) {
-      throw contractError('BATCH_CONTRACT_INVALID', `targets[${index}] CaseDefinition binding is incomplete`);
-    }
-    if (target.definitionId != null) {
-      ensureString(target.definitionId, `targets[${index}].definitionId`, 'BATCH_CONTRACT_INVALID');
-      ensureString(target.definitionSha, `targets[${index}].definitionSha`, 'BATCH_CONTRACT_INVALID');
-    }
-    ensureString(target.caseSpecSha, `targets[${index}].caseSpecSha`, 'BATCH_CONTRACT_INVALID');
     const policy = validatePreparationPolicy(target.preparationPolicy);
     if (target.preparationPolicySha !== preparationPolicySha(policy)) throw contractError('BATCH_CONTRACT_INVALID', `targets[${index}].preparationPolicySha does not match preparationPolicy`);
     const requirement = validateInitialStateRequirement(target.initialStateRequirement);

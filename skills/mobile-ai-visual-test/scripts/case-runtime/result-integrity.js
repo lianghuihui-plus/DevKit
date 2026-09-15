@@ -9,7 +9,6 @@ const { readJson } = require('../lib/execution-lifecycle');
 const { technicalFacts, technicalFactState } = require('../lib/technical-facts');
 const { evidenceRef, readActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { validateCaseResult } = require('./contract');
-const { validateCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { buildKnowledgeIndex } = require('./knowledge-review');
 const store = require('./store');
 const { loadValidationProfile } = require('../execution/contracts/validation-profile-contract');
@@ -57,13 +56,14 @@ function validateExpectationCoverage(execDir, result, events, suppliedExecution 
     throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
 
-  const sourceText = fs.readFileSync(path.join(execDir, 'source.snapshot.md'), 'utf8');
-  const caseSpec = readJson(path.join(execDir, 'case-spec.snapshot.json'), null);
-  if (!caseSpec) throw contractError('CASE_SPEC_MISSING', 'frozen CaseSpec snapshot is missing');
-  validateCaseSpec(caseSpec, { sourceText, sourceSha: execution.sourceSha });
-  if (execution.caseSpecSha !== caseSpec.specSha) throw contractError('CASE_SPEC_CHANGED', 'execution CaseSpec binding changed');
+  const caseModel = require('./case-model-service').current(execDir);
+  if (!caseModel?.verificationPoints?.length) {
+    throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult requires a current Case Model with ACTIVE verification points', {
+      missing: [{ field: 'caseModel', reason: '尚未形成本次用例理解与验证点' }],
+    });
+  }
   const missing = [];
-  const expectedRefs = caseSpec.expectations.map((item) => item.id);
+  const expectedRefs = caseModel.verificationPoints.map((item) => item.ref);
   const suppliedRefs = result.checks.map((check) => check.expectationRef);
   const duplicates = suppliedRefs.filter((ref, index) => suppliedRefs.indexOf(ref) !== index);
   const unknown = [...new Set(suppliedRefs.filter((ref) => !expectedRefs.includes(ref)))];
@@ -74,7 +74,12 @@ function validateExpectationCoverage(execDir, result, events, suppliedExecution 
   if (missing.length) {
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult does not cover the current expectations', { missing });
   }
-  return { expectations: caseSpec.expectations, coveredExpectationRefs: suppliedRefs, complete: true };
+  return {
+    caseModelRevision: caseModel.revision,
+    expectations: caseModel.verificationPoints.map((item) => ({ ...item, id: item.ref })),
+    coveredExpectationRefs: suppliedRefs,
+    complete: true,
+  };
 }
 
 function investigationConclusion(conclusions) {

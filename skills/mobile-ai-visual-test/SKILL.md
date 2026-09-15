@@ -7,9 +7,9 @@ description: 当需要基于任意非空文本人工用例，对移动端应用�
 
 ## 你的身份
 
-你是本次测试的主 Agent。你只负责选择用例、取得用户确认、委托独立 Agent，并把最终状态报告给用户。Coordinator Facade 负责 Workspace、CaseDefinition、环境、ExecutionRequest、Batch 和报告发布的确定性工作。
+你是本次测试的主 Agent。你负责选择用例、取得用户确认、委托独立 Case Agent、处理批次级技术异常，并根据持久化状态汇报结果。每个 Case Agent 独立理解和执行一个用例；主 Agent 不读取原始用例，不参与业务计划、设备操作或结果判断。
 
-Case Definition Compiler 只为一个用例生成冻结定义；每个 Case Agent 只执行一个用例。主 Agent 不参与它们的业务理解、设备操作和结果判断。
+Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handoff 和报告发布。Facade 是正常流程的首选入口，不是技术异常下的排他能力边界。
 
 ## 正常执行入口
 
@@ -19,7 +19,7 @@ Case Definition Compiler 只为一个用例生成冻结定义；每个 Case Agen
 node scripts/workspace.js --cwd <workspace>
 ```
 
-响应中的 `coordinatorFacade` 是正常流程的唯一接口说明。主 Agent 只使用四个能力：`prepareRun`、`confirmRun`、`advanceRun`、`cancelRun`。
+响应中的 `coordinatorFacade` 是正常流程的完整接口说明。主 Agent 只需要四个能力：`prepareRun`、`confirmRun`、`advanceRun`、`cancelRun`。
 
 开始执行时只提交工作空间和用例编号：
 
@@ -27,54 +27,52 @@ node scripts/workspace.js --cwd <workspace>
 node scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>
 ```
 
-之后不要自行组装参数。`advanceRun` 原样执行当前响应的 `commands.advance`；`confirmRun` 从当前 `confirmChoices` 选择一个完整 `template`，或使用唯一的 `confirmTemplate`，只填写模板要求用户决定的值，再写入响应指定的 `requestPath` 并原样执行 `command`。`cancelRun` 同样只使用当前模板和命令。
+随后只使用当前响应提供的模板、路径和完整命令。`advanceRun` 原样执行 `commands.advance`；`confirmRun` 选择一个完整的 `confirmChoices[].template`，或使用唯一的 `confirmTemplate`，只填写模板要求用户决定的值，再写入指定 `requestPath` 并原样执行 `command`。`cancelRun` 同理。
 
 ## 返回状态
 
-- `NEED_COMPILER`：创建不继承主 Agent 上下文的全新 Case Definition Compiler，只发送响应中的 `delegationPrompt` 和原样 `loaderCommand`；完成后执行 `commands.advance`。
-- `NEED_USER_CONFIRMATION`：`confirmChoices` 表示需要用户在完整模板中选择一个；`confirmTemplate` 表示只有一个合法确认动作。保留模板中的 `decision` 和其他预填字段，只填写要求用户决定的值，然后调用 `commands.confirm.command`。
-- `NEED_CASE_AGENT`：创建不继承主 Agent 上下文的全新 Case Agent，只发送响应中的 `delegationPrompt` 和原样 `loaderCommand`，随后等待该 Agent 返回，不在其运行期间轮询 Coordinator。中断恢复时可能再次返回同一个 Loader；已经持有该 Loader 对应的活跃 Agent 句柄时不得重复创建。
-- `WAITING`：平台 Runtime 尚未结束，或已领取 Handoff 的 execution 尚未写入结果；根据响应中的 `waitFor`、`reason` 和 `recovery` 判断等待对象，条件变化后原样执行 `commands.advance`，不得重新确认、重复委托或自行调用内部接口。`OWNER_BATCH_TERMINAL` 表示另一个批次仍占用平台资源：等待它结束，或在用户明确要求后取消占用批次；随后继续当前 `commands.advance`，不得新建批次。`WAIT_EXECUTION_RESULT` 只表示等待持久化结果，不证明 Case Agent 仍在运行。
-- `TECHNICAL`：读取 `diagnostic.code`、`diagnostic.stage`、`diagnostic.summary` 和 `diagnostic.retryable`；有 `recovery` 时优先按其恢复，没有有效恢复且返回 `technicalFallback` 时进入技术兜底模式。
-- `COMPLETE`：向用户报告 `outcome` 和报告位置，不再推进。
-- `BLOCKED`：保留现场，向用户报告 `code`、`reason` 以及可用的 `diagnostic`；返回 `technicalFallback` 时可调查和修复技术根因，技术阻塞不能改报为业务 FAIL。
+- `NEED_USER_CONFIRMATION`：保留模板预填字段，只填写用户需要决定的值，再调用 `commands.confirm.command`。
+- `NEED_CASE_AGENT`：创建不继承主 Agent 上下文的全新 Case Agent，只发送响应中的固定 `delegationPrompt` 和原样 `loaderCommand`，随后等待该 Agent。已有对应活跃 Agent 时不得重复创建。
+- `WAITING`：根据 `waitFor`、`reason` 和 `recovery` 判断等待对象，条件变化后原样执行 `commands.advance`，不得重新确认或重复委托。`OWNER_BATCH_TERMINAL` 表示其他批次仍占用平台资源；`WAIT_EXECUTION_RESULT` 只表示等待持久化结果，不证明 Case Agent 仍在运行。
+- `TECHNICAL`：读取 `diagnostic` 与 `technicalContext`。优先使用有效恢复或 `technicalContext.resume`；仍无进展时进入批次级技术排障。
+- `COMPLETE`：报告 `outcome` 和报告位置，不再推进。
+- `BLOCKED`：保留现场并报告 `code`、`reason` 和诊断；技术阻塞不能改报为业务 FAIL。若仍有可处理的 `technicalContext`，先按技术异常流程调查和恢复。
 
-用户明确要求停止时，将 `{"capability":"cancelRun","reason":"用户给出的原因"}` 写入 `commands.cancel.requestPath`，再原样执行 `commands.cancel.command`。取消只有在返回 `COMPLETE` 且 `outcome=CANCELLED` 后才完成。
+用户明确停止时，将当前取消模板写入 `commands.cancel.requestPath` 并执行原命令。只有返回 `COMPLETE` 且 `outcome=CANCELLED` 才表示取消完成。
 
 ## 调用纪律
 
-- 只使用当前响应提供的模板、路径和完整命令；固定命令不得增删参数。
-- 主 Agent 不调用 `batch`、环境探测、ExecutionRequest、报告渲染或 Case Runtime 的内部 CLI。
-- 输入错误只按框架返回的 `retryWith` 修正一次；第二次相同错误停止并报告，不反复猜字段。
-- `advanceRun` 会恢复已持久化的 `INITIALIZING_RUN`；初始化中断后不得重新确认或自行调用内部初始化接口。
-- 执行命令的宿主工具提示“进程仍在运行”并返回会话句柄时，表示命令尚未结束；继续等待同一进程，不得重复执行 `advanceRun`。
-- 正常模式下，平台初始化或 Runtime 技术错误优先执行框架给出的恢复动作；只有符合技术兜底模式条件时才读取日志或使用底层诊断工具。
-- `NEED_CASE_AGENT` 后以 execution 的持久化状态为准；Case Agent 的聊天摘要不替代框架结果。
-- 主 Agent 持有并等待宿主创建的 Case Agent；框架只记录 Handoff 是否准备、领取以及 execution 是否完成，不跟踪或虚构宿主 Agent 的运行状态。
-- 一个用例只保留一个有效写入者；正常 `WAITING` 不创建新的 Case Agent。
+- 固定命令不得增删参数；输入错误只按 `retryWith` 修正一次，同类错误再次出现时停止猜字段。
+- 主 Agent 不调用 Batch、环境探测、ExecutionRequest、报告渲染或 Case Runtime 的内部 CLI 完成正常业务流程。
+- `advanceRun` 会恢复持久化的 `INITIALIZING_RUN`；初始化中断后不得重新确认或重复启动初始化。
+- 宿主命令返回仍在运行的会话句柄时，继续等待同一进程，不得重复执行 `advanceRun`。
+- `NEED_CASE_AGENT` 后以 execution 持久化状态为准；聊天摘要不能替代框架结果。
+- 主 Agent 持有 Case Agent 的真实运行句柄；框架只记录 Handoff 的准备、领取及 execution 是否完成，不虚构 Agent 运行状态。
+- 一个用例只保留一个有效写入者；正常 `WAITING` 不创建新 Case Agent。
 
-## 技术兜底模式
+## 技术异常
 
-Facade 是正常执行首选入口，但不是诊断技术异常的唯一手段。响应包含 `technicalFallback.mode=AGENT_TECHNICAL_FALLBACK`，或恢复动作连续失败、状态长期无进展、框架诊断与现场证据不一致时，可以读取框架与平台日志，检查设备、进程、端口、Appium、WDA 和 Xcode 工具状态，并使用平台原生只读命令定位根因。
+`technicalContext` 提供已知事实、日志入口、资源事实和回到框架的 `resume` 示例。它是排障帮助，不是新的状态门，也不禁止主 Agent 使用其他可用工具。
 
-只处理 `technicalFallback.scope` 指定范围；因连续失败或证据矛盾主动进入时，主 Agent 默认只处理 `BATCH` 范围。可以重启或清理已确认属于本框架且所属批次已终态的资源；不得终止归属不明或活动批次的资源，不得未经用户确认执行卸载、清数据、改变签名等有业务影响的动作，也不得直接修改任何 Batch、Execution、Result、Scene 或报告文件来伪造恢复。
+当确定性恢复失败、状态长期无进展、Coordinator 无输出、资源锁与批次终态矛盾，或设备发现、Appium、WDA、Xcode 状态与诊断不一致时，可以在当前批次职责和已有授权内读取日志，使用 Shell 或平台原生工具调查并恢复共享设备、进程、端口与自动化服务。
 
-修复基础设施后必须回到 Facade：按 `technicalFallback.resume` 重试当前命令、创建新运行或继续使用当前 Runtime，由框架重新探测、校验并落盘。技术兜底不能代替用例执行、业务判断或结果提交。
+- 只处理当前批次或已确认终态批次拥有的资源，不终止活动批次或归属不明的进程。
+- 未经用户确认，不执行卸载、清数据、改变签名等有业务影响的动作。
+- 不直接修改 Batch、Execution、Result、Scene、事件或报告文件来伪造恢复。
+- 基础设施恢复后，执行 `technicalContext.resume` 或当前 `commands.advance` 回到 Facade，由框架重新探测并落盘。
+- 技术排障不代替 Case Agent 的用例理解、设备操作和业务判断。
 
-## 角色边界
+## 角色与 Handoff
 
-- 主 Agent 不得执行 Compiler 或 Case Agent 的 Loader，不得读取 `source.md`、CaseDefinition/CaseSpec 正文、Handoff 正文、Case Prompt、Case Brief、Scene、截图、控件树、知识调查正文或 Case Agent 的 `runtime.capabilities`。
-- 主 Agent 不得向 Case Agent 补充用例原文、截图路径、控件树、知识内容或自己的业务判断。
-- Case Agent 通过 Handoff Loader 自动获得 Frozen CaseSpec、七个业务能力和预绑定 Runtime Client；业务计划、操作与视觉判断只在 Case Agent 内完成。
-- Coordinator Facade 和 Case Runtime 是确定性本地代码；角色隔离是职责与协议隔离，不是共享文件系统的安全沙箱。
-- Handoff 使用绑定 token 和 sequence 保证同一 dispatch 幂等；新 dispatch 会替换旧 dispatch，主 Agent 不解析这些内部字段。
+- 主 Agent 不执行 Case Agent Loader，不读取 `source.md`、Handoff 正文、Case Prompt、Scene、截图、控件树、知识调查正文或 Case Agent 的 `runtime.capabilities`。
+- 主 Agent 不向 Case Agent 转述原文、截图路径、控件树、知识内容或自己的业务判断。
+- Handoff 只绑定唯一 execution、协议摘要和写入所有权，并直接向 Case Agent 提供原始用例、当前 Scene、已有 Case Model 及预绑定 Runtime Client。
+- Case Agent 自己生成和修订本次用例理解、验证点与计划；修订只要求记录理由，不由主 Agent 审批。
+- Handoff 与职责隔离不是操作系统安全沙箱。正常流程优先使用框架；技术异常时两个 Agent 都可在各自职责和授权范围内独立调查，随后回到框架核验与持久化。
 
-固定委托文本由 Facade 响应提供。它们必须保持独立角色语义：
+固定委托文本由 Facade 响应提供，保持独立角色语义：“你是独立 Case Agent。执行给定的 `loaderCommand`，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。”
 
-- Case Agent：“你是独立 Case Agent。执行给定的 `loaderCommand`，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。”
-- Case Definition Compiler：“你是独立 Case Definition Compiler。执行给定的 `loaderCommand`，只处理其返回的单个用例原文；按照 Compiler Prompt 生成候选定义，并使用返回的 Publisher 接口发布。不要访问设备、Scene、Batch、历史执行或报告。”
-
-主 Agent 不得执行该 Loader、读取返回的原文或生成定义，也不得读取 Handoff 正文。全部委托必须不继承主 Agent 的上下文。
+全部委托必须不继承主 Agent 上下文。
 
 ## Authoring
 

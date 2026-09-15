@@ -9,7 +9,7 @@ const { implementationGroups, roleEntrypoints, roleResources } = require('../lib
 const { AGENT_FACING_INTERFACE_KIND: COORDINATOR_INTERFACE_KIND, COORDINATOR_CAPABILITIES, capabilityCards } = require('../coordinator/agent-facing-contract');
 const { AGENT_FACING_CAPABILITIES, AGENT_FACING_INTERFACE_KIND: CASE_INTERFACE_KIND } = require('../case-runtime/agent-facing-contract');
 const { buildContract } = require('../build-agent-contract');
-const { REQUEST_FIELDS, validateCaseContext, validateDecision, validateRuntimeRequest } = require('../case-runtime/contract');
+const { REQUEST_FIELDS, validateDecision, validateRuntimeRequest } = require('../case-runtime/contract');
 const runtimeBroker = require('../case-runtime/runtime-broker');
 const runtimeOperationContract = require('../case-runtime/runtime-operation-contract');
 const { AGENT_OPERATIONS, isSupportedBroker } = runtimeBroker;
@@ -41,18 +41,25 @@ const casePrompt = read('prompts/case-agent.md');
 for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkpointId', 'turnId']) {
   assert.strictEqual(casePrompt.includes(obsolete), false, `Case Prompt must not expose ${obsolete}`);
 }
-assert.match(casePrompt, /业务执行/);
-assert.match(casePrompt, /Frozen CaseSpec/);
+assert.match(casePrompt, /独立负责 Handoff Loader 返回的一个 execution/);
+assert.match(casePrompt, /本次用例理解与计划/);
+assert.match(casePrompt, /case\.source/);
 assert.match(casePrompt, /expectationRef/);
 assert.match(casePrompt, /view_image/);
 assert.match(casePrompt, /七个业务能力/);
 assert.match(casePrompt, /observe.*inspect.*plan.*act.*knowledge.*recover.*finish/);
-assert.match(casePrompt, /当前 Scene 或响应中的 example/);
+assert.match(casePrompt, /动态值只取自当前 Brief、Scene 或响应/);
 assert.match(casePrompt, /retryWith/);
 assert.match(casePrompt, /AGENT_INPUT_STALLED/);
 assert.match(casePrompt, /控件树为空.*不得.*页面空白/);
 assert.match(casePrompt, /权限弹窗/);
 assert.match(casePrompt, /长按中状态/);
+assert.match(casePrompt, /scene\.inspect\.action\.path/);
+assert.match(casePrompt, /框架只返回.*坐标/);
+assert.match(casePrompt, /externalAction/);
+assert.match(casePrompt, /technicalContext/);
+assert.match(casePrompt, /首选能力.*不是排他的工具边界/);
+assert.strictEqual(casePrompt.includes('Frozen CaseSpec'), false);
 assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);
 for (const internalField of ['basedOnSceneId', 'capabilityId', 'inspectVisual', 'inspectScene', 'knowledgeReview', 'contractDefinitions', 'allowedOperations']) {
   assert.strictEqual(casePrompt.includes(internalField), false, `Case Prompt must not expose internal field ${internalField}`);
@@ -81,13 +88,7 @@ const promptRequests = [...casePrompt.matchAll(/```json\s*([\s\S]*?)```/g)].map(
 assert.strictEqual(promptRequests.length, 0, 'Runtime request schemas belong in runtime.capabilities, not the prompt');
 assert.match(casePrompt, /请求文件.*一次性.*每次调用.*新建/);
 for (const request of promptRequests) assert.doesNotThrow(() => validateRuntimeRequest(request));
-for (const request of promptRequests) {
-  if (request.caseContext) assert.doesNotThrow(() => validateCaseContext(request.caseContext));
-  if (request.decision) assert.doesNotThrow(() => validateDecision(request.decision));
-}
-assert.throws(() => validateCaseContext({
-  summary: '验证目标页面', preconditions: [], expectations: ['目标内容显示'], initialPlan: '观察页面', uncertainties: [],
-}), (error) => error?.code === 'CASE_NARRATIVE_INVALID' && error.fieldPath === 'caseContext.initialPlan');
+for (const request of promptRequests) if (request.decision) assert.doesNotThrow(() => validateDecision(request.decision));
 assert.doesNotThrow(() => validateDecision({ purpose: '检查结果', expectationRefs: ['E1'] }));
 assert.throws(() => validateDecision({ expectationRefs: ['E1'] }),
   (error) => error?.code === 'CASE_NARRATIVE_INVALID' && error.fieldPath === 'decision.purpose');
@@ -96,25 +97,24 @@ const mainPrompt = read('SKILL.md');
 assert.match(mainPrompt, /你是本次测试的主 Agent/);
 assert.match(mainPrompt, /NEED_CASE_AGENT/);
 assert.match(mainPrompt, /一个用例只保留一个有效写入者/);
-assert.match(mainPrompt, /Case Definition Compiler/);
-assert.match(mainPrompt, /主 Agent 不得执行该 Loader、读取返回的原文或生成定义/);
+assert.strictEqual(mainPrompt.includes('Case Definition Compiler'), false);
+assert.match(mainPrompt, /主 Agent 不执行 Case Agent Loader/);
 assert.strictEqual(/读取 `prompts\/case-agent\.md`/.test(mainPrompt), false);
-assert.match(mainPrompt, /不得读取.*[Hh]andoff.*正文/);
+assert.match(mainPrompt, /不读取.*Handoff 正文/);
 assert.match(mainPrompt, /不继承主 Agent.*上下文/);
 assert.match(mainPrompt, /loaderCommand/);
 assert.strictEqual(mainPrompt.includes('根据原文整理并审核'), false);
 assert.strictEqual(mainPrompt.includes('caseNo + definitionRef'), false);
 assert.match(mainPrompt, /prepareRun.*confirmRun.*advanceRun.*cancelRun/);
-assert.match(mainPrompt, /进程仍在运行.*继续等待.*不得重复执行/);
+assert.match(mainPrompt, /仍在运行的会话句柄.*继续等待.*不得重复执行/);
 assert.strictEqual(mainPrompt.includes('可重试的报告发布'), false, 'report publication must not keep a run WAITING');
 assert.strictEqual(mainPrompt.includes('coordinatorCapabilities'), false);
 assert.strictEqual(mainPrompt.includes('batch bootstrap'), false);
 assert.strictEqual(mainPrompt.includes('batch start'), false);
-assert.match(mainPrompt, /不得.*Case Agent.*runtime\.capabilities/);
-const compilerPrompt = read('prompts/case-definition-compiler.md');
-assert.match(compilerPrompt, /只使用本次 Loader 提供的 `source`/);
-assert.match(compilerPrompt, /不得访问设备、Scene、截图、控件树、知识库、Batch、历史 execution 或报告/);
-assert.match(compilerPrompt, /publisher\.contract/);
+assert.match(mainPrompt, /主 Agent.*不读取.*Case Agent.*runtime\.capabilities/);
+assert.match(mainPrompt, /technicalContext/);
+assert.match(mainPrompt, /首选入口.*不是.*排他能力边界/);
+assert.strictEqual(fs.existsSync(path.join(root, 'prompts/case-definition-compiler.md')), false);
 assert.strictEqual(mainPrompt.includes('allowedDecisions'), false);
 
 const currentReportSource = read('scripts/report/current-report.js');
@@ -122,7 +122,7 @@ assert.strictEqual(currentReportSource.includes('report.events'), false, 'Render
 for (const obsolete of ['execution-story', 'checkpoint-accordion', 'process-workspace', 'case-plan-workspace']) {
   assert.strictEqual(currentReportSource.includes(obsolete), false, `Renderer must not retain obsolete ${obsolete} UI`);
 }
-for (const artifact of ['binding.snapshot.json', 'case.snapshot.json', 'case-spec.snapshot.json', 'source.snapshot.md', 'logs/', 'action-spatial-evidence/']) {
+for (const artifact of ['binding.snapshot.json', 'case.snapshot.json', 'source.snapshot.md', 'logs/', 'action-spatial-evidence/']) {
   assert.ok(read('docs/architecture.md').includes(artifact), `architecture must list ${artifact}`);
 }
 
@@ -172,7 +172,8 @@ const iosContract = buildContract({ skillRoot: root, role: 'case-executor', plat
 assert.strictEqual(iosContract.implementationFiles.includes('scripts/platform/adapters/ios/lib/input-service.js'), true);
 assert.strictEqual(iosContract.implementationFiles.includes('scripts/platform/adapters/ios/lib/pointer-actions.js'), true);
 assert.strictEqual(caseContract.implementationFiles.includes('scripts/lib/app-provisioning.js'), true);
-assert.strictEqual(caseContract.implementationFiles.includes('scripts/execution/contracts/case-spec-contract.js'), true);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/case-runtime/case-model-service.js'), true);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/execution/contracts/case-spec-contract.js'), false);
 assert.strictEqual(caseContract.implementationFiles.includes('scripts/execution/contracts/validation-profile-contract.js'), true);
 assert.strictEqual(caseContract.implementationFiles.includes('scripts/case-runtime/runtime-operation-contract.js'), true);
 assert.strictEqual(caseContract.implementationFiles.includes('scripts/lib/dispatch-lease.js'), true);
@@ -181,7 +182,7 @@ const coordinatorContract = buildContract({ skillRoot: root, role: 'batch-coordi
 assert.strictEqual(Object.prototype.hasOwnProperty.call(coordinatorContract, 'schemaVersion'), false);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(coordinatorContract.coordinatorFacade, 'schemaVersion'), false);
 assert.strictEqual(coordinatorContract.coordinatorFacade.interfaceKind, 'AGENT_FACING');
-assert.strictEqual(coordinatorContract.implementationFiles.includes('prompts/case-definition-compiler.md'), true);
+assert.strictEqual(coordinatorContract.implementationFiles.includes('prompts/case-definition-compiler.md'), false);
 assert.strictEqual(coordinatorContract.allowedEntrypoints.includes('scripts/app-artifact.js'), false);
 assert.strictEqual(coordinatorContract.implementationFiles.includes('scripts/app-artifact.js'), true);
 assert.strictEqual(coordinatorContract.requiredResources.includes('references/knowledge.md'), false);
@@ -194,13 +195,11 @@ assert.strictEqual(read('references/workflow.md').includes('Prompt 和派生 Cas
 assert.strictEqual(read('docs/architecture.md').includes('agentRequired=true + derived Case Brief'), false);
 assert.strictEqual(read('docs/architecture.md').includes('主 Agent 使用该 Brief'), false);
 assert.match(casePrompt, /Handoff Loader/);
-assert.match(casePrompt, /普通调用.*只关联.*直接推进/);
-assert.match(casePrompt, /finish.*全部 Frozen expectations/);
+assert.match(casePrompt, /expectationRefs.*只关联.*直接推进/);
+assert.match(casePrompt, /finish.*当前 Case Model/);
 const implementation = implementationGroups(root, 'harmony');
-for (const contractFile of [
-  'scripts/execution/contracts/case-definition-contract.js',
-  'scripts/execution/contracts/validation-profile-contract.js',
-]) assert.strictEqual(implementation.report.includes(contractFile), true);
+assert.strictEqual(implementation.report.includes('scripts/execution/contracts/case-definition-contract.js'), false);
+assert.strictEqual(implementation.report.includes('scripts/execution/contracts/validation-profile-contract.js'), true);
 const platformSpecific = /\b(?:codex|spawn_agent|fork_turns|provider|mcp)\b/i;
 for (const relative of new Set([...caseContract.requiredResources, ...coordinatorContract.requiredResources])) {
   assert.strictEqual(platformSpecific.test(read(relative)), false, `${relative} must remain Agent-host neutral`);

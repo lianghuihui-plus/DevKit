@@ -60,7 +60,6 @@ const COORDINATOR_ENTRYPOINTS = Object.freeze([
   'scripts/environment.js',
   'scripts/execution-request.js',
   'scripts/import-case.js',
-  'scripts/case-definition.js',
   'scripts/knowledge.js',
   'scripts/workspace.js',
   'scripts/probe-env.sh',
@@ -103,7 +102,6 @@ function implementationGroups(skillRoot, platform) {
   for (const relative of walkFiles(skillRoot, 'scripts/session')) runtime.add(relative);
   for (const relative of [
     'scripts/execution/contracts/case-contract.js',
-    'scripts/execution/contracts/case-spec-contract.js',
     'scripts/execution/contracts/validation-profile-contract.js',
     'scripts/lib/action-contract.js',
     'scripts/lib/execution-timing.js',
@@ -115,12 +113,12 @@ function implementationGroups(skillRoot, platform) {
     'scripts/lib/observation-model.js',
     'scripts/lib/scroll-context.js',
     'scripts/lib/technical-facts.js',
+    'scripts/lib/technical-context.js',
     'scripts/lib/warm-session-contract.js',
     'scripts/lib/workspace.js',
   ]) runtime.add(relative);
 
   const coordinator = new Set([...sharedRuntime, ...COORDINATOR_ENTRYPOINTS]);
-  coordinator.add('prompts/case-definition-compiler.md');
   coordinator.add('scripts/case-runtime/lifecycle.js');
   for (const relative of walkFiles(skillRoot, 'scripts/batch')) coordinator.add(relative);
   for (const relative of walkFiles(skillRoot, 'scripts/case')) coordinator.add(relative);
@@ -137,8 +135,6 @@ function implementationGroups(skillRoot, platform) {
   for (const relative of [
     'scripts/build-agent-contract.js',
     'scripts/execution/contracts/case-contract.js',
-    'scripts/execution/contracts/case-definition-contract.js',
-    'scripts/execution/contracts/case-spec-contract.js',
     'scripts/execution/contracts/validation-profile-contract.js',
     'scripts/lib/agent-contract-manifest.js',
     'scripts/lib/batch-contract.js',

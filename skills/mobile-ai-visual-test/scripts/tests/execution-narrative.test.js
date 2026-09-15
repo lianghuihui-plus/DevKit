@@ -60,7 +60,7 @@ assert.strictEqual(narrative.steps.length, 3);
 assert.strictEqual(narrative.steps[0].action.status, 'OBSERVED');
 assert.strictEqual(narrative.steps[0].action.result.command.status, 'ACCEPTED');
 assert.strictEqual(narrative.steps[0].action.result.deviceExecution.status, 'UNVERIFIED');
-assert.strictEqual(narrative.steps[0].action.result.observedEffect.status, 'CHANGED');
+assert.strictEqual(narrative.steps[0].action.result.screenComparison.status, 'DIFFERENT');
 assert.strictEqual(narrative.steps[0].beforeScene.sceneId, 'scene-0001');
 assert.strictEqual(narrative.steps[0].afterScene.sceneId, 'scene-0002');
 assert.strictEqual(narrative.steps[0].postAssessment.conclusion, '查询本地经验辅助解释');

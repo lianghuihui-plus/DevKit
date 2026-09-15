@@ -29,6 +29,7 @@ const suites = Object.freeze({
   publication: 'tests/publication-integrity.test.js',
   knowledge: 'tests/knowledge.test.js',
   knowledgeClosure: 'tests/knowledge-closure.test.js',
+  caseModel: 'tests/case-model-service.test.js',
   caseRuntime: 'tests/case-runtime.test.js',
   batchCancellation: 'tests/batch-cancellation.test.js',
   batchReconcile: 'tests/batch-reconcile.test.js',

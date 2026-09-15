@@ -74,7 +74,7 @@ function capabilityCards() {
       optional: [],
       source: { workspace: '用户指定的测试工作空间', caseNos: '用户指定的用例编号' },
       example: { capability: 'prepareRun', workspace: '/absolute/test-workspace', caseNos: ['014'] },
-      returns: ['NEED_COMPILER', 'NEED_USER_CONFIRMATION'],
+      returns: ['NEED_USER_CONFIRMATION'],
     },
     confirmRun: {
       useWhen: '当前响应要求选择平台或确认设备、App 和执行授权',
@@ -85,12 +85,12 @@ function capabilityCards() {
       returns: ['NEED_USER_CONFIRMATION', 'IOS_SIGNING_REQUIRED', 'SELECT_DEVICE', 'CONFIRMED'],
     },
     advanceRun: {
-      useWhen: '执行已准备好，或 Case Agent、Compiler、等待步骤已经结束',
+      useWhen: '执行已准备好，或 Case Agent、等待步骤已经结束',
       required: [],
       optional: [],
       source: { request: '原样执行当前响应的 commands.advance' },
       example: { capability: 'advanceRun' },
-      returns: ['NEED_COMPILER', 'NEED_USER_CONFIRMATION', 'NEED_CASE_AGENT', 'WAITING', 'TECHNICAL', 'COMPLETE', 'BLOCKED'],
+      returns: ['NEED_USER_CONFIRMATION', 'NEED_CASE_AGENT', 'WAITING', 'TECHNICAL', 'COMPLETE', 'BLOCKED'],
     },
     cancelRun: {
       useWhen: '用户明确要求停止当前批次',

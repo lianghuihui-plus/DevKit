@@ -5,12 +5,10 @@ const fs = require('fs');
 const path = require('path');
 const { buildContract } = require('../build-agent-contract');
 const { createCaseContract, validateCaseContract } = require('../execution/contracts/case-contract');
-const { createCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { completionPaths, sha256File, validatePublishedCompletion } = require('../lib/completion-contract');
 const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
 const { confirmEnvironment, createExecutionRequest } = require('../lib/run-control');
 const { appProvisioningSha, defaultAppProvisioning, preparationPolicySha, validatePreparationPolicy } = require('../lib/app-provisioning');
-const { publishCaseDefinition } = require('../case/definition-store');
 const { createValidationProfile } = require('../execution/contracts/validation-profile-contract');
 
 const TEST_WORKSPACE_TYPE = 'mobile-ai-visual-test-test-workspace';
@@ -56,31 +54,11 @@ function createTestExecutionRequest(root, batchId, binding, targets, options = {
       const { resolveCaseNo } = require('../lib/case-numbering');
       caseDir = resolveCaseNo(root, target.caseNo)?.caseDir;
     }
-    const sourceText = fs.readFileSync(path.join(caseDir, 'source.md'), 'utf8');
-    const candidate = target.caseSpec || {
-      summary: sourceText.trim(),
-      preconditions: [],
-      expectations: [{ text: sourceText.trim(), sourceEvidence: [{ quote: sourceText.trim() }] }],
-      ambiguities: [],
-    };
-    const published = publishCaseDefinition({
-      caseDir,
-      candidate: {
-        ...candidate,
-        initialStateIntent: target.initialStateRequirement ? {
-          ...target.initialStateRequirement,
-          sourceEvidence: target.initialStateRequirement.targetState === 'KEEP_EXISTING'
-            ? [] : [{ quote: sourceText.trim() }],
-        } : { targetState: 'KEEP_EXISTING', rationale: '测试 fixture 默认保留现有状态', sourceEvidence: [] },
-      },
-      compilerProfileSha: 'case-definition-compiler-test',
-      now,
-    });
+    const caseJson = JSON.parse(fs.readFileSync(path.join(caseDir, 'case.json'), 'utf8'));
     return {
       caseNo: target.caseNo,
-      caseKey: target.caseKey || published.definition.caseKey,
+      caseKey: target.caseKey || caseJson.identity.caseKey,
       caseDir,
-      definitionRef: { definitionId: published.definition.definitionId, definitionSha: published.definition.definitionSha },
     };
   });
   return createExecutionRequest({
@@ -95,7 +73,16 @@ function createTestExecutionRequest(root, batchId, binding, targets, options = {
 }
 
 function event(executionId, sequence, time, type, payload = {}) {
-  return { schemaVersion: 1, eventId: `fixture-event-${sequence}`, executionId, sequence, time, type, ...payload };
+  return {
+    schemaVersion: 1,
+    eventId: `fixture-event-${sequence}`,
+    executionId,
+    sequence,
+    time,
+    type,
+    ...(!['executionStarted', 'caseModelRevised'].includes(type) ? { caseModelRevision: 1 } : {}),
+    ...payload,
+  };
 }
 
 function createCurrentFixture(root, options = {}) {
@@ -135,30 +122,7 @@ function createCurrentFixture(root, options = {}) {
     initialPlan: ['观察当前页面', '执行必要操作', '检查最终结果'],
     uncertainties: [],
   };
-  const caseSpec = createCaseSpec({
-    sourceText,
-    spec: {
-      summary: context.summary,
-      preconditions: context.preconditions,
-      expectations: [{ text: context.expectations[0].text, sourceEvidence: [{ quote: sourceText }] }],
-      ambiguities: [],
-    },
-  });
-  writeJson(path.join(execDir, 'case-spec.snapshot.json'), caseSpec);
-  const publishedDefinition = publishCaseDefinition({
-    caseDir,
-    candidate: {
-      summary: caseSpec.summary,
-      preconditions: caseSpec.preconditions,
-      expectations: caseSpec.expectations,
-      ambiguities: caseSpec.ambiguities,
-      initialStateIntent: { targetState: 'KEEP_EXISTING', rationale: '当前报告 fixture 保留现有状态', sourceEvidence: [] },
-    },
-    compilerProfileSha: 'case-definition-compiler-test',
-    now: startedAt,
-  }).definition;
   const validationProfile = createValidationProfile();
-  writeJson(path.join(execDir, 'case-definition.snapshot.json'), publishedDefinition);
   writeJson(path.join(execDir, 'validation-profile.snapshot.json'), validationProfile);
   const execution = {
     schemaVersion: 11,
@@ -171,9 +135,6 @@ function createCurrentFixture(root, options = {}) {
     caseProtocolSha: currentContract.protocolSha,
     coordinatorProtocolSha: 'agent-protocol-fixture0002',
     contractSha: caseJson.contractSha,
-    caseSpecSha: caseSpec.specSha,
-    definitionId: publishedDefinition.definitionId,
-    definitionSha: publishedDefinition.definitionSha,
     validationProfileSha: validationProfile.profileSha,
     batchContractSha: `batch-contract-${'a'.repeat(24)}`,
     executionRequestSha: `execution-request-${'a'.repeat(24)}`,
@@ -311,7 +272,17 @@ function createCurrentFixture(root, options = {}) {
   };
   const events = [
     event(executionId, 1, startedAt, 'executionStarted', { generation: 1 }),
-    event(executionId, 2, startedAt, 'caseContextRecorded', { contextVersion: 1, reason: 'INITIAL_UNDERSTANDING', caseContext: context }),
+    event(executionId, 2, startedAt, 'caseModelRevised', {
+      revision: 1,
+      reason: 'INITIAL_UNDERSTANDING',
+      basedOnSceneRef: null,
+      understanding: context.summary,
+      preconditions: context.preconditions,
+      verificationPoints: [{ ref: 'E1', text: context.expectations[0].text, status: 'ACTIVE' }],
+      retiredVerificationRefs: [],
+      items: context.initialPlan,
+      uncertainties: context.uncertainties,
+    }),
     event(executionId, 3, '2026-08-13T10:00:01.000+08:00', 'sceneObserved', {
       sceneId: 'scene-0001', generation: 1, operationId: 'observation-0001', purpose: options.includePreparation ? 'INITIAL_SCENE' : 'CURRENT_SCENE',
       relatedOperationId: null, decisionId: null, screenshotRef: beforeRef, screenshotSha256: screenshotSha, layoutRef: beforeLayoutRef, app,
@@ -362,6 +333,7 @@ function createCurrentFixture(root, options = {}) {
   const needsScene = ['PASS', 'FAIL'].includes(verdict);
   const result = {
     verdict,
+    caseModelRevision: 1,
     summary: options.summary || `${verdict} 当前报告结论`,
     checks: [{ expectationRef: 'E1', status: checkStatus, actual: verdict === 'PASS' ? '页面符合预期' : `页面结果为 ${verdict}`, sceneRefs: needsScene ? ['scene-0002'] : [] }],
     uncertainties: options.uncertainties || (verdict === 'INCONCLUSIVE' ? ['目标状态仍不确定'] : []),

@@ -79,7 +79,7 @@ function metrics(execution, result, events, endedAt, execDir = null, options = {
       appPreparationFailures: count('appPreparationFailed'),
       agentContinuations: count('agentContinuation'),
       invocationCorrections: timing.invocationErrorCount,
-      caseContextRevisions: count('caseContextRecorded'),
+      caseContextRevisions: count('caseModelRevised'),
       agentDecisions: count('agentDecisionRecorded'),
       narrativeGaps: count('narrativeGap'),
     },
@@ -98,7 +98,11 @@ function metrics(execution, result, events, endedAt, execDir = null, options = {
 
 function finish(execDir, caseResult, options = {}) {
   const execution = store.loadExecution(execDir, { allowFinalized: true });
-  const { result, graph } = validateResultIntegrity(execDir, caseResult);
+  const currentRevision = require('./case-model-service').currentRevision(execDir);
+  const { result, graph } = validateResultIntegrity(execDir, {
+    ...caseResult,
+    caseModelRevision: currentRevision,
+  });
   const target = store.paths(execDir);
   const readJson = require('../lib/execution-lifecycle').readJson;
   const existingResult = readJson(target.result, null);

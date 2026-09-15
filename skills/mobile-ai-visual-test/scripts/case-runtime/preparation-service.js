@@ -59,7 +59,7 @@ function resolveStrategy(execution, runtime, targetState) {
 
 function validatePhase(execDir) {
   const forbidden = new Set([
-    'sceneObserved', 'actionRequested', 'knowledgeQueried', 'appRecovered', 'caseFinished',
+    'actionRequested', 'knowledgeQueried', 'appRecovered', 'caseFinished',
     'appPreparationCompleted', 'appPreparationFailed', 'appPreparationOutcomeUnknown',
   ]);
   if (store.events(execDir).some((event) => forbidden.has(event.type))) {

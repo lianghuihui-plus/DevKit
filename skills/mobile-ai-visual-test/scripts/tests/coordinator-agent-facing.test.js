@@ -21,7 +21,6 @@ const {
 } = require('../coordinator/agent-facing-service');
 const coordinatorAgent = require('../coordinator-agent');
 const { createCaseContract } = require('../execution/contracts/case-contract');
-const { publishCaseDefinition } = require('../case/definition-store');
 const { confirmEnvironment } = require('../lib/run-control');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestWorkspace } = require('./current-fixture');
@@ -45,21 +44,6 @@ function createCase(caseNo) {
   return { caseNo, caseKey, caseDir, source };
 }
 
-function publish(testCase) {
-  return publishCaseDefinition({
-    caseDir: testCase.caseDir,
-    compilerProfileSha: 'coordinator-facing-test',
-    now: '2026-09-11T02:00:00.000Z',
-    candidate: {
-      summary: testCase.source,
-      preconditions: [],
-      expectations: [{ text: testCase.source, sourceEvidence: [{ quote: testCase.source }] }],
-      ambiguities: [],
-      initialStateIntent: { targetState: 'KEEP_EXISTING', rationale: '测试夹具保留现有状态', sourceEvidence: [] },
-    },
-  });
-}
-
 const case014 = createCase('014');
 const case015 = createCase('015');
 
@@ -80,13 +64,8 @@ const prepared = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['01
   batchId: 'batch-coordinator-facing',
   now: '2026-09-11T02:00:00.000Z',
 });
-assert.strictEqual(prepared.status, 'NEED_COMPILER');
-assert.strictEqual(prepared.caseNo, '014');
-assert.ok(prepared.loaderCommand);
-assert.match(prepared.delegationPrompt, /独立 Case Definition Compiler/);
-assert.strictEqual(prepared.source, undefined);
-assert.strictEqual(prepared.caseDir, undefined);
-assert.strictEqual(prepared.definition, undefined);
+assert.strictEqual(prepared.status, 'NEED_USER_CONFIRMATION');
+assert.strictEqual(prepared.reason, 'CHOOSE_ENVIRONMENT');
 assert.ok(prepared.commands.advance);
 assert.ok(prepared.commands.confirm.command);
 assert.ok(prepared.commands.confirm.requestPath);
@@ -94,22 +73,12 @@ assert.ok(prepared.commands.cancel.command);
 assert.ok(fs.existsSync(prepared.statePath));
 assert.strictEqual(Object.prototype.hasOwnProperty.call(loadCoordinatorState(prepared.statePath), 'schemaVersion'), false);
 
-publish(case014);
-const nextCompiler = advanceRun(prepared.statePath, { now: '2026-09-11T02:00:01.000Z' });
-assert.strictEqual(nextCompiler.status, 'NEED_COMPILER');
-assert.strictEqual(nextCompiler.caseNo, '015');
-assert.notStrictEqual(nextCompiler.loaderCommand, prepared.loaderCommand);
-
-publish(case015);
-const needPlatform = advanceRun(prepared.statePath, { now: '2026-09-11T02:00:02.000Z' });
-assert.strictEqual(needPlatform.status, 'NEED_USER_CONFIRMATION');
-assert.strictEqual(needPlatform.reason, 'CHOOSE_ENVIRONMENT');
-assert.deepStrictEqual(needPlatform.confirmChoices, [
+assert.deepStrictEqual(prepared.confirmChoices, [
   { id: 'SELECT_HARMONY', template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'harmony' } },
   { id: 'SELECT_ANDROID', template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'android' } },
   { id: 'SELECT_IOS', template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'ios' } },
 ]);
-for (const choice of needPlatform.confirmChoices) {
+for (const choice of prepared.confirmChoices) {
   assert.deepStrictEqual(validateCoordinatorRequest(choice.template), []);
 }
 
@@ -487,11 +456,11 @@ assert.strictEqual(blocked.code, 'PLATFORM_UNAVAILABLE');
 assert.strictEqual(blocked.reason, '设备不可用');
 assert.strictEqual(blocked.reportStatus, 'DEGRADED');
 assert.strictEqual(blocked.reportPath, undefined);
-assert.deepStrictEqual(blocked.technicalFallback, {
-  mode: 'AGENT_TECHNICAL_FALLBACK',
-  scope: 'BATCH',
-  resume: 'PREPARE_NEW_RUN',
-});
+assert.strictEqual(blocked.technicalContext.scope, 'COORDINATOR');
+assert.strictEqual(blocked.technicalContext.code, 'PLATFORM_UNAVAILABLE');
+assert.deepStrictEqual(blocked.technicalContext.resume, { capability: 'advanceRun' });
+assert.ok(blocked.technicalContext.resourceFacts.includes('batch=batch-coordinator-blocked'));
+assert.ok(blocked.technicalContext.resourceFacts.includes(`state=${blockedRun.statePath}`));
 const blockedAgain = advanceRun(blockedRun.statePath, {
   batchExecute: () => { throw new Error('stable BLOCKED must not re-enter Batch'); },
 });
@@ -591,15 +560,15 @@ technicalError.diagnostic = {
 const technicalResponse = coordinatorAgent.errorResponse(
   technicalError,
   'confirm',
-  { capability: 'confirmRun', userInstruction: '旧 iOS 确认模板' },
+  { capability: 'confirmRun', decision: 'USE_CURRENT', userInstruction: '重新确认当前 iOS 环境' },
 );
 assert.strictEqual(technicalResponse.status, 'TECHNICAL');
 assert.strictEqual(technicalResponse.retryWith, undefined);
 assert.deepStrictEqual(technicalResponse.diagnostic, technicalError.diagnostic);
-assert.deepStrictEqual(technicalResponse.technicalFallback, {
-  mode: 'AGENT_TECHNICAL_FALLBACK',
-  scope: 'BATCH',
-  resume: 'RETRY_CURRENT_COMMAND',
+assert.strictEqual(technicalResponse.technicalContext.scope, 'COORDINATOR');
+assert.strictEqual(technicalResponse.technicalContext.code, 'ENVIRONMENT_PROBE_FAILED');
+assert.deepStrictEqual(technicalResponse.technicalContext.resume, {
+  capability: 'confirmRun', decision: 'USE_CURRENT', userInstruction: '重新确认当前 iOS 环境',
 });
 
 const staleConfirmationState = loadCoordinatorState(invalidConfirmRun.statePath);

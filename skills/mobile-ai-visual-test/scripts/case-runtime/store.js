@@ -12,7 +12,6 @@ function paths(execDir) {
     root,
     execution: path.join(root, 'execution.json'),
     runtime: path.join(root, 'runtime.json'),
-    caseSpec: path.join(root, 'case-spec.snapshot.json'),
     events: path.join(root, 'events.jsonl'),
     scenes: path.join(root, 'scenes'),
     currentScene: path.join(root, 'current-scene.json'),
@@ -56,6 +55,9 @@ function appendEvent(execDir, type, payload = {}, options = {}) {
     type,
     ...payload,
   };
+  if (type !== 'caseModelRevised' && !Object.prototype.hasOwnProperty.call(payload, 'caseModelRevision')) {
+    event.caseModelRevision = current.filter((item) => item.type === 'caseModelRevised').at(-1)?.revision || null;
+  }
   if (isTechnicalFact(event)) {
     event.technicalFactRef = technicalFactRef(sequence);
     event = bindTechnicalFact(event, { execution, events: current, currentScene: readCurrentScene(execDir) });

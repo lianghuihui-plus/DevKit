@@ -19,6 +19,7 @@ const {
 } = require('../case-runtime/agent-facing-translator');
 const { run } = require('../case-runtime/agent-facing-client');
 const runtimeStore = require('../case-runtime/store');
+const { createActionSpatialEvidence, projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-agent-facing-runtime-'));
@@ -53,19 +54,6 @@ writeJsonAtomic(path.join(execDir, 'runtime.json'), {
     allowedOperations: ['observe', 'act', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status'],
   },
 });
-writeJsonAtomic(path.join(execDir, 'case-spec.snapshot.json'), {
-  schemaVersion: 1,
-  sourceSha: 'source-test',
-  specSha: 'spec-test',
-  summary: '验证语音录入',
-  preconditions: [],
-  expectations: [
-    { id: 'E1', text: '显示录音状态', verificationKind: 'DIRECT_OBSERVATION', sourceEvidence: [{ quote: '录音状态' }] },
-    { id: 'E2', text: '完成语音录入', verificationKind: 'DIRECT_OBSERVATION', sourceEvidence: [{ quote: '语音录入' }] },
-  ],
-  ambiguities: [],
-});
-
 const scene = {
   schemaVersion: 2,
   sceneId: 'scene-0007',
@@ -93,7 +81,7 @@ writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 writeJsonAtomic(path.join(execDir, 'scenes', `${scene.sceneId}.json`), scene);
 
 assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'inspect', 'plan', 'act', 'knowledge', 'recover', 'finish']);
-const cards = capabilityCards({ scene, caseSpec: JSON.parse(fs.readFileSync(path.join(execDir, 'case-spec.snapshot.json'), 'utf8')) });
+const cards = capabilityCards({ scene, caseModel: null });
 assert.deepStrictEqual(Object.keys(cards), AGENT_FACING_CAPABILITIES);
 for (const card of Object.values(cards)) {
   assert.ok(card.useWhen);
@@ -105,16 +93,22 @@ for (const card of Object.values(cards)) {
 assert.strictEqual(JSON.stringify(cards).includes('basedOnSceneId'), false);
 assert.strictEqual(JSON.stringify(cards).includes('decision'), false);
 assert.strictEqual(JSON.stringify(cards).includes('operation'), false);
-assert.match(cards.plan.useWhen, /完整替换/);
-assert.match(cards.act.useWhen, /已有执行计划/);
-assert.match(cards.recover.useWhen, /已有执行计划/);
-assert.match(cards.finish.useWhen, /已有执行计划/);
+assert.match(cards.plan.useWhen, /本次用例理解/);
+assert.doesNotMatch(cards.act.useWhen, /已有执行计划/);
+assert.doesNotMatch(cards.recover.useWhen, /已有执行计划/);
+assert.match(cards.finish.useWhen, /本次用例理解/);
 assert.ok(validateAgentFacingRequest({ capability: 'plan', items: [] })
+  .some((item) => item.field === 'understanding' && item.code === 'REQUIRED'));
+assert.ok(validateAgentFacingRequest({
+  capability: 'plan', understanding: '验证首页', preconditions: [], verificationPoints: [{ text: '首页正常' }], items: [], uncertainties: [],
+})
   .some((item) => item.field === 'items' && item.code === 'MIN_ITEMS'));
-assert.ok(validateAgentFacingRequest({ capability: 'plan', items: ['检查首页'], extra: true })
+assert.ok(validateAgentFacingRequest({
+  capability: 'plan', understanding: '验证首页', preconditions: [], verificationPoints: [{ text: '首页正常' }], items: ['检查首页'], uncertainties: [], extra: true,
+})
   .some((item) => item.field === 'extra' && item.code === 'FIELD_UNSUPPORTED'));
 
-const projectedScene = projectScene(scene, { caseSpec: JSON.parse(fs.readFileSync(path.join(execDir, 'case-spec.snapshot.json'), 'utf8')) });
+const projectedScene = projectScene(scene, { caseModel: null });
 assert.strictEqual(Object.prototype.hasOwnProperty.call(projectedScene, 'schemaVersion'), false);
 assert.strictEqual(projectedScene.sceneRef, scene.sceneId);
 assert.strictEqual(projectedScene.actions.some((item) => item.actionRef === 'record-button:longPress'), true);
@@ -123,48 +117,83 @@ for (const action of projectedScene.actions) assert.deepStrictEqual(validateAgen
 assert.deepStrictEqual(projectedScene.inspect.visual.example, {
   capability: 'inspect', channel: 'visual', observation: '描述截图中实际看到的事实', expectationRefs: [],
 });
-assert.deepStrictEqual(projectedScene.finish.example.checks.map((item) => item.expectationRef), ['E1', 'E2']);
+assert.deepStrictEqual(projectedScene.finish.example.checks, []);
 
-runtimeStore.appendEvent(execDir, 'caseContextRecorded', {
-  contextVersion: 1,
-  reason: 'FROZEN_CASE_SPEC',
-  caseContext: {
-    summary: '验证语音录入', preconditions: [], initialPlan: [], uncertainties: [],
-    expectations: [{ id: 'E1', text: '显示录音状态', verificationKind: 'DIRECT_OBSERVATION' }, { id: 'E2', text: '完成语音录入', verificationKind: 'DIRECT_OBSERVATION' }],
-  },
-}, { now: '2026-09-11T00:00:01.500Z' });
-
-const actionBeforePlan = run(execDir, {
+const actionBeforePlan = translateAgentFacingRequest(execDir, {
   capability: 'act', actionRef: 'record-button:longPress', input: { durationMs: 1200 },
-  purpose: '长按录入语音', expectationRefs: ['E1'],
-}, { executeRequest: () => { throw new Error('request without a plan must not reach the broker'); } });
-assert.strictEqual(actionBeforePlan.status, 'INPUT_INVALID');
-assert.ok(actionBeforePlan.issues.some((item) => item.code === 'PLAN_REQUIRED'));
-assert.deepStrictEqual(actionBeforePlan.retryWith, {
-  capability: 'plan', items: ['观察当前页面', '执行必要操作', '验证预期结果'],
+  purpose: '长按录入语音', expectationRefs: [],
 });
+assert.strictEqual(actionBeforePlan.operation, 'act');
 assert.throws(() => translateAgentFacingRequest(execDir, finishExample({
   summary: '无法继续',
   checks: [
     { expectationRef: 'E1', status: 'INCONCLUSIVE', actual: '尚未完成' },
     { expectationRef: 'E2', status: 'INCONCLUSIVE', actual: '尚未完成' },
   ],
-})), (error) => error?.code === 'AGENT_INPUT_INVALID' && error.issues.some((item) => item.code === 'PLAN_REQUIRED'));
+})), (error) => error?.code === 'AGENT_INPUT_INVALID' && error.issues.some((item) => item.code === 'CASE_MODEL_REQUIRED'));
 
-const initialPlanRequest = { capability: 'plan', items: ['检查当前首页', '长按录音按钮', '验证录音状态'] };
+const initialPlanRequest = {
+  capability: 'plan',
+  understanding: '验证语音录入过程和结果',
+  preconditions: [],
+  verificationPoints: [{ text: '显示录音状态' }, { text: '完成语音录入' }],
+  items: ['检查当前首页', '长按录音按钮', '验证录音状态'],
+  uncertainties: [],
+};
 assert.deepStrictEqual(translateAgentFacingRequest(execDir, initialPlanRequest), {
-  operation: 'recordPlan',
-  decision: {
-    purpose: '记录执行计划', expectationRefs: [],
-    planUpdate: { reason: 'INITIAL_PLAN', next: initialPlanRequest.items },
+  operation: 'recordCaseModel',
+  caseModel: {
+    understanding: initialPlanRequest.understanding,
+    preconditions: initialPlanRequest.preconditions,
+    verificationPoints: initialPlanRequest.verificationPoints,
+    items: initialPlanRequest.items,
+    uncertainties: initialPlanRequest.uncertainties,
   },
 });
 const planned = run(execDir, initialPlanRequest, { now: '2026-09-11T00:00:01.600Z' });
-assert.strictEqual(planned.status, 'PLAN_RECORDED');
-assert.deepStrictEqual(planned.plan.items, initialPlanRequest.items);
-assert.deepStrictEqual(runtimeStore.events(execDir).filter((event) => event.type === 'agentDecisionRecorded').at(-1).decision.planUpdate, {
-  reason: 'INITIAL_PLAN', next: initialPlanRequest.items,
-});
+assert.strictEqual(planned.status, 'CASE_MODEL_RECORDED');
+assert.deepStrictEqual(planned.caseModel.items, initialPlanRequest.items);
+assert.deepStrictEqual(planned.caseModel.verificationPoints.map((item) => item.ref), ['E1', 'E2']);
+
+fs.mkdirSync(path.join(execDir, 'screenshots'), { recursive: true });
+fs.writeFileSync(path.join(execDir, 'screenshots', 'scene-0007.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
+const spatialRef = createActionSpatialEvidence(execDir, {
+  operationId: 'action-0001',
+  action: { type: 'swipe', fromX: 0, fromY: 0, toX: 0, toY: 0, coordinateSource: 'visual' },
+  request: { basisObservationRef: 'screenshots/scene-0007.png' },
+}, { deviceExecution: { dispatchedFrom: { x: 0, y: 0 }, dispatchedTo: { x: 0, y: 0 } } });
+scene.previousAction = {
+  operationId: 'action-0001',
+  action: { type: 'swipe' },
+  spatialEvidence: projectActionSpatialEvidence(execDir, spatialRef, { operationId: 'action-0001', actionType: 'swipe' }),
+  observedEffect: { status: 'UNCHANGED', beforeSceneRef: 'scene-0006', afterSceneRef: scene.sceneId },
+};
+writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
+writeJsonAtomic(path.join(execDir, 'scenes', `${scene.sceneId}.json`), scene);
+const sceneWithAction = projectScene(scene, { caseModel: planned.caseModel });
+assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.coordinateTransform, 'MATCHED');
+assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.deviceActual, null);
+assert.strictEqual(sceneWithAction.previousAction.screenComparison.status, 'IDENTICAL');
+assert.strictEqual(sceneWithAction.previousAction.observedEffect, undefined);
+assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.inspect.example.channel, 'action');
+const actionInspection = run(execDir, {
+  capability: 'inspect', channel: 'action', observation: '滑动轨迹位于目标卡片区域上方', expectationRefs: ['E1'],
+}, { now: '2026-09-11T00:00:01.700Z' });
+assert.strictEqual(actionInspection.status, 'ACTION_SPATIAL_INSPECTED');
+const actionInspectionEvent = runtimeStore.events(execDir).find((event) => event.type === 'actionSpatialInspected');
+assert.strictEqual(actionInspectionEvent.operationId, 'action-0001');
+assert.strictEqual(actionInspectionEvent.caseModelRevision, 1);
+const externalRecovery = run(execDir, {
+  capability: 'recover',
+  reason: 'Runtime 无法表达当前技术恢复操作',
+  externalAction: { summary: '已使用平台原生工具恢复当前 App 连接', tool: 'platform-cli' },
+}, { now: '2026-09-11T00:00:01.800Z' });
+assert.strictEqual(externalRecovery.status, 'EXTERNAL_ACTION_RECORDED');
+assert.strictEqual(externalRecovery.declaration.evidence, false);
+assert.deepStrictEqual(externalRecovery.nextCall.example, { capability: 'observe' });
+const externalEvent = runtimeStore.events(execDir).find((event) => event.type === 'externalActionDeclared');
+assert.strictEqual(externalEvent.evidence, false);
+assert.strictEqual(externalEvent.caseModelRevision, 1);
 
 const translations = [
   [{ capability: 'observe' }, { operation: 'observe' }],
@@ -232,22 +261,25 @@ assert.strictEqual(completedReview.queryId, 'knowledge-0001');
 assert.strictEqual(require('../case-runtime/store').events(execDir).filter((event) => event.type === 'knowledgeReviewed').length, 1);
 
 const unexplainedPlanUpdate = run(execDir, {
-  capability: 'plan', items: ['处理权限弹窗', '重新验证录音状态'],
+  ...initialPlanRequest, items: ['处理权限弹窗', '重新验证录音状态'],
 });
 assert.strictEqual(unexplainedPlanUpdate.status, 'INPUT_INVALID');
 assert.ok(unexplainedPlanUpdate.issues.some((item) => item.field === 'reason' && item.code === 'REQUIRED'));
 assert.deepStrictEqual(unexplainedPlanUpdate.retryWith, {
-  capability: 'plan', reason: '说明执行路径变化原因',
+  ...initialPlanRequest,
+  reason: '说明本次用例理解或计划变化原因',
   items: ['处理权限弹窗', '重新验证录音状态'],
 });
 
 const revisedPlan = run(execDir, {
-  capability: 'plan', reason: '权限弹窗改变了执行路径',
+  ...initialPlanRequest,
+  verificationPoints: [{ ref: 'E1', text: '权限处理后显示录音状态' }, { ref: 'E2', text: '完成语音录入' }],
+  capability: 'plan', reason: '权限弹窗改变了执行路径和验证条件',
   items: ['处理权限弹窗', '重新长按录音按钮', '验证录音状态'],
 }, { now: '2026-09-11T00:00:03.100Z' });
-assert.strictEqual(revisedPlan.status, 'PLAN_RECORDED');
-assert.strictEqual(revisedPlan.plan.version, 2);
-assert.strictEqual(revisedPlan.plan.reason, '权限弹窗改变了执行路径');
+assert.strictEqual(revisedPlan.status, 'CASE_MODEL_RECORDED');
+assert.strictEqual(revisedPlan.caseModel.revision, 2);
+assert.strictEqual(revisedPlan.caseModel.reason, '权限弹窗改变了执行路径和验证条件');
 
 const knowledgeResponse = projectAgentFacingResponse(execDir, {
   status: 'KNOWLEDGE', queryId: 'knowledge-0001', query: '权限弹窗出现后语音录入无法继续',
@@ -306,10 +338,13 @@ const translationFailure = run(execDir, { capability: 'observe' }, {
 });
 assert.strictEqual(translationFailure.status, 'TECHNICAL');
 assert.strictEqual(translationFailure.code, 'FACADE_TRANSLATION_ERROR');
-assert.deepStrictEqual(translationFailure.technicalFallback, {
-  mode: 'AGENT_TECHNICAL_FALLBACK',
+assert.deepStrictEqual(translationFailure.technicalContext, {
   scope: 'EXECUTION',
-  resume: 'USE_CURRENT_RUNTIME',
+  code: 'FACADE_TRANSLATION_ERROR',
+  summary: 'Facade 生成的内部请求未通过 Runtime：unexpected internal mismatch',
+  logRefs: [],
+  resourceFacts: ['stage=FACADE_TRANSLATION', 'execution=execution-agent-facing'],
+  resume: { capability: 'observe' },
 });
 
 const guidedTechnical = projectAgentFacingResponse(execDir, {
@@ -317,7 +352,8 @@ const guidedTechnical = projectAgentFacingResponse(execDir, {
   code: 'SCENE_CHANGED',
   nextCall: { reason: 'OBSERVE_CURRENT_SCENE', example: { capability: 'observe' } },
 });
-assert.strictEqual(guidedTechnical.technicalFallback, undefined);
+assert.deepStrictEqual(guidedTechnical.technicalContext.resume, { capability: 'observe' });
+assert.strictEqual(guidedTechnical.technicalContext.scope, 'EXECUTION');
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('agent-facing Case Runtime passed');

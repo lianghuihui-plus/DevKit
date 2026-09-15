@@ -126,6 +126,26 @@ function recoverPendingTransactions(execDir, options = {}) {
 
 function recover(execDir, request, options = {}) {
   const execution = store.loadExecution(execDir, { allowFinalized: options.allowFinalized === true });
+  if (request.externalAction) {
+    const event = store.appendEvent(execDir, 'externalActionDeclared', {
+      reason: request.reason,
+      summary: request.externalAction.summary,
+      tool: request.externalAction.tool || null,
+      evidence: false,
+      sceneIdBefore: store.readCurrentScene(execDir)?.sceneId || null,
+      decisionId: request.decisionId || null,
+    }, options);
+    return {
+      status: 'EXTERNAL_ACTION_RECORDED',
+      declaration: {
+        eventId: event.eventId,
+        summary: event.summary,
+        evidence: false,
+        verification: 'REQUIRES_NEW_SCENE',
+      },
+      scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
+    };
+  }
   const target = store.paths(execDir);
   fs.mkdirSync(target.transactions, { recursive: true });
   fs.mkdirSync(target.operations, { recursive: true });

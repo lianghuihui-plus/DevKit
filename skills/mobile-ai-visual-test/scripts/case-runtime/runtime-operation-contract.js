@@ -17,13 +17,9 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
     type: 'object', required: ['purpose', 'expectationRefs'], additionalProperties: false,
     properties: {
       purpose: STRING, expectationRefs: STRING_ARRAY, assessment: STRING, observation: STRING,
-      conclusion: STRING, expectedOutcome: STRING, planUpdate: { $ref: 'planUpdate' },
+      conclusion: STRING, expectedOutcome: STRING,
       knowledgeReview: { $ref: 'knowledgeReview' }, uncertainties: STRING_ARRAY,
     },
-  },
-  planUpdate: {
-    type: 'object', required: ['reason', 'next'], additionalProperties: false,
-    properties: { reason: STRING, next: { type: 'array', minItems: 1, items: STRING } },
   },
   knowledgeReview: {
     type: 'object', required: ['queryId', 'conclusion', 'assessments'], additionalProperties: false,
@@ -89,6 +85,7 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
     properties: {
       verdict: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'] }, summary: STRING,
       checks: { type: 'array', items: { $ref: 'resultCheck' } }, uncertainties: STRING_ARRAY,
+      caseModelRevision: { type: 'integer', minimum: 1 },
     },
   },
   resultCheck: {
@@ -102,6 +99,25 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
   searchAbsenceEvidence: {
     type: 'object', required: ['type', 'sceneRef', 'scrollContextRef'], additionalProperties: false,
     properties: { type: { const: 'SEARCH_ABSENCE' }, sceneRef: STRING, scrollContextRef: STRING },
+  },
+  caseModelInput: {
+    type: 'object',
+    required: ['understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties'],
+    additionalProperties: false,
+    properties: {
+      understanding: STRING,
+      preconditions: STRING_ARRAY,
+      verificationPoints: {
+        type: 'array', minItems: 1,
+        items: {
+          type: 'object', required: ['text'], additionalProperties: false,
+          properties: { ref: STRING, text: STRING },
+        },
+      },
+      items: { type: 'array', minItems: 1, items: STRING },
+      uncertainties: STRING_ARRAY,
+      reason: STRING,
+    },
   },
 });
 
@@ -228,7 +244,9 @@ const OPERATION_CONTRACT = deepFreeze({
     whenToUse: ['The Scene summary is insufficient for locating controls or understanding structure.'],
     requestSchema: operationSchema('inspectScene', {
       basedOnSceneId: STRING,
-      view: { enum: ['ELEMENTS', 'CAPABILITIES', 'LAYOUT'] },
+      view: { enum: ['ELEMENTS', 'CAPABILITIES', 'LAYOUT', 'ACTION'] },
+      observation: STRING,
+      expectationRefs: { type: 'array', items: STRING },
       filter: {
         type: 'object', additionalProperties: false,
         properties: {
@@ -239,6 +257,7 @@ const OPERATION_CONTRACT = deepFreeze({
           'ELEMENTS allows interactiveOnly, textContains, and role.',
           'CAPABILITIES allows actionType and elementRef.',
           'LAYOUT does not accept filter fields.',
+          'ACTION records the Agent observation of the previous action annotation and does not accept filter fields.',
         ],
       },
     }, ['operation', 'basedOnSceneId', 'view']),
@@ -250,8 +269,9 @@ const OPERATION_CONTRACT = deepFreeze({
         operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'CAPABILITIES', filter: { actionType: 'longPress' },
       }),
       example('inspect-layout', { operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'LAYOUT' }),
+      example('inspect-action', { operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'ACTION', observation: '标注轨迹位于目标容器上方', expectationRefs: ['E1'] }),
     ],
-    responses: ['SCENE_INSPECTION', 'SCENE_CHANGED', 'REQUEST_INVALID', 'TECHNICAL'],
+    responses: ['SCENE_INSPECTION', 'ACTION_SPATIAL_INSPECTED', 'SCENE_CHANGED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
   knowledge: defineOperation({
     agentAccessible: true,
@@ -292,22 +312,24 @@ const OPERATION_CONTRACT = deepFreeze({
     })],
     responses: ['KNOWLEDGE_REVIEWED', 'SCENE_CHANGED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
-  recordPlan: defineOperation({
+  recordCaseModel: defineOperation({
     agentAccessible: false,
-    summary: 'Record an Agent-authored execution plan without touching the device.',
-    whenToUse: ['Agent-facing Facade only; never exposed as a Case Agent internal operation.'],
-    requestSchema: operationSchema('recordPlan', {
-      decision: { $ref: 'decision' },
-    }, ['operation', 'decision']),
-    constraints: ['decision.planUpdate is required.'],
-    examples: [example('record-agent-plan', {
-      operation: 'recordPlan',
-      decision: {
-        ...decision('记录执行计划'),
-        planUpdate: { reason: 'INITIAL_PLAN', next: ['观察当前页面', '执行必要操作', '验证预期结果'] },
+    summary: 'Record a complete Agent-authored Case Model revision without touching the device.',
+    whenToUse: ['Agent-facing Facade only; never exposed as a separate Case Agent capability.'],
+    requestSchema: operationSchema('recordCaseModel', {
+      caseModel: { $ref: 'caseModelInput' },
+    }, ['operation', 'caseModel']),
+    examples: [example('record-case-model', {
+      operation: 'recordCaseModel',
+      caseModel: {
+        understanding: '验证当前页面结果',
+        preconditions: [],
+        verificationPoints: [{ text: '目标结果可见' }],
+        items: ['观察当前页面', '验证目标结果'],
+        uncertainties: [],
       },
     })],
-    responses: ['PLAN_RECORDED', 'REQUEST_INVALID', 'TECHNICAL'],
+    responses: ['CASE_MODEL_RECORDED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
   recover: defineOperation({
     agentAccessible: true,
@@ -315,12 +337,16 @@ const OPERATION_CONTRACT = deepFreeze({
     whenToUse: ['The App is no longer usable and a fresh App process is required to continue.'],
     requestSchema: operationSchema('recover', {
       basedOnSceneId: STRING, reason: STRING, decision: { $ref: 'decision' },
+      externalAction: {
+        type: 'object', additionalProperties: false, required: ['summary'],
+        properties: { summary: STRING, tool: STRING },
+      },
     }, ['operation', 'basedOnSceneId', 'reason']),
     examples: [example('recover-app', {
       operation: 'recover', basedOnSceneId: 'scene-0001', reason: '目标 App 卡死且当前交互无法继续',
       decision: decision('恢复目标 App 后重新判断现场', ['E1']),
     })],
-    responses: ['SCENE', 'RECOVERY_APPLIED', 'SCENE_CHANGED', 'TIME_LIMIT', 'REQUEST_INVALID', 'TECHNICAL'],
+    responses: ['SCENE', 'RECOVERY_APPLIED', 'EXTERNAL_ACTION_RECORDED', 'SCENE_CHANGED', 'TIME_LIMIT', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
   finish: defineOperation({
     agentAccessible: true,

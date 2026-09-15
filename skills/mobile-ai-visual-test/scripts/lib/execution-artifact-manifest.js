@@ -12,12 +12,10 @@ const CURRENT_ROOT_FILES = new Set([
   'execution.json',
   'binding.snapshot.json',
   'case.snapshot.json',
-  'case-spec.snapshot.json',
   'source.snapshot.md',
   'events.jsonl',
   'result.json',
   'metrics.json',
-  'case-definition.snapshot.json',
   'validation-profile.snapshot.json',
 ]);
 const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge', 'action-spatial-evidence', 'scenes', 'operations', 'telemetry']);

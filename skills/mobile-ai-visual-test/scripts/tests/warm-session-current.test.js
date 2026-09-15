@@ -8,6 +8,7 @@ const os = require('os');
 const path = require('path');
 const { bootstrapBatch, commitCurrentCase, initializeBatch, startCurrentCase } = require('../batch/core');
 const { buildContract } = require('../build-agent-contract');
+const { run: runAgentFacing } = require('../case-runtime/agent-facing-client');
 const { run } = require('../case-runtime/runtime-client');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
@@ -62,11 +63,17 @@ function runner(command, args, options) {
 
 function completeCase(started, index) {
   const at = `2026-09-04T10:00:0${index}.000Z`;
-  const observed = run(started.execDir, {
-    operation: 'observe',
-    decision: { purpose: `观察第 ${index} 个暖会话用例`, expectationRefs: ['E1'] },
-  }, { runner, now: at });
+  const observed = run(started.execDir, { operation: 'observe' }, { runner, now: at });
   assert.strictEqual(observed.status, 'SCENE');
+  const planned = runAgentFacing(started.execDir, {
+    capability: 'plan',
+    understanding: `验证第 ${index} 个暖会话用例`,
+    preconditions: [],
+    verificationPoints: [{ text: '目标页面正常显示' }],
+    items: ['观察当前页面', '检查截图', '提交结果'],
+    uncertainties: [],
+  }, { now: at });
+  assert.strictEqual(planned.status, 'CASE_MODEL_RECORDED');
   const visualInspection = run(started.execDir, {
     operation: 'inspectVisual',
     basedOnSceneId: observed.scene.sceneId,

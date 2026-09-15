@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { assertActiveDispatch } = require('../lib/dispatch-lease');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { attachTechnicalFallback } = require('../lib/technical-fallback');
+const { attachTechnicalContext } = require('../lib/technical-context');
 const { executeFacadeRequest } = require('./runtime-broker');
 const {
   projectAgentFacingResponse,
@@ -88,7 +88,7 @@ function run(execDir, request, options = {}) {
     internal = translateAgentFacingRequest(resolved, request);
   } catch (error) {
     if (error.code === 'AGENT_INPUT_INVALID') return invalidResponse(resolved, request, error.issues || []);
-    return attachTechnicalFallback({
+    return attachTechnicalContext({
       status: 'TECHNICAL',
       code: error.code || 'FACADE_TRANSLATION_ERROR',
       message: error.message || String(error),
@@ -99,13 +99,13 @@ function run(execDir, request, options = {}) {
         retryable: false,
       },
       scene: projectAgentFacingResponse(resolved, { status: 'READY' }).scene,
-    }, 'EXECUTION', 'USE_CURRENT_RUNTIME');
+    }, 'EXECUTION', { capability: 'observe' }, { resourceFacts: [`execution=${path.basename(resolved)}`] });
   }
   clearInvalidState(resolved);
   const executeRequest = options.executeRequest || executeFacadeRequest;
   const response = executeRequest(resolved, internal, options);
   if (response?.status === 'REQUEST_INVALID') {
-    return attachTechnicalFallback({
+    return attachTechnicalContext({
       status: 'TECHNICAL',
       code: 'FACADE_TRANSLATION_ERROR',
       message: `Facade 生成的内部请求未通过 Runtime：${response.message || response.code || 'unknown error'}`,
@@ -116,7 +116,7 @@ function run(execDir, request, options = {}) {
         retryable: false,
       },
       scene: projectAgentFacingResponse(resolved, { status: 'READY' }).scene,
-    }, 'EXECUTION', 'USE_CURRENT_RUNTIME');
+    }, 'EXECUTION', { capability: 'observe' }, { resourceFacts: [`execution=${path.basename(resolved)}`] });
   }
   return projectAgentFacingResponse(resolved, response, request);
 }
@@ -160,12 +160,12 @@ function main(argv = process.argv.slice(2), options = {}) {
     if (!response) response = run(execDir, request, options);
   } catch (error) {
     const inputInvalid = ['AGENT_INPUT_INVALID', 'SyntaxError'].includes(error.code || error.name);
-    response = attachTechnicalFallback({
+    response = attachTechnicalContext({
       status: inputInvalid ? 'INPUT_INVALID' : 'TECHNICAL',
       code: inputInvalid ? 'AGENT_INPUT_INVALID' : (error.code || 'AGENT_FACING_CLIENT_ERROR'),
       message: error.message || String(error),
       issues: inputInvalid ? [{ field: error.name === 'SyntaxError' ? 'requestFile' : 'transport', message: error.message, code: error.name === 'SyntaxError' ? 'JSON_INVALID' : 'TRANSPORT_INVALID' }] : undefined,
-    }, 'EXECUTION', 'USE_CURRENT_RUNTIME');
+    }, 'EXECUTION', { capability: 'observe' });
   }
   if (options.returnOnly) return response;
   process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);

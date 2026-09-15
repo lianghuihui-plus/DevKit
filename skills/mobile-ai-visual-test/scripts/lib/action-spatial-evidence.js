@@ -459,7 +459,8 @@ function projectActionSpatialEvidence(execDir, ref, options = {}) {
   const value = readActionSpatialEvidence(execDir, ref, options);
   const annotatedScreenshot = value.annotatedScreenshotRef ? {
     ref: value.annotatedScreenshotRef,
-    absolutePath: resolveArtifact(execDir, value.annotatedScreenshotRef),
+    tool: 'view_image',
+    path: resolveArtifact(execDir, value.annotatedScreenshotRef),
     attachment: {
       type: 'image',
       mediaType: path.extname(value.annotatedScreenshotRef) === '.png' ? 'image/png' : 'image/svg+xml',
@@ -476,12 +477,11 @@ function projectActionSpatialEvidence(execDir, ref, options = {}) {
     kind: value.kind,
     certainty: value.certainty,
     requested: value.requested,
-    expectedDispatched: value.expectedDispatched,
     dispatched: value.dispatched,
-    actual: value.actual,
+    deviceActual: value.actual,
     screenshot: value.screenshot || null,
     viewport: value.viewport || null,
-    consistency: value.consistency,
+    coordinateTransform: value.consistency,
     annotatedScreenshot,
   };
 }

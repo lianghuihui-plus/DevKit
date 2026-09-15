@@ -7,8 +7,6 @@ const path = require('path');
 const { validateExecutionArtifactManifest } = require('./execution-artifact-manifest');
 const { canonicalJson, contractError } = require('./contract-utils');
 const { sourceSha, validateCaseContract } = require('../execution/contracts/case-contract');
-const { validateCaseSpec } = require('../execution/contracts/case-spec-contract');
-const { validateCaseDefinition } = require('../execution/contracts/case-definition-contract');
 const { readJson } = require('./execution-lifecycle');
 
 function sha256File(file) {
@@ -60,22 +58,15 @@ function validateExecutionSnapshotBindings(execDir, execution, snapshot) {
   try {
     validateCaseContract(snapshot);
     const sourceText = fs.readFileSync(path.join(execDir, 'source.snapshot.md'), 'utf8');
-    const caseSpec = readJson(path.join(execDir, 'case-spec.snapshot.json'), null);
-    const caseDefinition = readJson(path.join(execDir, 'case-definition.snapshot.json'), null);
     const binding = readJson(path.join(execDir, 'binding.snapshot.json'), null);
-    validateCaseSpec(caseSpec, { sourceText, sourceSha: execution.sourceSha });
-    validateCaseDefinition(caseDefinition, { sourceText, caseKey: snapshot.identity.caseKey });
     if (snapshot.identity.caseKey == null
       || snapshot.identity.sourceSha !== sourceSha(sourceText)
       || snapshot.identity.sourceSha !== execution.sourceSha
       || snapshot.contractSha !== execution.contractSha
-      || caseSpec.specSha !== execution.caseSpecSha
-      || caseDefinition.definitionId !== execution.definitionId
-      || caseDefinition.definitionSha !== execution.definitionSha
       || binding?.bindingSha !== execution.targetBindingSha
       || binding?.batchContractSha !== execution.batchContractSha
       || canonicalJson(binding?.binding) !== canonicalJson(execution.targetBinding)) {
-      throw new Error('execution snapshots do not match their frozen bindings');
+      throw new Error('execution snapshots do not match their source or environment bindings');
     }
   } catch (cause) {
     throw contractError('EXECUTION_SNAPSHOT_BINDING_INVALID', cause.message || String(cause));

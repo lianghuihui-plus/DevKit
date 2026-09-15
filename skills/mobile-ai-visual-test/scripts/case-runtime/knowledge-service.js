@@ -14,9 +14,9 @@ function knowledge(execDir, request, options = {}) {
   const execution = store.loadExecution(execDir);
   const appId = execution.targetBinding.appId;
   const scene = store.readCurrentScene(execDir);
-  const contextEvent = store.events(execDir).filter((event) => event.type === 'caseContextRecorded').at(-1) || null;
-  const relatedExpectations = (contextEvent?.caseContext?.expectations || [])
-    .filter((item) => (request.decision?.expectationRefs || []).includes(item.id))
+  const caseModel = require('./case-model-service').current(execDir);
+  const relatedExpectations = (caseModel?.verificationPoints || [])
+    .filter((item) => (request.decision?.expectationRefs || []).includes(item.ref))
     .map((item) => item.text);
   const queryId = store.nextId(execDir, 'knowledge');
   const runtime = require('../lib/execution-lifecycle').readJson(path.join(execDir, 'runtime.json'), null);
@@ -39,7 +39,7 @@ function knowledge(execDir, request, options = {}) {
       ...(confirmedPage || hintedPage ? { page: confirmedPage || hintedPage } : {}),
       ...(hintedOperation ? { operation: hintedOperation } : {}),
       symptom: request.query,
-      keywords: keywords([request.query, contextEvent?.caseContext?.summary || '', ...relatedExpectations].join(' ')),
+      keywords: keywords([request.query, caseModel?.understanding || '', ...relatedExpectations].join(' ')),
     },
     includeContent: true,
     now: options.now,
@@ -78,7 +78,7 @@ function knowledge(execDir, request, options = {}) {
     filterDiagnostics: result.filterDiagnostics,
     decisionId: request.decisionId || null,
     sceneId: scene?.sceneId || null,
-    contextVersion: contextEvent?.contextVersion || null,
+    contextVersion: caseModel?.revision || null,
     expectationRefs: request.decision?.expectationRefs || [],
     context: {
       platform: execution.platform,

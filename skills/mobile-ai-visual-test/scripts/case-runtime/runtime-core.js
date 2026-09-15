@@ -202,7 +202,7 @@ function execute(execDir, request, options = {}) {
         decision: narrative.decisionEvent?.decision || undefined,
         decisionId: narrative.decisionEvent?.decisionId || null,
       };
-      if (request.operation === 'recordPlan') response = { status: 'PLAN_RECORDED', plan: narrative.latestPlan };
+      if (request.operation === 'recordCaseModel') response = require('./case-model-service').revise(execDir, request.caseModel, options);
       else if (request.operation === 'prepare') response = require('./preparation-service').prepare(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
       else if (request.operation === 'act') response = actionService.act(execDir, enrichedRequest, runtimeOptions);
@@ -230,7 +230,7 @@ function execute(execDir, request, options = {}) {
     const requestInvalid = [
       'CASE_RUNTIME_REQUEST_INVALID', 'CASE_RUNTIME_VISUAL_ACTION_INVALID',
       'CASE_NARRATIVE_INVALID', 'CASE_RESULT_INVALID', 'ACTION_CONTRACT_INVALID',
-    ].includes(error.code);
+    ].includes(error.code) || String(error.code || '').startsWith('CASE_MODEL_');
     response = requestInvalid
       ? {
         status: 'REQUEST_INVALID',

@@ -128,8 +128,8 @@ function retrySafety(action, outcome) {
 function eventEntry(event, index) {
   const base = { sequence: index + 1, time: event.time || '', durationMs: null, phase: 'EXECUTE', operationId: event.operationId || null, raw: sanitizeOperationValue(event) };
   switch (event.type) {
-    case 'caseContextRecorded':
-      return { ...base, phase: 'UNDERSTAND', category: 'UNDERSTANDING', title: 'Agent 已形成用例理解与初始计划', summary: event.caseContext?.summary || '' };
+    case 'caseModelRevised':
+      return { ...base, phase: 'UNDERSTAND', category: 'UNDERSTANDING', title: event.revision === 1 ? 'Agent 已形成用例理解与初始计划' : 'Agent 已修订用例理解或计划', summary: event.understanding || '', caseModelRevision: event.revision, reason: event.reason || '' };
     case 'agentDecisionRecorded':
       return { ...base, category: 'DECISION', title: event.decision?.purpose || 'Agent 业务决策', summary: decisionField(event, 'conclusion') || '', decisionId: event.decisionId, intent: event.decision?.purpose || null, expectedOutcome: decisionField(event, 'expectedOutcome') || null };
     case 'knowledgeQueried':
@@ -237,11 +237,17 @@ function buildExecutionTrace(report) {
     action.beforeObservation = before?.observation || null;
     action.afterObservation = after?.observation ? { ...after.observation, sceneId: after.sceneId } : null;
     action.postActionArtifacts = after?.artifacts || null;
-    action.actionEffect = classifyActionEffect(
+    const comparison = classifyActionEffect(
       before ? { screenshot: { sha256: before.observation?.sha256 } } : null,
       after ? { screenshot: { sha256: after.observation?.sha256 } } : null,
       action.operationId,
     );
+    action.screenComparison = {
+      status: comparison.status === 'CHANGED' ? 'DIFFERENT'
+        : comparison.status === 'UNCHANGED' ? 'IDENTICAL' : 'UNAVAILABLE',
+      beforeSceneRef: before?.sceneId || null,
+      afterSceneRef: after?.sceneId || null,
+    };
     action.expectationAssessment = expectationAssessment(report, action);
     const followingDecision = entries.find((entry) => entry.sequence > (after?.sequence || action.sequence) && entry.category === 'DECISION');
     action.agentAnalysis = followingDecision

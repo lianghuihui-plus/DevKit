@@ -89,8 +89,10 @@ function coordinateText(value) {
 function renderSpatialEvidence(step, spatialShot) {
   const value = step.action?.spatialEvidence;
   if (!value) return '';
-  const actual = value.actual ? coordinateText(value.actual) : value.certainty === 'DISPATCH_ONLY' ? '平台未提供真实触点' : '-';
-  return `<section class="spatial-data"><header><div><span>动作空间证据</span><b>${escapeHtml(actionLabel(step.action.value))}</b></div><em>${step.action.value?.type === 'swipe' ? '滑动手势' : '点操作'}</em></header><dl><div><dt>定位来源</dt><dd>${escapeHtml(label(ACTION_VALUE_LABELS, value.source, value.source || '-'))}</dd></div><div><dt>请求坐标</dt><dd>${escapeHtml(coordinateText(value.requested))}</dd></div><div><dt>命令投递坐标</dt><dd>${escapeHtml(coordinateText(value.dispatched))}</dd></div><div><dt>设备实际触点</dt><dd>${escapeHtml(actual)}${spatialShot ? `<button type="button" class="spatial-shot-link" data-shot="${spatialShot.index}">查看动作落点</button>` : ''}</dd></div></dl></section>`;
+  const actual = value.deviceActual ? coordinateText(value.deviceActual) : value.certainty === 'DISPATCH_ONLY' ? '平台未提供真实触点' : '-';
+  const inspection = step.action?.spatialInspection?.observation
+    ? `<p class="spatial-inspection"><b>Agent 落点观察</b>${escapeHtml(step.action.spatialInspection.observation)}</p>` : '';
+  return `<section class="spatial-data"><header><div><span>动作空间证据</span><b>${escapeHtml(actionLabel(step.action.value))}</b></div><em>${step.action.value?.type === 'swipe' ? '滑动手势' : '点操作'}</em></header><dl><div><dt>定位来源</dt><dd>${escapeHtml(label(ACTION_VALUE_LABELS, value.source, value.source || '-'))}</dd></div><div><dt>请求坐标</dt><dd>${escapeHtml(coordinateText(value.requested))}</dd></div><div><dt>命令投递坐标</dt><dd>${escapeHtml(coordinateText(value.dispatched))}</dd></div><div><dt>设备实际触点</dt><dd>${escapeHtml(actual)}${spatialShot ? `<button type="button" class="spatial-shot-link" data-shot="${spatialShot.index}">查看动作落点</button>` : ''}</dd></div><div><dt>坐标换算</dt><dd>${escapeHtml(value.coordinateTransform || '-')}</dd></div></dl>${inspection}</section>`;
 }
 
 function renderActionDetails(step) {
@@ -179,7 +181,7 @@ function renderStepDetail(report, trace, narrative, shots, step, index) {
   const spatial = shots.find((shot) => shot.operationId === step.action?.operationId && shot.purpose === 'ACTION_SPATIAL_EVIDENCE') || null;
   const status = stepStatus(step);
   const knowledge = step.knowledge ? knowledgeContext(narrative, step.knowledge.queryId) : { investigation: null, refs: [] };
-  const actual = step.postAssessment?.conclusion || step.postAssessment?.observation || step.action?.result?.observedEffect?.summary || step.conclusion || '未单独记录操作后结论';
+  const actual = step.postAssessment?.conclusion || step.postAssessment?.observation || step.conclusion || '未单独记录操作后结论';
   const expectations = (step.expectationTargets || []).map((item) => item.ref).join(' · ') || '-';
   const expectationRows = (step.expectationTargets || []).map((item) => `<div><b>${escapeHtml(item.ref)} · ${escapeHtml(item.text)}</b><span>本步骤当时推进</span></div>`).join('');
   const shotCount = [before, spatial, after].filter(Boolean).length;

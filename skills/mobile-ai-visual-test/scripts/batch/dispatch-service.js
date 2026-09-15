@@ -312,8 +312,6 @@ function startCurrentCase(options) {
     }
     if (!['PENDING', 'RUNNING'].includes(item.status)) throw contractError('BATCH_CASE_INVALID', `current case is ${item.status}`);
     const caseJson = readJson(path.join(item.snapshotPath, 'case.snapshot.json'));
-    const caseDefinition = item.definitionId ? readJson(path.join(item.snapshotPath, 'case-definition.snapshot.json')) : null;
-    const caseSpec = readJson(path.join(item.snapshotPath, 'case-spec.snapshot.json'));
     const sourceText = fs.readFileSync(path.join(item.snapshotPath, 'source.snapshot.md'), 'utf8');
     const runtimeDir = caseRuntimeDir(item.caseDir, loaded.contract.binding.platform);
     let draft = readJson(loaded.paths.caseStartDraft, null);
@@ -345,8 +343,6 @@ function startCurrentCase(options) {
         workspaceRoot: options.workspaceRoot,
         runtimeDir,
         caseJson,
-        caseDefinition,
-        caseSpec,
         sourceText,
         executionId: draft.executionId,
         batchId: state.batchId,

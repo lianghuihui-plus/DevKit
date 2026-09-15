@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { bindingSha } = require('../lib/batch-contract');
-const { canonicalJson, contractError } = require('../lib/contract-utils');
+const { contractError } = require('../lib/contract-utils');
 const {
   appProvisioningSha,
   initialStatePreflightSha,
@@ -15,13 +15,11 @@ const {
   validatePreparationPolicy,
 } = require('../lib/app-provisioning');
 const { sourceSha, validateCaseContract } = require('../execution/contracts/case-contract');
-const { createCaseSpec, validateCaseSpec } = require('../execution/contracts/case-spec-contract');
 const { allocateExecutionId, atomicWrite, readJson, writeJsonAtomic, withFileLock } = require('../lib/execution-lifecycle');
 const { assertWorkspace } = require('../lib/workspace');
 const runtimeCore = require('./runtime-core');
 const store = require('./store');
 const { createValidationProfile, PROFILE_FILE } = require('../execution/contracts/validation-profile-contract');
-const { validateCaseDefinition } = require('../execution/contracts/case-definition-contract');
 const {
   AGENT_OPERATIONS,
   isSupportedBroker,
@@ -51,7 +49,7 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
-function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText, runtime, scene = null, dispatchSequence = 1) {
+function buildCaseBrief(executionDir, execution, caseJson, sourceText, runtime, scene = null, dispatchSequence = 1) {
   const preparation = runtimeCore.runtimeStatus(executionDir).preparation;
   const dispatchBound = Boolean(execution.batchId && runtime.sessionRef?.statePath);
   const requestPath = dispatchBound
@@ -62,12 +60,12 @@ function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText,
     : shellQuote(runtime.agentFacing.entry);
   const fullScene = store.readCurrentScene(executionDir) || scene;
   const agentContract = require('./agent-facing-contract');
+  const caseModel = require('./case-model-service').current(executionDir);
   return {
     case: {
       caseNo: caseJson.identity.caseNo || caseJson.identity.caseKey,
       caseKey: caseJson.identity.caseKey,
       source: sourceText,
-      spec: caseSpec,
     },
     target: {
       platform: execution.platform,
@@ -82,7 +80,7 @@ function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText,
       interfaceKind: agentContract.AGENT_FACING_INTERFACE_KIND,
       command,
       requestPath,
-      capabilities: agentContract.capabilityCards({ scene: fullScene, caseSpec }),
+      capabilities: agentContract.capabilityCards({ scene: fullScene, caseModel }),
       input: '每次调用都新建一个简化请求 JSON 到 requestPath，再原样执行 command；请求文件是一次性的，消费后删除。',
     },
     investigationCapabilities: {
@@ -90,7 +88,8 @@ function buildCaseBrief(executionDir, execution, caseJson, caseSpec, sourceText,
       layout: { available: true, capability: 'inspect', channels: ['elements', 'capabilities', 'layout'] },
       knowledge: { available: true, capability: 'knowledge', requiredBeforeNegativeConclusion: true },
     },
-    scene: agentContract.projectScene(fullScene, { caseSpec }),
+    caseModel,
+    scene: agentContract.projectScene(fullScene, { caseModel }),
   };
 }
 
@@ -99,15 +98,10 @@ function deriveCaseBrief(executionDir, dispatchSequence = 1) {
   const execution = store.loadExecution(resolved, { allowFinalized: true });
   const sourceText = fs.readFileSync(path.join(resolved, 'source.snapshot.md'), 'utf8');
   const caseJson = readJson(path.join(resolved, 'case.snapshot.json'), null);
-  const caseSpec = readJson(path.join(resolved, 'case-spec.snapshot.json'), null);
   validateCaseContract(caseJson);
   if (sourceSha(sourceText) !== execution.sourceSha || caseJson.identity.sourceSha !== execution.sourceSha
     || caseJson.contractSha !== execution.contractSha) {
     throw contractError('CASE_BRIEF_SOURCE_INVALID', 'execution snapshots do not match the frozen execution binding');
-  }
-  validateCaseSpec(caseSpec, { sourceText, sourceSha: execution.sourceSha });
-  if (caseSpec.specSha !== execution.caseSpecSha) {
-    throw contractError('CASE_BRIEF_SOURCE_INVALID', 'CaseSpec snapshot does not match the frozen execution binding');
   }
   const runtime = readJson(path.join(resolved, 'runtime.json'), null);
   const expectedEntry = path.join(resolved, 'runtime-client.js');
@@ -124,7 +118,7 @@ function deriveCaseBrief(executionDir, dispatchSequence = 1) {
     || invalidAgentFacing || !isSupportedBroker(runtime.broker)) {
     throw contractError('CASE_RUNTIME_BINDING_INVALID', 'Case Runtime client does not match the execution');
   }
-  return buildCaseBrief(resolved, execution, caseJson, caseSpec, sourceText, runtime, store.readCurrentScene(resolved), dispatchSequence);
+  return buildCaseBrief(resolved, execution, caseJson, sourceText, runtime, store.readCurrentScene(resolved), dispatchSequence);
 }
 
 function createExecution(options) {
@@ -132,23 +126,6 @@ function createExecution(options) {
   validateCaseContract(options.caseJson);
   const frozenSourceSha = sourceSha(options.sourceText);
   if (frozenSourceSha !== options.caseJson.identity.sourceSha) throw contractError('EXECUTION_SOURCE_CHANGED', 'source text does not match the case contract');
-  const caseSpec = validateCaseSpec(options.caseSpec, { sourceText: options.sourceText, sourceSha: frozenSourceSha });
-  const caseDefinition = validateCaseDefinition(options.caseDefinition, {
-    sourceText: options.sourceText,
-    caseKey: options.caseJson.identity.caseKey,
-  });
-  const projectedCaseSpec = createCaseSpec({
-    sourceText: options.sourceText,
-    spec: {
-      summary: caseDefinition.summary,
-      preconditions: caseDefinition.preconditions,
-      expectations: caseDefinition.expectations.map(({ text, verificationKind, sourceEvidence }) => ({ text, verificationKind, sourceEvidence })),
-      ambiguities: caseDefinition.ambiguities,
-    },
-  });
-  if (canonicalJson(projectedCaseSpec) !== canonicalJson(caseSpec)) {
-    throw contractError('CASE_DEFINITION_BINDING_INVALID', 'CaseSpec does not match the frozen CaseDefinition');
-  }
   const appProvisioning = validateAppProvisioning(options.appProvisioning, {
     workspaceRoot: options.workspaceRoot,
     platform: options.platform,
@@ -197,8 +174,6 @@ function createExecution(options) {
       }
       atomicWrite(path.join(stagingDir, 'source.snapshot.md'), options.sourceText);
       writeJsonAtomic(path.join(stagingDir, 'case.snapshot.json'), options.caseJson);
-      writeJsonAtomic(path.join(stagingDir, 'case-definition.snapshot.json'), caseDefinition);
-      writeJsonAtomic(path.join(stagingDir, 'case-spec.snapshot.json'), caseSpec);
       const validationProfile = createValidationProfile();
       writeJsonAtomic(path.join(stagingDir, PROFILE_FILE), validationProfile);
       const startedAt = options.now || new Date().toISOString();
@@ -213,9 +188,6 @@ function createExecution(options) {
         caseProtocolSha: options.caseProtocolSha,
         coordinatorProtocolSha: options.coordinatorProtocolSha,
         contractSha: options.caseJson.contractSha,
-        definitionId: caseDefinition.definitionId,
-        definitionSha: caseDefinition.definitionSha,
-        caseSpecSha: caseSpec.specSha,
         validationProfileSha: validationProfile.profileSha,
         batchContractSha: options.batchContractSha,
         executionRequestSha: options.executionRequestSha,
@@ -275,21 +247,10 @@ function createExecution(options) {
         boundAt: startedAt,
       });
       store.appendEvent(execDir, 'executionStarted', { generation: execution.warmSessionGeneration }, { now: startedAt });
-      store.appendEvent(execDir, 'caseContextRecorded', {
-        contextVersion: 1,
-        reason: 'FROZEN_CASE_SPEC',
-        caseContext: {
-          summary: caseSpec.summary,
-          preconditions: caseSpec.preconditions,
-          expectations: caseSpec.expectations.map(({ id, text, verificationKind }) => ({ id, text, verificationKind })),
-          initialPlan: [],
-          uncertainties: caseSpec.ambiguities,
-        },
-      }, { now: startedAt });
       const observed = options.initialObserve === false
         ? { status: 'READY', scene: null }
         : runtimeCore.execute(execDir, { operation: 'observe', purpose: 'INITIAL_SCENE' }, options.runtimeOptions || {});
-      const brief = buildCaseBrief(execDir, execution, options.caseJson, caseSpec, options.sourceText, readJson(path.join(execDir, 'runtime.json')), observed.scene || null);
+      const brief = buildCaseBrief(execDir, execution, options.caseJson, options.sourceText, readJson(path.join(execDir, 'runtime.json')), observed.scene || null);
       return { executionId, execDir, execution: readJson(path.join(execDir, 'execution.json')), runtime: readJson(path.join(execDir, 'runtime.json')), brief, scene: observed.scene || null, runtimeStatus: observed.status };
     } catch (error) {
       if (fs.existsSync(stagingDir)) fs.rmSync(stagingDir, { recursive: true, force: true });
@@ -328,26 +289,9 @@ function establishInitialState({ executionDir, runtimeOptions = {} }) {
     return { status: 'READY', agentRequired: true, scene: prepared.scene, preparation: prepared.preparation };
   }
   if (prepared.status === 'TECHNICAL' && prepared.code === 'APP_INITIAL_STATE_UNAVAILABLE') {
-    const caseSpec = readJson(path.join(executionDir, 'case-spec.snapshot.json'));
-    const actual = `Required initial state ${requirement.targetState} could not be established`;
-    const result = {
-      verdict: 'BLOCKED',
-      summary: actual,
-      checks: caseSpec.expectations.map((expectation) => ({
-        expectationRef: expectation.id,
-        status: 'BLOCKED',
-        actual,
-        sceneRefs: [],
-        knowledgeRefs: [],
-        technicalRefs: prepared.technicalFactRef ? [prepared.technicalFactRef] : [],
-      })),
-      uncertainties: [prepared.message || actual],
-    };
-    completeInitialState();
-    store.updateExecution(executionDir, (current) => ({ ...current, autoInitialStateBlocked: true }));
-    const finished = runtimeCore.execute(executionDir, { operation: 'finish', result }, runtimeOptions);
-    if (finished.status !== 'COMPLETED') throw contractError('INITIAL_STATE_BLOCKED_RESULT_INVALID', finished.message || 'failed to finalize blocked initial state');
-    return { status: 'BLOCKED', agentRequired: false, technicalFactRef: prepared.technicalFactRef || null, result };
+    const error = contractError('APP_INITIAL_STATE_UNAVAILABLE', prepared.message || `Required initial state ${requirement.targetState} could not be established`);
+    error.technicalFactRef = prepared.technicalFactRef || null;
+    throw error;
   }
   throw contractError('INITIAL_STATE_PREPARATION_FAILED', prepared.message || `unexpected preparation status: ${prepared.status}`);
 }
@@ -389,15 +333,13 @@ function buildContinuationBrief({ executionDir, reason }) {
       sequence,
     },
     scene: require('./agent-facing-contract').projectScene(store.readCurrentScene(executionDir), {
-      caseSpec: readJson(path.join(executionDir, 'case-spec.snapshot.json'), null),
+      caseModel: require('./case-model-service').current(executionDir),
     }),
     resumeState: {
       executionStatus: execution.status,
       remainingMs: status.remainingMs,
       ...(status.preparation ? { preparation: status.preparation } : {}),
-      caseContext: narrative.caseContext,
-      contextVersion: narrative.contextVersion,
-      latestPlan: narrative.latestPlan,
+      caseModel: narrative.caseModel,
       lastAction,
       unresolvedTechnicalFacts,
       pendingKnowledgeReviews: projectedPendingReviews,

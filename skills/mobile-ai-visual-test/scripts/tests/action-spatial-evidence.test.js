@@ -111,7 +111,12 @@ assert.strictEqual(annotated.annotatedScreenshotRef, 'action-spatial-evidence/ac
 assert.strictEqual(inspectPng(path.join(annotatedDir, annotated.annotatedScreenshotRef)).decodeStatus, 'VALID');
 const projection = projectActionSpatialEvidence(annotatedDir, annotatedRef, { operationId: 'action-0001', actionType: 'tap' });
 assert.strictEqual(projection.annotatedScreenshot.attachment.mediaType, 'image/png');
-assert.strictEqual(fs.existsSync(projection.annotatedScreenshot.absolutePath), true);
+assert.strictEqual(projection.annotatedScreenshot.tool, 'view_image');
+assert.strictEqual(fs.existsSync(projection.annotatedScreenshot.path), true);
+assert.strictEqual(projection.coordinateTransform, 'MATCHED');
+assert.strictEqual(projection.deviceActual, null);
+assert.strictEqual(projection.consistency, undefined);
+assert.strictEqual(projection.actual, undefined);
 
 assert.throws(() => createActionSpatialEvidence(annotatedDir, {
   ...validated({ type: 'tap', x: 0, y: 0, coordinateSource: 'visual', targetBounds: [0, null, 1, 1] }, 'action-0002'),
