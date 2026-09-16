@@ -161,7 +161,8 @@ for (const [inputIndex, [name, content]] of inputs.entries()) {
   assert.ok(fs.readFileSync(path.join(imported.caseDir, 'CONTEXT.html'), 'utf8').includes(sourceSignal));
   const indexHtml = fs.readFileSync(path.join(importWorkspace, 'index.html'), 'utf8');
   assert.ok(indexHtml.includes('查看用例内容'));
-  assert.ok(indexHtml.includes('data-case-filter="NOT_RUN"'));
+  assert.ok(indexHtml.includes('data-case-filter="PENDING"'));
+  assert.ok(indexHtml.includes('data-case-status="PENDING"'));
   assert.strictEqual(indexHtml.includes('暂无平台执行记录'), false);
 }
 

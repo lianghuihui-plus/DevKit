@@ -141,11 +141,11 @@ function collectCasePlatforms(caseDir) {
 
 function aggregateStatus(platforms) {
   const statuses = platforms.map((entry) => entry.status);
-  if (!statuses.length) return 'NOT_RUN';
-  for (const status of ['FAIL', 'BLOCKED', 'RUNNING', 'FINALIZATION_RECOVERY_REQUIRED', 'PENDING_PUBLICATION', 'CANCELLED', 'NEEDS_RERUN', 'UNKNOWN', 'ABANDONED']) {
+  if (!statuses.length) return 'PENDING';
+  for (const status of ['FAIL', 'BLOCKED', 'RUNNING', 'FINALIZATION_RECOVERY_REQUIRED', 'PENDING_PUBLICATION', 'CANCELLED', 'NEEDS_RERUN', 'UNKNOWN', 'ABANDONED', 'NOT_RUN']) {
     if (statuses.includes(status)) return status === 'FINALIZATION_RECOVERY_REQUIRED' ? 'RUNNING' : status;
   }
-  return statuses.every((status) => status === 'PASS') ? 'PASS' : 'NOT_RUN';
+  return statuses.every((status) => status === 'PASS') ? 'PASS' : 'PENDING';
 }
 
 function latestSummary(platforms) {
@@ -159,7 +159,7 @@ function aggregateCase(platforms) {
     ? aggregateStatus(readable)
     : platforms.some((entry) => entry.readability === 'DATA_INVALID')
       ? 'REPORT_DATA_INVALID'
-      : platforms.some((entry) => entry.readability === 'FORMAT_UNSUPPORTED') ? 'NEEDS_RERUN' : 'NOT_RUN';
+      : platforms.some((entry) => entry.readability === 'FORMAT_UNSUPPORTED') ? 'NEEDS_RERUN' : 'PENDING';
   const statusSource = considered.find((entry) => entry.status === status) || latestSummary(considered);
   const timeSource = latestSummary(considered) || statusSource;
   return {

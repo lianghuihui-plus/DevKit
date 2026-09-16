@@ -12,7 +12,7 @@ cancel -> CANCELLING -> finalization -> BATCH_CANCELLED
 fatal -> BLOCKING -> finalization -> BATCH_BLOCKED
 ```
 
-看板用例状态只展示五类：`PASS`、`FAIL`、`BLOCKED`、`INCONCLUSIVE` 和 `NOT_RUN`。内部批次状态 `PENDING`、`SKIPPED`、`CANCELLED` 统一投影为 `NOT_RUN`；执行中断前是否已进入实际执行，以是否产生第一条 `actionRequested` 或 `sceneObserved` 事件为检查点，检查点前为 `NOT_RUN`，检查点后为 `BLOCKED`。
+看板分开展示“未执行”与“无法执行”：用例没有任何 execution 记录时投影为 `PENDING`（未执行）；已创建 execution，但因前置条件、环境或其他问题未进入实际执行时投影为 `NOT_RUN`（无法执行）。是否已进入实际执行，以是否产生第一条 `actionRequested` 或 `sceneObserved` 事件为检查点；检查点后发生技术中断投影为 `BLOCKED`，用户取消保留为 `CANCELLED`，不再合并到 `NOT_RUN`。
 
 Coordinator 从用例编号解析当前 `case.json` 和 `source.md`，为新 execution 冻结 `case.snapshot.json`、`source.snapshot.md`、环境、App、初始状态策略和协议摘要。它不理解原始用例，也不生成验证点或执行计划。
 

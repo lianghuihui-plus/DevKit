@@ -174,7 +174,7 @@ for (const text of [
   '无法判断',
   '搜索用例编号、名称或标识',
 ]) assert.ok(html.includes(text), text);
-for (const text of ['run-control-section', 'control-band', 'outcome-band', 'Agent 执行信号', 'class="case-status"', '执行中']) assert.strictEqual(html.includes(text), false, text);
+for (const text of ['run-control-section', 'control-band', 'outcome-band', 'Agent 执行信号', 'class="case-status"']) assert.strictEqual(html.includes(text), false, text);
 assert.ok(html.includes('显示 4 / 4'));
 assert.ok(html.includes('data-case-status="INCONCLUSIVE"'));
 assert.ok(html.includes('batch-dashboard'));
@@ -255,7 +255,7 @@ const multiPlatformHtml = renderCurrentIndexHtml(root, [{
 assert.strictEqual((multiPlatformHtml.match(/class="platform-run /g) || []).length, 2);
 assert.strictEqual((multiPlatformHtml.match(/class="common-stat"/g) || []).length, 2);
 assert.strictEqual((multiPlatformHtml.match(/aria-label="查看执行报告"/g) || []).length, 2);
-assert.ok(multiPlatformHtml.includes('1 通 · 1 失 · 0 阻 · 0 无法 · 1 未'));
+assert.ok(multiPlatformHtml.includes('1 通 · 1 失 · 0 阻 · 0 无法判断 · 0 无法执行 · 1 未执行'));
 assert.ok(multiPlatformHtml.includes('查看用例内容'));
 for (const text of ['动作 / 观察', '验证点', '恢复', '用例总耗时', '开始时间', '结束时间']) assert.ok(multiPlatformHtml.includes(text), text);
 for (const text of ['时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟']) {
@@ -300,6 +300,40 @@ assert.strictEqual(platformOnlyFilters.clickPlatform('ios'), 2, 'iOS cases');
 assert.deepStrictEqual(platformOnlyFilters.visiblePlatforms(), ['ios', 'ios']);
 assert.strictEqual(platformOnlyFilters.clickPlatform('ALL'), 3, 'all platform cases');
 assert.deepStrictEqual(platformOnlyFilters.visiblePlatforms(), ['harmony', 'android', 'harmony', 'ios', 'ios']);
+
+const isolatedStatuses = [
+  ['PENDING', 'PENDING', '未执行'],
+  ['RUNNING', 'RUNNING', '执行中'],
+  ['FINALIZATION_RECOVERY_REQUIRED', 'FINALIZATION_RECOVERY_REQUIRED', '收尾待恢复'],
+  ['PENDING_PUBLICATION', 'PENDING_PUBLICATION', '待发布'],
+  ['CANCELLED', 'CANCELLED', '已取消'],
+  ['NEEDS_RERUN', 'NEEDS_RERUN', '需重新执行'],
+  ['ABANDONED', 'ABANDONED', '执行已废弃'],
+  ['REPORT_ERROR', 'REPORT_ERROR', '报告数据异常'],
+  ['REPORT_DATA_INVALID', 'REPORT_ERROR', '报告数据异常'],
+  ['NOT_RUN', 'NOT_RUN', '无法执行'],
+];
+const isolatedStatusHtml = renderCurrentIndexHtml(root, isolatedStatuses.map(([status], index) => ({
+  caseNo: String(80 + index),
+  title: `状态隔离 ${status}`,
+  caseKey: `ck-status-${index}`,
+  status,
+  contextHref: `cases/status-${index}/CONTEXT.html`,
+  platforms: status === 'REPORT_ERROR' ? [] : [{
+    platform: 'harmony', status, verdict: null,
+    contextHref: `cases/status-${index}/platforms/harmony/CONTEXT.html`,
+  }],
+})));
+assert.deepStrictEqual(
+  [...isolatedStatusHtml.matchAll(/data-case-filter="([^"]+)"/g)].map((match) => match[1]),
+  ['ALL', 'PASS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE', 'NOT_RUN', 'PENDING'],
+  'dashboard filters must match the six result statuses shown in the summary',
+);
+for (const [, , label] of isolatedStatuses) assert.ok(isolatedStatusHtml.includes(label), label);
+const isolatedStatusFilters = runIndexFilters(isolatedStatusHtml);
+for (const status of ['PENDING', 'NOT_RUN']) {
+  assert.strictEqual(isolatedStatusFilters.clickStatus(status), 1, `${status} must not be folded into another status`);
+}
 
 const detailHtml = fs.readFileSync(path.join(fixtures[0].runtimeDir, 'CONTEXT.html'), 'utf8');
 for (const text of ['用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙', '开始时间', '结束时间']) {

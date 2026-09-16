@@ -10,9 +10,10 @@ const {
 } = require('../lib/display-format');
 
 const PLATFORM_LABELS = Object.freeze({ harmony: 'HarmonyOS', android: 'Android', ios: 'iOS' });
-const VERDICT_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', UNKNOWN: '无法判断', CANCELLED: '已取消', NEEDS_RERUN: '需重新执行', NOT_RUN: '未执行', REPORT_ERROR: '报告数据异常', REPORT_DATA_INVALID: '报告数据异常' });
+const VERDICT_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', UNKNOWN: '无法判断', CANCELLED: '已取消', NEEDS_RERUN: '需重新执行', ABANDONED: '执行已废弃', NOT_RUN: '无法执行', PENDING: '未执行', REPORT_ERROR: '报告数据异常', REPORT_DATA_INVALID: '报告数据异常' });
+const DASHBOARD_STATUSES = new Set(['PASS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE', 'RUNNING', 'FINALIZATION_RECOVERY_REQUIRED', 'PENDING_PUBLICATION', 'CANCELLED', 'NEEDS_RERUN', 'ABANDONED', 'REPORT_ERROR', 'NOT_RUN', 'PENDING']);
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
-const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', CANCELLED: '已取消', TECHNICALLY_BLOCKED: '技术阻塞', STOPPED_BY_BUDGET: '达到时限', INTERRUPTED: '执行中断' });
+const EXECUTION_STATUS_LABELS = Object.freeze({ RUNNING: '执行中', FINALIZATION_RECOVERY_REQUIRED: '收尾待恢复', PENDING_PUBLICATION: '待发布', COMPLETED: '执行完成', CANCELLED: '已取消', TECHNICALLY_BLOCKED: '技术阻塞', NOT_RUN: '未进入实际执行', STOPPED_BY_BUDGET: '达到时限', INTERRUPTED: '执行中断' });
 const BATCH_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', RUNNING: '执行中', FINALIZING: '收尾中', CANCELLING: '取消收尾中', BLOCKING: '阻塞收尾中', CANCELLED: '已取消', COMPLETED: '已完成', BLOCKED: '已停止', DEGRADED: '已停止' });
 const WARM_STATUS_LABELS = Object.freeze({ INITIALIZING: '待启动', READY: '已就绪', DEGRADED: '已停止', CLOSED: '已关闭' });
 const INTERACTION_POLICY_LABELS = Object.freeze({ UNATTENDED: '无人值守' });
@@ -32,8 +33,8 @@ function displayPlatform(value) {
 
 function effectiveVerdict(item = {}) {
   if (item.verdict === 'INCONCLUSIVE' || item.status === 'UNKNOWN') return 'INCONCLUSIVE';
-  if (item.status === 'FINALIZATION_RECOVERY_REQUIRED') return 'RUNNING';
-  return item.verdict || item.status || 'NOT_RUN';
+  if (item.status === 'REPORT_DATA_INVALID') return 'REPORT_ERROR';
+  return item.verdict || item.status || 'PENDING';
 }
 
 function verdictLabel(value) {
@@ -42,9 +43,7 @@ function verdictLabel(value) {
 
 function dashboardVerdict(item = {}) {
   const value = effectiveVerdict(item);
-  if (['PASS', 'FAIL', 'BLOCKED'].includes(value)) return value;
-  if (value === 'INCONCLUSIVE' || value === 'UNKNOWN') return 'INCONCLUSIVE';
-  return 'NOT_RUN';
+  return DASHBOARD_STATUSES.has(value) ? value : 'REPORT_ERROR';
 }
 
 function basisLabel(value) {
@@ -107,7 +106,7 @@ function controlStage(value) {
 }
 
 function summarize(cases) {
-  const verdicts = cases.map(effectiveVerdict);
+  const verdicts = cases.map(dashboardVerdict);
   const currentRuns = cases.flatMap((item) => item.platforms || []);
   return {
     total: cases.length,
@@ -118,7 +117,8 @@ function summarize(cases) {
     pendingPublication: verdicts.filter((value) => value === 'PENDING_PUBLICATION').length,
     cancelled: verdicts.filter((value) => value === 'CANCELLED').length,
     needsRerun: verdicts.filter((value) => value === 'NEEDS_RERUN').length,
-    notRun: verdicts.filter((value) => value === 'NOT_RUN' || value === 'NEEDS_RERUN').length,
+    notRun: verdicts.filter((value) => value === 'NOT_RUN').length,
+    pending: verdicts.filter((value) => value === 'PENDING').length,
     reportError: verdicts.filter((value) => value === 'REPORT_ERROR').length,
     directEvidence: currentRuns.filter((item) => item.verdictBasis === 'DIRECT_EVIDENCE').length,
     warmReuse: currentRuns.filter((item) => item.currentMetrics?.warmSessionReused).length,
@@ -132,16 +132,20 @@ function summarize(cases) {
 
 function platformSummary(cases) {
   const rows = new Map(['harmony', 'android', 'ios'].map((platform) => [platform, {
-    platform, total: cases.length, executed: 0, pass: 0, fail: 0, blocked: 0, inconclusive: 0, notRun: cases.length,
+    platform, total: cases.length, executed: 0, pass: 0, fail: 0, blocked: 0, inconclusive: 0, notRun: 0, pending: cases.length,
   }]));
   for (const item of cases) {
     for (const platform of item.platforms || []) {
       if (!rows.has(platform.platform)) continue;
       const row = rows.get(platform.platform);
       const verdict = dashboardVerdict(platform);
-      if (verdict === 'NOT_RUN') continue;
+      if (verdict === 'PENDING') continue;
+      row.pending = Math.max(0, row.pending - 1);
+      if (verdict === 'NOT_RUN') {
+        row.notRun += 1;
+        continue;
+      }
       row.executed += 1;
-      row.notRun = Math.max(0, row.notRun - 1);
       if (verdict === 'PASS') row.pass += 1;
       if (verdict === 'FAIL') row.fail += 1;
       if (verdict === 'BLOCKED') row.blocked += 1;
@@ -179,7 +183,7 @@ function renderPlatformRun(platform) {
   const detail = unavailable ? platform.reason || executionState : `${executionState} · ${basisLabel(platform.verdictBasis)}`;
   return `<article class="platform-run ${escapeHtml(platform.platform)}" data-platform-run="${escapeHtml(platform.platform)}">
     <div class="run-platform"><span class="platform-token">${escapeHtml(PLATFORM_TOKENS[platform.platform] || '?')}</span><div><b>${escapeHtml(displayPlatform(platform.platform))}</b><small>${escapeHtml(detail)}</small></div></div>
-    ${renderStatus(unavailable ? platform.status : verdict)}
+    ${renderStatus(verdict)}
     <dl><div class="time-metric"><dt>用例总耗时</dt><dd>${escapeHtml(formatDuration(platform.durationMs))}</dd></div><div class="time-metric"><dt>开始时间</dt><dd>${escapeHtml(formatDisplayTime(platform.startedAt))}</dd></div><div class="time-metric"><dt>结束时间</dt><dd>${escapeHtml(formatDisplayTime(platform.endedAt))}</dd></div><div><dt>动作 / 观察</dt><dd>${metricValue(counts.actions)} / ${metricValue(counts.observations)}</dd></div><div><dt>验证点</dt><dd>${escapeHtml(platform.coverage || '-')}</dd></div><div><dt>恢复</dt><dd>${metricValue(platform.currentMetrics?.executionRecoveryCount)}</dd></div></dl>
     <a class="report-button" href="${escapeHtml(platform.contextHref)}" title="查看 ${escapeHtml(displayPlatform(platform.platform))} 执行报告" aria-label="查看执行报告"><span aria-hidden="true">↗</span></a>
   </article>`;
@@ -187,12 +191,12 @@ function renderPlatformRun(platform) {
 
 function casePlatformVerdicts(platforms) {
   const byPlatform = new Map(platforms.map((platform) => [platform.platform, dashboardVerdict(platform)]));
-  return PLATFORM_ORDER.map((platform) => byPlatform.get(platform) || 'NOT_RUN');
+  return PLATFORM_ORDER.map((platform) => byPlatform.get(platform) || 'PENDING');
 }
 
-function caseFilterVerdicts(platforms) {
-  const verdicts = platforms.map((platform) => dashboardVerdict(platform));
-  return [...new Set(verdicts.length ? verdicts : ['NOT_RUN'])];
+function caseFilterVerdicts(item) {
+  const verdicts = (item.platforms || []).map((platform) => dashboardVerdict(platform));
+  return [...new Set(verdicts.length ? verdicts : [dashboardVerdict(item)])];
 }
 
 function caseFilterPlatforms(platforms) {
@@ -206,7 +210,7 @@ function caseFilterResults(platforms) {
 }
 
 function renderCase(item, index) {
-  const platforms = (item.platforms || []).filter((platform) => platform.status !== 'NOT_RUN')
+  const platforms = (item.platforms || []).filter((platform) => dashboardVerdict(platform) !== 'PENDING')
     .sort((left, right) => PLATFORM_ORDER.indexOf(left.platform) - PLATFORM_ORDER.indexOf(right.platform));
   const verdicts = casePlatformVerdicts(item.platforms || []);
   const count = (status) => verdicts.filter((value) => value === status).length;
@@ -217,14 +221,14 @@ function renderCase(item, index) {
     : item.status === 'NEEDS_RERUN'
       ? `需重新执行：${item.reason || '用例原文已更新'}`
     : item.sourceSummary || '原始用例内容已收录';
-  const statusValues = caseFilterVerdicts(item.platforms || []).join(' ');
+  const statusValues = caseFilterVerdicts(item).join(' ');
   const platformValues = caseFilterPlatforms(item.platforms || []).join(' ');
   const resultValues = caseFilterResults(item.platforms || []).join(' ');
   return `<section class="case-row" data-case-status="${escapeHtml(statusValues)}" data-case-platforms="${escapeHtml(platformValues)}" data-case-results="${escapeHtml(resultValues)}" data-case-search="${escapeHtml(`${item.caseNo || ''} ${item.title} ${item.caseKey || ''}`.toLowerCase())}">
     <div class="case-common">
       <div class="case-order">${String(index + 1).padStart(2, '0')}</div>
       <div class="case-copy"><span>用例 ${escapeHtml(item.caseNo || String(index + 1).padStart(3, '0'))} · ${escapeHtml(item.caseKey || '-')}</span><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(summary)}</p></div>
-      <div class="common-stats"><span class="common-stat"><small>三端统计</small><b>${count('PASS')} 通 · ${count('FAIL')} 失 · ${count('BLOCKED')} 阻 · ${count('INCONCLUSIVE')} 无法 · ${count('NOT_RUN')} 未</b></span><span class="common-stat"><small>平均耗时</small><b>${escapeHtml(formatDuration(averageDuration(platforms)))}</b></span></div>
+      <div class="common-stats"><span class="common-stat"><small>三端统计</small><b>${count('PASS')} 通 · ${count('FAIL')} 失 · ${count('BLOCKED')} 阻 · ${count('INCONCLUSIVE')} 无法判断 · ${count('NOT_RUN')} 无法执行 · ${count('PENDING')} 未执行</b></span><span class="common-stat"><small>平均耗时</small><b>${escapeHtml(formatDuration(averageDuration(platforms)))}</b></span></div>
       <a class="icon-button" href="${escapeHtml(item.contextHref)}" title="查看用例内容" aria-label="查看用例内容"><span aria-hidden="true">▤</span></a>
     </div>
     ${platforms.length ? `<div class="platform-runs">${platforms.map(renderPlatformRun).join('')}</div>` : ''}
@@ -236,14 +240,15 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
   const orderedCases = cases.slice();
   const summary = summarize(orderedCases);
   const platforms = platformSummary(orderedCases);
-  const filterCount = (status) => orderedCases.filter((item) => caseFilterVerdicts(item.platforms || []).includes(status)).length;
+  const filterCount = (status) => orderedCases.filter((item) => caseFilterVerdicts(item).includes(status)).length;
   const filters = [
     ['ALL', '全部', summary.total],
     ['PASS', '通过', filterCount('PASS')],
     ['FAIL', '失败', filterCount('FAIL')],
     ['BLOCKED', '阻塞', filterCount('BLOCKED')],
     ['INCONCLUSIVE', '无法判断', filterCount('INCONCLUSIVE')],
-    ['NOT_RUN', '未执行', filterCount('NOT_RUN')],
+    ['NOT_RUN', '无法执行', filterCount('NOT_RUN')],
+    ['PENDING', '未执行', filterCount('PENDING')],
   ];
   const platformFilters = [
     ['ALL', '全部平台', summary.total],
@@ -262,7 +267,8 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
       ['失败', item.fail, 'fail', 'bar-fail'],
       ['阻塞', item.blocked, 'blocked', 'bar-blocked'],
       ['无法判断', item.inconclusive, 'inconclusive', 'bar-inconclusive'],
-      ['未执行', item.notRun, 'not-run', 'bar-not-run'],
+      ['无法执行', item.notRun, 'not-run', 'bar-not-run'],
+      ['未执行', item.pending, 'pending', 'bar-pending'],
     ];
     return `<article class="platform-summary ${escapeHtml(item.platform)}"><div class="platform-summary-head"><span class="platform-token">${escapeHtml(PLATFORM_TOKENS[item.platform])}</span><b>${escapeHtml(displayPlatform(item.platform))}</b><strong>${item.executed}/${item.total}</strong></div><div class="stacked-bar" aria-hidden="true">${rates.map(([,count,,bar]) => `<i class="${bar}" style="width:${percentage(count,item.total)}"></i>`).join('')}</div><div class="summary-counts">${rates.map(([label,count,tone]) => `<span class="${tone}"><small>${label}</small><b>${count}</b><em>${percentage(count,item.total)}</em></span>`).join('')}</div></article>`;
   }).join('');
@@ -275,7 +281,7 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
   <style>
     :root{color-scheme:light;--bg:#f4f6f8;--surface:#fff;--surface-2:#f8fafb;--text:#17212b;--text-2:#3e4b59;--muted:#74808d;--line:#dce2e7;--line-strong:#c6cfd7;--ink:#1d2935;--accent:#0e6873;--accent-soft:#e8f4f4;--pass:#16835c;--pass-soft:#eaf7f1;--fail:#cb4343;--fail-soft:#fff0f0;--blocked:#a4670b;--blocked-soft:#fff6df;--pending:#53657a;--pending-soft:#eef1f5;--harmony:#16808a;--android:#397357;--ios:#475a72;--shadow:0 2px 8px rgba(25,37,50,.05)}
     *{box-sizing:border-box}html{min-width:320px;background:var(--bg)}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;letter-spacing:0}button,input{font:inherit;letter-spacing:0}a{color:inherit;text-decoration:none}[hidden]{display:none!important}.product-bar{display:flex;align-items:center;justify-content:space-between;gap:24px;min-height:58px;padding:8px clamp(18px,3vw,48px);border-bottom:1px solid #22313f;background:#17232e;color:#dbe4ea}.product-bar b,.product-bar small{display:block}.product-bar small{color:#8fa0ad;font-size:10px}.product-brand{display:flex;align-items:center;gap:10px}.product-brand>span{display:grid;place-items:center;width:34px;height:34px;border-radius:6px;background:#dff1ef;color:#125d66;font-size:12px;font-weight:900}.product-bar>div{text-align:right}.workspace{width:min(1500px,100%);min-height:calc(100vh - 58px);margin:0 auto;padding:24px clamp(18px,3vw,48px) 60px}.page-head{display:flex;align-items:end;justify-content:space-between;gap:24px;margin-bottom:12px}.eyebrow{color:var(--accent);font-size:11px;font-weight:800}.page-head h1{margin:3px 0 0;font-size:24px;line-height:1.2}.batch-meta{text-align:right}.batch-meta span,.batch-meta b,.batch-meta small{display:block}.batch-meta span,.batch-meta small{color:var(--muted);font-size:10px}.batch-meta b{font-size:12px;overflow-wrap:anywhere}
-    .summary-matrix{display:grid;grid-template-columns:180px repeat(3,minmax(250px,1fr));border:1px solid var(--line);border-radius:7px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden}.matrix-intro{display:flex;flex-direction:column;justify-content:center;padding:15px 18px;border-right:1px solid var(--line)}.matrix-intro span{color:var(--muted);font-size:11px}.matrix-intro strong{margin:1px 0;font-size:30px;line-height:1}.matrix-intro small{color:var(--muted);font-size:10px}.platform-summary{min-width:0;padding:12px 14px;border-right:1px solid var(--line)}.platform-summary:last-child{border-right:0}.platform-summary-head{display:flex;align-items:center;gap:7px}.platform-summary-head b{font-size:12px}.platform-summary-head strong{margin-left:auto;font-size:17px}.platform-token{display:grid;place-items:center;width:30px;height:24px;border:1px solid currentColor;border-radius:4px;color:var(--harmony);font-size:9px;font-weight:900}.android .platform-token{color:var(--android)}.ios .platform-token{color:var(--ios)}.stacked-bar{display:flex;width:100%;height:6px;margin-top:9px;overflow:hidden;background:#e7ebef}.stacked-bar i{display:block;height:100%}.bar-pass{background:var(--pass)}.bar-fail{background:var(--fail)}.bar-blocked{background:#d29736}.bar-inconclusive{background:#8794a3}.bar-not-run{background:#dfe4e8}.summary-counts{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:8px}.summary-counts span{display:grid;grid-template-columns:auto 1fr;column-gap:4px;align-items:baseline;color:var(--muted);font-size:9px}.summary-counts small{grid-column:1/-1}.summary-counts b{color:var(--text);font-size:13px}.summary-counts em{font-size:8px;font-style:normal}
+    .summary-matrix{display:grid;grid-template-columns:180px repeat(3,minmax(250px,1fr));border:1px solid var(--line);border-radius:7px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden}.matrix-intro{display:flex;flex-direction:column;justify-content:center;padding:15px 18px;border-right:1px solid var(--line)}.matrix-intro span{color:var(--muted);font-size:11px}.matrix-intro strong{margin:1px 0;font-size:30px;line-height:1}.matrix-intro small{color:var(--muted);font-size:10px}.platform-summary{min-width:0;padding:12px 14px;border-right:1px solid var(--line)}.platform-summary:last-child{border-right:0}.platform-summary-head{display:flex;align-items:center;gap:7px}.platform-summary-head b{font-size:12px}.platform-summary-head strong{margin-left:auto;font-size:17px}.platform-token{display:grid;place-items:center;width:30px;height:24px;border:1px solid currentColor;border-radius:4px;color:var(--harmony);font-size:9px;font-weight:900}.android .platform-token{color:var(--android)}.ios .platform-token{color:var(--ios)}.stacked-bar{display:flex;width:100%;height:6px;margin-top:9px;overflow:hidden;background:#e7ebef}.stacked-bar i{display:block;height:100%}.bar-pass{background:var(--pass)}.bar-fail{background:var(--fail)}.bar-blocked{background:#d29736}.bar-inconclusive{background:#8794a3}.bar-not-run{background:#c58b38}.bar-pending{background:#dfe4e8}.summary-counts{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;margin-top:8px}.summary-counts span{display:grid;grid-template-columns:auto 1fr;column-gap:4px;align-items:baseline;color:var(--muted);font-size:9px}.summary-counts small{grid-column:1/-1}.summary-counts b{color:var(--text);font-size:13px}.summary-counts em{font-size:8px;font-style:normal}
     .content-section{margin-top:20px}.section-title{display:flex;align-items:end;justify-content:space-between;margin-bottom:9px}.section-title h2{margin:0;font-size:16px}.section-title span,.filter-result{color:var(--muted);font-size:11px}.list-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin-bottom:10px}.filter-group{display:inline-flex;min-width:0;border:1px solid var(--line-strong);border-radius:6px;background:var(--surface);overflow:hidden}.filter-button{min-height:34px;padding:5px 11px;border:0;border-right:1px solid var(--line);background:transparent;color:var(--text-2);cursor:pointer;font-size:11px;white-space:nowrap}.filter-button:last-child{border-right:0}.filter-button:hover{background:var(--surface-2)}.filter-button.active{background:var(--ink);color:white}.filter-button b{margin-left:5px}.search{width:min(270px,32vw);height:36px;margin-left:auto;padding:0 10px;border:1px solid var(--line-strong);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px}.search:focus{border-color:var(--accent);outline:2px solid #cce4e4}
     .case-list{display:grid;gap:9px}.case-row{border:1px solid var(--line);border-radius:7px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden}.case-common{display:grid;grid-template-columns:34px minmax(260px,1.6fr) minmax(250px,.9fr) 34px;gap:12px;align-items:center;min-height:74px;padding:10px 12px}.case-order{color:#a0aab4;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}.case-copy{min-width:0}.case-copy span{color:var(--muted);font-size:9px}.case-copy h3{margin:1px 0 2px;font-size:13px;overflow-wrap:anywhere}.case-copy p{margin:0;color:var(--text-2);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.common-stats{display:grid;grid-template-columns:minmax(180px,1fr) 90px;border-left:1px solid var(--line)}.common-stat{min-width:0;padding-left:13px}.common-stat small,.common-stat b{display:block}.common-stat small{color:var(--muted);font-size:8px}.common-stat b{margin-top:2px;font-size:10px;overflow-wrap:anywhere}.icon-button,.report-button{display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid var(--line-strong);border-radius:5px;background:white;color:var(--accent);font-weight:800}.icon-button:hover,.report-button:hover{border-color:var(--accent);background:var(--accent-soft)}.platform-runs{padding:0 12px 7px 58px;border-top:1px solid var(--line);background:var(--surface-2)}.platform-run{position:relative;display:grid;grid-template-columns:150px 70px minmax(680px,1fr) 36px;gap:12px;align-items:center;min-height:64px;padding:8px 0;border-bottom:1px solid var(--line)}.platform-run:last-child{border-bottom:0}.run-platform{display:flex;align-items:center;gap:8px}.run-platform b,.run-platform small{display:block}.run-platform b{font-size:11px}.run-platform small{color:var(--muted);font-size:8px}.status{display:inline-flex;align-items:center;justify-content:center;width:max-content;min-height:23px;padding:2px 7px;border:1px solid var(--line-strong);border-radius:4px;background:var(--pending-soft);color:var(--pending);font-size:9px;font-weight:800}.status.pass{border-color:#a9d8c4;background:var(--pass-soft);color:var(--pass)}.status.fail{border-color:#efb5b5;background:var(--fail-soft);color:var(--fail)}.status.blocked{border-color:#e8cd94;background:var(--blocked-soft);color:var(--blocked)}.platform-run dl{display:grid;grid-template-columns:minmax(10ch,12ch) repeat(2,minmax(calc(19ch + 16px),1fr)) repeat(3,minmax(64px,.45fr));margin:0}.platform-run dl div{min-width:0;padding:0 8px;border-left:1px solid var(--line)}.platform-run dt{color:var(--muted);font-size:8px}.platform-run dd{margin:2px 0 0;font:9px ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}.empty,.filter-empty{margin:0;padding:16px;color:var(--muted);text-align:center}.filter-empty{border:1px dashed var(--line-strong);background:var(--surface)}
     @media(max-width:1180px){.summary-matrix{grid-template-columns:150px repeat(3,minmax(205px,1fr))}.common-stats{grid-template-columns:1fr;gap:4px}.platform-run{grid-template-columns:150px 70px minmax(520px,1fr) 36px}.platform-run dl{grid-template-columns:minmax(10ch,12ch) repeat(2,minmax(calc(19ch + 16px),1fr))}.platform-run dl div:nth-child(n+4){margin-top:7px}}

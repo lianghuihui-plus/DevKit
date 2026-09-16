@@ -10,7 +10,7 @@ const VERDICT_LABELS = Object.freeze({
   FAIL: '失败',
   BLOCKED: '阻塞',
   INCONCLUSIVE: '无法判断',
-  NOT_RUN: '未执行',
+  NOT_RUN: '无法执行',
   RUNNING: '执行中',
   CANCELLED: '已取消',
   ABANDONED: '执行已废弃',

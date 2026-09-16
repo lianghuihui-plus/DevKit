@@ -12,7 +12,7 @@ const {
 } = require('../lib/display-format');
 
 const PLATFORM_LABELS = Object.freeze({ harmony: 'HarmonyOS', android: 'Android', ios: 'iOS' });
-const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '未执行' });
+const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '无法执行' });
 const BASIS_LABELS = Object.freeze({ DIRECT_EVIDENCE: '直接证据', INSUFFICIENT_EVIDENCE: '证据不足', TECHNICAL_CONSTRAINT: '技术约束' });
 const STATUS_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_ASSESSED: '未检查' });
 const PROCESS_STATE_LABELS = Object.freeze({ EXECUTED: '已执行', OBSERVED: '已观察', INVESTIGATED: '已调查', RECOVERED: '已恢复', UNKNOWN: '状态未知', ISSUE: '执行异常' });
