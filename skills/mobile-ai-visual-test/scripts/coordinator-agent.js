@@ -116,7 +116,7 @@ function errorResponse(error, command, retryWith = null, stalled = false, confir
     ...(inputInvalid && retryWith ? { retryWith } : {}),
     ...(inputInvalid && confirmChoices?.length ? { confirmChoices } : {}),
     ...commandHelp(COMMANDS.has(command) ? command : 'prepare'),
-  }, 'COORDINATOR', retryWith || { capability: command === 'advance' ? 'advanceRun' : 'prepareRun' });
+  }, 'COORDINATOR', error.resume || retryWith || { capability: command === 'advance' ? 'advanceRun' : 'prepareRun' });
 }
 
 function retryWithFor(argv) {

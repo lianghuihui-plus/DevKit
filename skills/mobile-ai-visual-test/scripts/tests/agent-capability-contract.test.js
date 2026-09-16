@@ -107,6 +107,10 @@ assert.match(read('prompts/case-agent.md'), /APP_INITIAL_STATE_UNAVAILABLE.*next
 assert.match(read('prompts/case-agent.md'), /目标级.*inputText.*优先/);
 assert.match(read('prompts/case-agent.md'), /不要.*逐个点击软键盘/);
 assert.match(read('SKILL.md'), /目标级.*inputText/);
+assert.match(read('prompts/case-agent.md'), /输入依赖.*Runtime.*自动/);
+assert.match(read('SKILL.md'), /输入依赖.*Runtime.*自动/);
+assert.doesNotMatch(read('prompts/case-agent.md'), /MAVT Input IME|mavtInputIme|androidImeNotReady/);
+assert.doesNotMatch(read('SKILL.md'), /MAVT Input IME|mavtInputIme|androidImeNotReady/);
 assert.match(read('references/failure-policy.md'), /APP_INITIAL_STATE_UNAVAILABLE.*原生.*安装态.*nextCall/);
 assert.strictEqual(read('SKILL.md').includes('不能自己调用 Appium、WDA、xcodebuild 或读取内部日志'), false);
 

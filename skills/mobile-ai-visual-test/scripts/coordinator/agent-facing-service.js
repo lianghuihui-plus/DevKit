@@ -265,6 +265,42 @@ function interruptInitialization(options, step) {
   throw error;
 }
 
+function inputCapabilityError() {
+  const error = new Error('设备输入能力自动准备失败，当前运行尚未进入用例执行');
+  error.code = 'INPUT_CAPABILITY_NOT_READY';
+  error.resume = { capability: 'advanceRun' };
+  error.diagnostic = {
+    code: 'INPUT_CAPABILITY_NOT_READY',
+    stage: 'ENVIRONMENT_PREPARE',
+    summary: '设备输入能力未就绪',
+    retryable: true,
+  };
+  return error;
+}
+
+function defaultPrepareEnvironment(input) {
+  const binding = input.binding;
+  if (binding.platform !== 'android') {
+    return { schemaVersion: 1, type: 'environmentPrepare', platform: binding.platform, ok: true, dependencies: [] };
+  }
+  const args = ['--platform', binding.platform, '--device', binding.deviceId];
+  try {
+    const output = childProcess.execFileSync(path.join(SKILL_ROOT, 'scripts/prepare-env.sh'), args, {
+      cwd: SKILL_ROOT,
+      encoding: 'utf8',
+    });
+    return JSON.parse(output);
+  } catch (error) {
+    return {
+      schemaVersion: 1,
+      type: 'environmentPrepare',
+      platform: binding.platform,
+      ok: false,
+      internalError: String(error.stderr || error.stdout || error.message || error).trim().slice(0, 4000),
+    };
+  }
+}
+
 function startInitialization(state, environment, userInstruction, options = {}) {
   const frozen = validateEnvironmentConfirmation(JSON.parse(JSON.stringify(environment)), {
     workspaceRoot: state.workspace,
@@ -301,6 +337,39 @@ function resumeInitialization(state, options = {}) {
   if (environment.confirmationId !== initialization.environmentFrozen.confirmationId
     || environment.confirmationSha !== initialization.environmentFrozen.confirmationSha) {
     throw coordinatorError('冻结环境引用与内容不一致', [], 'COORDINATOR_INITIALIZATION_INVALID');
+  }
+
+  if (environment.binding.platform === 'android' && !initialization.environmentPrepared) {
+    const prepareEnvironment = options.prepareEnvironment || defaultPrepareEnvironment;
+    let prepared;
+    try {
+      prepared = prepareEnvironment({ binding: { ...environment.binding } });
+    } catch (error) {
+      prepared = {
+        schemaVersion: 1,
+        type: 'environmentPrepare',
+        platform: environment.binding.platform,
+        ok: false,
+        internalError: String(error?.message || error),
+      };
+    }
+    if (prepared?.schemaVersion !== 1 || prepared?.type !== 'environmentPrepare'
+      || prepared?.platform !== environment.binding.platform || prepared?.ok !== true) {
+      initialization.environmentPrepareFailure = {
+        platform: environment.binding.platform,
+        status: 'FAILED',
+        detail: prepared || null,
+      };
+      saveCoordinatorState(state, options.now);
+      throw inputCapabilityError();
+    }
+    initialization.environmentPrepared = {
+      platform: environment.binding.platform,
+      status: 'READY',
+    };
+    delete initialization.environmentPrepareFailure;
+    saveCoordinatorState(state, options.now);
+    interruptInitialization(options, 'environmentPrepared');
   }
 
   let executionRequest;

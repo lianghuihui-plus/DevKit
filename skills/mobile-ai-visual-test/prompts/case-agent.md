@@ -30,7 +30,7 @@ Brief 提供七个业务能力：`observe`、`inspect`、`plan`、`act`、`knowl
 5. 控件树为空或缺失、截图与结构冲突、实际结果与用例不符、业务状态异常、操作无效果或当前信息无法解释时，必须查看截图。权限弹窗、Toast、遮罩、浮层、键盘、长按中状态、动画和纯视觉结果也必须查看截图；控件树为空不得据此判断页面空白。
 6. 视觉检查先用 `view_image(scene.screenshot.path)` 打开图片，再复制 `scene.inspect.visual.example` 登记实际看到的事实。同一 Scene 不重复登记，未看图片不得登记。
 7. 业务动作只复制 `scene.actions[]` 中符合当前意图的 example。优先使用控件动作；目标只在截图中可见时使用 `visual:*`，并先完成该 Scene 的视觉登记。
-8. Scene 提供目标级 `inputText` 时优先复制该动作一次性输入完整文本，由 Runtime 定位并聚焦目标；不要逐个点击软键盘。仅当 Runtime 明确发布无目标的 `inputText` 时，才使用当前焦点输入兜底。
+8. Scene 提供目标级 `inputText` 时优先复制该动作一次性输入完整文本，由 Runtime 定位并聚焦目标；不要逐个点击软键盘。输入依赖由 Runtime 自动准备和恢复，不要求你安装、启用或切换平台组件。仅当 Runtime 明确发布无目标的 `inputText` 时，才使用当前焦点输入兜底。
 9. `expectationRefs` 只关联本次直接推进或检查的验证点；普通导航和基线观察可以为空，不要机械填写全部验证点。
 10. 每次动作后查看新 Scene 和 `previousAction`。框架只返回请求坐标、实际投递坐标、设备明确提供的触点、坐标换算、落点标注图以及操作前后画面是否相同，不判断是否命中业务目标。
 11. 操作无效果、结果异常、怀疑点错或滑错位置时，优先用 `view_image(scene.inspect.action.path)` 查看上一动作标注图，再调用 `scene.inspect.action.example` 登记落点或轨迹事实；据此自行纠正动作或调整计划。

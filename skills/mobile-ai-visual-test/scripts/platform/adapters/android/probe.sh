@@ -103,10 +103,6 @@ if (hasTarget && !foregroundApp) {
 if (hasTarget && !logs) {
   diag("androidLogsUnavailable", "WARN", "Android 日志能力不可用", "确认 adb logcat 可执行；日志缺失不阻塞核心视觉测试", "adb logcat -d");
 }
-const ime = dependencies.find((item) => item && item.id === "mavtInputIme");
-if (hasTarget && ime && !ime.ok) {
-  diag("androidImeNotReady", "INFO", "MAVT Input IME 尚未准备", "执行 scripts/prepare-env.sh --platform android 自动构建、安装并启用输入法", "scripts/prepare-env.sh --platform android");
-}
 console.log(JSON.stringify({
   schemaVersion: 1,
   type: "environmentProbe",

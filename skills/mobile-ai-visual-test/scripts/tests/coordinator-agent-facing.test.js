@@ -154,6 +154,99 @@ assert.strictEqual(loadCoordinatorState(prepared.statePath).initialization.envir
 assert.ok(loadCoordinatorState(prepared.statePath).initialization.executionRequestCreated.requestSha);
 assert.ok(loadCoordinatorState(prepared.statePath).initialization.batchInitialized);
 
+const androidProbe = {
+  schemaVersion: 1,
+  type: 'environmentProbe',
+  platform: 'android',
+  ready: true,
+  devices: [{ id: 'android-device', serial: 'android-device' }],
+  diagnostics: [],
+  capabilities: { screenshot: true, layout: true },
+};
+const androidPreparedRun = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['014'] }, {
+  batchId: 'batch-android-input-prepared',
+});
+confirmRun(androidPreparedRun.statePath, {
+  capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'android',
+}, { probeEnvironment: () => androidProbe });
+const preparationCalls = [];
+const androidPrepared = confirmRun(androidPreparedRun.statePath, {
+  capability: 'confirmRun',
+  decision: 'CONFIRM_BINDING',
+  userInstruction: '确认 Android 输入能力由框架自动准备',
+  binding: {
+    platform: 'android', deviceId: 'android-device', appId: 'com.example.android', entry: '.MainActivity',
+  },
+}, {
+  prepareEnvironment: (input) => {
+    preparationCalls.push(input);
+    return { schemaVersion: 1, type: 'environmentPrepare', platform: 'android', ok: true, dependencies: [] };
+  },
+  batchExecute: () => ({ state: { status: 'INITIALIZING' } }),
+});
+assert.strictEqual(androidPrepared.status, 'CONFIRMED');
+assert.deepStrictEqual(preparationCalls, [{
+  binding: {
+    platform: 'android', deviceId: 'android-device', appId: 'com.example.android', entry: '.MainActivity',
+  },
+}]);
+assert.deepStrictEqual(loadCoordinatorState(androidPreparedRun.statePath).initialization.environmentPrepared, {
+  platform: 'android',
+  status: 'READY',
+});
+
+const androidPreparationFailureRun = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['014'] }, {
+  batchId: 'batch-android-input-prepare-failure',
+});
+confirmRun(androidPreparationFailureRun.statePath, {
+  capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'android',
+}, { probeEnvironment: () => androidProbe });
+let preparationError;
+try {
+  confirmRun(androidPreparationFailureRun.statePath, {
+    capability: 'confirmRun',
+    decision: 'CONFIRM_BINDING',
+    userInstruction: '确认 Android 输入能力失败时保持可恢复',
+    binding: {
+      platform: 'android', deviceId: 'android-device', appId: 'com.example.android', entry: '.MainActivity',
+    },
+  }, {
+    prepareEnvironment: () => ({
+      schemaVersion: 1,
+      type: 'environmentPrepare',
+      platform: 'android',
+      ok: false,
+      dependencies: [{ id: 'mavtInputIme', name: 'MAVT Input IME', ok: false }],
+    }),
+    batchExecute: () => { throw new Error('batch must not initialize before input capability is ready'); },
+  });
+} catch (error) {
+  preparationError = error;
+}
+assert.strictEqual(preparationError?.code, 'INPUT_CAPABILITY_NOT_READY');
+assert.strictEqual(preparationError?.diagnostic?.stage, 'ENVIRONMENT_PREPARE');
+const preparationErrorResponse = coordinatorAgent.errorResponse(preparationError, 'confirm');
+assert.strictEqual(JSON.stringify(preparationErrorResponse).includes('IME'), false);
+assert.deepStrictEqual(preparationErrorResponse.technicalContext.resume, { capability: 'advanceRun' });
+assert.strictEqual(fs.existsSync(path.join(
+  workspace, 'runs', 'batch-android-input-prepare-failure', 'execution-request.json',
+)), false);
+assert.strictEqual(loadCoordinatorState(androidPreparationFailureRun.statePath).phase, 'INITIALIZING_RUN');
+const recoveredAndroidPreparation = advanceRun(androidPreparationFailureRun.statePath, {
+  prepareEnvironment: () => ({
+    schemaVersion: 1, type: 'environmentPrepare', platform: 'android', ok: true, dependencies: [],
+  }),
+  batchExecute: () => ({ state: { status: 'INITIALIZING' } }),
+});
+assert.strictEqual(recoveredAndroidPreparation.status, 'CONFIRMED');
+
+confirmEnvironment({
+  workspaceRoot: workspace,
+  binding: { platform: 'harmony', deviceId: 'device-001', appId: 'com.example.coordinator', entry: 'EntryAbility' },
+  probe,
+  userConfirmation: '恢复协调器测试的 HarmonyOS 环境',
+});
+
 const switchable = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['014'] }, {
   batchId: 'batch-switch-existing-environment',
 });

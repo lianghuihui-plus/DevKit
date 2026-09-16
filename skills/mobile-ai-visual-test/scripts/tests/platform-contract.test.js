@@ -3,6 +3,7 @@
 
 const assert = require('assert');
 const childProcess = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -158,6 +159,91 @@ const androidFocusedInput = JSON.parse(run('./scripts/platform/adapters/android/
 assert.strictEqual(androidFocusedInput.inputTarget, 'current-focus');
 assert.strictEqual(androidFocusedInput.deviceExecution.dispatchedPoint, undefined);
 fs.rmSync(fakeAdbDir, { recursive: true, force: true });
+
+const recoveringAdbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-android-input-recovery-'));
+const recoveringAdbLog = path.join(recoveringAdbDir, 'adb.log');
+const recoveringAdbState = path.join(recoveringAdbDir, 'ime-state');
+const recoveringImeCache = path.join(recoveringAdbDir, 'ime-cache');
+const recoveringAdb = path.join(recoveringAdbDir, 'adb');
+fs.mkdirSync(recoveringImeCache, { recursive: true });
+fs.writeFileSync(path.join(recoveringImeCache, 'mavt-input.apk'), 'fixture apk');
+const imeSourceRoot = path.resolve(__dirname, '../platform/adapters/android/ime');
+const imeSourceHash = crypto.createHash('sha256');
+function hashAndroidImeSources(dir) {
+  for (const name of fs.readdirSync(dir).sort()) {
+    const file = path.join(dir, name);
+    if (fs.statSync(file).isDirectory()) hashAndroidImeSources(file);
+    else {
+      imeSourceHash.update(path.relative(imeSourceRoot, file));
+      imeSourceHash.update('\0');
+      imeSourceHash.update(fs.readFileSync(file));
+      imeSourceHash.update('\0');
+    }
+  }
+}
+hashAndroidImeSources(imeSourceRoot);
+fs.writeFileSync(path.join(recoveringImeCache, 'source.sha256'), imeSourceHash.digest('hex'));
+fs.writeFileSync(recoveringAdb, `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$MAVT_FAKE_ADB_LOG"
+case "$*" in
+  "devices") printf 'List of devices attached\\nandroid-device\\tdevice\\n' ;;
+  *"shell pm path mavt.android.ime"*) [[ -f "$MAVT_FAKE_IME_STATE.installed" ]] && echo "package:/data/app/mavt.android.ime/base.apk" ;;
+  *"shell ime list -s"*) [[ -f "$MAVT_FAKE_IME_STATE.enabled" ]] && echo "mavt.android.ime/.MavtInputMethodService" ;;
+  *" install -r "*)
+    if [[ "\${MAVT_FAKE_IME_INSTALL_FAIL:-}" == "1" ]]; then echo "fixture install failed" >&2; exit 1; fi
+    touch "$MAVT_FAKE_IME_STATE.installed"; echo "Success"
+    ;;
+  *"shell ime enable mavt.android.ime/.MavtInputMethodService"*) touch "$MAVT_FAKE_IME_STATE.enabled"; echo "Input method enabled" ;;
+  *"shell settings get secure default_input_method"*) echo "com.example/.OriginalIme" ;;
+  *"shell dumpsys input_method"*) echo "editorInfo: inputType=1 fieldId (viewId)=42" ;;
+  *"shell am broadcast"*)
+    if [[ "\${MAVT_FAKE_INPUT_BROADCAST_FAIL:-}" == "1" ]]; then echo "fixture broadcast failed" >&2; exit 1; fi
+    echo "Broadcast completed: result=-1"
+    ;;
+  *"shell wm size"*) echo "Physical size: 1080x2400" ;;
+esac
+`);
+fs.chmodSync(recoveringAdb, 0o755);
+const recoveringEnv = {
+  ...process.env,
+  PATH: `${recoveringAdbDir}:${process.env.PATH}`,
+  MAVT_FAKE_ADB_LOG: recoveringAdbLog,
+  MAVT_FAKE_IME_STATE: recoveringAdbState,
+  MAVT_ANDROID_IME_BUILD_DIR: recoveringImeCache,
+};
+const unpreparedAndroidProbe = JSON.parse(run('./scripts/platform/probe-env.sh', [
+  '--platform', 'android', '--device', 'android-device',
+], { env: recoveringEnv }));
+assert.strictEqual(unpreparedAndroidProbe.capabilities.dependencies[0].ok, false);
+assert.strictEqual(JSON.stringify(unpreparedAndroidProbe.diagnostics).includes('IME'), false);
+assert.strictEqual(JSON.stringify(unpreparedAndroidProbe.diagnostics).includes('输入法'), false);
+const recoveredAndroidInput = JSON.parse(run('./scripts/platform/adapters/android/action.sh', [
+  '--device', 'android-device', '--app', 'com.example.android', '--type', 'inputText',
+  '--text', '自动恢复输入', '--mode', 'replace',
+], { env: recoveringEnv }));
+assert.strictEqual(recoveredAndroidInput.action, 'inputText');
+assert.strictEqual(recoveredAndroidInput.command.status, 'ACCEPTED');
+assert.strictEqual(recoveredAndroidInput.inputMethod, 'platform-managed');
+const recoveringCommands = fs.readFileSync(recoveringAdbLog, 'utf8').trim().split('\n');
+assert.ok(recoveringCommands.some((line) => line.includes(' install -r ')), 'Android input should prepare its private backend');
+assert.ok(recoveringCommands.some((line) => line.includes('shell ime enable')), 'Android input should enable its private backend');
+assert.ok(recoveringCommands.some((line) => line.includes('shell am broadcast')), 'Android input should continue after recovery');
+fs.rmSync(`${recoveringAdbState}.installed`, { force: true });
+fs.rmSync(`${recoveringAdbState}.enabled`, { force: true });
+const unavailableAndroidInput = JSON.parse(run('./scripts/platform/adapters/android/action.sh', [
+  '--device', 'android-device', '--app', 'com.example.android', '--type', 'inputText',
+  '--text', '不会执行', '--mode', 'replace',
+], { env: { ...recoveringEnv, MAVT_FAKE_IME_INSTALL_FAIL: '1' } }));
+assert.strictEqual(unavailableAndroidInput.command.status, 'REJECTED');
+assert.strictEqual(unavailableAndroidInput.command.failureCode, 'INPUT_CAPABILITY_NOT_READY');
+assert.strictEqual(JSON.stringify(unavailableAndroidInput).includes('IME'), false);
+const rejectedAndroidInput = JSON.parse(run('./scripts/platform/adapters/android/action.sh', [
+  '--device', 'android-device', '--app', 'com.example.android', '--type', 'inputText',
+  '--text', '不会写入', '--mode', 'replace',
+], { env: { ...recoveringEnv, MAVT_FAKE_INPUT_BROADCAST_FAIL: '1' } }));
+assert.strictEqual(rejectedAndroidInput.command.status, 'REJECTED');
+assert.strictEqual(rejectedAndroidInput.command.failureCode, 'ANDROID_INPUT_TEXT_FAILED');
+fs.rmSync(recoveringAdbDir, { recursive: true, force: true });
 run('./scripts/platform/adapters/harmony/atoms/long-press.sh', [
   '--device', 'harmony-device', '--x', '120', '--y', '240', '--duration-ms', '1025',
 ], { env: { ...process.env, PATH: `${fakeHdcDir}:${process.env.PATH}`, MAVT_HDC_ARGS_OUT: fakeHdcLog } });

@@ -37,35 +37,75 @@ process.stdout.write(Buffer.from(process.argv[1] || "", "utf8").toString("base64
 
 android_input_text() {
   local value="$1"
-  local ime_id previous_ime text64 broadcast_output status_output
+  local ime_id previous_ime text64 broadcast_output status_output prepare_output
   ime_id="mavt.android.ime/.MavtInputMethodService"
-  status_output="$("$script_dir/mavt-ime.sh" ${device:+--device "$device"} --status)" || return $?
+  status_output="$("$script_dir/mavt-ime.sh" ${device:+--device "$device"} --status)" || return 10
   if ! node -e '
 const dependency = JSON.parse(process.argv[1]);
 process.exit(dependency.ok ? 0 : 1);
 ' "$status_output"; then
-    echo "Android input dependency is not prepared: MAVT Input IME is required. Run scripts/prepare-env.sh for the case/platform before starting execution." >&2
-    return 1
+    if ! prepare_output="$("$script_dir/mavt-ime.sh" ${device:+--device "$device"} --prepare 2>&1)"; then
+      return 10
+    fi
+    status_output="$("$script_dir/mavt-ime.sh" ${device:+--device "$device"} --status)" || return 10
+    if ! node -e '
+const dependency = JSON.parse(process.argv[1]);
+process.exit(dependency.ok ? 0 : 1);
+' "$status_output"; then
+      return 10
+    fi
   fi
   text64="$(text_base64 "$value")"
   previous_ime="$("${adb_prefix[@]}" shell settings get secure default_input_method 2>/dev/null | tr -d '\r' || true)"
-  "${adb_prefix[@]}" shell ime set "$ime_id" >/dev/null
+  "${adb_prefix[@]}" shell ime set "$ime_id" >/dev/null || return 10
   sleep 0.3
-  set +e
-  broadcast_output="$("${adb_prefix[@]}" shell am broadcast -a mavt.android.ime.INPUT_TEXT -n mavt.android.ime/.MavtInputReceiver --es text64 "$text64" --es mode "$mode" 2>&1)"
-  broadcast_status=$?
-  set -e
+  broadcast_status=0
+  broadcast_output="$("${adb_prefix[@]}" shell am broadcast -a mavt.android.ime.INPUT_TEXT -n mavt.android.ime/.MavtInputReceiver --es text64 "$text64" --es mode "$mode" 2>&1)" || broadcast_status=$?
   if [[ -n "$previous_ime" && "$previous_ime" != "null" && "$previous_ime" != "$ime_id" ]]; then
     "${adb_prefix[@]}" shell ime set "$previous_ime" >/dev/null 2>&1 || true
   fi
   if [[ $broadcast_status -ne 0 || "$broadcast_output" != *"result=-1"* ]]; then
-    printf '%s\n' "$broadcast_output" >&2
-    return 1
+    return 11
   fi
 }
 
+set +e
 android_input_text "$text"
-input_method="mavt-input-ime"
+input_status=$?
+set -e
+if [[ $input_status -ne 0 ]]; then
+  if [[ $input_status -eq 10 ]]; then
+    failure_code="INPUT_CAPABILITY_NOT_READY"
+    failure_reason="Android input capability is unavailable after automatic preparation"
+  else
+    failure_code="ANDROID_INPUT_TEXT_FAILED"
+    failure_reason="Android input dispatch failed"
+  fi
+  node -e '
+function localIso(date = new Date()) {
+  const offset = -date.getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  const abs = Math.abs(offset);
+  const pad = (value, size = 2) => String(value).padStart(size, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+console.log(JSON.stringify({
+  schemaVersion: 1,
+  type: "actionResult",
+  platform: "android",
+  time: localIso(),
+  action: "inputText",
+  ok: false,
+  failureCode: process.argv[1],
+  message: process.argv[2],
+  inputMethod: "platform-managed",
+  inputMode: process.argv[3],
+  inputEffect: { status: "UNVERIFIABLE", reason: process.argv[2] }
+}, null, 2));
+' "$failure_code" "$failure_reason" "$mode"
+  exit 0
+fi
+input_method="platform-managed"
 
 node -e '
 const preInputStateText = process.argv[2] || "";
