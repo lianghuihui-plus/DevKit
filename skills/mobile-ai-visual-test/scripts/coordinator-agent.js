@@ -3,7 +3,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { attachTechnicalContext } = require('./lib/technical-context');
+const {
+  AGENT_FACING_PROTOCOL,
+  documentationRefFor,
+} = require('./coordinator/agent-facing-contract');
 const {
   advanceRun,
   cancelRun,
@@ -76,27 +79,18 @@ function execute(parsed, options = {}) {
     : cancelRun(parsed.statePath, request, options);
 }
 
-function commandHelp(command = 'prepare') {
-  if (command === 'prepare') {
-    return {
-      usage: 'node scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>',
-      example: ['node', 'scripts/coordinator-agent.js', 'prepare', '--workspace', '<workspace>', '--case-nos', '014,015'],
-    };
-  }
-  return {
-    usage: `原样执行 Facade 响应中的 commands.${command === 'advance' ? 'advance' : `${command}.command`}`,
-    example: ['use-current-response-command'],
-  };
-}
-
-function errorResponse(error, command, retryWith = null, stalled = false, confirmChoices = null) {
+function errorResponse(error, command, recovery = {}, stalled = false) {
+  const code = stalled ? 'AGENT_INPUT_STALLED' : (error.code || 'COORDINATOR_AGENT_FAILED');
   if (stalled) {
     return {
+      protocol: AGENT_FACING_PROTOCOL,
       status: 'AGENT_INPUT_STALLED',
-      code: 'AGENT_INPUT_STALLED',
-      command: `scripts/coordinator-agent.js ${command}`,
+      code,
       message: '同一种输入错误已连续出现两次；停止自动重试并保留当前运行状态',
+      retryable: false,
       issues: error.issues?.length ? error.issues : [{ field: 'request', message: error.message || String(error), code: error.code || 'INVALID_ARGUMENT' }],
+      ...(Object.keys(recovery).length ? { facts: recovery } : {}),
+      documentationRef: documentationRefFor(code),
     };
   }
   const inputInvalid = error.code === 'COORDINATOR_INPUT_INVALID' || error.name === 'SyntaxError';
@@ -106,26 +100,33 @@ function errorResponse(error, command, retryWith = null, stalled = false, confir
     summary: error.message || String(error),
     retryable: false,
   };
-  return attachTechnicalContext({
+  return {
+    protocol: AGENT_FACING_PROTOCOL,
     status: inputInvalid ? 'REQUEST_INVALID' : 'TECHNICAL',
-    code: error.code || 'COORDINATOR_AGENT_FAILED',
-    command: `scripts/coordinator-agent.js ${COMMANDS.has(command) ? command : 'prepare'}`,
+    code,
     message: error.message || String(error),
+    retryable: inputInvalid || diagnostic.retryable === true,
     issues: error.issues?.length ? error.issues : [{ field: 'arguments', message: error.message || String(error), code: error.code || 'INVALID_ARGUMENT' }],
-    ...(!inputInvalid ? { diagnostic } : {}),
-    ...(inputInvalid && retryWith ? { retryWith } : {}),
-    ...(inputInvalid && confirmChoices?.length ? { confirmChoices } : {}),
-    ...commandHelp(COMMANDS.has(command) ? command : 'prepare'),
-  }, 'COORDINATOR', error.resume || retryWith || { capability: command === 'advance' ? 'advanceRun' : 'prepareRun' });
-}
-
-function retryWithFor(argv) {
-  return recoveryFor(argv).retryWith || null;
+    ...(!inputInvalid || Object.keys(recovery).length ? {
+      facts: {
+        ...recovery,
+        ...(!inputInvalid ? {
+          technical: {
+            ...(diagnostic.code ? { code: diagnostic.code } : {}),
+            ...(diagnostic.stage ? { stage: diagnostic.stage } : {}),
+            ...(diagnostic.logRefs ? { logRefs: diagnostic.logRefs } : {}),
+            ...(diagnostic.resourceFacts ? { resourceFacts: diagnostic.resourceFacts } : {}),
+          },
+        } : {}),
+      },
+    } : {}),
+    documentationRef: documentationRefFor(code),
+  };
 }
 
 function recoveryFor(argv) {
   const command = argv[0];
-  if (command === 'cancel') return { retryWith: { capability: 'cancelRun', reason: '说明取消原因' } };
+  if (command === 'cancel') return { phase: 'CANCEL_REQUEST' };
   if (command !== 'confirm') return {};
   const stateIndex = argv.indexOf('--state');
   if (stateIndex < 0 || !argv[stateIndex + 1]) return {};
@@ -155,7 +156,7 @@ function main(argv = process.argv.slice(2), options = {}) {
     process.stderr.write(`${JSON.stringify({
       event: 'COORDINATOR_COMMAND_STARTED',
       capability: 'advanceRun',
-      message: '命令正在执行；若宿主返回进程句柄，请继续等待同一进程，不要重复调用',
+      status: 'RUNNING',
     })}\n`);
   }
   const response = execute(parsed, options);
@@ -174,12 +175,11 @@ if (require.main === module) {
     process.stderr.write(`${JSON.stringify(errorResponse(
       error,
       process.argv[2],
-      recovery.retryWith,
+      recovery,
       stalled,
-      recovery.confirmChoices,
     ), null, 2)}\n`);
     process.exit(error.exitCode || 2);
   }
 }
 
-module.exports = { consumeRequest, errorResponse, execute, main, parseArgs, recordInputFailureFor, recoveryFor, retryWithFor };
+module.exports = { consumeRequest, errorResponse, execute, main, parseArgs, recordInputFailureFor, recoveryFor };

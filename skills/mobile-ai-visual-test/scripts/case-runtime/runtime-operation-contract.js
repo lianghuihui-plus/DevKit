@@ -105,6 +105,7 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
     required: ['understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties'],
     additionalProperties: false,
     properties: {
+      baseRevision: { oneOf: [{ type: 'integer', minimum: 1 }, { const: null }] },
       understanding: STRING,
       preconditions: STRING_ARRAY,
       verificationPoints: {
@@ -240,22 +241,20 @@ const OPERATION_CONTRACT = deepFreeze({
   }),
   inspectScene: defineOperation({
     agentAccessible: true,
-    summary: 'Read full elements, capabilities, or layout from an existing Scene without observing the device again.',
+    summary: 'Read full elements or layout from an existing Scene without observing the device again.',
     whenToUse: ['The Scene summary is insufficient for locating controls or understanding structure.'],
     requestSchema: operationSchema('inspectScene', {
       basedOnSceneId: STRING,
-      view: { enum: ['ELEMENTS', 'CAPABILITIES', 'LAYOUT', 'ACTION'] },
+      view: { enum: ['ELEMENTS', 'LAYOUT', 'ACTION'] },
       observation: STRING,
       expectationRefs: { type: 'array', items: STRING },
       filter: {
         type: 'object', additionalProperties: false,
         properties: {
           interactiveOnly: { type: 'boolean' }, textContains: STRING, role: STRING,
-          actionType: STRING, elementRef: STRING,
         },
         constraints: [
           'ELEMENTS allows interactiveOnly, textContains, and role.',
-          'CAPABILITIES allows actionType and elementRef.',
           'LAYOUT does not accept filter fields.',
           'ACTION records the Agent observation of the previous action annotation and does not accept filter fields.',
         ],
@@ -264,9 +263,6 @@ const OPERATION_CONTRACT = deepFreeze({
     examples: [
       example('inspect-elements', {
         operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'ELEMENTS', filter: { interactiveOnly: true },
-      }),
-      example('inspect-capabilities', {
-        operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'CAPABILITIES', filter: { actionType: 'longPress' },
       }),
       example('inspect-layout', { operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'LAYOUT' }),
       example('inspect-action', { operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'ACTION', observation: '标注轨迹位于目标容器上方', expectationRefs: ['E1'] }),
@@ -397,16 +393,6 @@ function isSupportedBroker(broker) {
   return JSON.stringify(broker.allowedOperations) === JSON.stringify(AGENT_OPERATIONS);
 }
 
-function projectAgentCapabilities(allowedOperations) {
-  const allowed = new Set(allowedOperations || []);
-  return Object.fromEntries(AGENT_OPERATIONS
-    .filter((operation) => allowed.has(operation))
-    .map((operation) => {
-      const { agentAccessible, requestFields, ...visible } = OPERATION_CONTRACT[operation];
-      return [operation, visible];
-    }));
-}
-
 function requestCorrection(operation, error = {}) {
   const definition = OPERATION_CONTRACT[operation];
   const issues = Array.isArray(error.issues) && error.issues.length
@@ -432,6 +418,5 @@ module.exports = {
   OPERATION_CONTRACT,
   RUNTIME_OPERATIONS,
   isSupportedBroker,
-  projectAgentCapabilities,
   requestCorrection,
 };

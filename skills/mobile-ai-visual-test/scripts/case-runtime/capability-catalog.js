@@ -3,8 +3,41 @@
 const { contractError } = require('../lib/contract-utils');
 const { validateActionExecution } = require('../lib/action-contract');
 
+const ACTION_KINDS = new Set([
+  'tap', 'toggle', 'doubleTap', 'longPress', 'inputText',
+  'swipeUp', 'swipeDown', 'swipeLeft', 'swipeRight',
+  'back', 'home', 'wait', 'dismissKeyboard',
+]);
+
 function capabilityId(sceneId, kind, target = 'screen') {
   return `${sceneId}:${kind}:${target}`;
+}
+
+function actionRefFor(capability) {
+  const elementRef = capability?.target || 'screen';
+  if (typeof elementRef !== 'string' || !elementRef || elementRef.includes(':')
+    || !ACTION_KINDS.has(capability?.kind)) {
+    throw contractError('ACTION_REF_INVALID', 'capability cannot be published as an ActionRef');
+  }
+  return `${elementRef}:${capability.kind}`;
+}
+
+function parseActionRef(actionRef) {
+  if (typeof actionRef !== 'string') throw contractError('ACTION_REF_INVALID', 'ActionRef must be a string');
+  const separator = actionRef.lastIndexOf(':');
+  const elementRef = separator > 0 ? actionRef.slice(0, separator) : '';
+  const kind = separator > 0 ? actionRef.slice(separator + 1) : '';
+  if (!elementRef || elementRef.includes(':') || !ACTION_KINDS.has(kind)) {
+    throw contractError('ACTION_REF_INVALID', 'ActionRef must be <elementRef|screen>:<action> without colons in elementRef');
+  }
+  return { elementRef: elementRef === 'screen' ? null : elementRef, kind };
+}
+
+function resolveActionRef(scene, actionRef, platform) {
+  const parsed = parseActionRef(actionRef);
+  return buildCapabilities(scene, platform).find((capability) => (
+    capability.kind === parsed.kind && (capability.target || null) === parsed.elementRef
+  )) || null;
 }
 
 function labelFor(kind, text) {
@@ -173,4 +206,11 @@ function resolveAction(scene, request, platform) {
   return { action, stale: false };
 }
 
-module.exports = { buildCapabilities, capabilityId, resolveAction };
+module.exports = {
+  actionRefFor,
+  buildCapabilities,
+  capabilityId,
+  parseActionRef,
+  resolveAction,
+  resolveActionRef,
+};

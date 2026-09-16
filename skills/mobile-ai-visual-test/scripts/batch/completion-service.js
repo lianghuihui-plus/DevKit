@@ -14,7 +14,7 @@ const {
 const { caseRuntimeDir, currentCase, hasBatchEvent, protocolBindings } = require('./service-support');
 
 function commitCurrentCase(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options, 'FINALIZE'));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
   return withFileLock(loaded.paths.lock, () => {
     const state = readBatchState(loaded.paths, loaded.contract);
     let draft = readJson(loaded.paths.caseCommitDraft, null);
@@ -45,7 +45,7 @@ function commitCurrentCase(options) {
     }
     const execDir = path.join(caseRuntimeDir(item.caseDir, loaded.contract.binding.platform), 'executions', item.executionId);
     const execution = readJson(path.join(execDir, 'execution.json'));
-    if (execution?.schemaVersion !== 11) throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
+    if (execution?.schemaVersion !== 12) throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
     if (!execution?.finalized) throw contractError('EXECUTION_NOT_FINALIZED', 'current execution must be finalized before commit');
     if (execution.batchContractSha !== state.contractSha || execution.runtimeSha !== state.runtimeSha
       || execution.adapterSha !== state.adapterSha) {

@@ -10,7 +10,7 @@
 4. 截图、控件树、知识库和动作落点事实都是 Case Agent 可主动选择的调查能力。
 5. 框架能力是正常首选路径，但异常时不限制 Agent 使用环境中的其他工具解决问题。
 6. 原始用例、设备事实和所有业务 revision 追加保存，报告可还原当时现场。
-7. 新 Runtime 只写当前格式；历史 execution 不迁移、不补写，按单条 execution 隔离显示。
+7. Runtime 只写当前格式；Reader、Batch 和 Report 只接受当前 execution schema，不提供转换或补写路径。
 
 本文是当前架构的事实来源。长期决策及原因记录在 [`design-decisions.md`](design-decisions.md)。
 
@@ -95,9 +95,9 @@ sequenceDiagram
     A->>F: inspect / act / knowledge / recover / plan
     F->>R: bind current Scene and Case Model revision
     R->>D: device operation or observation
-    R-->>A: facts + new Scene + current examples
+    R-->>A: compact facts + new Scene
   end
-  A->>F: finish current active verification points
+  A->>F: finish summary + final decision updates
   R-->>A: COMPLETED or RESULT_INCOMPLETE
   A-->>M: summary
   M->>C: advanceRun
@@ -128,9 +128,9 @@ Case Model 是 Case Agent 对本次 execution 的当前理解，包括：
 
 ## 6. Scene、视觉与动作事实
 
-Scene 是真实设备现场，不是计划或业务结论。`observe` 显式采集 Scene，`act` 后自动采集新 Scene。Scene 包含截图、布局与控件摘要、App/系统信号、可用动作、滚动上下文以及上一动作事实。
+Scene 是真实设备现场，不是计划或业务结论。`observe` 显式采集 Scene，`act` 后自动采集新 Scene。Runtime 内部 Scene 完整保存截图、布局、控件、动作能力、App/系统信号、滚动上下文以及上一动作事实；Agent-facing Scene 只投影截图引用、最多 24 个可交互控件事实、必要交互上下文、异常信号、冲突和上一动作摘要。
 
-完整结构保存在不可变 Scene 中，Case Agent 用 `inspect(channel=elements|capabilities|layout)` 按需读取。截图与控件树并列；纯视觉内容、系统弹窗、Toast、遮罩、键盘、动画、长按过程及证据冲突必须实际打开图片并用 `inspect(channel=visual)` 登记。
+完整结构保存在不可变 Scene 中，Case Agent 用 `inspect(channel=elements|layout)` 按需读取；ActionRef 根据服务文档中的稳定规则和当前控件事实构造，Runtime 使用完整 Scene 校验，不公开动作目录。截图与控件树并列；纯视觉内容、系统弹窗、Toast、遮罩、键盘、动画、长按过程及证据冲突必须实际打开图片并用 `inspect(channel=visual)` 登记。
 
 坐标动作使用一份不可变 `action-spatial-evidence/action-N.json`，Agent-facing 投影只返回客观事实：
 
@@ -147,21 +147,15 @@ Case Agent 怀疑点错、滑错或操作无效果时查看标注图，再用 `i
 
 ## 7. Agent-facing 与内部契约
 
-Agent-facing 能力卡提供用途、必填字段、字段来源和当前有效 example。Agent 复制 example 写入一次性 `runtime.requestPath`，再原样执行无可变参数的 `runtime.command`。请求消费后删除，下次调用重新创建。
+Agent-facing 方法签名、参数和恢复规则位于独立服务文档。Case Agent 通过 stdin 将一个结构化请求提交给预绑定 `runtime.command`；Runtime 响应只返回动态事实、错误原因和 `documentationRef`。
 
-Translator 注入 execution、dispatch、当前 Scene、内部 operation 和 decision 外壳，再交给严格 Runtime 契约。第一次格式错误返回 `INPUT_INVALID + retryWith`；同类错误第二次返回 `AGENT_INPUT_STALLED`，避免逐字段猜测。
+Translator 注入 execution、dispatch、当前 Scene、内部 operation 和 decision 外壳，再交给严格 Runtime 契约。第一次格式错误返回 `INPUT_INVALID`、字段问题和 `documentationRef`；同类错误第二次返回 `AGENT_INPUT_STALLED`，避免逐字段猜测。解决步骤和示例只存在于独立服务文档。
 
 内部 operation、完整 Schema、token、sequence、路径和平台参数不进入 Prompt。简单 Agent-facing 接口降低调用负担，严格内部契约仍保护事务、证据和写入所有权。
 
 ## 8. 技术异常与逃生口
 
-Facade 和 Runtime 是首选路径，不是异常场景的权限边界。技术响应按需附加：
-
-```text
-technicalContext = scope + code + summary + logRefs + resourceFacts + resume
-```
-
-`scope=COORDINATOR` 由主 Agent 处理批次、共享设备、资源锁、Appium/WDA 与平台服务；`scope=EXECUTION` 由 Case Agent 处理当前 App、session、Scene 和动作异常。字段只描述已知事实，不猜根因，也不阻止 Agent 使用 Shell、日志和平台原生工具。
+Facade 和 Runtime 是首选路径，不是异常场景的权限边界。技术响应只返回稳定错误码、具体原因、安全的动态事实、可用诊断引用、`retryable` 和 `documentationRef`；恢复步骤和调用示例位于对应服务文档。Coordinator 处理批次、共享设备、资源锁、Appium/WDA 与平台服务；Case Agent 处理当前 App、session、Scene 和动作异常。响应只描述已知事实，不猜根因，也不阻止 Agent 使用 Shell、日志和平台原生工具。
 
 异常处置必须遵守：
 
@@ -183,7 +177,7 @@ iOS Appium Session 是 Batch runtime 的可替换资源，Execution 只保存 `s
 
 ## 10. 结果、事件与报告
 
-`finish.example` 根据当前 ACTIVE 验证点生成。每个验证点必须恰好有一个 check；PASS/FAIL 引用真实且完成视觉登记的 Scene。搜索“不存在”结论必须引用已确认边界和连续覆盖的滚动上下文。最终 `result.json` 自动写入当前 `caseModelRevision`。
+Agent 在执行过程中通过相邻 `act`、`observe` 或最终 `finish` 的 `updates.expectationResults` 增量写入验证点判断。Runtime 维护追加式 ledger，并在 Case Model 语义变化时确定性失效相关判断。`finish` 只提交摘要、可选不确定项和最后一批 updates；Runtime 从 ledger 组装每个有效验证点的 check，再执行完整证据校验。PASS/FAIL 必须引用真实且完成视觉登记的 Scene；搜索“不存在”结论必须引用已确认边界和连续覆盖的滚动上下文。最终 `result.json` 自动写入当前 `caseModelRevision`。
 
 主要事件包括：
 
@@ -225,9 +219,9 @@ artifact-manifest.json
 completion.json
 ```
 
-`runtime.json`、Agent 请求文件、`current-scene.json`、锁和事务草稿是运行期文件。正式 Manifest 与 Completion 只绑定当前所需的快照、证据、结果和协议摘要，不再要求 CaseDefinition 或 CaseSpec。
+`runtime.json`、Coordinator 控制请求、`current-scene.json`、锁和事务草稿是运行期文件。Case Runtime 请求只通过 stdin 或绑定 MCP 工具进入，不创建请求文件。正式 Manifest 与 Completion 只绑定当前所需的快照、证据、结果和协议摘要，不再要求 CaseDefinition 或 CaseSpec。
 
-当前 Execution schema 为 11。新 Runtime 不提供旧格式继续执行或迁移分支；历史目录不修改、不删除。报告选择器按可发布状态和完成时间选择最新 execution，旧取消记录不能覆盖较新的已发布结果。无法由当前 Reader 解释的单条旧 execution 显示需要重跑，不影响其他用例或平台。
+当前 Execution schema 为 12。Runtime、Batch、Report 和 Reader 只接受该 schema，不提供并行读写或转换分支。报告选择器按可发布状态和完成时间选择最新 execution，取消记录不能覆盖较新的已发布结果。
 
 ## 12. 模块与依赖
 
@@ -247,4 +241,4 @@ scripts/
 
 依赖方向：主 Agent只依赖 Coordinator Facade；Case Agent 只依赖 Case Facade；Batch 只依赖 Case Runtime Lifecycle；Runtime 通过 Device Port 调用 Adapter 且不依赖 Report；Report 只读 execution；Adapter 不读取用例和 verdict。
 
-协议摘要按角色和模块分组，修改报告不改变 Runtime 摘要，修改单个平台 Adapter 不改变其他平台。版本号只属于独立持久化根或真实跨进程协议，内部模块不各自维护版本号。
+协议摘要按角色和模块分组，修改报告不改变 Runtime 摘要，修改单个平台 Adapter 不改变其他平台。schema 标识只属于独立持久化根或真实跨进程协议，内部模块不维护并行协议分支。

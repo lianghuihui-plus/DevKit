@@ -6,7 +6,6 @@ const runtimeCore = require('./runtime-core');
 const {
   AGENT_OPERATIONS,
   isSupportedBroker,
-  projectAgentCapabilities,
 } = require('./runtime-operation-contract');
 
 function executeAgentRequest(execDir, request, options = {}) {
@@ -26,7 +25,6 @@ function executeAgentRequest(execDir, request, options = {}) {
         code: 'OPERATION_FORBIDDEN',
       }],
       allowedOperations: allowed,
-      capabilities: projectAgentCapabilities(allowed),
     };
   }
   // Loader validation never reaches this broker; this idempotently marks the first Agent Runtime invocation.
@@ -38,7 +36,7 @@ function executeFacadeRequest(execDir, request, options = {}) {
   if (['reviewKnowledge', 'recordCaseModel', 'prepare'].includes(request?.operation)) {
     const resolved = path.resolve(execDir);
     const runtime = readJson(path.join(resolved, 'runtime.json'), null);
-    if (!isSupportedBroker(runtime?.broker) || !runtime?.agentFacing?.entry || !runtime?.agentFacing?.requestPath) {
+    if (!isSupportedBroker(runtime?.broker) || !runtime?.entry) {
       return {
         status: 'REQUEST_INVALID', code: 'CASE_RUNTIME_OPERATION_FORBIDDEN',
         message: `${request.operation} is only available through a bound Agent-facing Facade`, scene: null,

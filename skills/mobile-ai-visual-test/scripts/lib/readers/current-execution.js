@@ -1,6 +1,6 @@
 'use strict';
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 const READER_FAMILY = 'current-execution';
 
 function supports(execution) {

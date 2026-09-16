@@ -7,6 +7,7 @@ const path = require('path');
 const ROLE_ENTRYPOINTS = Object.freeze({
   'case-executor': Object.freeze([
     'scripts/case-runtime/agent-facing-client.js',
+    'scripts/case-runtime/mcp-server.js',
   ]),
   'batch-coordinator': Object.freeze([
     'scripts/coordinator-agent.js',
@@ -16,9 +17,25 @@ const ROLE_ENTRYPOINTS = Object.freeze({
 const ROLE_RESOURCES = Object.freeze({
   'case-executor': Object.freeze([
     'prompts/case-agent.md',
+    'references/case-runtime.md',
+    'references/case-runtime/methods/observe.md',
+    'references/case-runtime/methods/inspect.md',
+    'references/case-runtime/methods/plan.md',
+    'references/case-runtime/methods/act.md',
+    'references/case-runtime/methods/knowledge.md',
+    'references/case-runtime/methods/recover.md',
+    'references/case-runtime/methods/finish.md',
+    'references/case-runtime/action-refs.md',
+    'references/case-runtime/errors.md',
   ]),
   'batch-coordinator': Object.freeze([
     'SKILL.md',
+    'references/coordinator.md',
+    'references/coordinator/methods/prepare-run.md',
+    'references/coordinator/methods/confirm-run.md',
+    'references/coordinator/methods/advance-run.md',
+    'references/coordinator/methods/cancel-run.md',
+    'references/coordinator/errors.md',
   ]),
 });
 

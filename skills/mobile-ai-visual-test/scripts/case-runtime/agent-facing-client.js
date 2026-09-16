@@ -5,29 +5,39 @@ const fs = require('fs');
 const path = require('path');
 const { assertActiveDispatch } = require('../lib/dispatch-lease');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { attachTechnicalContext } = require('../lib/technical-context');
 const { executeFacadeRequest } = require('./runtime-broker');
 const {
   projectAgentFacingResponse,
-  retryExample,
   translateAgentFacingRequest,
 } = require('./agent-facing-translator');
+const { AGENT_FACING_PROTOCOL, documentationRefFor, validateAgentFacingRequest } = require('./agent-facing-contract');
+const decisionTransaction = require('./decision-transaction');
+const telemetry = require('./telemetry');
 
 const STATE_FILE = 'agent-facing-state.json';
 
-function parseRequest(argv, stdin = '', requestPath = null) {
+function metricClock(options) {
+  return typeof options.agentFacingMetricClock === 'function' ? options.agentFacingMetricClock() : Date.now();
+}
+
+function measureMetric(options, field, operation) {
+  const startedMs = metricClock(options);
+  try {
+    return operation();
+  } finally {
+    const endedMs = metricClock(options);
+    options.agentFacingMetrics[field] += Math.max(0, endedMs - startedMs);
+  }
+}
+
+function technicalFacts(code, stage) {
+  return { technical: { code, ...(stage ? { stage } : {}) } };
+}
+
+function parseRequest(argv, stdin = '') {
   if (argv.length) throw Object.assign(new Error('原样执行预绑定 command，不要增加参数'), { code: 'AGENT_INPUT_INVALID' });
   if (stdin.trim()) return JSON.parse(stdin);
-  if (requestPath && fs.existsSync(requestPath)) {
-    const claimedPath = `${requestPath}.claimed-${process.pid}-${Date.now()}`;
-    fs.renameSync(requestPath, claimedPath);
-    try {
-      return JSON.parse(fs.readFileSync(claimedPath, 'utf8'));
-    } finally {
-      if (fs.existsSync(claimedPath)) fs.unlinkSync(claimedPath);
-    }
-  }
-  throw Object.assign(new Error('请求文件是一次性的；请为本次调用重新创建简化请求 JSON 到 requestPath，再原样执行 command'), { code: 'AGENT_INPUT_INVALID' });
+  throw Object.assign(new Error('stdin 没有提供 JSON 请求'), { code: 'AGENT_INPUT_INVALID' });
 }
 
 function statePath(execDir) {
@@ -54,71 +64,164 @@ function invalidResponse(execDir, request, issues) {
       lastInvalid: { fingerprint: currentFingerprint, count: Number(current.lastInvalid.count || 1) + 1 },
     });
     return {
+      protocol: AGENT_FACING_PROTOCOL,
       status: 'AGENT_INPUT_STALLED',
       code: 'AGENT_INPUT_STALLED',
       message: '同一种输入错误已连续出现两次；停止自动重试并保留当前现场',
+      retryable: false,
       issues,
       scene: projectAgentFacingResponse(execDir, { status: 'READY' }).scene,
+      documentationRef: documentationRefFor('AGENT_INPUT_STALLED'),
     };
-  }
-  let retryWith = retryExample(execDir, request);
-  try {
-    translateAgentFacingRequest(execDir, retryWith);
-  } catch {
-    retryWith = { capability: 'observe' };
   }
   writeJsonAtomic(statePath(execDir), {
     type: 'agentFacingInputState',
     lastInvalid: { fingerprint: currentFingerprint, count: 1 },
   });
   return {
+    protocol: AGENT_FACING_PROTOCOL,
     status: 'INPUT_INVALID',
     code: 'AGENT_INPUT_INVALID',
-    message: '请求字段不符合当前能力；只按 retryWith 修正一次',
+    message: '请求字段不符合当前方法签名或上下文约束',
+    retryable: true,
     issues,
-    retryWith,
     scene: projectAgentFacingResponse(execDir, { status: 'READY' }).scene,
+    documentationRef: documentationRefFor('AGENT_INPUT_INVALID'),
   };
 }
 
-function run(execDir, request, options = {}) {
+function executeRun(execDir, request, options = {}) {
   const resolved = path.resolve(execDir);
+  const execution = readJson(path.join(resolved, 'execution.json'), null);
+  if (execution?.schemaVersion !== 12) {
+    return {
+      protocol: AGENT_FACING_PROTOCOL,
+      status: 'TECHNICAL',
+      code: 'PROTOCOL_MISMATCH',
+      message: `当前执行格式无效：期望 schema 12，实际为 ${execution?.schemaVersion || 'unknown'}`,
+      retryable: false,
+      facts: {
+        executionRef: execution?.executionId || path.basename(resolved),
+        executionSchemaVersion: execution?.schemaVersion || null,
+        requiredSchemaVersion: 12,
+      },
+      documentationRef: documentationRefFor('PROTOCOL_MISMATCH'),
+    };
+  }
+  const structural = validateAgentFacingRequest(request);
+  if (structural.length) return invalidResponse(resolved, request, structural);
+  let submission = null;
+  try {
+    submission = request.updates && Object.keys(request.updates).length
+      ? measureMetric(options, 'updatesApplyMs', () => decisionTransaction.applyUpdates(resolved, request, options))
+      : null;
+  } catch (error) {
+    const inputCodes = ['CASE_MODEL_INVALID', 'CASE_MODEL_REASON_REQUIRED', 'CASE_MODEL_REVISION_CONFLICT',
+      'CASE_MODEL_VERIFICATION_REF_INVALID', 'EXPECTATION_RESULT_INVALID', 'EXPECTATION_UNKNOWN',
+      'EVIDENCE_REFERENCE_INVALID', 'SCENE_REQUIRED', 'VISUAL_EVIDENCE_UNAVAILABLE', 'VISUAL_EVIDENCE_INVALID',
+      'OBSERVATION_SCREENSHOT_MISSING', 'OBSERVATION_SCREENSHOT_INVALID', 'EXECUTION_ARTIFACT_CHANGED'];
+    if (inputCodes.includes(error.code)) {
+      return invalidResponse(resolved, request, [{ field: 'updates', code: error.code, message: error.message }]);
+    }
+    throw error;
+  }
+  if (submission?.status === 'EFFECT_STARTED' && request.capability === 'act') {
+    const unknown = projectAgentFacingResponse(resolved, {
+      status: 'TECHNICAL',
+      code: 'ACTION_OUTCOME_UNKNOWN',
+      message: '该请求的设备 effect 已开始，但投递结果未能确认；禁止自动重放',
+      retryable: false,
+    }, request);
+    unknown.updatesApplied = submission.updatesApplied;
+    if (submission.caseModelChange) unknown.caseModelChange = submission.caseModelChange;
+    unknown.effect = { type: request.capability, status: 'OUTCOME_UNKNOWN' };
+    return unknown;
+  }
+  if (submission?.status === 'EFFECT_COMPLETED' && submission.effectResponse) {
+    const completed = projectAgentFacingResponse(resolved, submission.effectResponse, request);
+    completed.updatesApplied = submission.updatesApplied;
+    if (submission.caseModelChange) completed.caseModelChange = submission.caseModelChange;
+    return completed;
+  }
   let internal;
   try {
-    internal = translateAgentFacingRequest(resolved, request);
+    internal = request.capability === 'finish'
+      ? measureMetric(options, 'ledgerProjectionMs', () => translateAgentFacingRequest(resolved, request))
+      : translateAgentFacingRequest(resolved, request);
   } catch (error) {
-    if (error.code === 'AGENT_INPUT_INVALID') return invalidResponse(resolved, request, error.issues || []);
-    return attachTechnicalContext({
+    if (error.code === 'AGENT_INPUT_INVALID' || error.code === 'CASE_RESULT_INCOMPLETE') {
+      const issues = error.issues || error.readiness?.unresolved || [{ field: 'effect', code: error.code, message: error.message }];
+      const firstCode = error.code === 'CASE_RESULT_INCOMPLETE' ? 'CASE_RESULT_INCOMPLETE'
+        : issues.find((item) => ['SCENE_CHANGED', 'ACTION_NOT_AVAILABLE', 'ACTION_INPUT_INVALID', 'VISUAL_INSPECTION_REQUIRED'].includes(item.code))?.code
+          || 'AGENT_INPUT_INVALID';
+      if (submission) decisionTransaction.rejectEffect(resolved, submission.submissionId, firstCode);
+      const rejected = invalidResponse(resolved, request, issues);
+      if (firstCode !== 'AGENT_INPUT_INVALID' && rejected.status !== 'AGENT_INPUT_STALLED') {
+        rejected.code = firstCode;
+        rejected.status = firstCode === 'SCENE_CHANGED' ? 'SCENE_CHANGED'
+          : firstCode === 'CASE_RESULT_INCOMPLETE' ? 'RESULT_INCOMPLETE' : 'INPUT_INVALID';
+        rejected.documentationRef = documentationRefFor(firstCode);
+      }
+      if (error.readiness) rejected.readiness = error.readiness;
+      if (submission) {
+        rejected.updatesApplied = submission.updatesApplied;
+        rejected.caseModelChange = submission.caseModelChange;
+        rejected.effect = { type: request.capability, status: 'REJECTED' };
+      }
+      return rejected;
+    }
+    return {
+      protocol: AGENT_FACING_PROTOCOL,
       status: 'TECHNICAL',
-      code: error.code || 'FACADE_TRANSLATION_ERROR',
+      code: 'CASE_RUNTIME_TECHNICAL',
       message: error.message || String(error),
-      diagnostic: error.diagnostic || {
-        code: error.code || 'FACADE_TRANSLATION_ERROR',
-        stage: 'FACADE_TRANSLATION',
-        summary: error.message || String(error),
-        retryable: false,
-      },
+      retryable: false,
       scene: projectAgentFacingResponse(resolved, { status: 'READY' }).scene,
-    }, 'EXECUTION', { capability: 'observe' }, { resourceFacts: [`execution=${path.basename(resolved)}`] });
+      facts: technicalFacts(error.code || 'FACADE_TRANSLATION_ERROR', 'FACADE_TRANSLATION'),
+      documentationRef: documentationRefFor('CASE_RUNTIME_TECHNICAL'),
+    };
   }
   clearInvalidState(resolved);
+  if (submission && submission.status !== 'EFFECT_STARTED') {
+    decisionTransaction.startEffect(resolved, submission.submissionId);
+  }
   const executeRequest = options.executeRequest || executeFacadeRequest;
   const response = executeRequest(resolved, internal, options);
   if (response?.status === 'REQUEST_INVALID') {
-    return attachTechnicalContext({
+    return {
+      protocol: AGENT_FACING_PROTOCOL,
       status: 'TECHNICAL',
-      code: 'FACADE_TRANSLATION_ERROR',
+      code: 'CASE_RUNTIME_TECHNICAL',
       message: `Facade 生成的内部请求未通过 Runtime：${response.message || response.code || 'unknown error'}`,
-      diagnostic: response.diagnostic || {
-        code: 'FACADE_TRANSLATION_ERROR',
-        stage: 'FACADE_TRANSLATION',
-        summary: response.message || response.code || 'unknown error',
-        retryable: false,
-      },
+      retryable: false,
       scene: projectAgentFacingResponse(resolved, { status: 'READY' }).scene,
-    }, 'EXECUTION', { capability: 'observe' }, { resourceFacts: [`execution=${path.basename(resolved)}`] });
+      facts: technicalFacts(response.code || 'FACADE_TRANSLATION_ERROR', 'FACADE_TRANSLATION'),
+      documentationRef: documentationRefFor('CASE_RUNTIME_TECHNICAL'),
+    };
   }
-  return projectAgentFacingResponse(resolved, response, request);
+  if (submission) {
+    if (['REQUEST_INVALID', 'SCENE_CHANGED', 'RESULT_INCOMPLETE'].includes(response?.status)) {
+      decisionTransaction.rejectEffect(resolved, submission.submissionId, response.code || response.status);
+    } else decisionTransaction.completeEffect(resolved, submission.submissionId, response);
+  }
+  const projected = projectAgentFacingResponse(resolved, response, request);
+  if (submission) {
+    projected.updatesApplied = submission.updatesApplied;
+    if (submission.caseModelChange) projected.caseModelChange = submission.caseModelChange;
+  }
+  return projected;
+}
+
+function run(execDir, request, options = {}) {
+  const runOptions = {
+    ...options,
+    agentFacingMetrics: options.agentFacingMetrics || { updatesApplyMs: 0, ledgerProjectionMs: 0 },
+  };
+  const startedMs = typeof runOptions.agentFacingClock === 'function' ? runOptions.agentFacingClock() : Date.now();
+  const response = executeRun(execDir, request, runOptions);
+  const endedMs = typeof runOptions.agentFacingClock === 'function' ? runOptions.agentFacingClock() : Date.now();
+  telemetry.recordAgentFacing(path.resolve(execDir), request, response, Math.max(0, endedMs - startedMs), runOptions);
+  return response;
 }
 
 function main(argv = process.argv.slice(2), options = {}) {
@@ -143,29 +246,33 @@ function main(argv = process.argv.slice(2), options = {}) {
       assertActiveDispatch(dispatchDirectory, execution.executionId, dispatchSequence);
     }
     const stdin = options.stdin !== undefined ? options.stdin : (process.stdin.isTTY ? '' : fs.readFileSync(0, 'utf8'));
-    const requestPath = dispatchSequence
-      ? path.join(execDir, `agent-request.dispatch-${dispatchSequence}.json`)
-      : path.join(execDir, 'agent-request.json');
     let request;
     try {
-      request = parseRequest(requestArgs, stdin, requestPath);
+      request = parseRequest(requestArgs, stdin);
     } catch (error) {
       if (!['AGENT_INPUT_INVALID', 'SyntaxError'].includes(error.code || error.name)) throw error;
       response = invalidResponse(execDir, {}, [{
-        field: error.name === 'SyntaxError' ? 'requestFile' : 'transport',
+        field: error.name === 'SyntaxError' ? 'request' : 'transport',
         message: error.message,
         code: error.name === 'SyntaxError' ? 'JSON_INVALID' : 'TRANSPORT_INVALID',
       }]);
     }
-    if (!response) response = run(execDir, request, options);
+    if (!response) response = run(execDir, request, { ...options, hostTransport: 'stdin' });
   } catch (error) {
     const inputInvalid = ['AGENT_INPUT_INVALID', 'SyntaxError'].includes(error.code || error.name);
-    response = attachTechnicalContext({
+    const bindingInvalid = !inputInvalid && /(?:HANDOFF|BINDING)/.test(error.code || '');
+    const publicCode = inputInvalid ? 'AGENT_INPUT_INVALID'
+      : bindingInvalid ? 'BINDING_INVALID' : 'CASE_RUNTIME_TECHNICAL';
+    response = {
+      protocol: AGENT_FACING_PROTOCOL,
       status: inputInvalid ? 'INPUT_INVALID' : 'TECHNICAL',
-      code: inputInvalid ? 'AGENT_INPUT_INVALID' : (error.code || 'AGENT_FACING_CLIENT_ERROR'),
+      code: publicCode,
       message: error.message || String(error),
-      issues: inputInvalid ? [{ field: error.name === 'SyntaxError' ? 'requestFile' : 'transport', message: error.message, code: error.name === 'SyntaxError' ? 'JSON_INVALID' : 'TRANSPORT_INVALID' }] : undefined,
-    }, 'EXECUTION', { capability: 'observe' });
+      retryable: inputInvalid,
+      issues: inputInvalid ? [{ field: error.name === 'SyntaxError' ? 'request' : 'transport', message: error.message, code: error.name === 'SyntaxError' ? 'JSON_INVALID' : 'TRANSPORT_INVALID' }] : undefined,
+      facts: inputInvalid ? undefined : technicalFacts(error.code || 'AGENT_FACING_CLIENT_ERROR', 'TRANSPORT'),
+      documentationRef: documentationRefFor(publicCode),
+    };
   }
   if (options.returnOnly) return response;
   process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);

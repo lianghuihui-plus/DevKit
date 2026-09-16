@@ -9,7 +9,7 @@ const path = require('path');
 const { bootstrapBatch, commitCurrentCase, initializeBatch, startCurrentCase } = require('../batch/core');
 const { buildContract } = require('../build-agent-contract');
 const { run: runAgentFacing } = require('../case-runtime/agent-facing-client');
-const { run } = require('../case-runtime/runtime-client');
+const { executeFacadeRequest: run } = require('../case-runtime/runtime-broker');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
@@ -66,12 +66,14 @@ function completeCase(started, index) {
   const observed = run(started.execDir, { operation: 'observe' }, { runner, now: at });
   assert.strictEqual(observed.status, 'SCENE');
   const planned = runAgentFacing(started.execDir, {
-    capability: 'plan',
-    understanding: `验证第 ${index} 个暖会话用例`,
-    preconditions: [],
-    verificationPoints: [{ text: '目标页面正常显示' }],
-    items: ['观察当前页面', '检查截图', '提交结果'],
-    uncertainties: [],
+    capability: 'plan', caseModel: {
+      baseRevision: null,
+      understanding: `验证第 ${index} 个暖会话用例`,
+      preconditions: [],
+      verificationPoints: [{ text: '目标页面正常显示' }],
+      items: ['观察当前页面', '检查截图', '提交结果'],
+      uncertainties: [],
+    },
   }, { now: at });
   assert.strictEqual(planned.status, 'CASE_MODEL_RECORDED');
   const visualInspection = run(started.execDir, {

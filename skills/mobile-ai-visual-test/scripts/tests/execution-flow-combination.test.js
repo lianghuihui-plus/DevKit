@@ -76,15 +76,18 @@ try {
   const prepared = runCoordinator(['prepare', '--workspace', workspace, '--case-nos', current.caseNo]);
   assert.strictEqual(prepared.status, 'NEED_USER_CONFIRMATION');
   assert.strictEqual(prepared.binding.platform, 'harmony');
-  const selectIos = prepared.confirmChoices.find((choice) => choice.id === 'SELECT_IOS').template;
-  const needIosBinding = submit(prepared, 'confirm', selectIos);
+  const selectIos = prepared.choices.find((choice) => choice.id === 'SELECT_IOS');
+  const needIosBinding = submit(prepared, 'confirm', {
+    capability: 'confirmRun', decision: selectIos.decision, platform: selectIos.platform,
+  });
   assert.strictEqual(needIosBinding.status, 'NEED_USER_CONFIRMATION');
-  assert.strictEqual(needIosBinding.confirmTemplate.binding.platform, 'ios');
+  assert.strictEqual(needIosBinding.binding.platform, 'ios');
   const iosConfirmation = {
-    ...needIosBinding.confirmTemplate,
+    capability: 'confirmRun',
+    decision: 'CONFIRM_BINDING',
     userInstruction: '确认切换到 fake iOS 环境执行 014',
     binding: {
-      ...needIosBinding.confirmTemplate.binding,
+      ...needIosBinding.binding,
       appId: 'com.example.ios',
       entry: 'com.example.ios.Main',
     },

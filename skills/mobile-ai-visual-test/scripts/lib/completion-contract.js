@@ -76,7 +76,7 @@ function validateExecutionSnapshotBindings(execDir, execution, snapshot) {
 function validatePublishedCompletion(execDir, completion, artifacts) {
   const paths = completionPaths(execDir);
   const { execution, result, metrics, snapshot } = artifacts;
-  if (execution?.schemaVersion !== 11 || !execution.finalized || !result || !metrics || !snapshot) {
+  if (execution?.schemaVersion !== 12 || !execution.finalized || !result || !metrics || !snapshot) {
     throw new Error('Execution completion artifacts are incomplete or unsupported');
   }
   validateExecutionSnapshotBindings(execDir, execution, snapshot);

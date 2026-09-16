@@ -52,7 +52,7 @@ function validateVerdict(result, events) {
 
 function validateExpectationCoverage(execDir, result, events, suppliedExecution = null) {
   const execution = suppliedExecution || readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 11) {
+  if (!execution || execution.schemaVersion !== 12) {
     throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
 
@@ -288,7 +288,7 @@ function validateScene(execDir, sceneId, event, files, options = {}) {
 
 function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 11) {
+  if (!execution || execution.schemaVersion !== 12) {
     throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
   const result = suppliedResult || readJson(path.join(execDir, 'result.json'), null);

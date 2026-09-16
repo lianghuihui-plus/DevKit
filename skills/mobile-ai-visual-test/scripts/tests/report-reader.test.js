@@ -137,7 +137,7 @@ fs.writeFileSync(path.join(workspace, 'runs', timingFixture.execution.batchId, '
   },
 }, null, 2));
 const timingReport = readExecutionReport(timingFixture.execDir);
-assert.strictEqual(timingReport.display.durationBasis, 'CASE_TOTAL_V1');
+assert.strictEqual(timingReport.display.durationBasis, 'CASE_TOTAL');
 assert.strictEqual(timingReport.display.startedAt, '2026-08-13T09:59:55.000+08:00');
 assert.strictEqual(timingReport.display.durationMs, 10000);
 assert.deepStrictEqual(timingReport.display.phaseDurations, {
@@ -153,7 +153,7 @@ const persistedTimingDisplay = currentDisplayModel({ verdict: 'PASS', checks: []
   coordinatorPreparationMs: 10, initialStatePreparationMs: null, handoffPreparationMs: 20,
   handoffSchedulingMs: null, caseAgentPhaseMs: 30,
 }, { executionId: 'execution-persisted-timing', startedAt: '2026-08-13T10:00:00.000Z' });
-assert.strictEqual(persistedTimingDisplay.durationBasis, 'CASE_TOTAL_V1');
+assert.strictEqual(persistedTimingDisplay.durationBasis, 'CASE_TOTAL');
 assert.strictEqual(persistedTimingDisplay.durationMs, 99);
 assert.strictEqual(persistedTimingDisplay.phaseDurations.caseAgentPhaseMs, 30);
 

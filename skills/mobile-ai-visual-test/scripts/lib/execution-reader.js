@@ -9,7 +9,6 @@ const { deriveExecutionTiming } = require('./execution-timing');
 const currentExecution = require('./readers/current-execution');
 
 const currentContracts = new Map();
-const executionReaders = Object.freeze([currentExecution]);
 
 function readJson(file, fallback = null) {
   if (!fs.existsSync(file)) return fallback;
@@ -30,16 +29,12 @@ function currentContract(platform, skillRoot = path.resolve(__dirname, '../..'))
 }
 
 function assertExecutionSchema(execution) {
-  const reader = executionReaders.find((candidate) => candidate.supports(execution));
-  if (reader) return reader.assertSchema(execution);
-  const error = new Error(`unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
-  error.code = 'FORMAT_UNSUPPORTED';
-  throw error;
+  return currentExecution.assertSchema(execution);
 }
 
 function readerFor(execution) {
   assertExecutionSchema(execution);
-  return executionReaders.find((candidate) => candidate.supports(execution));
+  return currentExecution;
 }
 
 function assertCurrentExecution(execution, options = {}) {
@@ -175,7 +170,7 @@ function executionSelection(execDir, workspaceRoot = null) {
       time: fs.statSync(execDir).mtimeMs,
     };
   }
-  if (!executionReaders.some((reader) => reader.supports(execution))) {
+  if (!currentExecution.supports(execution)) {
     const time = Date.parse(execution?.endedAt || execution?.startedAt || 0) || fs.statSync(execDir).mtimeMs;
     return {
       execDir,

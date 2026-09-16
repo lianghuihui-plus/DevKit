@@ -25,16 +25,7 @@ const {
   isSupportedBroker,
 } = require('./runtime-operation-contract');
 
-const EXECUTION_SCHEMA_VERSION = 11;
-
-function createBoundClient(execDir) {
-  const entry = path.join(execDir, 'runtime-client.js');
-  const runtimeClient = path.resolve(__dirname, 'runtime-client.js');
-  const content = `#!/usr/bin/env node\n'use strict';\nrequire(${JSON.stringify(runtimeClient)}).main(process.argv.slice(2), { execDir: ${JSON.stringify(path.resolve(execDir))} });\n`;
-  atomicWrite(entry, content);
-  fs.chmodSync(entry, 0o755);
-  return entry;
-}
+const EXECUTION_SCHEMA_VERSION = 12;
 
 function createBoundAgentFacingClient(execDir) {
   const entry = path.join(execDir, 'agent-facing-client.js');
@@ -52,12 +43,9 @@ function shellQuote(value) {
 function buildCaseBrief(executionDir, execution, caseJson, sourceText, runtime, scene = null, dispatchSequence = 1) {
   const preparation = runtimeCore.runtimeStatus(executionDir).preparation;
   const dispatchBound = Boolean(execution.batchId && runtime.sessionRef?.statePath);
-  const requestPath = dispatchBound
-    ? path.join(executionDir, `agent-request.dispatch-${dispatchSequence}.json`)
-    : runtime.agentFacing.requestPath;
   const command = dispatchBound
-    ? `${shellQuote(runtime.agentFacing.entry)} --dispatch-sequence ${dispatchSequence}`
-    : shellQuote(runtime.agentFacing.entry);
+    ? `${shellQuote(runtime.entry)} --dispatch-sequence ${dispatchSequence}`
+    : shellQuote(runtime.entry);
   const fullScene = store.readCurrentScene(executionDir) || scene;
   const agentContract = require('./agent-facing-contract');
   const caseModel = require('./case-model-service').current(executionDir);
@@ -75,15 +63,9 @@ function buildCaseBrief(executionDir, execution, caseJson, sourceText, runtime, 
     initialState,
     runtime: {
       interfaceKind: agentContract.AGENT_FACING_INTERFACE_KIND,
+      protocol: agentContract.AGENT_FACING_PROTOCOL,
       command,
-      requestPath,
-      capabilities: agentContract.capabilityCards({ scene: fullScene, caseModel, initialState }),
-      input: '每次调用都新建一个简化请求 JSON 到 requestPath，再原样执行 command；请求文件是一次性的，消费后删除。',
-    },
-    investigationCapabilities: {
-      visual: { available: true, capability: 'inspect', channel: 'visual' },
-      layout: { available: true, capability: 'inspect', channels: ['elements', 'capabilities', 'layout'] },
-      knowledge: { available: true, capability: 'knowledge', requiredBeforeNegativeConclusion: true },
+      documentation: 'references/case-runtime.md',
     },
     caseModel,
     scene: agentContract.projectScene(fullScene, { caseModel }),
@@ -101,18 +83,9 @@ function deriveCaseBrief(executionDir, dispatchSequence = 1) {
     throw contractError('CASE_BRIEF_SOURCE_INVALID', 'execution snapshots do not match the frozen execution binding');
   }
   const runtime = readJson(path.join(resolved, 'runtime.json'), null);
-  const expectedEntry = path.join(resolved, 'runtime-client.js');
-  const expectedRequestPath = path.join(resolved, 'runtime-request.json');
   const expectedAgentEntry = path.join(resolved, 'agent-facing-client.js');
-  const expectedAgentRequestPath = path.join(resolved, 'agent-request.json');
-  const invalidAgentFacing = !runtime?.agentFacing || (
-    runtime.agentFacing.entry !== expectedAgentEntry
-    || runtime.agentFacing.requestPath !== expectedAgentRequestPath
-    || !fs.existsSync(expectedAgentEntry)
-  );
-  if (!runtime || runtime.executionId !== execution.executionId || runtime.entry !== expectedEntry
-    || runtime.requestPath !== expectedRequestPath || !fs.existsSync(expectedEntry)
-    || invalidAgentFacing || !isSupportedBroker(runtime.broker)) {
+  if (!runtime || runtime.executionId !== execution.executionId || runtime.entry !== expectedAgentEntry
+    || !fs.existsSync(expectedAgentEntry) || !isSupportedBroker(runtime.broker)) {
     throw contractError('CASE_RUNTIME_BINDING_INVALID', 'Case Runtime client does not match the execution');
   }
   return buildCaseBrief(resolved, execution, caseJson, sourceText, runtime, store.readCurrentScene(resolved), dispatchSequence);
@@ -224,18 +197,12 @@ function createExecution(options) {
         batchContractSha: execution.batchContractSha,
       });
       fs.renameSync(stagingDir, execDir);
-      const entry = createBoundClient(execDir);
-      const agentFacingEntry = createBoundAgentFacingClient(execDir);
+      const entry = createBoundAgentFacingClient(execDir);
       writeJsonAtomic(path.join(execDir, 'runtime.json'), {
         schemaVersion: 1,
         executionId,
         status: 'READY',
         entry,
-        requestPath: path.join(execDir, 'runtime-request.json'),
-        agentFacing: {
-          entry: agentFacingEntry,
-          requestPath: path.join(execDir, 'agent-request.json'),
-        },
         sessionRef: options.sessionRef || null,
         knowledgeRoots: (options.knowledgeRoots || []).map((root) => path.resolve(root)),
         broker: {
@@ -320,7 +287,6 @@ function buildContinuationBrief({ executionDir, reason }) {
     candidateCount: pending.candidateCount,
     expectationRefs: pending.expectationRefs || [],
     candidates: pending.candidates || [],
-    nextCall: { example: require('./agent-facing-translator').reviewExample(pending.requiredReview) },
   }));
   return {
     ...initial,

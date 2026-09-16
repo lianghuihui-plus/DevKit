@@ -21,4 +21,4 @@ ExecutionRequest 只接受用例选择，不接受 Agent 生成的 inline Case M
 
 Case Model 由 Case Agent 在 execution 内通过 `plan` 生成，所有 revision 追加到 `events.jsonl`，不写回 `case.json` 或 `source.md`。相同验证点保留原 `E` 引用，新验证点由 Runtime 分配新引用，取消的引用不复用。
 
-已完成的历史 execution 不迁移、不补写。旧静态报告可继续查看；当前 Reader 无法解释的旧 execution 只在自身平台记录上显示需要重跑，不影响其他用例或新 execution。看板优先选择最新可发布结果，旧取消记录不能覆盖较新的已发布结果。
+当前 Reader 只接受当前 execution schema。其他格式不迁移、不补写、不继续执行，也不通过当前 Reader 转换；看板只从当前可发布 execution 中选择最新结果，取消记录不能覆盖较新的已发布结果。

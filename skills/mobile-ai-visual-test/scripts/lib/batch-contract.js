@@ -141,7 +141,6 @@ function createBatchContract({ batchId, executionRequest }) {
 
 function assertBatchImplementation(contract, versions = {}) {
   validateBatchContract(contract);
-  if (['READ', 'CANCEL', 'FINALIZE', 'RECONCILE'].includes(versions.compatibilityMode)) return contract;
   for (const field of ['runtimeSha', 'adapterSha', 'coordinatorSha']) {
     if (versions[field] && contract[field] !== versions[field]) {
       throw contractError('BATCH_IMPLEMENTATION_MISMATCH', `batch belongs to a different ${field}`);

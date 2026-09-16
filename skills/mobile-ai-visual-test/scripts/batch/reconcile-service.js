@@ -43,7 +43,7 @@ function executionProgress(execDir, execution, runtime, dispatch) {
 }
 
 function reconcileBatch(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options, 'RECONCILE'));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
   return withFileLock(loaded.paths.lock, () => {
     const state = readBatchState(loaded.paths, loaded.contract);
     const terminalAction = { BLOCKED: 'BATCH_BLOCKED', CANCELLED: 'BATCH_CANCELLED', COMPLETED: 'BATCH_COMPLETE' }[state.status];
@@ -126,7 +126,7 @@ function reconcileBatch(options) {
       || entry.execution.batchContractSha !== state.contractSha) {
       throw contractError('BATCH_IMPLEMENTATION_MISMATCH', 'active execution belongs to another batch implementation');
     }
-    if (entry.execution.schemaVersion === 11) {
+    if (entry.execution.schemaVersion === 12) {
       try {
         const reconcileExecution = options.reconcileExecution || caseRuntimeLifecycle.reconcileExecution;
         reconcileExecution({ executionDir: entry.execDir, runtimeOptions: options.runtimeOptions || {} });

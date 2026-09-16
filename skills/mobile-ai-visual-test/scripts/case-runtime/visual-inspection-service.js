@@ -9,7 +9,7 @@ const { readJson } = require('../lib/execution-lifecycle');
 const store = require('./store');
 const { projectSceneSummary } = require('./scene-service');
 
-function inspectVisual(execDir, request, options = {}) {
+function prepareVisualInspection(execDir, request) {
   const currentScene = store.readCurrentScene(execDir);
   const scene = readJson(path.join(store.paths(execDir).scenes, `${request.basedOnSceneId}.json`), null);
   if (!scene || scene.sceneId !== request.basedOnSceneId) {
@@ -36,8 +36,23 @@ function inspectVisual(execDir, request, options = {}) {
   if (screenshot.sha256 && sha256File(screenshotPath) !== screenshot.sha256) {
     throw contractError('EXECUTION_ARTIFACT_CHANGED', `Scene screenshot digest changed: ${screenshot.ref}`);
   }
+  return {
+    currentScene,
+    scene,
+    screenshot,
+    observation: request.decision.observation,
+    expectationRefs: request.decision.expectationRefs || [],
+    decisionId: request.decisionId || null,
+  };
+}
+
+function commitVisualInspection(execDir, prepared, options = {}) {
+  const { currentScene, scene, screenshot } = prepared;
   const existing = store.events(execDir).find((event) => event.type === 'visualInspected'
-    && event.sceneId === scene.sceneId && event.screenshotSha256 === screenshot.sha256);
+    && event.sceneId === scene.sceneId && event.screenshotSha256 === screenshot.sha256
+    && (event.submissionId === options.submissionId
+      || (event.observation === prepared.observation
+        && JSON.stringify(event.expectationRefs || []) === JSON.stringify(prepared.expectationRefs))));
   const projection = (event) => ({
     inspectionId: event.inspectionId,
     sceneId: event.sceneId,
@@ -50,15 +65,20 @@ function inspectVisual(execDir, request, options = {}) {
     return { status: 'VISUAL_INSPECTED', scene: projectSceneSummary(currentScene), visualInspection: projection(existing), idempotent: true };
   }
   const event = store.appendEvent(execDir, 'visualInspected', {
+    submissionId: options.submissionId || null,
     inspectionId: store.nextId(execDir, 'inspection'),
     sceneId: scene.sceneId,
     screenshotRef: screenshot.ref,
     screenshotSha256: screenshot.sha256,
-    decisionId: request.decisionId || null,
-    expectationRefs: request.decision.expectationRefs,
-    observation: request.decision.observation,
+    decisionId: prepared.decisionId,
+    expectationRefs: prepared.expectationRefs,
+    observation: prepared.observation,
   }, options);
   return { status: 'VISUAL_INSPECTED', scene: projectSceneSummary(currentScene), visualInspection: projection(event) };
 }
 
-module.exports = { inspectVisual };
+function inspectVisual(execDir, request, options = {}) {
+  return commitVisualInspection(execDir, prepareVisualInspection(execDir, request), options);
+}
+
+module.exports = { commitVisualInspection, inspectVisual, prepareVisualInspection };

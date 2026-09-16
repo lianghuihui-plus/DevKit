@@ -11,6 +11,8 @@ description: 当需要基于任意非空文本人工用例，对移动端应用�
 
 Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handoff 和报告发布。Facade 是正常流程的首选入口，不是技术异常下的排他能力边界。
 
+启动时读取 `references/coordinator.md` 的方法短索引。只有紧凑签名不足以构造当前调用时才读取对应方法页；收到错误时只读取 `documentationRef` 指向的错误章节，不预读完整错误目录。
+
 ## 正常执行入口
 
 先执行：
@@ -19,30 +21,30 @@ Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handof
 node <skill-root>/scripts/workspace.js --cwd <workspace>
 ```
 
-脚本入口属于技能目录，`--cwd` 指向测试工作区；不要在测试工作区中解析相对的 `scripts/`。响应中的 `coordinatorFacade.command` 可从任意当前目录重新校验该工作区，`coordinatorFacade.prepareUsage` 是已绑定工作区的绝对 Facade 启动命令。主 Agent 只需要四个能力：`prepareRun`、`confirmRun`、`advanceRun`、`cancelRun`。
+脚本入口属于技能目录，`--cwd` 指向测试工作区；不要在测试工作区中解析相对的 `scripts/`。响应只提供工作区事实和紧凑的 `coordinatorFacade { interfaceKind, protocol, command, documentation }` 绑定，不返回方法说明或调用模板。主 Agent 只使用文档定义的四个能力：`prepareRun`、`confirmRun`、`advanceRun`、`cancelRun`。
 
-开始执行时只替换 `coordinatorFacade.prepareUsage` 中的用例编号并原样执行；其等价形式为：
+开始执行时，根据 `references/coordinator.md` 的 `prepareRun` 签名，将响应中的工作区绝对路径和用户指定用例编号传给 `coordinatorFacade.command`：
 
 ```bash
 node <skill-root>/scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>
 ```
 
-随后只使用当前响应提供的模板、路径和完整命令。`advanceRun` 原样执行 `commands.advance`；`confirmRun` 选择一个完整的 `confirmChoices[].template`，或使用唯一的 `confirmTemplate`，只填写模板要求用户决定的值，再写入指定 `requestPath` 并原样执行 `command`。`cancelRun` 同理。
+随后按 `references/coordinator.md` 中的方法签名构造请求。`advanceRun` 原样执行 `commands.advance`；`confirmRun` 根据当前 `reason`、`choices`、`binding`、`requiredUserFields` 和 `requiredBindingFields` 填写对应签名，将 JSON 写入 `commands.confirm.requestPath` 后原样执行 `commands.confirm.command`。`cancelRun` 同理。响应中的 commands 只绑定当前运行状态，不承载方法教程。
 
 ## 返回状态
 
-- `NEED_USER_CONFIRMATION`：保留模板预填字段，只填写用户需要决定的值，再调用 `commands.confirm.command`。
+- `NEED_USER_CONFIRMATION`：把响应中的动态选择和绑定事实映射到 `confirmRun` 签名，只向用户确认缺失的业务字段，再调用 `commands.confirm.command`。
 - `NEED_CASE_AGENT`：创建不继承主 Agent 上下文的全新 Case Agent，只发送响应中的固定 `delegationPrompt` 和原样 `loaderCommand`，随后等待该 Agent。已有对应活跃 Agent 时不得重复创建。
 - `WAITING`：根据 `waitFor`、`reason` 和 `recovery` 判断等待对象，条件变化后原样执行 `commands.advance`，不得重新确认或重复委托。`OWNER_BATCH_TERMINAL` 表示其他批次仍占用平台资源；`WAIT_EXECUTION_RESULT` 只表示等待持久化结果，不证明 Case Agent 仍在运行。
-- `TECHNICAL`：读取 `diagnostic` 与 `technicalContext`。优先使用有效恢复或 `technicalContext.resume`；仍无进展时进入批次级技术排障。
+- `TECHNICAL`：读取 `diagnostic`、`facts` 和 `documentationRef`；按错误文档处理后，通过当前状态允许的方法回到 Facade，仍无进展时进入批次级技术排障。
 - `COMPLETE`：报告 `outcome` 和报告位置，不再推进。
-- `BLOCKED`：保留现场并报告 `code`、`reason` 和诊断；技术阻塞不能改报为业务 FAIL。若仍有可处理的 `technicalContext`，先按技术异常流程调查和恢复。
+- `BLOCKED`：保留现场并报告 `code`、`reason`、`facts` 和诊断；技术阻塞不能改报为业务 FAIL，恢复办法只从 `documentationRef` 对应章节读取。
 
-用户明确停止时，将当前取消模板写入 `commands.cancel.requestPath` 并执行原命令。只有返回 `COMPLETE` 且 `outcome=CANCELLED` 才表示取消完成。
+用户明确停止时，按 `cancelRun(reason)` 签名构造请求，写入 `commands.cancel.requestPath` 并执行原命令。只有返回 `COMPLETE` 且 `outcome=CANCELLED` 才表示取消完成。
 
 ## 调用纪律
 
-- 固定命令不得增删参数；输入错误只按 `retryWith` 修正一次，同类错误再次出现时停止猜字段。
+- 固定命令不得增删参数；输入错误按 `issues` 和 `documentationRef` 修正一次，同类错误再次出现时停止猜字段。
 - 主 Agent 不调用 Batch、环境探测、ExecutionRequest、报告渲染或 Case Runtime 的内部 CLI 完成正常业务流程。
 - `advanceRun` 会恢复持久化的 `INITIALIZING_RUN`；初始化中断后不得重新确认或重复启动初始化。
 - 宿主命令返回仍在运行的会话句柄时，继续等待同一进程，不得重复执行 `advanceRun`。
@@ -54,20 +56,20 @@ node <skill-root>/scripts/coordinator-agent.js prepare --workspace <workspace> -
 
 Case Agent 通过统一的 `recover.targetState` 表达需要空本地状态或首次安装状态，平台差异由 Runtime 处理。Android、HarmonyOS 清除目标 App 数据；iOS 仅在 Case Agent 确实请求该状态时，从工作区 `app-packages/ios` 自动查找与 Bundle ID 和设备类型匹配的 `.app` 或 `.ipa`，校验并冻结后卸载、重装目标 App。
 
-iOS 真机用 `devicectl`、模拟器用 `simctl` 核验安装事实，不使用 WDA 运行态代替安装态。初始态准备失败时 Case Agent 只按响应中的 `nextCall` 恢复；连续失败需先完成技术处置并登记，再重试原目标状态。
+iOS 真机用 `devicectl`、模拟器用 `simctl` 核验安装事实，不使用 WDA 运行态代替安装态。初始态准备失败时 Case Agent 根据错误原因和 `documentationRef` 处理；连续失败需先完成技术处置并登记，再重试原目标状态。
 
 主 Agent 不读取用例来预判重装，不询问、登记或向 Case Agent 传递安装包。目录中没有唯一可用安装包时，Runtime 向 Case Agent 返回明确技术事实；放入该约定目录表示允许在已确认的目标 App 上按需重装，不表示每条用例都自动重装。
 
 ## 技术异常
 
-`technicalContext` 提供已知事实、日志入口、资源事实和回到框架的 `resume` 示例。它是排障帮助，不是新的状态门，也不禁止主 Agent 使用其他可用工具。
+Coordinator 响应只提供错误原因、诊断、当前资源事实和 `documentationRef`，不内联恢复请求或使用示例。恢复方法由错误文档说明，当前状态与资源归属以响应事实为准。
 
 当确定性恢复失败、状态长期无进展、Coordinator 无输出、资源锁与批次终态矛盾，或设备发现、Appium、WDA、Xcode 状态与诊断不一致时，可以在当前批次职责和已有授权内读取日志，使用 Shell 或平台原生工具调查并恢复共享设备、进程、端口与自动化服务。
 
 - 只处理当前批次或已确认终态批次拥有的资源，不终止活动批次或归属不明的进程。
 - 技术排障未经用户确认，不执行额外卸载、清数据、改变签名等有业务影响的动作；`recover.targetState` 只使用 execution 已授权的目标 App 状态能力。
 - 不直接修改 Batch、Execution、Result、Scene、事件或报告文件来伪造恢复。
-- 基础设施恢复后，执行 `technicalContext.resume` 或当前 `commands.advance` 回到 Facade，由框架重新探测并落盘。
+- 基础设施恢复后，按错误文档选择当前状态允许的方法回到 Facade；可推进状态执行当前 `commands.advance`，由框架重新探测并落盘。
 - 技术排障不代替 Case Agent 的用例理解、设备操作和业务判断。
 
 ## 角色与 Handoff

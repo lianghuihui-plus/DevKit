@@ -22,8 +22,8 @@ function validateValidationProfile(value) {
   const expected = {
     resultContractVersion: 1,
     visualInspectionPolicy: 'REQUIRED_FOR_REFERENCED_SCENES',
-    knowledgeClosurePolicy: 'NEGATIVE_CHECKS_V1',
-    searchCoveragePolicy: 'CONTINUOUS_BOTH_BOUNDARIES_V1',
+    knowledgeClosurePolicy: 'NEGATIVE_CHECKS',
+    searchCoveragePolicy: 'CONTINUOUS_BOTH_BOUNDARIES',
     evidenceGraphVersion: 1,
     technicalFactPolicyVersion: 1,
   };
@@ -41,8 +41,8 @@ function createValidationProfile() {
     schemaVersion: VALIDATION_PROFILE_SCHEMA_VERSION,
     resultContractVersion: 1,
     visualInspectionPolicy: 'REQUIRED_FOR_REFERENCED_SCENES',
-    knowledgeClosurePolicy: 'NEGATIVE_CHECKS_V1',
-    searchCoveragePolicy: 'CONTINUOUS_BOTH_BOUNDARIES_V1',
+    knowledgeClosurePolicy: 'NEGATIVE_CHECKS',
+    searchCoveragePolicy: 'CONTINUOUS_BOTH_BOUNDARIES',
     evidenceGraphVersion: 1,
     technicalFactPolicyVersion: 1,
   };
@@ -51,7 +51,7 @@ function createValidationProfile() {
 }
 
 function loadValidationProfile(execDir, execution) {
-  if (execution?.schemaVersion !== 11) {
+  if (execution?.schemaVersion !== 12) {
     throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
   const file = path.join(execDir, PROFILE_FILE);

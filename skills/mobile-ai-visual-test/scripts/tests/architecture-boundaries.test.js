@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { implementationGroups, roleEntrypoints, roleResources } = require('../lib/agent-contract-manifest');
-const { AGENT_FACING_INTERFACE_KIND: COORDINATOR_INTERFACE_KIND, COORDINATOR_CAPABILITIES, capabilityCards } = require('../coordinator/agent-facing-contract');
+const { AGENT_FACING_INTERFACE_KIND: COORDINATOR_INTERFACE_KIND, COORDINATOR_CAPABILITIES } = require('../coordinator/agent-facing-contract');
 const { AGENT_FACING_CAPABILITIES, AGENT_FACING_INTERFACE_KIND: CASE_INTERFACE_KIND } = require('../case-runtime/agent-facing-contract');
 const { buildContract } = require('../build-agent-contract');
 const { REQUEST_FIELDS, validateDecision, validateRuntimeRequest } = require('../case-runtime/contract');
@@ -19,23 +19,32 @@ const root = path.resolve(__dirname, '../..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 
 assert.strictEqual(fs.existsSync(path.join(root, 'scripts/lib/readers/current-execution.js')), true);
-assert.strictEqual(fs.existsSync(path.join(root, 'scripts/lib/readers/execution-v10.js')), false);
-assert.strictEqual(fs.existsSync(path.join(root, 'scripts/lib/readers/execution-v11.js')), false);
 
-assert.deepStrictEqual(roleResources('case-executor'), ['prompts/case-agent.md']);
-assert.deepStrictEqual(roleEntrypoints('case-executor'), ['scripts/case-runtime/agent-facing-client.js']);
+assert.deepStrictEqual(roleResources('case-executor'), [
+  'prompts/case-agent.md',
+  'references/case-runtime.md',
+  'references/case-runtime/methods/observe.md',
+  'references/case-runtime/methods/inspect.md',
+  'references/case-runtime/methods/plan.md',
+  'references/case-runtime/methods/act.md',
+  'references/case-runtime/methods/knowledge.md',
+  'references/case-runtime/methods/recover.md',
+  'references/case-runtime/methods/finish.md',
+  'references/case-runtime/action-refs.md',
+  'references/case-runtime/errors.md',
+]);
+assert.deepStrictEqual(roleEntrypoints('case-executor'), [
+  'scripts/case-runtime/agent-facing-client.js',
+  'scripts/case-runtime/mcp-server.js',
+]);
 assert.deepStrictEqual(roleEntrypoints('batch-coordinator'), ['scripts/coordinator-agent.js']);
 assert.strictEqual(roleResources('batch-coordinator').includes('prompts/case-agent.md'), false);
 assert.strictEqual(roleResources('batch-coordinator')[0], 'SKILL.md');
 assert.strictEqual(fs.existsSync(path.join(root, 'prompts/main-agent.md')), false);
-const coordinatorCapabilities = capabilityCards();
 assert.strictEqual(COORDINATOR_INTERFACE_KIND, 'AGENT_FACING');
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
 assert.ok(COORDINATOR_CAPABILITIES.length <= 4, 'Main Agent active capability budget is 4');
 assert.ok(AGENT_FACING_CAPABILITIES.length <= 7, 'Case Agent active capability budget is 7');
-assert.deepStrictEqual(Object.keys(coordinatorCapabilities), COORDINATOR_CAPABILITIES);
-assert.strictEqual(JSON.stringify(coordinatorCapabilities).includes('definitionRef'), false);
-assert.strictEqual(JSON.stringify(coordinatorCapabilities).includes('batchId'), false);
 
 const casePrompt = read('prompts/case-agent.md');
 for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkpointId', 'turnId']) {
@@ -49,15 +58,12 @@ assert.match(casePrompt, /view_image/);
 assert.match(casePrompt, /七个业务能力/);
 assert.match(casePrompt, /observe.*inspect.*plan.*act.*knowledge.*recover.*finish/);
 assert.match(casePrompt, /动态值只取自当前 Brief、Scene 或响应/);
-assert.match(casePrompt, /retryWith/);
-assert.match(casePrompt, /AGENT_INPUT_STALLED/);
+assert.doesNotMatch(casePrompt, /retryWith|nextCall|technicalContext/);
 assert.match(casePrompt, /控件树为空.*不得.*页面空白/);
 assert.match(casePrompt, /权限弹窗/);
-assert.match(casePrompt, /长按中状态/);
-assert.match(casePrompt, /scene\.inspect\.action\.path/);
-assert.match(casePrompt, /框架只返回.*坐标/);
-assert.match(casePrompt, /externalAction/);
-assert.match(casePrompt, /technicalContext/);
+assert.match(casePrompt, /长按过程/);
+assert.match(casePrompt, /inspect\(channel="action"\)/);
+assert.match(casePrompt, /previousAction/);
 assert.match(casePrompt, /有效技术事实.*BLOCKED.*证据不足.*INCONCLUSIVE/);
 assert.match(casePrompt, /首选能力.*不是排他的工具边界/);
 assert.strictEqual(casePrompt.includes('Frozen CaseSpec'), false);
@@ -75,10 +81,9 @@ assert.strictEqual(isSupportedBroker({ allowedOperations: AGENT_OPERATIONS }), t
 assert.strictEqual(isSupportedBroker({ allowedOperations: ['observe', 'act', 'knowledge', 'recover', 'finish', 'status'] }), false);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeOperationContract, 'BROKER_OPERATION_SETS'), false);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeBroker, 'LEGACY_AGENT_OPERATIONS'), false);
-assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeBroker, 'V3_AGENT_OPERATIONS'), false);
 assert.strictEqual(read('scripts/case-runtime/runtime-operation-contract.js').includes('BROKER_OPERATION_SETS'), false);
 assert.strictEqual(read('scripts/coordinator/agent-facing-service.js').includes('COORDINATOR_SCHEMA_VERSION'), false);
-assert.strictEqual(read('scripts/case-runtime/agent-facing-client.js').includes('schemaVersion'), false);
+assert.match(read('scripts/case-runtime/agent-facing-client.js'), /schemaVersion !== 12/);
 assert.strictEqual(read('scripts/report/execution-trace.js').includes('legacyCoordinateAudit'), false);
 assert.strictEqual(read('scripts/report/execution-trace.js').includes('event.coordinateAudit'), false);
 assert.strictEqual(read('scripts/lib/execution-timing.js').includes('EXECUTION_LEGACY'), false);
@@ -87,7 +92,7 @@ for (const hidden of ['CLEAR_APP_DATA', 'REINSTALL_APP', 'artifactPath', 'appium
 }
 const promptRequests = [...casePrompt.matchAll(/```json\s*([\s\S]*?)```/g)].map((match) => JSON.parse(match[1]));
 assert.strictEqual(promptRequests.length, 0, 'Runtime request schemas belong in runtime.capabilities, not the prompt');
-assert.match(casePrompt, /请求文件.*一次性.*每次调用.*新建/);
+assert.match(casePrompt, /stdin.*一次提交一个 JSON 请求/);
 for (const request of promptRequests) assert.doesNotThrow(() => validateRuntimeRequest(request));
 for (const request of promptRequests) if (request.decision) assert.doesNotThrow(() => validateDecision(request.decision));
 assert.doesNotThrow(() => validateDecision({ purpose: '检查结果', expectationRefs: ['E1'] }));
@@ -113,7 +118,8 @@ assert.strictEqual(mainPrompt.includes('coordinatorCapabilities'), false);
 assert.strictEqual(mainPrompt.includes('batch bootstrap'), false);
 assert.strictEqual(mainPrompt.includes('batch start'), false);
 assert.match(mainPrompt, /主 Agent.*不读取.*Case Agent.*runtime\.capabilities/);
-assert.match(mainPrompt, /technicalContext/);
+assert.match(mainPrompt, /documentationRef/);
+assert.doesNotMatch(mainPrompt, /confirmChoices|confirmTemplate|retryWith|technicalContext\.resume/);
 assert.match(mainPrompt, /首选入口.*不是.*排他能力边界/);
 assert.strictEqual(fs.existsSync(path.join(root, 'prompts/case-definition-compiler.md')), false);
 assert.strictEqual(mainPrompt.includes('allowedDecisions'), false);
@@ -131,18 +137,15 @@ for (const name of fs.readdirSync(path.join(root, 'scripts/case-runtime')).filte
   assert.strictEqual(read(`scripts/case-runtime/${name}`).includes("require('../batch/"), false, `${name} must not depend on Batch`);
 }
 
-const runtimeClient = require('../case-runtime/runtime-client');
 const lifecycle = require('../case-runtime/lifecycle');
 const batchCore = require('../batch/core');
-assert.deepStrictEqual(Object.keys(runtimeClient).sort(), ['main', 'parseRequest', 'run']);
 assert.deepStrictEqual(Object.keys(lifecycle).sort(), ['EXECUTION_SCHEMA_VERSION', 'buildContinuationBrief', 'cancelExecution', 'commitExecution', 'createExecution', 'establishInitialState', 'readCompletion', 'reconcileExecution', 'recordAgentContinuation', 'recordTimingAnchor', 'resumeExecution']);
 assert.strictEqual(batchCore.BATCH_SCHEMA_VERSION, 8);
-assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeClient, 'createExecution'), false);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(lifecycle, 'act'), false);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(batchCore, 'recoverApp'), false);
 
 const batchCoreSource = read('scripts/batch/core.js');
-assert.ok(batchCoreSource.split(/\r?\n/).length < 100, 'Batch core must be a small compatibility facade');
+assert.ok(batchCoreSource.split(/\r?\n/).length < 100, 'Batch core must be a small phase facade');
 for (const service of [
   'initialization-service.js',
   'dispatch-service.js',
@@ -187,7 +190,15 @@ assert.strictEqual(coordinatorContract.implementationFiles.includes('prompts/cas
 assert.strictEqual(coordinatorContract.allowedEntrypoints.includes('scripts/app-artifact.js'), false);
 assert.strictEqual(coordinatorContract.implementationFiles.includes('scripts/app-artifact.js'), true);
 assert.strictEqual(coordinatorContract.requiredResources.includes('references/knowledge.md'), false);
-assert.deepStrictEqual(coordinatorContract.requiredResources, ['SKILL.md']);
+assert.deepStrictEqual(coordinatorContract.requiredResources, [
+  'SKILL.md',
+  'references/coordinator.md',
+  'references/coordinator/methods/prepare-run.md',
+  'references/coordinator/methods/confirm-run.md',
+  'references/coordinator/methods/advance-run.md',
+  'references/coordinator/methods/cancel-run.md',
+  'references/coordinator/errors.md',
+]);
 assert.strictEqual(read('references/interfaces.md').includes('## Case Runtime'), false);
 assert.strictEqual(read('references/interfaces.md').includes('runtime.requestPath'), false);
 assert.match(read('references/interfaces.md'), /scripts\/coordinator-agent\.js/);
@@ -197,11 +208,11 @@ assert.strictEqual(read('docs/architecture.md').includes('agentRequired=true + d
 assert.strictEqual(read('docs/architecture.md').includes('主 Agent 使用该 Brief'), false);
 assert.match(casePrompt, /Handoff Loader/);
 assert.match(casePrompt, /expectationRefs.*只关联.*直接推进/);
-assert.match(casePrompt, /finish.*当前 Case Model/);
+assert.match(casePrompt, /finish.*ledger.*完整性校验/);
 const implementation = implementationGroups(root, 'harmony');
 assert.strictEqual(implementation.report.includes('scripts/execution/contracts/case-definition-contract.js'), false);
 assert.strictEqual(implementation.report.includes('scripts/execution/contracts/validation-profile-contract.js'), true);
-const platformSpecific = /\b(?:codex|spawn_agent|fork_turns|provider|mcp)\b/i;
+const platformSpecific = /\b(?:codex|spawn_agent|fork_turns|provider)\b/i;
 for (const relative of new Set([...caseContract.requiredResources, ...coordinatorContract.requiredResources])) {
   assert.strictEqual(platformSpecific.test(read(relative)), false, `${relative} must remain Agent-host neutral`);
 }
@@ -216,12 +227,15 @@ fs.appendFileSync(path.join(digestRoot, 'references/knowledge.md'), '\nBehavior-
 const coordinatorAfterKnowledge = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
 assert.strictEqual(coordinatorAfterKnowledge.protocolSha, coordinatorBefore.protocolSha);
 assert.strictEqual(buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' }).protocolSha, harmonyBefore.protocolSha);
+fs.appendFileSync(path.join(digestRoot, 'references/case-runtime/methods/act.md'), '\nActionRef recovery fixture.\n');
+const caseAfterDocs = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
+assert.notStrictEqual(caseAfterDocs.protocolSha, harmonyBefore.protocolSha);
 const coordinatorInterfaceFile = path.join(digestRoot, 'scripts/coordinator/agent-facing-contract.js');
 fs.writeFileSync(coordinatorInterfaceFile, fs.readFileSync(coordinatorInterfaceFile, 'utf8')
-  .replace('开始执行一个或一批已有用例', '开始执行一个或一批已选择用例'));
+  .replace('为指定工作空间和用例创建一次 Coordinator run。', '为已选择工作空间和用例创建一次 Coordinator run。'));
 const coordinatorAfterInterface = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
 assert.notStrictEqual(coordinatorAfterInterface.protocolSha, coordinatorAfterKnowledge.protocolSha);
-assert.strictEqual(buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' }).protocolSha, harmonyBefore.protocolSha);
+assert.strictEqual(buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' }).protocolSha, caseAfterDocs.protocolSha);
 fs.appendFileSync(path.join(digestRoot, 'scripts/report/current-report.js'), '\n// renderer digest boundary fixture\n');
 const afterReport = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
 assert.strictEqual(afterReport.runtimeSha, harmonyBefore.runtimeSha);

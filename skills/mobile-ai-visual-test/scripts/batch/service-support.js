@@ -126,14 +126,13 @@ function stopBatch(paths, state, action, failureCode, reason, options = {}) {
   };
 }
 
-function protocolBindings(options, compatibilityMode) {
+function protocolBindings(options) {
   return {
     caseProtocolSha: options.caseProtocolSha,
     coordinatorProtocolSha: options.coordinatorProtocolSha,
     runtimeSha: options.runtimeSha,
     adapterSha: options.adapterSha,
     coordinatorSha: options.coordinatorSha,
-    ...(compatibilityMode ? { compatibilityMode } : {}),
   };
 }
 

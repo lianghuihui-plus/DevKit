@@ -51,13 +51,19 @@ function normalizeVerificationPoints(value, previous, events) {
   return resolved;
 }
 
-function revise(execDir, value, options = {}) {
+function prepareRevision(execDir, value) {
   const input = ensureObject(value, 'caseModel', 'CASE_MODEL_INVALID');
-  const allowed = new Set(['understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties', 'reason']);
+  const allowed = new Set(['baseRevision', 'understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties', 'reason']);
   const unsupported = Object.keys(input).filter((field) => !allowed.has(field));
   if (unsupported.length) throw contractError('CASE_MODEL_INVALID', `caseModel contains unsupported fields: ${unsupported.join(', ')}`);
   const events = history(execDir);
   const previous = events.at(-1) || null;
+  if (Object.prototype.hasOwnProperty.call(input, 'baseRevision')) {
+    const expected = previous?.revision || null;
+    if (input.baseRevision !== expected) {
+      throw contractError('CASE_MODEL_REVISION_CONFLICT', `baseRevision ${input.baseRevision} does not match current revision ${expected}`);
+    }
+  }
   if (previous && !String(input.reason || '').trim()) {
     throw contractError('CASE_MODEL_REASON_REQUIRED', 'reason is required when revising the current Case Model');
   }
@@ -66,7 +72,7 @@ function revise(execDir, value, options = {}) {
   if (!items.length) throw contractError('CASE_MODEL_INVALID', 'items must contain at least one item');
   const activeRefs = new Set(verificationPoints.map((item) => item.ref));
   const newlyRetired = (previous?.verificationPoints || []).map((item) => item.ref).filter((ref) => !activeRefs.has(ref));
-  const event = store.appendEvent(execDir, 'caseModelRevised', {
+  const event = {
     revision: events.length + 1,
     reason: previous ? String(input.reason).trim() : 'INITIAL_UNDERSTANDING',
     basedOnSceneRef: store.readCurrentScene(execDir)?.sceneId || null,
@@ -76,12 +82,41 @@ function revise(execDir, value, options = {}) {
     retiredVerificationRefs: [...new Set([...(previous?.retiredVerificationRefs || []), ...newlyRetired])],
     items,
     uncertainties: strings(input.uncertainties, 'uncertainties'),
+  };
+  return { event, previous, newlyRetired };
+}
+
+function commitRevision(execDir, prepared, options = {}) {
+  const existing = options.submissionId
+    ? history(execDir).find((item) => item.submissionId === options.submissionId)
+    : null;
+  const event = existing || store.appendEvent(execDir, 'caseModelRevised', {
+    ...prepared.event,
+    submissionId: options.submissionId || null,
   }, options);
-  return { status: 'CASE_MODEL_RECORDED', caseModel: event };
+  const previous = prepared.previous || history(execDir).filter((item) => item.sequence < event.sequence).at(-1) || null;
+  const invalidatedResultRefs = require('./expectation-result-service')
+    .invalidateForCaseModelChange(execDir, previous, event, options);
+  return {
+    status: 'CASE_MODEL_RECORDED',
+    caseModel: event,
+    caseModelChange: {
+      revision: event.revision,
+      assignedRefs: event.verificationPoints.filter((point) => !(previous?.verificationPoints || []).some((old) => old.ref === point.ref))
+        .map((point) => ({ index: event.verificationPoints.findIndex((item) => item.ref === point.ref), ref: point.ref })),
+      retiredRefs: prepared.newlyRetired || (previous?.verificationPoints || [])
+        .map((point) => point.ref).filter((ref) => !(event.verificationPoints || []).some((point) => point.ref === ref)),
+      invalidatedResultRefs,
+    },
+  };
+}
+
+function revise(execDir, value, options = {}) {
+  return commitRevision(execDir, prepareRevision(execDir, value), options);
 }
 
 function currentRevision(execDir) {
   return current(execDir)?.revision || null;
 }
 
-module.exports = { current, currentRevision, history, revise };
+module.exports = { commitRevision, current, currentRevision, history, prepareRevision, revise };

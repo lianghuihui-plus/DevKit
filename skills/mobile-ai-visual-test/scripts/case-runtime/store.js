@@ -21,14 +21,13 @@ function paths(execDir) {
     preparationDraft: path.join(root, 'transactions', 'preparation.draft.json'),
     transactions: path.join(root, 'transactions'),
     operations: path.join(root, 'operations'),
-    runtimeRequest: path.join(root, 'runtime-request.json'),
     lock: path.join(root, '.runtime.lock'),
   };
 }
 
 function loadExecution(execDir, options = {}) {
   const execution = readJson(paths(execDir).execution, null);
-  if (!execution || execution.schemaVersion !== 11 || execution.runtime !== 'case-runtime') {
+  if (!execution || execution.schemaVersion !== 12 || execution.runtime !== 'case-runtime') {
     throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
   if (!options.allowFinalized && execution.finalized === true) {

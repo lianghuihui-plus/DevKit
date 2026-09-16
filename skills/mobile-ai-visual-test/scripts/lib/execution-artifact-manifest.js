@@ -34,7 +34,7 @@ function walkFiles(root, relative = '') {
 
 function executionArtifactFiles(execDir) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 11) {
+  if (execution?.schemaVersion !== 12) {
     throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
   return walkFiles(execDir).filter((relative) => {
@@ -46,7 +46,7 @@ function executionArtifactFiles(execDir) {
 }
 
 function requiredArtifactFiles(execution) {
-  if (execution?.schemaVersion !== 11) {
+  if (execution?.schemaVersion !== 12) {
     throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
   return [...CURRENT_ROOT_FILES];

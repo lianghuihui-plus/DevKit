@@ -51,12 +51,6 @@ function inspectScene(execDir, request, options = {}) {
       if (filter.role && element.role !== filter.role) return false;
       return true;
     });
-  } else if (request.view === 'CAPABILITIES') {
-    items = (scene.capabilities || []).filter((capability) => {
-      if (filter.actionType && capability.kind !== filter.actionType) return false;
-      if (filter.elementRef && capability.target !== filter.elementRef) return false;
-      return true;
-    });
   } else {
     layout = scene.layout;
   }

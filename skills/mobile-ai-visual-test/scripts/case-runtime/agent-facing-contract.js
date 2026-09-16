@@ -4,6 +4,7 @@ const { validateAgentJson } = require('../lib/agent-json-contract');
 const { initialStateStrategy } = require('../lib/app-provisioning');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
+const AGENT_FACING_PROTOCOL = 'agent-facing';
 const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'inspect', 'plan', 'act', 'knowledge', 'recover', 'finish']);
 const STRING = { type: 'string', minLength: 1 };
 const STRING_ARRAY = { type: 'array', items: STRING };
@@ -32,52 +33,203 @@ const ASSESSMENT = object({
 
 const EXTERNAL_ACTION = object({ summary: STRING, tool: STRING }, ['summary']);
 
-const CHECK = object({
+const VERIFICATION_POINT = object({ ref: STRING, text: STRING }, ['text']);
+const CASE_MODEL_UPDATE = object({
+  baseRevision: { oneOf: [{ type: 'integer', minimum: 1 }, { const: null }] },
+  understanding: STRING,
+  preconditions: STRING_ARRAY,
+  verificationPoints: { type: 'array', minItems: 1, items: VERIFICATION_POINT },
+  items: { type: 'array', minItems: 1, items: STRING },
+  uncertainties: STRING_ARRAY,
+  reason: STRING,
+}, ['baseRevision', 'understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties']);
+const VISUAL_OBSERVATION = object({ observation: STRING, expectationRefs: STRING_ARRAY }, ['observation']);
+const RESULT_EVIDENCE = object({
+  sceneRefs: STRING_ARRAY,
+  knowledgeRefs: STRING_ARRAY,
+  technicalRefs: STRING_ARRAY,
+  searchAbsence: object({ sceneRef: STRING, scrollContextRef: STRING }, ['sceneRef', 'scrollContextRef']),
+}, []);
+const EXPECTATION_RESULT = object({
   expectationRef: STRING,
   status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'] },
   actual: STRING,
-  evidence: STRING_ARRAY,
-  knowledgeRefs: STRING_ARRAY,
-  technicalRefs: STRING_ARRAY,
-  evidenceBasis: object({ type: { const: 'SEARCH_ABSENCE' }, sceneRef: STRING, scrollContextRef: STRING }, ['type', 'sceneRef', 'scrollContextRef']),
+  evidence: RESULT_EVIDENCE,
 }, ['expectationRef', 'status', 'actual']);
-
-const VERIFICATION_POINT = object({ ref: STRING, text: STRING }, ['text']);
+const DECISION_UPDATES = object({
+  caseModel: CASE_MODEL_UPDATE,
+  visual: VISUAL_OBSERVATION,
+  expectationResults: { type: 'array', minItems: 1, items: EXPECTATION_RESULT },
+}, []);
 
 const SCHEMAS = Object.freeze({
-  observe: object({ capability: { const: 'observe' }, purpose: STRING, expectationRefs: STRING_ARRAY }, ['capability']),
+  observe: object({
+    capability: { const: 'observe' }, basedOnSceneRef: STRING, purpose: STRING,
+    expectationRefs: STRING_ARRAY, updates: DECISION_UPDATES,
+  }, ['capability']),
   inspect: object({
-    capability: { const: 'inspect' }, channel: { enum: ['visual', 'action', 'elements', 'capabilities', 'layout'] },
+    capability: { const: 'inspect' }, basedOnSceneRef: STRING,
+    channel: { enum: ['visual', 'action', 'elements', 'layout'] },
     observation: STRING, expectationRefs: STRING_ARRAY,
-    filter: object({ interactiveOnly: { type: 'boolean' }, textContains: STRING, role: STRING, actionType: STRING, elementRef: STRING }, []),
-  }, ['capability', 'channel']),
-  plan: object({
-    capability: { const: 'plan' },
-    understanding: STRING,
-    preconditions: STRING_ARRAY,
-    verificationPoints: { type: 'array', minItems: 1, items: VERIFICATION_POINT },
-    items: { type: 'array', minItems: 1, items: STRING },
-    uncertainties: STRING_ARRAY,
-    reason: STRING,
-  }, ['capability', 'understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties']),
-  act: object({ capability: { const: 'act' }, actionRef: STRING, input: INPUT, purpose: STRING, expectationRefs: STRING_ARRAY }, ['capability', 'actionRef', 'purpose']),
-  knowledgeQuery: object({ capability: { const: 'knowledge' }, query: STRING, expectationRefs: STRING_ARRAY }, ['capability', 'query']),
+    filter: object({ interactiveOnly: { type: 'boolean' }, textContains: STRING, role: STRING }, []),
+  }, ['capability', 'basedOnSceneRef', 'channel']),
+  plan: object({ capability: { const: 'plan' }, caseModel: CASE_MODEL_UPDATE }, ['capability', 'caseModel']),
+  act: object({
+    capability: { const: 'act' }, basedOnSceneRef: STRING, actionRef: STRING,
+    input: INPUT, purpose: STRING, expectationRefs: STRING_ARRAY, updates: DECISION_UPDATES,
+  }, ['capability', 'basedOnSceneRef', 'actionRef', 'purpose']),
+  knowledgeQuery: object({
+    capability: { const: 'knowledge' }, basedOnSceneRef: STRING, query: STRING, expectationRefs: STRING_ARRAY,
+  }, ['capability', 'basedOnSceneRef', 'query']),
   knowledgeReview: object({
-    capability: { const: 'knowledge' }, queryId: STRING,
+    capability: { const: 'knowledge' }, basedOnSceneRef: STRING, queryId: STRING,
     conclusion: { enum: ['APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT'] },
     assessments: { type: 'array', items: ASSESSMENT },
-  }, ['capability', 'queryId', 'conclusion', 'assessments']),
+  }, ['capability', 'basedOnSceneRef', 'queryId', 'conclusion', 'assessments']),
   recover: object({
-    capability: { const: 'recover' }, reason: STRING,
+    capability: { const: 'recover' }, basedOnSceneRef: STRING, reason: STRING,
     targetState: { enum: ['APP_LOCAL_STATE_EMPTY', 'FRESH_INSTALL'] },
     externalAction: EXTERNAL_ACTION,
   }, ['capability', 'reason']),
-  finish: object({ capability: { const: 'finish' }, summary: STRING, checks: { type: 'array', minItems: 1, items: CHECK }, uncertainties: STRING_ARRAY }, ['capability', 'summary', 'checks']),
+  finish: object({
+    capability: { const: 'finish' }, basedOnSceneRef: STRING, summary: STRING,
+    uncertainties: STRING_ARRAY,
+    updates: object({ visual: VISUAL_OBSERVATION, expectationResults: { type: 'array', minItems: 1, items: EXPECTATION_RESULT } }, []),
+  }, ['capability', 'summary']),
 });
+
+const PUBLIC_ERRORS = Object.freeze({
+  AGENT_INPUT_INVALID: { retryable: true, summary: '请求结构、类型或条件字段不合法。' },
+  AGENT_INPUT_STALLED: { retryable: false, summary: '同类输入错误连续发生，停止自动猜测。' },
+  PROTOCOL_MISMATCH: { retryable: false, summary: 'Prompt、文档、客户端或 execution 协议不一致。' },
+  BINDING_INVALID: { retryable: false, summary: 'Execution 或 dispatch 绑定无效。' },
+  SCENE_REQUIRED: { retryable: true, summary: '当前方法需要 Scene，但 execution 尚无 Scene。' },
+  SCENE_CHANGED: { retryable: true, summary: '动作所依据的 Scene 已不是当前 Scene。' },
+  ACTION_NOT_AVAILABLE: { retryable: true, summary: 'ActionRef 对当前 Scene 不成立。' },
+  ACTION_INPUT_INVALID: { retryable: true, summary: '动作输入缺失、越界或包含不支持字段。' },
+  VISUAL_INSPECTION_REQUIRED: { retryable: true, summary: '当前视觉动作或结论要求先登记图片事实。' },
+  CASE_MODEL_REQUIRED: { retryable: true, summary: '当前 execution 尚无 Case Model。' },
+  CASE_MODEL_REVISION_CONFLICT: { retryable: true, summary: 'Case Model baseRevision 不是当前 revision。' },
+  EXPECTATION_UNKNOWN: { retryable: true, summary: 'ExpectationRef 不属于当前 ACTIVE 模型。' },
+  EVIDENCE_REFERENCE_INVALID: { retryable: true, summary: 'Scene、知识、技术或滚动证据引用无效。' },
+  KNOWLEDGE_QUERY_UNKNOWN: { retryable: true, summary: '知识 queryId 不存在或不属于当前 execution。' },
+  KNOWLEDGE_REVIEW_INVALID: { retryable: true, summary: '知识候选复核不满足当前 query 约束。' },
+  APP_INITIAL_STATE_UNAVAILABLE: { retryable: true, summary: '授权的初始状态准备未完成。' },
+  ACTION_OUTCOME_UNKNOWN: { retryable: false, summary: '动作可能已经投递，禁止自动重放。' },
+  CASE_RESULT_INCOMPLETE: { retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。' },
+  TIME_LIMIT: { retryable: false, summary: '已停止新的设备动作。' },
+  CASE_RUNTIME_TECHNICAL: { retryable: false, summary: '未归类的 execution 技术异常。' },
+});
+
+function method(name, summary, requestSchema, parameterDescriptions, options = {}) {
+  return Object.freeze({
+    name,
+    summary,
+    requestSchema,
+    parameterDescriptions,
+    conditionalRequirements: options.conditionalRequirements || [],
+    contextualValidationRules: options.contextualValidationRules || [],
+    successStatuses: options.successStatuses || [],
+    errorCodes: options.errorCodes || ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_RUNTIME_TECHNICAL'],
+    sideEffects: options.sideEffects || [],
+    idempotency: options.idempotency || 'Read-only.',
+    minimalExample: options.minimalExample,
+  });
+}
+
+const PUBLIC_METHODS = Object.freeze({
+  observe: method('observe', '采集一个新 Scene，不执行业务动作。', SCHEMAS.observe, {
+    capability: '固定为 observe', basedOnSceneRef: '更新所依据的 Scene', purpose: '本次观察目的',
+    expectationRefs: '本次决策直接推进的验证点', updates: '随观察提交的已形成判断',
+  }, {
+    conditionalRequirements: ['已有 Scene 且携带 updates 时必须提供 basedOnSceneRef。'],
+    contextualValidationRules: ['updates 绑定旧 Scene，新 Scene 在更新落盘后采集。'],
+    successStatuses: ['READY'], sideEffects: ['保存有效 updates', '采集一个新 Scene'],
+    idempotency: 'Updates 按 submission 幂等；恢复时复用已关联的新 Scene。', minimalExample: { capability: 'observe' },
+  }),
+  inspect: method('inspect', '登记视觉事实，或按需读取 elements 或 layout。', SCHEMAS.inspect, {
+    capability: '固定为 inspect', basedOnSceneRef: '被检查的 Scene', channel: '检查通道',
+    observation: 'visual/action 通道看到的事实', expectationRefs: '相关验证点', filter: 'elements 过滤器',
+  }, {
+    conditionalRequirements: ['visual/action 必须提供 observation。'],
+    contextualValidationRules: ['历史 Scene 可登记事实；读取通道只返回所请求投影。'],
+    successStatuses: ['VISUAL_INSPECTED', 'ACTION_SPATIAL_INSPECTED', 'SCENE_INSPECTION'],
+    sideEffects: ['visual/action 追加事实事件'], idempotency: '相同 submission 不重复追加事实。',
+    minimalExample: { capability: 'inspect', basedOnSceneRef: 'scene-1', channel: 'elements' },
+  }),
+  plan: method('plan', '单独创建或修订 Case Model。', SCHEMAS.plan, {
+    capability: '固定为 plan', caseModel: '完整 Case Model 快照',
+  }, {
+    conditionalRequirements: ['首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。'],
+    contextualValidationRules: ['继续存在的验证点保留 ref；新验证点省略 ref。'],
+    successStatuses: ['CASE_MODEL_RECORDED'], sideEffects: ['追加 Case Model revision'],
+    idempotency: '相同 submission 只写一次 revision。',
+    minimalExample: { capability: 'plan', caseModel: { baseRevision: null, understanding: '验证目标', preconditions: [], verificationPoints: [{ text: '结果可见' }], items: ['观察并验证'], uncertainties: [] } },
+  }),
+  act: method('act', '基于当前 Scene 执行一个 ActionRef，并采集新 Scene。', SCHEMAS.act, {
+    capability: '固定为 act', basedOnSceneRef: '当前 Scene', actionRef: '控件、屏幕或视觉动作引用',
+    purpose: '业务动作目的', input: '动作类型对应输入', expectationRefs: '直接推进的验证点', updates: '随动作提交的已形成判断',
+  }, {
+    conditionalRequirements: ['actionRef 对应动作所需 input 字段必须存在。'],
+    contextualValidationRules: ['updates 先落盘；ActionRef、动态输入或 Scene 无效时只拒绝 effect。'],
+    successStatuses: ['READY'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'ACTION_NOT_AVAILABLE', 'ACTION_INPUT_INVALID', 'VISUAL_INSPECTION_REQUIRED', 'ACTION_OUTCOME_UNKNOWN', 'CASE_RUNTIME_TECHNICAL'],
+    sideEffects: ['保存有效 updates', '最多投递一个设备动作', '采集新 Scene'],
+    idempotency: '已投递且结果未知的动作永不重放。',
+    minimalExample: { capability: 'act', basedOnSceneRef: 'scene-1', actionRef: 'button-1:tap', purpose: '继续' },
+  }),
+  knowledge: method('knowledge', '查询知识，或登记指定 query 的候选复核结果。', { oneOf: [SCHEMAS.knowledgeQuery, SCHEMAS.knowledgeReview] }, {
+    capability: '固定为 knowledge', basedOnSceneRef: '当前 Scene', query: '待调查问题', queryId: '已有查询引用',
+    expectationRefs: '相关验证点', conclusion: '候选复核结论', assessments: '逐候选适用性判断',
+  }, {
+    conditionalRequirements: ['query 与 queryId 两种模式互斥。'],
+    contextualValidationRules: ['复核必须覆盖当前 query 候选约束。'],
+    successStatuses: ['KNOWLEDGE', 'KNOWLEDGE_REVIEWED'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_REQUIRED', 'KNOWLEDGE_QUERY_UNKNOWN', 'KNOWLEDGE_REVIEW_INVALID', 'CASE_RUNTIME_TECHNICAL'],
+    sideEffects: ['保存查询或复核事件'], idempotency: '重复 queryId 复核按内部事件规则处理。',
+    minimalExample: { capability: 'knowledge', basedOnSceneRef: 'scene-1', query: '解释当前异常' },
+  }),
+  recover: method('recover', '建立授权的 App 初始状态、重启恢复或登记框架外事实。', SCHEMAS.recover, {
+    capability: '固定为 recover', basedOnSceneRef: '重启恢复所依据的 Scene', reason: '恢复原因',
+    targetState: '授权的目标 App 状态', externalAction: '已实际完成的框架外事实',
+  }, {
+    conditionalRequirements: ['targetState 与 externalAction 互斥。'],
+    contextualValidationRules: ['有当前 Scene 的重启恢复必须绑定当前 Scene。'],
+    successStatuses: ['READY', 'RECOVERY_APPLIED', 'EXTERNAL_ACTION_RECORDED'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'APP_INITIAL_STATE_UNAVAILABLE', 'CASE_RUNTIME_TECHNICAL'],
+    sideEffects: ['执行授权恢复或保存外部事实'], idempotency: '由现有恢复事务保证。',
+    minimalExample: { capability: 'recover', reason: '目标 App 无法继续交互' },
+  }),
+  finish: method('finish', '从 expectation ledger 收口并完成用例。', SCHEMAS.finish, {
+    capability: '固定为 finish', basedOnSceneRef: '最后视觉事实所依据的 Scene', summary: '最终摘要',
+    uncertainties: '仍需披露的不确定性', updates: '最后一批视觉事实和验证点结果',
+  }, {
+    conditionalRequirements: ['updates.visual 存在时 basedOnSceneRef 必填。'],
+    contextualValidationRules: ['不接收全量 checks；Runtime 从 ledger 组装并执行完整性校验。'],
+    successStatuses: ['COMPLETED', 'RESULT_INCOMPLETE'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_MODEL_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_RUNTIME_TECHNICAL'],
+    sideEffects: ['保存最后 updates', '就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',
+    minimalExample: { capability: 'finish', summary: '验证完成' },
+  }),
+});
+
+const PUBLIC_CONTRACT = Object.freeze({
+  interfaceKind: AGENT_FACING_INTERFACE_KIND,
+  protocol: AGENT_FACING_PROTOCOL,
+  methods: PUBLIC_METHODS,
+  errors: PUBLIC_ERRORS,
+});
+
+function documentationRefFor(code) {
+  const normalized = String(code || 'CASE_RUNTIME_TECHNICAL').replace(/_/g, '-').toLowerCase();
+  return `references/case-runtime/errors.md#error-${normalized}`;
+}
 
 function schemaFor(request) {
   if (request?.capability === 'knowledge') return request.queryId !== undefined ? SCHEMAS.knowledgeReview : SCHEMAS.knowledgeQuery;
-  return SCHEMAS[request?.capability] || object({ capability: { enum: AGENT_FACING_CAPABILITIES } }, ['capability']);
+  if (request?.capability === 'recover') return SCHEMAS.recover;
+  return SCHEMAS[request?.capability]
+    || object({ capability: { enum: AGENT_FACING_CAPABILITIES } }, ['capability']);
 }
 
 function messageFor(issue) {
@@ -94,86 +246,30 @@ function validateAgentFacingRequest(request) {
   }));
 }
 
-function actionRefFor(capability) {
-  return `${capability.target || 'screen'}:${capability.kind}`;
-}
-
-function actionExample(capability) {
-  const example = {
-    capability: 'act',
-    actionRef: actionRefFor(capability),
-    purpose: capability.label || '执行当前页面动作',
-    expectationRefs: [],
-  };
-  if (capability.kind === 'longPress') example.input = { durationMs: 1200 };
-  else if (capability.kind === 'inputText') example.input = { text: '测试文本', mode: 'replace' };
-  else if (capability.kind === 'wait') example.input = { ms: 1000 };
-  return example;
-}
-
-function visualActionExamples(scene) {
-  const gestures = new Set(scene?.visual?.gestures || []);
-  const values = [];
-  if (gestures.has('tap')) values.push({ actionRef: 'visual:tap', label: '点击截图中的目标', requiredInput: ['point'], example: { capability: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] }, purpose: '点击截图中的目标', expectationRefs: [] } });
-  if (gestures.has('doubleTap')) values.push({ actionRef: 'visual:doubleTap', label: '双击截图中的目标', requiredInput: ['point'], example: { capability: 'act', actionRef: 'visual:doubleTap', input: { point: [0.5, 0.5] }, purpose: '双击截图中的目标', expectationRefs: [] } });
-  if (gestures.has('longPress')) values.push({ actionRef: 'visual:longPress', label: '长按截图中的目标', requiredInput: ['point', 'durationMs'], example: { capability: 'act', actionRef: 'visual:longPress', input: { point: [0.5, 0.5], durationMs: 1200, duringActionAtMs: 600 }, purpose: '长按截图中的目标并检查过程状态', expectationRefs: [] } });
-  if (gestures.has('swipe')) values.push({ actionRef: 'visual:swipe', label: '在截图上滑动', requiredInput: ['from', 'to'], example: { capability: 'act', actionRef: 'visual:swipe', input: { from: [0.5, 0.75], to: [0.5, 0.25] }, purpose: '在截图上滑动', expectationRefs: [] } });
-  return values;
-}
-
-function projectActions(scene) {
-  const capabilities = (scene?.capabilities || []).map((capability) => ({
-    actionRef: actionRefFor(capability),
-    label: capability.label,
-    requiredInput: capability.kind === 'longPress' ? ['durationMs']
-      : capability.kind === 'inputText' ? ['text'] : capability.kind === 'wait' ? ['ms'] : [],
-    example: actionExample(capability),
-  }));
-  return [...capabilities, ...visualActionExamples(scene)];
-}
-
-function finishTemplate(caseModel) {
-  return {
-    capability: 'finish',
-    summary: '简要说明本用例的最终结果',
-    checks: (caseModel?.verificationPoints || []).map((item) => ({
-      expectationRef: item.ref,
-      status: 'INCONCLUSIVE',
-      actual: '说明该验证点的实际结果',
-      evidence: ['current'],
-    })),
-    uncertainties: [],
-  };
-}
-
 function screenComparison(effect) {
-  const status = effect?.status === 'CHANGED' ? 'DIFFERENT'
+  return effect?.status === 'CHANGED' ? 'DIFFERENT'
     : effect?.status === 'UNCHANGED' ? 'IDENTICAL' : 'UNAVAILABLE';
-  return {
-    status,
-    beforeSceneRef: effect?.beforeSceneRef || null,
-    afterSceneRef: effect?.afterSceneRef || null,
-  };
 }
 
-function projectPreviousAction(previousAction, caseModel) {
+function projectPreviousAction(previousAction) {
   if (!previousAction) return null;
-  const { observedEffect, ...facts } = previousAction;
-  const spatialEvidence = facts.spatialEvidence ? {
-    ...facts.spatialEvidence,
-    inspect: {
-      example: {
-        capability: 'inspect',
-        channel: 'action',
-        observation: '描述标注图中实际看到的落点或轨迹事实',
-        expectationRefs: (caseModel?.verificationPoints || []).map((item) => item.ref),
-      },
-    },
-  } : null;
+  const unknown = previousAction.outcomeKnown === false
+    || previousAction.status === 'ACTION_OUTCOME_UNKNOWN'
+    || previousAction.deliveryStatus === 'UNKNOWN';
+  const commandStatus = previousAction.command?.status;
+  const deliveryStatus = unknown ? 'UNKNOWN'
+    : commandStatus === 'REJECTED' ? 'NOT_SENT'
+      : previousAction.observedEffect || commandStatus === 'ACCEPTED' ? 'RESULT_RECORDED'
+        : previousAction.deliveryStatus || 'UNKNOWN';
+  const annotatedScreenshotPath = previousAction.spatialEvidence?.annotatedScreenshot?.path
+    || previousAction.spatialEvidence?.annotatedScreenshotPath;
   return {
-    ...facts,
-    screenComparison: screenComparison(observedEffect),
-    ...(spatialEvidence ? { spatialEvidence } : {}),
+    operationRef: previousAction.operationRef || previousAction.operationId,
+    type: previousAction.action?.type || previousAction.type || 'unknown',
+    deliveryStatus,
+    outcomeKnown: deliveryStatus !== 'UNKNOWN',
+    screenComparison: screenComparison(previousAction.observedEffect),
+    ...(annotatedScreenshotPath ? { spatialEvidence: { available: true, annotatedScreenshotPath } } : {}),
   };
 }
 
@@ -204,134 +300,65 @@ function projectInitialState(execution, preparation = null) {
   };
 }
 
-function recoverModes(initialState = null) {
-  const available = new Map((initialState?.availablePreparation || [])
-    .map((item) => [item.targetState, item]));
-  const stateMode = (mode, targetState, useWhen, reason) => ({
-    mode,
-    useWhen,
-    authorized: available.get(targetState)?.authorized ?? null,
-    ...(available.get(targetState)?.platformEffect
-      ? { platformEffect: available.get(targetState).platformEffect } : {}),
-    example: { capability: 'recover', reason, targetState },
-  });
-  return [
-    stateMode('ESTABLISH_APP_LOCAL_STATE', 'APP_LOCAL_STATE_EMPTY',
-      '用例要求目标 App 不保留既有本地状态', '用例前置条件要求目标 App 本地状态为空'),
-    stateMode('ESTABLISH_FRESH_INSTALL', 'FRESH_INSTALL',
-      '用例要求首次安装或等价首次启动状态', '用例前置条件要求首次安装状态'),
-    {
-      mode: 'RESTART_APP',
-      useWhen: '目标 App 卡死、失去响应或需要冷启动恢复',
-      example: { capability: 'recover', reason: '目标 App 无法继续交互，需要冷启动恢复' },
-    },
-    {
-      mode: 'RECORD_EXTERNAL_ACTION',
-      useWhen: '框架外技术处置已经实际完成，需要登记客观事实',
-      example: {
-        capability: 'recover',
-        reason: '登记已完成的框架外技术处置',
-        externalAction: { summary: '说明已经实际完成的技术处置及结果', tool: '说明使用的工具' },
-      },
-    },
-  ];
-}
-
-function capabilityCards({ scene = null, caseModel = null, initialState = null } = {}) {
-  const firstAction = projectActions(scene)[0]?.example || {
-    capability: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] }, purpose: '点击截图中的目标', expectationRefs: [],
-  };
-  const finish = finishTemplate(caseModel);
-  if (!finish.checks.length) {
-    finish.checks.push({ expectationRef: 'E1', status: 'INCONCLUSIVE', actual: '说明该验证点的实际结果', evidence: ['current'] });
-  }
-  return {
-    observe: { useWhen: '没有 Scene，或页面可能已在外部发生变化', required: [], optional: ['purpose', 'expectationRefs'], source: {}, example: { capability: 'observe' }, returns: ['SCENE'] },
-    inspect: { useWhen: '需要查看控件树、完整布局、当前截图，或上一动作的落点标注图', required: ['channel'], optional: ['filter', 'observation', 'expectationRefs'], source: { channel: '当前调查意图' }, example: { capability: 'inspect', channel: 'elements' }, returns: ['SCENE_INSPECTION', 'VISUAL_INSPECTED', 'ACTION_SPATIAL_INSPECTED'] },
-    plan: {
-      useWhen: '形成或调整本次用例理解、前置条件、验证点和执行计划；第二版起填写 reason',
-      required: ['understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties'],
-      optional: ['reason'],
-      source: {},
-      example: {
-        capability: 'plan',
-        understanding: '说明本次用例要验证的业务目标',
-        preconditions: [],
-        verificationPoints: [{ text: '说明一个可验证的实际结果' }],
-        items: ['观察当前页面', '执行必要操作', '验证实际结果'],
-        uncertainties: [],
-      },
-      returns: ['CASE_MODEL_RECORDED'],
-    },
-    act: { useWhen: '当前 Scene 提供了可执行动作', required: ['actionRef', 'purpose'], optional: ['input', 'expectationRefs'], source: { actionRef: 'scene.actions[].actionRef', input: '对应 action 的 requiredInput/example' }, example: firstAction, returns: ['SCENE', 'SCENE_CHANGED'] },
-    knowledge: { useWhen: '现场异常、无法解释、无法决定下一步，或负向结论需要知识支撑', required: ['query'], optional: ['expectationRefs'], source: { queryId: '知识查询响应的 nextCall.example' }, example: { capability: 'knowledge', query: '描述当前无法解释的问题', expectationRefs: [] }, returns: ['KNOWLEDGE', 'KNOWLEDGE_REVIEWED'] },
-    recover: {
-      useWhen: '需要建立用例前置 App 状态、冷启动恢复，或登记框架外技术处置；从 modes 选择对应的完整 example',
-      required: ['reason'],
-      optional: ['targetState', 'externalAction'],
-      source: {
-        targetState: 'initialState.availablePreparation 中 authorized=true 的 targetState',
-        externalAction: '仅登记已经实际完成的框架外技术处置',
-      },
-      example: { capability: 'recover', reason: '目标 App 无法继续交互，需要冷启动恢复' },
-      modes: recoverModes(initialState),
-      returns: ['SCENE', 'RECOVERY_APPLIED', 'EXTERNAL_ACTION_RECORDED'],
-    },
-    finish: { useWhen: '已形成本次用例理解与计划，且证据足够形成结论或已无法安全继续', required: ['summary', 'checks'], optional: ['uncertainties'], source: { checks: '当前 Case Model 的 ACTIVE 验证点' }, example: finish, returns: ['COMPLETED', 'RESULT_INCOMPLETE'] },
-  };
-}
-
 function projectScene(scene, { caseModel = null } = {}) {
   if (!scene) return null;
+  const interactive = (scene.elements || []).filter((element) => element.visible !== false
+    && element.enabled !== false && Array.isArray(element.bounds)
+    && (element.clickable || element.checkable || element.editable));
+  const controls = interactive.slice(0, 24).map((element) => ({
+    ref: element.id,
+    ...(element.text ? { text: element.text } : {}),
+    ...(element.role ? { role: element.role } : {}),
+    bounds: element.bounds.map(Number),
+    clickable: element.clickable === true,
+    checkable: element.checkable === true,
+    editable: element.editable === true,
+    ...(element.focused === true ? { focused: true } : {}),
+  }));
+  const verticalScroll = (scene.scrollContexts || []).some((item) => item.axis === 'VERTICAL'
+    && item.trackingStatus === 'TRACKING');
+  const horizontalScroll = (scene.scrollContexts || []).some((item) => item.axis === 'HORIZONTAL'
+    && item.trackingStatus === 'TRACKING');
+  const focusedElement = interactive.find((element) => element.focused)
+    || (scene.signals?.focusedElement && interactive.find((element) => element.id === scene.signals.focusedElement));
+  const inForeground = scene.app?.inTargetApp !== false;
+  const signals = scene.signals && Object.keys(scene.signals).length ? scene.signals : null;
+  const conflicts = (scene.conflicts || []).length ? scene.conflicts : null;
   return {
     sceneRef: scene.sceneId,
     capturedAt: scene.capturedAt,
-    screenshot: scene.screenshot,
-    evidence: {
-      visual: {
-        available: scene.evidenceChannels?.visual?.available === true,
-        tool: 'view_image',
-        path: scene.screenshot?.path || null,
-      },
-      layout: {
-        available: scene.evidenceChannels?.layout?.available === true,
-        capability: 'inspect',
-        channels: ['elements', 'capabilities', 'layout'],
-      },
-      policy: scene.evidenceChannels?.policy || null,
-      conflictRule: scene.evidenceChannels?.conflictRule || null,
+    screenshot: {
+      ref: scene.screenshot?.ref,
+      path: scene.screenshot?.path,
+      width: scene.screenshot?.width,
+      height: scene.screenshot?.height,
     },
-    app: scene.app,
-    signals: scene.signals,
-    conflicts: scene.conflicts || [],
-    previousAction: projectPreviousAction(scene.previousAction, caseModel),
-    actions: projectActions(scene),
-    inspect: {
-      visual: { tool: 'view_image', path: scene.screenshot?.path || null, example: { capability: 'inspect', channel: 'visual', observation: '描述截图中实际看到的事实', expectationRefs: [] } },
-      ...(scene.previousAction?.spatialEvidence ? { action: {
-        tool: 'view_image',
-        path: scene.previousAction.spatialEvidence.annotatedScreenshot?.path || null,
-        example: projectPreviousAction(scene.previousAction, caseModel).spatialEvidence.inspect.example,
-      } } : {}),
-      elements: { example: { capability: 'inspect', channel: 'elements' } },
-      capabilities: { example: { capability: 'inspect', channel: 'capabilities' } },
-      layout: { example: { capability: 'inspect', channel: 'layout' } },
+    targetApp: {
+      inForeground,
+      ...(!inForeground ? { actualApp: scene.app?.appId || scene.app?.bundleId || scene.app?.packageName } : {}),
     },
-    caseModel,
-    plan: { example: capabilityCards({ scene, caseModel }).plan.example },
-    finish: { example: finishTemplate(caseModel) },
+    controls: { total: interactive.length, truncated: interactive.length > 24, items: controls },
+    interactionContext: {
+      verticalScroll,
+      horizontalScroll,
+      ...(focusedElement ? { focusedElementRef: focusedElement.id } : {}),
+      keyboardShown: scene.signals?.keyboard?.shown === true,
+      visualGestures: [...(scene.visual?.gestures || [])],
+    },
+    ...(signals ? { signals } : {}),
+    ...(conflicts ? { conflicts } : {}),
+    ...(scene.previousAction ? { previousAction: projectPreviousAction(scene.previousAction) } : {}),
   };
 }
 
 module.exports = {
   AGENT_FACING_INTERFACE_KIND,
+  AGENT_FACING_PROTOCOL,
   AGENT_FACING_CAPABILITIES,
-  actionRefFor,
-  capabilityCards,
-  finishTemplate,
+  PUBLIC_CONTRACT,
+  documentationRefFor,
   projectInitialState,
   projectPreviousAction,
-  projectActions,
   projectScene,
   validateAgentFacingRequest,
 };

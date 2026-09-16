@@ -1,18 +1,15 @@
 'use strict';
 
 const { validateRuntimeRequest } = require('./contract');
-const { aggregateVerdict } = require('./result-integrity');
 const store = require('./store');
-const { attachTechnicalContext } = require('../lib/technical-context');
 const {
-  actionRefFor,
-  capabilityCards,
-  finishTemplate,
-  projectActions,
+  AGENT_FACING_PROTOCOL,
   projectPreviousAction,
   projectScene,
   validateAgentFacingRequest,
+  documentationRefFor,
 } = require('./agent-facing-contract');
+const { resolveActionRef } = require('./capability-catalog');
 
 function inputError(issues) {
   const error = new Error('Agent-facing request is invalid');
@@ -43,6 +40,17 @@ function currentScene(execDir) {
   return store.readCurrentScene(execDir);
 }
 
+function executionPlatform(execDir) {
+  return store.loadExecution(execDir, { allowFinalized: true }).platform;
+}
+
+function sceneByRef(execDir, sceneRef) {
+  if (!sceneRef) return currentScene(execDir);
+  return require('../lib/execution-lifecycle').readJson(
+    require('path').join(store.paths(execDir).scenes, `${sceneRef}.json`), null,
+  );
+}
+
 function currentPlan(execDir) {
   const model = caseModel(execDir);
   return model ? { version: model.revision, reason: model.reason, items: model.items } : null;
@@ -50,6 +58,9 @@ function currentPlan(execDir) {
 
 function contextualIssues(execDir, request, scene) {
   const issues = [];
+  if (request.capability === 'observe' && request.updates && currentScene(execDir) && !request.basedOnSceneRef) {
+    issues.push(issue('basedOnSceneRef', '已有 Scene 时携带 updates 必须绑定其事实来源', 'SCENE_REQUIRED'));
+  }
   if ((['inspect', 'act', 'knowledge'].includes(request.capability)
     || (request.capability === 'recover' && !request.targetState && !request.externalAction)) && !scene) {
     issues.push(issue('capability', '当前没有 Scene，请先使用 observe', 'SCENE_REQUIRED'));
@@ -58,7 +69,8 @@ function contextualIssues(execDir, request, scene) {
     issues.push(issue('capability', '结束前必须先使用 plan 形成本次用例理解、验证点和计划', 'CASE_MODEL_REQUIRED'));
   }
   if (request.capability === 'plan' && currentPlan(execDir) && !request.reason) {
-    issues.push(issue('reason', '更新执行计划时必须说明路径变化原因', 'REQUIRED'));
+    const reason = request.caseModel?.reason || request.reason;
+    if (!reason) issues.push(issue(request.caseModel ? 'caseModel.reason' : 'reason', '更新执行计划时必须说明路径变化原因', 'REQUIRED'));
   }
   issues.push(...validateExpectationRefs(execDir, request.expectationRefs));
   if (request.capability === 'inspect') {
@@ -71,17 +83,37 @@ function contextualIssues(execDir, request, scene) {
     if (request.channel === 'action' && !scene?.previousAction?.spatialEvidence) {
       issues.push(issue('channel', '当前 Scene 没有可检查的上一动作落点标注图', 'ACTION_SPATIAL_EVIDENCE_REQUIRED'));
     }
-    const allowedFilters = request.channel === 'elements' ? ['interactiveOnly', 'textContains', 'role']
-      : request.channel === 'capabilities' ? ['actionType', 'elementRef'] : [];
+    const allowedFilters = request.channel === 'elements' ? ['interactiveOnly', 'textContains', 'role'] : [];
     for (const field of Object.keys(request.filter || {})) {
       if (!allowedFilters.includes(field)) issues.push(issue(`filter.${field}`, `${request.channel} 检查不支持该过滤字段`, 'FIELD_UNSUPPORTED'));
     }
   }
   if (request.capability === 'act' && scene) {
-    const action = projectActions(scene).find((item) => item.actionRef === request.actionRef);
-    if (!action) issues.push(issue('actionRef', '请使用当前 scene.actions 中的 actionRef', 'ACTION_UNKNOWN'));
+    if (request.basedOnSceneRef && request.basedOnSceneRef !== scene.sceneId) {
+      issues.push(issue('basedOnSceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
+      return issues;
+    }
+    let internalCapability = null;
+    if (!request.actionRef?.startsWith('visual:')) {
+      try {
+        internalCapability = resolveActionRef(scene, request.actionRef, executionPlatform(execDir));
+      } catch (error) {
+        if (error.code !== 'ACTION_REF_INVALID') throw error;
+      }
+    }
+    const visualGesture = request.actionRef?.startsWith('visual:')
+      ? request.actionRef.slice('visual:'.length) : null;
+    const action = visualGesture && (scene.visual?.gestures || []).includes(visualGesture)
+      ? { requiredInput: visualGesture === 'swipe' ? ['from', 'to']
+        : visualGesture === 'longPress' ? ['point', 'durationMs'] : ['point'] }
+      : internalCapability && {
+        requiredInput: internalCapability.kind === 'longPress' ? ['durationMs']
+          : internalCapability.kind === 'inputText' ? ['text']
+            : internalCapability.kind === 'wait' ? ['ms'] : [],
+      };
+    if (!action) issues.push(issue('actionRef', 'actionRef 对当前 Scene 不可用', 'ACTION_NOT_AVAILABLE'));
     for (const field of action?.requiredInput || []) {
-      if (request.input?.[field] === undefined) issues.push(issue(`input.${field}`, `动作 ${request.actionRef} 必须提供 ${field}`, 'REQUIRED'));
+      if (request.input?.[field] === undefined) issues.push(issue(`input.${field}`, `动作 ${request.actionRef} 必须提供 ${field}`, 'ACTION_INPUT_INVALID'));
     }
     const allowedInput = request.actionRef === 'visual:swipe' ? ['from', 'to']
       : ['visual:tap', 'visual:doubleTap'].includes(request.actionRef) ? ['point']
@@ -90,15 +122,23 @@ function contextualIssues(execDir, request, scene) {
       : request.actionRef?.endsWith(':inputText') ? ['text', 'mode']
       : request.actionRef?.endsWith(':wait') ? ['ms'] : [];
     for (const field of Object.keys(request.input || {})) {
-      if (!allowedInput.includes(field)) issues.push(issue(`input.${field}`, `动作 ${request.actionRef} 不支持该输入字段`, 'FIELD_UNSUPPORTED'));
+      if (!allowedInput.includes(field)) issues.push(issue(`input.${field}`, `动作 ${request.actionRef} 不支持该输入字段`, 'ACTION_INPUT_INVALID'));
     }
     if (request.actionRef === 'visual:longPress' && request.input?.duringActionAtMs !== undefined
       && request.input.duringActionAtMs >= request.input.durationMs) {
-      issues.push(issue('input.duringActionAtMs', '必须小于长按 durationMs', 'RANGE_INVALID'));
+      issues.push(issue('input.duringActionAtMs', '必须小于长按 durationMs', 'ACTION_INPUT_INVALID'));
+    }
+    if (request.basedOnSceneRef && request.actionRef?.startsWith('visual:') && !request.updates?.visual) {
+      const inspected = store.events(execDir).some((event) => event.type === 'visualInspected' && event.sceneId === scene.sceneId);
+      if (!inspected) issues.push(issue('actionRef', '视觉动作要求先登记该 Scene 的视觉事实', 'VISUAL_INSPECTION_REQUIRED'));
     }
   }
   if (request.capability === 'recover' && request.targetState && request.externalAction) {
     issues.push(issue('externalAction', 'targetState 与 externalAction 不能在同一次恢复请求中同时使用', 'MUTUALLY_EXCLUSIVE'));
+  }
+  if (request.capability === 'recover' && !request.targetState && !request.externalAction
+    && currentScene(execDir) && !request.basedOnSceneRef) {
+    issues.push(issue('basedOnSceneRef', 'App 重启恢复必须绑定当前 Scene', 'SCENE_REQUIRED'));
   }
   if (request.capability === 'knowledge' && request.queryId) {
     const query = store.events(execDir).find((event) => event.type === 'knowledgeQueried' && event.queryId === request.queryId);
@@ -118,25 +158,6 @@ function contextualIssues(execDir, request, scene) {
       }
     }
   }
-  if (request.capability === 'finish') {
-    const expected = [...knownExpectations(execDir)];
-    if (!expected.length) issues.push(issue('checks', '当前 Case Model 没有 ACTIVE 验证点', 'CASE_MODEL_REQUIRED'));
-    const supplied = (request.checks || []).map((item) => item.expectationRef);
-    for (const ref of expected.filter((ref) => !supplied.includes(ref))) issues.push(issue('checks', `缺少验证点 ${ref}`, 'EXPECTATION_MISSING'));
-    for (const ref of supplied.filter((ref) => !expected.includes(ref))) issues.push(issue('checks', `未知验证点 ${ref}`, 'EXPECTATION_UNKNOWN'));
-    for (const ref of new Set(supplied.filter((value, index) => supplied.indexOf(value) !== index))) issues.push(issue('checks', `验证点 ${ref} 重复`, 'EXPECTATION_DUPLICATE'));
-    const knownScenes = new Set(store.events(execDir).filter((event) => event.type === 'sceneObserved').map((event) => event.sceneId));
-    if (scene) knownScenes.add(scene.sceneId);
-    for (const [index, check] of (request.checks || []).entries()) {
-      if (['PASS', 'FAIL'].includes(check.status) && !(check.evidence || []).length) {
-        issues.push(issue(`checks[${index}].evidence`, `${check.status} 必须引用支持判断的 Scene`, 'EVIDENCE_REQUIRED'));
-      }
-      for (const ref of check.evidence || []) {
-        if (ref === 'current' && !scene) issues.push(issue(`checks[${index}].evidence`, '当前没有可引用的 Scene', 'SCENE_REQUIRED'));
-        else if (ref !== 'current' && !knownScenes.has(ref)) issues.push(issue(`checks[${index}].evidence`, `未知 Scene ${ref}`, 'SCENE_UNKNOWN'));
-      }
-    }
-  }
   return issues;
 }
 
@@ -146,14 +167,11 @@ function visualRequest(actionRef, input) {
   return { gesture, point: input.point, ...(gesture === 'longPress' ? { durationMs: input.durationMs } : {}) };
 }
 
-function resolveEvidence(scene, refs = []) {
-  return refs.map((ref) => ref === 'current' ? scene?.sceneId : ref);
-}
-
 function translateAgentFacingRequest(execDir, request) {
   const structural = validateAgentFacingRequest(request);
   if (structural.length) throw inputError(structural);
-  const scene = currentScene(execDir);
+  const current = currentScene(execDir);
+  const scene = request.capability === 'inspect' ? sceneByRef(execDir, request.basedOnSceneRef) : current;
   const contextual = contextualIssues(execDir, request, scene);
   if (contextual.length) throw inputError(contextual);
   const expectationRefs = request.expectationRefs || [];
@@ -168,25 +186,27 @@ function translateAgentFacingRequest(execDir, request) {
   };
   else if (request.capability === 'inspect') translated = {
     operation: 'inspectScene', basedOnSceneId: scene.sceneId,
-    view: { action: 'ACTION', elements: 'ELEMENTS', capabilities: 'CAPABILITIES', layout: 'LAYOUT' }[request.channel],
+    view: { action: 'ACTION', elements: 'ELEMENTS', layout: 'LAYOUT' }[request.channel],
     ...(request.channel === 'action' ? { observation: request.observation, expectationRefs } : {}),
     ...(request.filter ? { filter: request.filter } : {}),
   };
   else if (request.capability === 'plan') {
+    const source = request.caseModel;
     translated = {
       operation: 'recordCaseModel',
       caseModel: {
-        understanding: request.understanding,
-        preconditions: request.preconditions,
-        verificationPoints: request.verificationPoints,
-        items: request.items,
-        uncertainties: request.uncertainties,
-        ...(request.reason ? { reason: request.reason } : {}),
+        ...(Object.prototype.hasOwnProperty.call(source, 'baseRevision') ? { baseRevision: source.baseRevision } : {}),
+        understanding: source.understanding,
+        preconditions: source.preconditions,
+        verificationPoints: source.verificationPoints,
+        items: source.items,
+        uncertainties: source.uncertainties,
+        ...(source.reason ? { reason: source.reason } : {}),
       },
     };
   } else if (request.capability === 'act') {
-    const action = projectActions(scene).find((item) => item.actionRef === request.actionRef);
-    const internalCapability = (scene.capabilities || []).find((item) => actionRefFor(item) === action.actionRef);
+    const internalCapability = request.actionRef.startsWith('visual:')
+      ? null : resolveActionRef(scene, request.actionRef, executionPlatform(execDir));
     translated = {
       operation: 'act', basedOnSceneId: scene.sceneId,
       ...(request.actionRef.startsWith('visual:')
@@ -220,22 +240,11 @@ function translateAgentFacingRequest(execDir, request) {
     ...(request.externalAction ? { externalAction: request.externalAction } : {}),
   };
   else if (request.capability === 'finish') {
-    const checks = request.checks.map((check) => ({
-      expectationRef: check.expectationRef,
-      status: check.status,
-      actual: check.actual,
-      ...(check.evidence ? { sceneRefs: resolveEvidence(scene, check.evidence) } : {}),
-      ...(check.knowledgeRefs ? { knowledgeRefs: check.knowledgeRefs } : {}),
-      ...(check.technicalRefs ? { technicalRefs: check.technicalRefs } : {}),
-      ...(check.evidenceBasis ? { evidenceBasis: {
-        ...check.evidenceBasis,
-        sceneRef: check.evidenceBasis.sceneRef === 'current' ? scene?.sceneId : check.evidenceBasis.sceneRef,
-      } } : {}),
-    }));
+    const result = require('./expectation-result-service').buildCaseResultFromLedger(execDir, request);
     translated = {
-      operation: 'finish', ...(scene ? { basedOnSceneId: scene.sceneId } : {}),
-      decision: { purpose: '提交最终结论', expectationRefs: checks.map((item) => item.expectationRef) },
-      result: { verdict: aggregateVerdict(checks), summary: request.summary, checks, uncertainties: request.uncertainties || [] },
+      operation: 'finish', ...(current ? { basedOnSceneId: current.sceneId } : {}),
+      decision: { purpose: '提交最终结论', expectationRefs: result.checks.map((item) => item.expectationRef) },
+      result,
     };
   }
   try {
@@ -249,66 +258,61 @@ function translateAgentFacingRequest(execDir, request) {
   return translated;
 }
 
-function reviewExample(requiredReview) {
-  if (!requiredReview?.template) return null;
-  return {
-    capability: 'knowledge',
-    queryId: requiredReview.template.queryId,
-    conclusion: requiredReview.template.conclusion,
-    assessments: (requiredReview.template.assessments || []).map((item) => ({
-      entryId: item.entryId,
-      status: item.status,
-      reason: '说明该候选对当前现场是否适用',
-    })),
-  };
-}
-
-function preparationNextCall(execDir, response, model) {
-  if (response.code !== 'APP_INITIAL_STATE_UNAVAILABLE'
-    && response.status !== 'EXTERNAL_ACTION_RECORDED') return null;
-  const recovery = require('./preparation-service').preparationRecoveryState(execDir);
-  if (!recovery?.targetState) return null;
-  if (recovery.retryAllowed) {
-    return {
-      reason: 'RETRY_APP_INITIAL_STATE',
-      example: {
-        capability: 'recover',
-        reason: '重新建立用例要求的 App 初始状态',
-        targetState: recovery.targetState,
-      },
-    };
-  }
-  if (recovery.requiresExternalAction) {
-    return {
-      reason: 'RECORD_TECHNICAL_RECOVERY',
-      example: {
-        capability: 'recover',
-        reason: '完成当前 execution 范围内的技术处置后登记事实',
-        externalAction: { summary: '说明已完成的技术处置及结果' },
-      },
-    };
-  }
-  if (!model) return null;
-  return { reason: 'CLOSE_UNRECOVERABLE_INITIAL_STATE', example: finishTemplate(model) };
-}
-
 function projectAgentFacingResponse(execDir, response, request = null) {
+  if (response.status === 'COMPLETED') {
+    return {
+      protocol: AGENT_FACING_PROTOCOL,
+      status: 'COMPLETED',
+      executionRef: response.executionId,
+      verdict: response.verdict,
+      resultRef: 'result.json',
+      ...(response.idempotent === true ? { idempotent: true } : {}),
+    };
+  }
   const projected = { ...response };
   delete projected.allowedOperations;
   delete projected.capabilities;
   delete projected.narrative;
   delete projected.requiredReview;
+  delete projected.nextCall;
+  delete projected.retryWith;
+  delete projected.technicalContext;
+  if (projected.diagnostic && typeof projected.diagnostic === 'object') {
+    const technical = {
+      ...(projected.diagnostic.code ? { code: projected.diagnostic.code } : {}),
+      ...(projected.diagnostic.stage ? { stage: projected.diagnostic.stage } : {}),
+      ...(projected.diagnostic.logRefs ? { logRefs: projected.diagnostic.logRefs } : {}),
+      ...(projected.diagnostic.resourceFacts ? { resourceFacts: projected.diagnostic.resourceFacts } : {}),
+    };
+    if (Object.keys(technical).length) projected.facts = { ...(projected.facts || {}), technical };
+  }
+  delete projected.diagnostic;
+  delete projected.result;
+  delete projected.evidenceDiagnostics;
+  delete projected.knowledgeUsage;
+  delete projected.caseModel;
   const scene = currentScene(execDir);
   const model = caseModel(execDir);
-  projected.scene = projectScene(scene, { caseModel: model });
-  if (projected.action) projected.action = projectPreviousAction(projected.action, model);
-  const nextReview = reviewExample(response.requiredReview);
-  if (nextReview) projected.nextCall = { reason: 'REVIEW_KNOWLEDGE_CANDIDATES', example: nextReview };
-  const preparationRecovery = preparationNextCall(execDir, response, model);
-  if (preparationRecovery) projected.nextCall = preparationRecovery;
-  else if (response.status === 'EXTERNAL_ACTION_RECORDED') {
-    projected.nextCall = { reason: 'VERIFY_EXTERNAL_ACTION_WITH_NEW_SCENE', example: { capability: 'observe' } };
+  if (request?.capability === 'inspect') delete projected.scene;
+  else projected.scene = projectScene(scene, { caseModel: model });
+  if (response.status === 'SCENE_INSPECTION') {
+    delete projected.evidence;
+    if (response.view === 'ELEMENTS') {
+      projected.items = (response.items || []).map((element) => ({
+        ref: element.id,
+        ...(element.text ? { text: element.text } : {}),
+        ...(element.role ? { role: element.role } : {}),
+        bounds: element.bounds,
+        clickable: element.clickable === true,
+        checkable: element.checkable === true,
+        editable: element.editable === true,
+        enabled: element.enabled !== false,
+        visible: element.visible !== false,
+        ...(element.focused === true ? { focused: true } : {}),
+      }));
+    }
   }
+  if (projected.action) projected.action = projectPreviousAction(projected.action, model);
   if (projected.knowledgeInvestigation) {
     projected.knowledgeInvestigation = {
       ...projected.knowledgeInvestigation,
@@ -318,70 +322,22 @@ function projectAgentFacingResponse(execDir, response, request = null) {
         candidateCount: pending.candidateCount,
         expectationRefs: pending.expectationRefs || [],
         candidates: pending.candidates || [],
-        nextCall: { example: reviewExample(pending.requiredReview) },
       })),
     };
   }
-  return attachTechnicalContext(projected, 'EXECUTION', { capability: 'observe' }, {
-    resourceFacts: [
-      `execution=${store.loadExecution(execDir, { allowFinalized: true }).executionId}`,
-      `scene=${scene?.sceneId || 'none'}`,
-    ],
-  });
-}
-
-function finishExample(values = {}) {
-  return { capability: 'finish', summary: values.summary, checks: values.checks, uncertainties: values.uncertainties || [] };
-}
-
-function retryExample(execDir, request = {}) {
-  const scene = currentScene(execDir);
-  const model = caseModel(execDir);
-  if (!scene && ['inspect', 'act', 'knowledge', 'recover', 'finish'].includes(request.capability)) return { capability: 'observe' };
-  if (!currentPlan(execDir) && request.capability === 'finish') {
-    return capabilityCards({ scene, caseModel: null }).plan.example;
+  projected.protocol = AGENT_FACING_PROTOCOL;
+  const state = require('./expectation-result-service').caseStateSummary(execDir);
+  if (state.caseModelRevision !== null) projected.caseState = state;
+  if (response.caseModelChange) projected.caseModelChange = response.caseModelChange;
+  if (projected.code) {
+    projected.retryable = projected.retryable !== undefined ? projected.retryable
+      : !['ACTION_OUTCOME_UNKNOWN', 'TIME_LIMIT'].includes(projected.code);
+    projected.documentationRef = documentationRefFor(projected.code);
   }
-  if (request.capability === 'plan') {
-    const fallback = model ? {
-      capability: 'plan',
-      understanding: model.understanding,
-      preconditions: model.preconditions,
-      verificationPoints: model.verificationPoints.map(({ ref, text }) => ({ ref, text })),
-      items: model.items,
-      uncertainties: model.uncertainties,
-    } : capabilityCards({ scene, caseModel: null }).plan.example;
-    return { ...fallback, ...request, ...(model ? { reason: request.reason || '说明本次用例理解或计划变化原因' } : {}) };
-  }
-  if (request.capability === 'act') {
-    const action = projectActions(scene).find((item) => item.actionRef === request.actionRef) || projectActions(scene)[0];
-    return action?.example || { capability: 'observe' };
-  }
-  if (request.capability === 'inspect') {
-    if (request.channel === 'action' && scene?.previousAction?.spatialEvidence?.inspect?.example) {
-      return scene.previousAction.spatialEvidence.inspect.example;
-    }
-    return request.channel === 'visual'
-      ? { capability: 'inspect', channel: 'visual', observation: '描述截图中实际看到的事实', expectationRefs: [] }
-      : { capability: 'inspect', channel: ['elements', 'capabilities', 'layout'].includes(request.channel) ? request.channel : 'elements' };
-  }
-  if (request.capability === 'knowledge' && request.queryId) {
-    const query = store.events(execDir).find((event) => event.type === 'knowledgeQueried' && event.queryId === request.queryId);
-    if (query) return reviewExample(require('./knowledge-review').buildKnowledgeReviewGuidance(query.queryId, query.candidates || []));
-  }
-  if (request.capability === 'knowledge') return { capability: 'knowledge', query: request.query || '描述当前无法解释的问题', expectationRefs: [] };
-  if (request.capability === 'recover') return {
-    capability: 'recover', reason: request.reason || '目标 App 无法继续交互',
-    ...(request.targetState ? { targetState: request.targetState } : {}),
-    ...(request.externalAction ? { externalAction: request.externalAction } : {}),
-  };
-  if (request.capability === 'finish') return finishTemplate(model);
-  return { capability: 'observe' };
+  return projected;
 }
 
 module.exports = {
-  finishExample,
   projectAgentFacingResponse,
-  reviewExample,
-  retryExample,
   translateAgentFacingRequest,
 };

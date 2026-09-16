@@ -15,8 +15,11 @@ const {
   validateEnvironmentConfirmation,
 } = require('../lib/run-control');
 const { readJson, withFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { attachTechnicalContext } = require('../lib/technical-context');
-const { validateCoordinatorRequest } = require('./agent-facing-contract');
+const {
+  AGENT_FACING_PROTOCOL,
+  documentationRefFor,
+  validateCoordinatorRequest,
+} = require('./agent-facing-contract');
 
 const SKILL_ROOT = path.resolve(__dirname, '../..');
 const CASE_AGENT_PROMPT = '你是独立 Case Agent。执行给定的 loaderCommand，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。';
@@ -118,7 +121,17 @@ function recordCoordinatorInputFailure(statePath, command, error) {
 }
 
 function publicBase(state) {
-  return { statePath: state.statePath, commands: state.commands };
+  return { protocol: AGENT_FACING_PROTOCOL, statePath: state.statePath, commands: state.commands };
+}
+
+function technicalFacts(diagnostic) {
+  if (!diagnostic) return null;
+  return {
+    ...(diagnostic.code ? { code: diagnostic.code } : {}),
+    ...(diagnostic.stage ? { stage: diagnostic.stage } : {}),
+    ...(diagnostic.logRefs ? { logRefs: diagnostic.logRefs } : {}),
+    ...(diagnostic.resourceFacts ? { resourceFacts: diagnostic.resourceFacts } : {}),
+  };
 }
 
 function reportPublicationResponse(publication = null) {
@@ -146,40 +159,41 @@ function completedResponse(state, outcome, publication = state.reportPublication
 function blockedResponse(state) {
   const report = reportPublicationResponse(state.reportPublication);
   const diagnostic = state.terminalFailure?.diagnostic;
-  return attachTechnicalContext({
+  const code = state.terminalFailure?.code || 'BATCH_BLOCKED';
+  return {
     status: 'BLOCKED',
-    code: state.terminalFailure?.code || 'BATCH_BLOCKED',
+    code,
     reason: state.terminalFailure?.reason || '批次已经阻塞',
-    ...(diagnostic ? { diagnostic } : {}),
     ...report,
     ...(report.reportStatus === 'PUBLISHED' ? { reportPath: path.join(state.workspace, 'index.html') } : {}),
+    facts: {
+      batchId: state.batchId,
+      statePath: state.statePath,
+      ...(diagnostic ? { technical: technicalFacts(diagnostic) } : {}),
+    },
+    documentationRef: documentationRefFor(code),
     ...publicBase(state),
-  }, 'COORDINATOR', { capability: 'advanceRun' }, {
-    resourceFacts: [`batch=${state.batchId}`, `state=${state.statePath}`],
-  });
+  };
 }
 
 function selectPlatformChoice(platform) {
   return {
     id: `SELECT_${platform.toUpperCase()}`,
-    template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform },
+    decision: 'SELECT_PLATFORM',
+    platform,
   };
 }
 
 function buildConfirmationChoices(state, environment) {
-  const confirmChoices = [];
+  const choices = [];
   if (environment) {
-    confirmChoices.push({
+    choices.push({
       id: 'USE_CURRENT',
-      template: {
-        capability: 'confirmRun',
-        decision: 'USE_CURRENT',
-        userInstruction: `确认在当前设备和 App 上执行用例 ${state.targets.map((item) => item.caseNo).join(', ')}`,
-      },
+      decision: 'USE_CURRENT',
     });
   }
-  confirmChoices.push(...PLATFORMS.map(selectPlatformChoice));
-  return confirmChoices;
+  choices.push(...PLATFORMS.map(selectPlatformChoice));
+  return choices;
 }
 
 function confirmationChoicesForState(state) {
@@ -190,11 +204,11 @@ function confirmationChoicesForState(state) {
   } catch (error) {
     environmentError = error;
   }
-  return { confirmChoices: buildConfirmationChoices(state, environment), environment, environmentError };
+  return { choices: buildConfirmationChoices(state, environment), environment, environmentError };
 }
 
 function environmentDecisionResponse(state, options = {}, details = {}) {
-  const { confirmChoices, environment, environmentError } = confirmationChoicesForState(state);
+  const { choices, environment, environmentError } = confirmationChoicesForState(state);
   state.environmentConfirmed = Boolean(environment);
   state.currentEnvironmentOffer = environment ? JSON.parse(JSON.stringify(environment)) : null;
   state.phase = 'NEED_ENVIRONMENT_DECISION';
@@ -209,7 +223,7 @@ function environmentDecisionResponse(state, options = {}, details = {}) {
     ...(!details.diagnostics?.length && environmentError && environmentError.code !== 'ENVIRONMENT_NOT_CONFIRMED'
       ? { diagnostics: [{ code: environmentError.code || 'ENVIRONMENT_CONFIRMATION_INVALID', message: environmentError.message || String(environmentError) }] }
       : {}),
-    confirmChoices,
+    choices,
     ...publicBase(state),
   };
 }
@@ -218,12 +232,18 @@ function coordinatorInputRecovery(statePath, command) {
   if (command !== 'confirm') return {};
   const state = loadCoordinatorState(statePath);
   if (state.phase === 'NEED_BINDING_CONFIRMATION' && state.bindingConfirmationTemplate) {
-    return { retryWith: state.bindingConfirmationTemplate };
+    return { phase: state.phase };
   }
   if (state.phase === 'NEED_ENVIRONMENT_DECISION') {
-    return { confirmChoices: buildConfirmationChoices(state, state.currentEnvironmentOffer) };
+    return { phase: state.phase };
   }
   return {};
+}
+
+function knownBindingFacts(binding) {
+  return Object.fromEntries(Object.entries(binding || {}).filter(([, value]) => (
+    typeof value !== 'string' || !/^<.*>$/.test(value)
+  )));
 }
 
 function bindingConfirmationResponse(state, options = {}) {
@@ -248,7 +268,7 @@ function bindingConfirmationResponse(state, options = {}) {
     requiredUserFields: state.selectedProbe.platform === 'ios'
       ? ['binding.appId']
       : ['binding.appId', 'binding.entry'],
-    confirmTemplate: state.bindingConfirmationTemplate,
+    binding: knownBindingFacts(state.bindingConfirmationTemplate.binding),
     ...publicBase(state),
   };
 }
@@ -271,7 +291,6 @@ function interruptInitialization(options, step) {
 function inputCapabilityError() {
   const error = new Error('设备输入能力自动准备失败，当前运行尚未进入用例执行');
   error.code = 'INPUT_CAPABILITY_NOT_READY';
-  error.resume = { capability: 'advanceRun' };
   error.diagnostic = {
     code: 'INPUT_CAPABILITY_NOT_READY',
     stage: 'ENVIRONMENT_PREPARE',
@@ -424,7 +443,7 @@ function resumeInitialization(state, options = {}) {
 
   state.phase = 'BATCH_READY';
   saveCoordinatorState(state, options.now);
-  return { status: 'CONFIRMED', next: 'advanceRun', ...publicBase(state) };
+  return { status: 'CONFIRMED', ...publicBase(state) };
 }
 
 function prepareRun(request, options = {}) {
@@ -523,9 +542,11 @@ function confirmRun(statePath, request, options = {}) {
           reason: 'SELECT_DEVICE',
           code: request.deviceId ? 'DEVICE_NOT_FOUND' : 'DEVICE_SELECTION_REQUIRED',
           devices: probe.devices,
-          deviceChoices: probe.devices.map((device) => ({
+          choices: probe.devices.map((device) => ({
             id: `SELECT_DEVICE_${deviceId(device)}`,
-            template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: request.platform, deviceId: deviceId(device) },
+            decision: 'SELECT_PLATFORM',
+            platform: request.platform,
+            deviceId: deviceId(device),
           })),
           diagnostics: probe.diagnostics || [],
           ...publicBase(state),
@@ -573,7 +594,7 @@ function confirmRun(statePath, request, options = {}) {
           requiredBindingFields: ['xcodeOrgId', 'xcodeSigningId', 'updatedWDABundleId'],
           diagnostics: [{ code: error.code, message: error.message }],
           devices: state.selectedProbe.devices,
-          confirmTemplate: state.bindingConfirmationTemplate,
+          binding: knownBindingFacts(state.bindingConfirmationTemplate.binding),
           ...publicBase(state),
         };
       }
@@ -654,8 +675,7 @@ function advanceBatch(state, options = {}) {
           reason: bootstrapped.waitFor === 'OWNER_BATCH_TERMINAL'
             ? 'PLATFORM_RUNTIME_OWNER_ACTIVE'
             : 'PLATFORM_RUNTIME_INITIALIZING',
-          diagnostic: bootstrapped.technical,
-          ...(bootstrapped.technical?.recovery ? { recovery: bootstrapped.technical.recovery } : {}),
+          ...(bootstrapped.technical ? { facts: { technical: technicalFacts(bootstrapped.technical) } } : {}),
           ...publicBase(state),
         };
       }

@@ -56,9 +56,12 @@ function start(batchId, target) {
   const started = startCurrentCase({ workspaceRoot: root, batchId, now: T0, runtimeOptions: { runner: observeRunner } });
   const execDir = fs.realpathSync(path.join(target.caseDir, 'platforms', binding.platform, 'executions', started.executionId));
   const plan = run(execDir, {
-    capability: 'plan', understanding: `验证 ${target.source} 的空数据首次启动状态`,
-    preconditions: ['目标 App 本地数据为空'], verificationPoints: [{ text: '首次启动页面可见' }],
-    items: ['建立空数据状态', '观察首次启动页面'], uncertainties: [],
+    capability: 'plan', caseModel: {
+      baseRevision: null,
+      understanding: `验证 ${target.source} 的空数据首次启动状态`,
+      preconditions: ['目标 App 本地数据为空'], verificationPoints: [{ text: '首次启动页面可见' }],
+      items: ['建立空数据状态', '观察首次启动页面'], uncertainties: [],
+    },
   }, { now: T0 });
   assert.strictEqual(plan.status, 'CASE_MODEL_RECORDED');
   return { started, execDir };
@@ -110,14 +113,14 @@ const deniedResponse = run(deniedRun.execDir, {
 });
 assert.strictEqual(deniedResponse.status, 'TECHNICAL');
 assert.strictEqual(deniedResponse.code, 'APP_INITIAL_STATE_UNAVAILABLE');
-assert.strictEqual(deniedResponse.diagnostic.code, 'APP_PREPARATION_SCOPE_MISMATCH');
+assert.strictEqual(deniedResponse.diagnostic, undefined);
+assert.strictEqual(deniedResponse.facts.technical.code, 'APP_PREPARATION_SCOPE_MISMATCH');
 assert.match(deniedResponse.message, /outside the frozen execution scope/);
 assert.match(deniedResponse.technicalFactRef, /^technical-fact-/);
 assert.strictEqual(deniedCalls, 0);
-assert.strictEqual(deniedResponse.technicalContext.scope, 'EXECUTION');
-assert.notDeepStrictEqual(deniedResponse.technicalContext.resume, { capability: 'observe' });
-assert.strictEqual(deniedResponse.nextCall.reason, 'CLOSE_UNRECOVERABLE_INITIAL_STATE');
-assert.deepStrictEqual(deniedResponse.technicalContext.resume, deniedResponse.nextCall.example);
+assert.strictEqual(deniedResponse.technicalContext, undefined);
+assert.strictEqual(deniedResponse.nextCall, undefined);
+assert.match(deniedResponse.documentationRef, /error-app-initial-state-unavailable$/);
 
 const retryable = makeCase('准备失败后恢复');
 const retryableRun = start('batch-preparation-retryable', retryable);
@@ -144,28 +147,28 @@ const firstFailure = run(retryableRun.execDir, {
   capability: 'recover', reason: '用例要求空本地状态', targetState: 'APP_LOCAL_STATE_EMPTY',
 }, { now: T0, runner: observeRunner, invokeAppPreparation: invokeRetryablePreparation });
 assert.strictEqual(firstFailure.status, 'TECHNICAL');
-assert.strictEqual(firstFailure.nextCall.reason, 'RETRY_APP_INITIAL_STATE');
-assert.deepStrictEqual(firstFailure.nextCall.example, {
-  capability: 'recover', reason: '重新建立用例要求的 App 初始状态', targetState: 'APP_LOCAL_STATE_EMPTY',
-});
-assert.deepStrictEqual(firstFailure.technicalContext.resume, firstFailure.nextCall.example);
+assert.strictEqual(firstFailure.nextCall, undefined);
+assert.strictEqual(firstFailure.technicalContext, undefined);
+assert.match(firstFailure.documentationRef, /error-app-initial-state-unavailable$/);
 
-const secondFailure = run(retryableRun.execDir, firstFailure.nextCall.example, {
+const retryPreparationRequest = {
+  capability: 'recover', reason: '重新建立用例要求的 App 初始状态', targetState: 'APP_LOCAL_STATE_EMPTY',
+};
+const secondFailure = run(retryableRun.execDir, retryPreparationRequest, {
   now: T0, runner: observeRunner, invokeAppPreparation: invokeRetryablePreparation,
 });
 assert.strictEqual(secondFailure.status, 'TECHNICAL');
-assert.strictEqual(secondFailure.nextCall.reason, 'RECORD_TECHNICAL_RECOVERY');
-assert.strictEqual(secondFailure.nextCall.example.capability, 'recover');
-assert.ok(secondFailure.nextCall.example.externalAction);
+assert.strictEqual(secondFailure.nextCall, undefined);
+assert.match(secondFailure.documentationRef, /error-app-initial-state-unavailable$/);
 
 const externalRecovery = run(retryableRun.execDir, {
-  ...secondFailure.nextCall.example,
+  capability: 'recover', reason: '登记当前 execution 范围内的技术处置',
   externalAction: { summary: '已恢复当前 execution 的设备安装态查询能力', tool: 'platform-native-tool' },
 }, { now: T0, runner: observeRunner, invokeAppPreparation: invokeRetryablePreparation });
 assert.strictEqual(externalRecovery.status, 'EXTERNAL_ACTION_RECORDED', JSON.stringify(externalRecovery));
-assert.strictEqual(externalRecovery.nextCall.reason, 'RETRY_APP_INITIAL_STATE');
+assert.strictEqual(externalRecovery.nextCall, undefined);
 
-const recoveredPreparation = run(retryableRun.execDir, externalRecovery.nextCall.example, {
+const recoveredPreparation = run(retryableRun.execDir, retryPreparationRequest, {
   now: T0,
   runner: observeRunner,
   invokeAppPreparation: invokeRetryablePreparation,

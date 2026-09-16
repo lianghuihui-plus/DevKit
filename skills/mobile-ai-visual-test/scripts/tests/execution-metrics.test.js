@@ -10,7 +10,7 @@ const { metrics } = require('../case-runtime/result-service');
 const { deriveExecutionTiming } = require('../lib/execution-timing');
 
 const execDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-metrics-'));
-fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ finalized: false }));
+fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 12, finalized: false }));
 let nowMs = 1000;
 const clock = () => nowMs;
 const invocation = telemetry.beginInvocation(execDir, 'act', {
@@ -62,6 +62,21 @@ assert.deepStrictEqual(summary, {
   },
   invocationCount: 2,
   invocationErrorCount: 1,
+  agentFacing: {
+    decisionSubmissionCount: 0,
+    piggybackedSubmissionCount: 0,
+    piggybackedUpdateCount: 0,
+    effectRejectionAfterUpdatesCount: 0,
+    unresolvedFinishAttemptCount: 0,
+    requestBytes: 0,
+    responseBytes: 0,
+    sceneProjectionBytes: 0,
+    updatesApplyMs: 0,
+    ledgerProjectionMs: 0,
+    documentationRefCount: 0,
+    hostTransportCounts: {},
+    durationMs: 0,
+  },
 });
 assert.strictEqual(summary.agentAndSchedulingGapMs,
   summary.agentTiming.firstPreparationMs + summary.agentTiming.stepDecisionMs
@@ -78,6 +93,56 @@ const invalidEnd = invocationEntries.find((entry) => entry.invocationId === inva
 assert.deepStrictEqual(invalidEnd.issueCodes, ['TYPE_MISMATCH', 'REQUIRED']);
 assert.deepStrictEqual(invalidEnd.fieldPaths, ['input.text', 'decision']);
 assert.strictEqual(invocationText.includes('received'), false);
+
+const rejectedResponse = {
+  status: 'INPUT_INVALID', code: 'ACTION_NOT_AVAILABLE',
+  documentationRef: 'references/case-runtime/errors.md#error-action-not-available',
+  updatesApplied: { visual: true, expectationResults: ['E1'] },
+  effect: { type: 'act', status: 'REJECTED' },
+  scene: { sceneRef: 'scene-0001', screenshot: { ref: 'screenshots/scene-0001.png' } },
+};
+telemetry.recordAgentFacing(execDir, {
+  capability: 'act', actionRef: 'secret-control:tap',
+  updates: { visual: { observation: 'private observation' }, expectationResults: [{ actual: 'private result' }] },
+}, rejectedResponse, 25, {
+  now: '2026-08-20T10:00:00.950Z', hostTransport: 'stdin',
+  agentFacingMetrics: { updatesApplyMs: 7, ledgerProjectionMs: 0 },
+});
+const finishRequest = {
+  capability: 'finish', summary: 'private summary',
+};
+const finishResponse = {
+  status: 'RESULT_INCOMPLETE', code: 'CASE_RESULT_INCOMPLETE',
+  documentationRef: 'references/case-runtime/errors.md#error-case-result-incomplete',
+  readiness: { unresolved: [{ expectationRef: 'E2', reasons: ['RESULT_MISSING'] }] },
+};
+telemetry.recordAgentFacing(execDir, finishRequest, finishResponse, 15, {
+  now: '2026-08-20T10:00:00.975Z', hostTransport: 'mcp',
+  agentFacingMetrics: { updatesApplyMs: 0, ledgerProjectionMs: 9 },
+});
+const protocolSummary = telemetry.summarize(execDir, 1000).agentFacing;
+assert.deepStrictEqual(protocolSummary, {
+  decisionSubmissionCount: 2,
+  piggybackedSubmissionCount: 1,
+  piggybackedUpdateCount: 2,
+  effectRejectionAfterUpdatesCount: 1,
+  unresolvedFinishAttemptCount: 1,
+  requestBytes: Buffer.byteLength(JSON.stringify({
+    capability: 'act', actionRef: 'secret-control:tap',
+    updates: { visual: { observation: 'private observation' }, expectationResults: [{ actual: 'private result' }] },
+  })) + Buffer.byteLength(JSON.stringify(finishRequest)),
+  responseBytes: Buffer.byteLength(JSON.stringify(rejectedResponse)) + Buffer.byteLength(JSON.stringify(finishResponse)),
+  sceneProjectionBytes: Buffer.byteLength(JSON.stringify(rejectedResponse.scene)),
+  updatesApplyMs: 7,
+  ledgerProjectionMs: 9,
+  documentationRefCount: 2,
+  hostTransportCounts: { stdin: 1, mcp: 1 },
+  durationMs: 40,
+});
+const agentFacingText = fs.readFileSync(telemetry.agentFacingFile(execDir), 'utf8');
+for (const secret of ['secret-control', 'private observation', 'private result', 'private summary']) {
+  assert.strictEqual(agentFacingText.includes(secret), false);
+}
 
 const resultMetrics = metrics({
   executionId: 'execution-investigation-metrics',
@@ -152,7 +217,7 @@ const anchoredTiming = deriveExecutionTiming({
   handoffConsumedAt: '2026-08-20T10:00:06.000Z',
 }, {}, { caseReportPublishedAt: '2026-08-20T10:00:12.000Z' });
 assert.deepStrictEqual(anchoredTiming, {
-  durationBasis: 'CASE_TOTAL_V1',
+  durationBasis: 'CASE_TOTAL',
   startedAt: '2026-08-20T10:00:00.000Z',
   durationMs: 10000,
   phases: {
@@ -170,7 +235,7 @@ assert.deepStrictEqual(deriveExecutionTiming({
   initialStateCompletedAt: '2026-08-20T10:00:08.000Z',
   autoInitialStateBlocked: true,
 }, {}), {
-  durationBasis: 'CASE_TOTAL_V1',
+  durationBasis: 'CASE_TOTAL',
   startedAt: '2026-08-20T10:00:06.000Z',
   durationMs: 4000,
   phases: {
@@ -220,7 +285,7 @@ assert.deepStrictEqual(deriveExecutionTiming({ startedAt: '2026-08-20T10:00:01.0
   handoffSchedulingMs: null,
   caseAgentPhaseMs: 30,
 }), {
-  durationBasis: 'CASE_TOTAL_V1',
+  durationBasis: 'CASE_TOTAL',
   startedAt: '2026-08-20T10:00:01.000Z',
   durationMs: 654,
   phases: {

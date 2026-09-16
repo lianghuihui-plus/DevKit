@@ -241,7 +241,7 @@ function acquireBatchPlatformRuntime(options) {
 }
 
 function releaseBatchPlatformRuntime(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options, 'FINALIZE'));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
   if (!['FINALIZING', 'CANCELLING', 'BLOCKING', 'COMPLETED', 'CANCELLED', 'BLOCKED'].includes(loaded.state.status)) {
     throw contractError('PLATFORM_RUNTIME_RELEASE_EARLY', 'platform runtime can only be released after the batch reaches a terminal state');
   }
@@ -316,7 +316,7 @@ function releaseBatchPlatformRuntime(options) {
 }
 
 function loadBatchPlatformRuntime(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options, 'READ'));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
   const state = readJson(runtimePaths(loaded.paths.batchDir).state, null);
   return state ? validateState(state, loaded) : null;
 }

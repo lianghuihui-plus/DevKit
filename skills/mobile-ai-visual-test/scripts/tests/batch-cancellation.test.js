@@ -35,6 +35,14 @@ writeJsonAtomic(path.join(caseDir, 'case.json'), caseJson);
 const batchId = 'batch-cancel';
 const binding = { platform: 'harmony', deviceId: 'cancel-device', appId: 'com.example.cancel', appName: 'Cancel', entry: 'EntryAbility' };
 const contract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform: 'harmony' });
+const coordinatorContract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'batch-coordinator', platform: 'harmony' });
+const currentProtocol = {
+  runtimeSha: contract.runtimeSha,
+  adapterSha: contract.adapterSha,
+  coordinatorSha: coordinatorContract.coordinatorSha,
+  caseProtocolSha: contract.protocolSha,
+  coordinatorProtocolSha: coordinatorContract.protocolSha,
+};
 createTestExecutionRequest(root, batchId, binding, [{ caseKey, caseDir }]);
 initializeBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha });
 const adapter = {
@@ -54,21 +62,22 @@ const upgradedProtocol = {
   coordinatorProtocolSha: 'agent-protocol-coordinator-newer',
 };
 
-const cancelled = cancelBatch({
+assert.throws(() => cancelBatch({
   workspaceRoot: root,
   batchId,
   ...upgradedProtocol,
   reason: '用户停止本批执行',
-});
+}), (error) => error.code === 'BATCH_IMPLEMENTATION_MISMATCH');
+const cancelled = cancelBatch({ workspaceRoot: root, batchId, ...currentProtocol, reason: '用户停止本批执行' });
 assert.strictEqual(cancelled.state.status, 'CANCELLING');
 assert.strictEqual(cancelled.state.cases[0].status, 'CANCELLED');
 assert.strictEqual(findActiveExecutions(root).length, 0);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(startedExecDir, 'execution.json'), 'utf8')).status, 'CANCELLED');
-assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'SETTLE_EXECUTIONS');
+assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, ...currentProtocol, adapter }).action, 'SETTLE_EXECUTIONS');
 const repeatedCancellation = cancelBatch({
   workspaceRoot: root,
   batchId,
-  ...upgradedProtocol,
+  ...currentProtocol,
   reason: '重复取消不应重置收尾状态',
 });
 assert.strictEqual(repeatedCancellation.idempotent, true);
@@ -77,7 +86,7 @@ assert.strictEqual(repeatedCancellation.state.reason, '用户停止本批执行'
 assert.throws(() => recordFinalizationStep({
   workspaceRoot: root,
   batchId,
-  implementationSha: contract.implementationSha,
+  ...currentProtocol,
   step: 'platformReleased',
   result: { status: 'PUBLISHED' },
 }), (error) => error.code === 'BATCH_FINALIZATION_INVALID');
@@ -85,23 +94,23 @@ assert.throws(() => recordFinalizationStep({
 recordFinalizationStep({
   workspaceRoot: root,
   batchId,
-  ...upgradedProtocol,
+  ...currentProtocol,
   step: 'executionsSettled',
   result: { ok: true },
 });
-assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'RELEASE_PLATFORM');
+assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, ...currentProtocol, adapter }).action, 'RELEASE_PLATFORM');
 recordFinalizationStep({
   workspaceRoot: root,
   batchId,
-  ...upgradedProtocol,
+  ...currentProtocol,
   step: 'platformReleased',
   result: { ok: true },
 });
-assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter }).action, 'BATCH_CANCELLED');
+assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, ...currentProtocol, adapter }).action, 'BATCH_CANCELLED');
 const repeatedAfterRelease = cancelBatch({
   workspaceRoot: root,
   batchId,
-  implementationSha: contract.implementationSha,
+  ...currentProtocol,
 });
 assert.strictEqual(repeatedAfterRelease.idempotent, true);
 assert.strictEqual(repeatedAfterRelease.state.status, 'CANCELLED');
@@ -109,7 +118,7 @@ assert.strictEqual(repeatedAfterRelease.state.finalization.platformReleased, tru
 const publicationFailure = new Error('renderer contract is invalid');
 publicationFailure.code = 'REPORT_RENDERER_INVALID';
 const terminalWithDegradedReport = reconcileWithFinalization(
-  { workspaceRoot: root, batchId, implementationSha: contract.implementationSha },
+  { workspaceRoot: root, batchId, ...currentProtocol },
   { adapter, refreshBatchIndex: () => { throw publicationFailure; } },
 );
 assert.strictEqual(terminalWithDegradedReport.action, 'BATCH_CANCELLED');
@@ -118,7 +127,7 @@ assert.strictEqual(terminalWithDegradedReport.publicationState.status, 'DEGRADED
 assert.strictEqual(terminalWithDegradedReport.retryable, undefined);
 fs.writeFileSync(path.join(root, 'runs', batchId, 'report-publication.json'), '{ invalid json');
 const terminalWithCorruptedPublicationState = reconcileWithFinalization(
-  { workspaceRoot: root, batchId, implementationSha: contract.implementationSha },
+  { workspaceRoot: root, batchId, ...currentProtocol },
   { adapter },
 );
 assert.strictEqual(terminalWithCorruptedPublicationState.action, 'BATCH_CANCELLED');
@@ -128,7 +137,7 @@ assert.strictEqual(terminalWithCorruptedPublicationState.publicationState.errorC
 assert.strictEqual(cancelBatch({
   workspaceRoot: root,
   batchId,
-  implementationSha: contract.implementationSha,
+  ...currentProtocol,
 }).idempotent, true);
 
 const deferredRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-batch-cancel-finalized-'));
@@ -157,14 +166,14 @@ writeJsonAtomic(path.join(deferredExecDir, 'result.json'), { verdict: 'PASS', su
 const deferredCancel = cancelBatch({
   workspaceRoot: deferredRoot,
   batchId: deferredBatchId,
-  ...upgradedProtocol,
+  ...currentProtocol,
   reason: '完成当前用例后取消剩余用例',
 });
 assert.strictEqual(deferredCancel.action, 'CANCELLATION_PENDING_COMMIT');
 assert.strictEqual(deferredCancel.state.status, 'RUNNING');
 assert.strictEqual(deferredCancel.state.cases[0].status, 'RUNNING');
 assert.strictEqual(deferredCancel.state.cancellationRequested.reason, '完成当前用例后取消剩余用例');
-assert.strictEqual(reconcileBatch({ workspaceRoot: deferredRoot, batchId: deferredBatchId, implementationSha: contract.implementationSha, adapter }).action, 'COMMIT_CASE');
+assert.strictEqual(reconcileBatch({ workspaceRoot: deferredRoot, batchId: deferredBatchId, ...currentProtocol, adapter }).action, 'COMMIT_CASE');
 fs.rmSync(deferredRoot, { recursive: true, force: true });
 
 fs.rmSync(root, { recursive: true, force: true });

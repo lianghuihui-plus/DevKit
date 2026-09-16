@@ -9,7 +9,7 @@ const os = require('os');
 const path = require('path');
 const {
   COORDINATOR_CAPABILITIES,
-  capabilityCards,
+  PUBLIC_CONTRACT,
   validateCoordinatorRequest,
 } = require('../coordinator/agent-facing-contract');
 const {
@@ -32,6 +32,29 @@ const workspace = path.join(temp, 'workspace');
 createTestWorkspace(workspace);
 fs.mkdirSync(path.join(workspace, 'knowledge'));
 
+const FORBIDDEN_RESPONSE_FIELDS = new Set([
+  'template',
+  'confirmTemplate',
+  'retryWith',
+  'usage',
+  'example',
+  'nextCall',
+  'diagnostic',
+  'resume',
+]);
+
+function assertNoEmbeddedInstructions(value, location = 'response') {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoEmbeddedInstructions(item, `${location}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    assert.strictEqual(FORBIDDEN_RESPONSE_FIELDS.has(key), false, `${location}.${key} must not embed usage instructions`);
+    assertNoEmbeddedInstructions(child, `${location}.${key}`);
+  }
+}
+
 function createCase(caseNo) {
   const source = `验证用例 ${caseNo} 的目标页面`;
   const caseKey = `ck-${crypto.createHash('sha256').update(source).digest('hex').slice(0, 12)}`;
@@ -48,16 +71,8 @@ const case014 = createCase('014');
 const case015 = createCase('015');
 
 assert.deepStrictEqual(COORDINATOR_CAPABILITIES, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun']);
-const cards = capabilityCards();
-assert.deepStrictEqual(Object.keys(cards), COORDINATOR_CAPABILITIES);
-for (const card of Object.values(cards)) {
-  assert.ok(card.useWhen);
-  assert.ok(card.example);
-  assert.deepStrictEqual(validateCoordinatorRequest(card.example), []);
-}
-assert.strictEqual(cards.confirmRun.example.decision, 'SELECT_PLATFORM');
-for (const hidden of ['batchId', 'definitionRef', 'runtimeSha', 'adapterSha', 'coordinatorProtocolSha']) {
-  assert.strictEqual(JSON.stringify(cards).includes(hidden), false, `Agent-facing cards must not expose ${hidden}`);
+for (const [name, method] of Object.entries(PUBLIC_CONTRACT.methods)) {
+  assert.deepStrictEqual(validateCoordinatorRequest(method.minimalExample), [], `${name} documentation example must validate`);
 }
 
 const prepared = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['014', '015'] }, {
@@ -73,14 +88,12 @@ assert.ok(prepared.commands.cancel.command);
 assert.ok(fs.existsSync(prepared.statePath));
 assert.strictEqual(Object.prototype.hasOwnProperty.call(loadCoordinatorState(prepared.statePath), 'schemaVersion'), false);
 
-assert.deepStrictEqual(prepared.confirmChoices, [
-  { id: 'SELECT_HARMONY', template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'harmony' } },
-  { id: 'SELECT_ANDROID', template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'android' } },
-  { id: 'SELECT_IOS', template: { capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'ios' } },
+assert.deepStrictEqual(prepared.choices, [
+  { id: 'SELECT_HARMONY', decision: 'SELECT_PLATFORM', platform: 'harmony' },
+  { id: 'SELECT_ANDROID', decision: 'SELECT_PLATFORM', platform: 'android' },
+  { id: 'SELECT_IOS', decision: 'SELECT_PLATFORM', platform: 'ios' },
 ]);
-for (const choice of prepared.confirmChoices) {
-  assert.deepStrictEqual(validateCoordinatorRequest(choice.template), []);
-}
+assertNoEmbeddedInstructions(prepared);
 
 const probe = {
   schemaVersion: 1,
@@ -107,7 +120,7 @@ assert.strictEqual(unavailable.status, 'NEED_USER_CONFIRMATION');
 assert.strictEqual(unavailable.reason, 'ENVIRONMENT_NOT_READY');
 assert.strictEqual(unavailable.code, 'ENVIRONMENT_NOT_READY');
 assert.match(unavailable.diagnostics[0].message, /adb/);
-assert.ok(unavailable.confirmChoices.some((choice) => choice.id === 'SELECT_HARMONY'));
+assert.ok(unavailable.choices.some((choice) => choice.id === 'SELECT_HARMONY'));
 assert.strictEqual(loadCoordinatorState(unavailableRun.statePath).phase, 'NEED_ENVIRONMENT_DECISION');
 
 const needBinding = confirmRun(prepared.statePath, {
@@ -119,20 +132,15 @@ const needBinding = confirmRun(prepared.statePath, {
 assert.strictEqual(needBinding.status, 'NEED_USER_CONFIRMATION');
 assert.strictEqual(needBinding.reason, 'CONFIRM_ENVIRONMENT_AND_RUN');
 assert.deepStrictEqual(needBinding.devices, probe.devices);
-assert.deepStrictEqual(needBinding.confirmTemplate, {
-  capability: 'confirmRun',
-  decision: 'CONFIRM_BINDING',
-  userInstruction: '确认在所选设备和 App 上执行用例 014, 015',
-  binding: {
-    platform: 'harmony', deviceId: 'device-001', appId: '<target-app-id>', entry: '<entry-ability>',
-    deviceFormFactor: 'phone',
-  },
+assert.deepStrictEqual(needBinding.binding, {
+  platform: 'harmony', deviceId: 'device-001', deviceFormFactor: 'phone',
 });
 assert.deepStrictEqual(needBinding.requiredUserFields, ['binding.appId', 'binding.entry']);
 assert.strictEqual(JSON.stringify(needBinding).includes('probeJson'), false);
-assert.deepStrictEqual(coordinatorAgent.retryWithFor([
+assert.deepStrictEqual(coordinatorAgent.recoveryFor([
   'confirm', '--state', prepared.statePath,
-]), needBinding.confirmTemplate);
+]), { phase: 'NEED_BINDING_CONFIRMATION' });
+assertNoEmbeddedInstructions(needBinding);
 
 assert.throws(() => confirmEnvironment({
   workspaceRoot: workspace,
@@ -235,7 +243,9 @@ assert.strictEqual(preparationError?.code, 'INPUT_CAPABILITY_NOT_READY');
 assert.strictEqual(preparationError?.diagnostic?.stage, 'ENVIRONMENT_PREPARE');
 const preparationErrorResponse = coordinatorAgent.errorResponse(preparationError, 'confirm');
 assert.strictEqual(JSON.stringify(preparationErrorResponse).includes('IME'), false);
-assert.deepStrictEqual(preparationErrorResponse.technicalContext.resume, { capability: 'advanceRun' });
+assert.strictEqual(preparationErrorResponse.retryable, true);
+assert.match(preparationErrorResponse.documentationRef, /references\/coordinator\/errors\.md#error-input-capability-not-ready$/);
+assertNoEmbeddedInstructions(preparationErrorResponse);
 assert.strictEqual(fs.existsSync(path.join(
   workspace, 'runs', 'batch-android-input-prepare-failure', 'execution-request.json',
 )), false);
@@ -261,13 +271,8 @@ const switchable = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['
 assert.strictEqual(switchable.status, 'NEED_USER_CONFIRMATION');
 assert.strictEqual(switchable.reason, 'CHOOSE_ENVIRONMENT');
 assert.strictEqual(switchable.binding.platform, 'harmony');
-assert.strictEqual(switchable.confirmChoices[0].id, 'USE_CURRENT');
-assert.deepStrictEqual(switchable.confirmChoices[0].template, {
-  capability: 'confirmRun',
-  decision: 'USE_CURRENT',
-  userInstruction: '确认在当前设备和 App 上执行用例 014',
-});
-assert.ok(switchable.confirmChoices.some((choice) => choice.id === 'SELECT_IOS'));
+assert.deepStrictEqual(switchable.choices[0], { id: 'USE_CURRENT', decision: 'USE_CURRENT' });
+assert.ok(switchable.choices.some((choice) => choice.id === 'SELECT_IOS'));
 const selectedIos = confirmRun(switchable.statePath, {
   capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'ios',
 }, {
@@ -278,9 +283,9 @@ const selectedIos = confirmRun(switchable.statePath, {
 });
 assert.strictEqual(selectedIos.status, 'NEED_USER_CONFIRMATION');
 assert.strictEqual(selectedIos.reason, 'CONFIRM_ENVIRONMENT_AND_RUN');
-assert.strictEqual(selectedIos.confirmTemplate.decision, 'CONFIRM_BINDING');
-assert.strictEqual(selectedIos.confirmTemplate.binding.platform, 'ios');
-assert.deepStrictEqual(validateCoordinatorRequest(selectedIos.confirmTemplate), []);
+assert.strictEqual(selectedIos.binding.platform, 'ios');
+assert.strictEqual(selectedIos.binding.deviceId, 'ios-device');
+assertNoEmbeddedInstructions(selectedIos);
 
 const multiIos = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['014'] }, {
   batchId: 'batch-ios-multiple-devices',
@@ -297,8 +302,8 @@ const multiIosSelection = confirmRun(multiIos.statePath, {
   }),
 });
 assert.strictEqual(multiIosSelection.reason, 'SELECT_DEVICE');
-assert.strictEqual(multiIosSelection.confirmTemplate, undefined);
-assert.deepStrictEqual(multiIosSelection.deviceChoices.map((choice) => choice.template.deviceId), ['ios-a', 'ios-b']);
+assert.deepStrictEqual(multiIosSelection.choices.map((choice) => choice.deviceId), ['ios-a', 'ios-b']);
+assertNoEmbeddedInstructions(multiIosSelection);
 const multiIosConfirmed = confirmRun(multiIos.statePath, {
   capability: 'confirmRun', decision: 'SELECT_PLATFORM', platform: 'ios', deviceId: 'ios-b',
 }, {
@@ -310,7 +315,7 @@ const multiIosConfirmed = confirmRun(multiIos.statePath, {
     ], diagnostics: [],
   }),
 });
-assert.strictEqual(multiIosConfirmed.confirmTemplate.binding.deviceId, 'ios-b');
+assert.strictEqual(multiIosConfirmed.binding.deviceId, 'ios-b');
 
 const iosDeviceDetectedButSigningPending = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['014'] }, {
   batchId: 'batch-ios-device-detected-signing-pending',
@@ -364,8 +369,8 @@ const invalidBindingConfirmationProcess = childProcess.spawnSync(process.execPat
 ], { encoding: 'utf8', env: process.env });
 assert.strictEqual(invalidBindingConfirmationProcess.status, 2);
 const invalidBindingConfirmation = JSON.parse(invalidBindingConfirmationProcess.stderr);
-assert.deepStrictEqual(invalidBindingConfirmation.retryWith, selectedIos.confirmTemplate);
-assert.strictEqual(invalidBindingConfirmation.confirmChoices, undefined);
+assert.deepStrictEqual(invalidBindingConfirmation.facts, { phase: 'NEED_BINDING_CONFIRMATION' });
+assertNoEmbeddedInstructions(invalidBindingConfirmation);
 
 const environmentFile = path.join(workspace, 'environment-confirmation.json');
 const validEnvironmentSource = fs.readFileSync(environmentFile, 'utf8');
@@ -376,7 +381,7 @@ const invalidDefaultEnvironment = prepareRun({ capability: 'prepareRun', workspa
 assert.strictEqual(invalidDefaultEnvironment.status, 'NEED_USER_CONFIRMATION');
 assert.strictEqual(invalidDefaultEnvironment.binding, undefined);
 assert.ok(invalidDefaultEnvironment.diagnostics.length);
-assert.deepStrictEqual(invalidDefaultEnvironment.confirmChoices.map((choice) => choice.id), [
+assert.deepStrictEqual(invalidDefaultEnvironment.choices.map((choice) => choice.id), [
   'SELECT_HARMONY', 'SELECT_ANDROID', 'SELECT_IOS',
 ]);
 fs.writeFileSync(environmentFile, validEnvironmentSource);
@@ -568,11 +573,13 @@ assert.strictEqual(blocked.code, 'PLATFORM_UNAVAILABLE');
 assert.strictEqual(blocked.reason, '设备不可用');
 assert.strictEqual(blocked.reportStatus, 'DEGRADED');
 assert.strictEqual(blocked.reportPath, undefined);
-assert.strictEqual(blocked.technicalContext.scope, 'COORDINATOR');
-assert.strictEqual(blocked.technicalContext.code, 'PLATFORM_UNAVAILABLE');
-assert.deepStrictEqual(blocked.technicalContext.resume, { capability: 'advanceRun' });
-assert.ok(blocked.technicalContext.resourceFacts.includes('batch=batch-coordinator-blocked'));
-assert.ok(blocked.technicalContext.resourceFacts.includes(`state=${blockedRun.statePath}`));
+assert.deepStrictEqual(blocked.facts, {
+  batchId: 'batch-coordinator-blocked',
+  statePath: blockedRun.statePath,
+  technical: { code: 'PLATFORM_UNAVAILABLE', stage: 'BATCH' },
+});
+assert.match(blocked.documentationRef, /references\/coordinator\/errors\.md#error-platform-unavailable$/);
+assertNoEmbeddedInstructions(blocked);
 const blockedAgain = advanceRun(blockedRun.statePath, {
   batchExecute: () => { throw new Error('stable BLOCKED must not re-enter Batch'); },
 });
@@ -601,12 +608,11 @@ const stateOnlyBlocked = advanceRun(stateOnlyBlockedRun.statePath, {
 });
 assert.strictEqual(stateOnlyBlocked.code, 'IOS_WDA_START_TIMEOUT');
 assert.strictEqual(stateOnlyBlocked.reason, 'WDA 启动超过等待期限');
-assert.deepStrictEqual(stateOnlyBlocked.diagnostic, {
-  code: 'IOS_WDA_START_TIMEOUT',
-  stage: 'WDA_BUILD',
-  summary: 'WDA 启动超过等待期限',
-  retryable: true,
+assert.strictEqual(stateOnlyBlocked.diagnostic, undefined);
+assert.deepStrictEqual(stateOnlyBlocked.facts.technical, {
+  code: 'IOS_WDA_START_TIMEOUT', stage: 'WDA_BUILD',
 });
+assertNoEmbeddedInstructions(stateOnlyBlocked);
 
 const waitingRuntimeRun = prepareConfirmedRun('batch-coordinator-waiting-runtime');
 const waitingRuntime = advanceRun(waitingRuntimeRun.statePath, {
@@ -625,7 +631,9 @@ const waitingRuntime = advanceRun(waitingRuntimeRun.statePath, {
 });
 assert.strictEqual(waitingRuntime.status, 'WAITING');
 assert.strictEqual(waitingRuntime.waitFor, 'PLATFORM_RUNTIME');
-assert.strictEqual(waitingRuntime.diagnostic.code, 'DEVICE_ADAPTER_TIMEOUT');
+assert.strictEqual(waitingRuntime.diagnostic, undefined);
+assert.strictEqual(waitingRuntime.facts.technical.code, 'DEVICE_ADAPTER_TIMEOUT');
+assertNoEmbeddedInstructions(waitingRuntime);
 
 const waitingOwnerRun = prepareConfirmedRun('batch-coordinator-waiting-owner');
 const waitingOwner = advanceRun(waitingOwnerRun.statePath, {
@@ -646,7 +654,9 @@ const waitingOwner = advanceRun(waitingOwnerRun.statePath, {
 assert.strictEqual(waitingOwner.status, 'WAITING');
 assert.strictEqual(waitingOwner.waitFor, 'OWNER_BATCH_TERMINAL');
 assert.strictEqual(waitingOwner.reason, 'PLATFORM_RUNTIME_OWNER_ACTIVE');
-assert.deepStrictEqual(waitingOwner.recovery, { kind: 'WAIT_OR_CANCEL_OWNER_BATCH' });
+assert.strictEqual(waitingOwner.recovery, undefined);
+assert.strictEqual(waitingOwner.facts.technical.code, 'IOS_APPIUM_SERVICE_IN_USE');
+assertNoEmbeddedInstructions(waitingOwner);
 
 const invalidConfirmRun = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['014'] }, {
   batchId: 'batch-coordinator-invalid-confirm',
@@ -658,8 +668,8 @@ const invalidConfirmProcess = childProcess.spawnSync(process.execPath, [
 assert.strictEqual(invalidConfirmProcess.status, 2);
 const invalidConfirm = JSON.parse(invalidConfirmProcess.stderr);
 assert.strictEqual(invalidConfirm.status, 'REQUEST_INVALID');
-assert.strictEqual(invalidConfirm.retryWith, undefined);
-assert.deepStrictEqual(invalidConfirm.confirmChoices, invalidConfirmRun.confirmChoices);
+assert.deepStrictEqual(invalidConfirm.facts, { phase: 'NEED_ENVIRONMENT_DECISION' });
+assertNoEmbeddedInstructions(invalidConfirm);
 
 const technicalError = new Error('probe failed before environment selection completed');
 technicalError.code = 'ENVIRONMENT_PROBE_FAILED';
@@ -672,16 +682,15 @@ technicalError.diagnostic = {
 const technicalResponse = coordinatorAgent.errorResponse(
   technicalError,
   'confirm',
-  { capability: 'confirmRun', decision: 'USE_CURRENT', userInstruction: '重新确认当前 iOS 环境' },
+  { phase: 'NEED_ENVIRONMENT_DECISION' },
 );
 assert.strictEqual(technicalResponse.status, 'TECHNICAL');
-assert.strictEqual(technicalResponse.retryWith, undefined);
-assert.deepStrictEqual(technicalResponse.diagnostic, technicalError.diagnostic);
-assert.strictEqual(technicalResponse.technicalContext.scope, 'COORDINATOR');
-assert.strictEqual(technicalResponse.technicalContext.code, 'ENVIRONMENT_PROBE_FAILED');
-assert.deepStrictEqual(technicalResponse.technicalContext.resume, {
-  capability: 'confirmRun', decision: 'USE_CURRENT', userInstruction: '重新确认当前 iOS 环境',
+assert.strictEqual(technicalResponse.diagnostic, undefined);
+assert.deepStrictEqual(technicalResponse.facts, {
+  phase: 'NEED_ENVIRONMENT_DECISION',
+  technical: { code: 'ENVIRONMENT_PROBE_FAILED', stage: 'ENVIRONMENT_PROBE' },
 });
+assertNoEmbeddedInstructions(technicalResponse);
 
 const staleConfirmationState = loadCoordinatorState(invalidConfirmRun.statePath);
 staleConfirmationState.phase = 'BATCH_READY';
@@ -690,9 +699,9 @@ staleConfirmationState.bindingConfirmationTemplate = {
   binding: { platform: 'ios', deviceId: 'old-ios', appId: 'com.example.old' },
 };
 writeJsonAtomic(invalidConfirmRun.statePath, staleConfirmationState);
-assert.strictEqual(coordinatorAgent.retryWithFor([
+assert.deepStrictEqual(coordinatorAgent.recoveryFor([
   'confirm', '--state', invalidConfirmRun.statePath,
-]), null);
+]), {});
 staleConfirmationState.phase = 'NEED_ENVIRONMENT_DECISION';
 writeJsonAtomic(invalidConfirmRun.statePath, staleConfirmationState);
 
@@ -704,7 +713,7 @@ assert.strictEqual(repeatedInvalidConfirmProcess.status, 2);
 const repeatedInvalidConfirm = JSON.parse(repeatedInvalidConfirmProcess.stderr);
 assert.strictEqual(repeatedInvalidConfirm.status, 'AGENT_INPUT_STALLED');
 assert.strictEqual(repeatedInvalidConfirm.code, 'AGENT_INPUT_STALLED');
-assert.strictEqual(repeatedInvalidConfirm.retryWith, undefined);
+assertNoEmbeddedInstructions(repeatedInvalidConfirm);
 
 const advanceProcess = childProcess.spawnSync(process.execPath, [
   path.resolve(__dirname, '../coordinator-agent.js'), 'advance', '--state', invalidConfirmRun.statePath,
@@ -713,7 +722,7 @@ assert.strictEqual(advanceProcess.status, 0, advanceProcess.stderr || advancePro
 assert.deepStrictEqual(JSON.parse(advanceProcess.stderr), {
   event: 'COORDINATOR_COMMAND_STARTED',
   capability: 'advanceRun',
-  message: '命令正在执行；若宿主返回进程句柄，请继续等待同一进程，不要重复调用',
+  status: 'RUNNING',
 });
 
 const cancelledBeforeBatch = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['014'] }, {

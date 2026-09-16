@@ -95,7 +95,7 @@ function normalizeAdapterActionResult(value, context = {}) {
 
 function validateAdapterActionResult(value) {
   if (!value || value.schemaVersion !== 2 || value.type !== 'actionResult') {
-    throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'action adapter must return Action Result schema v2');
+    throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'action adapter must return current Action Result schema');
   }
   if (!COMMAND_STATUSES.has(value.command?.status)) {
     throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'action result command.status is invalid');

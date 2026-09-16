@@ -22,7 +22,7 @@ function commitBusinessTerminal(state, now = null) {
 }
 
 function recordFinalizationStep(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options, 'FINALIZE'));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
   return withFileLock(loaded.paths.lock, () => {
     const state = readBatchState(loaded.paths, loaded.contract);
     if (['COMPLETED', 'CANCELLED', 'BLOCKED'].includes(state.status)) return { state, idempotent: true };
@@ -73,7 +73,7 @@ function archiveBatchDrafts(paths, options = {}) {
 }
 
 function cancelBatch(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options, 'CANCEL'));
+  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
   return withFileLock(loaded.paths.lock, () => {
     const state = readBatchState(loaded.paths, loaded.contract);
     if (state.status === 'CANCELLED') return { action: 'BATCH_CANCELLED', state, idempotent: true };

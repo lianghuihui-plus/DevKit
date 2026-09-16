@@ -87,16 +87,18 @@ function executeResult(verdict, options = {}) {
     initialObserve: false,
     now: '2026-09-04T02:00:00.000Z',
   });
-  assert.strictEqual(started.execution.schemaVersion, 11);
+  assert.strictEqual(started.execution.schemaVersion, 12);
   assert.ok(started.execution.validationProfileSha);
   assert.strictEqual(readExecutionReport(started.execDir).readerFamily, 'current-execution');
   const planned = run(started.execDir, {
-    capability: 'plan',
-    understanding: source,
-    preconditions: ['目标 App 已启动'],
-    verificationPoints: [{ text: '目标页面符合用例预期' }],
-    items: ['确认目标页面现场', '完成验证点判断'],
-    uncertainties: [],
+    capability: 'plan', caseModel: {
+      baseRevision: null,
+      understanding: source,
+      preconditions: ['目标 App 已启动'],
+      verificationPoints: [{ text: '目标页面符合用例预期' }],
+      items: ['确认目标页面现场', '完成验证点判断'],
+      uncertainties: [],
+    },
   }, { now: '2026-09-04T02:00:00.500Z' });
   assert.strictEqual(planned.status, 'CASE_MODEL_RECORDED');
   let technicalFactRef = null;
@@ -105,7 +107,7 @@ function executeResult(verdict, options = {}) {
   }, { runner, now: '2026-09-04T02:00:01.000Z' });
   assert.strictEqual(observed.status, 'SCENE');
   const visualInspection = run(started.execDir, {
-    capability: 'inspect', channel: 'visual', expectationRefs: ['E1'],
+    capability: 'inspect', basedOnSceneRef: observed.scene.sceneRef, channel: 'visual', expectationRefs: ['E1'],
     observation: `截图中的目标页面表现可用于 ${verdict} 判断`,
   }, { now: '2026-09-04T02:00:01.100Z' });
   assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
@@ -124,6 +126,7 @@ function executeResult(verdict, options = {}) {
   if (verdict !== 'PASS' && !options.technical) {
     const knowledge = run(started.execDir, {
       capability: 'knowledge',
+      basedOnSceneRef: observed.scene.sceneRef,
       query: `${verdict} 现场是否存在已知解释`,
       expectationRefs: ['E1'],
     }, { now: '2026-09-04T02:00:01.500Z' });
@@ -140,13 +143,15 @@ function executeResult(verdict, options = {}) {
   };
   const finished = run(started.execDir, {
     capability: 'finish', summary: `${verdict} Runtime 结果`,
-    checks: [{
+    updates: { expectationResults: [{
       expectationRef: check.expectationRef,
       status: check.status,
       actual: check.actual,
-      ...(['PASS', 'FAIL'].includes(verdict) ? { evidence: ['current'] } : {}),
-      ...(technicalFactRef ? { technicalRefs: [technicalFactRef] } : {}),
-    }],
+      evidence: {
+        ...(['PASS', 'FAIL'].includes(verdict) ? { sceneRefs: [observed.scene.sceneRef] } : {}),
+        ...(technicalFactRef ? { technicalRefs: [technicalFactRef] } : {}),
+      },
+    }] },
     uncertainties: verdict === 'INCONCLUSIVE' ? ['现场不足以可靠判断'] : [],
   }, { now: '2026-09-04T02:00:02.000Z' });
   assert.strictEqual(finished.status, 'COMPLETED');

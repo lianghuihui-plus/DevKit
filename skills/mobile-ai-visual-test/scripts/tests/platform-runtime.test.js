@@ -250,12 +250,13 @@ assert.strictEqual(managedReleaseCalls, 1);
 const changedImplementation = fixture('changed-implementation-release');
 acquireBatchPlatformRuntime(common(changedImplementation, managedAdapter));
 terminal(changedImplementation);
-const releasedByCurrentImplementation = releaseBatchPlatformRuntime({
+assert.throws(() => releaseBatchPlatformRuntime({
   ...common(changedImplementation, managedAdapter),
   runtimeSha: 'case-runtime-current-implementation',
   adapterSha: 'platform-adapter-current-implementation',
   coordinatorSha: 'batch-coordinator-current-implementation',
-});
+}), (error) => error.code === 'BATCH_IMPLEMENTATION_MISMATCH');
+const releasedByCurrentImplementation = releaseBatchPlatformRuntime(common(changedImplementation, managedAdapter));
 assert.strictEqual(releasedByCurrentImplementation.status, 'RELEASED');
 
 const external = fixture('external');

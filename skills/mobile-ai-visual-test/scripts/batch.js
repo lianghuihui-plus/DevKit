@@ -135,7 +135,7 @@ function publishTerminalReports(common, current) {
   const startedAt = Date.now();
   let publication;
   try {
-    const loaded = loadBatch(common.workspaceRoot, common.batchId, { ...common, compatibilityMode: 'FINALIZE' });
+    const loaded = loadBatch(common.workspaceRoot, common.batchId, common);
     const refresh = current.refreshBatchIndex || refreshBatchIndex;
     refresh(common.workspaceRoot, loaded.contract.targets.map((target) => target.caseDir));
     publication = { status: 'PUBLISHED', durationMs: Date.now() - startedAt };
@@ -272,7 +272,7 @@ function execute(options) {
         }));
       } catch (error) {
         try {
-          const loaded = loadBatch(options.workspace, options.batchId, { ...common, compatibilityMode: 'FINALIZE' });
+          const loaded = loadBatch(options.workspace, options.batchId, common);
           if (loaded.state.status === 'BLOCKING') return reconcileWithFinalization(common, current);
         } catch {
           // Preserve the bootstrap error when state recovery cannot be started.
@@ -286,12 +286,12 @@ function execute(options) {
     }
     case 'commit': return cleanupTerminalPlatformRuntime(common, current, commitWithDashboard(common));
     case 'status': {
-      const loaded = loadBatch(options.workspace, options.batchId, { ...common, compatibilityMode: 'READ' });
+      const loaded = loadBatch(options.workspace, options.batchId, common);
       return { ...loaded, platformRuntime: loadBatchPlatformRuntime(common) };
     }
     case 'cancel': return cancelBatch({ ...common, reason: options.reason });
     case 'teardown': {
-      const loaded = loadBatch(options.workspace, options.batchId, { ...common, compatibilityMode: 'FINALIZE' });
+      const loaded = loadBatch(options.workspace, options.batchId, common);
       return {
         ...loaded,
         platformRuntimeCleanup: releaseBatchPlatformRuntime({ ...common, adapter: current.adapter }),

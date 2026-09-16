@@ -7,15 +7,15 @@
 - `INCONCLUSIVE`：原文、覆盖范围或证据不足以可靠判断。
 - `BLOCKED`：客观技术或业务前置条件阻止继续执行。
 
-设备离线、Adapter 不可用、Session 失效、截图产物异常和 Runtime 文件错误属于技术事实，不直接成为产品 FAIL。Runtime 返回 `TECHNICAL`、稳定错误码、最后 Scene、技术事实引用和 `technicalContext`；只有仍属于当前 execution、generation 和验证点的有效技术事实才能被最终 check 引用。
+设备离线、Adapter 不可用、Session 失效、截图产物异常和 Runtime 文件错误属于技术事实，不直接成为产品 FAIL。Runtime 返回 `TECHNICAL`、稳定错误码、最后 Scene、技术事实引用、动态 facts 和 `documentationRef`；只有仍属于当前 execution、generation 和验证点的有效技术事实才能被最终 check 引用。
 
-优先使用响应提供的 `nextCall`、确定性恢复或 `technicalContext.resume`。恢复无效、状态长期无进展、框架不能表达所需操作，或诊断与现场矛盾时，Agent 可在职责与授权范围内读取日志并使用平台工具调查。不得直接修改权威产物；框架外处置用 `recover.externalAction` 登记后必须重新 `observe`。
+收到错误时按 `documentationRef` 查阅恢复条件，并根据当前动态 facts 构造签名中允许的请求。恢复无效、状态长期无进展、框架不能表达所需操作，或诊断与现场矛盾时，Agent 可在职责与授权范围内读取日志并使用平台工具调查。不得直接修改权威产物；框架外处置用 `recover.externalAction` 登记后必须重新 `observe`。
 
 每次动作自动采集新 Scene，并返回请求坐标、投递坐标、可选设备触点、落点标注图和整屏像素比较。框架不判断动作是否命中业务目标。动作已发出但结果未知时记录 `actionOutcomeUnknown`，先观察现场，不自动重放；旧 Scene 动作返回 `SCENE_CHANGED`。
 
 截图与控件树是并列证据。控件树为空、缺失或冲突时不得推断页面空白；系统权限弹窗、Toast、遮罩、浮层、键盘、长按过程、动画和纯视觉结果必须通过 `view_image` 检查并登记。最终 PASS/FAIL 引用的 Scene 必须有视觉检查记录。
 
-需要 App 初始状态时，Case Agent 只能请求 execution 已授权的准备策略；未授权时 Runtime 在调用清理命令前返回 `APP_INITIAL_STATE_UNAVAILABLE`。iOS 的卸载与安装通过原生工具确认三态安装态，不用 WDA 运行态代替安装事实；失败后只按 `nextCall` 重试或登记已完成的外部处置，不能用 `observe` 绕过门禁。未知结果的清数据或重装不重放。
+需要 App 初始状态时，Case Agent 只能请求 execution 已授权的准备策略；未授权时 Runtime 在调用清理命令前返回 `APP_INITIAL_STATE_UNAVAILABLE`。iOS 的卸载与安装通过原生工具确认三态安装态，不用 WDA 运行态代替安装事实；失败后根据错误文档与当前准备状态重试或登记已完成的外部处置，不能用 `observe` 绕过门禁。未知结果的清数据或重装不重放。
 
 单用例预算为 30 分钟。预算结束后 Runtime 停止新的设备动作，但允许 Case Agent 检查已有 Scene、查询知识并 finish。无人值守批次不等待账号、验证码或业务解释；单用例可收口时继续下一条，只有共享平台与批次级故障停止批次。
 

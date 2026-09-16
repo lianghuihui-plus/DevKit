@@ -25,7 +25,7 @@ const common = {
   batchId: 'batch-20260910',
   executionId: 'exec-20260910-001',
   caseProtocolSha: 'agent-protocol-0123456789abcdef',
-  casePrompt: 'Frozen Case Agent prompt v1',
+  casePrompt: 'Frozen Case Agent prompt',
   brief: { caseKey: 'ck-001', expectations: [{ id: 'E1', text: '目标内容可见' }] },
   now: '2026-09-10T08:00:00.000Z',
 };

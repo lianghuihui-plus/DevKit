@@ -179,8 +179,8 @@ function validateRuntimeRequest(value) {
   }
   if (operation === 'inspectScene') {
     ensureString(value.basedOnSceneId, 'basedOnSceneId', 'CASE_RUNTIME_REQUEST_INVALID');
-    if (!['ELEMENTS', 'CAPABILITIES', 'LAYOUT', 'ACTION'].includes(value.view)) {
-      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'inspectScene.view must be ELEMENTS, CAPABILITIES, LAYOUT, or ACTION');
+    if (!['ELEMENTS', 'LAYOUT', 'ACTION'].includes(value.view)) {
+      throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'inspectScene.view must be ELEMENTS, LAYOUT, or ACTION');
     }
     if (value.view === 'ACTION') {
       ensureString(value.observation, 'observation', 'CASE_RUNTIME_REQUEST_INVALID');
@@ -190,12 +190,10 @@ function validateRuntimeRequest(value) {
     }
     if (value.filter !== undefined) {
       const filter = ensureObject(value.filter, 'filter', 'CASE_RUNTIME_REQUEST_INVALID');
-      const allowed = value.view === 'ELEMENTS'
-        ? new Set(['interactiveOnly', 'textContains', 'role'])
-        : value.view === 'CAPABILITIES' ? new Set(['actionType', 'elementRef']) : new Set();
+      const allowed = value.view === 'ELEMENTS' ? new Set(['interactiveOnly', 'textContains', 'role']) : new Set();
       const unsupported = Object.keys(filter).filter((field) => !allowed.has(field));
       if (unsupported.length) throw contractError('CASE_RUNTIME_REQUEST_INVALID', `inspectScene filter contains unsupported fields: ${unsupported.join(', ')}`);
-      for (const field of ['textContains', 'role', 'actionType', 'elementRef']) {
+      for (const field of ['textContains', 'role']) {
         if (filter[field] !== undefined) ensureString(filter[field], `filter.${field}`, 'CASE_RUNTIME_REQUEST_INVALID');
       }
       if (filter.interactiveOnly !== undefined && typeof filter.interactiveOnly !== 'boolean') {

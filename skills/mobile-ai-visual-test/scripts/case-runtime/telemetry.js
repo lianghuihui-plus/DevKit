@@ -16,6 +16,10 @@ function spanFile(execDir) {
   return path.join(telemetryDir(execDir), 'spans.jsonl');
 }
 
+function agentFacingFile(execDir) {
+  return path.join(telemetryDir(execDir), 'agent-facing.jsonl');
+}
+
 function clock(options = {}) {
   return typeof options.telemetryClock === 'function' ? options.telemetryClock() : Date.now();
 }
@@ -77,6 +81,40 @@ function recordSpan(execDir, name, durationMs, details = {}, options = {}) {
   });
 }
 
+function recordAgentFacing(execDir, request, response, durationMs, options = {}) {
+  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  if (execution?.schemaVersion !== 12 || execution.finalized === true) return;
+  fs.mkdirSync(telemetryDir(execDir), { recursive: true });
+  const updateKinds = Object.keys(request?.updates || {});
+  appendJsonl(agentFacingFile(execDir), {
+    schemaVersion: 1,
+    at: options.now || new Date().toISOString(),
+    capability: request?.capability || 'unknown',
+    status: response?.status || 'TECHNICAL',
+    ...(response?.code ? { code: response.code } : {}),
+    updateCount: updateKinds.length,
+    piggybacked: updateKinds.length > 0,
+    effectRejectedAfterUpdates: updateKinds.length > 0 && response?.effect?.status === 'REJECTED',
+    unresolvedFinish: request?.capability === 'finish' && response?.code === 'CASE_RESULT_INCOMPLETE',
+    requestBytes: Buffer.byteLength(JSON.stringify(request || {})),
+    responseBytes: Buffer.byteLength(JSON.stringify(response || {})),
+    sceneProjectionBytes: response?.scene ? Buffer.byteLength(JSON.stringify(response.scene)) : 0,
+    updatesApplyMs: Math.max(0, Number(options.agentFacingMetrics?.updatesApplyMs) || 0),
+    ledgerProjectionMs: Math.max(0, Number(options.agentFacingMetrics?.ledgerProjectionMs) || 0),
+    documentationRefCount: countDocumentationRefs(response),
+    ...(['stdin', 'mcp'].includes(options.hostTransport) ? { hostTransport: options.hostTransport } : {}),
+    durationMs: Math.max(0, Number(durationMs) || 0),
+  });
+}
+
+function countDocumentationRefs(value) {
+  if (!value || typeof value !== 'object') return 0;
+  if (Array.isArray(value)) return value.reduce((sum, item) => sum + countDocumentationRefs(item), 0);
+  return Object.entries(value).reduce((sum, [key, child]) => (
+    sum + (key === 'documentationRef' && typeof child === 'string' ? 1 : countDocumentationRefs(child))
+  ), 0);
+}
+
 function summarize(execDir, totalElapsedMs, openInvocation = null, options = {}) {
   const invocations = readJsonl(invocationFile(execDir), { repairIncompleteTail: true });
   const starts = invocations.filter((entry) => entry.phase === 'START');
@@ -85,6 +123,7 @@ function summarize(execDir, totalElapsedMs, openInvocation = null, options = {})
   if (openInvocation) runtimeActiveMs += Math.max(0, clock(options) - openInvocation.startedMs);
   runtimeActiveMs = Math.min(totalElapsedMs, runtimeActiveMs);
   const spans = readJsonl(spanFile(execDir), { repairIncompleteTail: true });
+  const agentFacingEntries = readJsonl(agentFacingFile(execDir), { repairIncompleteTail: true });
   const operationMs = (operation) => ends.filter((entry) => entry.operation === operation)
     .reduce((total, entry) => total + (Number(entry.durationMs) || 0), 0);
   const raw = {
@@ -166,14 +205,36 @@ function summarize(execDir, totalElapsedMs, openInvocation = null, options = {})
     agentTiming,
     invocationCount: starts.length,
     invocationErrorCount: ends.filter((entry) => entry.error === true).length,
+    agentFacing: {
+      decisionSubmissionCount: agentFacingEntries.length,
+      piggybackedSubmissionCount: agentFacingEntries.filter((entry) => entry.piggybacked).length,
+      piggybackedUpdateCount: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.updateCount) || 0), 0),
+      effectRejectionAfterUpdatesCount: agentFacingEntries.filter((entry) => entry.effectRejectedAfterUpdates).length,
+      unresolvedFinishAttemptCount: agentFacingEntries.filter((entry) => entry.unresolvedFinish).length,
+      requestBytes: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.requestBytes) || 0), 0),
+      responseBytes: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.responseBytes) || 0), 0),
+      sceneProjectionBytes: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.sceneProjectionBytes) || 0), 0),
+      updatesApplyMs: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.updatesApplyMs) || 0), 0),
+      ledgerProjectionMs: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.ledgerProjectionMs) || 0), 0),
+      documentationRefCount: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.documentationRefCount) || 0), 0),
+      hostTransportCounts: agentFacingEntries.reduce((counts, entry) => {
+        if (['stdin', 'mcp'].includes(entry.hostTransport)) {
+          counts[entry.hostTransport] = (counts[entry.hostTransport] || 0) + 1;
+        }
+        return counts;
+      }, {}),
+      durationMs: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.durationMs) || 0), 0),
+    },
   };
 }
 
 module.exports = {
+  agentFacingFile,
   beginInvocation,
   endInvocation,
   invocationFile,
   recordSpan,
+  recordAgentFacing,
   redactRequest,
   spanFile,
   summarize,

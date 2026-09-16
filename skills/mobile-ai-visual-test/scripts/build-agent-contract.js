@@ -53,9 +53,19 @@ function coordinatorCapabilities(skillRoot, entrypoints) {
   const agentFacingContract = require(resolved);
   return {
     interfaceKind: agentFacingContract.AGENT_FACING_INTERFACE_KIND,
-    entrypoint: entrypoints[0],
-    capabilities: agentFacingContract.capabilityCards(),
+    protocol: agentFacingContract.AGENT_FACING_PROTOCOL,
+    command: entrypoints[0],
+    documentation: 'references/coordinator.md',
   };
+}
+
+function publicContract(skillRoot, role) {
+  const relative = role === 'case-executor'
+    ? 'scripts/case-runtime/agent-facing-contract.js'
+    : 'scripts/coordinator/agent-facing-contract.js';
+  const resolved = require.resolve(path.join(skillRoot, relative));
+  delete require.cache[resolved];
+  return require(resolved).PUBLIC_CONTRACT;
 }
 
 function filesDigest(skillRoot, files, prefix) {
@@ -90,7 +100,8 @@ function buildContract(options) {
   const entrypoints = roleEntrypoints(options.role);
   const capabilities = options.role === 'batch-coordinator'
     ? coordinatorCapabilities(options.skillRoot, entrypoints) : null;
-  const protocolSha = contractDigest(options.skillRoot, options.role, options.platform, resources, entrypoints, capabilities);
+  const protocolDefinition = publicContract(options.skillRoot, options.role);
+  const protocolSha = contractDigest(options.skillRoot, options.role, options.platform, resources, entrypoints, protocolDefinition);
   const implementation = implementationDigest(options.skillRoot, options.role, options.platform);
   if (options.verifySha && options.verifySha !== protocolSha) {
     throw new Error(`AGENT_PROTOCOL_MISMATCH: requested ${options.verifySha}, current ${protocolSha}`);

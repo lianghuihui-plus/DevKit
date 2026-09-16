@@ -17,7 +17,7 @@ fs.mkdirSync(execDir, { recursive: true });
 fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
 fs.writeFileSync(path.join(execDir, 'source.snapshot.md'), '验证首页卡片展示');
 writeJsonAtomic(path.join(execDir, 'execution.json'), {
-  schemaVersion: 11,
+  schemaVersion: 12,
   runtime: 'case-runtime',
   executionId: 'execution-case-model',
   sourceSha: 'source-test',
@@ -91,26 +91,22 @@ assert.throws(() => require('../case-runtime/result-integrity').validateExpectat
 
 const agentPlan = {
   capability: 'plan',
-  understanding: '验证首页卡片展示',
-  preconditions: ['已进入首页'],
-  verificationPoints: [{ text: '首页显示入口 A' }],
-  items: ['检查首页入口'],
-  uncertainties: [],
-  reason: '为当前执行重新整理业务理解',
+  caseModel: {
+    baseRevision: 2,
+    understanding: '验证首页卡片展示',
+    preconditions: ['已进入首页'],
+    verificationPoints: [{ text: '首页显示入口 A' }],
+    items: ['检查首页入口'],
+    uncertainties: [],
+    reason: '为当前执行重新整理业务理解',
+  },
 };
 assert.deepStrictEqual(validateAgentFacingRequest(agentPlan), []);
 assert.ok(validateAgentFacingRequest({ capability: 'plan', items: ['旧格式计划'] })
-  .some((item) => item.field === 'understanding' && item.code === 'REQUIRED'));
+  .some((item) => item.field === 'caseModel' && item.code === 'REQUIRED'));
 assert.deepStrictEqual(translateAgentFacingRequest(execDir, agentPlan), {
   operation: 'recordCaseModel',
-  caseModel: {
-    understanding: agentPlan.understanding,
-    preconditions: agentPlan.preconditions,
-    verificationPoints: agentPlan.verificationPoints,
-    items: agentPlan.items,
-    uncertainties: agentPlan.uncertainties,
-    reason: agentPlan.reason,
-  },
+  caseModel: agentPlan.caseModel,
 });
 
 fs.rmSync(temp, { recursive: true, force: true });

@@ -55,7 +55,7 @@ function deriveExecutionTiming(execution = {}, metrics = {}, publication = null)
     for (const field of PERSISTED_PHASE_FIELDS) phases[field] = hasOwn(metrics, field) ? metrics[field] : null;
     phases.reportPublicationDelayMs = publicationDelay(execution, publication);
     return {
-      durationBasis: 'CASE_TOTAL_V1',
+      durationBasis: 'CASE_TOTAL',
       startedAt: processingStartedAt || execution.startedAt || '',
       durationMs: hasOwn(metrics, 'caseTotalElapsedMs') ? metrics.caseTotalElapsedMs : null,
       phases,
@@ -81,7 +81,7 @@ function deriveExecutionTiming(execution = {}, metrics = {}, publication = null)
   }
   phases.reportPublicationDelayMs = publicationDelay(execution, publication);
   return {
-    durationBasis: 'CASE_TOTAL_V1',
+    durationBasis: 'CASE_TOTAL',
     startedAt: processingStartedAt,
     durationMs: duration(execution.endedAt, processingStartedAt),
     phases,
