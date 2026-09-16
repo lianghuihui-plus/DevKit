@@ -105,9 +105,13 @@ sequenceDiagram
   C-->>M: next case or terminal state
 ```
 
-批次内同一时刻只有一个活跃用例。用例之间可以复用 App 暖状态，但不共享 Case Agent 上下文、Case Model 或 execution 证据。
+批次内同一时刻只有一个活跃用例。用例之间可以复用 App 暖状态，但不共享 Case Agent 上下文、Case Model 或 execution 证据。不同 `batchId` 的 Run 相互隔离，可以在同一工作空间并行执行不同平台；同一设备或同一平台资源能否共享仍由现有资源所有权规则决定。
 
 初始化步骤持久化在 Coordinator run 中；命令中断后 `advanceRun` 从首个缺失步骤恢复，不重复已经完成的初始化。Execution 收口、平台释放、Batch 业务终态与报告发布是独立事实，报告失败不会把已完成批次改回等待态。
+
+工作空间根 `environment-confirmation.json` 只表示供新 Run 选择的最近默认环境，不表示工作空间唯一活跃平台。Run 在准备阶段保存自己的 `currentEnvironmentOffer`，确认后把完整绑定冻结到 `initialization.environmentFrozen` 和 Batch/ExecutionRequest；后续恢复使用冻结值，不跟随另一个会话对根默认环境的更新。
+
+各平台 Execution 位于独立目录，可以并行落盘。`index.html`、根报告元数据、用例原文页和平台详情页属于可重建的共享派生产物，所有正式报告入口通过 `<workspace>/.report-publication.lock` 执行完整的“重新读取 -> 生成 -> 发布”事务。合法活跃锁在框架内部等待，失效 PID 锁自动回收，锁竞争不返回给 Agent；报告锁不包围设备操作，也不在锁内取得 Batch、Execution 或平台资源锁。
 
 ## 5. Case Model
 
@@ -194,6 +198,8 @@ Narrative Projector 从事件投影初始理解、当前理解、修订理由、
 
 看板总览只展示总耗时和起止时间；细分耗时位于用例详情的结果概览。详情左侧步骤列表与右侧检查区域等高并独立滚动；每一步只显示当时关联的验证点，最终结果独立展示。
 
+看板用例状态、平台和搜索条件可以组合。选择具体平台时，用例列表只保留该平台有对应结果且满足当前状态的用例，并只显示所选平台的执行行；切回全部平台后恢复所有执行行。顶部三平台执行分布始终保留为工作空间全局总览，不随列表过滤变化。
+
 ## 11. 产物与读取边界
 
 新 execution 的正式产物包括：
@@ -222,6 +228,8 @@ completion.json
 `runtime.json`、Coordinator 控制请求、`current-scene.json`、锁和事务草稿是运行期文件。Case Runtime 请求只通过 stdin 或绑定 MCP 工具进入，不创建请求文件。正式 Manifest 与 Completion 只绑定当前所需的快照、证据、结果和协议摘要，不再要求 CaseDefinition 或 CaseSpec。
 
 当前 Execution schema 为 12。Runtime、Batch、Report 和 Reader 只接受该 schema，不提供并行读写或转换分支。报告选择器按可发布状态和完成时间选择最新 execution，取消记录不能覆盖较新的已发布结果。
+
+工作空间可复用与历史 Execution 可读取是两个兼容边界：旧工作空间目录和用例可以创建当前格式的新 Run，无需迁移；旧 Execution 保持原样，只按当前 Reader 的支持范围展示，报告刷新不会补写、转换或删除历史数据。某个平台的旧记录不可读取时，不得遮蔽同一用例其他平台的当前可读结果。
 
 ## 12. 模块与依赖
 

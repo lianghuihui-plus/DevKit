@@ -2,6 +2,7 @@
 'use strict';
 
 const assert = require('assert');
+const childProcess = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -11,8 +12,14 @@ const {
 } = require('../lib/execution-artifact-manifest');
 const { completionPaths, sha256File, validateCompletionBinding, validatePublishedCompletion } = require('../lib/completion-contract');
 const { classifyPublicationFailure, readPublicationState, recordPublicationAttempt } = require('../report/publication-state');
-const { refreshBatchIndex, renderIndexForRoot } = require('../report/report-service');
+const {
+  rebuildCaseDerivedArtifacts,
+  refreshBatchIndex,
+  refreshCommittedCaseReports,
+  renderIndexForRoot,
+} = require('../report/report-service');
 const { writeCaseReports } = require('../report/report-service');
+const { withWorkspaceReportPublication } = require('../report/publication-lock');
 const { commitWithDashboard } = require('../batch');
 const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
 
@@ -36,6 +43,75 @@ function fixture(name) {
 
 function expectCode(fn, code) {
   assert.throws(fn, (error) => error?.code === code, `expected ${code}`);
+}
+
+function waitForFile(file, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  while (!fs.existsSync(file) && Date.now() < deadline) Atomics.wait(pause, 0, 0, 10);
+  assert.strictEqual(fs.existsSync(file), true, `timed out waiting for ${file}`);
+}
+
+function fileAppears(file, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  while (!fs.existsSync(file) && Date.now() < deadline) Atomics.wait(pause, 0, 0, 10);
+  return fs.existsSync(file);
+}
+
+function holdReportLock(workspaceRoot, holdMs = 250) {
+  const lockPath = path.join(workspaceRoot, '.report-publication.lock');
+  const readyPath = path.join(workspaceRoot, '.report-lock-holder-ready');
+  const releasedPath = path.join(workspaceRoot, '.report-lock-holder-released');
+  const lifecyclePath = path.resolve(__dirname, '../lib/execution-lifecycle.js');
+  const script = `
+    const fs = require('fs');
+    const { acquireFileLock, releaseFileLock } = require(${JSON.stringify(lifecyclePath)});
+    const [lockPath, readyPath, releasedPath, holdMs] = process.argv.slice(1);
+    const lock = acquireFileLock(lockPath);
+    fs.writeFileSync(readyPath, 'ready');
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(holdMs));
+    } finally {
+      releaseFileLock(lock);
+      fs.writeFileSync(releasedPath, 'released');
+    }
+  `;
+  const child = childProcess.spawn(process.execPath, [
+    '-e', script, lockPath, readyPath, releasedPath, String(holdMs),
+  ], { cwd: path.resolve(__dirname, '..'), stdio: 'ignore' });
+  waitForFile(readyPath);
+  return { child, lockPath, releasedPath };
+}
+
+function spawnCommittedReportRefresh(caseDir, platform) {
+  const resultPath = path.join(caseDir, `.concurrent-refresh-${platform}.json`);
+  const reportServicePath = path.resolve(__dirname, '../report/report-service.js');
+  const script = `
+    const fs = require('fs');
+    const { refreshCommittedCaseReports } = require(${JSON.stringify(reportServicePath)});
+    const [caseDir, platform, resultPath] = process.argv.slice(1);
+    try {
+      refreshCommittedCaseReports(caseDir, platform);
+      fs.writeFileSync(resultPath, JSON.stringify({ ok: true }));
+    } catch (error) {
+      fs.writeFileSync(resultPath, JSON.stringify({
+        ok: false,
+        code: error && error.code,
+        message: error && error.message,
+      }));
+    }
+  `;
+  const child = childProcess.spawn(process.execPath, [
+    '-e', script, caseDir, platform, resultPath,
+  ], { cwd: path.resolve(__dirname, '..'), stdio: 'ignore' });
+  return { child, resultPath };
+}
+
+function readRefreshResult(refresh) {
+  waitForFile(refresh.resultPath);
+  const result = JSON.parse(fs.readFileSync(refresh.resultPath, 'utf8'));
+  assert.deepStrictEqual(result, { ok: true });
 }
 
 const published = fixture('published');
@@ -193,7 +269,114 @@ assert.strictEqual(fs.existsSync(platformReport), true);
 const repairAlias = `${repairRoot}-alias`;
 fs.symlinkSync(repairRoot, repairAlias, 'dir');
 assert.doesNotThrow(() => refreshBatchIndex(repairAlias, [repairFixture.caseDir]));
+
+const callbackFailure = new Error('simulated report callback failure');
+assert.throws(
+  () => withWorkspaceReportPublication(repairRoot, () => { throw callbackFailure; }),
+  (error) => error === callbackFailure,
+);
+assert.strictEqual(fs.existsSync(path.join(repairRoot, '.report-publication.lock')), false);
+assert.doesNotThrow(() => withWorkspaceReportPublication(repairRoot, () => 'recovered'));
+
+withWorkspaceReportPublication(repairRoot, () => {
+  const expectedCode = 'REPORT_PUBLICATION_REENTRANT';
+  expectCode(() => withWorkspaceReportPublication(repairAlias, () => null), expectedCode);
+  expectCode(() => renderIndexForRoot(repairAlias), expectedCode);
+  expectCode(() => refreshBatchIndex(repairAlias, [repairFixture.caseDir]), expectedCode);
+  expectCode(() => refreshCommittedCaseReports(repairFixture.caseDir, 'harmony'), expectedCode);
+  expectCode(() => rebuildCaseDerivedArtifacts(repairFixture.caseDir), expectedCode);
+});
+
+const reportLock = holdReportLock(repairRoot);
+const reportLockStartedAt = Date.now();
+refreshBatchIndex(repairAlias, [repairFixture.caseDir]);
+const reportLockWaitMs = Date.now() - reportLockStartedAt;
+waitForFile(reportLock.releasedPath);
+assert.ok(reportLockWaitMs >= 150, `report refresh ignored the active publication lock (${reportLockWaitMs}ms)`);
+assert.strictEqual(fs.existsSync(reportLock.lockPath), false);
 fs.unlinkSync(repairAlias);
+
+fs.writeFileSync(reportLock.lockPath, `${JSON.stringify({
+  pid: 2147483647,
+  acquiredAt: '2026-09-16T00:00:00.000Z',
+})}\n`);
+assert.doesNotThrow(() => refreshBatchIndex(repairRoot, [repairFixture.caseDir]));
+assert.strictEqual(fs.existsSync(reportLock.lockPath), false, 'stale report publication lock must be recovered');
+
+const malformedLockRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-malformed-lock-'));
+createTestWorkspace(malformedLockRoot);
+const malformedLockPath = path.join(malformedLockRoot, '.report-publication.lock');
+const malformedResultPath = path.join(malformedLockRoot, '.report-publication-result.json');
+fs.writeFileSync(malformedLockPath, '{ malformed');
+const publicationLockPath = path.resolve(__dirname, '../report/publication-lock.js');
+const malformedLockScript = `
+  const fs = require('fs');
+  const { withWorkspaceReportPublication } = require(${JSON.stringify(publicationLockPath)});
+  const [root, resultPath] = process.argv.slice(1);
+  try {
+    withWorkspaceReportPublication(root, () => null);
+    fs.writeFileSync(resultPath, JSON.stringify({ ok: true }));
+  } catch (error) {
+    fs.writeFileSync(resultPath, JSON.stringify({ ok: false, code: error && error.code }));
+  }
+`;
+const malformedLockChild = childProcess.spawn(process.execPath, [
+  '-e', malformedLockScript, malformedLockRoot, malformedResultPath,
+], { cwd: path.resolve(__dirname, '..'), stdio: 'ignore' });
+const malformedLockCompleted = fileAppears(malformedResultPath, 1000);
+if (!malformedLockCompleted) malformedLockChild.kill('SIGKILL');
+assert.strictEqual(malformedLockCompleted, true, 'malformed report lock must not wait forever');
+assert.deepStrictEqual(JSON.parse(fs.readFileSync(malformedResultPath, 'utf8')), {
+  ok: false,
+  code: 'REPORT_PUBLICATION_LOCK_INVALID',
+});
+
+const concurrentRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-concurrent-'));
+createTestWorkspace(concurrentRoot);
+const concurrentIos = createCurrentFixture(concurrentRoot, {
+  suffix: 'concurrent-shared',
+  platform: 'ios',
+  verdict: 'PASS',
+  sourceText: '相同原文',
+  title: '并发平台用例',
+});
+const concurrentAndroid = createCurrentFixture(concurrentRoot, {
+  suffix: 'concurrent-shared',
+  platform: 'android',
+  verdict: 'FAIL',
+  sourceText: '相同原文',
+  title: '并发平台用例',
+});
+assert.strictEqual(concurrentIos.caseDir, concurrentAndroid.caseDir);
+const concurrentFactsBefore = [concurrentIos, concurrentAndroid].map(({ execDir }) => ({
+  execution: sha256File(path.join(execDir, 'execution.json')),
+  result: sha256File(path.join(execDir, 'result.json')),
+}));
+const concurrentLock = holdReportLock(concurrentRoot, 300);
+const iosRefresh = spawnCommittedReportRefresh(concurrentIos.caseDir, 'ios');
+const androidRefresh = spawnCommittedReportRefresh(concurrentAndroid.caseDir, 'android');
+readRefreshResult(iosRefresh);
+readRefreshResult(androidRefresh);
+waitForFile(concurrentLock.releasedPath);
+
+const concurrentIndex = fs.readFileSync(path.join(concurrentRoot, 'index.html'), 'utf8');
+const concurrentMetadata = JSON.parse(fs.readFileSync(path.join(concurrentRoot, 'report-metadata.json'), 'utf8'));
+const concurrentCaseContext = fs.readFileSync(path.join(concurrentIos.caseDir, 'CONTEXT.html'), 'utf8');
+for (const [platform, verdict] of [['iOS', 'PASS'], ['Android', 'FAIL']]) {
+  assert.ok(concurrentIndex.includes(platform), `index must retain ${platform}`);
+  assert.ok(concurrentIndex.includes(verdict), `index must retain ${platform} ${verdict}`);
+}
+assert.ok(concurrentCaseContext.includes('相同原文'), 'case source report must remain intact');
+assert.ok(fs.readFileSync(path.join(concurrentIos.runtimeDir, 'CONTEXT.html'), 'utf8').includes('PASS'));
+assert.ok(fs.readFileSync(path.join(concurrentAndroid.runtimeDir, 'CONTEXT.html'), 'utf8').includes('FAIL'));
+assert.strictEqual(concurrentMetadata.artifacts['index.html'].sha256, sha256File(path.join(concurrentRoot, 'index.html')));
+assert.deepStrictEqual([concurrentIos, concurrentAndroid].map(({ execDir }) => ({
+  execution: sha256File(path.join(execDir, 'execution.json')),
+  result: sha256File(path.join(execDir, 'result.json')),
+})), concurrentFactsBefore, 'report publication must not rewrite execution facts');
+assert.strictEqual(fs.existsSync(path.join(concurrentRoot, '.report-publication.lock')), false);
+assert.strictEqual(fs.existsSync(path.join(concurrentRoot, 'report-publication.draft.json')), false);
+assert.strictEqual(fs.existsSync(path.join(concurrentIos.caseDir, 'report-publication.draft.json')), false);
 
 const failedFirstPublishRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-first-publish-'));
 createTestWorkspace(failedFirstPublishRoot);
@@ -221,4 +404,6 @@ fs.rmSync(failedFirstPublishRoot, { recursive: true, force: true });
 fs.rmSync(retryRecoveryRoot, { recursive: true, force: true });
 fs.rmSync(corruptedCommitPublicationRoot, { recursive: true, force: true });
 fs.rmSync(corruptedTimingRoot, { recursive: true, force: true });
+fs.rmSync(concurrentRoot, { recursive: true, force: true });
+fs.rmSync(malformedLockRoot, { recursive: true, force: true });
 console.log('publication-integrity passed');

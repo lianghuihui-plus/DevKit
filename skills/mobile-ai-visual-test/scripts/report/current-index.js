@@ -177,7 +177,7 @@ function renderPlatformRun(platform) {
   const executionState = executionStatusLabel(platform.executionStatus);
   const unavailable = platform.readability && platform.readability !== 'READABLE';
   const detail = unavailable ? platform.reason || executionState : `${executionState} · ${basisLabel(platform.verdictBasis)}`;
-  return `<article class="platform-run ${escapeHtml(platform.platform)}">
+  return `<article class="platform-run ${escapeHtml(platform.platform)}" data-platform-run="${escapeHtml(platform.platform)}">
     <div class="run-platform"><span class="platform-token">${escapeHtml(PLATFORM_TOKENS[platform.platform] || '?')}</span><div><b>${escapeHtml(displayPlatform(platform.platform))}</b><small>${escapeHtml(detail)}</small></div></div>
     ${renderStatus(unavailable ? platform.status : verdict)}
     <dl><div class="time-metric"><dt>用例总耗时</dt><dd>${escapeHtml(formatDuration(platform.durationMs))}</dd></div><div class="time-metric"><dt>开始时间</dt><dd>${escapeHtml(formatDisplayTime(platform.startedAt))}</dd></div><div class="time-metric"><dt>结束时间</dt><dd>${escapeHtml(formatDisplayTime(platform.endedAt))}</dd></div><div><dt>动作 / 观察</dt><dd>${metricValue(counts.actions)} / ${metricValue(counts.observations)}</dd></div><div><dt>验证点</dt><dd>${escapeHtml(platform.coverage || '-')}</dd></div><div><dt>恢复</dt><dd>${metricValue(platform.currentMetrics?.executionRecoveryCount)}</dd></div></dl>
@@ -306,6 +306,9 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
         || results.includes(selectedPlatform + ':' + selectedStatus);
       const matchesSearch = !query || (card.dataset.caseSearch || '').includes(query);
       card.hidden = !(matchesStatus && matchesPlatform && matchesCombined && matchesSearch);
+      for (const run of card.querySelectorAll('[data-platform-run]')) {
+        run.hidden = selectedPlatform !== 'ALL' && run.dataset.platformRun !== selectedPlatform;
+      }
       if (!card.hidden) visible += 1;
     }
     for (const button of statusButtons) {

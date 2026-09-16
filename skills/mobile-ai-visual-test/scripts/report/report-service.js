@@ -10,6 +10,7 @@ const { buildExecutionNarrative } = require('./execution-narrative');
 const { renderIndexArtifacts } = require('./index-renderer');
 const { reportRendererInfo } = require('./renderer-manifest');
 const { publishReportBundle } = require('./report-publisher');
+const { withWorkspaceReportPublication } = require('./publication-lock');
 const { assertWorkspace } = require('../lib/workspace');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { deriveExecutionTiming } = require('../lib/execution-timing');
@@ -356,7 +357,7 @@ function assertIndexLinks(rootDir, cases) {
   }
 }
 
-function renderIndexForRoot(rootDir) {
+function renderIndexForRootUnlocked(rootDir) {
   const casesDir = path.join(rootDir, 'cases');
   const errors = new Map();
   const projections = new Map();
@@ -385,7 +386,11 @@ function renderIndexForRoot(rootDir) {
   return indexPath;
 }
 
-function refreshBatchIndex(rootDir, targetCaseDirs) {
+function renderIndexForRoot(rootDir) {
+  return withWorkspaceReportPublication(rootDir, () => renderIndexForRootUnlocked(rootDir));
+}
+
+function refreshBatchIndexUnlocked(rootDir, targetCaseDirs) {
   const targets = new Set(targetCaseDirs.map((caseDir) => path.resolve(caseDir)));
   const targetIdentities = new Set([...targets].map(canonicalExistingPath));
   const errors = new Map();
@@ -415,14 +420,18 @@ function refreshBatchIndex(rootDir, targetCaseDirs) {
   return renderIndexArtifacts(rootDir, cases);
 }
 
-function refreshCommittedCaseReports(caseDir, platform) {
+function refreshBatchIndex(rootDir, targetCaseDirs) {
+  return withWorkspaceReportPublication(rootDir, () => refreshBatchIndexUnlocked(rootDir, targetCaseDirs));
+}
+
+function refreshCommittedCaseReportsUnlocked(caseDir, platform) {
   const rootDir = caseRootFromCaseDir(caseDir);
   let itemError = null;
   const projections = new Map();
   try {
     const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
     const projection = buildCaseReportProjection(caseDir, caseJson);
-    writeCaseReports(caseDir, caseJson, {}, [], projection.reports.get(platform), { platform, skipRootOverview: true });
+    writePlatformCaseReports(caseDir, caseJson, projection);
     const publishedProjection = buildCaseReportProjection(caseDir, caseJson);
     projections.set(path.resolve(caseDir), publishedProjection);
     writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: publishedProjection.platforms });
@@ -444,14 +453,24 @@ function refreshCommittedCaseReports(caseDir, platform) {
   };
 }
 
-function rebuildCaseDerivedArtifacts(caseDir, { refreshIndex = true, scope = 'all', platform = null } = {}) {
+function refreshCommittedCaseReports(caseDir, platform) {
+  const rootDir = caseRootFromCaseDir(caseDir);
+  return withWorkspaceReportPublication(rootDir, () => refreshCommittedCaseReportsUnlocked(caseDir, platform));
+}
+
+function rebuildCaseDerivedArtifactsUnlocked(caseDir, { refreshIndex = true, scope = 'all', platform = null } = {}) {
   const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
   if (!['all', 'platform', 'index'].includes(scope)) throw new Error(`Unsupported derived artifact scope: ${scope}`);
   const platformReports = scope === 'all' ? writePlatformCaseReports(caseDir, caseJson)
     : scope === 'platform' && platform ? [writeCaseReports(caseDir, caseJson, {}, [], null, { platform, skipRootOverview: true })] : [];
   const rootReport = scope === 'index' ? null : writeCaseReports(caseDir, caseJson);
-  const indexHtml = refreshIndex ? renderIndexForRoot(assertWorkspace(caseRootFromCaseDir(caseDir), { allowTest: true }).root) : null;
+  const indexHtml = refreshIndex ? renderIndexForRootUnlocked(assertWorkspace(caseRootFromCaseDir(caseDir), { allowTest: true }).root) : null;
   return { platformReports, rootReport, indexHtml };
+}
+
+function rebuildCaseDerivedArtifacts(caseDir, options = {}) {
+  const rootDir = caseRootFromCaseDir(caseDir);
+  return withWorkspaceReportPublication(rootDir, () => rebuildCaseDerivedArtifactsUnlocked(caseDir, options));
 }
 
 module.exports = {

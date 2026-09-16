@@ -42,15 +42,24 @@ function runIndexFilters(html) {
     addEventListener(type, listener) { listeners.set(`platform:${match[1]}:${type}`, listener); },
   }));
   const attribute = (tag, name) => tag.match(new RegExp(`${name}="([^"]*)"`))?.[1] || '';
-  const cards = [...html.matchAll(/<section class="case-row"[^>]*>/g)].map((match) => ({
-    dataset: {
-      caseStatus: attribute(match[0], 'data-case-status'),
-      casePlatforms: attribute(match[0], 'data-case-platforms'),
-      caseResults: attribute(match[0], 'data-case-results'),
-      caseSearch: attribute(match[0], 'data-case-search'),
-    },
-    hidden: false,
-  }));
+  const cards = [...html.matchAll(/<section class="case-row"[^>]*>/g)].map((match) => {
+    const casePlatforms = attribute(match[0], 'data-case-platforms');
+    const platformRuns = casePlatforms.split(' ').filter(Boolean).map((platform) => ({
+      dataset: { platformRun: platform },
+      hidden: false,
+    }));
+    return {
+      dataset: {
+        caseStatus: attribute(match[0], 'data-case-status'),
+        casePlatforms,
+        caseResults: attribute(match[0], 'data-case-results'),
+        caseSearch: attribute(match[0], 'data-case-search'),
+      },
+      hidden: false,
+      querySelectorAll(selector) { return selector === '[data-platform-run]' ? platformRuns : []; },
+      platformRuns,
+    };
+  });
   const search = { value: '', addEventListener() {} };
   const result = { textContent: '' };
   const empty = { hidden: true };
@@ -71,6 +80,10 @@ function runIndexFilters(html) {
     clickPlatform(platform) {
       listeners.get(`platform:${platform}:click`)();
       return cards.filter((card) => !card.hidden).length;
+    },
+    visiblePlatforms() {
+      return cards.filter((card) => !card.hidden)
+        .flatMap((card) => card.platformRuns.filter((run) => !run.hidden).map((run) => run.dataset.platformRun));
     },
   };
 }
@@ -279,6 +292,14 @@ assert.strictEqual(combinedFilters.clickPlatform('ios'), 1, 'FAIL + iOS');
 assert.strictEqual(combinedFilters.clickStatus('PASS'), 1, 'PASS + iOS');
 assert.strictEqual(combinedFilters.clickPlatform('ALL'), 2, 'PASS across all platforms');
 assert.strictEqual(combinedFilters.clickStatus('ALL'), 3, 'all statuses and platforms');
+
+const platformOnlyFilters = runIndexFilters(combinedFilterHtml);
+assert.strictEqual(platformOnlyFilters.clickPlatform('harmony'), 2, 'HarmonyOS cases');
+assert.deepStrictEqual(platformOnlyFilters.visiblePlatforms(), ['harmony', 'harmony']);
+assert.strictEqual(platformOnlyFilters.clickPlatform('ios'), 2, 'iOS cases');
+assert.deepStrictEqual(platformOnlyFilters.visiblePlatforms(), ['ios', 'ios']);
+assert.strictEqual(platformOnlyFilters.clickPlatform('ALL'), 3, 'all platform cases');
+assert.deepStrictEqual(platformOnlyFilters.visiblePlatforms(), ['harmony', 'android', 'harmony', 'ios', 'ios']);
 
 const detailHtml = fs.readFileSync(path.join(fixtures[0].runtimeDir, 'CONTEXT.html'), 'utf8');
 for (const text of ['用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙', '开始时间', '结束时间']) {
