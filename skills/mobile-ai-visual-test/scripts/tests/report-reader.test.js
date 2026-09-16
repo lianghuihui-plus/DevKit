@@ -224,9 +224,33 @@ createExecutionClosure(workspace, activeDir, {
   replacementBatchId: 'batch-report-replacement',
   now: '2026-08-18T12:01:00.000Z',
 });
-assert.strictEqual(readExecutionReport(activeDir).display.status, 'ABANDONED');
+assert.strictEqual(readExecutionReport(activeDir).display.status, 'NOT_RUN');
 assert.strictEqual(selectExecutionDir(passRuntimeDir).state, 'PUBLISHED');
 assert.strictEqual(findActiveExecutions(workspace).length, 0);
+
+const interruptedAfterActionDir = path.join(passRuntimeDir, 'executions', 'execution-interrupted-after-action');
+fs.mkdirSync(interruptedAfterActionDir, { recursive: true });
+fs.writeFileSync(path.join(interruptedAfterActionDir, 'execution.json'), JSON.stringify({
+  ...passFixture.execution,
+  executionId: 'execution-interrupted-after-action', finalized: false, lifecycle: 'RUNNING', phase: 'EXECUTE',
+  startedAt: '2026-08-20T12:00:00.000Z', endedAt: undefined,
+}));
+fs.copyFileSync(path.join(passFixture.execDir, 'source.snapshot.md'), path.join(interruptedAfterActionDir, 'source.snapshot.md'));
+fs.writeFileSync(path.join(interruptedAfterActionDir, 'case.snapshot.json'), JSON.stringify(passFixture.caseJson));
+fs.writeFileSync(path.join(interruptedAfterActionDir, 'events.jsonl'), JSON.stringify({
+  schemaVersion: 1,
+  eventId: 'action-requested-1',
+  time: '2026-08-20T12:00:05.000Z',
+  type: 'actionRequested',
+  operationId: 'operation-1',
+}) + '\n');
+createExecutionClosure(workspace, interruptedAfterActionDir, {
+  closedByRuntimeSha: `runtime-${'d'.repeat(16)}`,
+  closedByAdapterSha: `adapter-${'c'.repeat(16)}`,
+  replacementBatchId: 'batch-report-replacement-2',
+  now: '2026-08-20T12:01:00.000Z',
+});
+assert.strictEqual(readExecutionReport(interruptedAfterActionDir).display.status, 'BLOCKED');
 
 const unsupportedNewerDir = path.join(passRuntimeDir, 'executions', 'execution-unsupported-newest');
 fs.mkdirSync(unsupportedNewerDir, { recursive: true });

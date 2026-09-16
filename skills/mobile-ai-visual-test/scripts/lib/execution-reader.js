@@ -291,11 +291,13 @@ function readExecutionReport(execDir) {
 
   if (!report.rawResult) {
     const cancelled = report.execution.status === 'CANCELLED';
+    const enteredExecution = report.events.some((event) => ['actionRequested', 'sceneObserved'].includes(event.type));
+    const interruptedStatus = enteredExecution ? 'BLOCKED' : 'NOT_RUN';
     report.display = {
-      status: cancelled ? 'CANCELLED' : report.closure ? 'ABANDONED' : 'RUNNING', verdict: null,
-      executionStatus: cancelled ? 'CANCELLED' : report.closure ? 'INTERRUPTED' : 'RUNNING', verdictBasis: null,
+      status: cancelled ? 'CANCELLED' : report.closure ? interruptedStatus : 'RUNNING', verdict: null,
+      executionStatus: cancelled ? 'CANCELLED' : report.closure ? (enteredExecution ? 'TECHNICALLY_BLOCKED' : 'NOT_RUN') : 'RUNNING', verdictBasis: null,
       summary: cancelled ? `执行已取消：${report.execution.cancellation?.reason || '用户取消'}`
-        : report.closure ? '执行因实现变更被废弃，未形成测试结论' : '用例执行中',
+        : report.closure ? (enteredExecution ? '执行已中断，未形成测试结论' : '执行未进入实际操作，未形成测试结论') : '用例执行中',
       uncertainties: [], failureCode: cancelled ? null : report.closure?.reasonCode || null, failedStep: null,
       ...displayTiming(report.execution, report.metrics), endedAt: report.execution.endedAt || '', stepsSummary: '-', metrics: null,
     };
