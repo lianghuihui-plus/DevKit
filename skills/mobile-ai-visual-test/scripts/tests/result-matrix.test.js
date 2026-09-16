@@ -103,7 +103,7 @@ function executeResult(verdict, options = {}) {
   assert.strictEqual(planned.status, 'CASE_MODEL_RECORDED');
   let technicalFactRef = null;
   const observed = run(started.execDir, {
-    capability: 'observe', purpose: '确认目标页面表现', expectationRefs: ['E1'],
+    capability: 'observe', purpose: '确认目标页面表现',
   }, { runner, now: '2026-09-04T02:00:01.000Z' });
   assert.strictEqual(observed.status, 'SCENE');
   const visualInspection = run(started.execDir, {
@@ -113,7 +113,7 @@ function executeResult(verdict, options = {}) {
   assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
   if (options.technical) {
     const technical = run(started.execDir, {
-      capability: 'observe', purpose: '获取可用于最终判断的现场', expectationRefs: ['E1'],
+      capability: 'observe', purpose: '获取可用于最终判断的现场',
     }, {
       now: '2026-09-04T02:00:01.500Z',
       runner: () => { throw Object.assign(new Error('simulated adapter disconnection'), { code: 'ADAPTER_DISCONNECTED' }); },
@@ -141,9 +141,8 @@ function executeResult(verdict, options = {}) {
     sceneRefs: ['PASS', 'FAIL'].includes(verdict) ? [observed.scene.sceneRef] : [],
     ...(technicalFactRef ? { technicalRefs: [technicalFactRef] } : {}),
   };
-  const finished = run(started.execDir, {
-    capability: 'finish', summary: `${verdict} Runtime 结果`,
-    updates: { expectationResults: [{
+  const recorded = run(started.execDir, {
+    capability: 'recordResult', results: [{
       expectationRef: check.expectationRef,
       status: check.status,
       actual: check.actual,
@@ -151,7 +150,11 @@ function executeResult(verdict, options = {}) {
         ...(['PASS', 'FAIL'].includes(verdict) ? { sceneRefs: [observed.scene.sceneRef] } : {}),
         ...(technicalFactRef ? { technicalRefs: [technicalFactRef] } : {}),
       },
-    }] },
+    }],
+  }, { now: '2026-09-04T02:00:01.900Z' });
+  assert.strictEqual(recorded.status, 'RESULTS_RECORDED', JSON.stringify(recorded));
+  const finished = run(started.execDir, {
+    capability: 'finish', summary: `${verdict} Runtime 结果`,
     uncertainties: verdict === 'INCONCLUSIVE' ? ['现场不足以可靠判断'] : [],
   }, { now: '2026-09-04T02:00:02.000Z' });
   assert.strictEqual(finished.status, 'COMPLETED');

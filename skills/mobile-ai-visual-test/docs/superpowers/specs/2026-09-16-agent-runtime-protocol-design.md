@@ -11,7 +11,7 @@
 ### 2.1 目标
 
 1. Agent 在调用前通过独立 SDK 式文档理解方法签名，不再依赖响应中的 capability card、template 或 example。
-2. 一次 Agent 决策只产生一次正常 Runtime 调用；Case Model、视觉事实和验证点结果可以随相邻设备操作一起提交。
+2. Case Model、视觉事实、验证点结果和设备动作分别使用单一职责能力，避免业务事实与设备 effect 共用恢复事务。
 3. Agent-facing Scene 默认只返回当前决策需要的动态事实，不返回完整动作目录和稳定使用说明。
 4. 验证点结果在执行过程中增量持久化，`finish` 只收口未决项和冲突项。
 5. Runtime 继续保存完整 Scene、事件、证据和事务事实，并继续执行最终全量完整性校验。
@@ -37,18 +37,17 @@ Agent-facing 方法文档
   └─ 由公开接口定义生成：签名、参数、返回、错误、示例
 
 Agent
-  └─ 基于 Scene N 形成一次决策
-       └─ updates(caseModel / visual / expectationResults) + effect(act / observe / finish)
+  └─ 基于 Scene N 依次调用 plan / inspect / recordResult / act / finish
 
 Facade
   ├─ 校验公开 Schema 和当前上下文
   ├─ 将 actionRef 映射为内部 capabilityId
-  └─ 将复合请求翻译为确定性内部操作
+  └─ 将每个单一职责请求翻译为确定性内部操作
 
 Runtime Core
   ├─ 在 execution 锁内恢复未完成事务
-  ├─ 持久化同次决策更新
-  ├─ 执行一个明确 effect
+  ├─ 独立持久化 Case Model、视觉事实或验证结果
+  ├─ 每个 act 最多执行一个明确 effect
   ├─ 采集并完整保存 Scene N+1
   └─ 返回最小 Agent-facing 投影
 
@@ -67,7 +66,7 @@ Adapter / Store / Evidence / Result Integrity
 | 服务 | 消费者 | 入口 | 方法数 | 启动索引 |
 |---|---|---|---:|---|
 | Coordinator Facade | 主 Agent | `scripts/coordinator-agent.js` | 4 | `references/coordinator.md` |
-| Case Runtime Facade | Case Agent | `scripts/case-runtime/agent-facing-client.js` | 7 | `references/case-runtime.md` |
+| Case Runtime Facade | Case Agent | `scripts/case-runtime/agent-facing-client.js` | 8 | `references/case-runtime.md` |
 
 Workspace Bootstrap 和 Case Handoff Loader 是一次性启动入口，不是新增服务。Batch、Environment、Runtime Core、Adapter、Knowledge、Evidence、Report 等仍为内部模块，不向 Agent 发布方法签名。
 
@@ -150,19 +149,9 @@ interface TargetBinding {
 - 三个签名字段只在 iOS 真机探测明确返回 `IOS_SIGNING_REQUIRED` 时条件必填。
 - Agent 不提交 Appium server、WDA 端口、内部路径或进程参数。
 
-### 5.4 DecisionUpdates
+### 5.4 独立事实提交
 
-`DecisionUpdates` 只承载 Agent 在查看当前 Scene 后已经形成的判断：
-
-```typescript
-interface DecisionUpdates {
-  caseModel?: CaseModelUpdate;
-  visual?: VisualObservation;
-  expectationResults?: ExpectationResultInput[];
-}
-```
-
-它不是任务描述，也不会触发 Runtime 推理。Runtime 只做结构校验、引用绑定、revision 处理和持久化。
+Case Model、视觉/动作检查和验证点结果分别由 `plan`、`inspect` 和 `recordResult` 提交。Runtime 只做结构校验、引用绑定、revision 处理和持久化，不把这些事实附着到设备 effect。
 
 ### 5.5 CaseModelUpdate
 
@@ -188,13 +177,9 @@ interface CaseModelUpdate {
 - 继续存在的验证点保留 `ref`；新增点省略 `ref`，由 Runtime 分配。
 - 已退休的 ref 不允许复用。
 - Case Model 仍采用完整快照，不引入字段级 patch。
-- 同一请求中的 expectation result 只能引用提交前已经存在的 ref；新分配 ref 从本次响应取得，在后续决策中使用。
+- expectation result 只能引用当前 Case Model 已经存在的 ref；新分配 ref 从 plan 响应取得，在后续 recordResult 中使用。
 
-最后一条保留了现有单调分配规则，避免引入临时引用解析。如果新增验证点当轮已经形成判断，Agent 可在下一次 act、observe 或 finish 中携带结果，不需要为其立即单开一次 plan 调用。
-
-`updates.caseModel` 允许提交初始模型，但同一请求外层的 `expectationRefs` 和 `expectationResults` 只能引用提交前已经存在的 ref。因此，首次动作必须与新验证点建立当步关联时，先使用 plan；没有该要求时可把初始模型随 act 或 observe 提交。该限制主要避免临时 ref 协议，后续 Case Model 修订仍可正常随 act/observe 合并。
-
-如果同一请求修订了已有 ref 的文本并提交该 ref 的 expectation result，结果绑定 prospective Case Model 中的新 semantic hash；如果该 ref 在 prospective Model 中被退休，请求整体拒绝。
+最后一条保留了现有单调分配规则，避免引入临时引用解析。修改已有 ref 的文本后，旧 semantic hash 对应结果失效；Agent 必须基于新语义重新调用 recordResult。
 
 ### 5.6 VisualObservation
 
@@ -318,17 +303,12 @@ cancelRun(input: {
 ```typescript
 observe(input: {
   capability: "observe";
-  basedOnSceneRef?: SceneRef;
   purpose?: string;
-  expectationRefs?: ExpectationRef[];
-  updates?: DecisionUpdates;
 }): SceneResult;
 ```
 
-- 首次没有 Scene 时省略 `basedOnSceneRef`。
-- 已有 Scene 且携带 `updates` 时必须提供 `basedOnSceneRef`。
 - observe 只采集一次新 Scene，不执行业务动作。
-- `updates.visual` 登记旧 Scene 的视觉事实，新 Scene 采集完成后返回 Scene N+1。
+- 三端核心可见通道按控件树、截图顺序采集，并返回 `captureTiming` 事实。
 
 ### 7.2 inspect
 
@@ -372,15 +352,23 @@ plan(input: {
 }): CaseModelResult;
 ```
 
-`plan` 保留为以下场景的显式能力：
+`plan` 是创建或修订 Case Model 的唯一能力。首次模型不需要理由；后续提交完整新版本并说明修改理由。
 
-- 首次 Case Model 无法自然附着到相邻 act 或 observe。
-- 只需要修订模型且当前没有安全设备操作。
-- 输入错误后需要单独纠正模型。
+### 7.4 recordResult
 
-正常执行优先将相同 `CaseModelUpdate` 放入 act 或 observe 的 `updates.caseModel`，避免纯记账独占回合。
+```typescript
+recordResult(input: {
+  capability: "recordResult";
+  results: ExpectationResultInput[];
+}): RecordResultResult;
+```
 
-### 7.4 act
+- 一次可登记一个或多个验证点结果。
+- Runtime 先校验整批结果；任一条无效时整批不写入。
+- 与当前 ledger 完全相同的重复结果幂等返回。
+- 本能力不采集 Scene、不执行设备动作、不结束 execution。
+
+### 7.5 act
 
 ```typescript
 act(input: {
@@ -389,16 +377,14 @@ act(input: {
   actionRef: ActionRef;
   purpose: string;
   input?: ActionInput;
-  expectationRefs?: ExpectationRef[];
-  updates?: DecisionUpdates;
 }): SceneResult;
 ```
 
-- `basedOnSceneRef` 必须等于当前 Scene；否则返回 `SCENE_CHANGED`，不执行动作，但同一结构合法请求中已经通过校验的 updates 仍然落盘。
+- `basedOnSceneRef` 必须等于当前 Scene；否则返回 `SCENE_CHANGED` 且不执行动作。
 - 一个请求只允许一个 actionRef。
-- 所有 updates 完成静态和上下文校验后，Runtime 才允许设备动作进入 dispatch。
 - act 完成后自动采集并返回新 Scene。
-- visual action 要求该 Scene 已有视觉登记，或同一请求包含 `updates.visual`。
+- visual action 要求该 Scene 已经通过 inspect 登记视觉事实。
+- 响应返回请求坐标、投递坐标、可选设备实际触点和动作前标注图，不解释是否命中业务目标。
 
 `ActionInput`：
 
@@ -417,7 +403,7 @@ interface ActionInput {
 
 字段仍按 actionRef 条件必填，未声明字段一律拒绝。坐标为 0 到 1 的归一化值。
 
-### 7.5 knowledge
+### 7.6 knowledge
 
 ```typescript
 knowledge(input:
@@ -445,7 +431,7 @@ knowledge(input:
 - 查询结果返回候选事实和 queryId，不返回下一次调用 example。
 - 复核模式必须覆盖当前 query 的候选约束；解决办法由错误码链接到文档。
 
-### 7.6 recover
+### 7.7 recover
 
 ```typescript
 recover(input: {
@@ -465,25 +451,18 @@ recover(input: {
 - externalAction 只登记已经实际完成的框架外事实，固定 `evidence=false`。
 - 响应返回恢复事实或错误原因，不返回 nextCall example。
 
-### 7.7 finish
+### 7.8 finish
 
 ```typescript
 finish(input: {
   capability: "finish";
-  basedOnSceneRef?: SceneRef;
   summary: string;
   uncertainties?: string[];
-  updates?: {
-    visual?: VisualObservation;
-    expectationResults?: ExpectationResultInput[];
-  };
 }): FinishResult;
 ```
 
 - finish 不再接收全量 `checks`。
-- Agent 可以随 finish 提交最后一批视觉事实和验证点结果。
-- 携带 `updates.visual` 时 `basedOnSceneRef` 必填，并且该 visual 先于 readiness 和完整性校验落盘。
-- finish 不允许修订 Case Model；需要修订时先通过 plan 或相邻 observe 提交，以便 Runtime 明确暴露新产生的 unresolved 项。
+- finish 不接收视觉事实、验证点结果或 Case Model 修订；这些内容分别通过 inspect、recordResult 和 plan 提交。
 - Runtime 从当前 expectation ledger 构造完整 CaseResult，并执行现有全量证据完整性校验。
 - 存在 unresolved 或 conflicts 时返回 `RESULT_INCOMPLETE`，execution 保持可写。
 - 全部闭环后执行现有可恢复 finish 事务并返回 `COMPLETED`。
@@ -621,10 +600,7 @@ visual:longPress
 
 ### 9.4 视觉动作
 
-`visual:*` 是否可用由 `interactionContext.visualGestures` 给出。视觉动作提交前必须满足以下任一条件：
-
-1. 该 Scene 已经存在有效 visual inspection；或
-2. 当前 act 同时提交 `updates.visual`。
+`visual:*` 是否可用由 `interactionContext.visualGestures` 给出。视觉动作提交前，该 Scene 必须已经存在有效 visual inspection。
 
 ### 9.5 Runtime 校验
 
@@ -637,92 +613,43 @@ Facade 根据当前完整 Scene 重建内部 capabilities，并将 actionRef 映
 
 错误响应只说明 actionRef 不适用于当前 Scene，并指向错误目录中的对应章节；不返回完整替代动作目录。
 
-## 10. 复合决策提交
+## 10. 单一职责提交与恢复
 
-### 10.1 允许的组合
+### 10.1 能力边界
 
-| effect | caseModel | visual | expectationResults |
-|---|---:|---:|---:|
-| act | 可选 | 可选 | 可选 |
-| observe | 可选 | 可选 | 可选 |
-| finish | 禁止 | 可选 | 可选 |
-| plan | 请求主体 | 不适用 | 不适用 |
-| inspect | 不适用 | visual/action 为请求主体 | 不适用 |
-| knowledge | 不适用 | 不适用 | 不适用 |
-| recover | 不适用 | 不适用 | 不适用 |
+| 能力 | 唯一写入或 effect |
+|---|---|
+| plan | Case Model revision |
+| inspect | visual/action inspection fact |
+| recordResult | expectation result event |
+| observe | 新 Scene |
+| act | 一个设备动作和动作后 Scene |
+| knowledge | query 或 review 事实 |
+| recover | 恢复 effect 或外部处置声明 |
+| finish | 最终结果和 execution 收口 |
 
-当前范围不把 updates 扩展到 knowledge 和 recover，避免修改无关路径。知识复核后形成的 expectation result 可以随下一次 act、observe 或 finish 提交。
+`observe`、`act` 和 `finish` 不接受 `updates`。请求失败时不会隐式保存另一类业务事实；Agent 根据当前事实选择是否单独调用 plan、inspect 或 recordResult。
 
-### 10.2 提交顺序
+### 10.2 事务边界
 
-Runtime 在 execution 锁内按以下顺序处理一次复合请求：
-
-```text
-1. 恢复旧的未完成事务
-2. 校验请求结构 Schema、execution、dispatch 和 referenced Scene 身份
-3. 计算 prospective Case Model 和 expectation hashes
-4. 将 caseModel、visual、expectationResults 作为一个 update bundle 完整校验
-5. 写 decision submission draft
-6. 幂等写入 update bundle 的 Case Model、visual、expectation result 事件
-7. 标记 UPDATES_APPLIED
-8. 单独校验 effect 的上下文语义：当前 Scene 前提、actionRef 可用性和 action input 动态约束
-9. effect 无效：标记 EFFECT_REJECTED，返回已落盘 updates receipt 和具体错误
-10. effect 有效：启动且仅启动一个 act、observe 或 finish
-11. 复用或扩展现有 effect 事务执行和恢复
-12. 写入新 Scene 或最终结果
-13. 完成 decision submission，返回最小投影
-```
-
-update bundle 自身保持原子性：caseModel、visual、expectationResults 中任一更新无效时，整个 update bundle 不写入，effect 也不开始。effect 与 update bundle 不绑定成同一个成败单元：请求结构合法但 actionRef 不可用、action input 动态约束不成立、当前 Scene 已变化或 finish readiness 不满足时，已经成立的 updates 保留，不要求 Agent 重写。
-
-`basedOnSceneRef` 对 updates 和 effect 使用不同校验：
-
-- 对 visual、expectationResults 和 Case Model 事实，只要求该 Scene 属于当前 execution 且证据未被篡改；即使它已不是 current Scene，关于历史 Scene 的事实仍可保存。
-- 对 act 和需要当前现场的 recover，必须额外等于 current Scene；不相等时 effect 返回 `SCENE_CHANGED`，updates 仍然有效。
-- observe 不产生业务副作用，可以在 updates 落盘后采集最新 Scene。
-- finish 按 ledger readiness 收口，不要求用于证据的 Scene 仍是 current Scene。
-
-### 10.3 Decision submission 事务
-
-新增运行期草稿：
+通用 `decision-*.draft.json` 已删除。Runtime 只为真正需要防止重复 effect 的动作、准备、恢复和 finish 使用专用事务：
 
 ```text
-transactions/decision-<id>.draft.json
+transactions/action-<id>.draft.json
+transactions/preparation.draft.json
+transactions/recovery.draft.json
+transactions/finish.draft.json
 ```
 
-状态：
+plan、inspect 和 recordResult 在 execution 锁内先完整校验，再追加事实事件；recordResult 的批量输入为全有或全无，并对完全相同的当前结果幂等。
 
-```text
-PREPARED
-→ UPDATES_APPLIED
-→ EFFECT_REJECTED
-或
-→ EFFECT_STARTED
-→ EFFECT_COMPLETED
-```
+### 10.3 失败语义
 
-草稿保存请求摘要、basis Scene、预期更新事件摘要、effect 类型和关联内部事务引用，不保存未脱敏的输入文本。
-
-恢复规则：
-
-- PREPARED：按 submissionId 补写缺失更新，不执行重复更新。
-- UPDATES_APPLIED：先完成 effect 校验；无效则记录拒绝事实，有效才允许开始一次 effect。
-- EFFECT_REJECTED：updates 已成为 execution 事实，effect 从未开始；返回错误和 updates receipt 后清理草稿。
-- EFFECT_STARTED：act 和 finish 交给现有事务恢复；observe 先检查该 submission 是否已经产生关联 Scene，已有则复用，没有则允许重新采集，因为 observe 不产生业务副作用。结果未知的动作不得重放。
-- EFFECT_COMPLETED：重建响应并清理草稿。
-
-每个增量事件携带 submissionId。Runtime 通过事件中的 submissionId 和更新序号实现幂等，不依赖 Agent 重复生成相同自然语言。
-
-### 10.4 失败语义
-
-- 请求无法解析、请求结构 Schema 不合法、capability 不可识别、execution/dispatch 绑定无效：整个请求拒绝，不写 updates，不开始 effect。
-- Case Model、visual 或 expectation result 任一更新无效：update bundle 整体拒绝，effect 不开始。
-- 请求结构和 update bundle 有效，但 actionRef 可用性、action input 动态约束、当前 Scene 或其他 effect 上下文前提无效：updates 全部保留，effect 不开始，响应同时返回 `updatesApplied` 和 effect 错误。
-- 更新已经持久化但 effect 尚未开始时进程中断：下次调用先恢复同一 submission。
+- 请求结构、execution 或 dispatch 绑定无效：拒绝当前请求且不写业务事实。
+- act 的 Scene、ActionRef 或 input 无效：不执行设备动作，Agent 可先 inspect/observe 后重试修正后的动作。
 - effect 已 dispatch 且结果未知：返回 `ACTION_OUTCOME_UNKNOWN` 和当前事实，不自动重放。
-- action 已完成并产生新 Scene，但响应丢失：恢复返回该 Scene；旧 basedOnSceneRef 的新调用不能再次执行动作。
-
-示例：act 的 actionRef 拼写错误，但同一请求的 visual 和 expectationResults 都有效。Runtime 先保存两项更新，再返回 `ACTION_NOT_AVAILABLE`、`effect.status=REJECTED` 和 updates receipt。Agent 下一次只提交纠正后的 act，不重传 visual 或 expectationResults。
+- action 已完成并产生新 Scene但响应丢失：专用 action 事务恢复现有结果，不能再次执行动作。
+- ledger 不完整：finish 返回 `RESULT_INCOMPLETE`；Agent使用 inspect、knowledge 或 recordResult 补齐后再 finish。
 
 ## 11. Expectation Result Ledger
 
@@ -914,11 +841,6 @@ interface AgentFacingSuccess {
   status: string;
   scene?: AgentScene;
   caseState?: CaseStateSummary;
-  updatesApplied?: {
-    caseModel?: boolean;
-    visual?: boolean;
-    expectationResults?: ExpectationRef[];
-  };
   caseModelChange?: CaseModelChange;
 }
 ```
@@ -958,22 +880,11 @@ interface AgentFacingError {
   facts?: Record<string, unknown>;
   scene?: AgentScene;
   caseState?: CaseStateSummary;
-  updatesApplied?: {
-    caseModel?: boolean;
-    visual?: boolean;
-    expectationResults?: ExpectationRef[];
-  };
-  effect?: {
-    type: "act" | "observe" | "finish";
-    status: "REJECTED" | "OUTCOME_UNKNOWN";
-  };
   documentationRef: string;
 }
 ```
 
 允许返回具体失败原因和相关当前事实；禁止返回解决步骤或可复制请求。`message` 描述本次为什么失败，`documentationRef` 指向稳定解决办法。
-
-`updatesApplied` 是持久化 receipt，不是恢复教程。它明确告诉 Agent 哪些业务事实已经写入，避免 effect 失败后重复提交相同 visual、Case Model 或 verdict。
 
 `retryable=true` 只表示在状态变化或请求修正后可以再次调用，不表示允许宿主自动重放同一请求。`ACTION_OUTCOME_UNKNOWN` 永远不得自动重试 act。
 
@@ -1068,7 +979,7 @@ Coordinator 调用频率低，不是本轮主要性能瓶颈。当前实现保�
 
 MCP 工具直接使用公开 requestSchema，execution 和 dispatch 绑定由工具注册上下文注入，Agent 不传内部 ID。MCP 只是 transport adapter：
 
-- 不改变七个 Case Runtime 方法。
+- 不改变八个 Case Runtime 方法。
 - 不新增业务意图执行器。
 - 不绕过 Facade 校验、Runtime 锁、事务或审计。
 - Shell 和 MCP 必须通过同一组 contract tests。
@@ -1201,7 +1112,7 @@ batch-coordinator:
 2. Case Agent 路径改用 stdin，并删除 requestPath。
 3. 移除成功和错误响应中的静态说明字段，启用统一错误文档锚点。
 4. 上线精简 Scene 和 ActionRef 映射校验，删除 capabilities inspect。
-5. 上线 decision submission 事务、DecisionUpdates 和 expectation ledger，execution schema 升到 12。
+5. 上线独立 plan、inspect、recordResult 和 expectation ledger，execution schema 升到 12。
 6. 切换 finish 为 ledger 收口，保留并复用完整 `validateResultIntegrity()`。
 7. 稳定后发布 MCP transport；Shell 在本协议范围内继续作为受支持入口，移除 Shell 不属于本设计范围。
 
@@ -1223,8 +1134,7 @@ batch-coordinator:
 | stdin 正常路径 | `prompts/case-agent.md`、`scripts/case-runtime/lifecycle.js` |
 | 精简 Scene 投影 | `scripts/case-runtime/agent-facing-contract.js` |
 | ActionRef 校验和内部映射 | `scripts/case-runtime/agent-facing-translator.js` |
-| 复合请求翻译 | `scripts/case-runtime/agent-facing-translator.js`、`runtime-core.js` |
-| decision submission 事务 | 新增 `scripts/case-runtime/decision-transaction.js` |
+| 单一职责请求翻译 | `scripts/case-runtime/agent-facing-translator.js`、`runtime-core.js` |
 | expectation ledger | 新增 `scripts/case-runtime/expectation-result-service.js` |
 | Case Model 失效规则 | `scripts/case-runtime/case-model-service.js` |
 | finish ledger 收口 | `scripts/case-runtime/result-service.js`、`result-integrity.js` |
@@ -1232,7 +1142,7 @@ batch-coordinator:
 | Coordinator 静态响应清理 | `scripts/coordinator/agent-facing-service.js`、`coordinator-agent.js` |
 | Case Runtime 静态响应清理 | `scripts/case-runtime/agent-facing-translator.js`、`agent-facing-client.js` |
 
-内部 Runtime operation contract 只在复合事务需要的新内部字段上扩展，不公开给 Agent。Adapter、Device Port 和平台脚本不因本协议直接修改。
+内部 Runtime operation contract 提供 Facade 所需的确定性操作，不公开给 Agent。Adapter、Device Port 和平台脚本保持平台动作语义。
 
 ## 18. 自动化验证要求
 
@@ -1258,17 +1168,11 @@ batch-coordinator:
 - 控件 stale、Scene stale、输入缺失、视觉未登记和动态全局动作不可用时均不得调用 Adapter。
 - visual、screen 和 element 三类动作分别覆盖。
 
-### 18.4 复合事务
+### 18.4 专用 effect 事务
 
 对以下中断点做故障注入并恢复：
 
 ```text
-decision draft written
-case model event written
-visual event written
-expectation result event written
-updates applied
-effect rejected receipt written
 action dispatched
 scene written
 finish artifacts written
@@ -1276,14 +1180,14 @@ finish event written
 execution finalized
 ```
 
-验证更新事件不重复、设备动作不重复、未知结果不重放、恢复响应可继续决策。
+验证设备动作不重复、未知结果不重放、finish 结果不可变、恢复响应可继续决策。
 
 另外覆盖以下非中断分支：
 
-- actionRef 拼错时，有效 visual 和 expectationResults 已落盘，Adapter 未调用。
-- basedOnSceneRef 已不是 current Scene 时，历史 Scene updates 已落盘，act 返回 `SCENE_CHANGED`。
-- update bundle 任一项无效时 bundle 不产生部分事件，effect 不开始。
-- effect 被拒绝的响应包含 updates receipt，纠正后的 effect 请求不需要重传 updates。
+- actionRef 拼错时 Adapter 未调用，且不隐式写视觉或验证结果。
+- basedOnSceneRef 已不是 current Scene 时 act 返回 `SCENE_CHANGED` 且不执行动作。
+- recordResult 任一项无效时整批不产生部分事件。
+- 正常发布流不产生 `decision-*.draft.json`。
 
 ### 18.5 Ledger 和 finish
 
@@ -1311,8 +1215,6 @@ Runtime telemetry 增加但不进入普通响应：
 requestBytes
 responseBytes
 sceneProjectionBytes
-updatesCount
-updatesApplyMs
 ledgerProjectionMs
 documentationRefCount
 hostTransport = stdin | mcp
@@ -1322,7 +1224,7 @@ hostTransport = stdin | mcp
 
 - 宿主工具边界是否减少。
 - 单次响应是否变小。
-- plan、visual、verdict 独立回合是否减少。
+- plan、visual、verdict 的独立调用是否正确闭环。
 - finish 的 Agent 准备长尾是否减少。
 
 ## 20. 已关闭的设计问题
@@ -1333,9 +1235,9 @@ hostTransport = stdin | mcp
 - 验证点语义失效采用确定性 hash，不使用模型判断同义关系。
 - Ledger 以追加事件为权威事实，不提供 Agent 可编辑状态文件。
 - finish 不再接收全量 checks，但最终完整性校验不降级。
-- DecisionUpdates 只挂载到 act、observe 和 finish，不扩散到全部方法。
-- updates bundle 自身原子提交，但不与 effect 组成全有或全无事务；effect 无效不回滚已经成立的记账事实。
-- 历史 Scene 的 visual 和 verdict 可以继续登记；act 的 current Scene 校验只约束设备 effect。
+- plan、inspect、recordResult 与设备 effect 保持单一职责边界。
+- recordResult 批量提交全有或全无，重复提交相同当前结果保持幂等。
+- 历史 Scene 的 visual 和 verdict 可以独立登记；act 的 current Scene 校验只约束设备 effect。
 - Agent 启动只读有硬预算的服务短索引，方法详情、ActionRef 和错误恢复按需读取。
 - Coordinator 不为统一形式强制改造 stdin，优先保持低频控制通道稳定。
 - 所有 execution 读写只接受 schema 12，不保留并行格式。
@@ -1347,7 +1249,7 @@ hostTransport = stdin | mcp
 1. 公开接口定义与服务文档。
 2. stdin 与静态响应清理。
 3. 精简 Scene 与 ActionRef 映射。
-4. DecisionUpdates 与 decision submission 事务。
+4. 独立 plan、inspect、recordResult 与专用 effect 事务。
 5. Expectation ledger 与 finish 收口。
 6. MCP transport。
 

@@ -80,6 +80,7 @@ assert.deepStrictEqual(contract.requiredResources, [
   'references/case-runtime/methods/observe.md',
   'references/case-runtime/methods/inspect.md',
   'references/case-runtime/methods/plan.md',
+  'references/case-runtime/methods/record-result.md',
   'references/case-runtime/methods/act.md',
   'references/case-runtime/methods/knowledge.md',
   'references/case-runtime/methods/recover.md',

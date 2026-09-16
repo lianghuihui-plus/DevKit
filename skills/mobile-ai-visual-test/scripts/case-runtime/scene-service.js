@@ -46,6 +46,7 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
     },
     layoutRef: view.layoutRef,
     layout: view.layout,
+    captureTiming: view.captureTiming,
     app: view.app,
     signals: view.signals,
     conflicts: view.conflicts || [],
@@ -93,6 +94,7 @@ function projectSceneSummary(scene) {
     generation: scene.generation,
     warmSessionRef: scene.warmSessionRef,
     capturedAt: scene.capturedAt,
+    captureTiming: scene.captureTiming || null,
     screenshot: scene.screenshot,
     evidenceChannels: {
       ...scene.evidenceChannels,

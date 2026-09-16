@@ -90,6 +90,7 @@ function baseObservationView(execDir, observation, cache = null) {
       format: parsed.format,
       diagnostics: [...(parsed.diagnostics || []), ...(projected.diagnostics || [])],
     },
+    captureTiming: observation.technicalSignals?.captureTiming || null,
     signals: projected.signals,
     actionEffect: null,
     stateChanges: [],

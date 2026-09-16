@@ -72,16 +72,16 @@ function serviceIndex(title, contract, baseDirectory, extraLinks = []) {
 
 function errorsPage(title, contract) {
   const sections = Object.entries(contract.errors).map(([code, definition]) => {
-    const recovery = definition.retryable
+    const recovery = definition.recovery || (definition.retryable
       ? '根据本次响应的动态事实修正输入或等待状态变化后重新调用；不要重放结果未知的设备动作。'
-      : '保留当前现场，读取本次响应中的原因和事实；需要人工或技术处置时完成处置后回到 facade。';
+      : '保留当前现场，读取本次响应中的原因和事实；需要人工或技术处置时完成处置后回到 facade。');
     return `<a id="error-${kebab(code)}"></a>\n## ${code}\n\n${definition.summary}\n\n**可重试：** ${definition.retryable ? '是' : '否'}\n\n**处理：** ${recovery}`;
   }).join('\n\n');
   return `# ${title} 错误目录\n\n错误响应只返回本次失败原因、相关动态事实和本页锚点；调用签名见服务索引。\n\n${sections}\n`;
 }
 
 function actionRefsPage() {
-  return `# Case Runtime ActionRef\n\nActionRef 是 Runtime 发布事实的稳定引用，Agent 不解析内部 capabilityId。\n\n## 格式\n\n| 类型 | 格式 | 示例 |\n|---|---|---|\n| 控件动作 | \`<elementRef>:<actionType>\` | \`button-1:tap\` |\n| 全局动作 | \`screen:<actionType>\` | \`screen:swipeUp\` |\n| 视觉动作 | \`visual:<gesture>\` | \`visual:longPress\` |\n\n## 控件映射\n\n- \`clickable\`：\`tap\`、\`doubleTap\`、\`longPress\`。\n- \`checkable\`：\`tap\`、\`toggle\`。\n- \`editable\`：\`tap\`、\`inputText\`。\n- 多个属性同时成立时取并集。\n\n## 动态约束\n\n- 屏幕动作由 \`interactionContext\` 的滚动、焦点和键盘事实约束。\n- 视觉动作必须出现在 \`interactionContext.visualGestures\`，且 Scene 已登记视觉事实或本次 act 同时提交 \`updates.visual\`。\n- Runtime 在完整当前 Scene 上重建能力；无效引用返回 \`ACTION_NOT_AVAILABLE\`，不会返回整份替代动作目录。\n`;
+  return `# Case Runtime ActionRef\n\nActionRef 是 Runtime 发布事实的稳定引用，Agent 不解析内部 capabilityId。\n\n## 格式\n\n| 类型 | 格式 | 示例 |\n|---|---|---|\n| 控件动作 | \`<elementRef>:<actionType>\` | \`button-1:tap\` |\n| 全局动作 | \`screen:<actionType>\` | \`screen:swipeUp\` |\n| 视觉动作 | \`visual:<gesture>\` | \`visual:longPress\` |\n\n## 控件映射\n\n- \`clickable\`：\`tap\`、\`doubleTap\`、\`longPress\`。\n- \`checkable\`：\`tap\`、\`toggle\`。\n- \`editable\`：\`tap\`、\`inputText\`。\n- 多个属性同时成立时取并集。\n\n## 动态约束\n\n- 屏幕动作由 \`interactionContext\` 的滚动、焦点和键盘事实约束。\n- 视觉动作必须出现在 \`interactionContext.visualGestures\`，且 Scene 已通过 \`inspect(channel="visual")\` 登记视觉事实。\n- Runtime 在完整当前 Scene 上重建能力；无效引用返回 \`ACTION_NOT_AVAILABLE\`，不会返回整份替代动作目录。\n`;
 }
 
 function outputFiles({ root }) {

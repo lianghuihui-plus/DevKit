@@ -81,6 +81,12 @@ function timeBudget(execDir, execution, now, context = {}) {
   return { exhausted: true, remainingMs: 0, technicalFactRef: fact.technicalFactRef };
 }
 
+function narrativeExpectationRefs(narrative) {
+  const decisionRefs = narrative?.decisionEvent?.decision?.expectationRefs || [];
+  if (decisionRefs.length) return decisionRefs;
+  return narrative?.caseContext?.expectations?.map((item) => item.id) || [];
+}
+
 function assertSceneBasis(execDir, request) {
   if (!['act', 'knowledge', 'reviewKnowledge', 'recover', 'finish'].includes(request.operation)) return;
   const scene = store.readCurrentScene(execDir);
@@ -185,7 +191,9 @@ function execute(execDir, request, options = {}) {
         };
       }
       assertSceneBasis(execDir, request);
-      narrative = narrativeService.recordRequestNarrative(execDir, request, options);
+      narrative = request.operation === 'recordExpectationResults'
+        ? narrativeService.narrativeStatus(execDir)
+        : narrativeService.recordRequestNarrative(execDir, request, options);
       if (request.operation === 'finish') {
         return resultService.finish(execDir, request.result, { ...options, openInvocation: invocation, narrative });
       }
@@ -193,8 +201,7 @@ function execute(execDir, request, options = {}) {
       const budget = timeBudget(execDir, latestExecution, now, {
         operation: request.operation,
         decisionId: narrative.decisionEvent?.decisionId || null,
-        expectationRefs: narrative.decisionEvent?.decision?.expectationRefs
-          || narrative.caseContext?.expectations?.map((item) => item.id) || [],
+        expectationRefs: narrativeExpectationRefs(narrative),
       });
       const recoveredRecovery = recoveredTransactions.find((item) => item.kind === 'recovery');
       if (request.operation === 'recover' && recoveredRecovery) {
@@ -217,6 +224,16 @@ function execute(execDir, request, options = {}) {
         decisionId: narrative.decisionEvent?.decisionId || null,
       };
       if (request.operation === 'recordCaseModel') response = require('./case-model-service').revise(execDir, request.caseModel, options);
+      else if (request.operation === 'recordExpectationResults') {
+        const expectationResultService = require('./expectation-result-service');
+        const recorded = expectationResultService.applyExpectationResults(execDir, request.results, options);
+        response = {
+          status: 'RESULTS_RECORDED',
+          recorded: recorded.updated,
+          unchanged: recorded.idempotent,
+          readiness: expectationResultService.finishReadiness(execDir),
+        };
+      }
       else if (request.operation === 'prepare') response = require('./preparation-service').prepare(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
       else if (request.operation === 'act') response = actionService.act(execDir, enrichedRequest, runtimeOptions);
@@ -273,8 +290,7 @@ function execute(execDir, request, options = {}) {
         ...options,
         operation,
         decisionId: narrative?.decisionEvent?.decisionId || null,
-        expectationRefs: narrative?.decisionEvent?.decision?.expectationRefs
-          || narrative?.caseContext?.expectations?.map((item) => item.id) || [],
+        expectationRefs: narrativeExpectationRefs(narrative),
         allowFinalized: true,
       });
   }

@@ -69,23 +69,11 @@ Runtime 不理解自由文本业务意图，不自主选择业务目标，不判
 
 Agent 必须基于最新现场决定下一步操作。Runtime 不能在 Agent 尚未查看操作后现场时自动推导或执行后续业务动作。
 
-### 5.2 只合并同一次决策产生的确定性工作
+### 5.2 单一职责能力与专用恢复
 
-在 Agent 已经查看 Scene 并完成本轮决策后，可以考虑将以下内容作为一个复合请求提交：
+最终实现不把 Case Model、视觉事实或验证点结果与设备 effect 放进同一请求。`plan`、`inspect`、`recordResult`、`observe`、`act` 和 `finish` 各自只有一种主要责任，避免业务事实持久化与设备动作恢复互相影响。
 
-- 登记 Agent 对当前 Scene 已形成的视觉事实。
-- 首次提交或修订 Case Model。
-- 更新本轮已经形成的验证点判断和证据引用。
-- 校验 `basedOnSceneRef` 和具体 `actionRef`。
-- 执行本轮已经决定的具体动作，或执行一次明确的 observe。
-- 等待页面稳定，采集并持久化新 Scene。
-- 返回本次执行结果和新 Scene 的最小必要投影。
-
-这类合并不会让 Runtime 获得业务智能，只是减少同一 Agent 决策被协议拆成多个通信回合。
-
-Case Model、视觉事实和验证点判断都由 Agent 生成，Runtime 只负责校验、绑定 revision 并持久化。验证点状态必须作为 Agent 请求的一部分，不能由 Runtime 根据操作响应自行推断。
-
-复合请求应先完成全部静态校验，再执行设备动作。设备动作无法与文件记录形成真正的数据库原子事务，因此仍需事务日志保证恢复：动作投递前失败不得执行设备操作；动作投递后结果未知不得自动重放。
+Case Model、视觉事实和验证点判断仍全部由 Agent 生成，Runtime 只负责校验、绑定 revision 并持久化。`act` 保留“一个明确动作 + 动作后 Scene”，因为这是同一次设备操作的事实闭环；动作投递后结果未知仍不得自动重放。
 
 ### 5.3 异常结果必须回到 Agent 决策
 
@@ -160,8 +148,7 @@ act(
   basedOnSceneRef: SceneRef,          // 必填；当前决策依据的 Scene
   actionRef: ActionRef,               // 必填；由控件引用和动作类型构造
   purpose: string,                    // 必填；Agent 的本轮决策摘要
-  input?: ActionInput,                // 可选；仅输入、等待、坐标等动作需要
-  updates?: DecisionUpdates           // 可选；本轮 Case Model、视觉事实和验证点判断
+  input?: ActionInput                 // 可选；仅输入、等待、坐标等动作需要
 ) -> ActionResult
 ```
 
@@ -190,16 +177,9 @@ act(
 
 stdin 和 MCP 只改变请求如何到达 Runtime，不改变 Agent 与 Runtime 的业务职责。
 
-### 6.3 决策提交层
+### 6.3 业务事实提交层
 
-一次请求对应 Agent 基于某个 Scene 已完成的一次决策。请求可以同时携带：
-
-- Case Model 首次提交或修订。
-- 当前 Scene 的视觉事实。
-- 已形成的验证点结果更新。
-- 一个明确的 act 或 observe。
-
-这些字段是同一次决策的复合提交，而不是 Runtime 执行业务意图。新的 Scene 返回后必须重新交给 Agent 判断，不能越过“看图、决策、操作、再看图”的边界。
+Case Model、视觉/动作检查、验证点结果分别通过 `plan`、`inspect` 和 `recordResult` 提交；采集、设备动作和收口分别通过 `observe`、`act` 和 `finish` 完成。新的 Scene 返回后必须重新交给 Agent 判断，不能越过“看图、决策、操作、再看图”的边界。
 
 ### 6.4 响应投影层
 
@@ -224,11 +204,11 @@ stdin 和 MCP 只改变请求如何到达 Runtime，不改变 Agent 与 Runtime 
 ```text
 服务文档 / 方法签名
         ↓ 调用前查询
-Agent 查看 Scene N，形成一次业务决策
-        ↓ 一次结构化提交
-updates(caseModel / visual / verdict) + act|observe
+Agent 查看 Scene N，形成业务决策
+        ↓ 单一职责调用
+plan | inspect | recordResult | act | observe | finish
         ↓
-Runtime 静态校验 → 记录事务 → 执行设备动作 → 采集并完整持久化 Scene N+1
+Runtime 静态校验 → 持久化事实或执行专用 effect → 必要时采集 Scene N+1
         ↓ 最小必要投影
 Agent 查看 Scene N+1，开始下一次决策
 ```
@@ -250,13 +230,14 @@ Agent 查看 Scene N+1，开始下一次决策
 | Coordinator | `confirmRun` | 按 decision 分支使用 `userInstruction`、`platform`、`deviceId` 或 `binding` |
 | Coordinator | `advanceRun` | 无业务参数 |
 | Coordinator | `cancelRun` | `reason` |
-| Case Runtime | `observe` | 可选 `purpose`、`expectationRefs` |
+| Case Runtime | `observe` | 可选 `purpose` |
 | Case Runtime | `inspect` | `channel`；按 channel 条件使用 `observation`、`expectationRefs`、`filter` |
 | Case Runtime | `plan` | `understanding`、`preconditions`、`verificationPoints`、`items`、`uncertainties`；修订时需要 `reason` |
-| Case Runtime | `act` | `actionRef`、`purpose`；可选 `input`、`expectationRefs` |
+| Case Runtime | `recordResult` | 非空 `results`，每项包含验证点、状态、实际结果和证据引用 |
+| Case Runtime | `act` | `actionRef`、`purpose`；可选 `input` |
 | Case Runtime | `knowledge` | 查询模式使用 `query`；复核模式使用 `queryId`、`conclusion`、`assessments` |
 | Case Runtime | `recover` | `reason`；按模式使用 `targetState` 或 `externalAction` |
-| Case Runtime | `finish` | `summary`；可选 `uncertainties`、`updates.visual`、`updates.expectationResults` |
+| Case Runtime | `finish` | `summary`；可选 `uncertainties` |
 
 ### 7.2 一次性引导入口
 
@@ -459,9 +440,9 @@ Runtime 维护验证点结果台账，并在 Case Model revision 变化时确定
 - 移除 `actions[].example`、Case 级模板以及无关的重复状态。
 - 建立投影大小预算和字段级快照测试。
 
-### Phase 4：合并同次决策提交并增量维护结果
+### Phase 4：拆分业务事实与 effect 并增量维护结果
 
-- 为 act/observe 增加可选 decision updates，承载 Case Model、视觉事实和 expectation verdict。
+- 提供独立 plan、inspect 和 recordResult，observe、act、finish 不接受复合 updates。
 - 建立 expectation result ledger、revision/hash 失效规则和未决/冲突查询。
 - 将 `finish` 改为收口接口，同时保留 Runtime 的全量证据完整性校验。
 - 重点验证设备动作结果未知、Scene stale、部分写入和幂等恢复路径。
@@ -488,13 +469,13 @@ Runtime 维护验证点结果台账，并在 Case Model revision 变化时确定
 - 确认 Runtime 使用说明、Schema、通用动作映射和 example 应放入独立文档，由 Case Agent Prompt 引用，不随每次响应重复返回。
 - 确认 Agent-facing Scene 不再返回由控件树展开的完整动作目录和逐动作 example，只保留动态控件事实及必要引用。
 - 确认正常调用优先使用现有 stdin 通道，将请求文件写入和 Runtime command 合并为一次宿主工具调用；MCP 化作为后续结构化入口目标。
-- 确认 Case Model 修订、视觉事实和验证点判断等纯记账操作不应在正常路径独占通信回合，应作为同一次 Agent 决策的可选更新随相邻 act 或 observe 提交。
+- 确认 Case Model 修订、视觉事实和验证点判断分别通过 plan、inspect 和 recordResult 提交，不与设备 effect 共用请求。
 - 确认所有 Agent-facing 服务必须提供独立文档；角色 Prompt 只保留职责边界和文档引用，成功响应不返回使用说明。
 - 确认错误响应可以返回错误码、具体原因、相关事实和文档锚点，但解决步骤、重试方法和 example 必须放在服务文档中。
 - 确认每个 Agent-facing 能力必须提供 SDK 式方法签名，完整说明必填、可选、条件必填、参数语义、取值范围、动态值来源、返回类型、副作用和错误码。
 - 确认机器 Schema、服务端校验、MCP tool schema 和 Markdown 方法文档应由同一接口定义生成并参与 protocol SHA，避免实现与说明书漂移。
 - 确认方案按能力发布、调用传输、决策提交、响应投影、结果状态和内部审计六层组织，优化 Agent-facing 协议但不削弱 Runtime 内部记录。
-- 确认实施顺序先建立基线和 SDK 式服务契约，再移除响应内说明、收敛工具边界、精简 Scene、引入复合提交与增量结果，最后评估 MCP 化。
-- 确认复合请求中的 updates 与设备 effect 不是同一个成败单元：updates bundle 自身原子提交，effect 校验失败不回滚已经成立的 visual、Case Model 或验证点结果。
+- 确认实施顺序先建立基线和 SDK 式服务契约，再移除响应内说明、收敛工具边界、精简 Scene、拆分业务事实与 effect、引入增量结果，最后评估 MCP 化。
+- 确认 recordResult 批量输入自身原子提交，设备 effect 使用独立恢复事务。
 - 确认历史 Scene 的记账事实可以保存；只有 act 等设备 effect 要求 `basedOnSceneRef` 等于 current Scene。
 - 确认 Agent 启动只读取有硬体积预算的服务短索引，方法详情、ActionRef 和错误恢复按需分文件读取；全部文件仍参与 protocol SHA。

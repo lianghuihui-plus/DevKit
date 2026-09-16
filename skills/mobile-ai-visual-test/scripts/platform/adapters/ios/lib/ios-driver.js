@@ -611,11 +611,16 @@ async function runObserve(argv) {
   let screen = null;
   let keyboardShown;
   let windowRect = null;
+  const captureStartedMs = Date.now();
+  let layoutCompletedAt = null;
+  let screenshotCompletedAt = null;
 
   if (fakeEnabled()) {
+    fs.writeFileSync(sourcePath, `<?xml version="1.0" encoding="UTF-8"?><AppiumAUT><XCUIElementTypeApplication bundleId="${target.appId || 'com.example.demo'}" name="Demo" x="0" y="0" width="393" height="852"/></AppiumAUT>`);
+    layoutCompletedAt = new Date().toISOString();
     if (process.env.MAVT_TEST_PNG && fs.existsSync(process.env.MAVT_TEST_PNG)) fs.copyFileSync(process.env.MAVT_TEST_PNG, screenshotPath);
     else fs.writeFileSync(screenshotPath, 'fake-ios-png');
-    fs.writeFileSync(sourcePath, `<?xml version="1.0" encoding="UTF-8"?><AppiumAUT><XCUIElementTypeApplication bundleId="${target.appId || 'com.example.demo'}" name="Demo" x="0" y="0" width="393" height="852"/></AppiumAUT>`);
+    screenshotCompletedAt = new Date().toISOString();
     fs.writeFileSync(logPath, 'fake ios log\n');
     foreground = { bundleId: target.appId || 'com.example.demo', pid: 1234, name: 'Demo' };
     screen = '393x852';
@@ -623,22 +628,6 @@ async function runObserve(argv) {
     windowRect = { x: 0, y: 0, width: 393, height: 852 };
   } else {
     await appium.withSession(target, async ({ sessionId }) => {
-      try {
-        const shot = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/screenshot`);
-        decodeBase64Png(shot.value, screenshotPath);
-      } catch (error) {
-        recordObservationError(errors, 'screenshot', error, { required: true });
-      }
-      try {
-        const source = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/source`);
-        fs.writeFileSync(sourcePath, source.value || '');
-        const appMatch = String(source.value || '').match(/<XCUIElementTypeApplication[^>]*bundleId="([^"]+)"/);
-        if (appMatch && !foreground) foreground = { bundleId: appMatch[1] };
-        const viewport = sourceViewport(source.value);
-        if (viewport) screen = `${viewport.width}x${viewport.height}`;
-      } catch (error) {
-        recordObservationError(errors, 'layout', error);
-      }
       try {
         const active = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/execute/sync`, { script: 'mobile: activeAppInfo', args: [] });
         if (active.value) foreground = active.value;
@@ -656,6 +645,26 @@ async function runObserve(argv) {
         windowRect = rect.value || null;
       } catch (error) {
         recordObservationError(errors, 'windowRect', error);
+      }
+      try {
+        const source = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/source`);
+        fs.writeFileSync(sourcePath, source.value || '');
+        const appMatch = String(source.value || '').match(/<XCUIElementTypeApplication[^>]*bundleId="([^"]+)"/);
+        if (appMatch && !foreground) foreground = { bundleId: appMatch[1] };
+        const viewport = sourceViewport(source.value);
+        if (viewport) screen = `${viewport.width}x${viewport.height}`;
+      } catch (error) {
+        recordObservationError(errors, 'layout', error);
+      } finally {
+        layoutCompletedAt = new Date().toISOString();
+      }
+      try {
+        const shot = await appium.request(target.appiumServer, 'GET', `/session/${sessionId}/screenshot`);
+        decodeBase64Png(shot.value, screenshotPath);
+      } catch (error) {
+        recordObservationError(errors, 'screenshot', error, { required: true });
+      } finally {
+        screenshotCompletedAt = new Date().toISOString();
       }
     }, { autoLaunch: false });
     if (target.deviceType === 'simulator' && target.device) {
@@ -701,6 +710,13 @@ async function runObserve(argv) {
     technicalSignals: {
       ...(keyboardShown !== undefined ? { keyboardShown } : {}),
       ...(windowRect ? { windowRect } : {}),
+      captureTiming: {
+        order: ['layout', 'screenshot'],
+        captureStartedAt: new Date(captureStartedMs).toISOString(),
+        layoutCompletedAt,
+        screenshotCompletedAt,
+        spanMs: Math.max(0, Date.parse(screenshotCompletedAt) - captureStartedMs),
+      },
     },
     raw: {
       foreground,

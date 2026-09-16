@@ -532,10 +532,27 @@ const iosObservationDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-ios-observ
 const iosObservation = JSON.parse(run('./scripts/platform/adapters/ios/observe.sh', [
   '--device', 'ios-device', '--app', 'com.example.ios', '--out', iosObservationDir, '--label', 'signals',
 ], { env: { ...process.env, MAVT_IOS_FAKE: '1', MAVT_IOS_FAKE_KEYBOARD_SHOWN: '1' } }));
-assert.deepStrictEqual(iosObservation.technicalSignals, {
-  keyboardShown: true,
-  windowRect: { x: 0, y: 0, width: 393, height: 852 },
-});
+assert.strictEqual(iosObservation.technicalSignals.keyboardShown, true);
+assert.deepStrictEqual(iosObservation.technicalSignals.windowRect, { x: 0, y: 0, width: 393, height: 852 });
+assert.deepStrictEqual(iosObservation.technicalSignals.captureTiming.order, ['layout', 'screenshot']);
+assert.ok(Date.parse(iosObservation.technicalSignals.captureTiming.layoutCompletedAt)
+  <= Date.parse(iosObservation.technicalSignals.captureTiming.screenshotCompletedAt));
+assert.ok(iosObservation.technicalSignals.captureTiming.spanMs >= 0);
+
+for (const relative of [
+  '../platform/adapters/android/observe.sh',
+  '../platform/adapters/harmony/observe.sh',
+]) {
+  const source = fs.readFileSync(path.resolve(__dirname, relative), 'utf8');
+  const layoutIndex = source.indexOf('"$atoms_dir/dump-tree.sh"');
+  const screenshotIndex = source.indexOf('"$atoms_dir/screenshot.sh"');
+  assert.ok(layoutIndex >= 0 && screenshotIndex > layoutIndex, `${relative}: layout must be captured before screenshot`);
+  assert.match(source, /captureTiming/);
+}
+const iosDriverSource = fs.readFileSync(path.resolve(__dirname, '../platform/adapters/ios/lib/ios-driver.js'), 'utf8');
+const iosObserveSource = iosDriverSource.slice(iosDriverSource.indexOf('async function runObserve'), iosDriverSource.indexOf('async function waitForRuntimeAppState'));
+assert.ok(iosObserveSource.indexOf('`/session/${sessionId}/source`')
+  < iosObserveSource.indexOf('`/session/${sessionId}/screenshot`'), 'iOS source must be captured before screenshot');
 assert.throws(() => validateActionExecution({ type: 'dismissKeyboard' }, {
   platform: 'android', scope: 'case-business',
 }), /dismissKeyboard is not allowed/);

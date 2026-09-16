@@ -54,16 +54,7 @@ local_dump_layout="$out/logs/${label}-dump-layout.txt"
 
 : >"$local_errors"
 
-if ! "$atoms_dir/screenshot.sh" "${device_args[@]}" --out "$local_png" >"$out/logs/${label}-screenshot.json" 2>"$out/logs/${label}-screencap.txt"; then
-  printf '[screenshot] screencap failed. See logs/%s-screencap.txt\n' "$label" >>"$local_errors"
-  rm -f "$local_png"
-fi
-
-if ! "$atoms_dir/dump-tree.sh" "${device_args[@]}" --out "$local_xml" --remote "/sdcard/mavt-${label}.xml" >"$local_dump_tree_json" 2>"$local_dump_layout"; then
-  layout_error="$(head -n 1 "$local_dump_layout" | tr -d '\r' || true)"
-  printf '[layout] %s. See logs/%s-dump-layout.txt\n' "${layout_error:-uiautomator dump failed}" "$label" >>"$local_errors"
-  rm -f "$local_xml"
-fi
+capture_started_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
 
 log_args=(--out-dir "$out/logs" --label "$label")
 if [[ -n "$bundle" ]]; then
@@ -72,11 +63,25 @@ fi
 "$atoms_dir/logs.sh" "${device_args[@]}" "${log_args[@]}" >"$out/logs/${label}-logs.json" 2>>"$local_errors" || true
 "$atoms_dir/foreground.sh" "${device_args[@]}" --out "$local_window_dump" >"$out/logs/${label}-foreground.json" 2>>"$local_errors" || true
 
+if ! "$atoms_dir/dump-tree.sh" "${device_args[@]}" --out "$local_xml" --remote "/sdcard/mavt-${label}.xml" >"$local_dump_tree_json" 2>"$local_dump_layout"; then
+  layout_error="$(head -n 1 "$local_dump_layout" | tr -d '\r' || true)"
+  printf '[layout] %s. See logs/%s-dump-layout.txt\n' "${layout_error:-uiautomator dump failed}" "$label" >>"$local_errors"
+  rm -f "$local_xml"
+fi
+layout_completed_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+
+if ! "$atoms_dir/screenshot.sh" "${device_args[@]}" --out "$local_png" >"$out/logs/${label}-screenshot.json" 2>"$out/logs/${label}-screencap.txt"; then
+  printf '[screenshot] screencap failed. See logs/%s-screencap.txt\n' "$label" >>"$local_errors"
+  rm -f "$local_png"
+fi
+screenshot_completed_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+
 node -e '
 const path = require("path");
 const fs = require("fs");
 const out = process.argv[1], label = process.argv[2], png = process.argv[3], xml = process.argv[4], device = process.argv[5], app = process.argv[6];
 const windowDump = process.argv[7], activityDump = process.argv[8], pidofFile = process.argv[9], logcat = process.argv[10], errorsFile = process.argv[11], foregroundJson = process.argv[12], dumpTreeJson = process.argv[13];
+const captureStartedAt = process.argv[14], layoutCompletedAt = process.argv[15], screenshotCompletedAt = process.argv[16];
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();
   const sign = offset >= 0 ? "+" : "-";
@@ -160,7 +165,14 @@ console.log(JSON.stringify({
     logs: logs.length > 0
   },
   technicalSignals: {
-    layoutCapture
+    layoutCapture,
+    captureTiming: {
+      order: ["layout", "screenshot"],
+      captureStartedAt,
+      layoutCompletedAt,
+      screenshotCompletedAt,
+      spanMs: Math.max(0, Date.parse(screenshotCompletedAt) - Date.parse(captureStartedAt))
+    }
   },
   raw: {
     foregroundLine: foreground?.line || null,
@@ -171,4 +183,4 @@ console.log(JSON.stringify({
   screenshot: screenshotRel,
   layout: layoutRel
 }, null, 2));
-' "$out" "$label" "$local_png" "$local_xml" "$device" "$bundle" "$local_window_dump" "$local_activity_dump" "$local_pidof" "$local_logcat" "$local_errors" "$out/logs/${label}-foreground.json" "$local_dump_tree_json"
+' "$out" "$label" "$local_png" "$local_xml" "$device" "$bundle" "$local_window_dump" "$local_activity_dump" "$local_pidof" "$local_logcat" "$local_errors" "$out/logs/${label}-foreground.json" "$local_dump_tree_json" "$capture_started_at" "$layout_completed_at" "$screenshot_completed_at"

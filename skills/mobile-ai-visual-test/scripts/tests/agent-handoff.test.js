@@ -9,7 +9,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { canonicalJson } = require('../lib/contract-utils');
 const { createAgentHandoff, loadAgentHandoff, loadPreparedAgentHandoff } = require('../batch/agent-handoff');
-const { claimDispatch, claimTokenFor } = require('../lib/dispatch-lease');
+const { assertActiveDispatch, claimDispatch, claimTokenFor } = require('../lib/dispatch-lease');
 
 function expectCode(fn, code) {
   assert.throws(fn, (error) => error?.code === code, `expected ${code}`);
@@ -130,6 +130,17 @@ try {
     executionId: common.executionId,
     caseProtocolSha: common.caseProtocolSha,
   }), 'HANDOFF_REPLACED');
+  expectCode(() => assertActiveDispatch(path.dirname(initial.path), common.executionId, 999), 'HANDOFF_SEQUENCE_MISMATCH');
+  expectCode(() => assertActiveDispatch(path.dirname(initial.path), common.executionId, 1), 'HANDOFF_REPLACED');
+  assert.strictEqual(assertActiveDispatch(path.dirname(initial.path), common.executionId, 2).sequence, 2);
+
+  const unclaimedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-agent-handoff-unclaimed-'));
+  try {
+    const unclaimed = createAgentHandoff({ ...common, workspaceRoot: unclaimedRoot, executionId: 'exec-unclaimed' });
+    expectCode(() => assertActiveDispatch(path.dirname(unclaimed.path), 'exec-unclaimed', 1), 'HANDOFF_NOT_CLAIMED');
+  } finally {
+    fs.rmSync(unclaimedRoot, { recursive: true, force: true });
+  }
 
   expectCode(() => loadAgentHandoff({
     workspaceRoot,

@@ -96,6 +96,26 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
       evidenceBasis: { $ref: 'searchAbsenceEvidence' },
     },
   },
+  expectationResultInput: {
+    type: 'object', required: ['expectationRef', 'status', 'actual'], additionalProperties: false,
+    properties: {
+      expectationRef: STRING,
+      status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'] },
+      actual: STRING,
+      evidence: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          sceneRefs: STRING_ARRAY,
+          knowledgeRefs: STRING_ARRAY,
+          technicalRefs: STRING_ARRAY,
+          searchAbsence: {
+            type: 'object', additionalProperties: false, required: ['sceneRef', 'scrollContextRef'],
+            properties: { sceneRef: STRING, scrollContextRef: STRING },
+          },
+        },
+      },
+    },
+  },
   searchAbsenceEvidence: {
     type: 'object', required: ['type', 'sceneRef', 'scrollContextRef'], additionalProperties: false,
     properties: { type: { const: 'SEARCH_ABSENCE' }, sceneRef: STRING, scrollContextRef: STRING },
@@ -326,6 +346,19 @@ const OPERATION_CONTRACT = deepFreeze({
       },
     })],
     responses: ['CASE_MODEL_RECORDED', 'REQUEST_INVALID', 'TECHNICAL'],
+  }),
+  recordExpectationResults: defineOperation({
+    agentAccessible: false,
+    summary: 'Record independent expectation results without observing or acting.',
+    whenToUse: ['Agent-facing Facade only; Case Agent uses recordResult.'],
+    requestSchema: operationSchema('recordExpectationResults', {
+      results: { type: 'array', minItems: 1, items: { $ref: 'expectationResultInput' } },
+    }, ['operation', 'results']),
+    examples: [example('record-results', {
+      operation: 'recordExpectationResults',
+      results: [{ expectationRef: 'E1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: ['scene-0001'] } }],
+    })],
+    responses: ['RESULTS_RECORDED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
   recover: defineOperation({
     agentAccessible: true,

@@ -58,9 +58,6 @@ function currentPlan(execDir) {
 
 function contextualIssues(execDir, request, scene) {
   const issues = [];
-  if (request.capability === 'observe' && request.updates && currentScene(execDir) && !request.basedOnSceneRef) {
-    issues.push(issue('basedOnSceneRef', '已有 Scene 时携带 updates 必须绑定其事实来源', 'SCENE_REQUIRED'));
-  }
   if ((['inspect', 'act', 'knowledge'].includes(request.capability)
     || (request.capability === 'recover' && !request.targetState && !request.externalAction)) && !scene) {
     issues.push(issue('capability', '当前没有 Scene，请先使用 observe', 'SCENE_REQUIRED'));
@@ -73,6 +70,19 @@ function contextualIssues(execDir, request, scene) {
     if (!reason) issues.push(issue(request.caseModel ? 'caseModel.reason' : 'reason', '更新执行计划时必须说明路径变化原因', 'REQUIRED'));
   }
   issues.push(...validateExpectationRefs(execDir, request.expectationRefs));
+  if (request.capability === 'recordResult') {
+    for (const [index, result] of (request.results || []).entries()) {
+      issues.push(...validateExpectationRefs(execDir, [result.expectationRef], `results[${index}].expectationRef`));
+    }
+    if (!issues.length) {
+      try {
+        require('./expectation-result-service').prepareExpectationResults(execDir, request.results);
+      } catch (error) {
+        issues.push(issue('results', error.message, ['EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID'].includes(error.code)
+          ? error.code : 'RECORD_RESULT_INVALID'));
+      }
+    }
+  }
   if (request.capability === 'inspect') {
     if (['visual', 'action'].includes(request.channel) && !request.observation) {
       issues.push(issue('observation', `${request.channel === 'visual' ? '视觉' : '动作落点'}登记必须描述实际看到的图片事实`, 'REQUIRED'));
@@ -128,7 +138,7 @@ function contextualIssues(execDir, request, scene) {
       && request.input.duringActionAtMs >= request.input.durationMs) {
       issues.push(issue('input.duringActionAtMs', '必须小于长按 durationMs', 'ACTION_INPUT_INVALID'));
     }
-    if (request.basedOnSceneRef && request.actionRef?.startsWith('visual:') && !request.updates?.visual) {
+    if (request.basedOnSceneRef && request.actionRef?.startsWith('visual:')) {
       const inspected = store.events(execDir).some((event) => event.type === 'visualInspected' && event.sceneId === scene.sceneId);
       if (!inspected) issues.push(issue('actionRef', '视觉动作要求先登记该 Scene 的视觉事实', 'VISUAL_INSPECTION_REQUIRED'));
     }
@@ -178,7 +188,7 @@ function translateAgentFacingRequest(execDir, request) {
   let translated;
   if (request.capability === 'observe') translated = {
     operation: 'observe',
-    ...(request.purpose || expectationRefs.length ? { decision: { purpose: request.purpose || '刷新当前页面现场', expectationRefs } } : {}),
+    ...(request.purpose ? { decision: { purpose: request.purpose, expectationRefs: [] } } : {}),
   };
   else if (request.capability === 'inspect' && request.channel === 'visual') translated = {
     operation: 'inspectVisual', basedOnSceneId: scene.sceneId,
@@ -204,6 +214,11 @@ function translateAgentFacingRequest(execDir, request) {
         ...(source.reason ? { reason: source.reason } : {}),
       },
     };
+  } else if (request.capability === 'recordResult') {
+    translated = {
+      operation: 'recordExpectationResults',
+      results: request.results,
+    };
   } else if (request.capability === 'act') {
     const internalCapability = request.actionRef.startsWith('visual:')
       ? null : resolveActionRef(scene, request.actionRef, executionPlatform(execDir));
@@ -217,7 +232,7 @@ function translateAgentFacingRequest(execDir, request) {
         }),
       ...(request.actionRef.endsWith(':longPress') && request.input?.duringActionAtMs !== undefined
         ? { observationPolicy: { duringActionAtMs: request.input.duringActionAtMs } } : {}),
-      decision: { purpose: request.purpose, expectationRefs },
+      decision: { purpose: request.purpose, expectationRefs: [] },
     };
   } else if (request.capability === 'knowledge' && request.queryId) {
     const query = store.events(execDir).find((event) => event.type === 'knowledgeQueried' && event.queryId === request.queryId);

@@ -11,7 +11,6 @@ const {
   translateAgentFacingRequest,
 } = require('./agent-facing-translator');
 const { AGENT_FACING_PROTOCOL, documentationRefFor, validateAgentFacingRequest } = require('./agent-facing-contract');
-const decisionTransaction = require('./decision-transaction');
 const telemetry = require('./telemetry');
 
 const STATE_FILE = 'agent-facing-state.json';
@@ -110,39 +109,6 @@ function executeRun(execDir, request, options = {}) {
   }
   const structural = validateAgentFacingRequest(request);
   if (structural.length) return invalidResponse(resolved, request, structural);
-  let submission = null;
-  try {
-    submission = request.updates && Object.keys(request.updates).length
-      ? measureMetric(options, 'updatesApplyMs', () => decisionTransaction.applyUpdates(resolved, request, options))
-      : null;
-  } catch (error) {
-    const inputCodes = ['CASE_MODEL_INVALID', 'CASE_MODEL_REASON_REQUIRED', 'CASE_MODEL_REVISION_CONFLICT',
-      'CASE_MODEL_VERIFICATION_REF_INVALID', 'EXPECTATION_RESULT_INVALID', 'EXPECTATION_UNKNOWN',
-      'EVIDENCE_REFERENCE_INVALID', 'SCENE_REQUIRED', 'VISUAL_EVIDENCE_UNAVAILABLE', 'VISUAL_EVIDENCE_INVALID',
-      'OBSERVATION_SCREENSHOT_MISSING', 'OBSERVATION_SCREENSHOT_INVALID', 'EXECUTION_ARTIFACT_CHANGED'];
-    if (inputCodes.includes(error.code)) {
-      return invalidResponse(resolved, request, [{ field: 'updates', code: error.code, message: error.message }]);
-    }
-    throw error;
-  }
-  if (submission?.status === 'EFFECT_STARTED' && request.capability === 'act') {
-    const unknown = projectAgentFacingResponse(resolved, {
-      status: 'TECHNICAL',
-      code: 'ACTION_OUTCOME_UNKNOWN',
-      message: '该请求的设备 effect 已开始，但投递结果未能确认；禁止自动重放',
-      retryable: false,
-    }, request);
-    unknown.updatesApplied = submission.updatesApplied;
-    if (submission.caseModelChange) unknown.caseModelChange = submission.caseModelChange;
-    unknown.effect = { type: request.capability, status: 'OUTCOME_UNKNOWN' };
-    return unknown;
-  }
-  if (submission?.status === 'EFFECT_COMPLETED' && submission.effectResponse) {
-    const completed = projectAgentFacingResponse(resolved, submission.effectResponse, request);
-    completed.updatesApplied = submission.updatesApplied;
-    if (submission.caseModelChange) completed.caseModelChange = submission.caseModelChange;
-    return completed;
-  }
   let internal;
   try {
     internal = request.capability === 'finish'
@@ -152,9 +118,11 @@ function executeRun(execDir, request, options = {}) {
     if (error.code === 'AGENT_INPUT_INVALID' || error.code === 'CASE_RESULT_INCOMPLETE') {
       const issues = error.issues || error.readiness?.unresolved || [{ field: 'effect', code: error.code, message: error.message }];
       const firstCode = error.code === 'CASE_RESULT_INCOMPLETE' ? 'CASE_RESULT_INCOMPLETE'
-        : issues.find((item) => ['SCENE_CHANGED', 'ACTION_NOT_AVAILABLE', 'ACTION_INPUT_INVALID', 'VISUAL_INSPECTION_REQUIRED'].includes(item.code))?.code
+        : issues.find((item) => [
+          'SCENE_CHANGED', 'ACTION_NOT_AVAILABLE', 'ACTION_INPUT_INVALID', 'VISUAL_INSPECTION_REQUIRED',
+          'EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID', 'RECORD_RESULT_INVALID',
+        ].includes(item.code))?.code
           || 'AGENT_INPUT_INVALID';
-      if (submission) decisionTransaction.rejectEffect(resolved, submission.submissionId, firstCode);
       const rejected = invalidResponse(resolved, request, issues);
       if (firstCode !== 'AGENT_INPUT_INVALID' && rejected.status !== 'AGENT_INPUT_STALLED') {
         rejected.code = firstCode;
@@ -163,11 +131,6 @@ function executeRun(execDir, request, options = {}) {
         rejected.documentationRef = documentationRefFor(firstCode);
       }
       if (error.readiness) rejected.readiness = error.readiness;
-      if (submission) {
-        rejected.updatesApplied = submission.updatesApplied;
-        rejected.caseModelChange = submission.caseModelChange;
-        rejected.effect = { type: request.capability, status: 'REJECTED' };
-      }
       return rejected;
     }
     return {
@@ -182,9 +145,6 @@ function executeRun(execDir, request, options = {}) {
     };
   }
   clearInvalidState(resolved);
-  if (submission && submission.status !== 'EFFECT_STARTED') {
-    decisionTransaction.startEffect(resolved, submission.submissionId);
-  }
   const executeRequest = options.executeRequest || executeFacadeRequest;
   const response = executeRequest(resolved, internal, options);
   if (response?.status === 'REQUEST_INVALID') {
@@ -199,23 +159,13 @@ function executeRun(execDir, request, options = {}) {
       documentationRef: documentationRefFor('CASE_RUNTIME_TECHNICAL'),
     };
   }
-  if (submission) {
-    if (['REQUEST_INVALID', 'SCENE_CHANGED', 'RESULT_INCOMPLETE'].includes(response?.status)) {
-      decisionTransaction.rejectEffect(resolved, submission.submissionId, response.code || response.status);
-    } else decisionTransaction.completeEffect(resolved, submission.submissionId, response);
-  }
-  const projected = projectAgentFacingResponse(resolved, response, request);
-  if (submission) {
-    projected.updatesApplied = submission.updatesApplied;
-    if (submission.caseModelChange) projected.caseModelChange = submission.caseModelChange;
-  }
-  return projected;
+  return projectAgentFacingResponse(resolved, response, request);
 }
 
 function run(execDir, request, options = {}) {
   const runOptions = {
     ...options,
-    agentFacingMetrics: options.agentFacingMetrics || { updatesApplyMs: 0, ledgerProjectionMs: 0 },
+    agentFacingMetrics: options.agentFacingMetrics || { ledgerProjectionMs: 0 },
   };
   const startedMs = typeof runOptions.agentFacingClock === 'function' ? runOptions.agentFacingClock() : Date.now();
   const response = executeRun(execDir, request, runOptions);

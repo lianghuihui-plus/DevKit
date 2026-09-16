@@ -62,7 +62,7 @@ Case Agent 通过 Handoff 直接得到：
 - 平台、App 和已授权初始状态摘要。
 - 当前 Scene 和已有 Case Model；首次启动时 Case Model 为空。
 - Case Prompt 与预绑定 Runtime Client。
-- `observe`、`inspect`、`plan`、`act`、`knowledge`、`recover`、`finish` 七个能力。
+- `observe`、`inspect`、`plan`、`recordResult`、`act`、`knowledge`、`recover`、`finish` 八个能力。
 
 Case Agent 自己阅读用例、观察设备、形成验证点、执行、调查和 finish。它不把业务理解交回主 Agent 审批。
 
@@ -97,7 +97,8 @@ sequenceDiagram
     R->>D: device operation or observation
     R-->>A: compact facts + new Scene
   end
-  A->>F: finish summary + final decision updates
+  A->>F: recordResult for formed verdicts
+  A->>F: finish summary
   R-->>A: COMPLETED or RESULT_INCOMPLETE
   A-->>M: summary
   M->>C: advanceRun
@@ -181,7 +182,7 @@ iOS Appium Session 是 Batch runtime 的可替换资源，Execution 只保存 `s
 
 ## 10. 结果、事件与报告
 
-Agent 在执行过程中通过相邻 `act`、`observe` 或最终 `finish` 的 `updates.expectationResults` 增量写入验证点判断。Runtime 维护追加式 ledger，并在 Case Model 语义变化时确定性失效相关判断。`finish` 只提交摘要、可选不确定项和最后一批 updates；Runtime 从 ledger 组装每个有效验证点的 check，再执行完整证据校验。PASS/FAIL 必须引用真实且完成视觉登记的 Scene；搜索“不存在”结论必须引用已确认边界和连续覆盖的滚动上下文。最终 `result.json` 自动写入当前 `caseModelRevision`。
+Agent 在执行过程中通过独立 `recordResult` 增量写入验证点判断。Runtime 维护追加式 ledger，并在 Case Model 语义变化时确定性失效相关判断。`observe` 只采集 Scene，`act` 只执行一个动作并采集动作后 Scene，`finish` 只提交摘要和可选不确定项；Runtime 从 ledger 组装每个有效验证点的 check，再执行完整证据校验。PASS/FAIL 必须引用真实且完成视觉登记的 Scene；搜索“不存在”结论必须引用已确认边界和连续覆盖的滚动上下文。最终 `result.json` 自动写入当前 `caseModelRevision`。
 
 主要事件包括：
 

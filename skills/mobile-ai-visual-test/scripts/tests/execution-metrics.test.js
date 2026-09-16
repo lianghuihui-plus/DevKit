@@ -63,15 +63,12 @@ assert.deepStrictEqual(summary, {
   invocationCount: 2,
   invocationErrorCount: 1,
   agentFacing: {
-    decisionSubmissionCount: 0,
-    piggybackedSubmissionCount: 0,
-    piggybackedUpdateCount: 0,
-    effectRejectionAfterUpdatesCount: 0,
+    requestCount: 0,
+    recordResultCount: 0,
     unresolvedFinishAttemptCount: 0,
     requestBytes: 0,
     responseBytes: 0,
     sceneProjectionBytes: 0,
-    updatesApplyMs: 0,
     ledgerProjectionMs: 0,
     documentationRefCount: 0,
     hostTransportCounts: {},
@@ -97,16 +94,13 @@ assert.strictEqual(invocationText.includes('received'), false);
 const rejectedResponse = {
   status: 'INPUT_INVALID', code: 'ACTION_NOT_AVAILABLE',
   documentationRef: 'references/case-runtime/errors.md#error-action-not-available',
-  updatesApplied: { visual: true, expectationResults: ['E1'] },
-  effect: { type: 'act', status: 'REJECTED' },
   scene: { sceneRef: 'scene-0001', screenshot: { ref: 'screenshots/scene-0001.png' } },
 };
 telemetry.recordAgentFacing(execDir, {
   capability: 'act', actionRef: 'secret-control:tap',
-  updates: { visual: { observation: 'private observation' }, expectationResults: [{ actual: 'private result' }] },
 }, rejectedResponse, 25, {
   now: '2026-08-20T10:00:00.950Z', hostTransport: 'stdin',
-  agentFacingMetrics: { updatesApplyMs: 7, ledgerProjectionMs: 0 },
+  agentFacingMetrics: { ledgerProjectionMs: 0 },
 });
 const finishRequest = {
   capability: 'finish', summary: 'private summary',
@@ -118,22 +112,18 @@ const finishResponse = {
 };
 telemetry.recordAgentFacing(execDir, finishRequest, finishResponse, 15, {
   now: '2026-08-20T10:00:00.975Z', hostTransport: 'mcp',
-  agentFacingMetrics: { updatesApplyMs: 0, ledgerProjectionMs: 9 },
+  agentFacingMetrics: { ledgerProjectionMs: 9 },
 });
 const protocolSummary = telemetry.summarize(execDir, 1000).agentFacing;
 assert.deepStrictEqual(protocolSummary, {
-  decisionSubmissionCount: 2,
-  piggybackedSubmissionCount: 1,
-  piggybackedUpdateCount: 2,
-  effectRejectionAfterUpdatesCount: 1,
+  requestCount: 2,
+  recordResultCount: 0,
   unresolvedFinishAttemptCount: 1,
   requestBytes: Buffer.byteLength(JSON.stringify({
     capability: 'act', actionRef: 'secret-control:tap',
-    updates: { visual: { observation: 'private observation' }, expectationResults: [{ actual: 'private result' }] },
   })) + Buffer.byteLength(JSON.stringify(finishRequest)),
   responseBytes: Buffer.byteLength(JSON.stringify(rejectedResponse)) + Buffer.byteLength(JSON.stringify(finishResponse)),
   sceneProjectionBytes: Buffer.byteLength(JSON.stringify(rejectedResponse.scene)),
-  updatesApplyMs: 7,
   ledgerProjectionMs: 9,
   documentationRefCount: 2,
   hostTransportCounts: { stdin: 1, mcp: 1 },

@@ -56,6 +56,13 @@ const scene = {
   sceneId: 'scene-0007',
   generation: 1,
   capturedAt: '2026-09-11T00:00:01.000Z',
+  captureTiming: {
+    order: ['layout', 'screenshot'],
+    captureStartedAt: '2026-09-11T00:00:00.900Z',
+    layoutCompletedAt: '2026-09-11T00:00:00.950Z',
+    screenshotCompletedAt: '2026-09-11T00:00:01.000Z',
+    spanMs: 100,
+  },
   screenshot: { ref: 'screenshots/scene-0007.png', path: path.join(execDir, 'screenshots/scene-0007.png'), sha256: 'png-test', width: 1080, height: 1920 },
   evidenceChannels: {
     visual: { available: true, attachment: { path: path.join(execDir, 'screenshots/scene-0007.png') } },
@@ -96,7 +103,7 @@ function assertCompactResponse(value) {
   }
 }
 
-assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'inspect', 'plan', 'act', 'knowledge', 'recover', 'finish']);
+assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'inspect', 'plan', 'recordResult', 'act', 'knowledge', 'recover', 'finish']);
 const initialState = projectInitialState({
   platform: 'ios',
   initialStateRequirement: { targetState: 'KEEP_EXISTING' },
@@ -138,6 +145,7 @@ assert.ok(validateAgentFacingRequest({
 const projectedScene = projectScene(scene, { caseModel: null });
 assert.strictEqual(Object.prototype.hasOwnProperty.call(projectedScene, 'schemaVersion'), false);
 assert.strictEqual(projectedScene.sceneRef, scene.sceneId);
+assert.deepStrictEqual(projectedScene.captureTiming, scene.captureTiming);
 assert.strictEqual(projectedScene.actions, undefined);
 assert.strictEqual(projectedScene.capabilities, undefined);
 assert.strictEqual(projectedScene.inspect, undefined);
@@ -167,7 +175,7 @@ assert.ok(Buffer.byteLength(JSON.stringify(projectedBudgetScene)) <= 12 * 1024,
 
 const actionBeforePlan = translateAgentFacingRequest(execDir, {
   capability: 'act', basedOnSceneRef: scene.sceneId, actionRef: 'record-button:longPress', input: { durationMs: 1200 },
-  purpose: '长按录入语音', expectationRefs: [],
+  purpose: '长按录入语音',
 });
 assert.strictEqual(actionBeforePlan.operation, 'act');
 assert.throws(() => translateAgentFacingRequest(execDir, { capability: 'finish',
@@ -215,6 +223,14 @@ writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 writeJsonAtomic(path.join(execDir, 'scenes', `${scene.sceneId}.json`), scene);
 const sceneWithAction = projectScene(scene, { caseModel: plannedModel });
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.available, true);
+assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.coordinateSource, 'visual');
+assert.deepStrictEqual(sceneWithAction.previousAction.spatialEvidence.requested, {
+  from: { x: 0, y: 0 }, to: { x: 0, y: 0 },
+});
+assert.deepStrictEqual(sceneWithAction.previousAction.spatialEvidence.dispatched, {
+  from: { x: 0, y: 0 }, to: { x: 0, y: 0 },
+});
+assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.deviceActual, null);
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.coordinateTransform, undefined);
 assert.strictEqual(sceneWithAction.previousAction.screenComparison, 'IDENTICAL');
 assert.strictEqual(sceneWithAction.previousAction.observedEffect, undefined);
@@ -255,9 +271,9 @@ const translations = [
     operation: 'inspectVisual', basedOnSceneId: scene.sceneId,
     decision: { purpose: '记录当前截图的视觉事实', expectationRefs: ['E1'], observation: '页面显示系统权限弹窗' },
   }],
-  [{ capability: 'act', basedOnSceneRef: scene.sceneId, actionRef: 'record-button:longPress', input: { durationMs: 1200 }, purpose: '长按录入语音', expectationRefs: ['E1'] }, {
+  [{ capability: 'act', basedOnSceneRef: scene.sceneId, actionRef: 'record-button:longPress', input: { durationMs: 1200 }, purpose: '长按录入语音' }, {
     operation: 'act', basedOnSceneId: scene.sceneId, capabilityId: 'scene-0007:longPress:record-button', input: { durationMs: 1200 },
-    decision: { purpose: '长按录入语音', expectationRefs: ['E1'] },
+    decision: { purpose: '长按录入语音', expectationRefs: [] },
   }],
   [{ capability: 'act', basedOnSceneRef: scene.sceneId, actionRef: 'message-input:inputText', input: { text: '测试', mode: 'replace' }, purpose: '输入消息' }, {
     operation: 'act', basedOnSceneId: scene.sceneId, capabilityId: 'scene-0007:inputText:message-input', input: { text: '测试', mode: 'replace' },
@@ -333,6 +349,38 @@ assert.strictEqual(revisedPlan.status, 'CASE_MODEL_RECORDED');
 const revisedModel = require('../case-runtime/case-model-service').current(execDir);
 assert.strictEqual(revisedModel.revision, 2);
 assert.strictEqual(revisedModel.reason, '权限弹窗改变了执行路径和验证条件');
+
+const recordedResults = run(execDir, {
+  capability: 'recordResult',
+  results: [
+    { expectationRef: 'E1', status: 'PASS', actual: '权限处理后显示录音状态', evidence: { sceneRefs: [scene.sceneId] } },
+    { expectationRef: 'E2', status: 'INCONCLUSIVE', actual: '当前现场不足以确认完整录音结果', evidence: { sceneRefs: [scene.sceneId] } },
+  ],
+}, { now: '2026-09-11T00:00:03.200Z' });
+assert.strictEqual(recordedResults.status, 'RESULTS_RECORDED');
+assert.deepStrictEqual(recordedResults.recorded, ['E1', 'E2']);
+assert.deepStrictEqual(recordedResults.unchanged, []);
+assert.strictEqual(recordedResults.readiness.ready, false);
+const repeatedResults = run(execDir, {
+  capability: 'recordResult',
+  results: [
+    { expectationRef: 'E1', status: 'PASS', actual: '权限处理后显示录音状态', evidence: { sceneRefs: [scene.sceneId] } },
+    { expectationRef: 'E2', status: 'INCONCLUSIVE', actual: '当前现场不足以确认完整录音结果', evidence: { sceneRefs: [scene.sceneId] } },
+  ],
+}, { now: '2026-09-11T00:00:03.300Z' });
+assert.deepStrictEqual(repeatedResults.recorded, []);
+assert.deepStrictEqual(repeatedResults.unchanged, ['E1', 'E2']);
+const resultEventCount = runtimeStore.events(execDir).filter((event) => event.type === 'expectationResultUpdated').length;
+const invalidResults = run(execDir, {
+  capability: 'recordResult',
+  results: [
+    { expectationRef: 'E1', status: 'PASS', actual: '仍然可见', evidence: { sceneRefs: [scene.sceneId] } },
+    { expectationRef: 'E9', status: 'PASS', actual: '未知验证点', evidence: { sceneRefs: [scene.sceneId] } },
+  ],
+});
+assert.strictEqual(invalidResults.status, 'INPUT_INVALID');
+assert.strictEqual(invalidResults.code, 'EXPECTATION_UNKNOWN');
+assert.strictEqual(runtimeStore.events(execDir).filter((event) => event.type === 'expectationResultUpdated').length, resultEventCount);
 
 const knowledgeResponse = projectAgentFacingResponse(execDir, {
   status: 'KNOWLEDGE', queryId: 'knowledge-0001', query: '权限弹窗出现后语音录入无法继续',

@@ -51,13 +51,17 @@ function readActiveDispatch(directory, executionId) {
 function assertActiveDispatch(directory, executionId, sequence) {
   const state = validateState(readJson(statePaths(directory).state, null), executionId);
   const dispatch = activeDispatch(state);
-  if (!dispatch || dispatch.sequence !== sequence || dispatch.status === 'REPLACED') {
+  const requested = Object.values(state.dispatches).find((item) => item.sequence === sequence) || null;
+  if (!requested) {
+    throw contractError('HANDOFF_SEQUENCE_MISMATCH', 'dispatch sequence is unknown; reuse the command from the loaded handoff exactly');
+  }
+  if (!dispatch || requested.dispatchId !== dispatch.dispatchId || requested.status === 'REPLACED') {
     throw contractError('HANDOFF_REPLACED', 'handoff was replaced by a newer continuation');
   }
-  if (dispatch.status !== 'CONSUMED') {
+  if (requested.status !== 'CONSUMED') {
     throw contractError('HANDOFF_NOT_CLAIMED', 'handoff must be claimed before using the Runtime client');
   }
-  return dispatch;
+  return requested;
 }
 
 function registerDispatch(directory, envelope, options = {}) {

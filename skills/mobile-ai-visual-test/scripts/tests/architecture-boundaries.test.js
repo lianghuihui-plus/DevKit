@@ -26,6 +26,7 @@ assert.deepStrictEqual(roleResources('case-executor'), [
   'references/case-runtime/methods/observe.md',
   'references/case-runtime/methods/inspect.md',
   'references/case-runtime/methods/plan.md',
+  'references/case-runtime/methods/record-result.md',
   'references/case-runtime/methods/act.md',
   'references/case-runtime/methods/knowledge.md',
   'references/case-runtime/methods/recover.md',
@@ -44,7 +45,7 @@ assert.strictEqual(fs.existsSync(path.join(root, 'prompts/main-agent.md')), fals
 assert.strictEqual(COORDINATOR_INTERFACE_KIND, 'AGENT_FACING');
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
 assert.ok(COORDINATOR_CAPABILITIES.length <= 4, 'Main Agent active capability budget is 4');
-assert.ok(AGENT_FACING_CAPABILITIES.length <= 7, 'Case Agent active capability budget is 7');
+assert.ok(AGENT_FACING_CAPABILITIES.length <= 8, 'Case Agent active capability budget is 8');
 
 const casePrompt = read('prompts/case-agent.md');
 for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkpointId', 'turnId']) {
@@ -55,8 +56,8 @@ assert.match(casePrompt, /本次用例理解与计划/);
 assert.match(casePrompt, /case\.source/);
 assert.match(casePrompt, /expectationRef/);
 assert.match(casePrompt, /view_image/);
-assert.match(casePrompt, /七个业务能力/);
-assert.match(casePrompt, /observe.*inspect.*plan.*act.*knowledge.*recover.*finish/);
+assert.match(casePrompt, /八个业务能力/);
+assert.match(casePrompt, /observe.*inspect.*plan.*recordResult.*act.*knowledge.*recover.*finish/);
 assert.match(casePrompt, /动态值只取自当前 Brief、Scene 或响应/);
 assert.doesNotMatch(casePrompt, /retryWith|nextCall|technicalContext/);
 assert.match(casePrompt, /控件树为空.*不得.*页面空白/);
@@ -207,7 +208,7 @@ assert.strictEqual(read('references/workflow.md').includes('Prompt 和派生 Cas
 assert.strictEqual(read('docs/architecture.md').includes('agentRequired=true + derived Case Brief'), false);
 assert.strictEqual(read('docs/architecture.md').includes('主 Agent 使用该 Brief'), false);
 assert.match(casePrompt, /Handoff Loader/);
-assert.match(casePrompt, /expectationRefs.*只关联.*直接推进/);
+assert.match(casePrompt, /expectationRefs.*只关联.*直接检查或调查/);
 assert.match(casePrompt, /finish.*ledger.*完整性校验/);
 const implementation = implementationGroups(root, 'harmony');
 assert.strictEqual(implementation.report.includes('scripts/execution/contracts/case-definition-contract.js'), false);

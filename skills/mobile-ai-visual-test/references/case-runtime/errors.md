@@ -36,7 +36,7 @@ Execution 或 dispatch 绑定无效。
 
 **可重试：** 否
 
-**处理：** 保留当前现场，读取本次响应中的原因和事实；需要人工或技术处置时完成处置后回到 facade。
+**处理：** 读取 facts.technical.code：sequence 不匹配时原样复用当前 Loader/Brief 中的 command；只有 HANDOFF_REPLACED 才表示该 dispatch 已被真实 continuation 取代；HANDOFF_NOT_CLAIMED 表示 Loader 尚未成功 claim。
 
 <a id="error-scene-required"></a>
 ## SCENE_REQUIRED
@@ -105,6 +105,15 @@ Case Model baseRevision 不是当前 revision。
 ## EXPECTATION_UNKNOWN
 
 ExpectationRef 不属于当前 ACTIVE 模型。
+
+**可重试：** 是
+
+**处理：** 根据本次响应的动态事实修正输入或等待状态变化后重新调用；不要重放结果未知的设备动作。
+
+<a id="error-record-result-invalid"></a>
+## RECORD_RESULT_INVALID
+
+验证结果缺少有效证据或字段不符合当前验证点。
 
 **可重试：** 是
 

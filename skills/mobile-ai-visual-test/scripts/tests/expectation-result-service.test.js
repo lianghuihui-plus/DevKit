@@ -83,6 +83,14 @@ receipt = applyExpectationResults(execDir, [{
 assert.deepStrictEqual(receipt.idempotent, ['E1']);
 assert.strictEqual(store.events(execDir).filter((event) => event.type === 'expectationResultUpdated').length, beforeDuplicate);
 
+const beforeInvalidBatch = store.events(execDir).filter((event) => event.type === 'expectationResultUpdated').length;
+assert.throws(() => applyExpectationResults(execDir, [
+  { expectationRef: 'E1', status: 'PASS', actual: '标题仍然可见', evidence: { sceneRefs: ['scene-0001'] } },
+  { expectationRef: 'E9', status: 'PASS', actual: '未知验证点', evidence: { sceneRefs: ['scene-0001'] } },
+]), (error) => error.code === 'EXPECTATION_UNKNOWN');
+assert.strictEqual(store.events(execDir).filter((event) => event.type === 'expectationResultUpdated').length, beforeInvalidBatch,
+  'an invalid recordResult batch must not partially persist valid items');
+
 assert.deepStrictEqual(buildCaseResultFromLedger(execDir, { summary: '验证完成', uncertainties: [] }), {
   verdict: 'PASS', summary: '验证完成',
   checks: [{ expectationRef: 'E1', status: 'PASS', actual: '标题可见', sceneRefs: ['scene-0001'] }],

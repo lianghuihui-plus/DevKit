@@ -70,7 +70,7 @@ assertExamples(COORDINATOR_PUBLIC_CONTRACT.methods, validateCoordinatorRequest);
 assert.strictEqual(CASE_PUBLIC_CONTRACT.protocol, 'agent-facing');
 assert.deepStrictEqual(Object.keys(CASE_PUBLIC_CONTRACT.methods), AGENT_FACING_CAPABILITIES);
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
-assert.ok(AGENT_FACING_CAPABILITIES.length <= 7, 'Case Agent active capability budget is 7');
+assert.ok(AGENT_FACING_CAPABILITIES.length <= 8, 'Case Agent active capability budget is 8');
 assertExamples(CASE_PUBLIC_CONTRACT.methods, validateAgentFacingRequest, { forbidPaths: true });
 
 assert.strictEqual(RUNTIME_INTERFACE_KIND, 'INTERNAL');

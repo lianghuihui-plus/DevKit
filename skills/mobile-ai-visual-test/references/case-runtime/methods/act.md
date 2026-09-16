@@ -3,7 +3,7 @@
 基于当前 Scene 执行一个 ActionRef，并采集新 Scene。
 
 ```typescript
-act({ capability: "act", basedOnSceneRef: string, actionRef: string, input?: object, purpose: string, expectationRefs?: string[], updates?: object })
+act({ capability: "act", basedOnSceneRef: string, actionRef: string, input?: object, purpose: string })
 ```
 
 ## 参数
@@ -15,8 +15,6 @@ act({ capability: "act", basedOnSceneRef: string, actionRef: string, input?: obj
 | `actionRef` | 是 | `string` | 控件、屏幕或视觉动作引用 |
 | `purpose` | 是 | `string` | 业务动作目的 |
 | `input` | 否/条件 | `object` | 动作类型对应输入 |
-| `expectationRefs` | 否/条件 | `string[]` | 直接推进的验证点 |
-| `updates` | 否/条件 | `object` | 随动作提交的已形成判断 |
 
 ## 条件要求
 
@@ -24,15 +22,14 @@ act({ capability: "act", basedOnSceneRef: string, actionRef: string, input?: obj
 
 ## 上下文校验
 
-- updates 先落盘；ActionRef、动态输入或 Scene 无效时只拒绝 effect。
+- ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。
 
 ## 成功状态
 
-- `READY`
+- `SCENE`
 
 ## 副作用
 
-- 保存有效 updates
 - 最多投递一个设备动作
 - 采集新 Scene
 

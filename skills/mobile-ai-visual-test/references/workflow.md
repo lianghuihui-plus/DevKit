@@ -32,7 +32,7 @@ Case Agent 读取原始用例和当前 Scene，使用 `plan` 形成 Case Model�
 
 Case Agent 可以用 `recover.targetState` 请求 execution 已授权的目标 App 状态，或用 `recover.externalAction` 登记框架外技术处置。Android、HarmonyOS 在底层清数据；iOS 按需从 `app-packages/ios` 唯一匹配、校验并冻结安装包后重装。Agent 不处理平台安装参数；一般框架外声明后重新 `observe`，初始态准备失败则根据错误文档和当前准备事实重试，并由新 Scene 验证。
 
-验证点判断在执行过程中通过 decision updates 增量保存，并引用真实 Scene、知识或技术事实。`finish` 只处理 ledger 中仍未决或冲突的项目并提交摘要；Runtime 从 ledger 组装完整 checks 并完成证据完整性校验后，主 Agent 才能 commit。聊天摘要不是批次事实来源。
+验证点判断在执行过程中通过独立 `recordResult` 增量保存，并引用真实 Scene、知识或技术事实。`observe` 只采集 Scene，`act` 只投递一个动作并采集动作后 Scene，`finish` 只处理 ledger 中仍未决或冲突的项目并提交摘要；Runtime 从 ledger 组装完整 checks 并完成证据完整性校验后，主 Agent 才能 commit。聊天摘要不是批次事实来源。
 
 ## 技术异常
 

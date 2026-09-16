@@ -3,7 +3,7 @@
 从 expectation ledger 收口并完成用例。
 
 ```typescript
-finish({ capability: "finish", basedOnSceneRef?: string, summary: string, uncertainties?: string[], updates?: object })
+finish({ capability: "finish", summary: string, uncertainties?: string[] })
 ```
 
 ## 参数
@@ -11,18 +11,12 @@ finish({ capability: "finish", basedOnSceneRef?: string, summary: string, uncert
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
 | `capability` | 是 | `"finish"` | 固定为 finish |
-| `basedOnSceneRef` | 否/条件 | `string` | 最后视觉事实所依据的 Scene |
 | `summary` | 是 | `string` | 最终摘要 |
 | `uncertainties` | 否/条件 | `string[]` | 仍需披露的不确定性 |
-| `updates` | 否/条件 | `object` | 最后一批视觉事实和验证点结果 |
-
-## 条件要求
-
-- updates.visual 存在时 basedOnSceneRef 必填。
 
 ## 上下文校验
 
-- 不接收全量 checks；Runtime 从 ledger 组装并执行完整性校验。
+- 不接收 updates 或全量 checks；Runtime 从 ledger 组装并执行完整性校验。
 
 ## 成功状态
 
@@ -31,7 +25,6 @@ finish({ capability: "finish", basedOnSceneRef?: string, summary: string, uncert
 
 ## 副作用
 
-- 保存最后 updates
 - 就绪后持久化最终结果
 
 ## 幂等性

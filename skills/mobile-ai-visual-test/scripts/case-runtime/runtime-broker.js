@@ -33,7 +33,7 @@ function executeAgentRequest(execDir, request, options = {}) {
 }
 
 function executeFacadeRequest(execDir, request, options = {}) {
-  if (['reviewKnowledge', 'recordCaseModel', 'prepare'].includes(request?.operation)) {
+  if (['reviewKnowledge', 'recordCaseModel', 'recordExpectationResults', 'prepare'].includes(request?.operation)) {
     const resolved = path.resolve(execDir);
     const runtime = readJson(path.join(resolved, 'runtime.json'), null);
     if (!isSupportedBroker(runtime?.broker) || !runtime?.entry) {

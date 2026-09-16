@@ -20,5 +20,5 @@ ActionRef 是 Runtime 发布事实的稳定引用，Agent 不解析内部 capabi
 ## 动态约束
 
 - 屏幕动作由 `interactionContext` 的滚动、焦点和键盘事实约束。
-- 视觉动作必须出现在 `interactionContext.visualGestures`，且 Scene 已登记视觉事实或本次 act 同时提交 `updates.visual`。
+- 视觉动作必须出现在 `interactionContext.visualGestures`，且 Scene 已通过 `inspect(channel="visual")` 登记视觉事实。
 - Runtime 在完整当前 Scene 上重建能力；无效引用返回 `ACTION_NOT_AVAILABLE`，不会返回整份替代动作目录。

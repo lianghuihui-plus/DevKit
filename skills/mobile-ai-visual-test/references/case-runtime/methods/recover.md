@@ -26,8 +26,7 @@ recover({ capability: "recover", basedOnSceneRef?: string, reason: string, targe
 
 ## 成功状态
 
-- `READY`
-- `RECOVERY_APPLIED`
+- `SCENE`
 - `EXTERNAL_ACTION_RECORDED`
 
 ## 副作用
