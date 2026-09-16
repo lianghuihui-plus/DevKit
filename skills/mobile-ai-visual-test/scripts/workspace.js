@@ -13,13 +13,16 @@ function main(argv = process.argv.slice(2)) {
   const result = ensureWorkspace(path.resolve(argv[1]));
   const numbering = ensureWorkspaceCaseNumbers(result.root);
   if (numbering.changed) renderIndexForRoot(result.root);
+  const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve(__dirname, 'workspace.js'))} --cwd ${JSON.stringify(result.root)}`;
+  const coordinatorCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve(__dirname, 'coordinator-agent.js'))}`;
   process.stdout.write(`${JSON.stringify({
     ...result,
     caseNumbering: numbering,
     coordinatorFacade: {
       schemaVersion: 1,
       entrypoint: 'scripts/coordinator-agent.js',
-      prepareUsage: 'node scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>',
+      command,
+      prepareUsage: `${coordinatorCommand} prepare --workspace ${JSON.stringify(result.root)} --case-nos <014,015>`,
       capabilities: capabilityCards(),
     },
   }, null, 2)}\n`);

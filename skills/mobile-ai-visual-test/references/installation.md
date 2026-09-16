@@ -45,9 +45,9 @@ scripts/probe-env.sh --platform android
 
 说明：
 
-- Android 中文输入依赖 MAVT Input IME。
-- `scripts/prepare-env.sh --platform android [--device <serial>]` 会自动构建、安装、启用 MAVT Input IME。
-- 如果 IME 构建失败，通常是 SDK Platform、Build Tools、JDK 或 `ANDROID_HOME` 缺失。
+- Android 中文输入的具体后端属于 Runtime/Adapter 内部实现，不向主 Agent 或 Case Agent 暴露，也不要求 Agent 安装、启用或切换输入组件。
+- Coordinator 在创建 ExecutionRequest 前自动准备并校验输入能力；准备失败时流程停在环境阶段，不能进入用例执行。
+- `scripts/prepare-env.sh --platform android [--device <serial>]` 只供人工安装和环境诊断使用；如果构建失败，检查 SDK Platform、Build Tools、JDK 或 `ANDROID_HOME`。
 
 ## HarmonyOS
 

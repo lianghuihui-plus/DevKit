@@ -43,6 +43,16 @@ assert.strictEqual(initialized.marker.type, 'mobile-ai-visual-test-workspace');
 assert.strictEqual(initialized.initialized, true);
 assert.strictEqual(fs.existsSync(path.join(workspace, 'flows')), false);
 assert.strictEqual(initialized.coordinatorFacade.entrypoint, 'scripts/coordinator-agent.js');
+assert.strictEqual(initialized.coordinatorFacade.command,
+  `${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(repo, 'scripts', 'workspace.js'))} --cwd ${JSON.stringify(path.resolve(workspace))}`);
+const reopenedFromWorkspace = childProcess.spawnSync(initialized.coordinatorFacade.command, {
+  cwd: workspace,
+  encoding: 'utf8',
+  env: { ...process.env, MAVT_SELF_TEST: '' },
+  shell: true,
+});
+assert.strictEqual(reopenedFromWorkspace.status, 0, reopenedFromWorkspace.stderr);
+assert.strictEqual(JSON.parse(reopenedFromWorkspace.stdout).root, path.resolve(workspace));
 assert.deepStrictEqual(Object.keys(initialized.coordinatorFacade.capabilities), COORDINATOR_CAPABILITIES);
 assert.strictEqual(initialized.coordinatorCapabilities, undefined);
 assert.strictEqual(JSON.stringify(initialized.coordinatorFacade).includes('definitionRef'), false);
@@ -55,6 +65,18 @@ assert.strictEqual(fs.readFileSync(imported.sourcePath, 'utf8'), fs.readFileSync
 assert.strictEqual(fs.existsSync(imported.contextHtml), true);
 assert.ok(fs.readFileSync(imported.contextHtml, 'utf8').includes('看一下当前页面是否符合用例描述'));
 assert.ok(fs.readFileSync(path.join(workspace, 'index.html'), 'utf8').includes('查看用例内容'));
+const preparedFromWorkspace = childProcess.spawnSync(
+  initialized.coordinatorFacade.prepareUsage.replace('<014,015>', imported.caseJson.identity.caseNo),
+  {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: { ...process.env, MAVT_SELF_TEST: '' },
+    shell: true,
+  },
+);
+assert.strictEqual(preparedFromWorkspace.status, 0, preparedFromWorkspace.stderr);
+assert.strictEqual(JSON.parse(preparedFromWorkspace.stdout).status, 'NEED_USER_CONFIRMATION');
+fs.rmSync(path.join(workspace, 'runs'), { recursive: true, force: true });
 
 const contract = run(['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony']);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(contract, 'schemaVersion'), false);

@@ -40,6 +40,11 @@ const fail = { verdict: 'FAIL', checks: [{ expectationRef: 'E1', status: 'FAIL',
 assert.throws(() => validateKnowledgeClosure(fail, []),
   (error) => error.code === 'CASE_RESULT_INCOMPLETE'
     && error.missing.some((item) => item.field === 'checks.E1.knowledgeInvestigation'));
+assert.throws(() => validateKnowledgeClosure(fail, [
+  query('knowledge-pending-0001', ['E1'], [{ entryId: 'K-pending-001', expired: false }]),
+]), (error) => error.code === 'CASE_RESULT_INCOMPLETE'
+  && error.missing.some((item) => item.field === 'checks.E1.knowledgeInvestigation'
+    && JSON.stringify(item.queryIds) === JSON.stringify(['knowledge-pending-0001'])));
 assert.throws(() => validateKnowledgeClosure({
   verdict: 'INCONCLUSIVE',
   checks: [{ expectationRef: 'E1', status: 'INCONCLUSIVE', actual: '现场不足以判断', sceneRefs: [] }],

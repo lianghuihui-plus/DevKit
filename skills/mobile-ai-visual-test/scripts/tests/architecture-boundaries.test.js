@@ -58,6 +58,7 @@ assert.match(casePrompt, /scene\.inspect\.action\.path/);
 assert.match(casePrompt, /框架只返回.*坐标/);
 assert.match(casePrompt, /externalAction/);
 assert.match(casePrompt, /technicalContext/);
+assert.match(casePrompt, /有效技术事实.*BLOCKED.*证据不足.*INCONCLUSIVE/);
 assert.match(casePrompt, /首选能力.*不是排他的工具边界/);
 assert.strictEqual(casePrompt.includes('Frozen CaseSpec'), false);
 assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);

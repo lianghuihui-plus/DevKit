@@ -5,14 +5,14 @@
 普通执行只使用：
 
 ```bash
-node scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>
+node <skill-root>/scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>
 ```
 
-首次调用只填写工作空间和用例编号。之后以当前响应中的能力卡、模板和预绑定命令为调用事实源，不在文档中复制字段清单。
+首次调用优先使用 Workspace 响应中已绑定绝对脚本路径和工作区的 `coordinatorFacade.prepareUsage`，只替换用例编号。之后以当前响应中的能力卡、模板和预绑定命令为调用事实源，不在文档中复制字段清单。
 
 Coordinator 返回 `NEED_USER_CONFIRMATION`、`NEED_CASE_AGENT`、`WAITING`、`TECHNICAL`、`COMPLETE` 或 `BLOCKED`。需要委托时只暴露不透明 `loaderCommand` 与固定 `delegationPrompt`；主 Agent 不读取 Handoff 正文。
 
-`scripts/workspace.js --cwd <workspace>` 用于校验或初始化 Workspace，并返回四个能力的 `coordinatorFacade`。它不返回底层 CLI 参数 Schema。
+`<skill-root>/scripts/workspace.js --cwd <workspace>` 用于校验或初始化 Workspace，并返回四个能力的 `coordinatorFacade`。脚本路径属于技能目录，`--cwd` 属于测试工作区；响应中的 `coordinatorFacade.command` 可从任意当前目录重新校验该工作区，`coordinatorFacade.prepareUsage` 是已绑定工作区的绝对 Facade 启动命令。它不返回底层 CLI 参数 Schema。
 
 ## 内部/Authoring 接口
 

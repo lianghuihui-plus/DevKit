@@ -16,15 +16,15 @@ Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handof
 先执行：
 
 ```bash
-node scripts/workspace.js --cwd <workspace>
+node <skill-root>/scripts/workspace.js --cwd <workspace>
 ```
 
-响应中的 `coordinatorFacade` 是正常流程的完整接口说明。主 Agent 只需要四个能力：`prepareRun`、`confirmRun`、`advanceRun`、`cancelRun`。
+脚本入口属于技能目录，`--cwd` 指向测试工作区；不要在测试工作区中解析相对的 `scripts/`。响应中的 `coordinatorFacade.command` 可从任意当前目录重新校验该工作区，`coordinatorFacade.prepareUsage` 是已绑定工作区的绝对 Facade 启动命令。主 Agent 只需要四个能力：`prepareRun`、`confirmRun`、`advanceRun`、`cancelRun`。
 
-开始执行时只提交工作空间和用例编号：
+开始执行时只替换 `coordinatorFacade.prepareUsage` 中的用例编号并原样执行；其等价形式为：
 
 ```bash
-node scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>
+node <skill-root>/scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>
 ```
 
 随后只使用当前响应提供的模板、路径和完整命令。`advanceRun` 原样执行 `commands.advance`；`confirmRun` 选择一个完整的 `confirmChoices[].template`，或使用唯一的 `confirmTemplate`，只填写模板要求用户决定的值，再写入指定 `requestPath` 并原样执行 `command`。`cancelRun` 同理。
@@ -48,7 +48,7 @@ node scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <01
 - 宿主命令返回仍在运行的会话句柄时，继续等待同一进程，不得重复执行 `advanceRun`。
 - `NEED_CASE_AGENT` 后以 execution 持久化状态为准；聊天摘要不能替代框架结果。
 - 主 Agent 持有 Case Agent 的真实运行句柄；框架只记录 Handoff 的准备、领取及 execution 是否完成，不虚构 Agent 运行状态。
-- 一个用例只保留一个有效写入者；正常 `WAITING` 不创建新 Case Agent。
+- 一个用例只保留一个有效写入者；正常 `WAITING` 不创建新 Case Agent，当前 case 未由 Batch commit 前不得委托后续 case。
 
 ## App 初始状态
 

@@ -128,10 +128,18 @@ assert.deepStrictEqual(needBinding.confirmTemplate, {
     deviceFormFactor: 'phone',
   },
 });
+assert.deepStrictEqual(needBinding.requiredUserFields, ['binding.appId', 'binding.entry']);
 assert.strictEqual(JSON.stringify(needBinding).includes('probeJson'), false);
 assert.deepStrictEqual(coordinatorAgent.retryWithFor([
   'confirm', '--state', prepared.statePath,
 ]), needBinding.confirmTemplate);
+
+assert.throws(() => confirmEnvironment({
+  workspaceRoot: workspace,
+  binding: { platform: 'harmony', deviceId: 'device-001', appId: '<target-app-id>', entry: '<entry-ability>' },
+  probe,
+  userConfirmation: '确认环境',
+}), (error) => error.code === 'ENVIRONMENT_CONFIRMATION_INVALID');
 
 const initCalls = [];
 const confirmed = confirmRun(prepared.statePath, {
@@ -477,11 +485,22 @@ for (const hidden of ['handoff', 'path', 'sha256', 'brief', 'source']) {
 }
 
 const waiting = advanceRun(prepared.statePath, {
-  batchExecute: () => ({ action: 'WAIT_EXECUTION_RESULT', batchId: 'batch-coordinator-facing', caseKey: case014.caseKey, executionId: 'execution-014' }),
+  batchExecute: () => ({
+    action: 'WAIT_EXECUTION_RESULT', batchId: 'batch-coordinator-facing', caseKey: case014.caseKey, executionId: 'execution-014',
+    progress: {
+      executionPhase: 'HANDOFF_CONSUMED', lastEventType: 'actionOutcomeUnknown', lastEventAt: '2026-09-11T02:00:06.000Z',
+      resultArtifacts: { result: false, metrics: false, executionFinalized: false, runtimeCompleted: false },
+    },
+  }),
 });
 assert.deepStrictEqual(waiting.status, 'WAITING');
 assert.strictEqual(waiting.reason, 'WAIT_EXECUTION_RESULT');
 assert.strictEqual(waiting.waitFor, 'EXECUTION_RESULT');
+assert.strictEqual(waiting.caseNo, '014');
+assert.strictEqual(waiting.caseKey, case014.caseKey);
+assert.strictEqual(waiting.executionId, 'execution-014');
+assert.strictEqual(waiting.progress.executionPhase, 'HANDOFF_CONSUMED');
+assert.strictEqual(waiting.progress.lastEventType, 'actionOutcomeUnknown');
 assert.strictEqual(waiting.commands.advance, prepared.commands.advance);
 
 const complete = advanceRun(prepared.statePath, {

@@ -127,6 +127,11 @@ function confirmEnvironment(options) {
   const workspace = assertWorkspace(options.workspaceRoot, { allowTest: true });
   return withFileLock(environmentConfirmationLockPath(workspace.root), () => {
     const binding = validateBinding({ ...options.binding });
+    for (const field of ['appId', ...(binding.platform === 'ios' ? [] : ['entry'])]) {
+      if (/^<[^>]+>$/.test(binding[field])) {
+        throw contractError('ENVIRONMENT_CONFIRMATION_INVALID', `binding.${field} must replace the confirmation template placeholder`);
+      }
+    }
     const probe = validateProbeSelection(options.probe, binding);
     const appProvisioning = validateAppProvisioning(options.appProvisioning || defaultAppProvisioning(), {
       workspaceRoot: workspace.root,

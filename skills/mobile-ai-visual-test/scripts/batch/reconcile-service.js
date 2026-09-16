@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { canonicalJson, contractError } = require('../lib/contract-utils');
-const { findActiveExecutions, readJson, withFileLock } = require('../lib/execution-lifecycle');
+const { findActiveExecutions, readJson, readJsonl, withFileLock } = require('../lib/execution-lifecycle');
 const { readActiveDispatch } = require('../lib/dispatch-lease');
 const { markDegraded } = require('../lib/warm-session-contract');
 const caseRuntimeLifecycle = require('../case-runtime/lifecycle');
@@ -21,6 +21,25 @@ function probeWarmSession(state, contract, adapter, now) {
     : 'warm App session probe failed');
   state.warmSession = markDegraded(state.warmSession, now || new Date().toISOString(), { failureCode, reason });
   return { state, probe, failureCode, reason };
+}
+
+function executionProgress(execDir, execution, runtime, dispatch) {
+  const lastEvent = readJsonl(path.join(execDir, 'events.jsonl')).at(-1) || null;
+  return {
+    executionPhase: execution.finalized === true
+      ? 'RESULT_FINALIZED'
+      : runtime?.status === 'COMPLETED'
+        ? 'RUNTIME_COMPLETED'
+        : dispatch?.status === 'CONSUMED' ? 'HANDOFF_CONSUMED' : 'HANDOFF_PREPARED',
+    lastEventType: lastEvent?.type || null,
+    lastEventAt: lastEvent?.time || null,
+    resultArtifacts: {
+      result: fs.existsSync(path.join(execDir, 'result.json')),
+      metrics: fs.existsSync(path.join(execDir, 'metrics.json')),
+      executionFinalized: execution.finalized === true,
+      runtimeCompleted: runtime?.status === 'COMPLETED',
+    },
+  };
 }
 
 function reconcileBatch(options) {
@@ -157,6 +176,9 @@ function reconcileBatch(options) {
         batchId: state.batchId,
         caseKey: item.caseKey,
         executionId: item.executionId,
+        ...(dispatch?.status === 'CONSUMED'
+          ? { progress: executionProgress(entry.execDir, entry.execution, runtime, dispatch) }
+          : {}),
       };
     }
     return stopBatch(loaded.paths, state, 'CORRUPTED', 'FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again', { now: options.now });

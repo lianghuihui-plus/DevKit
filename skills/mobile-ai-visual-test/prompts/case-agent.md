@@ -48,7 +48,7 @@ Brief 提供七个业务能力：`observe`、`inspect`、`plan`、`act`、`knowl
 - `APP_INITIAL_STATE_UNAVAILABLE`：只复制当前 `nextCall.example`；首次可恢复失败由 Runtime 给出一次重试，连续失败时先实际完成技术处置再登记 `externalAction`，不得用 `observe` 绕过准备失败门禁。
 - 动作结果未知：先观察确认，不自动重放可能已经生效的动作。
 - 当前 App 或 session 的恢复仅在归属明确且不会重放结果未知动作时进行；共享 Appium/WDA、跨批次资源和归属不明进程交由主 Agent。
-- 无法安全恢复时保留技术事实，形成 BLOCKED 或 INCONCLUSIVE，不把技术问题判为产品 FAIL。
+- 无法安全恢复时不把技术问题判为产品 FAIL：有与当前验证点关联的有效技术事实时形成 BLOCKED 并引用该事实；没有有效技术事实且只是证据不足时形成 INCONCLUSIVE。
 
 可识别列表会提供滚动上下文。搜索型验证点只有在报告明确支持完整覆盖时才能形成“不存在”的结论，否则只描述已检查区域或形成 INCONCLUSIVE。
 

@@ -245,6 +245,9 @@ function bindingConfirmationResponse(state, options = {}) {
     ...(state.selectedProbe.executionReady === false && state.selectedProbe.platform === 'ios'
       && state.selectedProbe.diagnostics?.some((item) => item.id === 'iosRealDeviceSigningIncomplete')
       ? { requiredBindingFields: ['xcodeOrgId', 'xcodeSigningId', 'updatedWDABundleId'] } : {}),
+    requiredUserFields: state.selectedProbe.platform === 'ios'
+      ? ['binding.appId']
+      : ['binding.appId', 'binding.entry'],
     confirmTemplate: state.bindingConfirmationTemplate,
     ...publicBase(state),
   };
@@ -683,6 +686,10 @@ function advanceBatch(state, options = {}) {
         status: 'WAITING',
         waitFor: 'EXECUTION_RESULT',
         reason: 'WAIT_EXECUTION_RESULT',
+        caseNo: state.targets.find((item) => item.caseKey === response.caseKey)?.caseNo,
+        caseKey: response.caseKey,
+        executionId: response.executionId,
+        ...(response.progress ? { progress: response.progress } : {}),
         ...publicBase(state),
       };
     }

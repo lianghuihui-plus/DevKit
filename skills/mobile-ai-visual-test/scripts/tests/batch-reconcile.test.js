@@ -72,11 +72,19 @@ claimDispatch(path.dirname(started.handoff.path), handoffEnvelope, {
   claimToken: claimTokenFor(handoffEnvelope),
   now: '2026-09-14T08:00:00.000Z',
 });
-assert.deepStrictEqual(reconcileBatch({ workspaceRoot: root, batchId, adapter }), {
-  action: 'WAIT_EXECUTION_RESULT',
-  batchId,
-  caseKey,
-  executionId: started.executionId,
+const waitingForExecution = reconcileBatch({ workspaceRoot: root, batchId, adapter });
+assert.strictEqual(waitingForExecution.action, 'WAIT_EXECUTION_RESULT');
+assert.strictEqual(waitingForExecution.batchId, batchId);
+assert.strictEqual(waitingForExecution.caseKey, caseKey);
+assert.strictEqual(waitingForExecution.executionId, started.executionId);
+assert.strictEqual(waitingForExecution.progress.executionPhase, 'HANDOFF_CONSUMED');
+assert.strictEqual(waitingForExecution.progress.lastEventType, 'executionStarted');
+assert.ok(waitingForExecution.progress.lastEventAt);
+assert.deepStrictEqual(waitingForExecution.progress.resultArtifacts, {
+  result: false,
+  metrics: false,
+  executionFinalized: false,
+  runtimeCompleted: false,
 });
 
 const locked = () => {

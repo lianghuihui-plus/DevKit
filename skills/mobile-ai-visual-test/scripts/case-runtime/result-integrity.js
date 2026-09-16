@@ -158,6 +158,7 @@ function validateKnowledgeClosure(result, events, execution = null) {
       missing.push({
         field: `checks.${check.expectationRef}.knowledgeInvestigation`,
         reason: '负向结论前尚未完成与该验证点关联的知识调查',
+        ...(associatedQueries.length ? { queryIds: associatedQueries.map((event) => event.queryId) } : {}),
       });
     }
   }
