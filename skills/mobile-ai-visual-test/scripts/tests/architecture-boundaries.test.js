@@ -224,6 +224,29 @@ fs.cpSync(root, digestRoot, { recursive: true, filter: (source) => !source.inclu
 const harmonyBefore = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
 const androidBefore = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'android' });
 const coordinatorBefore = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
+
+function assertCoordinatorOnlyDigestChange(relative) {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-coordinator-digest-boundary-'));
+  fs.cpSync(root, fixtureRoot, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  const caseBefore = buildContract({ skillRoot: fixtureRoot, role: 'case-executor', platform: 'harmony' });
+  const coordinatorBeforeFixture = buildContract({ skillRoot: fixtureRoot, role: 'batch-coordinator', platform: 'harmony' });
+  fs.appendFileSync(path.join(fixtureRoot, relative), '\n// coordinator digest boundary fixture\n');
+  const caseAfter = buildContract({ skillRoot: fixtureRoot, role: 'case-executor', platform: 'harmony' });
+  const coordinatorAfter = buildContract({ skillRoot: fixtureRoot, role: 'batch-coordinator', platform: 'harmony' });
+  assert.notStrictEqual(coordinatorAfter.coordinatorSha, coordinatorBeforeFixture.coordinatorSha, `${relative} must affect coordinatorSha`);
+  assert.strictEqual(caseAfter.runtimeSha, caseBefore.runtimeSha, `${relative} must not affect runtimeSha`);
+  assert.strictEqual(caseAfter.adapterSha, caseBefore.adapterSha, `${relative} must not affect adapterSha`);
+  assert.strictEqual(caseAfter.protocolSha, caseBefore.protocolSha, `${relative} must not affect case protocolSha`);
+  assert.strictEqual(coordinatorAfter.protocolSha, coordinatorBeforeFixture.protocolSha, `${relative} must not affect coordinator protocolSha`);
+  fs.rmSync(fixtureRoot, { recursive: true, force: true });
+}
+
+for (const relative of [
+  'scripts/batch/initialization-service.js',
+  'scripts/batch/reconcile-service.js',
+  'scripts/case-runtime/lifecycle.js',
+]) assertCoordinatorOnlyDigestChange(relative);
+
 fs.appendFileSync(path.join(digestRoot, 'references/knowledge.md'), '\nBehavior-bearing knowledge protocol fixture.\n');
 const coordinatorAfterKnowledge = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
 assert.strictEqual(coordinatorAfterKnowledge.protocolSha, coordinatorBefore.protocolSha);

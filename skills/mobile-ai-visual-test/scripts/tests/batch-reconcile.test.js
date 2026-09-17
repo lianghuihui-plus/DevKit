@@ -16,6 +16,7 @@ const {
 } = require('../batch/core');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const lifecycle = require('../case-runtime/lifecycle');
+const { closurePath } = require('../lib/execution-closure');
 const { findActiveExecutions, readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { claimDispatch, claimTokenFor } = require('../lib/dispatch-lease');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
@@ -23,6 +24,51 @@ const { createTestExecutionRequest, createTestWorkspace } = require('./current-f
 process.env.MAVT_SELF_TEST = '1';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-batch-reconcile-'));
 createTestWorkspace(root);
+
+function initializeBatchFixture(workspaceRoot, { batchId, platform, deviceId, suffix }) {
+  const source = `验证跨平台并行 ${suffix}`;
+  const fixtureCaseKey = `ck-${crypto.createHash('sha256').update(source).digest('hex').slice(0, 12)}`;
+  const fixtureCaseDir = path.join(workspaceRoot, 'cases', `${suffix}__${fixtureCaseKey}`);
+  fs.mkdirSync(fixtureCaseDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureCaseDir, 'source.md'), source);
+  writeJsonAtomic(path.join(fixtureCaseDir, 'case.json'), createCaseContract({
+    caseKey: fixtureCaseKey,
+    title: `跨平台并行 ${suffix}`,
+    sourceText: source,
+    importPath: `/fixture/${suffix}.md`,
+  }));
+  const binding = {
+    platform,
+    deviceId,
+    appId: `com.example.${suffix}`,
+    ...(platform === 'ios'
+      ? { deviceType: 'simulator' }
+      : { entry: platform === 'android' ? '.MainActivity' : 'EntryAbility' }),
+  };
+  createTestExecutionRequest(workspaceRoot, batchId, binding, [{
+    caseKey: fixtureCaseKey,
+    caseDir: fixtureCaseDir,
+  }]);
+  initializeBatch({ workspaceRoot, batchId });
+  const fixtureAdapter = {
+    restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }),
+    probeSession: () => ({ ok: true, binding }),
+  };
+  bootstrapBatch({ workspaceRoot, batchId, adapter: fixtureAdapter });
+  return {
+    adapter: fixtureAdapter,
+    batchId,
+    binding,
+    caseDir: fixtureCaseDir,
+  };
+}
+
+function startFixture(workspaceRoot, fixture) {
+  return {
+    ...fixture,
+    started: startCurrentCase({ workspaceRoot, batchId: fixture.batchId }),
+  };
+}
 const sourceText = '验证 Runtime reconcile 错误能够有限重试并完成阻塞收口';
 const caseKey = `ck-${crypto.createHash('sha256').update(sourceText).digest('hex').slice(0, 12)}`;
 const caseDir = path.join(root, 'cases', `reconcile__${caseKey}`);
@@ -203,6 +249,154 @@ const recoveredDispatch = startCurrentCase({ workspaceRoot: interruptedRoot, bat
 assert.strictEqual(recoveredDispatch.executionId, dispatchRecovery.executionId);
 assert.ok(recoveredDispatch.handoff.loaderCommand);
 fs.rmSync(interruptedRoot, { recursive: true, force: true });
+
+const initializationIsolationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-initialization-platform-isolation-'));
+createTestWorkspace(initializationIsolationRoot);
+let activeAndroid = initializeBatchFixture(initializationIsolationRoot, {
+  batchId: 'batch-active-android',
+  platform: 'android',
+  deviceId: 'active-android-device',
+  suffix: 'active-android',
+});
+activeAndroid = startFixture(initializationIsolationRoot, activeAndroid);
+initializeBatchFixture(initializationIsolationRoot, {
+  batchId: 'batch-new-harmony',
+  platform: 'harmony',
+  deviceId: 'new-harmony-device',
+  suffix: 'new-harmony',
+});
+assert.ok(findActiveExecutions(initializationIsolationRoot).some(({ execution }) => (
+  execution.executionId === activeAndroid.started.executionId
+)));
+assert.strictEqual(fs.existsSync(closurePath(
+  initializationIsolationRoot,
+  activeAndroid.started.executionId,
+)), false);
+fs.rmSync(initializationIsolationRoot, { recursive: true, force: true });
+
+const samePlatformReplacementRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-same-platform-replacement-'));
+createTestWorkspace(samePlatformReplacementRoot);
+let replacedAndroid = initializeBatchFixture(samePlatformReplacementRoot, {
+  batchId: 'batch-replaced-android',
+  platform: 'android',
+  deviceId: 'replaced-android-device',
+  suffix: 'replaced-android',
+});
+replacedAndroid = startFixture(samePlatformReplacementRoot, replacedAndroid);
+const replacedExecutionPath = path.join(
+  replacedAndroid.caseDir,
+  'platforms',
+  'android',
+  'executions',
+  replacedAndroid.started.executionId,
+  'execution.json',
+);
+writeJsonAtomic(replacedExecutionPath, {
+  ...readJson(replacedExecutionPath),
+  adapterSha: 'platform-adapter-replaced',
+});
+initializeBatchFixture(samePlatformReplacementRoot, {
+  batchId: 'batch-current-android',
+  platform: 'android',
+  deviceId: 'current-android-device',
+  suffix: 'current-android',
+});
+assert.strictEqual(fs.existsSync(closurePath(
+  samePlatformReplacementRoot,
+  replacedAndroid.started.executionId,
+)), true);
+fs.rmSync(samePlatformReplacementRoot, { recursive: true, force: true });
+
+for (const [leftPlatform, rightPlatform] of [
+  ['android', 'harmony'],
+  ['android', 'ios'],
+  ['harmony', 'ios'],
+]) {
+  const concurrentRoot = fs.mkdtempSync(path.join(os.tmpdir(), `mavt-cross-platform-${leftPlatform}-${rightPlatform}-`));
+  createTestWorkspace(concurrentRoot);
+  let left = initializeBatchFixture(concurrentRoot, {
+    batchId: `batch-${leftPlatform}`,
+    platform: leftPlatform,
+    deviceId: `${leftPlatform}-device`,
+    suffix: `${leftPlatform}-left`,
+  });
+  let right = initializeBatchFixture(concurrentRoot, {
+    batchId: `batch-${rightPlatform}`,
+    platform: rightPlatform,
+    deviceId: `${rightPlatform}-device`,
+    suffix: `${rightPlatform}-right`,
+  });
+  left = startFixture(concurrentRoot, left);
+  right = startFixture(concurrentRoot, right);
+  assert.strictEqual(reconcileBatch({
+    workspaceRoot: concurrentRoot,
+    batchId: left.batchId,
+    adapter: left.adapter,
+  }).action, 'NEED_CASE_AGENT', `${leftPlatform} reconcile must ignore ${rightPlatform} execution`);
+  assert.strictEqual(reconcileBatch({
+    workspaceRoot: concurrentRoot,
+    batchId: right.batchId,
+    adapter: right.adapter,
+  }).action, 'NEED_CASE_AGENT', `${rightPlatform} reconcile must ignore ${leftPlatform} execution`);
+  fs.rmSync(concurrentRoot, { recursive: true, force: true });
+}
+
+const samePlatformRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-same-platform-conflict-'));
+createTestWorkspace(samePlatformRoot);
+let firstAndroid = initializeBatchFixture(samePlatformRoot, {
+  batchId: 'batch-android-first',
+  platform: 'android',
+  deviceId: 'android-device-first',
+  suffix: 'android-first',
+});
+let secondAndroid = initializeBatchFixture(samePlatformRoot, {
+  batchId: 'batch-android-second',
+  platform: 'android',
+  deviceId: 'android-device-second',
+  suffix: 'android-second',
+});
+firstAndroid = startFixture(samePlatformRoot, firstAndroid);
+secondAndroid = startFixture(samePlatformRoot, secondAndroid);
+const samePlatformConflict = reconcileBatch({
+  workspaceRoot: samePlatformRoot,
+  batchId: firstAndroid.batchId,
+  adapter: firstAndroid.adapter,
+});
+assert.strictEqual(samePlatformConflict.action, 'CORRUPTED');
+assert.strictEqual(samePlatformConflict.state.failureCode, 'BATCH_ACTIVE_EXECUTION_CONFLICT');
+assert.deepStrictEqual(samePlatformConflict.executions, [secondAndroid.started.executionId]);
+fs.rmSync(samePlatformRoot, { recursive: true, force: true });
+
+const mismatchedPlatformRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-batch-platform-mismatch-'));
+createTestWorkspace(mismatchedPlatformRoot);
+let mismatchedBatch = initializeBatchFixture(mismatchedPlatformRoot, {
+  batchId: 'batch-platform-mismatch',
+  platform: 'android',
+  deviceId: 'android-mismatch-device',
+  suffix: 'android-mismatch',
+});
+mismatchedBatch = startFixture(mismatchedPlatformRoot, mismatchedBatch);
+const mismatchedExecutionPath = path.join(
+  mismatchedBatch.caseDir,
+  'platforms',
+  'android',
+  'executions',
+  mismatchedBatch.started.executionId,
+  'execution.json',
+);
+writeJsonAtomic(mismatchedExecutionPath, {
+  ...readJson(mismatchedExecutionPath),
+  platform: 'harmony',
+});
+const mismatchedPlatformResult = reconcileBatch({
+  workspaceRoot: mismatchedPlatformRoot,
+  batchId: mismatchedBatch.batchId,
+  adapter: mismatchedBatch.adapter,
+});
+assert.strictEqual(mismatchedPlatformResult.action, 'CORRUPTED');
+assert.strictEqual(mismatchedPlatformResult.state.failureCode, 'BATCH_STATE_CORRUPTED');
+assert.deepStrictEqual(mismatchedPlatformResult.executions, [mismatchedBatch.started.executionId]);
+fs.rmSync(mismatchedPlatformRoot, { recursive: true, force: true });
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log('batch reconcile policy passed');

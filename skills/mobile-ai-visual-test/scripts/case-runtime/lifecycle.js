@@ -130,10 +130,10 @@ function createExecution(options) {
   if (!/^warm-[0-9]{4,}$/.test(warmSessionId) || !Number.isInteger(warmSessionEpoch) || warmSessionEpoch < 1) {
     throw contractError('WARM_SESSION_INVALID', 'execution warm session identity is invalid');
   }
-  const executionId = options.executionId || allocateExecutionId(options.runtimeDir, options);
-  const execDir = path.join(options.runtimeDir, 'executions', executionId);
-  options.execDir = execDir;
-  return withFileLock(path.join(options.workspaceRoot, '.execution-create.lock'), () => {
+  return withFileLock(path.join(options.runtimeDir, 'executions', '.create.lock'), () => {
+    const executionId = options.executionId || allocateExecutionId(options.runtimeDir, options);
+    const execDir = path.join(options.runtimeDir, 'executions', executionId);
+    options.execDir = execDir;
     if (fs.existsSync(execDir)) throw contractError('EXECUTION_ALREADY_EXISTS', `execution already exists: ${executionId}`);
     fs.mkdirSync(path.dirname(execDir), { recursive: true });
     const stagingDir = path.join(path.dirname(execDir), `.${executionId}.creating`);

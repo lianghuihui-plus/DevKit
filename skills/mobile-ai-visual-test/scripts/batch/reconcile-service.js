@@ -101,13 +101,22 @@ function reconcileBatch(options) {
     };
     const allActive = findActiveExecutions(options.workspaceRoot);
     const active = allActive.filter((entry) => entry.execution.batchId === state.batchId);
-    if (allActive.length !== active.length) {
-      const executions = allActive.map((entry) => entry.execution.executionId);
-      return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_ACTIVE_EXECUTION_CONFLICT', 'another batch owns an active execution', { now: options.now, executions });
+    const mismatched = active.filter((entry) => entry.execution.platform !== loaded.contract.binding.platform);
+    const samePlatformConflicts = allActive.filter((entry) => (
+      entry.execution.batchId !== state.batchId
+      && entry.execution.platform === loaded.contract.binding.platform
+    ));
+    if (mismatched.length) {
+      const executions = mismatched.map((entry) => entry.execution.executionId);
+      return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_STATE_CORRUPTED', 'batch owns an active execution for another platform', { now: options.now, executions });
     }
     if (active.length > 1) {
       const executions = active.map((entry) => entry.execution.executionId);
       return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_ACTIVE_EXECUTION_CONFLICT', 'batch has more than one active execution', { now: options.now, executions });
+    }
+    if (samePlatformConflicts.length) {
+      const executions = samePlatformConflicts.map((entry) => entry.execution.executionId);
+      return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_ACTIVE_EXECUTION_CONFLICT', 'another batch on the same platform owns an active execution', { now: options.now, executions });
     }
     const item = currentCase(state);
     if (!item) return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_FINALIZATION_INVALID', 'batch has no current case before finalization', { now: options.now });

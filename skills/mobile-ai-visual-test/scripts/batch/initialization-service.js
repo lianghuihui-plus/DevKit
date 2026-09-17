@@ -3,13 +3,29 @@
 const fs = require('fs');
 const { canonicalJson, contractError } = require('../lib/contract-utils');
 const { createBatchContract } = require('../lib/batch-contract');
-const { appendJsonl, readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { createExecutionClosure } = require('../lib/execution-closure');
+const { appendJsonl, findActiveExecutions, readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { loadExecutionRequest, resolveExecutionTargets } = require('../lib/run-control');
 const { createWarmSession } = require('../lib/warm-session-contract');
-const { closeStaleExecutions } = require('../lib/execution-closure');
 const { BATCH_SCHEMA_VERSION, validateBatchState } = require('./state-contract');
 const { assertBatchWorkspace, batchPaths, loadBatch } = require('./state-repository');
 const { hasBatchEvent, protocolBindings } = require('./service-support');
+
+function closeStaleExecutionsForPlatform(workspaceRoot, platform, components, options = {}) {
+  return findActiveExecutions(workspaceRoot)
+    .filter(({ execution }) => execution.platform === platform)
+    .filter(({ execution }) => (
+      execution.runtimeSha !== components.runtimeSha
+      || execution.adapterSha !== components.adapterSha
+    ))
+    .map(({ execDir }) => createExecutionClosure(workspaceRoot, execDir, {
+      closedByRuntimeSha: components.runtimeSha,
+      closedByAdapterSha: components.adapterSha,
+      replacementBatchId: options.replacementBatchId,
+      reason: options.reason,
+      now: options.now,
+    }).closure);
+}
 
 function initializeBatch(options) {
   assertBatchWorkspace(options.workspaceRoot);
@@ -28,14 +44,19 @@ function initializeBatch(options) {
     || (options.coordinatorProtocolSha && executionRequest.coordinatorProtocolSha !== options.coordinatorProtocolSha)) {
     throw contractError('BATCH_PROTOCOL_MISMATCH', 'execution request belongs to a different Agent protocol');
   }
-  const closedExecutions = closeStaleExecutions(options.workspaceRoot, {
-    runtimeSha: executionRequest.runtimeSha,
-    adapterSha: executionRequest.adapterSha,
-  }, {
-    replacementBatchId: options.batchId,
-    reason: '新批次使用当前实现，其他实现的未完成 execution 不再续写',
-    now: options.now,
-  });
+  const closedExecutions = closeStaleExecutionsForPlatform(
+    options.workspaceRoot,
+    executionRequest.binding.platform,
+    {
+      runtimeSha: executionRequest.runtimeSha,
+      adapterSha: executionRequest.adapterSha,
+    },
+    {
+      replacementBatchId: options.batchId,
+      reason: '新批次使用当前实现，同平台其他实现的未完成 execution 不再续写',
+      now: options.now,
+    },
+  );
   let draft = readJson(paths.initDraft, null);
   const existingState = readJson(paths.state, null);
   const existingContract = readJson(paths.contract, null);

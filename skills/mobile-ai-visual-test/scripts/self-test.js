@@ -34,6 +34,7 @@ const suites = Object.freeze({
   caseRuntime: 'tests/case-runtime.test.js',
   batchCancellation: 'tests/batch-cancellation.test.js',
   batchReconcile: 'tests/batch-reconcile.test.js',
+  crossPlatformExecution: 'tests/cross-platform-execution.test.js',
   runtimeEnhancements: 'tests/runtime-enhancements.test.js',
   resultMatrix: 'tests/result-matrix.test.js',
   warmSession: 'tests/warm-session-current.test.js',

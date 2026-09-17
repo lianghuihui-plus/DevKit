@@ -1078,4 +1078,83 @@ assert.strictEqual(changedProfileReport.completionError !== null, true);
 assert.strictEqual(changedProfileReport.display.failureCode, 'EXECUTION_COMPLETION_INVALID');
 fs.writeFileSync(validationProfilePath, frozenValidationProfile);
 
+function createExecutionLockFixture(workspaceRoot, fixtureBatchId, suffix, platform = 'harmony') {
+  const fixtureSource = `验证 execution 创建锁隔离 ${suffix}`;
+  const fixtureCaseKey = `ck-${crypto.createHash('sha256').update(fixtureSource).digest('hex').slice(0, 12)}`;
+  const fixtureCaseDir = path.join(workspaceRoot, 'cases', `${suffix}__${fixtureCaseKey}`);
+  fs.mkdirSync(fixtureCaseDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureCaseDir, 'source.md'), fixtureSource);
+  writeJsonAtomic(path.join(fixtureCaseDir, 'case.json'), createCaseContract({
+    caseKey: fixtureCaseKey,
+    title: `execution 创建锁 ${suffix}`,
+    sourceText: fixtureSource,
+    importPath: `/fixture/${suffix}.md`,
+  }));
+  const fixtureBinding = {
+    platform,
+    deviceId: `${suffix}-device`,
+    appId: `com.example.${suffix}`,
+    entry: platform === 'android' ? '.MainActivity' : 'EntryAbility',
+  };
+  createTestExecutionRequest(workspaceRoot, fixtureBatchId, fixtureBinding, [{
+    caseKey: fixtureCaseKey,
+    caseDir: fixtureCaseDir,
+  }]);
+  initializeBatch({ workspaceRoot, batchId: fixtureBatchId });
+  const fixtureAdapter = {
+    restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }),
+    probeSession: () => ({ ok: true, binding: fixtureBinding }),
+  };
+  bootstrapBatch({ workspaceRoot, batchId: fixtureBatchId, adapter: fixtureAdapter });
+  return {
+    batchId: fixtureBatchId,
+    runtimeDir: path.join(fixtureCaseDir, 'platforms', platform),
+  };
+}
+
+const scopedCreationLockRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-scoped-execution-create-lock-'));
+createTestWorkspace(scopedCreationLockRoot);
+const scopedCreationLock = createExecutionLockFixture(
+  scopedCreationLockRoot,
+  'batch-scoped-execution-create-lock',
+  'scoped-execution-create-lock',
+);
+const runtimeCreationLock = path.join(scopedCreationLock.runtimeDir, 'executions', '.create.lock');
+writeJsonAtomic(runtimeCreationLock, { pid: process.pid, acquiredAt: '2026-09-17T10:00:00.000Z' });
+assert.throws(
+  () => startCurrentCase({
+    workspaceRoot: scopedCreationLockRoot,
+    batchId: scopedCreationLock.batchId,
+  }),
+  (error) => error.code === 'EXECUTION_LOCKED',
+);
+const otherPlatformCreation = createExecutionLockFixture(
+  scopedCreationLockRoot,
+  'batch-other-platform-execution-create-lock',
+  'other-platform-execution-create-lock',
+  'android',
+);
+assert.strictEqual(startCurrentCase({
+  workspaceRoot: scopedCreationLockRoot,
+  batchId: otherPlatformCreation.batchId,
+}).action, 'DELEGATE_CASE_AGENT');
+fs.rmSync(scopedCreationLockRoot, { recursive: true, force: true });
+
+const legacyCreationLockRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-legacy-execution-create-lock-'));
+createTestWorkspace(legacyCreationLockRoot);
+const legacyCreationLock = createExecutionLockFixture(
+  legacyCreationLockRoot,
+  'batch-legacy-execution-create-lock',
+  'legacy-execution-create-lock',
+);
+const legacyRootLock = path.join(legacyCreationLockRoot, '.execution-create.lock');
+writeJsonAtomic(legacyRootLock, { pid: process.pid, acquiredAt: '2026-09-17T10:00:00.000Z' });
+const startedWithLegacyRootLock = startCurrentCase({
+  workspaceRoot: legacyCreationLockRoot,
+  batchId: legacyCreationLock.batchId,
+});
+assert.strictEqual(startedWithLegacyRootLock.action, 'DELEGATE_CASE_AGENT');
+assert.strictEqual(fs.existsSync(legacyRootLock), true);
+fs.rmSync(legacyCreationLockRoot, { recursive: true, force: true });
+
 console.log('case runtime tests passed');
