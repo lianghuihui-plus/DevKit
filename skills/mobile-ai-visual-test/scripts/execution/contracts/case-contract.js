@@ -50,14 +50,17 @@ function validateCaseContract(value) {
   if (!SOURCE_SHA_PATTERN.test(identity.sourceSha || '')) throw contractError('CASE_CONTRACT_INVALID', 'identity.sourceSha is invalid');
   const importSource = ensureObject(identity.importSource, 'identity.importSource', 'CASE_CONTRACT_INVALID');
   ensureString(importSource.path, 'identity.importSource.path', 'CASE_CONTRACT_INVALID');
-  if (importSource.kind !== 'file') throw contractError('CASE_CONTRACT_INVALID', 'identity.importSource.kind must be file');
+  if (!['file', 'agent-authored'].includes(importSource.kind)) {
+    throw contractError('CASE_CONTRACT_INVALID', 'identity.importSource.kind must be file or agent-authored');
+  }
   if (value.contractSha !== undefined && value.contractSha !== caseContractSha(value)) {
     throw contractError('CASE_CONTRACT_INVALID', 'contractSha does not match case content');
   }
   return value;
 }
 
-function createCaseContract({ caseKey, caseNo, title, sourceText, importPath }) {
+function createCaseContract({ caseKey, caseNo, title, sourceText, importPath, importSource }) {
+  const normalizedImportSource = importSource || { kind: 'file', path: importPath };
   const value = {
     schemaVersion: CASE_SCHEMA_VERSION,
     identity: {
@@ -65,7 +68,7 @@ function createCaseContract({ caseKey, caseNo, title, sourceText, importPath }) 
       ...(caseNo ? { caseNo } : {}),
       title: String(title || '').trim() || 'Untitled case',
       sourceSha: sourceSha(sourceText),
-      importSource: { kind: 'file', path: importPath },
+      importSource: normalizedImportSource,
     },
   };
   value.contractSha = caseContractSha(value);

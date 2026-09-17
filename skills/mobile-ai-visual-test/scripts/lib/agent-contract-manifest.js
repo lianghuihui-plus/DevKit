@@ -79,6 +79,7 @@ const COORDINATOR_ENTRYPOINTS = Object.freeze([
   'scripts/environment.js',
   'scripts/execution-request.js',
   'scripts/import-case.js',
+  'scripts/import-cases.js',
   'scripts/knowledge.js',
   'scripts/workspace.js',
   'scripts/probe-env.sh',

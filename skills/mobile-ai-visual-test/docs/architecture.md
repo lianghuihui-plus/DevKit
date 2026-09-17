@@ -2,15 +2,16 @@
 
 ## 1. 设计目标
 
-本 Skill 基于任意非空文本用例执行移动端黑盒视觉测试，核心目标是：
+本 Skill 从任意可读取来源生成逻辑用例，并执行移动端黑盒视觉测试，核心目标是：
 
-1. 主 Agent 只负责编排、授权、批次级技术恢复和汇报，不理解单个用例。
-2. Case Agent 是唯一业务理解者，自主形成并修订同时表达操作、分支和检查点的 Case Flow。
-3. Agent-facing 接口保持简单，确定性框架处理绑定、事务、证据和状态机。
-4. 截图、控件树、知识库和动作落点事实都是 Case Agent 可主动选择的调查能力。
-5. 框架能力是正常首选路径，但异常时不限制 Agent 使用环境中的其他工具解决问题。
-6. 原始用例、设备事实和所有业务 revision 追加保存，报告可还原当时现场。
-7. Runtime 只写当前格式；Reader、Batch 和 Report 只接受当前 execution schema，不提供转换或补写路径。
+1. Authoring Agent 完整理解用户输入并决定逻辑用例边界，格式和文件数量不替它作决定。
+2. 执行协调 Agent 只负责编排、授权、批次级技术恢复和汇报，不理解单个已生成用例。
+3. Case Agent 是 execution 内唯一业务理解者，自主形成并修订同时表达操作、分支和检查点的 Case Flow。
+4. Agent-facing 接口保持简单，确定性框架处理绑定、事务、证据和状态机。
+5. 截图、控件树、知识库和动作落点事实都是 Case Agent 可主动选择的调查能力。
+6. 框架能力是正常首选路径，但异常时不限制 Agent 使用环境中的其他工具解决问题。
+7. 原始用例、设备事实和所有业务 revision 追加保存，报告可还原当时现场。
+8. Runtime 只写当前格式；Reader、Batch 和 Report 只接受当前 execution schema，不提供转换或补写路径。
 
 本文是当前架构的事实来源。长期决策及原因记录在 [`design-decisions.md`](design-decisions.md)。
 
@@ -18,7 +19,11 @@
 
 ```mermaid
 flowchart LR
-  U["用户"] --> M["主 Agent"]
+  U["用户输入"] --> AU["Authoring Agent"]
+  AU --> AI["Case Draft Import"]
+  AI --> C["Workspace Cases"]
+  U --> M["执行协调 Agent"]
+  C --> M
   M --> CF["Coordinator Facade<br/>4 个能力"]
   CF --> CT["Coordinator Translator"]
   CT --> B["Workspace / Environment / Batch"]
@@ -34,26 +39,30 @@ flowchart LR
   B --> P["Completion / Report"]
 ```
 
-主 Agent 和 Case Agent 负责判断；Facade、Translator、Runtime、Adapter、Store 与 Report 是确定性代码。
+Authoring Agent 判断用例边界，Case Agent 判断 execution 内业务；执行协调 Agent 负责编排。Import、Facade、Translator、Runtime、Adapter、Store 与 Report 是确定性代码。
 
 ## 3. 角色与通信
 
-### 3.1 主 Agent
+### 3.1 Authoring Agent
 
-主 Agent 读取 `SKILL.md`，正常执行只面对：
+用户要求生成、导入或维护用例时，Authoring Agent 使用适合来源格式的能力完整读取输入。一个文件可以形成一条或多条用例，多个文件也可以共同形成一条或多条用例。Agent 为每条逻辑用例提交 `sourceLocator`、标题和相关原始内容；`import-cases.js` 只验证结构并持久化，不实现格式解析或业务拆分规则。
+
+### 3.2 执行协调 Agent
+
+执行协调 Agent 读取 `SKILL.md`，正常执行只面对：
 
 - `prepareRun`：选择 Workspace 和用例编号。
 - `confirmRun`：复制当前模板确认平台、设备、App 和执行授权。
 - `advanceRun`：恢复初始化、取得委托、提交 execution 或完成报告发布。
 - `cancelRun`：在用户明确要求时取消运行。
 
-Coordinator 响应为 `NEED_USER_CONFIRMATION`、`NEED_CASE_AGENT`、`WAITING`、`TECHNICAL`、`COMPLETE` 或 `BLOCKED`。主 Agent 不调用内部 Batch、ExecutionRequest、环境或报告命令拼装流程。
+Coordinator 响应为 `NEED_USER_CONFIRMATION`、`NEED_CASE_AGENT`、`WAITING`、`TECHNICAL`、`COMPLETE` 或 `BLOCKED`。执行协调 Agent 不调用内部 Batch、ExecutionRequest、环境或报告命令拼装流程。
 
-主 Agent 不读取原始用例、Handoff 正文、Case Prompt、Case Flow、Scene、截图、控件树或知识调查正文。它只把 `NEED_CASE_AGENT` 返回的固定委托文本和原样 Loader 交给一个不继承主 Agent 上下文的新 Case Agent，并持有真实 Agent 句柄。
+这项限制只适用于执行协调阶段：执行协调 Agent 不读取已生成的原始用例、Handoff 正文、Case Prompt、Case Flow、Scene、截图、控件树或知识调查正文。它只把 `NEED_CASE_AGENT` 返回的固定委托文本和原样 Loader 交给一个不继承其上下文的新 Case Agent，并持有真实 Agent 句柄。
 
 Coordinator 只知道 Handoff 是 `PREPARED` 还是 `CONSUMED`，以及 execution 是否有持久化结果；它不虚构宿主 Agent 运行状态。`WAIT_EXECUTION_RESULT` 只表示等待结果，已有活跃写入者时不重复委托。
 
-### 3.2 Case Agent
+### 3.3 Case Agent
 
 Case Agent 通过 Handoff 直接得到：
 
@@ -64,9 +73,9 @@ Case Agent 通过 Handoff 直接得到：
 - Case Prompt 与预绑定 Runtime Client。
 - `observe`、`inspect`、`plan`、`recordResult`、`act`、`knowledge`、`recover`、`finish` 八个能力。
 
-Case Agent 自己阅读用例、观察设备、形成验证点、执行、调查和 finish。它不把业务理解交回主 Agent 审批。
+Case Agent 自己阅读用例、观察设备、形成验证点、执行、调查和 finish。它不把业务理解交回执行协调 Agent 审批。
 
-### 3.3 Handoff
+### 3.4 Handoff
 
 Handoff 是启动包和身份绑定，不是业务预处理结果或工具沙箱。它用 token、sequence 和 claim/lease 绑定唯一 execution，防止旧 Agent 或错误用例写入。新 continuation 会替换旧 dispatch，旧 Runtime command 返回 `HANDOFF_REPLACED`。
 
@@ -76,7 +85,7 @@ Handoff 完成后，Case Agent 与 Runtime 通过预绑定 Client 通信；Agent
 
 ```mermaid
 sequenceDiagram
-  participant M as 主 Agent
+  participant M as 执行协调 Agent
   participant C as Coordinator
   participant A as Case Agent
   participant F as Case Facade
@@ -122,7 +131,7 @@ Case Flow 是 Case Agent 对原始用例的当前工作模型，一份产物同�
 
 每个版本写为 `caseFlowRevised` 事件。现场调用可携带 `flowContext` 关联当前节点和 Agent 声明的分支选择；Runtime 只验证引用属于当前 revision，不强制流程顺序。其他事件自动记录 `caseFlowRevision`，报告据此还原当时节点、选择边和 CHECK 结果。
 
-历史 schema 12 中的 `caseModelRevised` 只由 Reader 和报告做只读投影，不转换为 Case Flow，也不能进入新 Runtime 的 ledger 或 finish。
+新 Agent-facing 接口不再创建或修订 Case Model，新 execution 只通过 Case Flow 形成业务模型。历史 schema 12 中已有的 `caseModelRevised` 不转换为 Case Flow；Reader 和报告保留只读投影，结果完整性校验保留对这类历史记录的 fallback。该 fallback 不是公开能力，不能由新 Case Agent 继续修订旧 Case Model。
 
 ## 6. Scene、视觉与动作事实
 
@@ -229,8 +238,8 @@ completion.json
 
 ```text
 scripts/
-├── coordinator/           # 主 Agent Facade、编排和 run 状态
-├── coordinator-agent.js   # 主 Agent 正常执行入口
+├── coordinator/           # 执行协调 Agent Facade、编排和 run 状态
+├── coordinator-agent.js   # 执行协调 Agent 正常执行入口
 ├── batch/                 # initialization/dispatch/completion/finalization/reconcile
 ├── case/                  # 原始用例导入
 ├── case-runtime/          # Case Facade、Case Flow、Runtime、事务和 Store
@@ -241,6 +250,6 @@ scripts/
 └── session/               # 暖会话及 iOS 动态 Session
 ```
 
-依赖方向：主 Agent只依赖 Coordinator Facade；Case Agent 只依赖 Case Facade；Batch 只依赖 Case Runtime Lifecycle；Runtime 通过 Device Port 调用 Adapter 且不依赖 Report；Report 只读 execution；Adapter 不读取用例和 verdict。
+依赖方向：执行协调 Agent 只依赖 Coordinator Facade；Case Agent 只依赖 Case Facade；Batch 只依赖 Case Runtime Lifecycle；Runtime 通过 Device Port 调用 Adapter 且不依赖 Report；Report 只读 execution；Adapter 不读取用例和 verdict。
 
 协议摘要按角色和模块分组，修改报告不改变 Runtime 摘要，修改单个平台 Adapter 不改变其他平台。schema 标识只属于独立持久化根或真实跨进程协议，内部模块不维护并行协议分支。

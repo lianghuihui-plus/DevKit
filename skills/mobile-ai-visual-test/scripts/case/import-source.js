@@ -14,6 +14,10 @@ function stableCaseKey(inputPath) {
   return `ck-${crypto.createHash('sha256').update(path.resolve(inputPath)).digest('hex').slice(0, 12)}`;
 }
 
+function stableDraftCaseKey(sourceLocator) {
+  return `ck-${crypto.createHash('sha256').update(`agent-authored:${sourceLocator}`).digest('hex').slice(0, 12)}`;
+}
+
 function fallbackTitle(inputPath) {
   const extension = path.extname(inputPath);
   return path.basename(inputPath, extension).trim() || 'Untitled case';
@@ -24,36 +28,40 @@ function caseDirectoryName(title, caseKey) {
   return `${safeTitle}__${caseKey}`;
 }
 
-function importSource(workspaceRoot, inputPath, options = {}) {
+function existingCaseDir(workspaceRoot, caseKey) {
+  const casesRoot = path.join(workspaceRoot, 'cases');
+  if (!fs.existsSync(casesRoot)) return null;
+  for (const name of fs.readdirSync(casesRoot).sort()) {
+    const caseDir = path.join(casesRoot, name);
+    const casePath = path.join(caseDir, 'case.json');
+    if (!fs.existsSync(casePath)) continue;
+    try {
+      if (readJson(casePath, null)?.identity?.caseKey === caseKey) return caseDir;
+    } catch {
+      // Invalid case directories are handled by their owning validation path.
+    }
+  }
+  return null;
+}
+
+function importCaseContent(workspaceRoot, input, options = {}) {
   const workspace = assertWorkspace(workspaceRoot, { allowTest: true });
-  const absoluteInput = path.resolve(inputPath);
-  const caseKey = stableCaseKey(absoluteInput);
-  const title = fallbackTitle(absoluteInput);
-  const caseDir = path.join(workspace.root, 'cases', caseDirectoryName(title, caseKey));
+  const { caseKey, title, sourceText, importSource } = input;
+  const caseDir = existingCaseDir(workspace.root, caseKey)
+    || path.join(workspace.root, 'cases', caseDirectoryName(title, caseKey));
   ensureWorkspaceCaseNumbers(workspace.root);
   const draftPath = path.join(caseDir, 'case-import.draft.json');
   let draft = readJson(draftPath, null);
   if (!draft) {
-    let sourceText;
-    try {
-      const stat = fs.statSync(absoluteInput);
-      if (!stat.isFile()) throw new Error('input path is not a file');
-      sourceText = fs.readFileSync(absoluteInput, 'utf8');
-    } catch (error) {
-      const wrapped = new Error(`CASE_INPUT_UNREADABLE: ${error.message}`);
-      wrapped.code = 'CASE_INPUT_UNREADABLE';
-      wrapped.exitCode = 2;
-      throw wrapped;
-    }
     const normalized = validateSourceText(sourceText);
     const existing = readJson(path.join(caseDir, 'case.json'), null);
     const caseNo = existing?.identity?.caseNo || nextCaseNo(workspace.root, title);
-    const caseJson = createCaseContract({ caseKey, caseNo, title, sourceText: normalized, importPath: absoluteInput });
-    draft = { schemaVersion: 1, inputPath: absoluteInput, caseKey, sourceText: normalized, caseJson };
+    const caseJson = createCaseContract({ caseKey, caseNo, title, sourceText: normalized, importSource });
+    draft = { schemaVersion: 1, importSource, caseKey, sourceText: normalized, caseJson };
     fs.mkdirSync(caseDir, { recursive: true });
     writeJsonAtomic(draftPath, draft);
   }
-  if (draft.schemaVersion !== 1 || draft.inputPath !== absoluteInput || draft.caseKey !== caseKey
+  if (draft.schemaVersion !== 1 || JSON.stringify(draft.importSource) !== JSON.stringify(importSource) || draft.caseKey !== caseKey
     || draft.caseJson?.identity?.caseKey !== caseKey) {
     throw contractError('CASE_IMPORT_DRAFT_INVALID', 'import draft does not match the requested source');
   }
@@ -79,9 +87,32 @@ function importSource(workspaceRoot, inputPath, options = {}) {
   return { caseDir, caseJson: draft.caseJson, sourcePath, contextHtml: reports.rootReport.contextHtml };
 }
 
+function importSource(workspaceRoot, inputPath, options = {}) {
+  const absoluteInput = path.resolve(inputPath);
+  let sourceText;
+  try {
+    const stat = fs.statSync(absoluteInput);
+    if (!stat.isFile()) throw new Error('input path is not a file');
+    sourceText = fs.readFileSync(absoluteInput, 'utf8');
+  } catch (error) {
+    const wrapped = new Error(`CASE_INPUT_UNREADABLE: ${error.message}`);
+    wrapped.code = 'CASE_INPUT_UNREADABLE';
+    wrapped.exitCode = 2;
+    throw wrapped;
+  }
+  return importCaseContent(workspaceRoot, {
+    caseKey: stableCaseKey(absoluteInput),
+    title: fallbackTitle(absoluteInput),
+    sourceText,
+    importSource: { kind: 'file', path: absoluteInput },
+  }, options);
+}
+
 module.exports = {
   caseDirectoryName,
   fallbackTitle,
+  importCaseContent,
   importSource,
   stableCaseKey,
+  stableDraftCaseKey,
 };

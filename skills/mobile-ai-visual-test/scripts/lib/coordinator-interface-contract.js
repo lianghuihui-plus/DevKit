@@ -163,6 +163,13 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
       { name: 'input-file', required: true, description: 'Path to the source test-case file' },
     ])],
   },
+  'scripts/import-cases.js': {
+    summary: 'Persist one or more logical cases already identified by the Authoring Agent',
+    commands: [command(null, 'Import Agent-authored case drafts', 'node scripts/import-cases.js --workspace <workspace> --request-file <json-file>', {
+      workspace: flag(true, 'Workspace path', { value: '<workspace>' }),
+      requestFile: flag(true, 'JSON file containing a non-empty cases array', { value: '<json-file>' }),
+    }, ['node', 'scripts/import-cases.js', '--workspace', '<workspace>', '--request-file', '<json-file>'], ['imported case metadata'])],
+  },
   'scripts/build-agent-contract.js': {
     summary: 'Build and optionally verify the role-scoped Agent protocol and implementation digests',
     commands: [command(null, 'Build an Agent contract', 'node scripts/build-agent-contract.js --role <case-executor|batch-coordinator> --platform <harmony|android|ios> [--skill-root <path>] [--verify-sha <sha>]', {

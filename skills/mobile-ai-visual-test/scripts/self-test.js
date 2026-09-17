@@ -24,6 +24,7 @@ const suites = Object.freeze({
   narrative: 'tests/execution-narrative.test.js',
   dashboard: 'tests/dashboard.test.js',
   workspace: 'tests/workspace.test.js',
+  caseAuthoring: 'tests/case-authoring.test.js',
   control: 'tests/run-control.test.js',
   appProvisioning: 'tests/app-provisioning.test.js',
   appPreparation: 'tests/app-preparation.test.js',

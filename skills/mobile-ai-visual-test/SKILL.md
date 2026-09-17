@@ -1,13 +1,15 @@
 ---
 name: mobile-ai-visual-test
-description: 当需要基于任意非空文本人工用例，对移动端应用进行 AI 黑盒视觉自动化测试时使用；支持 HarmonyOS、Android、iOS 的环境确认、单用例或批量执行、独立 Case Agent、证据记录与报告生成。
+description: 当需要从任意可读取格式的人工用例生成测试工作区，或对移动端应用进行 AI 黑盒视觉自动化测试时使用；支持 HarmonyOS、Android、iOS 的用例生成、环境确认、单用例或批量执行、独立 Case Agent、证据记录与报告生成。
 ---
 
 # 移动端 AI 视觉测试
 
-## 你的身份
+## 工作模式
 
-你是本次测试的主 Agent。你负责选择用例、取得用户确认、委托独立 Case Agent、处理批次级技术异常，并根据持久化状态汇报结果。每个 Case Agent 独立理解和执行一个用例；主 Agent 不读取原始用例，不参与业务计划、设备操作或结果判断。
+用户要求生成、导入或维护用例时，你是 Authoring Agent。必须完整读取用户提供的输入，使用适合其格式的可用能力理解内容，自主判断逻辑用例边界，并按 `references/case-authoring.md` 生成一条或多条用例。执行阶段的隔离规则不适用于 Authoring。
+
+用户要求执行已生成用例时，你是执行协调 Agent。你负责选择用例、取得用户确认、委托独立 Case Agent、处理批次级技术异常，并根据持久化状态汇报结果。每个 Case Agent 独立理解和执行一个用例；执行协调 Agent 不读取已生成的原始用例，不参与业务计划、设备操作或结果判断。
 
 Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handoff 和报告发布。Facade 是正常流程的首选入口，不是技术异常下的排他能力边界。
 
@@ -21,7 +23,7 @@ Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handof
 node <skill-root>/scripts/workspace.js --cwd <workspace>
 ```
 
-脚本入口属于技能目录，`--cwd` 指向测试工作区；不要在测试工作区中解析相对的 `scripts/`。响应只提供工作区事实和紧凑的 `coordinatorFacade { interfaceKind, protocol, command, documentation }` 绑定，不返回方法说明或调用模板。主 Agent 只使用文档定义的四个能力：`prepareRun`、`confirmRun`、`advanceRun`、`cancelRun`。
+脚本入口属于技能目录，`--cwd` 指向测试工作区；不要在测试工作区中解析相对的 `scripts/`。响应只提供工作区事实和紧凑的 `coordinatorFacade { interfaceKind, protocol, command, documentation }` 绑定，不返回方法说明或调用模板。执行协调 Agent 只使用文档定义的四个能力：`prepareRun`、`confirmRun`、`advanceRun`、`cancelRun`。
 
 开始执行时，根据 `references/coordinator.md` 的 `prepareRun` 签名，将响应中的工作区绝对路径和用户指定用例编号传给 `coordinatorFacade.command`：
 
@@ -34,7 +36,7 @@ node <skill-root>/scripts/coordinator-agent.js prepare --workspace <workspace> -
 ## 返回状态
 
 - `NEED_USER_CONFIRMATION`：把响应中的动态选择和绑定事实映射到 `confirmRun` 签名，只向用户确认缺失的业务字段，再调用 `commands.confirm.command`。
-- `NEED_CASE_AGENT`：创建不继承主 Agent 上下文的全新 Case Agent，只发送响应中的固定 `delegationPrompt` 和原样 `loaderCommand`，随后等待该 Agent。已有对应活跃 Agent 时不得重复创建。
+- `NEED_CASE_AGENT`：创建不继承执行协调 Agent 上下文的全新 Case Agent，只发送响应中的固定 `delegationPrompt` 和原样 `loaderCommand`，随后等待该 Agent。已有对应活跃 Agent 时不得重复创建。
 - `WAITING`：根据 `waitFor`、`reason` 和 `recovery` 判断等待对象，条件变化后原样执行 `commands.advance`，不得重新确认或重复委托。`OWNER_BATCH_TERMINAL` 表示其他批次仍占用平台资源；`WAIT_EXECUTION_RESULT` 只表示等待持久化结果，不证明 Case Agent 仍在运行。
 - `TECHNICAL`：读取 `diagnostic`、`facts` 和 `documentationRef`；按错误文档处理后，通过当前状态允许的方法回到 Facade，仍无进展时进入批次级技术排障。
 - `COMPLETE`：报告 `outcome` 和报告位置，不再推进。
@@ -45,11 +47,11 @@ node <skill-root>/scripts/coordinator-agent.js prepare --workspace <workspace> -
 ## 调用纪律
 
 - 固定命令不得增删参数；输入错误按 `issues` 和 `documentationRef` 修正一次，同类错误再次出现时停止猜字段。
-- 主 Agent 不调用 Batch、环境探测、ExecutionRequest、报告渲染或 Case Runtime 的内部 CLI 完成正常业务流程。
+- 执行协调 Agent 不调用 Batch、环境探测、ExecutionRequest、报告渲染或 Case Runtime 的内部 CLI 完成正常业务流程。
 - `advanceRun` 会恢复持久化的 `INITIALIZING_RUN`；初始化中断后不得重新确认或重复启动初始化。
 - 宿主命令返回仍在运行的会话句柄时，继续等待同一进程，不得重复执行 `advanceRun`。
 - `NEED_CASE_AGENT` 后以 execution 持久化状态为准；聊天摘要不能替代框架结果。
-- 主 Agent 持有 Case Agent 的真实运行句柄；框架只记录 Handoff 的准备、领取及 execution 是否完成，不虚构 Agent 运行状态。
+- 执行协调 Agent 持有 Case Agent 的真实运行句柄；框架只记录 Handoff 的准备、领取及 execution 是否完成，不虚构 Agent 运行状态。
 - 一个用例只保留一个有效写入者；正常 `WAITING` 不创建新 Case Agent，当前 case 未由 Batch commit 前不得委托后续 case。
 
 ## App 初始状态
@@ -58,7 +60,7 @@ Case Agent 通过统一的 `recover.targetState` 表达需要空本地状态或�
 
 iOS 真机用 `devicectl`、模拟器用 `simctl` 核验安装事实，不使用 WDA 运行态代替安装态。初始态准备失败时 Case Agent 根据错误原因和 `documentationRef` 处理；连续失败需先完成技术处置并登记，再重试原目标状态。
 
-主 Agent 不读取用例来预判重装，不询问、登记或向 Case Agent 传递安装包。目录中没有唯一可用安装包时，Runtime 向 Case Agent 返回明确技术事实；放入该约定目录表示允许在已确认的目标 App 上按需重装，不表示每条用例都自动重装。
+执行协调 Agent 不读取用例来预判重装，不询问、登记或向 Case Agent 传递安装包。目录中没有唯一可用安装包时，Runtime 向 Case Agent 返回明确技术事实；放入该约定目录表示允许在已确认的目标 App 上按需重装，不表示每条用例都自动重装。
 
 ## 技术异常
 
@@ -74,18 +76,18 @@ Coordinator 响应只提供错误原因、诊断、当前资源事实和 `docume
 
 ## 角色与 Handoff
 
-- 主 Agent 不执行 Case Agent Loader，不读取 `source.md`、Handoff 正文、Case Prompt、Scene、截图、控件树、知识调查正文或 Case Agent 的 `runtime.capabilities`。
-- 主 Agent 不向 Case Agent 转述原文、截图路径、控件树、知识内容或自己的业务判断。
+- 执行协调 Agent 不执行 Case Agent Loader，不读取 `source.md`、Handoff 正文、Case Prompt、Scene、截图、控件树、知识调查正文或 Case Agent 的 `runtime.capabilities`。
+- 执行协调 Agent 不向 Case Agent 转述原文、截图路径、控件树、知识内容或自己的业务判断。
 - Handoff 只绑定唯一 execution、协议摘要和写入所有权，并直接向 Case Agent 提供原始用例、当前 Scene、已有 Case Flow 及预绑定 Runtime Client。
-- Case Agent 自己生成和修订本次用例理解、验证点与计划；修订只要求记录理由，不由主 Agent 审批。
+- Case Agent 自己生成和修订本次用例理解、验证点与计划；修订只要求记录理由，不由执行协调 Agent 审批。
 - 三端输入由 Case Runtime 统一发布目标级 `inputText`，Case Agent 复制 Scene 动作即可完成目标聚焦和整段输入；无目标焦点输入只是 Scene 无法识别输入控件时的兜底。
-- 输入依赖由 Runtime 自动准备、校验和恢复，主 Agent 与 Case Agent 不安装、启用或切换平台输入组件。
+- 输入依赖由 Runtime 自动准备、校验和恢复，执行协调 Agent 与 Case Agent 不安装、启用或切换平台输入组件。
 - Handoff 与职责隔离不是操作系统安全沙箱。正常流程优先使用框架；技术异常时两个 Agent 都可在各自职责和授权范围内独立调查，随后回到框架核验与持久化。
 
 固定委托文本由 Facade 响应提供，保持独立角色语义：“你是独立 Case Agent。执行给定的 `loaderCommand`，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。”
 
-全部委托必须不继承主 Agent 上下文。
+全部委托必须不继承执行协调 Agent 上下文。
 
-## Authoring
+## Authoring 入口
 
-只有用户明确要求初始化、导入或维护用例时，才按需读取 `references/interfaces.md` 的“内部/Authoring 接口”。普通执行不读取该文档或 Case Agent Prompt。
+只有用户明确要求生成、导入或维护用例时，才读取 `references/case-authoring.md`，并按需读取 `references/interfaces.md` 的 Authoring 接口。用例来源的文件数量、文件格式和物理布局都不是用例边界；边界由 Authoring Agent 阅读内容后判断。普通执行不读取 Authoring 文档或 Case Agent Prompt。

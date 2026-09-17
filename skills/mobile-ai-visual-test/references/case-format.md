@@ -2,9 +2,9 @@
 
 ## 输入
 
-任意可读取且至少包含一个非空白字符的文本文件都可作为用例输入，不要求 Markdown 标题、前置条件、编号步骤、断言表格或固定字段。框架不评价内容质量，也不从文本格式决定业务结果。
+用例来源可以是任意可由 Authoring Agent 读取的格式，也可以由一个或多个输入共同组成。文件数量、格式和物理布局不决定用例数量；Authoring Agent 完整阅读内容后，按业务语义形成一条或多条 draft。
 
-空文件、纯空白或去除 BOM 后为空返回 `CASE_INPUT_EMPTY`，不创建 case、execution、Agent session 或报告；不可读取路径返回 `CASE_INPUT_UNREADABLE`。
+每条 draft 包含稳定 `sourceLocator`、标题和相关原始内容。框架只验证这些字段并持久化，不解释表格行、文档章节或其他格式结构。空内容返回 `CASE_AUTHORING_INPUT_INVALID`，整批在写入前拒绝；已有单文本导入入口仍分别使用 `CASE_INPUT_EMPTY` 和 `CASE_INPUT_UNREADABLE`。
 
 ## case 目录
 
@@ -15,7 +15,7 @@ cases/<title>__<caseKey>/
   platforms/<platform>/executions/<executionId>/
 ```
 
-`source.md` 保存原文；`case.json` 只保存稳定的三位 `caseNo`、`caseKey`、标题回退值、`sourceSha`、导入来源和 `contractSha`，不保存预生成验证点或计划。用户以编号选择单个或批量执行范围，Coordinator 负责解析到稳定目录。
+`source.md` 保存该逻辑用例对应的来源内容；`case.json` 只保存稳定的三位 `caseNo`、`caseKey`、标题、`sourceSha`、导入来源和 `contractSha`，不保存预生成验证点或计划。Agent-authored 用例以 `sourceLocator` 形成稳定标识，重复导入更新同一 case 并保留编号。用户以编号选择单个或批量执行范围，Coordinator 负责解析到稳定目录。
 
 ExecutionRequest 只接受用例选择，不接受 Agent 生成的 inline Case Flow。创建 execution 时复制 `source.snapshot.md` 和 `case.snapshot.json`，并冻结环境、App、平台策略和协议摘要。源文件后续变化不会改变正在执行的 execution；重跑会创建独立的新 execution。
 

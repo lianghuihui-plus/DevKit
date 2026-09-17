@@ -140,6 +140,7 @@ for (const fixture of [
   { args: ['scripts/workspace.js'], command: 'scripts/workspace.js' },
   { args: ['scripts/coordinator-agent.js'], command: 'scripts/coordinator-agent.js prepare', compactError: true },
   { args: ['scripts/import-case.js'], command: 'scripts/import-case.js' },
+  { args: ['scripts/import-cases.js'], command: 'scripts/import-cases.js' },
   { args: ['scripts/build-agent-contract.js'], command: 'scripts/build-agent-contract.js' },
   { args: ['scripts/probe-env.sh'], command: 'scripts/probe-env.sh', executable: 'bash' },
   { args: ['scripts/prepare-env.sh'], command: 'scripts/prepare-env.sh', executable: 'bash' },

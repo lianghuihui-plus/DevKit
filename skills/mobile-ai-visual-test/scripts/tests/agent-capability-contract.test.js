@@ -98,7 +98,7 @@ assert.match(read('SKILL.md'), /不直接修改.*Batch.*Execution.*Result/);
 assert.match(read('SKILL.md'), /documentationRef/);
 assert.doesNotMatch(read('SKILL.md'), /confirmChoices|confirmTemplate|retryWith|technicalContext\.resume/);
 assert.match(read('SKILL.md'), /app-packages\/ios/);
-assert.match(read('SKILL.md'), /主 Agent.*不.*询问.*安装包/);
+assert.match(read('SKILL.md'), /执行协调 Agent.*不.*询问.*安装包/);
 assert.match(read('prompts/case-agent.md'), /技术异常/);
 assert.match(read('prompts/case-agent.md'), /(读取|使用).*日志/);
 assert.match(read('prompts/case-agent.md'), /不得直接.*修改.*Execution.*Result/);

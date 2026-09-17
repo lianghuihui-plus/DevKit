@@ -103,14 +103,16 @@ assert.throws(() => validateDecision({ expectationRefs: ['E1'] }),
   (error) => error?.code === 'CASE_NARRATIVE_INVALID' && error.fieldPath === 'decision.purpose');
 
 const mainPrompt = read('SKILL.md');
-assert.match(mainPrompt, /你是本次测试的主 Agent/);
+assert.match(mainPrompt, /你是 Authoring Agent/);
+assert.match(mainPrompt, /你是执行协调 Agent/);
+assert.strictEqual(mainPrompt.includes('主 Agent'), false);
 assert.match(mainPrompt, /NEED_CASE_AGENT/);
 assert.match(mainPrompt, /一个用例只保留一个有效写入者/);
 assert.strictEqual(mainPrompt.includes('Case Definition Compiler'), false);
-assert.match(mainPrompt, /主 Agent 不执行 Case Agent Loader/);
+assert.match(mainPrompt, /执行协调 Agent 不执行 Case Agent Loader/);
 assert.strictEqual(/读取 `prompts\/case-agent\.md`/.test(mainPrompt), false);
 assert.match(mainPrompt, /不读取.*Handoff 正文/);
-assert.match(mainPrompt, /不继承主 Agent.*上下文/);
+assert.match(mainPrompt, /不继承执行协调 Agent.*上下文/);
 assert.match(mainPrompt, /loaderCommand/);
 assert.strictEqual(mainPrompt.includes('根据原文整理并审核'), false);
 assert.strictEqual(mainPrompt.includes('caseNo + definitionRef'), false);
@@ -120,7 +122,7 @@ assert.strictEqual(mainPrompt.includes('可重试的报告发布'), false, 'repo
 assert.strictEqual(mainPrompt.includes('coordinatorCapabilities'), false);
 assert.strictEqual(mainPrompt.includes('batch bootstrap'), false);
 assert.strictEqual(mainPrompt.includes('batch start'), false);
-assert.match(mainPrompt, /主 Agent.*不读取.*Case Agent.*runtime\.capabilities/);
+assert.match(mainPrompt, /执行协调 Agent.*不读取.*Case Agent.*runtime\.capabilities/);
 assert.match(mainPrompt, /documentationRef/);
 assert.doesNotMatch(mainPrompt, /confirmChoices|confirmTemplate|retryWith|technicalContext\.resume/);
 assert.match(mainPrompt, /首选入口.*不是.*排他能力边界/);
@@ -205,7 +207,13 @@ assert.deepStrictEqual(coordinatorContract.requiredResources, [
 assert.strictEqual(read('references/interfaces.md').includes('## Case Runtime'), false);
 assert.strictEqual(read('references/interfaces.md').includes('runtime.requestPath'), false);
 assert.match(read('references/interfaces.md'), /scripts\/coordinator-agent\.js/);
-assert.match(read('references/interfaces.md'), /内部\/Authoring/);
+assert.match(read('references/interfaces.md'), /Authoring 接口/);
+assert.match(read('references/interfaces.md'), /scripts\/import-cases\.js/);
+assert.match(read('SKILL.md'), /references\/case-authoring\.md/);
+assert.match(read('references/case-authoring.md'), /文件(?:名|数量|格式)?.*不是用例边界|文件不是用例边界/);
+assert.match(read('references/case-authoring.md'), /完整读取|阅读完整/);
+assert.match(read('references/case-authoring.md'), /一条或多条/);
+assert.strictEqual(read('SKILL.md').includes('你是本次测试的主 Agent'), false);
 assert.strictEqual(read('references/workflow.md').includes('Prompt 和派生 Case Brief 一次性交给'), false);
 assert.strictEqual(read('docs/architecture.md').includes('agentRequired=true + derived Case Brief'), false);
 assert.strictEqual(read('docs/architecture.md').includes('主 Agent 使用该 Brief'), false);

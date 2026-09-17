@@ -4,19 +4,19 @@
 
 ## D1：Case Agent 是唯一业务理解者
 
-- 决策：Execution 只冻结原始用例和技术策略；Case Agent 在现场生成并修订统一 Case Flow，主 Agent 不读取原文或参与业务判断。
+- 决策：Execution 只冻结原始用例和技术策略；Case Agent 在现场生成并修订统一 Case Flow，执行协调 Agent 不读取原文或参与业务判断。这不限制 execution 之前的 Authoring Agent 阅读来源并生成逻辑用例。
 - 原因：独立 Compiler 会重复理解用例，增加批量耗时，并用冻结规则限制 Case Agent 的现场判断。
 - 影响：revision 2 起只要求修改理由；节点和分支可自主调整，历史版本完整保留，Runtime 不审批业务语义。
 
 ## D2：Handoff 只负责身份与交付
 
 - 决策：Handoff 绑定 execution、dispatch 和写入所有权，并直接交付原文、Scene、Case Flow 与 Runtime Client。
-- 原因：主 Agent 转读或转述 Case Agent 上下文会增加耗时并破坏角色隔离。
-- 影响：主 Agent 持有真实 Agent 句柄；框架只记录 Handoff 与 execution 事实，不虚构 Agent 运行状态。
+- 原因：执行协调 Agent 转读或转述 Case Agent 上下文会增加耗时并破坏角色隔离。
+- 影响：执行协调 Agent 持有真实 Agent 句柄；框架只记录 Handoff 与 execution 事实，不虚构 Agent 运行状态。
 
 ## D3：薄 Agent-facing，厚确定性框架
 
-- 决策：主 Agent 面对四个、Case Agent 面对八个自描述能力，Translator 负责注入内部字段并交给严格契约。
+- 决策：执行协调 Agent 面对四个、Case Agent 面对八个自描述能力，Translator 负责注入内部字段并交给严格契约。
 - 原因：直接暴露 ID、状态机和完整 Schema 会分散业务注意力并造成参数猜测。
 - 影响：独立服务文档提供签名、参数和恢复规则；响应只交付动态事实、错误原因和文档锚点，同类格式错误只定向修正一次。
 
@@ -46,9 +46,9 @@
 
 ## D8：只写当前格式，历史按 execution 隔离
 
-- 决策：新 Runtime 不维护旧协议继续执行或迁移分支；历史 execution 不修改、不删除。
+- 决策：新 Agent-facing 接口只写 Case Flow，不提供旧 Case Model 的创建或修订入口，也不迁移历史 execution；同为 schema 12 的历史 Case Model 只保留报告投影和结果完整性 fallback。
 - 原因：长期兼容会把版本分支扩散到 Runtime、证据、完成态和看板。
-- 影响：历史目录可以保留，但当前 Reader 直接拒绝非当前 schema，不提供转换、补写或继续执行路径。
+- 影响：历史目录可以保留，但当前 Reader 直接拒绝非当前 schema，不提供转换或补写路径；schema 12 内的历史 Case Model 不转换为 Case Flow，也不能由新 Case Agent 继续修订。
 
 ## D9：业务终态与报告发布分离
 
@@ -66,4 +66,10 @@
 
 - 决策：执行确认统一授权当前目标 App 的平台等价状态准备；Case Agent 只通过 `recover.targetState` 表达目标。iOS 包由 Runtime 从 `app-packages/ios` 按需解析、唯一匹配并冻结，目录中存在包不触发自动安装。
 - 原因：三端 Agent 接口应一致，安装包发现、身份校验和平台命令属于框架职责；授权范围仍必须限制在已确认目标 App。
-- 影响：Main Agent 不询问或传递安装包；iOS 用平台原生命令验证安装事实，缺包或冲突在卸载前失败；明确失败受控恢复，未知结果不重放。
+- 影响：执行协调 Agent 不询问或传递安装包；iOS 用平台原生命令验证安装事实，缺包或冲突在卸载前失败；明确失败受控恢复，未知结果不重放。
+
+## D12：用例边界由 Authoring Agent 判断
+
+- 决策：用例生成阶段允许并要求 Agent 完整阅读任意格式、任意数量的输入，自主形成一条或多条逻辑用例；框架只持久化 draft。
+- 原因：文件、表格行、Sheet 或章节都不是稳定的业务边界，确定性拆分会把格式规则误当成用例语义。
+- 影响：单用例与批量用例使用同一 `import-cases.js` 入口；`sourceLocator` 提供稳定身份和来源追踪，执行协调阶段的原文隔离保持不变。

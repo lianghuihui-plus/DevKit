@@ -1,5 +1,9 @@
 # 执行流程
 
+## 用例生成
+
+用户要求生成或导入用例时，Authoring Agent 完整读取任意格式、任意数量的输入，自主判断一条或多条逻辑用例，并通过 `import-cases.js` 持久化 draft。框架不根据文件、表格行、章节或其他物理结构拆分业务用例。该阶段与下面的执行协调角色隔离规则无关。
+
 ## 批次状态机
 
 ```text
@@ -14,7 +18,7 @@ fatal -> BLOCKING -> finalization -> BATCH_BLOCKED
 
 看板分开展示“未执行”与“无法执行”：用例没有任何 execution 记录时投影为 `PENDING`（未执行）；已创建 execution，但因前置条件、环境或其他问题未进入实际执行时投影为 `NOT_RUN`（无法执行）。是否已进入实际执行，以是否产生第一条 `actionRequested` 或 `sceneObserved` 事件为检查点；检查点后发生技术中断投影为 `BLOCKED`，用户取消保留为 `CANCELLED`，不再合并到 `NOT_RUN`。
 
-Coordinator 从用例编号解析当前 `case.json` 和 `source.md`，为新 execution 冻结 `case.snapshot.json`、`source.snapshot.md`、环境、App、初始状态策略和协议摘要。它不理解原始用例，也不生成验证点或执行计划。
+执行阶段的 Coordinator 从用例编号解析当前 `case.json` 和 `source.md`，为新 execution 冻结 `case.snapshot.json`、`source.snapshot.md`、环境、App、初始状态策略和协议摘要。它不理解原始用例，也不生成验证点或执行计划。
 
 主 Agent 通过 Facade 推进：
 
