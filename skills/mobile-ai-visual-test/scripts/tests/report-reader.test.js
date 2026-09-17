@@ -267,7 +267,11 @@ assert.strictEqual(unsupportedNewestReport.display.failureCode, 'FORMAT_UNSUPPOR
 const isolatedCases = collectIndexCases(workspace);
 assert.strictEqual(isolatedCases.length, fixtures.size);
 assert.strictEqual(isolatedCases.filter((item) => item.status === 'REPORT_ERROR').length, 0);
-assert.strictEqual(isolatedCases.find((item) => item.caseKey === passFixture.caseJson.identity.caseKey).status, 'NEEDS_RERUN');
+assert.strictEqual(
+  isolatedCases.find((item) => item.caseKey === passFixture.caseJson.identity.caseKey).status,
+  'PASS',
+  'an unsupported execution must not replace the last published dashboard snapshot before publication',
+);
 
 const extraArtifact = path.join(passFixture.execDir, 'screenshots', 'extra-after-publication.png');
 fs.writeFileSync(extraArtifact, Buffer.from('not part of the published artifact set'));

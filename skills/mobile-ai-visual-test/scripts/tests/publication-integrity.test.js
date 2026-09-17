@@ -338,6 +338,67 @@ assert.deepStrictEqual(JSON.parse(fs.readFileSync(malformedResultPath, 'utf8')),
   code: 'REPORT_PUBLICATION_LOCK_INVALID',
 });
 
+const unpublishedSiblingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-unpublished-sibling-'));
+createTestWorkspace(unpublishedSiblingRoot);
+const publishedSibling = createCurrentFixture(unpublishedSiblingRoot, {
+  suffix: 'published-sibling',
+  platform: 'harmony',
+  verdict: 'PASS',
+});
+const unpublishedSibling = createCurrentFixture(unpublishedSiblingRoot, {
+  suffix: 'unpublished-sibling',
+  platform: 'ios',
+  verdict: 'PASS',
+});
+writeCaseReports(unpublishedSibling.caseDir, unpublishedSibling.caseJson);
+assert.doesNotThrow(() => refreshCommittedCaseReports(publishedSibling.caseDir, 'harmony'));
+const unpublishedSiblingIndex = fs.readFileSync(path.join(unpublishedSiblingRoot, 'index.html'), 'utf8');
+assert.ok(unpublishedSiblingIndex.includes('published-sibling'));
+assert.strictEqual(
+  unpublishedSiblingIndex.includes('platforms/ios/CONTEXT.html'),
+  false,
+  'an execution must not appear in the index before its platform report is published',
+);
+refreshCommittedCaseReports(unpublishedSibling.caseDir, 'ios');
+fs.unlinkSync(path.join(unpublishedSibling.runtimeDir, 'CONTEXT.html'));
+assert.throws(
+  () => refreshCommittedCaseReports(publishedSibling.caseDir, 'harmony'),
+  /REPORT_LINK_TARGET_MISSING: .*platforms\/ios\/CONTEXT\.html/,
+  'a missing artifact from an actually published snapshot must remain an integrity error',
+);
+
+const platformBoundaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-platform-boundary-'));
+createTestWorkspace(platformBoundaryRoot);
+const boundaryIos = createCurrentFixture(platformBoundaryRoot, {
+  suffix: 'platform-boundary',
+  platform: 'ios',
+  verdict: 'PASS',
+  sourceText: '相同平台边界原文',
+  title: '平台发布边界用例',
+});
+const boundaryAndroid = createCurrentFixture(platformBoundaryRoot, {
+  suffix: 'platform-boundary',
+  platform: 'android',
+  verdict: 'PASS',
+  sourceText: '相同平台边界原文',
+  title: '平台发布边界用例',
+});
+refreshCommittedCaseReports(boundaryIos.caseDir, 'ios');
+assert.strictEqual(fs.existsSync(path.join(boundaryIos.runtimeDir, 'CONTEXT.html')), true);
+assert.strictEqual(
+  fs.existsSync(path.join(boundaryAndroid.runtimeDir, 'CONTEXT.html')),
+  false,
+  'publishing one platform must not publish another session platform',
+);
+assert.strictEqual(
+  fs.readFileSync(path.join(platformBoundaryRoot, 'index.html'), 'utf8').includes('data-platform-run="android"'),
+  false,
+);
+refreshCommittedCaseReports(boundaryAndroid.caseDir, 'android');
+const platformBoundaryIndex = fs.readFileSync(path.join(platformBoundaryRoot, 'index.html'), 'utf8');
+assert.ok(platformBoundaryIndex.includes('iOS'));
+assert.ok(platformBoundaryIndex.includes('Android'));
+
 const concurrentRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-concurrent-'));
 createTestWorkspace(concurrentRoot);
 const concurrentIos = createCurrentFixture(concurrentRoot, {
@@ -412,5 +473,7 @@ fs.rmSync(retryRecoveryRoot, { recursive: true, force: true });
 fs.rmSync(corruptedCommitPublicationRoot, { recursive: true, force: true });
 fs.rmSync(corruptedTimingRoot, { recursive: true, force: true });
 fs.rmSync(concurrentRoot, { recursive: true, force: true });
+fs.rmSync(unpublishedSiblingRoot, { recursive: true, force: true });
+fs.rmSync(platformBoundaryRoot, { recursive: true, force: true });
 fs.rmSync(malformedLockRoot, { recursive: true, force: true });
 console.log('publication-integrity passed');

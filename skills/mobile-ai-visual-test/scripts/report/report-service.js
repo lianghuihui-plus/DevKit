@@ -63,6 +63,37 @@ function readLatestExecutionReport(caseDir, options = {}) {
   return selected ? readExecutionReport(selected.execDir) : null;
 }
 
+function reportMetadataError(message) {
+  const error = new Error(`REPORT_METADATA_INVALID: ${message}`);
+  error.code = 'REPORT_METADATA_INVALID';
+  return error;
+}
+
+function readPublishedExecutionReport(caseDir, platform) {
+  const normalized = normalizePlatform(platform);
+  if (!normalized) return null;
+  const runtimeDir = caseRuntimeDir(caseDir, normalized);
+  const metadataPath = path.join(runtimeDir, 'report-metadata.json');
+  if (!fs.existsSync(metadataPath)) return null;
+  let metadata;
+  try {
+    metadata = readJson(metadataPath);
+  } catch (error) {
+    throw reportMetadataError(`${metadataPath}: ${error.message || String(error)}`);
+  }
+  if (metadata?.scope !== 'platform-case' || normalizePlatform(metadata.platform) !== normalized) {
+    throw reportMetadataError(`${metadataPath}: platform report identity does not match ${normalized}`);
+  }
+  const executionId = String(metadata.executionId || '').trim();
+  if (!executionId) throw reportMetadataError(`${metadataPath}: executionId is required`);
+  const executionsDir = path.resolve(runtimeDir, 'executions');
+  const execDir = path.resolve(executionsDir, executionId);
+  if (path.dirname(execDir) !== executionsDir || !fs.existsSync(execDir) || !fs.statSync(execDir).isDirectory()) {
+    throw reportMetadataError(`${metadataPath}: execution ${executionId} is unavailable`);
+  }
+  return readExecutionReport(execDir);
+}
+
 function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
   report = report || readLatestExecutionReport(caseDir, { platform });
   if (!report) return null;
@@ -128,6 +159,22 @@ function buildCaseReportProjection(caseDir, suppliedCaseJson = null) {
   if (fs.existsSync(platformsDir)) {
     for (const platform of fs.readdirSync(platformsDir).map(normalizePlatform).filter(Boolean)) {
       const report = readLatestExecutionReport(caseDir, { platform });
+      if (report) reports.set(platform, report);
+    }
+  }
+  const platforms = [...reports.entries()].map(([platform, report]) => runtimeSummary(caseDir, platform, report, caseJson))
+    .filter(Boolean)
+    .sort((left, right) => PLATFORM_ORDER.indexOf(left.platform) - PLATFORM_ORDER.indexOf(right.platform));
+  return { caseDir, caseJson, reports, platforms };
+}
+
+function buildPublishedCaseReportProjection(caseDir, suppliedCaseJson = null) {
+  const caseJson = suppliedCaseJson || validateCaseContract(readJson(path.join(caseDir, 'case.json')));
+  const platformsDir = path.join(caseDir, 'platforms');
+  const reports = new Map();
+  if (fs.existsSync(platformsDir)) {
+    for (const platform of fs.readdirSync(platformsDir).map(normalizePlatform).filter(Boolean)) {
+      const report = readPublishedExecutionReport(caseDir, platform);
       if (report) reports.set(platform, report);
     }
   }
@@ -211,7 +258,7 @@ function collectIndexCases(rootDir, options = {}) {
     .map((caseDir) => {
       if (options.errors?.has(caseDir)) return options.errors.get(caseDir);
       try {
-        const projection = options.projections?.get(path.resolve(caseDir)) || buildCaseReportProjection(caseDir);
+        const projection = options.projections?.get(path.resolve(caseDir)) || buildPublishedCaseReportProjection(caseDir);
         const caseJson = projection.caseJson;
         const sourceText = fs.readFileSync(path.join(caseDir, 'source.md'), 'utf8');
         const sourceSummary = sourceText.split(/\r?\n/).map((line) => line.trim())
@@ -395,7 +442,7 @@ function renderIndexForRootUnlocked(rootDir) {
         const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
         const projection = buildCaseReportProjection(caseDir, caseJson);
         writePlatformCaseReports(caseDir, caseJson, projection);
-        const publishedProjection = buildCaseReportProjection(caseDir, caseJson);
+        const publishedProjection = buildPublishedCaseReportProjection(caseDir, caseJson);
         projections.set(path.resolve(caseDir), publishedProjection);
         writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: publishedProjection.platforms });
       } catch (error) {
@@ -418,7 +465,8 @@ function renderIndexForRoot(rootDir) {
   return withWorkspaceReportPublication(rootDir, () => renderIndexForRootUnlocked(rootDir));
 }
 
-function refreshBatchIndexUnlocked(rootDir, targetCaseDirs) {
+function refreshBatchIndexUnlocked(rootDir, targetCaseDirs, platform = '') {
+  const targetPlatform = normalizePlatform(platform);
   const targets = new Set(targetCaseDirs.map((caseDir) => path.resolve(caseDir)));
   const targetIdentities = new Set([...targets].map(canonicalExistingPath));
   const errors = new Map();
@@ -426,9 +474,15 @@ function refreshBatchIndexUnlocked(rootDir, targetCaseDirs) {
   for (const caseDir of targets) {
     try {
       const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
-      const projection = buildCaseReportProjection(caseDir, caseJson);
-      writePlatformCaseReports(caseDir, caseJson, projection);
-      const publishedProjection = buildCaseReportProjection(caseDir, caseJson);
+      if (targetPlatform) {
+        const report = readLatestExecutionReport(caseDir, { platform: targetPlatform });
+        if (!report) throw new Error(`CURRENT_EXECUTION_REQUIRED: ${targetPlatform}`);
+        writeCaseReports(caseDir, caseJson, {}, [], report, { platform: targetPlatform, skipRootOverview: true });
+      } else {
+        const projection = buildCaseReportProjection(caseDir, caseJson);
+        writePlatformCaseReports(caseDir, caseJson, projection);
+      }
+      const publishedProjection = buildPublishedCaseReportProjection(caseDir, caseJson);
       projections.set(path.resolve(caseDir), publishedProjection);
       writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: publishedProjection.platforms });
     } catch (error) {
@@ -448,8 +502,8 @@ function refreshBatchIndexUnlocked(rootDir, targetCaseDirs) {
   return renderIndexArtifacts(rootDir, cases);
 }
 
-function refreshBatchIndex(rootDir, targetCaseDirs) {
-  return withWorkspaceReportPublication(rootDir, () => refreshBatchIndexUnlocked(rootDir, targetCaseDirs));
+function refreshBatchIndex(rootDir, targetCaseDirs, platform = '') {
+  return withWorkspaceReportPublication(rootDir, () => refreshBatchIndexUnlocked(rootDir, targetCaseDirs, platform));
 }
 
 function refreshCommittedCaseReportsUnlocked(caseDir, platform) {
@@ -458,9 +512,10 @@ function refreshCommittedCaseReportsUnlocked(caseDir, platform) {
   const projections = new Map();
   try {
     const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
-    const projection = buildCaseReportProjection(caseDir, caseJson);
-    writePlatformCaseReports(caseDir, caseJson, projection);
-    const publishedProjection = buildCaseReportProjection(caseDir, caseJson);
+    const report = readLatestExecutionReport(caseDir, { platform });
+    if (!report) throw new Error(`CURRENT_EXECUTION_REQUIRED: ${platform}`);
+    writeCaseReports(caseDir, caseJson, {}, [], report, { platform, skipRootOverview: true });
+    const publishedProjection = buildPublishedCaseReportProjection(caseDir, caseJson);
     projections.set(path.resolve(caseDir), publishedProjection);
     writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: publishedProjection.platforms });
   } catch (error) {

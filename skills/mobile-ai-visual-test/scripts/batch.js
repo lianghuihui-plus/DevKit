@@ -132,7 +132,11 @@ function publishTerminalReports(common, current) {
   try {
     const loaded = loadBatchForMaintenance(common.workspaceRoot, common.batchId);
     const refresh = current.refreshBatchIndex || refreshBatchIndex;
-    refresh(common.workspaceRoot, loaded.contract.targets.map((target) => target.caseDir));
+    refresh(
+      common.workspaceRoot,
+      loaded.contract.targets.map((target) => target.caseDir),
+      loaded.contract.binding?.platform,
+    );
     publication = { status: 'PUBLISHED', durationMs: Date.now() - startedAt };
   } catch (error) {
     publication = {

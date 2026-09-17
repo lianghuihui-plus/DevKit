@@ -262,7 +262,11 @@ fs.utimesSync(brokenContext, fixedTime, fixedTime);
 const isolatedIncremental = refreshCommittedCaseReports(activeFixture.caseDir, 'harmony');
 assert.strictEqual(isolatedIncremental.status, 'UPDATED');
 assert.strictEqual(fs.statSync(brokenContext).mtimeMs, fixedTime.getTime());
-assert.ok(fs.readFileSync(isolatedIncremental.indexHtml, 'utf8').includes('报告数据异常'));
+assert.strictEqual(
+  fs.readFileSync(isolatedIncremental.indexHtml, 'utf8').includes('报告数据异常'),
+  false,
+  'an unpublished corrupt execution must not replace the published dashboard snapshot',
+);
 
 const multiPlatformHtml = renderCurrentIndexHtml(root, [{
   caseNo: '99', title: '多平台结果用例', caseKey: 'ck-multi-platform', status: 'FAIL', verdict: 'FAIL',
