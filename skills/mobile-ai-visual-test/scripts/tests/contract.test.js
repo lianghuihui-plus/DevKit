@@ -34,6 +34,11 @@ const result = {
   checks: [{ expectationRef: 'E1', status: 'PASS', actual: '最新回复显示一个播放按钮', sceneRefs: ['scene-0002'] }],
   uncertainties: [],
 };
+const flowResult = {
+  ...result,
+  caseFlowRevision: 1,
+  checks: [{ checkNodeRef: 'N1', status: 'PASS', actual: '最新回复显示一个播放按钮', sceneRefs: ['scene-0002'] }],
+};
 assert.strictEqual(validateCaseResult(result), result);
 assert.doesNotThrow(() => validateCaseResult({
   ...result,
@@ -59,9 +64,10 @@ for (const request of [
   { operation: 'status' },
   { operation: 'prepare', preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' } },
   { operation: 'act', basedOnSceneId: 'scene-0001', capabilityId: 'scene-0001:tap:el-1', decision: { purpose: '进入目标页', expectationRefs: ['E1'] } },
-  { operation: 'finish', basedOnSceneId: 'scene-0002', result, decision: { purpose: '保存结论', expectationRefs: ['E1'] } },
+  { operation: 'finish', basedOnSceneId: 'scene-0002', result: flowResult, decision: { purpose: '保存结论', expectationRefs: ['N1'] } },
 ]) assert.doesNotThrow(() => validateRuntimeRequest(request));
 expectCode(() => validateRuntimeRequest({ operation: 'act' }), 'CASE_RUNTIME_REQUEST_INVALID');
+expectCode(() => validateRuntimeRequest({ operation: 'finish', basedOnSceneId: 'scene-0002', result }), 'CASE_RESULT_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'unknown' }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'status', extra: true }), 'CASE_RUNTIME_REQUEST_INVALID');
 expectCode(() => validateRuntimeRequest({ operation: 'observe', caseContext: {} }), 'CASE_RUNTIME_REQUEST_INVALID');

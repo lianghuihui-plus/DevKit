@@ -47,6 +47,7 @@ const report = {
 
 const narrative = buildExecutionNarrative(report);
 assert.strictEqual(narrative.available, true);
+assert.strictEqual(narrative.modelKind, 'LEGACY_CASE_MODEL');
 assert.strictEqual(narrative.recordingStatus, 'COMPLETE');
 assert.strictEqual(narrative.recordingComplete, undefined);
 assert.strictEqual(narrative.understanding.summary, '验证目标页面内容');
@@ -281,5 +282,54 @@ assert.strictEqual(legacyFallbackNarrative.steps[0].assessment, '');
 assert.strictEqual(legacyFallbackNarrative.steps[0].observation, '');
 assert.strictEqual(legacyFallbackNarrative.steps[0].conclusion, '');
 assert.strictEqual(legacyFallbackNarrative.steps[0].expectedOutcome, '');
+
+const caseFlowReport = {
+  latest: '/tmp/execution-case-flow',
+  execution: { executionId: 'execution-case-flow' },
+  events: [
+    {
+      sequence: 1, time: '2026-09-17T01:00:00.000Z', type: 'caseFlowRevised', revision: 1,
+      reason: 'INITIAL_CASE_FLOW', summary: '验证条件分支', entryNodeRef: 'N1', uncertainties: [],
+      nodes: [
+        { ref: 'N1', type: 'DECISION', text: '是否出现可选弹窗', sourceBasis: '原文若出现则检查' },
+        { ref: 'N2', type: 'CHECK', text: '目标入口可见', sourceBasis: '原始用例预期', verificationKind: 'DIRECT_OBSERVATION' },
+        { ref: 'N3', type: 'END', text: '完成' },
+      ],
+      edges: [
+        { ref: 'L1', from: 'N1', to: 'N2', condition: '未出现可选弹窗' },
+        { ref: 'L2', from: 'N1', to: 'N2', condition: '出现并已处理弹窗' },
+        { ref: 'L3', from: 'N2', to: 'N3' },
+      ],
+    },
+    {
+      sequence: 2, time: '2026-09-17T01:00:01.000Z', type: 'agentDecisionRecorded', decisionId: 'decision-flow',
+      requestedOperation: 'observe', caseFlowRevision: 1,
+      decision: { purpose: '确认可选分支', expectationRefs: ['N2'] },
+    },
+    {
+      sequence: 3, time: '2026-09-17T01:00:01.100Z', type: 'flowContextRecorded', decisionId: 'decision-flow',
+      requestedOperation: 'observe', caseFlowRevision: 1, nodeRef: 'N1', selectedEdgeRef: 'L1',
+    },
+  ],
+  result: {
+    verdict: 'PASS', summary: '目标入口正常', caseFlowRevision: 1,
+    checks: [{ checkNodeRef: 'N2', status: 'PASS', actual: '目标入口可见', sceneRefs: [] }], uncertainties: [],
+  },
+  display: { verdict: 'PASS', durationMs: 1000 },
+  sourceText: '验证条件分支',
+};
+const caseFlowNarrative = buildExecutionNarrative(caseFlowReport);
+assert.strictEqual(caseFlowNarrative.modelKind, 'CASE_FLOW');
+assert.strictEqual(caseFlowNarrative.caseFlow.revision, 1);
+assert.strictEqual(caseFlowNarrative.caseModel, null);
+assert.strictEqual(caseFlowNarrative.checks[0].expectationRef, 'N2');
+assert.deepStrictEqual(caseFlowNarrative.steps[0].flowContext, { nodeRef: 'N1', selectedEdgeRef: 'L1' });
+const caseFlowHtml = renderCurrentContextHtml({ identity: { title: 'Case Flow 用例' } }, caseFlowReport);
+assert.match(caseFlowHtml, /data-panel-view="case-flow"/);
+assert.match(caseFlowHtml, /L1/);
+assert.doesNotMatch(caseFlowHtml, /data-panel-view="understanding"/);
+const caseFlowMarkdown = renderCurrentContextMarkdown({ identity: { title: 'Case Flow 用例' } }, caseFlowReport);
+assert.match(caseFlowMarkdown, /## Case Flow/);
+assert.doesNotMatch(caseFlowMarkdown, /## Agent 用例理解/);
 
 console.log('execution narrative passed');

@@ -7,6 +7,7 @@ const { validatePublishedCompletion } = require('./completion-contract');
 const { referencedTechnicalFacts } = require('./technical-facts');
 const { deriveExecutionTiming } = require('./execution-timing');
 const currentExecution = require('./readers/current-execution');
+const { projectCaseStatus } = require('./case-status-projection');
 
 const currentContracts = new Map();
 
@@ -291,13 +292,12 @@ function readExecutionReport(execDir) {
 
   if (!report.rawResult) {
     const cancelled = report.execution.status === 'CANCELLED';
-    const enteredExecution = report.events.some((event) => ['actionRequested', 'sceneObserved'].includes(event.type));
-    const interruptedStatus = enteredExecution ? 'BLOCKED' : 'NOT_RUN';
+    const interruptedStatus = projectCaseStatus(report);
     report.display = {
       status: cancelled ? 'CANCELLED' : report.closure ? interruptedStatus : 'RUNNING', verdict: null,
-      executionStatus: cancelled ? 'CANCELLED' : report.closure ? (enteredExecution ? 'TECHNICALLY_BLOCKED' : 'NOT_RUN') : 'RUNNING', verdictBasis: null,
+      executionStatus: cancelled ? 'CANCELLED' : report.closure ? (interruptedStatus === 'BLOCKED' ? 'TECHNICALLY_BLOCKED' : 'NOT_RUN') : 'RUNNING', verdictBasis: null,
       summary: cancelled ? `执行已取消：${report.execution.cancellation?.reason || '用户取消'}`
-        : report.closure ? (enteredExecution ? '执行已中断，未形成测试结论' : '执行未进入实际操作，未形成测试结论') : '用例执行中',
+        : report.closure ? (interruptedStatus === 'BLOCKED' ? 'Case Agent 接管后执行中断，未形成测试结论' : '执行未由 Case Agent 接管，未形成测试结论') : '用例执行中',
       uncertainties: [], failureCode: cancelled ? null : report.closure?.reasonCode || null, failedStep: null,
       ...displayTiming(report.execution, report.metrics), endedAt: report.execution.endedAt || '', stepsSummary: '-', metrics: null,
     };

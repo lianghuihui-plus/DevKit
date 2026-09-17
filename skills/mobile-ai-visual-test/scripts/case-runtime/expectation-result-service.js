@@ -7,21 +7,24 @@ const { readJson } = require('../lib/execution-lifecycle');
 const { technicalFacts, technicalFactState } = require('../lib/technical-facts');
 const store = require('./store');
 
-const STATUSES = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
+const STATUSES = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE']);
 
 function normalizeExpectationText(value) {
   return String(value || '').replace(/\r\n?/g, '\n').trim();
 }
 
-function expectationSemanticHash(text) {
-  const input = canonicalJson({ text: normalizeExpectationText(text) });
+function expectationSemanticHash(text, verificationKind = 'DIRECT_OBSERVATION', sourceBasis = '', type = 'CHECK') {
+  const input = canonicalJson({ type, text: normalizeExpectationText(text), verificationKind, sourceBasis: normalizeExpectationText(sourceBasis) });
   return `expectation-semantic-${crypto.createHash('sha256').update(input).digest('hex')}`;
 }
 
-function activeExpectations(execDir, model = null) {
-  const current = model || require('./case-model-service').current(execDir);
-  return new Map((current?.verificationPoints || []).filter((item) => item.status !== 'RETIRED')
-    .map((item) => [item.ref, { ...item, semanticHash: expectationSemanticHash(item.text) }]));
+function activeExpectations(execDir, suppliedFlow = null) {
+  const flow = suppliedFlow || require('./case-flow-service').current(execDir);
+  return new Map((flow?.nodes || []).filter((item) => item.type === 'CHECK')
+    .map((item) => [item.ref, {
+      ...item,
+      semanticHash: expectationSemanticHash(item.text, item.verificationKind, item.sourceBasis, item.type),
+    }]));
 }
 
 function normalizeStringRefs(value, field) {
@@ -95,7 +98,7 @@ function fsSceneIds(execDir) {
 
 function prepareExpectationResults(execDir, values, options = {}) {
   const list = ensureArray(values || [], 'expectationResults', 'EXPECTATION_RESULT_INVALID');
-  const expectations = activeExpectations(execDir, options.caseModel);
+  const expectations = activeExpectations(execDir, options.caseFlow);
   const seen = new Set();
   return list.map((value, index) => {
     const input = ensureObject(value, `expectationResults[${index}]`, 'EXPECTATION_RESULT_INVALID');
@@ -199,9 +202,9 @@ function invalidateForCaseModelChange(execDir, previous, next, options = {}) {
   for (const oldPoint of previous.verificationPoints || []) {
     const nextPoint = nextByRef.get(oldPoint.ref);
     const reason = !nextPoint ? 'EXPECTATION_RETIRED'
-      : expectationSemanticHash(oldPoint.text) !== expectationSemanticHash(nextPoint.text) ? 'SEMANTICS_CHANGED' : null;
+      : expectationSemanticHash(oldPoint.text, oldPoint.verificationKind) !== expectationSemanticHash(nextPoint.text, nextPoint.verificationKind) ? 'SEMANTICS_CHANGED' : null;
     if (!reason) continue;
-    const latest = currentResultFor(execDir, oldPoint.ref, expectationSemanticHash(oldPoint.text));
+    const latest = currentResultFor(execDir, oldPoint.ref, expectationSemanticHash(oldPoint.text, oldPoint.verificationKind));
     if (!latest) continue;
     const duplicate = store.events(execDir).some((event) => event.type === 'expectationResultInvalidated'
       && event.submissionId === (options.submissionId || null)
@@ -215,8 +218,34 @@ function invalidateForCaseModelChange(execDir, previous, next, options = {}) {
       resultUpdateId: latest.resultUpdateId,
       expectationRef: oldPoint.ref,
       reason,
-      previousSemanticHash: expectationSemanticHash(oldPoint.text),
-      nextSemanticHash: nextPoint ? expectationSemanticHash(nextPoint.text) : null,
+      previousSemanticHash: expectationSemanticHash(oldPoint.text, oldPoint.verificationKind),
+      nextSemanticHash: nextPoint ? expectationSemanticHash(nextPoint.text, nextPoint.verificationKind) : null,
+    }, options);
+    invalidated.push(oldPoint.ref);
+  }
+  return invalidated;
+}
+
+function invalidateForCaseFlowChange(execDir, previous, next, options = {}) {
+  if (!previous) return [];
+  const nextByRef = new Map((next.nodes || []).filter((item) => item.type === 'CHECK').map((item) => [item.ref, item]));
+  const invalidated = [];
+  for (const oldPoint of (previous.nodes || []).filter((item) => item.type === 'CHECK')) {
+    const nextPoint = nextByRef.get(oldPoint.ref);
+    const oldHash = expectationSemanticHash(oldPoint.text, oldPoint.verificationKind, oldPoint.sourceBasis, oldPoint.type);
+    const nextHash = nextPoint
+      ? expectationSemanticHash(nextPoint.text, nextPoint.verificationKind, nextPoint.sourceBasis, nextPoint.type) : null;
+    const reason = !nextPoint ? 'EXPECTATION_RETIRED' : oldHash !== nextHash ? 'SEMANTICS_CHANGED' : null;
+    if (!reason) continue;
+    const latest = currentResultFor(execDir, oldPoint.ref, oldHash);
+    if (!latest) continue;
+    store.appendEvent(execDir, 'expectationResultInvalidated', {
+      submissionId: options.submissionId || null,
+      resultUpdateId: latest.resultUpdateId,
+      expectationRef: oldPoint.ref,
+      reason,
+      previousSemanticHash: oldHash,
+      nextSemanticHash: nextHash,
     }, options);
     invalidated.push(oldPoint.ref);
   }
@@ -283,12 +312,12 @@ function finishReadiness(execDir) {
 }
 
 function caseStateSummary(execDir) {
-  const model = require('./case-model-service').current(execDir);
+  const flow = require('./case-flow-service').current(execDir);
   const readiness = finishReadiness(execDir);
   return {
-    caseModelRevision: model?.revision || null,
+    caseFlowRevision: flow?.revision || null,
     expectations: {
-      active: (model?.verificationPoints || []).length,
+      active: (flow?.nodes || []).filter((item) => item.type === 'CHECK').length,
       resolved: readiness.resolved.length,
       unresolved: readiness.unresolved.map((item) => item.expectationRef),
       conflicts: readiness.conflicts.map((item) => item.expectationRef),
@@ -299,12 +328,13 @@ function caseStateSummary(execDir) {
 function buildCaseResultFromLedger(execDir, values) {
   const readiness = finishReadiness(execDir);
   if (!readiness.ready) throw contractError('CASE_RESULT_INCOMPLETE', 'Expectation ledger is incomplete', { readiness });
-  const model = require('./case-model-service').current(execDir);
+  const flow = require('./case-flow-service').current(execDir);
   const ledger = currentLedger(execDir);
-  const checks = model.verificationPoints.map((point) => {
+  const points = flow.nodes.filter((item) => item.type === 'CHECK');
+  const checks = points.map((point) => {
     const result = ledger[point.ref].result;
     return {
-      expectationRef: point.ref,
+      checkNodeRef: point.ref,
       status: result.status,
       actual: result.actual,
       ...(result.evidence.sceneRefs.length ? { sceneRefs: result.evidence.sceneRefs } : {}),
@@ -318,7 +348,7 @@ function buildCaseResultFromLedger(execDir, values) {
     summary: ensureString(values.summary, 'summary', 'CASE_RESULT_INVALID'),
     checks,
     uncertainties: values.uncertainties || [],
-    caseModelRevision: model.revision,
+    caseFlowRevision: flow.revision,
   };
 }
 
@@ -331,6 +361,7 @@ module.exports = {
   expectationSemanticHash,
   finishReadiness,
   invalidateForCaseModelChange,
+  invalidateForCaseFlowChange,
   normalizeExpectationText,
   prepareExpectationResults,
 };

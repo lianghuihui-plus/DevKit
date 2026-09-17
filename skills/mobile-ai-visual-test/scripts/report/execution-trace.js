@@ -8,7 +8,7 @@ const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence
 const { buildExecutionNarrative } = require('./execution-narrative');
 
 const STATE_CHANGING_ACTIONS = new Set(['tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard']);
-const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断' });
+const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '无法执行' });
 
 function actionLabel(value) {
   const displayed = displayAction(value);
@@ -128,10 +128,14 @@ function retrySafety(action, outcome) {
 function eventEntry(event, index) {
   const base = { sequence: index + 1, time: event.time || '', durationMs: null, phase: 'EXECUTE', operationId: event.operationId || null, raw: sanitizeOperationValue(event) };
   switch (event.type) {
+    case 'caseFlowRevised':
+      return { ...base, phase: 'UNDERSTAND', category: 'UNDERSTANDING', title: event.revision === 1 ? 'Agent 已形成 Case Flow' : 'Agent 已修订 Case Flow', summary: event.summary || '', caseFlowRevision: event.revision, reason: event.reason || '' };
     case 'caseModelRevised':
       return { ...base, phase: 'UNDERSTAND', category: 'UNDERSTANDING', title: event.revision === 1 ? 'Agent 已形成用例理解与初始计划' : 'Agent 已修订用例理解或计划', summary: event.understanding || '', caseModelRevision: event.revision, reason: event.reason || '' };
     case 'agentDecisionRecorded':
       return { ...base, category: 'DECISION', title: event.decision?.purpose || 'Agent 业务决策', summary: decisionField(event, 'conclusion') || '', decisionId: event.decisionId, intent: event.decision?.purpose || null, expectedOutcome: decisionField(event, 'expectedOutcome') || null };
+    case 'flowContextRecorded':
+      return { ...base, category: 'FLOW', title: `关联 Case Flow 节点 ${event.nodeRef}`, summary: event.selectedEdgeRef ? `选择分支 ${event.selectedEdgeRef}` : '记录当前处理节点', decisionId: event.decisionId || null, caseFlowRevision: event.caseFlowRevision || null, flowContext: { nodeRef: event.nodeRef, selectedEdgeRef: event.selectedEdgeRef || null } };
     case 'knowledgeQueried':
       return { ...base, phase: 'INVESTIGATE', category: 'KNOWLEDGE', title: '查询本地知识', summary: `${event.candidateCount || 0} 个候选`, query: event.query, candidates: event.candidates || [], filterDiagnostics: event.filterDiagnostics || null };
     case 'knowledgeReviewed':

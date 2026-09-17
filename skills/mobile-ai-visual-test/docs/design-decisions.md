@@ -4,13 +4,13 @@
 
 ## D1：Case Agent 是唯一业务理解者
 
-- 决策：Execution 只冻结原始用例和技术策略；Case Agent 在现场生成并修订 Case Model，主 Agent 不读取原文或参与业务判断。
+- 决策：Execution 只冻结原始用例和技术策略；Case Agent 在现场生成并修订统一 Case Flow，主 Agent 不读取原文或参与业务判断。
 - 原因：独立 Compiler 会重复理解用例，增加批量耗时，并用冻结规则限制 Case Agent 的现场判断。
-- 影响：revision 2 起只要求修改理由；验证点可新增、改写、合并和取消，历史版本完整保留。
+- 影响：revision 2 起只要求修改理由；节点和分支可自主调整，历史版本完整保留，Runtime 不审批业务语义。
 
 ## D2：Handoff 只负责身份与交付
 
-- 决策：Handoff 绑定 execution、dispatch 和写入所有权，并直接交付原文、Scene、Case Model 与 Runtime Client。
+- 决策：Handoff 绑定 execution、dispatch 和写入所有权，并直接交付原文、Scene、Case Flow 与 Runtime Client。
 - 原因：主 Agent 转读或转述 Case Agent 上下文会增加耗时并破坏角色隔离。
 - 影响：主 Agent 持有真实 Agent 句柄；框架只记录 Handoff 与 execution 事实，不虚构 Agent 运行状态。
 
@@ -40,9 +40,9 @@
 
 ## D7：事实与历史不可覆盖
 
-- 决策：原文、动作、Scene、截图、知识、Case Model revisions、结果和完成绑定采用不可变或追加式记录。
+- 决策：原文、动作、Scene、截图、知识、Case Flow revisions、结果和完成绑定采用不可变或追加式记录。
 - 原因：报告必须还原每一步当时看到什么、依据哪个验证点、为何调整。
-- 影响：每个事件绑定当时 Case Model revision，被取消的验证点引用不复用。
+- 影响：每个事件绑定当时 Case Flow revision，被取消的节点和边引用不复用；历史 Case Model 只读展示。
 
 ## D8：只写当前格式，历史按 execution 隔离
 

@@ -71,6 +71,32 @@ const frozenCaseSpec = {
   ],
   ambiguities: [],
 };
+function caseFlowRevision(baseRevision, actionText, reason) {
+  return {
+    baseRevision,
+    summary: frozenCaseSpec.summary,
+    entryNodeRef: 'N1',
+    nodes: [
+      { ref: 'N1', type: 'ACTION', text: actionText },
+      {
+        ref: 'N2', type: 'CHECK', text: frozenCaseSpec.expectations[0].text,
+        verificationKind: 'DIRECT_OBSERVATION', sourceBasis: sourceText,
+      },
+      {
+        ref: 'N3', type: 'CHECK', text: frozenCaseSpec.expectations[1].text,
+        verificationKind: 'DIRECT_OBSERVATION', sourceBasis: sourceText,
+      },
+      { ref: 'N4', type: 'END', text: '用例完成' },
+    ],
+    edges: [
+      { ref: 'L1', from: 'N1', to: 'N2' },
+      { ref: 'L2', from: 'N2', to: 'N3' },
+      { ref: 'L3', from: 'N3', to: 'N4' },
+    ],
+    uncertainties: frozenCaseSpec.ambiguities,
+    ...(reason ? { reason } : {}),
+  };
+}
 const contract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform: 'harmony' });
 createTestExecutionRequest(root, batchId, binding, [{ caseKey, caseDir }], { now: T0 });
 initializeBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, now: T0 });
@@ -97,18 +123,14 @@ const started = {
     caseProtocolSha: contract.protocolSha,
   }).brief,
 };
-require('../case-runtime/case-model-service').revise(started.execDir, {
-  understanding: frozenCaseSpec.summary,
-  preconditions: frozenCaseSpec.preconditions,
-  verificationPoints: frozenCaseSpec.expectations.map((item) => ({ text: item.text })),
-  items: ['观察当前页面', '执行必要操作', '验证实际结果'],
-  uncertainties: frozenCaseSpec.ambiguities,
-}, { now: T0 });
+require('../case-runtime/case-flow-service').revise(started.execDir,
+  caseFlowRevision(null, '观察当前页面并等待稳定'), { now: T0 });
 assert.strictEqual(started.execution.schemaVersion, 12);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(started.brief, 'schemaVersion'), false);
 const validationProfile = JSON.parse(fs.readFileSync(path.join(started.execDir, 'validation-profile.snapshot.json'), 'utf8'));
 assert.strictEqual(started.execution.validationProfileSha, validationProfile.profileSha);
-assert.strictEqual(started.brief.caseModel, null);
+assert.strictEqual(started.brief.caseFlow, null);
+assert.strictEqual(started.brief.caseModel, undefined);
 assert.strictEqual(started.brief.case.spec, undefined);
 assert.strictEqual(started.request, undefined);
 assert.strictEqual(started.brief.case.source, sourceText);
@@ -234,7 +256,9 @@ assert.strictEqual(continuationBrief.continuation.sequence, 2);
 assert.strictEqual(continuationBrief.scene, null);
 assert.strictEqual(continuationBrief.resumeState.executionStatus, 'RUNNING');
 assert.strictEqual(continuationBrief.case.source, sourceText);
-assert.strictEqual(continuationBrief.caseModel.understanding, frozenCaseSpec.summary);
+assert.strictEqual(continuationBrief.caseFlow.summary, frozenCaseSpec.summary);
+assert.strictEqual(continuationBrief.resumeState.caseFlow.revision, 1);
+assert.strictEqual(continuationBrief.resumeState.caseModel, undefined);
 assert.deepStrictEqual(Object.keys(continuationBrief.runtime).sort(), ['command', 'documentation', 'interfaceKind', 'protocol']);
 const replacedWriter = JSON.parse(childProcess.execSync(started.brief.runtime.command, {
   encoding: 'utf8', input: JSON.stringify({ capability: 'observe' }),
@@ -364,7 +388,7 @@ const wait = require('../case-runtime/store').readCurrentScene(started.execDir).
   .find((capability) => capability.kind === 'wait');
 assert.ok(wait);
 assert.strictEqual(observationCount, observationsBeforeInspection);
-assert.deepStrictEqual(first.narrative.caseContext.expectations.map((item) => item.id), ['E1', 'E2']);
+assert.deepStrictEqual(first.narrative.caseContext.expectations.map((item) => item.id), ['N2', 'N3']);
 const firstScenePath = path.join(started.execDir, 'scenes', `${first.scene.sceneId}.json`);
 const frozenFirstScene = JSON.parse(fs.readFileSync(firstScenePath, 'utf8'));
 writeJsonAtomic(firstScenePath, {
@@ -382,7 +406,7 @@ const mismatchedVisualAttachment = run(started.execDir, {
   basedOnSceneId: first.scene.sceneId,
   decision: {
     purpose: '拒绝不匹配的视觉附件',
-    expectationRefs: ['E1'],
+    expectationRefs: ['N2'],
     observation: '不应登记错误路径的截图',
   },
 }, { now: T0 });
@@ -394,7 +418,7 @@ const firstInspection = run(started.execDir, {
   basedOnSceneId: first.scene.sceneId,
   decision: {
     purpose: '记录首屏截图视觉检查',
-    expectationRefs: ['E1'],
+    expectationRefs: ['N2'],
     observation: '截图显示目标 App 页面',
   },
 }, { now: T0 });
@@ -418,7 +442,7 @@ const duplicateInspection = run(started.execDir, {
   basedOnSceneId: first.scene.sceneId,
   decision: {
     purpose: '重复确认首屏截图',
-    expectationRefs: ['E1'],
+    expectationRefs: ['N2'],
     observation: '截图仍显示目标 App 页面',
   },
 }, { now: T0 });
@@ -427,7 +451,7 @@ assert.strictEqual(duplicateInspection.idempotent, undefined);
 assert.notStrictEqual(duplicateInspection.visualInspection.inspectionId, firstInspection.visualInspection.inspectionId);
 assert.deepStrictEqual(
   require('../case-runtime/narrative-service').latestCaseContext(started.execDir).expectations.map((item) => item.id),
-  ['E1', 'E2'],
+  ['N2', 'N3'],
 );
 const currentSceneId = () => JSON.parse(fs.readFileSync(path.join(started.execDir, 'current-scene.json'), 'utf8')).sceneId;
 const eventsBeforeInvalidNarrative = require('../case-runtime/store').events(started.execDir).length;
@@ -436,7 +460,7 @@ const invalidVisualNarrative = run(started.execDir, {
   basedOnSceneId: currentSceneId(),
   decision: {
     purpose: '拒绝未知验证点的视觉登记',
-    expectationRefs: ['E999'],
+    expectationRefs: ['N999'],
     observation: '该视觉登记不应落盘',
   },
 }, { now: T0 });
@@ -450,7 +474,7 @@ const invalidKnowledgeNarrative = run(started.execDir, {
   query: '该查询不应执行',
   decision: {
     purpose: '拒绝未知验证点的知识查询',
-    expectationRefs: ['E999'],
+    expectationRefs: ['N999'],
   },
 }, { now: T0 });
 assert.strictEqual(invalidKnowledgeNarrative.status, 'REQUEST_INVALID');
@@ -465,7 +489,7 @@ const knowledge = run(started.execDir, {
     conclusion: '查询本地经验以辅助判断',
     purpose: '调查可能的页面显示异常',
     expectedOutcome: '获得与当前现象相关的本地经验',
-    expectationRefs: ['E1'],
+    expectationRefs: ['N2'],
   },
 }, { now: T0 });
 assert.strictEqual(knowledge.status, 'KNOWLEDGE');
@@ -488,6 +512,8 @@ const pendingReviewBrief = buildContinuationBrief({
 });
 assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].queryId, knowledge.queryId);
 assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].query, '当前页面显示异常');
+assert.deepStrictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].checkNodeRefs, ['N2']);
+assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].expectationRefs, undefined);
 assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].candidates[0].entryId, 'K-runtime-001');
 assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].nextCall, undefined);
 assert.strictEqual(JSON.stringify(pendingReviewBrief).includes('decision.knowledgeReview'), false);
@@ -519,7 +545,7 @@ const knowledgeMiss = run(started.execDir, {
     conclusion: '需要确认是否存在已知应用规则',
     purpose: '验证知识过滤诊断',
     expectedOutcome: '记录未命中的具体原因',
-    expectationRefs: ['E2'],
+    expectationRefs: ['N3'],
   },
 }, { now: T0 });
 assert.strictEqual(knowledgeMiss.candidates.length, 0);
@@ -538,7 +564,7 @@ const invalidKnowledgeReview = run(started.execDir, {
   capabilityId: wait.id,
   decision: {
     purpose: '拒绝引用不存在查询的知识复核',
-    expectationRefs: ['E1'],
+    expectationRefs: ['N2'],
     knowledgeReview: {
       queryId: 'query-9999',
       conclusion: 'NO_APPLICABLE',
@@ -568,7 +594,7 @@ assert.deepStrictEqual(invalidRecover.issues.map((issue) => issue.fieldPath).sor
   'basedOnSceneId', 'reason', 'unexpected',
 ]);
 assert.deepStrictEqual(invalidRecover.allowedFields,
-  ['operation', 'basedOnSceneId', 'reason', 'decision', 'externalAction']);
+  ['operation', 'basedOnSceneId', 'reason', 'decision', 'externalAction', 'flowContext']);
 assert.deepStrictEqual(invalidRecover.requiredFields,
   ['operation', 'reason']);
 assert.strictEqual(invalidRecover.example.operation, 'recover');
@@ -584,14 +610,9 @@ assert.strictEqual(ambiguousTarget.issues.some((issue) => issue.code === 'EXACTL
 assert.strictEqual(ambiguousTarget.issues.some((issue) => issue.fieldPath === 'decision' && issue.code === 'REQUIRED'), true);
 assert.strictEqual(actionInvocationCount, actionInvocationsBeforeSceneGuard);
 
-require('../case-runtime/case-model-service').revise(started.execDir, {
-  understanding: frozenCaseSpec.summary,
-  preconditions: frozenCaseSpec.preconditions,
-  verificationPoints: [{ ref: 'E1', text: frozenCaseSpec.expectations[0].text }, { ref: 'E2', text: frozenCaseSpec.expectations[1].text }],
-  items: ['等待稳定', '完成两个验证点'],
-  uncertainties: [],
-  reason: '当前页面已是目标页，无需导航',
-}, { now: '2026-09-03T10:00:00.900Z' });
+require('../case-runtime/case-flow-service').revise(started.execDir,
+  caseFlowRevision(1, '等待页面稳定', '当前页面已是目标页，无需导航'),
+  { now: '2026-09-03T10:00:00.900Z' });
 
 const second = run(started.execDir, {
   operation: 'act',
@@ -602,7 +623,7 @@ const second = run(started.execDir, {
     conclusion: '可以执行短暂等待后验证最终状态',
     purpose: '等待页面稳定',
     expectedOutcome: '目标内容保持可见且 App 状态正常',
-    expectationRefs: ['E1', 'E2'],
+    expectationRefs: ['N2', 'N3'],
     knowledgeReview: {
       queryId: knowledge.queryId,
       conclusion: 'APPLICABLE_FOUND',
@@ -625,7 +646,7 @@ assert.strictEqual(narrativeStatus.narrative.contextVersion, 2);
 assert.strictEqual(narrativeStatus.narrative.latestPlan.version, 2);
 assert.strictEqual(narrativeStatus.narrative.lastDecision.decision.purpose, '等待页面稳定');
 assert.deepStrictEqual(narrativeStatus.knowledgeInvestigation.pendingReviews, []);
-assert.deepStrictEqual(narrativeStatus.knowledgeInvestigation.reviewedExpectationRefs, ['E1', 'E2']);
+assert.deepStrictEqual(narrativeStatus.knowledgeInvestigation.reviewedExpectationRefs, ['N2', 'N3']);
 const actionInvocationsBeforePartialNarrative = actionInvocationCount;
 const secondWait = require('../case-runtime/store').readCurrentScene(started.execDir).capabilities
   .find((capability) => capability.kind === 'wait');
@@ -637,7 +658,7 @@ const partialNarrative = run(started.execDir, {
     observation: '页面仍在目标 App 内',
     conclusion: '继续短暂等待以确认稳定性',
     purpose: '继续观察页面稳定性',
-    expectationRefs: ['E1'],
+    expectationRefs: ['N2'],
   },
 }, { runner, now: '2026-09-03T10:00:01.050Z' });
 assert.strictEqual(partialNarrative.status, 'SCENE');
@@ -648,7 +669,7 @@ const historicalInspection = run(started.execDir, {
   basedOnSceneId: first.scene.sceneId,
   decision: {
     purpose: '补查历史 Scene 截图',
-    expectationRefs: ['E1'],
+    expectationRefs: ['N2'],
     observation: '历史截图显示目标 App 页面',
   },
 }, { now: '2026-09-03T10:00:01.050Z' });
@@ -658,7 +679,7 @@ assert.strictEqual(historicalInspection.visualInspection.sceneId, first.scene.sc
 assert.strictEqual(historicalInspection.scene.sceneId, partialNarrative.scene.sceneId);
 const stale = run(started.execDir, {
   operation: 'act', basedOnSceneId: currentSceneId(), capabilityId: wait.id,
-  decision: { purpose: '验证过期能力会被拒绝', expectationRefs: ['E1'] },
+  decision: { purpose: '验证过期能力会被拒绝', expectationRefs: ['N2'] },
 }, { runner, now: '2026-09-03T10:00:01.100Z' });
 assert.strictEqual(stale.status, 'SCENE_CHANGED');
 assert.strictEqual(stale.scene.sceneId, partialNarrative.scene.sceneId);
@@ -679,7 +700,7 @@ const recoveredInspection = run(started.execDir, {
   basedOnSceneId: recovered.scene.sceneId,
   decision: {
     purpose: '检查恢复后的截图',
-    expectationRefs: ['E1', 'E2'],
+    expectationRefs: ['N2', 'N3'],
     observation: '恢复后页面显示目标内容且目标 App 保持前台',
   },
 }, { now: '2026-09-03T10:00:01.510Z' });
@@ -769,7 +790,7 @@ const afterAutomaticRecovery = run(started.execDir, {
   operation: 'observe',
   decision: {
     purpose: '确认自动恢复后的页面状态',
-    expectationRefs: ['E1', 'E2'],
+    expectationRefs: ['N2', 'N3'],
   },
 }, {
   runner,
@@ -781,26 +802,21 @@ const afterAutomaticRecovery = run(started.execDir, {
 });
 assert.strictEqual(afterAutomaticRecovery.status, 'RECOVERY_APPLIED');
 assert.strictEqual(afterAutomaticRecovery.requiresReassessment, true);
-require('../case-runtime/case-model-service').revise(started.execDir, {
-  understanding: frozenCaseSpec.summary,
-  preconditions: frozenCaseSpec.preconditions,
-  verificationPoints: [{ ref: 'E1', text: frozenCaseSpec.expectations[0].text }, { ref: 'E2', text: frozenCaseSpec.expectations[1].text }],
-  items: ['确认恢复后的页面状态', '完成两个验证点'],
-  uncertainties: [],
-  reason: '恢复后按当前现场收敛执行计划',
-}, { now: '2026-09-03T10:00:01.910Z' });
+require('../case-runtime/case-flow-service').revise(started.execDir,
+  caseFlowRevision(2, '确认恢复后的页面状态', '恢复后按当前现场收敛执行路径'),
+  { now: '2026-09-03T10:00:01.910Z' });
 const afterRecoveryObserve = run(started.execDir, {
   operation: 'observe',
   decision: {
     purpose: '观察恢复后的页面',
-    expectationRefs: ['E1', 'E2'],
+    expectationRefs: ['N2', 'N3'],
   },
 }, { runner, now: '2026-09-03T10:00:01.925Z' });
 assert.strictEqual(afterRecoveryObserve.status, 'SCENE');
 assert.strictEqual(afterRecoveryObserve.narrative.contextVersion, 3);
 assert.strictEqual(afterRecoveryObserve.narrative.latestPlan.version, 3);
-assert.deepStrictEqual(afterRecoveryObserve.narrative.latestPlan.items, ['确认恢复后的页面状态', '完成两个验证点']);
-assert.deepStrictEqual(afterRecoveryObserve.narrative.caseContext.expectations.map((item) => item.id), ['E1', 'E2']);
+assert.deepStrictEqual(afterRecoveryObserve.narrative.latestPlan.nodes.map((item) => item.ref), ['N1', 'N2', 'N3', 'N4']);
+assert.deepStrictEqual(afterRecoveryObserve.narrative.caseContext.expectations.map((item) => item.id), ['N2', 'N3']);
 assert.strictEqual(afterRecoveryObserve.narrative.warnings.length, 0);
 assert.strictEqual(resumedDeviceResultCount, 1);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(root, 'runs', batchId, 'batch.json'), 'utf8')).warmSession.generation, 4);
@@ -841,21 +857,16 @@ const spatialInspection = run(started.execDir, {
   basedOnSceneId: currentSceneId(),
   view: 'ACTION',
   observation: '标注落点位于目标区域左上方，需要调整后续操作位置',
-  expectationRefs: ['E1'],
+  expectationRefs: ['N2'],
 }, { now: '2026-09-03T10:00:01.960Z' });
 assert.strictEqual(spatialInspection.status, 'ACTION_SPATIAL_INSPECTED');
 const spatialInspectionEvent = require('../case-runtime/store').events(started.execDir)
   .find((event) => event.type === 'actionSpatialInspected' && event.operationId === spatialOperationId);
-assert.strictEqual(spatialInspectionEvent.caseModelRevision, 3);
-const revisedAfterSpatialInspection = require('../case-runtime/case-model-service').revise(started.execDir, {
-  understanding: frozenCaseSpec.summary,
-  preconditions: frozenCaseSpec.preconditions,
-  verificationPoints: [{ ref: 'E1', text: frozenCaseSpec.expectations[0].text }, { ref: 'E2', text: frozenCaseSpec.expectations[1].text }],
-  items: ['根据落点标注修正操作位置', '完成两个验证点'],
-  uncertainties: [],
-  reason: '上一动作标注图显示落点偏离目标区域',
-}, { now: '2026-09-03T10:00:01.970Z' });
-assert.strictEqual(revisedAfterSpatialInspection.caseModel.revision, 4);
+assert.strictEqual(spatialInspectionEvent.caseFlowRevision, 3);
+const revisedAfterSpatialInspection = require('../case-runtime/case-flow-service').revise(started.execDir,
+  caseFlowRevision(3, '根据落点标注修正操作位置', '上一动作标注图显示落点偏离目标区域'),
+  { now: '2026-09-03T10:00:01.970Z' });
+assert.strictEqual(revisedAfterSpatialInspection.caseFlow.revision, 4);
 
 const timedOut = run(started.execDir, { operation: 'observe' }, { runner, now: '2026-09-03T10:30:00.000Z' });
 assert.strictEqual(timedOut.status, 'TIME_LIMIT');
@@ -870,8 +881,8 @@ const result = {
   verdict: 'PASS',
   summary: '页面在等待后保持正常显示',
   checks: [
-    { expectationRef: 'E1', status: 'PASS', actual: '目标内容在稳定后的页面中正常显示', sceneRefs: [recovered.scene.sceneId], knowledgeRefs: ['K-runtime-001'] },
-    { expectationRef: 'E2', status: 'PASS', actual: '页面保持在目标 App 且截图可用', sceneRefs: [recovered.scene.sceneId] },
+    { checkNodeRef: 'N2', status: 'PASS', actual: '目标内容在稳定后的页面中正常显示', sceneRefs: [recovered.scene.sceneId], knowledgeRefs: ['K-runtime-001'] },
+    { checkNodeRef: 'N3', status: 'PASS', actual: '页面保持在目标 App 且截图可用', sceneRefs: [recovered.scene.sceneId] },
   ],
   uncertainties: [],
 };
@@ -880,7 +891,7 @@ const uninspectedResult = {
   checks: result.checks.map((check) => ({
     ...check,
     sceneRefs: [spatialAction.scene.sceneId],
-    knowledgeRefs: check.expectationRef === 'E1' ? ['K-runtime-001'] : [],
+    knowledgeRefs: check.checkNodeRef === 'N2' ? ['K-runtime-001'] : [],
   })),
 };
 const finishWithoutVisualInspection = run(started.execDir, {
@@ -893,7 +904,7 @@ const timedOutInspection = run(started.execDir, {
   basedOnSceneId: currentSceneId(),
   decision: {
     purpose: '在设备动作超时后补充截图检查',
-    expectationRefs: ['E1', 'E2'],
+    expectationRefs: ['N2', 'N3'],
     observation: '截图仍可用于已有 Scene 的业务判断',
   },
 }, { now: '2026-09-03T10:30:00.100Z' });
@@ -922,7 +933,7 @@ const uncoveredExpectation = run(started.execDir, { operation: 'finish', basedOn
 } }, { now: '2026-09-03T10:00:01.900Z' });
 assert.strictEqual(uncoveredExpectation.status, 'RESULT_INCOMPLETE');
 assert.strictEqual(uncoveredExpectation.code, 'CASE_RESULT_INCOMPLETE');
-assert.ok(uncoveredExpectation.missing.some((item) => item.field === 'checks.E2'));
+assert.ok(uncoveredExpectation.missing.some((item) => item.field === 'checks.N3'));
 const actionsBeforePendingRecovery = actionInvocationCount;
 writeJsonAtomic(path.join(started.execDir, 'transactions', 'action-9000.draft.json'), {
   schemaVersion: 1,
@@ -936,7 +947,7 @@ const finishDecision = {
   conclusion: 'E1 和 E2 均有当前 Scene 支持，可以判定通过',
   purpose: '完成用例并提交结论',
   expectedOutcome: '全部验证点都有明确结果和现场证据',
-  expectationRefs: ['E1', 'E2'],
+  expectationRefs: ['N2', 'N3'],
 };
 const recoveryBeforeFinish = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), decision: finishDecision, result }, {
   now: '2026-09-03T10:00:01.950Z', runner,
@@ -969,7 +980,7 @@ assert.strictEqual(fs.existsSync(path.join(started.execDir, 'transactions', 'fin
 const finished = run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), decision: finishDecision, result }, { now: '2026-09-03T10:00:02.500Z' });
 assert.strictEqual(finished.status, 'COMPLETED');
 assert.strictEqual(finished.idempotent, true);
-assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'result.json'), 'utf8')).caseModelRevision, 4);
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'result.json'), 'utf8')).caseFlowRevision, 4);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'metrics.json'), 'utf8')).elapsedMs, 2000);
 assert.strictEqual(run(started.execDir, { operation: 'finish', basedOnSceneId: currentSceneId(), decision: finishDecision, result }).idempotent, true);
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'COMMIT_CASE');
@@ -1053,13 +1064,14 @@ assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementation
 const report = readExecutionReport(started.execDir);
 assert.strictEqual(report.schemaFamily, 'current');
 assert.strictEqual(report.display.verdict, 'PASS');
-assert.ok(report.events.some((event) => event.type === 'caseModelRevised'));
+assert.ok(report.events.some((event) => event.type === 'caseFlowRevised'));
 assert.ok(report.events.some((event) => event.type === 'actionSpatialInspected'));
 assert.ok(report.events.some((event) => event.type === 'agentDecisionRecorded'));
 const reportNarrative = buildExecutionNarrative(report);
 assert.strictEqual(reportNarrative.contextVersion, 4);
-assert.strictEqual(reportNarrative.understandingHistory.length, 4);
-assert.strictEqual(reportNarrative.plan.reason, '上一动作标注图显示落点偏离目标区域');
+assert.strictEqual(reportNarrative.modelKind, 'CASE_FLOW');
+assert.strictEqual(reportNarrative.caseFlowHistory.length, 4);
+assert.strictEqual(reportNarrative.caseFlow.reason, '上一动作标注图显示落点偏离目标区域');
 assert.ok(reportNarrative.steps.some((step) => step.action?.spatialInspection?.observation === '标注落点位于目标区域左上方，需要调整后续操作位置'));
 const rendered = refreshCommittedCaseReports(caseDir, 'harmony');
 assert.strictEqual(rendered.status, 'UPDATED');
@@ -1067,7 +1079,7 @@ const contextHtml = fs.readFileSync(path.join(caseDir, 'platforms', 'harmony', '
 assert.match(contextHtml, /目标内容正常显示/);
 assert.match(contextHtml, /页面保持在目标 App/);
 assert.match(contextHtml, /Runtime 请求错误/);
-for (const text of ['结果概览', '理解摘要', '用例理解', '执行计划', '初始计划', '为什么做', '预期效果', '实际效果', '2\/2', '详细日志']) {
+for (const text of ['结果概览', 'Case Flow', '连接与分支', '修订记录', '为什么做', '预期效果', '实际效果', '2\/2', '详细日志']) {
   assert.ok(contextHtml.includes(text), text);
 }
 const validationProfilePath = path.join(started.execDir, 'validation-profile.snapshot.json');

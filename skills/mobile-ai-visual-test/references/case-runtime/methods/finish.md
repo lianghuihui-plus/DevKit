@@ -1,9 +1,9 @@
 # CaseRuntime.finish
 
-从 expectation ledger 收口并完成用例。
+从 CHECK ledger 收口并完成用例。
 
 ```typescript
-finish({ capability: "finish", summary: string, uncertainties?: string[] })
+finish({ capability: "finish", summary: string, uncertainties?: string[], flowContext?: object, outcome?: "NOT_RUN", reason?: string, evidence?: object })
 ```
 
 ## 参数
@@ -13,10 +13,14 @@ finish({ capability: "finish", summary: string, uncertainties?: string[] })
 | `capability` | 是 | `"finish"` | 固定为 finish |
 | `summary` | 是 | `string` | 最终摘要 |
 | `uncertainties` | 否/条件 | `string[]` | 仍需披露的不确定性 |
+| `outcome` | 否/条件 | `"NOT_RUN"` | 仅前置条件不满足时使用 NOT_RUN |
+| `reason` | 否/条件 | `string` | NOT_RUN 的业务原因 |
+| `evidence` | 否/条件 | `object` | NOT_RUN 引用的已登记 Scene 或技术事实 |
+| `flowContext` | 否/条件 | `object` | 实际到达的 END 节点 |
 
 ## 上下文校验
 
-- 不接收 updates 或全量 checks；Runtime 从 ledger 组装并执行完整性校验。
+- 正常收口由 Runtime 从 ledger 组装；NOT_RUN 必须提供原因和已登记证据。
 
 ## 成功状态
 
@@ -35,7 +39,7 @@ finish({ capability: "finish", summary: string, uncertainties?: string[] })
 
 - [`AGENT_INPUT_INVALID`](../errors.md#error-agent-input-invalid)
 - [`BINDING_INVALID`](../errors.md#error-binding-invalid)
-- [`CASE_MODEL_REQUIRED`](../errors.md#error-case-model-required)
+- [`CASE_FLOW_REQUIRED`](../errors.md#error-case-flow-required)
 - [`CASE_RESULT_INCOMPLETE`](../errors.md#error-case-result-incomplete)
 - [`CASE_RUNTIME_TECHNICAL`](../errors.md#error-case-runtime-technical)
 

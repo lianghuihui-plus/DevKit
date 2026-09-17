@@ -67,7 +67,10 @@ function methodPage(serviceName, method) {
 function serviceIndex(title, contract, baseDirectory, extraLinks = []) {
   const rows = Object.values(contract.methods).map((method) =>
     `| [\`${method.name}\`](${baseDirectory}/methods/${kebab(method.name)}.md) | ${method.summary} | \`${signature(method)}\` |`).join('\n');
-  return `# ${title}\n\n协议：\`${contract.protocol}\`。本页是启动短索引；只在紧凑签名不足时读取对应方法页，收到错误时只读取 \`documentationRef\` 指向的章节。\n\n## 方法\n\n| 方法 | 用途 | 紧凑签名 |\n|---|---|---|\n${rows}\n\n## 参数来源\n\n- Scene、控件、键盘和滚动状态来自当前 Runtime 响应。\n- 用户选择和目标绑定来自当前 Coordinator 探测事实。\n- 验证点引用来自 Case Model 变更回执或 continuation brief。\n\n## 按需文档\n\n${[...extraLinks, `- [错误目录](${baseDirectory}/errors.md)`].join('\n')}\n`;
+  const referenceSource = title === 'Case Runtime'
+    ? '- CHECK 节点和分支引用来自 Case Flow 回执或 continuation brief。'
+    : '- 用例、平台和设备选择来自 Coordinator 响应或当前用户输入。';
+  return `# ${title}\n\n协议：\`${contract.protocol}\`。本页是启动短索引；只在紧凑签名不足时读取对应方法页，收到错误时只读取 \`documentationRef\` 指向的章节。\n\n## 方法\n\n| 方法 | 用途 | 紧凑签名 |\n|---|---|---|\n${rows}\n\n## 参数来源\n\n- Scene、控件、键盘和滚动状态来自当前 Runtime 响应。\n- 用户选择和目标绑定来自当前 Coordinator 探测事实。\n${referenceSource}\n\n## 按需文档\n\n${[...extraLinks, `- [错误目录](${baseDirectory}/errors.md)`].join('\n')}\n`;
 }
 
 function errorsPage(title, contract) {

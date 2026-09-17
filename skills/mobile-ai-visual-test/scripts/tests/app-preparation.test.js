@@ -12,6 +12,7 @@ const { createCaseContract } = require('../execution/contracts/case-contract');
 const { preparationPolicySha, validatePreparationPolicy } = require('../lib/app-provisioning');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
+const { simpleCaseFlow } = require('./simple-case-flow');
 
 process.env.MAVT_SELF_TEST = '1';
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -56,14 +57,12 @@ function start(batchId, target) {
   const started = startCurrentCase({ workspaceRoot: root, batchId, now: T0, runtimeOptions: { runner: observeRunner } });
   const execDir = fs.realpathSync(path.join(target.caseDir, 'platforms', binding.platform, 'executions', started.executionId));
   const plan = run(execDir, {
-    capability: 'plan', caseModel: {
-      baseRevision: null,
-      understanding: `验证 ${target.source} 的空数据首次启动状态`,
-      preconditions: ['目标 App 本地数据为空'], verificationPoints: [{ text: '首次启动页面可见' }],
-      items: ['建立空数据状态', '观察首次启动页面'], uncertainties: [],
-    },
+    capability: 'plan',
+    caseFlow: simpleCaseFlow(`验证 ${target.source} 的空数据首次启动状态`, '首次启动页面可见', {
+      actionText: '建立空数据状态并观察首次启动页面',
+    }),
   }, { now: T0 });
-  assert.strictEqual(plan.status, 'CASE_MODEL_RECORDED');
+  assert.strictEqual(plan.status, 'CASE_FLOW_RECORDED', JSON.stringify(plan));
   return { started, execDir };
 }
 
@@ -92,7 +91,7 @@ assert.strictEqual(prepared.preparation.sessionId, 'warm-0002');
 assert.strictEqual(preparationCalls, 1);
 const preparedEvents = fs.readFileSync(path.join(allowedRun.execDir, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const preparationEvent = preparedEvents.find((event) => event.type === 'appPreparationCompleted');
-assert.strictEqual(preparationEvent.caseModelRevision, 1);
+assert.strictEqual(preparationEvent.caseFlowRevision, 1);
 
 const denied = makeCase('未授权清理');
 const deniedRun = start('batch-preparation-denied', denied);

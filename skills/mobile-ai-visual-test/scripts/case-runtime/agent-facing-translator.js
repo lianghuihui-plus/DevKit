@@ -22,12 +22,21 @@ function issue(field, message, code = 'INVALID') {
   return { field, message, code };
 }
 
-function caseModel(execDir) {
-  return require('./case-model-service').current(execDir);
+function projectCheckTerminology(value) {
+  if (Array.isArray(value)) return value.map(projectCheckTerminology);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key === 'expectationRef' ? 'checkNodeRef' : key === 'expectationRefs' ? 'checkNodeRefs' : key,
+    projectCheckTerminology(child),
+  ]));
+}
+
+function caseFlow(execDir) {
+  return require('./case-flow-service').current(execDir);
 }
 
 function knownExpectations(execDir) {
-  return new Set((caseModel(execDir)?.verificationPoints || []).map((item) => item.ref));
+  return new Set((caseFlow(execDir)?.nodes || []).filter((item) => item.type === 'CHECK').map((item) => item.ref));
 }
 
 function validateExpectationRefs(execDir, refs, field = 'expectationRefs') {
@@ -52,8 +61,8 @@ function sceneByRef(execDir, sceneRef) {
 }
 
 function currentPlan(execDir) {
-  const model = caseModel(execDir);
-  return model ? { version: model.revision, reason: model.reason, items: model.items } : null;
+  const flow = caseFlow(execDir);
+  return flow ? { version: flow.revision, reason: flow.reason, nodes: flow.nodes, edges: flow.edges } : null;
 }
 
 function contextualIssues(execDir, request, scene) {
@@ -63,20 +72,29 @@ function contextualIssues(execDir, request, scene) {
     issues.push(issue('capability', '当前没有 Scene，请先使用 observe', 'SCENE_REQUIRED'));
   }
   if (request.capability === 'finish' && !currentPlan(execDir)) {
-    issues.push(issue('capability', '结束前必须先使用 plan 形成本次用例理解、验证点和计划', 'CASE_MODEL_REQUIRED'));
+    issues.push(issue('capability', '结束前必须先使用 plan 形成 Case Flow', 'CASE_FLOW_REQUIRED'));
   }
   if (request.capability === 'plan' && currentPlan(execDir) && !request.reason) {
-    const reason = request.caseModel?.reason || request.reason;
-    if (!reason) issues.push(issue(request.caseModel ? 'caseModel.reason' : 'reason', '更新执行计划时必须说明路径变化原因', 'REQUIRED'));
+    const reason = request.caseFlow?.reason || request.reason;
+    if (!reason) issues.push(issue(request.caseFlow ? 'caseFlow.reason' : 'reason', '修订 Case Flow 时必须说明原因', 'REQUIRED'));
   }
-  issues.push(...validateExpectationRefs(execDir, request.expectationRefs));
+  issues.push(...validateExpectationRefs(execDir, request.checkNodeRefs, 'checkNodeRefs'));
+  if (request.flowContext !== undefined) {
+    try {
+      require('./case-flow-service').validateFlowContext(execDir, request.flowContext);
+    } catch (error) {
+      issues.push(issue('flowContext', error.message, error.code || 'CASE_FLOW_CONTEXT_INVALID'));
+    }
+  }
   if (request.capability === 'recordResult') {
     for (const [index, result] of (request.results || []).entries()) {
-      issues.push(...validateExpectationRefs(execDir, [result.expectationRef], `results[${index}].expectationRef`));
+      issues.push(...validateExpectationRefs(execDir, [result.checkNodeRef], `results[${index}].checkNodeRef`));
     }
     if (!issues.length) {
       try {
-        require('./expectation-result-service').prepareExpectationResults(execDir, request.results);
+        require('./expectation-result-service').prepareExpectationResults(execDir, request.results.map(({ checkNodeRef, ...item }) => ({
+          ...item, expectationRef: checkNodeRef,
+        })));
       } catch (error) {
         issues.push(issue('results', error.message, ['EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID'].includes(error.code)
           ? error.code : 'RECORD_RESULT_INVALID'));
@@ -168,6 +186,18 @@ function contextualIssues(execDir, request, scene) {
       }
     }
   }
+  if (request.capability === 'finish' && request.outcome === 'NOT_RUN') {
+    const sceneRefs = request.evidence?.sceneRefs || [];
+    const technicalRefs = request.evidence?.technicalRefs || [];
+    if (!sceneRefs.length && !technicalRefs.length) {
+      issues.push(issue('evidence', 'NOT_RUN 必须引用至少一个已登记 Scene 或技术事实', 'REQUIRED'));
+    }
+    const events = store.events(execDir);
+    const knownScenes = new Set(events.filter((event) => event.type === 'sceneObserved').map((event) => event.sceneId));
+    const knownTechnical = new Set(events.map((event) => event.technicalFactRef).filter(Boolean));
+    for (const ref of sceneRefs.filter((item) => !knownScenes.has(item))) issues.push(issue('evidence.sceneRefs', `未知 Scene ${ref}`, 'EVIDENCE_REFERENCE_INVALID'));
+    for (const ref of technicalRefs.filter((item) => !knownTechnical.has(item))) issues.push(issue('evidence.technicalRefs', `未知技术事实 ${ref}`, 'EVIDENCE_REFERENCE_INVALID'));
+  }
   return issues;
 }
 
@@ -184,46 +214,42 @@ function translateAgentFacingRequest(execDir, request) {
   const scene = request.capability === 'inspect' ? sceneByRef(execDir, request.basedOnSceneRef) : current;
   const contextual = contextualIssues(execDir, request, scene);
   if (contextual.length) throw inputError(contextual);
-  const expectationRefs = request.expectationRefs || [];
+  const expectationRefs = request.checkNodeRefs || [];
+  const flowContext = request.flowContext ? { flowContext: request.flowContext } : {};
   let translated;
   if (request.capability === 'observe') translated = {
     operation: 'observe',
+    ...flowContext,
     ...(request.purpose ? { decision: { purpose: request.purpose, expectationRefs: [] } } : {}),
   };
   else if (request.capability === 'inspect' && request.channel === 'visual') translated = {
     operation: 'inspectVisual', basedOnSceneId: scene.sceneId,
+    ...flowContext,
     decision: { purpose: '记录当前截图的视觉事实', expectationRefs, observation: request.observation },
   };
   else if (request.capability === 'inspect') translated = {
     operation: 'inspectScene', basedOnSceneId: scene.sceneId,
+    ...flowContext,
     view: { action: 'ACTION', elements: 'ELEMENTS', layout: 'LAYOUT' }[request.channel],
     ...(request.channel === 'action' ? { observation: request.observation, expectationRefs } : {}),
     ...(request.filter ? { filter: request.filter } : {}),
   };
   else if (request.capability === 'plan') {
-    const source = request.caseModel;
     translated = {
-      operation: 'recordCaseModel',
-      caseModel: {
-        ...(Object.prototype.hasOwnProperty.call(source, 'baseRevision') ? { baseRevision: source.baseRevision } : {}),
-        understanding: source.understanding,
-        preconditions: source.preconditions,
-        verificationPoints: source.verificationPoints,
-        items: source.items,
-        uncertainties: source.uncertainties,
-        ...(source.reason ? { reason: source.reason } : {}),
-      },
+      operation: 'recordCaseFlow',
+      caseFlow: request.caseFlow,
     };
   } else if (request.capability === 'recordResult') {
     translated = {
       operation: 'recordExpectationResults',
-      results: request.results,
+      results: request.results.map(({ checkNodeRef, ...item }) => ({ ...item, expectationRef: checkNodeRef })),
     };
   } else if (request.capability === 'act') {
     const internalCapability = request.actionRef.startsWith('visual:')
       ? null : resolveActionRef(scene, request.actionRef, executionPlatform(execDir));
     translated = {
       operation: 'act', basedOnSceneId: scene.sceneId,
+      ...flowContext,
       ...(request.actionRef.startsWith('visual:')
         ? { visual: visualRequest(request.actionRef, request.input || {}) }
         : {
@@ -238,6 +264,7 @@ function translateAgentFacingRequest(execDir, request) {
     const query = store.events(execDir).find((event) => event.type === 'knowledgeQueried' && event.queryId === request.queryId);
     translated = {
       operation: 'reviewKnowledge', basedOnSceneId: scene.sceneId,
+      ...flowContext,
       decision: {
         purpose: '登记知识候选复核结果', expectationRefs: query.expectationRefs || [],
         knowledgeReview: { queryId: request.queryId, conclusion: request.conclusion, assessments: request.assessments },
@@ -245,20 +272,27 @@ function translateAgentFacingRequest(execDir, request) {
     };
   } else if (request.capability === 'knowledge') translated = {
     operation: 'knowledge', basedOnSceneId: scene.sceneId, query: request.query,
+    ...flowContext,
     decision: { purpose: '调查当前异常的已知解释和处理规则', expectationRefs },
   };
   else if (request.capability === 'recover') translated = {
     operation: request.targetState ? 'prepare' : 'recover',
+    ...flowContext,
     ...(request.targetState
       ? { preparation: { targetState: request.targetState } }
       : { ...(scene ? { basedOnSceneId: scene.sceneId } : {}), reason: request.reason }),
     ...(request.externalAction ? { externalAction: request.externalAction } : {}),
   };
   else if (request.capability === 'finish') {
-    const result = require('./expectation-result-service').buildCaseResultFromLedger(execDir, request);
+    const flow = caseFlow(execDir);
+    const result = request.outcome === 'NOT_RUN' ? {
+      verdict: 'NOT_RUN', summary: request.summary, checks: [], uncertainties: request.uncertainties || [],
+      caseFlowRevision: flow.revision, notRunReason: request.reason, notRunEvidence: request.evidence,
+    } : require('./expectation-result-service').buildCaseResultFromLedger(execDir, request);
     translated = {
       operation: 'finish', ...(current ? { basedOnSceneId: current.sceneId } : {}),
-      decision: { purpose: '提交最终结论', expectationRefs: result.checks.map((item) => item.expectationRef) },
+      ...flowContext,
+      decision: { purpose: '提交最终结论', expectationRefs: result.checks.map((item) => item.checkNodeRef) },
       result,
     };
   }
@@ -307,9 +341,8 @@ function projectAgentFacingResponse(execDir, response, request = null) {
   delete projected.knowledgeUsage;
   delete projected.caseModel;
   const scene = currentScene(execDir);
-  const model = caseModel(execDir);
   if (request?.capability === 'inspect') delete projected.scene;
-  else projected.scene = projectScene(scene, { caseModel: model });
+  else projected.scene = projectScene(scene);
   if (response.status === 'SCENE_INSPECTION') {
     delete projected.evidence;
     if (response.view === 'ELEMENTS') {
@@ -335,21 +368,21 @@ function projectAgentFacingResponse(execDir, response, request = null) {
         queryId: pending.queryId,
         query: pending.query,
         candidateCount: pending.candidateCount,
-        expectationRefs: pending.expectationRefs || [],
+        checkNodeRefs: pending.expectationRefs || [],
         candidates: pending.candidates || [],
       })),
     };
   }
   projected.protocol = AGENT_FACING_PROTOCOL;
   const state = require('./expectation-result-service').caseStateSummary(execDir);
-  if (state.caseModelRevision !== null) projected.caseState = state;
-  if (response.caseModelChange) projected.caseModelChange = response.caseModelChange;
+  if (state.caseFlowRevision !== null) projected.caseState = state;
+  if (response.caseFlowChange) projected.caseFlowChange = response.caseFlowChange;
   if (projected.code) {
     projected.retryable = projected.retryable !== undefined ? projected.retryable
       : !['ACTION_OUTCOME_UNKNOWN', 'TIME_LIMIT'].includes(projected.code);
     projected.documentationRef = documentationRefFor(projected.code);
   }
-  return projected;
+  return projectCheckTerminology(projected);
 }
 
 module.exports = {

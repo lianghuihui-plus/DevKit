@@ -27,6 +27,7 @@ const {
 
 const root = path.resolve(__dirname, '../..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
+const { roleResources } = require('../lib/agent-contract-manifest');
 
 const INTERNAL_FIELDS = new Set([
   'batchId', 'executionId', 'definitionRef', 'sceneId', 'basedOnSceneId',
@@ -72,6 +73,7 @@ assert.deepStrictEqual(Object.keys(CASE_PUBLIC_CONTRACT.methods), AGENT_FACING_C
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
 assert.ok(AGENT_FACING_CAPABILITIES.length <= 8, 'Case Agent active capability budget is 8');
 assertExamples(CASE_PUBLIC_CONTRACT.methods, validateAgentFacingRequest, { forbidPaths: true });
+assert.ok(roleResources('case-executor').includes('references/case-reasoning.md'));
 
 assert.strictEqual(RUNTIME_INTERFACE_KIND, 'INTERNAL');
 assert.strictEqual(COORDINATOR_INTERNAL_INTERFACE_KIND, 'INTERNAL');

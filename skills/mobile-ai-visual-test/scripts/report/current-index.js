@@ -297,8 +297,30 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
   const search = document.querySelector('.search');
   const result = document.querySelector('.filter-result');
   const empty = document.querySelector('.filter-empty');
-  let selectedStatus = 'ALL';
-  let selectedPlatform = 'ALL';
+  const storageKey = 'mavt-dashboard-filters:' + (globalThis.location?.pathname || 'index.html');
+  const readSavedFilters = () => {
+    try {
+      const value = JSON.parse(globalThis.sessionStorage?.getItem(storageKey) || '{}');
+      return value && typeof value === 'object' ? value : {};
+    } catch {
+      return {};
+    }
+  };
+  const savedFilters = readSavedFilters();
+  const hasStatus = (value) => statusButtons.some((button) => button.dataset.caseFilter === value);
+  const hasPlatform = (value) => platformButtons.some((button) => button.dataset.platformFilter === value);
+  let selectedStatus = hasStatus(savedFilters.status) ? savedFilters.status : 'ALL';
+  let selectedPlatform = hasPlatform(savedFilters.platform) ? savedFilters.platform : 'ALL';
+  if (search && typeof savedFilters.query === 'string') search.value = savedFilters.query;
+  const saveFilters = () => {
+    try {
+      globalThis.sessionStorage?.setItem(storageKey, JSON.stringify({
+        status: selectedStatus,
+        platform: selectedPlatform,
+        query: search?.value || '',
+      }));
+    } catch {}
+  };
   const apply = () => {
     const query = (search?.value || '').trim().toLowerCase();
     let visible = 0;
@@ -329,6 +351,7 @@ function renderCurrentIndexHtml(rootDir, cases = []) {
     }
     if (result) result.textContent = '显示 ' + visible + ' / ' + cards.length;
     if (empty) empty.hidden = visible !== 0;
+    saveFilters();
   };
   for (const button of statusButtons) button.addEventListener('click', () => { selectedStatus = button.dataset.caseFilter || 'ALL'; apply(); });
   for (const button of platformButtons) button.addEventListener('click', () => { selectedPlatform = button.dataset.platformFilter || 'ALL'; apply(); });

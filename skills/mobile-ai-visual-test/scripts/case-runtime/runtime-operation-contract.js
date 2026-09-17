@@ -80,18 +80,28 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
     properties: { duringActionAtMs: { type: 'integer', minimum: 20 } },
     constraints: ['duringActionAtMs must be less than visual.durationMs for longPress.'],
   },
+  flowContext: {
+    type: 'object', required: ['nodeRef'], additionalProperties: false,
+    properties: { nodeRef: STRING, selectedEdgeRef: STRING },
+  },
   caseResult: {
     type: 'object', required: ['verdict', 'summary', 'checks'], additionalProperties: false,
     properties: {
-      verdict: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'] }, summary: STRING,
+      verdict: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_RUN'] }, summary: STRING,
       checks: { type: 'array', items: { $ref: 'resultCheck' } }, uncertainties: STRING_ARRAY,
-      caseModelRevision: { type: 'integer', minimum: 1 },
+      caseFlowRevision: { type: 'integer', minimum: 1 },
+      notRunReason: STRING,
+      notRunEvidence: {
+        type: 'object', additionalProperties: false, required: ['sceneRefs', 'technicalRefs'],
+        properties: { sceneRefs: STRING_ARRAY, technicalRefs: STRING_ARRAY },
+      },
     },
   },
   resultCheck: {
-    type: 'object', required: ['expectationRef', 'status', 'actual'], additionalProperties: false,
+    type: 'object', required: ['status', 'actual'], additionalProperties: false,
     properties: {
-      expectationRef: STRING, status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'] }, actual: STRING,
+      checkNodeRef: STRING,
+      status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE'] }, actual: STRING,
       sceneRefs: STRING_ARRAY, knowledgeRefs: STRING_ARRAY, technicalRefs: STRING_ARRAY,
       evidenceBasis: { $ref: 'searchAbsenceEvidence' },
     },
@@ -100,7 +110,7 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
     type: 'object', required: ['expectationRef', 'status', 'actual'], additionalProperties: false,
     properties: {
       expectationRef: STRING,
-      status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'] },
+      status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE'] },
       actual: STRING,
       evidence: {
         type: 'object', additionalProperties: false,
@@ -120,22 +130,31 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
     type: 'object', required: ['type', 'sceneRef', 'scrollContextRef'], additionalProperties: false,
     properties: { type: { const: 'SEARCH_ABSENCE' }, sceneRef: STRING, scrollContextRef: STRING },
   },
-  caseModelInput: {
+  caseFlowInput: {
     type: 'object',
-    required: ['understanding', 'preconditions', 'verificationPoints', 'items', 'uncertainties'],
+    required: ['baseRevision', 'summary', 'entryNodeRef', 'nodes', 'edges', 'uncertainties'],
     additionalProperties: false,
     properties: {
       baseRevision: { oneOf: [{ type: 'integer', minimum: 1 }, { const: null }] },
-      understanding: STRING,
-      preconditions: STRING_ARRAY,
-      verificationPoints: {
+      summary: STRING,
+      entryNodeRef: STRING,
+      nodes: {
         type: 'array', minItems: 1,
         items: {
-          type: 'object', required: ['text'], additionalProperties: false,
-          properties: { ref: STRING, text: STRING },
+          type: 'object', required: ['ref', 'type', 'text'], additionalProperties: false,
+          properties: {
+            ref: STRING, type: { enum: ['ACTION', 'DECISION', 'CHECK', 'END'] }, text: STRING,
+            sourceBasis: STRING, verificationKind: { enum: ['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE'] },
+          },
         },
       },
-      items: { type: 'array', minItems: 1, items: STRING },
+      edges: {
+        type: 'array', minItems: 1,
+        items: {
+          type: 'object', required: ['ref', 'from', 'to'], additionalProperties: false,
+          properties: { ref: STRING, from: STRING, to: STRING, condition: STRING },
+        },
+      },
       uncertainties: STRING_ARRAY,
       reason: STRING,
     },
@@ -145,7 +164,7 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
 function operationSchema(operation, properties, required = ['operation']) {
   return {
     type: 'object', required, additionalProperties: false,
-    properties: { operation: { const: operation }, ...properties },
+    properties: { operation: { const: operation }, ...properties, flowContext: { $ref: 'flowContext' } },
   };
 }
 
@@ -161,7 +180,7 @@ function passingResult() {
   return {
     verdict: 'PASS', summary: '验证点均符合预期',
     checks: [{
-      expectationRef: 'E1', status: 'PASS', actual: '当前 Scene 显示预期结果',
+      checkNodeRef: 'N1', status: 'PASS', actual: '当前 Scene 显示预期结果',
       sceneRefs: ['scene-0002'], knowledgeRefs: [], technicalRefs: [],
     }],
     uncertainties: [],
@@ -218,29 +237,29 @@ const OPERATION_CONTRACT = deepFreeze({
     examples: [
       example('capability-tap', {
         operation: 'act', basedOnSceneId: 'scene-0001', capabilityId: 'scene-0001:tap:el-1',
-        decision: decision('进入目标页面', ['E1']),
+        decision: decision('进入目标页面', ['N1']),
       }),
       example('capability-long-press', {
         operation: 'act', basedOnSceneId: 'scene-0001', capabilityId: 'scene-0001:longPress:el-1',
-        input: { durationMs: 1200 }, decision: decision('长按目标控件', ['E1']),
+        input: { durationMs: 1200 }, decision: decision('长按目标控件', ['N1']),
       }),
       example('capability-input-text', {
         operation: 'act', basedOnSceneId: 'scene-0001', capabilityId: 'scene-0001:inputText:el-1',
-        input: { text: '测试文本', mode: 'replace' }, decision: decision('向目标输入框录入文本', ['E1']),
+        input: { text: '测试文本', mode: 'replace' }, decision: decision('向目标输入框录入文本', ['N1']),
       }),
       example('visual-tap', {
         operation: 'act', basedOnSceneId: 'scene-0001', visual: { gesture: 'tap', point: [0.5, 0.5] },
-        decision: decision('点击截图中的目标', ['E1']),
+        decision: decision('点击截图中的目标', ['N1']),
       }),
       example('visual-long-press', {
         operation: 'act', basedOnSceneId: 'scene-0001',
         visual: { gesture: 'longPress', point: [0.5, 0.5], durationMs: 1200 },
-        observationPolicy: { duringActionAtMs: 600 }, decision: decision('长按截图中的目标并记录过程', ['E1']),
+        observationPolicy: { duringActionAtMs: 600 }, decision: decision('长按截图中的目标并记录过程', ['N1']),
       }),
       example('visual-swipe', {
         operation: 'act', basedOnSceneId: 'scene-0001',
         visual: { gesture: 'swipe', from: [0.5, 0.75], to: [0.5, 0.25] },
-        decision: decision('向上滚动当前页面', ['E1']),
+        decision: decision('向上滚动当前页面', ['N1']),
       }),
     ],
     responses: ['SCENE', 'SCENE_CHANGED', 'RECOVERY_APPLIED', 'TIME_LIMIT', 'REQUEST_INVALID', 'TECHNICAL'],
@@ -255,7 +274,7 @@ const OPERATION_CONTRACT = deepFreeze({
     constraints: ['decision.observation is required.'],
     examples: [example('register-visual-inspection', {
       operation: 'inspectVisual', basedOnSceneId: 'scene-0001',
-      decision: { ...decision('记录当前截图的视觉事实', ['E1']), observation: '页面显示系统权限弹窗' },
+      decision: { ...decision('记录当前截图的视觉事实', ['N1']), observation: '页面显示系统权限弹窗' },
     })],
     responses: ['VISUAL_INSPECTED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
@@ -285,7 +304,7 @@ const OPERATION_CONTRACT = deepFreeze({
         operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'ELEMENTS', filter: { interactiveOnly: true },
       }),
       example('inspect-layout', { operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'LAYOUT' }),
-      example('inspect-action', { operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'ACTION', observation: '标注轨迹位于目标容器上方', expectationRefs: ['E1'] }),
+      example('inspect-action', { operation: 'inspectScene', basedOnSceneId: 'scene-0001', view: 'ACTION', observation: '标注轨迹位于目标容器上方', expectationRefs: ['N1'] }),
     ],
     responses: ['SCENE_INSPECTION', 'ACTION_SPATIAL_INSPECTED', 'SCENE_CHANGED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
@@ -304,7 +323,7 @@ const OPERATION_CONTRACT = deepFreeze({
     examples: [example('query-knowledge', {
       operation: 'knowledge', basedOnSceneId: 'scene-0001', query: '权限弹窗出现后语音录入无法继续',
       context: { page: '语音录入页', operation: '长按录音按钮' },
-      decision: decision('调查当前异常是否存在已知规则', ['E1']),
+      decision: decision('调查当前异常是否存在已知规则', ['N1']),
     })],
     responses: ['KNOWLEDGE', 'SCENE_CHANGED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
@@ -319,7 +338,7 @@ const OPERATION_CONTRACT = deepFreeze({
     examples: [example('record-knowledge-review', {
       operation: 'reviewKnowledge', basedOnSceneId: 'scene-0001',
       decision: {
-        ...decision('登记知识候选复核结果', ['E1']),
+        ...decision('登记知识候选复核结果', ['N1']),
         knowledgeReview: {
           queryId: 'knowledge-0001', conclusion: 'NO_APPLICABLE',
           assessments: [{ entryId: 'K-example-001', status: 'NOT_APPLICABLE', reason: '与当前现场不匹配' }],
@@ -328,24 +347,25 @@ const OPERATION_CONTRACT = deepFreeze({
     })],
     responses: ['KNOWLEDGE_REVIEWED', 'SCENE_CHANGED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
-  recordCaseModel: defineOperation({
+  recordCaseFlow: defineOperation({
     agentAccessible: false,
-    summary: 'Record a complete Agent-authored Case Model revision without touching the device.',
+    summary: 'Record a complete Agent-authored Case Flow revision without touching the device.',
     whenToUse: ['Agent-facing Facade only; never exposed as a separate Case Agent capability.'],
-    requestSchema: operationSchema('recordCaseModel', {
-      caseModel: { $ref: 'caseModelInput' },
-    }, ['operation', 'caseModel']),
-    examples: [example('record-case-model', {
-      operation: 'recordCaseModel',
-      caseModel: {
-        understanding: '验证当前页面结果',
-        preconditions: [],
-        verificationPoints: [{ text: '目标结果可见' }],
-        items: ['观察当前页面', '验证目标结果'],
-        uncertainties: [],
+    requestSchema: operationSchema('recordCaseFlow', {
+      caseFlow: { $ref: 'caseFlowInput' },
+    }, ['operation', 'caseFlow']),
+    examples: [example('record-case-flow', {
+      operation: 'recordCaseFlow',
+      caseFlow: {
+        baseRevision: null, summary: '验证目标结果', entryNodeRef: 'N1',
+        nodes: [
+          { ref: 'N1', type: 'CHECK', text: '目标结果可见', sourceBasis: '原始用例预期', verificationKind: 'DIRECT_OBSERVATION' },
+          { ref: 'N2', type: 'END', text: '完成' },
+        ],
+        edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [],
       },
     })],
-    responses: ['CASE_MODEL_RECORDED', 'REQUEST_INVALID', 'TECHNICAL'],
+    responses: ['CASE_FLOW_RECORDED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
   recordExpectationResults: defineOperation({
     agentAccessible: false,
@@ -356,7 +376,7 @@ const OPERATION_CONTRACT = deepFreeze({
     }, ['operation', 'results']),
     examples: [example('record-results', {
       operation: 'recordExpectationResults',
-      results: [{ expectationRef: 'E1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: ['scene-0001'] } }],
+      results: [{ expectationRef: 'N1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: ['scene-0001'] } }],
     })],
     responses: ['RESULTS_RECORDED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
@@ -374,7 +394,7 @@ const OPERATION_CONTRACT = deepFreeze({
     constraints: ['basedOnSceneId is required for App restart recovery; externalAction may be recorded before the first Scene exists.'],
     examples: [example('recover-app', {
       operation: 'recover', basedOnSceneId: 'scene-0001', reason: '目标 App 卡死且当前交互无法继续',
-      decision: decision('恢复目标 App 后重新判断现场', ['E1']),
+      decision: decision('恢复目标 App 后重新判断现场', ['N1']),
     })],
     responses: ['SCENE', 'RECOVERY_APPLIED', 'EXTERNAL_ACTION_RECORDED', 'SCENE_CHANGED', 'TIME_LIMIT', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
@@ -389,12 +409,12 @@ const OPERATION_CONTRACT = deepFreeze({
     examples: [
       example('finish-pass', {
         operation: 'finish', basedOnSceneId: 'scene-0002',
-        decision: decision('保存最终结论', ['E1']), result: passingResult(),
+        decision: decision('保存最终结论', ['N1']), result: passingResult(),
       }),
       example('finish-with-knowledge-review', {
         operation: 'finish', basedOnSceneId: 'scene-0002',
         decision: {
-          ...decision('完成知识复核并保存最终结论', ['E1']),
+          ...decision('完成知识复核并保存最终结论', ['N1']),
           knowledgeReview: {
             queryId: 'knowledge-0001', conclusion: 'NO_APPLICABLE',
             assessments: [{

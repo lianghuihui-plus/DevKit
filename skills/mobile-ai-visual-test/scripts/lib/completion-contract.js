@@ -46,7 +46,7 @@ function validateCompletionBinding(value, expected) {
   if (!/^validation-profile-[0-9a-f]{24}$/.test(value.validationProfileSha || '')) throw new Error('Execution completion validationProfileSha is invalid');
   if (value.validationProfileSha !== expected.validationProfileSha) throw new Error('Execution completion validationProfileSha mismatch');
   if (value.completionSource !== 'framework' || value.runtimeCompleted !== true) throw new Error('Case Runtime completion state is invalid');
-  if (!['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(value.verdict)) throw new Error('Execution completion verdict is invalid');
+  if (!['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_RUN'].includes(value.verdict)) throw new Error('Execution completion verdict is invalid');
   if (!['COMPLETED', 'TECHNICALLY_BLOCKED'].includes(value.executionStatus)) throw new Error('Execution completion executionStatus is invalid');
   for (const field of ['resultSha256', 'metricsSha256', 'artifactManifestSha256']) {
     if (!/^[0-9a-f]{64}$/.test(value[field] || '')) throw new Error(`Execution completion ${field} is invalid`);

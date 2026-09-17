@@ -3,7 +3,7 @@
 登记视觉事实，或按需读取 elements 或 layout。
 
 ```typescript
-inspect({ capability: "inspect", basedOnSceneRef: string, channel: "visual" | "action" | "elements" | "layout", observation?: string, expectationRefs?: string[], filter?: object })
+inspect({ capability: "inspect", basedOnSceneRef: string, channel: "visual" | "action" | "elements" | "layout", observation?: string, checkNodeRefs?: string[], flowContext?: object, filter?: object })
 ```
 
 ## 参数
@@ -14,8 +14,9 @@ inspect({ capability: "inspect", basedOnSceneRef: string, channel: "visual" | "a
 | `basedOnSceneRef` | 是 | `string` | 被检查的 Scene |
 | `channel` | 是 | `"visual" | "action" | "elements" | "layout"` | 检查通道 |
 | `observation` | 否/条件 | `string` | visual/action 通道看到的事实 |
-| `expectationRefs` | 否/条件 | `string[]` | 相关验证点 |
+| `checkNodeRefs` | 否/条件 | `string[]` | 相关 CHECK 节点 |
 | `filter` | 否/条件 | `object` | elements 过滤器 |
+| `flowContext` | 否/条件 | `object` | 当前 Case Flow 节点和可选分支选择 |
 
 ## 条件要求
 

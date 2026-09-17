@@ -54,7 +54,12 @@ function appendEvent(execDir, type, payload = {}, options = {}) {
     type,
     ...payload,
   };
-  if (type !== 'caseModelRevised' && !Object.prototype.hasOwnProperty.call(payload, 'caseModelRevision')) {
+  const caseFlowRevision = current.filter((item) => item.type === 'caseFlowRevised').at(-1)?.revision || null;
+  if (type !== 'caseFlowRevised' && caseFlowRevision
+    && !Object.prototype.hasOwnProperty.call(payload, 'caseFlowRevision')) {
+    event.caseFlowRevision = caseFlowRevision;
+  } else if (type !== 'caseModelRevised' && !caseFlowRevision
+    && !Object.prototype.hasOwnProperty.call(payload, 'caseModelRevision')) {
     event.caseModelRevision = current.filter((item) => item.type === 'caseModelRevised').at(-1)?.revision || null;
   }
   if (isTechnicalFact(event)) {

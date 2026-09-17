@@ -233,7 +233,7 @@ fs.mkdirSync(interruptedAfterActionDir, { recursive: true });
 fs.writeFileSync(path.join(interruptedAfterActionDir, 'execution.json'), JSON.stringify({
   ...passFixture.execution,
   executionId: 'execution-interrupted-after-action', finalized: false, lifecycle: 'RUNNING', phase: 'EXECUTE',
-  startedAt: '2026-08-20T12:00:00.000Z', endedAt: undefined,
+  startedAt: '2026-08-20T12:00:00.000Z', handoffConsumedAt: '2026-08-20T12:00:02.000Z', endedAt: undefined,
 }));
 fs.copyFileSync(path.join(passFixture.execDir, 'source.snapshot.md'), path.join(interruptedAfterActionDir, 'source.snapshot.md'));
 fs.writeFileSync(path.join(interruptedAfterActionDir, 'case.snapshot.json'), JSON.stringify(passFixture.caseJson));

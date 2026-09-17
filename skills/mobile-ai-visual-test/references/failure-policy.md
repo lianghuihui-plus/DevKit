@@ -1,6 +1,6 @@
 # 失败与结果策略
 
-业务 verdict 由 Case Agent 根据原始用例、当前 Case Model 和现场形成：
+业务 verdict 由 Case Agent 根据原始用例、当前 Case Flow 和现场形成：
 
 - `PASS`：证据满足当前验证点。
 - `FAIL`：证据明确不满足当前验证点。

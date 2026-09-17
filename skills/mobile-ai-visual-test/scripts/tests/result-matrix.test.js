@@ -14,6 +14,7 @@ const { createInitialStatePreflight } = require('../lib/app-provisioning');
 const { readExecutionReport } = require('../lib/execution-reader');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestWorkspace } = require('./current-fixture');
+const { simpleCaseFlow } = require('./simple-case-flow');
 
 process.env.MAVT_SELF_TEST = '1';
 
@@ -91,23 +92,16 @@ function executeResult(verdict, options = {}) {
   assert.ok(started.execution.validationProfileSha);
   assert.strictEqual(readExecutionReport(started.execDir).readerFamily, 'current-execution');
   const planned = run(started.execDir, {
-    capability: 'plan', caseModel: {
-      baseRevision: null,
-      understanding: source,
-      preconditions: ['目标 App 已启动'],
-      verificationPoints: [{ text: '目标页面符合用例预期' }],
-      items: ['确认目标页面现场', '完成验证点判断'],
-      uncertainties: [],
-    },
+    capability: 'plan', caseFlow: simpleCaseFlow(source, '目标页面符合用例预期'),
   }, { now: '2026-09-04T02:00:00.500Z' });
-  assert.strictEqual(planned.status, 'CASE_MODEL_RECORDED');
+  assert.strictEqual(planned.status, 'CASE_FLOW_RECORDED');
   let technicalFactRef = null;
   const observed = run(started.execDir, {
     capability: 'observe', purpose: '确认目标页面表现',
   }, { runner, now: '2026-09-04T02:00:01.000Z' });
   assert.strictEqual(observed.status, 'SCENE');
   const visualInspection = run(started.execDir, {
-    capability: 'inspect', basedOnSceneRef: observed.scene.sceneRef, channel: 'visual', expectationRefs: ['E1'],
+    capability: 'inspect', basedOnSceneRef: observed.scene.sceneRef, channel: 'visual', checkNodeRefs: ['N2'],
     observation: `截图中的目标页面表现可用于 ${verdict} 判断`,
   }, { now: '2026-09-04T02:00:01.100Z' });
   assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
@@ -128,14 +122,14 @@ function executeResult(verdict, options = {}) {
       capability: 'knowledge',
       basedOnSceneRef: observed.scene.sceneRef,
       query: `${verdict} 现场是否存在已知解释`,
-      expectationRefs: ['E1'],
+      checkNodeRefs: ['N2'],
     }, { now: '2026-09-04T02:00:01.500Z' });
     assert.strictEqual(knowledge.status, 'KNOWLEDGE');
     assert.strictEqual(knowledge.candidates.length, 0);
   }
 
   const check = {
-    expectationRef: 'E1',
+    checkNodeRef: 'N2',
     status: verdict,
     actual: options.technical ? 'Adapter 连接中断，验证点无法继续' : `现场判断为 ${verdict}`,
     sceneRefs: ['PASS', 'FAIL'].includes(verdict) ? [observed.scene.sceneRef] : [],
@@ -143,7 +137,7 @@ function executeResult(verdict, options = {}) {
   };
   const recorded = run(started.execDir, {
     capability: 'recordResult', results: [{
-      expectationRef: check.expectationRef,
+      checkNodeRef: check.checkNodeRef,
       status: check.status,
       actual: check.actual,
       evidence: {
@@ -164,7 +158,7 @@ function executeResult(verdict, options = {}) {
     const fact = report.events.find((event) => event.technicalFactRef === technicalFactRef);
     assert.strictEqual(fact.executionId, started.execution.executionId);
     assert.strictEqual(fact.decisionId !== null, true);
-    assert.deepStrictEqual(fact.expectationRefs, ['E1']);
+    assert.deepStrictEqual(fact.expectationRefs, ['N2']);
     assert.strictEqual(fact.sceneId, observed.scene.sceneRef);
     assert.strictEqual(fact.generation, started.execution.warmSessionGeneration);
   }

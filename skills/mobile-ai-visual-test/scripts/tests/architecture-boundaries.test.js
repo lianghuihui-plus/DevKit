@@ -22,6 +22,7 @@ assert.strictEqual(fs.existsSync(path.join(root, 'scripts/lib/readers/current-ex
 
 assert.deepStrictEqual(roleResources('case-executor'), [
   'prompts/case-agent.md',
+  'references/case-reasoning.md',
   'references/case-runtime.md',
   'references/case-runtime/methods/observe.md',
   'references/case-runtime/methods/inspect.md',
@@ -54,7 +55,8 @@ for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkp
 assert.match(casePrompt, /独立负责 Handoff Loader 返回的一个 execution/);
 assert.match(casePrompt, /本次用例理解与计划/);
 assert.match(casePrompt, /case\.source/);
-assert.match(casePrompt, /expectationRef/);
+assert.match(casePrompt, /Case Flow/);
+assert.match(casePrompt, /checkNodeRef/);
 assert.match(casePrompt, /view_image/);
 assert.match(casePrompt, /八个业务能力/);
 assert.match(casePrompt, /observe.*inspect.*plan.*recordResult.*act.*knowledge.*recover.*finish/);
@@ -208,8 +210,8 @@ assert.strictEqual(read('references/workflow.md').includes('Prompt 和派生 Cas
 assert.strictEqual(read('docs/architecture.md').includes('agentRequired=true + derived Case Brief'), false);
 assert.strictEqual(read('docs/architecture.md').includes('主 Agent 使用该 Brief'), false);
 assert.match(casePrompt, /Handoff Loader/);
-assert.match(casePrompt, /expectationRefs.*只关联.*直接检查或调查/);
-assert.match(casePrompt, /finish.*ledger.*完整性校验/);
+assert.match(casePrompt, /checkNodeRefs.*只关联.*直接检查或调查/);
+assert.match(casePrompt, /finish.*Runtime 从 ledger 组装完整结果/);
 const implementation = implementationGroups(root, 'harmony');
 assert.strictEqual(implementation.report.includes('scripts/execution/contracts/case-definition-contract.js'), false);
 assert.strictEqual(implementation.report.includes('scripts/execution/contracts/validation-profile-contract.js'), true);

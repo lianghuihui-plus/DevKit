@@ -76,7 +76,7 @@ Coordinator 响应只提供错误原因、诊断、当前资源事实和 `docume
 
 - 主 Agent 不执行 Case Agent Loader，不读取 `source.md`、Handoff 正文、Case Prompt、Scene、截图、控件树、知识调查正文或 Case Agent 的 `runtime.capabilities`。
 - 主 Agent 不向 Case Agent 转述原文、截图路径、控件树、知识内容或自己的业务判断。
-- Handoff 只绑定唯一 execution、协议摘要和写入所有权，并直接向 Case Agent 提供原始用例、当前 Scene、已有 Case Model 及预绑定 Runtime Client。
+- Handoff 只绑定唯一 execution、协议摘要和写入所有权，并直接向 Case Agent 提供原始用例、当前 Scene、已有 Case Flow 及预绑定 Runtime Client。
 - Case Agent 自己生成和修订本次用例理解、验证点与计划；修订只要求记录理由，不由主 Agent 审批。
 - 三端输入由 Case Runtime 统一发布目标级 `inputText`，Case Agent 复制 Scene 动作即可完成目标聚焦和整段输入；无目标焦点输入只是 Scene 无法识别输入控件时的兜底。
 - 输入依赖由 Runtime 自动准备、校验和恢复，主 Agent 与 Case Agent 不安装、启用或切换平台输入组件。

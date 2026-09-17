@@ -3,7 +3,7 @@
 建立授权的 App 初始状态、重启恢复或登记框架外事实。
 
 ```typescript
-recover({ capability: "recover", basedOnSceneRef?: string, reason: string, targetState?: "APP_LOCAL_STATE_EMPTY" | "FRESH_INSTALL", externalAction?: object })
+recover({ capability: "recover", basedOnSceneRef?: string, reason: string, targetState?: "APP_LOCAL_STATE_EMPTY" | "FRESH_INSTALL", externalAction?: object, flowContext?: object })
 ```
 
 ## 参数
@@ -15,6 +15,7 @@ recover({ capability: "recover", basedOnSceneRef?: string, reason: string, targe
 | `reason` | 是 | `string` | 恢复原因 |
 | `targetState` | 否/条件 | `"APP_LOCAL_STATE_EMPTY" | "FRESH_INSTALL"` | 授权的目标 App 状态 |
 | `externalAction` | 否/条件 | `object` | 已实际完成的框架外事实 |
+| `flowContext` | 否/条件 | `object` | 异常发生时正在处理的 Case Flow 节点 |
 
 ## 条件要求
 

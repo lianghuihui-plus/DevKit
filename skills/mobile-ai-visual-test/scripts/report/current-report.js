@@ -64,6 +64,27 @@ function renderCurrentContextMarkdown(caseJson, report) {
   const display = report.display || {};
   const phases = display.phaseDurations || {};
   const narrative = buildExecutionNarrative(report);
+  const modelLines = narrative.modelKind === 'CASE_FLOW' ? [
+    '## Case Flow', '',
+    `- 版本：${narrative.caseFlow?.revision || '-'}`,
+    `- 摘要：${narrative.caseFlow?.summary || '未记录'}`,
+    `- 入口：${narrative.caseFlow?.entryNodeRef || '-'}`,
+    `- 不确定项：${narrative.caseFlow?.uncertainties?.join('；') || '无'}`, '',
+    '### 节点', '',
+    ...((narrative.caseFlow?.nodes || []).map((node) => `- ${node.ref} [${node.type}] ${node.text}${node.sourceBasis ? `；依据：${node.sourceBasis}` : ''}`)), '',
+    '### 连接与分支', '',
+    ...((narrative.caseFlow?.edges || []).map((edge) => `- ${edge.ref} ${edge.from} -> ${edge.to}${edge.condition ? `；条件：${edge.condition}` : ''}`)), '',
+    '### 修订记录', '',
+    ...((narrative.caseFlowHistory || []).map((item) => `- 版本 ${item.revision}：${item.reason || 'Agent 修订'}`)),
+  ] : [
+    '## Agent 用例理解', '', narrative.understanding?.summary || '未记录', '',
+    `- 前置条件：${narrative.understanding?.preconditions?.join('；') || '无'}`,
+    `- 验证点：${narrative.understanding?.expectations?.map((item) => `${item.id} ${item.text}`).join('；') || '未记录'}`,
+    `- 不确定项：${narrative.understanding?.uncertainties?.join('；') || '无'}`,
+    `- 理解记录：${narrative.understandingHistory.length} 个版本`, '',
+    '## 初始计划', '',
+    ...(narrative.initialPlan?.items?.length ? narrative.initialPlan.items.map((item, index) => `${index + 1}. ${item}`) : ['- 未记录']),
+  ];
   const lines = [
     `# ${caseJson.identity?.caseNo ? `${caseJson.identity.caseNo} · ` : ''}${caseJson.identity?.title || '未命名用例'}`, '',
     `- 执行结论：${label(VERDICT_LABELS, display.verdict || display.status, '未执行')}`,
@@ -83,15 +104,9 @@ function renderCurrentContextMarkdown(caseJson, report) {
     `- Adapter 活跃：${optionalDuration(report.metrics?.adapterActiveMs)}`,
     `- Agent 与调度间隙：${optionalDuration(report.metrics?.agentAndSchedulingGapMs)}`, '',
     '## 原始用例', '', report.sourceText || '未记录', '',
-    '## Agent 用例理解', '', narrative.understanding?.summary || '未记录', '',
-    `- 前置条件：${narrative.understanding?.preconditions?.join('；') || '无'}`,
-    `- 验证点：${narrative.understanding?.expectations?.map((item) => `${item.id} ${item.text}`).join('；') || '未记录'}`,
-    `- 不确定项：${narrative.understanding?.uncertainties?.join('；') || '无'}`,
-    `- 理解记录：${narrative.understandingHistory.length} 个版本`, '',
-    '## 初始计划', '',
-    ...(narrative.initialPlan?.items?.length ? narrative.initialPlan.items.map((item, index) => `${index + 1}. ${item}`) : ['- 未记录']),
+    ...modelLines,
   ];
-  const planUpdates = narrative.planHistory.slice(1);
+  const planUpdates = narrative.modelKind === 'CASE_FLOW' ? [] : narrative.planHistory.slice(1);
   if (planUpdates.length) {
     lines.push('', '## 计划调整', '');
     for (const update of planUpdates) {

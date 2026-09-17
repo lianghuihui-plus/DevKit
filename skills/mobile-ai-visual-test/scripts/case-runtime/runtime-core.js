@@ -191,9 +191,18 @@ function execute(execDir, request, options = {}) {
         };
       }
       assertSceneBasis(execDir, request);
+      const flowContext = require('./case-flow-service').validateFlowContext(execDir, request.flowContext);
       narrative = request.operation === 'recordExpectationResults'
         ? narrativeService.narrativeStatus(execDir)
         : narrativeService.recordRequestNarrative(execDir, request, options);
+      if (flowContext) {
+        store.appendEvent(execDir, 'flowContextRecorded', {
+          requestedOperation: request.operation,
+          sceneId: store.readCurrentScene(execDir)?.sceneId || null,
+          decisionId: narrative.decisionEvent?.decisionId || null,
+          ...flowContext,
+        }, options);
+      }
       if (request.operation === 'finish') {
         return resultService.finish(execDir, request.result, { ...options, openInvocation: invocation, narrative });
       }
@@ -223,7 +232,7 @@ function execute(execDir, request, options = {}) {
         decision: narrative.decisionEvent?.decision || undefined,
         decisionId: narrative.decisionEvent?.decisionId || null,
       };
-      if (request.operation === 'recordCaseModel') response = require('./case-model-service').revise(execDir, request.caseModel, options);
+      if (request.operation === 'recordCaseFlow') response = require('./case-flow-service').revise(execDir, request.caseFlow, options);
       else if (request.operation === 'recordExpectationResults') {
         const expectationResultService = require('./expectation-result-service');
         const recorded = expectationResultService.applyExpectationResults(execDir, request.results, options);
@@ -261,7 +270,8 @@ function execute(execDir, request, options = {}) {
     const requestInvalid = [
       'CASE_RUNTIME_REQUEST_INVALID', 'CASE_RUNTIME_VISUAL_ACTION_INVALID',
       'CASE_NARRATIVE_INVALID', 'CASE_RESULT_INVALID', 'ACTION_CONTRACT_INVALID',
-    ].includes(error.code) || String(error.code || '').startsWith('CASE_MODEL_');
+    ].includes(error.code) || String(error.code || '').startsWith('CASE_MODEL_')
+      || String(error.code || '').startsWith('CASE_FLOW_');
     response = requestInvalid
       ? {
         status: 'REQUEST_INVALID',

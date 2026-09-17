@@ -5,7 +5,7 @@
 本 Skill 基于任意非空文本用例执行移动端黑盒视觉测试，核心目标是：
 
 1. 主 Agent 只负责编排、授权、批次级技术恢复和汇报，不理解单个用例。
-2. Case Agent 是唯一业务理解者，自主形成并修订验证点和执行计划。
+2. Case Agent 是唯一业务理解者，自主形成并修订同时表达操作、分支和检查点的 Case Flow。
 3. Agent-facing 接口保持简单，确定性框架处理绑定、事务、证据和状态机。
 4. 截图、控件树、知识库和动作落点事实都是 Case Agent 可主动选择的调查能力。
 5. 框架能力是正常首选路径，但异常时不限制 Agent 使用环境中的其他工具解决问题。
@@ -24,7 +24,7 @@ flowchart LR
   CT --> B["Workspace / Environment / Batch"]
   B --> L["Handoff + Execution Lifecycle"]
   M -->|"不透明 Loader"| A["Case Agent"]
-  A --> AF["Case Facade<br/>7 个能力"]
+  A --> AF["Case Facade<br/>8 个能力"]
   AF --> AT["Case Translator"]
   AT --> R["Runtime Core"]
   R --> D["Device Port / Adapter"]
@@ -49,7 +49,7 @@ flowchart LR
 
 Coordinator 响应为 `NEED_USER_CONFIRMATION`、`NEED_CASE_AGENT`、`WAITING`、`TECHNICAL`、`COMPLETE` 或 `BLOCKED`。主 Agent 不调用内部 Batch、ExecutionRequest、环境或报告命令拼装流程。
 
-主 Agent 不读取原始用例、Handoff 正文、Case Prompt、Case Model、Scene、截图、控件树或知识调查正文。它只把 `NEED_CASE_AGENT` 返回的固定委托文本和原样 Loader 交给一个不继承主 Agent 上下文的新 Case Agent，并持有真实 Agent 句柄。
+主 Agent 不读取原始用例、Handoff 正文、Case Prompt、Case Flow、Scene、截图、控件树或知识调查正文。它只把 `NEED_CASE_AGENT` 返回的固定委托文本和原样 Loader 交给一个不继承主 Agent 上下文的新 Case Agent，并持有真实 Agent 句柄。
 
 Coordinator 只知道 Handoff 是 `PREPARED` 还是 `CONSUMED`，以及 execution 是否有持久化结果；它不虚构宿主 Agent 运行状态。`WAIT_EXECUTION_RESULT` 只表示等待结果，已有活跃写入者时不重复委托。
 
@@ -60,7 +60,7 @@ Case Agent 通过 Handoff 直接得到：
 - execution 绑定与写入所有权。
 - 原始用例 `case.source`。
 - 平台、App 和已授权初始状态摘要。
-- 当前 Scene 和已有 Case Model；首次启动时 Case Model 为空。
+- 当前 Scene 和已有 Case Flow；首次启动时 Case Flow 为空。
 - Case Prompt 与预绑定 Runtime Client。
 - `observe`、`inspect`、`plan`、`recordResult`、`act`、`knowledge`、`recover`、`finish` 八个能力。
 
@@ -90,10 +90,10 @@ sequenceDiagram
   A->>F: observe
   F->>R: translated request
   R->>D: capture Scene
-  A->>F: plan(Case Model revision 1)
+  A->>F: plan(Case Flow revision 1)
   loop 自主执行与调整
     A->>F: inspect / act / knowledge / recover / plan
-    F->>R: bind current Scene and Case Model revision
+    F->>R: bind current Scene and Case Flow revision
     R->>D: device operation or observation
     R-->>A: compact facts + new Scene
   end
@@ -106,7 +106,7 @@ sequenceDiagram
   C-->>M: next case or terminal state
 ```
 
-批次内同一时刻只有一个活跃用例。用例之间可以复用 App 暖状态，但不共享 Case Agent 上下文、Case Model 或 execution 证据。不同平台的不同 `batchId` Run 可以在同一工作空间并行；Batch reconcile 只把同平台其他 Batch 的活动 execution 视为冲突，其他平台 execution 不参与当前 Batch 的冲突判断。初始化只关闭同平台且实现摘要不匹配的旧 execution，不会关闭其他平台的活动 execution。同一 Batch 仍只允许一个活动 execution；同平台不同设备并行尚未开放，设备及 Appium/WDA 等真实资源继续由 Platform Runtime 所有权层保护。
+批次内同一时刻只有一个活跃用例。用例之间可以复用 App 暖状态，但不共享 Case Agent 上下文、Case Flow 或 execution 证据。不同平台的不同 `batchId` Run 可以在同一工作空间并行；Batch reconcile 只把同平台其他 Batch 的活动 execution 视为冲突，其他平台 execution 不参与当前 Batch 的冲突判断。初始化只关闭同平台且实现摘要不匹配的旧 execution，不会关闭其他平台的活动 execution。同一 Batch 仍只允许一个活动 execution；同平台不同设备并行尚未开放，设备及 Appium/WDA 等真实资源继续由 Platform Runtime 所有权层保护。
 
 初始化步骤持久化在 Coordinator run 中；命令中断后 `advanceRun` 从首个缺失步骤恢复，不重复已经完成的初始化。Execution 收口、平台释放、Batch 业务终态与报告发布是独立事实，报告失败不会把已完成批次改回等待态。
 
@@ -114,22 +114,15 @@ sequenceDiagram
 
 各平台 Execution 位于独立目录，可以并行落盘。Execution 创建锁位于 `<runtimeDir>/executions/.create.lock`，只串行化同一 case + platform Runtime 的 ID 分配和原子创建，不让不同平台竞争工作空间根锁。`index.html`、根报告元数据、用例原文页和平台详情页属于可重建的共享派生产物，所有正式报告入口通过工作空间级 `<workspace>/.report-publication.lock` 执行完整的“重新读取 -> 生成 -> 发布”事务。合法活跃锁在框架内部等待，失效 PID 锁自动回收，锁竞争不返回给 Agent；报告锁不包围设备操作，也不在锁内取得 Batch、Execution 或平台资源锁。
 
-## 5. Case Model
+## 5. Case Flow
 
-Case Model 是 Case Agent 对本次 execution 的当前理解，包括：
+Case Flow 是 Case Agent 对原始用例的当前工作模型，一份产物同时表达理解和执行导航。它由 `ACTION / DECISION / CHECK / END` 节点、自然语言条件边、`uncertainties`、`revision` 和 `reason` 组成；`CHECK.verificationKind` 只支持 `DIRECT_OBSERVATION` 和 `SEARCH_EXISTENCE`。
 
-- `understanding`
-- `preconditions`
-- `verificationPoints`
-- `items`
-- `uncertainties`
-- `revision` 和 `reason`
+首次 `plan` 生成 revision 1。后续 `plan` 提交完整快照并要求非空理由。Agent 使用稳定 `N` / `L` 引用；语义未变的节点和边保留引用，已取消引用不复用。框架只校验图结构、引用、修订理由、证据和结果闭环，不理解自然语言条件，不审批 Agent 的分支或业务判断。
 
-首次 `plan` 生成 revision 1，不要求理由。后续 `plan` 提交完整新快照并要求非空理由。继续存在的验证点保留原 `E` 引用；新增点不填引用，由 Runtime 单调分配；新版本省略的引用视为取消且永不复用。
+每个版本写为 `caseFlowRevised` 事件。现场调用可携带 `flowContext` 关联当前节点和 Agent 声明的分支选择；Runtime 只验证引用属于当前 revision，不强制流程顺序。其他事件自动记录 `caseFlowRevision`，报告据此还原当时节点、选择边和 CHECK 结果。
 
-框架只校验结构、引用和结果闭环，不判断调整是否忠于原文。每个版本写为 `caseModelRevised` 事件；当前模型从事件投影，不维护 Agent 可直接编辑的第二份状态文件。
-
-动作、视觉检查、动作落点检查、知识查询、恢复和 finish 自动记录调用时的 `caseModelRevision`。报告用当时 revision 的验证点文本解释每一步，不用最终版本覆盖历史现场。
+历史 schema 12 中的 `caseModelRevised` 只由 Reader 和报告做只读投影，不转换为 Case Flow，也不能进入新 Runtime 的 ledger 或 finish。
 
 ## 6. Scene、视觉与动作事实
 
@@ -182,11 +175,11 @@ iOS Appium Session 是 Batch runtime 的可替换资源，Execution 只保存 `s
 
 ## 10. 结果、事件与报告
 
-Agent 在执行过程中通过独立 `recordResult` 增量写入验证点判断。Runtime 维护追加式 ledger，并在 Case Model 语义变化时确定性失效相关判断。`observe` 只采集 Scene，`act` 只执行一个动作并采集动作后 Scene，`finish` 只提交摘要和可选不确定项；Runtime 从 ledger 组装每个有效验证点的 check，再执行完整证据校验。PASS/FAIL 必须引用真实且完成视觉登记的 Scene；搜索“不存在”结论必须引用已确认边界和连续覆盖的滚动上下文。最终 `result.json` 自动写入当前 `caseModelRevision`。
+Agent 在执行过程中通过独立 `recordResult` 增量写入 CHECK 判断。Runtime 维护追加式 ledger，并在 CHECK 的文本、验证类型或原文依据变化时确定性失效相关判断。`NOT_APPLICABLE` 只表示未进入的条件分支；用例级前置条件不满足通过显式 `finish.outcome=NOT_RUN` 收口。`observe` 只采集 Scene，`act` 只执行一个动作并采集动作后 Scene，正常 `finish` 只提交摘要和可选不确定项；Runtime 从 ledger 组装完整 checks 并聚合 verdict。PASS/FAIL 必须引用真实且完成视觉登记的 Scene；搜索“不存在”结论必须引用已确认边界和连续覆盖的滚动上下文。最终 `result.json` 自动写入当前 `caseFlowRevision`。
 
 主要事件包括：
 
-- `caseModelRevised`、`agentDecisionRecorded`、`narrativeGap`
+- `caseFlowRevised`、`flowContextRecorded`、`agentDecisionRecorded`、`narrativeGap`
 - `sceneObserved`、`visualInspected`、`actionSpatialInspected`
 - `actionRequested`、`actionCompleted`、`actionOutcomeUnknown`
 - `knowledgeQueried`、`knowledgeReviewed`
@@ -195,7 +188,7 @@ Agent 在执行过程中通过独立 `recordResult` 增量写入验证点判断�
 
 动作、恢复和 finish 使用 execution 内事务。Telemetry 记录调用与 Adapter 耗时，不作为 verdict 来源。单用例预算结束后停止新设备动作，但仍允许检查已有现场和 finish。
 
-Narrative Projector 从事件投影初始理解、当前理解、修订理由、当时验证点、业务步骤与最终 checks。Renderer 只消费 ViewModel，不回写 execution。
+Narrative Projector 从事件投影 Case Flow revision、节点关联、选择边、业务步骤与最终 checks。历史 Case Model 由独立只读分支展示旧理解和线性计划。Renderer 只消费 ViewModel，不回写 execution。
 
 看板总览只展示总耗时和起止时间；细分耗时位于用例详情的结果概览。详情左侧步骤列表与右侧检查区域等高并独立滚动；每一步只显示当时关联的验证点，最终结果独立展示。
 
@@ -240,7 +233,7 @@ scripts/
 ├── coordinator-agent.js   # 主 Agent 正常执行入口
 ├── batch/                 # initialization/dispatch/completion/finalization/reconcile
 ├── case/                  # 原始用例导入
-├── case-runtime/          # Case Facade、Case Model、Runtime、事务和 Store
+├── case-runtime/          # Case Facade、Case Flow、Runtime、事务和 Store
 ├── execution/contracts/   # Case 与 ValidationProfile 契约
 ├── lib/                   # 共享契约、证据、Reader 与运行控制
 ├── platform/              # Device Port 与三平台 Adapter

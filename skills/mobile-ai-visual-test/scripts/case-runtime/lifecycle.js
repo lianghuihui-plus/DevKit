@@ -48,7 +48,7 @@ function buildCaseBrief(executionDir, execution, caseJson, sourceText, runtime, 
     : shellQuote(runtime.entry);
   const fullScene = store.readCurrentScene(executionDir) || scene;
   const agentContract = require('./agent-facing-contract');
-  const caseModel = require('./case-model-service').current(executionDir);
+  const caseFlow = require('./case-flow-service').current(executionDir);
   const initialState = agentContract.projectInitialState(execution, preparation);
   return {
     case: {
@@ -67,8 +67,8 @@ function buildCaseBrief(executionDir, execution, caseJson, sourceText, runtime, 
       command,
       documentation: 'references/case-runtime.md',
     },
-    caseModel,
-    scene: agentContract.projectScene(fullScene, { caseModel }),
+    caseFlow,
+    scene: agentContract.projectScene(fullScene),
   };
 }
 
@@ -279,13 +279,13 @@ function buildContinuationBrief({ executionDir, reason }) {
   const technical = require('../lib/technical-facts');
   const unresolvedTechnicalFacts = technical.technicalFacts(events)
     .filter((event) => technical.technicalFactState(event, events, execution).state === 'VALID')
-    .map((event) => ({ technicalFactRef: event.technicalFactRef, code: event.code, message: event.message, expectationRefs: event.expectationRefs || [] }));
+    .map((event) => ({ technicalFactRef: event.technicalFactRef, code: event.code, message: event.message, checkNodeRefs: event.expectationRefs || [] }));
   const status = runtimeCore.runtimeStatus(executionDir);
   const projectedPendingReviews = pendingKnowledgeReviews.map((pending) => ({
     queryId: pending.queryId,
     query: pending.query,
     candidateCount: pending.candidateCount,
-    expectationRefs: pending.expectationRefs || [],
+    checkNodeRefs: pending.expectationRefs || [],
     candidates: pending.candidates || [],
   }));
   return {
@@ -295,14 +295,12 @@ function buildContinuationBrief({ executionDir, reason }) {
       reason: String(reason || 'native Agent handle is unavailable'),
       sequence,
     },
-    scene: require('./agent-facing-contract').projectScene(store.readCurrentScene(executionDir), {
-      caseModel: require('./case-model-service').current(executionDir),
-    }),
+    scene: require('./agent-facing-contract').projectScene(store.readCurrentScene(executionDir)),
     resumeState: {
       executionStatus: execution.status,
       remainingMs: status.remainingMs,
       ...(status.preparation ? { preparation: status.preparation } : {}),
-      caseModel: narrative.caseModel,
+      caseFlow: narrative.caseFlow,
       lastAction,
       unresolvedTechnicalFacts,
       pendingKnowledgeReviews: projectedPendingReviews,

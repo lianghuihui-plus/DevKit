@@ -132,17 +132,24 @@ assert.deepStrictEqual(initialState, {
 assert.strictEqual(JSON.stringify(initialState).includes('KEEP_EXISTING'), false);
 
 assert.ok(validateAgentFacingRequest({ capability: 'plan', items: [] })
-  .some((item) => item.field === 'caseModel' && item.code === 'REQUIRED'));
+  .some((item) => item.field === 'caseFlow' && item.code === 'REQUIRED'));
 assert.ok(validateAgentFacingRequest({
   capability: 'plan', caseModel: { baseRevision: null, understanding: '验证首页', preconditions: [], verificationPoints: [{ text: '首页正常' }], items: [], uncertainties: [] },
 })
-  .some((item) => item.field === 'caseModel.items' && item.code === 'MIN_ITEMS'));
+  .some((item) => item.field === 'caseFlow' && item.code === 'REQUIRED'));
 assert.ok(validateAgentFacingRequest({
-  capability: 'plan', caseModel: { baseRevision: null, understanding: '验证首页', preconditions: [], verificationPoints: [{ text: '首页正常' }], items: ['检查首页'], uncertainties: [], extra: true },
+  capability: 'plan', caseFlow: {
+    baseRevision: null, summary: '验证首页', entryNodeRef: 'N1',
+    nodes: [
+      { ref: 'N1', type: 'CHECK', text: '首页正常', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期' },
+      { ref: 'N2', type: 'END', text: '完成' },
+    ],
+    edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [], extra: true,
+  },
 })
-  .some((item) => item.field === 'caseModel.extra' && item.code === 'FIELD_UNSUPPORTED'));
+  .some((item) => item.field === 'caseFlow.extra' && item.code === 'FIELD_UNSUPPORTED'));
 
-const projectedScene = projectScene(scene, { caseModel: null });
+const projectedScene = projectScene(scene, { caseFlow: null });
 assert.strictEqual(Object.prototype.hasOwnProperty.call(projectedScene, 'schemaVersion'), false);
 assert.strictEqual(projectedScene.sceneRef, scene.sceneId);
 assert.deepStrictEqual(projectedScene.captureTiming, scene.captureTiming);
@@ -167,7 +174,7 @@ const projectedBudgetScene = projectScene({
     bounds: [0, index * 20, 400, index * 20 + 18],
     clickable: true, checkable: false, editable: false, enabled: true, visible: true,
   })),
-}, { caseModel: null });
+}, { caseFlow: null });
 assert.strictEqual(projectedBudgetScene.controls.items.length, 24);
 assert.strictEqual(projectedBudgetScene.controls.truncated, true);
 assert.ok(Buffer.byteLength(JSON.stringify(projectedBudgetScene)) <= 12 * 1024,
@@ -180,31 +187,36 @@ const actionBeforePlan = translateAgentFacingRequest(execDir, {
 assert.strictEqual(actionBeforePlan.operation, 'act');
 assert.throws(() => translateAgentFacingRequest(execDir, { capability: 'finish',
   summary: '无法继续',
-}), (error) => error?.code === 'AGENT_INPUT_INVALID' && error.issues.some((item) => item.code === 'CASE_MODEL_REQUIRED'));
+}), (error) => error?.code === 'AGENT_INPUT_INVALID' && error.issues.some((item) => item.code === 'CASE_FLOW_REQUIRED'));
 
 const initialPlanRequest = {
   capability: 'plan',
-  caseModel: {
-    baseRevision: null,
-    understanding: '验证语音录入过程和结果',
-    preconditions: [],
-    verificationPoints: [{ text: '显示录音状态' }, { text: '完成语音录入' }],
-    items: ['检查当前首页', '长按录音按钮', '验证录音状态'],
+  caseFlow: {
+    baseRevision: null, summary: '验证语音录入过程和结果', entryNodeRef: 'N1',
+    nodes: [
+      { ref: 'N1', type: 'ACTION', text: '长按录音按钮' },
+      { ref: 'N2', type: 'CHECK', text: '显示录音状态', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期' },
+      { ref: 'N3', type: 'CHECK', text: '完成语音录入', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期' },
+      { ref: 'N4', type: 'END', text: '完成' },
+    ],
+    edges: [
+      { ref: 'L1', from: 'N1', to: 'N2' },
+      { ref: 'L2', from: 'N2', to: 'N3' },
+      { ref: 'L3', from: 'N3', to: 'N4' },
+    ],
     uncertainties: [],
   },
 };
 assert.deepStrictEqual(translateAgentFacingRequest(execDir, initialPlanRequest), {
-  operation: 'recordCaseModel',
-  caseModel: {
-    ...initialPlanRequest.caseModel,
-  },
+  operation: 'recordCaseFlow',
+  caseFlow: { ...initialPlanRequest.caseFlow },
 });
 const planned = run(execDir, initialPlanRequest, { now: '2026-09-11T00:00:01.600Z' });
-assert.strictEqual(planned.status, 'CASE_MODEL_RECORDED');
-const plannedModel = require('../case-runtime/case-model-service').current(execDir);
-assert.deepStrictEqual(plannedModel.items, initialPlanRequest.caseModel.items);
-assert.deepStrictEqual(plannedModel.verificationPoints.map((item) => item.ref), ['E1', 'E2']);
-assert.strictEqual(planned.caseState.caseModelRevision, 1);
+assert.strictEqual(planned.status, 'CASE_FLOW_RECORDED');
+const plannedFlow = require('../case-runtime/case-flow-service').current(execDir);
+assert.deepStrictEqual(plannedFlow.nodes.map((item) => item.ref), ['N1', 'N2', 'N3', 'N4']);
+assert.deepStrictEqual(plannedFlow.nodes.filter((item) => item.type === 'CHECK').map((item) => item.ref), ['N2', 'N3']);
+assert.strictEqual(planned.caseState.caseFlowRevision, 1);
 
 fs.mkdirSync(path.join(execDir, 'screenshots'), { recursive: true });
 fs.writeFileSync(path.join(execDir, 'screenshots', 'scene-0007.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
@@ -221,7 +233,7 @@ scene.previousAction = {
 };
 writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 writeJsonAtomic(path.join(execDir, 'scenes', `${scene.sceneId}.json`), scene);
-const sceneWithAction = projectScene(scene, { caseModel: plannedModel });
+const sceneWithAction = projectScene(scene, { caseFlow: plannedFlow });
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.available, true);
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.coordinateSource, 'visual');
 assert.deepStrictEqual(sceneWithAction.previousAction.spatialEvidence.requested, {
@@ -237,12 +249,12 @@ assert.strictEqual(sceneWithAction.previousAction.observedEffect, undefined);
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.annotatedScreenshotPath,
   scene.previousAction.spatialEvidence.annotatedScreenshot.path);
 const actionInspection = run(execDir, {
-  capability: 'inspect', basedOnSceneRef: scene.sceneId, channel: 'action', observation: '滑动轨迹位于目标卡片区域上方', expectationRefs: ['E1'],
+  capability: 'inspect', basedOnSceneRef: scene.sceneId, channel: 'action', observation: '滑动轨迹位于目标卡片区域上方', checkNodeRefs: ['N2'],
 }, { now: '2026-09-11T00:00:01.700Z' });
 assert.strictEqual(actionInspection.status, 'ACTION_SPATIAL_INSPECTED');
 const actionInspectionEvent = runtimeStore.events(execDir).find((event) => event.type === 'actionSpatialInspected');
 assert.strictEqual(actionInspectionEvent.operationId, 'action-0001');
-assert.strictEqual(actionInspectionEvent.caseModelRevision, 1);
+assert.strictEqual(actionInspectionEvent.caseFlowRevision, 1);
 const externalRecovery = run(execDir, {
   capability: 'recover',
   basedOnSceneRef: scene.sceneId,
@@ -255,7 +267,7 @@ assert.strictEqual(externalRecovery.nextCall, undefined);
 assertCompactResponse(externalRecovery);
 const externalEvent = runtimeStore.events(execDir).find((event) => event.type === 'externalActionDeclared');
 assert.strictEqual(externalEvent.evidence, false);
-assert.strictEqual(externalEvent.caseModelRevision, 1);
+assert.strictEqual(externalEvent.caseFlowRevision, 1);
 runtimeStore.appendEvent(execDir, 'visualInspected', {
   inspectionId: 'inspection-translation-fixture', sceneId: scene.sceneId,
   screenshotRef: scene.screenshot.ref, screenshotSha256: scene.screenshot.sha256,
@@ -267,9 +279,9 @@ const translations = [
   [{ capability: 'inspect', basedOnSceneRef: scene.sceneId, channel: 'elements', filter: { interactiveOnly: true } }, {
     operation: 'inspectScene', basedOnSceneId: scene.sceneId, view: 'ELEMENTS', filter: { interactiveOnly: true },
   }],
-  [{ capability: 'inspect', basedOnSceneRef: scene.sceneId, channel: 'visual', observation: '页面显示系统权限弹窗', expectationRefs: ['E1'] }, {
+  [{ capability: 'inspect', basedOnSceneRef: scene.sceneId, channel: 'visual', observation: '页面显示系统权限弹窗', checkNodeRefs: ['N2'] }, {
     operation: 'inspectVisual', basedOnSceneId: scene.sceneId,
-    decision: { purpose: '记录当前截图的视觉事实', expectationRefs: ['E1'], observation: '页面显示系统权限弹窗' },
+    decision: { purpose: '记录当前截图的视觉事实', expectationRefs: ['N2'], observation: '页面显示系统权限弹窗' },
   }],
   [{ capability: 'act', basedOnSceneRef: scene.sceneId, actionRef: 'record-button:longPress', input: { durationMs: 1200 }, purpose: '长按录入语音' }, {
     operation: 'act', basedOnSceneId: scene.sceneId, capabilityId: 'scene-0007:longPress:record-button', input: { durationMs: 1200 },
@@ -287,9 +299,9 @@ const translations = [
     operation: 'act', basedOnSceneId: scene.sceneId, visual: { gesture: 'swipe', from: [0.5, 0.8], to: [0.5, 0.2] },
     decision: { purpose: '向上滚动', expectationRefs: [] },
   }],
-  [{ capability: 'knowledge', basedOnSceneRef: scene.sceneId, query: '权限弹窗出现后语音录入无法继续', expectationRefs: ['E1'] }, {
+  [{ capability: 'knowledge', basedOnSceneRef: scene.sceneId, query: '权限弹窗出现后语音录入无法继续', checkNodeRefs: ['N2'] }, {
     operation: 'knowledge', basedOnSceneId: scene.sceneId, query: '权限弹窗出现后语音录入无法继续',
-    decision: { purpose: '调查当前异常的已知解释和处理规则', expectationRefs: ['E1'] },
+    decision: { purpose: '调查当前异常的已知解释和处理规则', expectationRefs: ['N2'] },
   }],
   [{ capability: 'recover', basedOnSceneRef: scene.sceneId, reason: '目标 App 卡死' }, {
     operation: 'recover', basedOnSceneId: scene.sceneId, reason: '目标 App 卡死',
@@ -303,7 +315,7 @@ for (const [input, expected] of translations) {
 
 runtimeStore.appendEvent(execDir, 'knowledgeQueried', {
   queryId: 'knowledge-0001',
-  query: '权限弹窗出现后语音录入无法继续', candidateCount: 1, expectationRefs: ['E1'], sceneId: scene.sceneId,
+  query: '权限弹窗出现后语音录入无法继续', candidateCount: 1, expectationRefs: ['N2'], sceneId: scene.sceneId,
   candidates: [{ entryId: 'K-voice-001', title: '语音权限规则', snapshotRef: 'knowledge/k.md', expired: false }],
 }, { now: '2026-09-11T00:00:02.000Z' });
 const review = {
@@ -314,7 +326,7 @@ const translatedReview = translateAgentFacingRequest(execDir, review);
 assert.deepStrictEqual(translatedReview, {
   operation: 'reviewKnowledge', basedOnSceneId: scene.sceneId,
   decision: {
-    purpose: '登记知识候选复核结果', expectationRefs: ['E1'],
+    purpose: '登记知识候选复核结果', expectationRefs: ['N2'],
     knowledgeReview: {
       queryId: 'knowledge-0001', conclusion: 'APPLICABLE_FOUND',
       assessments: [{ entryId: 'K-voice-001', status: 'APPLICABLE', reason: '当前权限弹窗与规则一致' }],
@@ -329,53 +341,53 @@ assert.strictEqual(require('../case-runtime/store').events(execDir).filter((even
 
 const unexplainedPlanUpdate = run(execDir, {
   ...initialPlanRequest,
-  caseModel: { ...initialPlanRequest.caseModel, baseRevision: 1, items: ['处理权限弹窗', '重新验证录音状态'] },
+  caseFlow: { ...initialPlanRequest.caseFlow, baseRevision: 1 },
 });
 assert.strictEqual(unexplainedPlanUpdate.status, 'INPUT_INVALID');
-assert.ok(unexplainedPlanUpdate.issues.some((item) => item.field === 'caseModel.reason' && item.code === 'REQUIRED'));
+assert.ok(unexplainedPlanUpdate.issues.some((item) => item.field === 'caseFlow.reason' && item.code === 'REQUIRED'));
 assert.strictEqual(unexplainedPlanUpdate.retryWith, undefined);
 
 const revisedPlan = run(execDir, {
   ...initialPlanRequest,
-  caseModel: {
-    ...initialPlanRequest.caseModel,
+  caseFlow: {
+    ...initialPlanRequest.caseFlow,
     baseRevision: 1,
-    verificationPoints: [{ ref: 'E1', text: '权限处理后显示录音状态' }, { ref: 'E2', text: '完成语音录入' }],
     reason: '权限弹窗改变了执行路径和验证条件',
-    items: ['处理权限弹窗', '重新长按录音按钮', '验证录音状态'],
+    nodes: initialPlanRequest.caseFlow.nodes.map((node) => node.ref === 'N2'
+      ? { ...node, text: '权限处理后显示录音状态' } : node),
   },
 }, { now: '2026-09-11T00:00:03.100Z' });
-assert.strictEqual(revisedPlan.status, 'CASE_MODEL_RECORDED');
-const revisedModel = require('../case-runtime/case-model-service').current(execDir);
-assert.strictEqual(revisedModel.revision, 2);
-assert.strictEqual(revisedModel.reason, '权限弹窗改变了执行路径和验证条件');
+assert.strictEqual(revisedPlan.status, 'CASE_FLOW_RECORDED');
+const revisedFlow = require('../case-runtime/case-flow-service').current(execDir);
+assert.strictEqual(revisedFlow.revision, 2);
+assert.strictEqual(revisedFlow.reason, '权限弹窗改变了执行路径和验证条件');
 
 const recordedResults = run(execDir, {
   capability: 'recordResult',
   results: [
-    { expectationRef: 'E1', status: 'PASS', actual: '权限处理后显示录音状态', evidence: { sceneRefs: [scene.sceneId] } },
-    { expectationRef: 'E2', status: 'INCONCLUSIVE', actual: '当前现场不足以确认完整录音结果', evidence: { sceneRefs: [scene.sceneId] } },
+    { checkNodeRef: 'N2', status: 'PASS', actual: '权限处理后显示录音状态', evidence: { sceneRefs: [scene.sceneId] } },
+    { checkNodeRef: 'N3', status: 'INCONCLUSIVE', actual: '当前现场不足以确认完整录音结果', evidence: { sceneRefs: [scene.sceneId] } },
   ],
 }, { now: '2026-09-11T00:00:03.200Z' });
 assert.strictEqual(recordedResults.status, 'RESULTS_RECORDED');
-assert.deepStrictEqual(recordedResults.recorded, ['E1', 'E2']);
+assert.deepStrictEqual(recordedResults.recorded, ['N2', 'N3']);
 assert.deepStrictEqual(recordedResults.unchanged, []);
 assert.strictEqual(recordedResults.readiness.ready, false);
 const repeatedResults = run(execDir, {
   capability: 'recordResult',
   results: [
-    { expectationRef: 'E1', status: 'PASS', actual: '权限处理后显示录音状态', evidence: { sceneRefs: [scene.sceneId] } },
-    { expectationRef: 'E2', status: 'INCONCLUSIVE', actual: '当前现场不足以确认完整录音结果', evidence: { sceneRefs: [scene.sceneId] } },
+    { checkNodeRef: 'N2', status: 'PASS', actual: '权限处理后显示录音状态', evidence: { sceneRefs: [scene.sceneId] } },
+    { checkNodeRef: 'N3', status: 'INCONCLUSIVE', actual: '当前现场不足以确认完整录音结果', evidence: { sceneRefs: [scene.sceneId] } },
   ],
 }, { now: '2026-09-11T00:00:03.300Z' });
 assert.deepStrictEqual(repeatedResults.recorded, []);
-assert.deepStrictEqual(repeatedResults.unchanged, ['E1', 'E2']);
+assert.deepStrictEqual(repeatedResults.unchanged, ['N2', 'N3']);
 const resultEventCount = runtimeStore.events(execDir).filter((event) => event.type === 'expectationResultUpdated').length;
 const invalidResults = run(execDir, {
   capability: 'recordResult',
   results: [
-    { expectationRef: 'E1', status: 'PASS', actual: '仍然可见', evidence: { sceneRefs: [scene.sceneId] } },
-    { expectationRef: 'E9', status: 'PASS', actual: '未知验证点', evidence: { sceneRefs: [scene.sceneId] } },
+    { checkNodeRef: 'N2', status: 'PASS', actual: '仍然可见', evidence: { sceneRefs: [scene.sceneId] } },
+    { checkNodeRef: 'N9', status: 'PASS', actual: '未知验证点', evidence: { sceneRefs: [scene.sceneId] } },
   ],
 });
 assert.strictEqual(invalidResults.status, 'INPUT_INVALID');
@@ -391,6 +403,7 @@ const knowledgeResponse = projectAgentFacingResponse(execDir, {
 assert.strictEqual(knowledgeResponse.nextCall, undefined);
 assertCompactResponse(knowledgeResponse);
 assert.strictEqual(JSON.stringify(knowledgeResponse).includes('decision.knowledgeReview'), false);
+assert.strictEqual(JSON.stringify(knowledgeResponse).includes('expectationRefs'), false);
 
 assert.ok(validateAgentFacingRequest({
   capability: 'finish', summary: '系统权限弹窗阻止语音录入', checks: [],

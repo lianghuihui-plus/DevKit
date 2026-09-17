@@ -1,9 +1,9 @@
 # CaseRuntime.plan
 
-单独创建或修订 Case Model。
+创建或修订完整 Case Flow。
 
 ```typescript
-plan({ capability: "plan", caseModel: object })
+plan({ capability: "plan", caseFlow: object })
 ```
 
 ## 参数
@@ -11,7 +11,7 @@ plan({ capability: "plan", caseModel: object })
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
 | `capability` | 是 | `"plan"` | 固定为 plan |
-| `caseModel` | 是 | `object` | 完整 Case Model 快照 |
+| `caseFlow` | 是 | `object` | 完整 Case Flow 快照 |
 
 ## 条件要求
 
@@ -19,15 +19,15 @@ plan({ capability: "plan", caseModel: object })
 
 ## 上下文校验
 
-- 继续存在的验证点保留 ref；新验证点省略 ref。
+- 语义不变的节点和边保留 ref；retired ref 不得复用。
 
 ## 成功状态
 
-- `CASE_MODEL_RECORDED`
+- `CASE_FLOW_RECORDED`
 
 ## 副作用
 
-- 追加 Case Model revision
+- 追加 Case Flow revision
 
 ## 幂等性
 
@@ -44,17 +44,30 @@ plan({ capability: "plan", caseModel: object })
 ```json
 {
   "capability": "plan",
-  "caseModel": {
+  "caseFlow": {
     "baseRevision": null,
-    "understanding": "验证目标",
-    "preconditions": [],
-    "verificationPoints": [
+    "summary": "验证目标",
+    "entryNodeRef": "N1",
+    "nodes": [
       {
-        "text": "结果可见"
+        "ref": "N1",
+        "type": "CHECK",
+        "text": "结果可见",
+        "verificationKind": "DIRECT_OBSERVATION",
+        "sourceBasis": "原始用例预期"
+      },
+      {
+        "ref": "N2",
+        "type": "END",
+        "text": "完成"
       }
     ],
-    "items": [
-      "观察并验证"
+    "edges": [
+      {
+        "ref": "L1",
+        "from": "N1",
+        "to": "N2"
+      }
     ],
     "uncertainties": []
   }

@@ -29,8 +29,8 @@ const first = caseModelService.revise(execDir, {
   understanding: '验证首页卡片在横向滑动前后的展示',
   preconditions: ['已进入首页'],
   verificationPoints: [
-    { text: '初始位置显示入口 A' },
-    { text: '滑动后显示入口 B' },
+    { text: '初始位置显示入口 A', verificationKind: 'DIRECT_OBSERVATION' },
+    { text: '滑动后显示入口 B', verificationKind: 'SEARCH_EXISTENCE' },
   ],
   items: ['检查初始位置', '横向滑动卡片区域', '检查滑动后位置'],
   uncertainties: ['原始用例未定义滑动距离'],
@@ -39,13 +39,14 @@ const first = caseModelService.revise(execDir, {
 assert.strictEqual(first.status, 'CASE_MODEL_RECORDED');
 assert.strictEqual(first.caseModel.revision, 1);
 assert.deepStrictEqual(first.caseModel.verificationPoints.map((item) => item.ref), ['E1', 'E2']);
+assert.deepStrictEqual(first.caseModel.verificationPoints.map((item) => item.verificationKind), ['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE']);
 assert.deepStrictEqual(first.caseModel.retiredVerificationRefs, []);
 assert.strictEqual(first.caseModel.basedOnSceneRef, null);
 
 assert.throws(() => caseModelService.revise(execDir, {
   understanding: first.caseModel.understanding,
   preconditions: first.caseModel.preconditions,
-  verificationPoints: first.caseModel.verificationPoints.map(({ ref, text }) => ({ ref, text })),
+  verificationPoints: first.caseModel.verificationPoints.map(({ ref, text, verificationKind }) => ({ ref, text, verificationKind })),
   items: first.caseModel.items,
   uncertainties: [],
 }), (error) => error?.code === 'CASE_MODEL_REASON_REQUIRED');
@@ -54,8 +55,8 @@ const second = caseModelService.revise(execDir, {
   understanding: '滑动必须发生在卡片容器内部',
   preconditions: ['已进入首页'],
   verificationPoints: [
-    { ref: 'E2', text: '在卡片容器内滑动后显示入口 B' },
-    { text: '卡片顺序保持连续' },
+    { ref: 'E2', text: '在卡片容器内滑动后显示入口 B', verificationKind: 'SEARCH_EXISTENCE' },
+    { text: '卡片顺序保持连续', verificationKind: 'DIRECT_OBSERVATION' },
   ],
   items: ['查看上一动作落点', '在卡片容器内部重新滑动', '检查入口和顺序'],
   uncertainties: [],
@@ -68,7 +69,7 @@ assert.deepStrictEqual(second.caseModel.retiredVerificationRefs, ['E1']);
 assert.throws(() => caseModelService.revise(execDir, {
   understanding: '不允许恢复已取消的验证点',
   preconditions: [],
-  verificationPoints: [{ ref: 'E1', text: '尝试恢复 E1' }],
+  verificationPoints: [{ ref: 'E1', text: '尝试恢复 E1', verificationKind: 'DIRECT_OBSERVATION' }],
   items: ['停止'],
   uncertainties: [],
   reason: '验证引用保护测试',
@@ -89,25 +90,16 @@ assert.throws(() => require('../case-runtime/result-integrity').validateExpectat
   checks: [{ expectationRef: 'E1' }, { expectationRef: 'E2' }, { expectationRef: 'E3' }],
 }, store.events(execDir)), (error) => error?.code === 'CASE_RESULT_INCOMPLETE');
 
-const agentPlan = {
-  capability: 'plan',
-  caseModel: {
-    baseRevision: 2,
-    understanding: '验证首页卡片展示',
-    preconditions: ['已进入首页'],
-    verificationPoints: [{ text: '首页显示入口 A' }],
-    items: ['检查首页入口'],
-    uncertainties: [],
-    reason: '为当前执行重新整理业务理解',
-  },
-};
-assert.deepStrictEqual(validateAgentFacingRequest(agentPlan), []);
 assert.ok(validateAgentFacingRequest({ capability: 'plan', items: ['旧格式计划'] })
-  .some((item) => item.field === 'caseModel' && item.code === 'REQUIRED'));
-assert.deepStrictEqual(translateAgentFacingRequest(execDir, agentPlan), {
-  operation: 'recordCaseModel',
-  caseModel: agentPlan.caseModel,
-});
+  .some((item) => item.field === 'caseFlow' && item.code === 'REQUIRED'));
+assert.throws(() => translateAgentFacingRequest(execDir, {
+  capability: 'plan', caseModel: { understanding: '旧 Agent-facing 格式不再可执行' },
+}), (error) => error?.code === 'AGENT_INPUT_INVALID');
+assert.strictEqual(require('../case-runtime/expectation-result-service').finishReadiness(execDir).ready, false,
+  '旧 Case Model 不得进入新 Runtime ledger');
+assert.throws(() => require('../case-runtime/result-service').finish(execDir, {
+  verdict: 'PASS', summary: '旧模型不可收口', checks: [], uncertainties: [],
+}), (error) => error?.code === 'CASE_FLOW_REQUIRED');
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('case model service passed');

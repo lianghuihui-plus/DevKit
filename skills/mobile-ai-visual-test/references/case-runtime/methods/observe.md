@@ -3,7 +3,7 @@
 采集一个新 Scene，不执行业务动作。
 
 ```typescript
-observe({ capability: "observe", purpose?: string })
+observe({ capability: "observe", purpose?: string, flowContext?: object })
 ```
 
 ## 参数
@@ -12,6 +12,7 @@ observe({ capability: "observe", purpose?: string })
 |---|---|---|---|
 | `capability` | 是 | `"observe"` | 固定为 observe |
 | `purpose` | 否/条件 | `string` | 本次观察目的 |
+| `flowContext` | 否/条件 | `object` | 当前 Case Flow 节点和可选分支选择 |
 
 ## 成功状态
 

@@ -21,6 +21,7 @@ const { createCaseContract } = require('../execution/contracts/case-contract');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { refreshBatchIndex, renderIndexForRoot } = require('../report/report-service');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
+const { simpleCaseFlow } = require('./simple-case-flow');
 
 process.env.MAVT_SELF_TEST = '1';
 
@@ -141,15 +142,8 @@ if (process.argv[2] === '--worker') {
     };
     assert.strictEqual(run(fixture.execDir, {
       capability: 'plan',
-      caseModel: {
-        baseRevision: null,
-        understanding: `${fixture.platform} 并行执行验证`,
-        preconditions: [],
-        verificationPoints: [{ text: `${fixture.platform} 页面结果正常显示` }],
-        items: ['观察页面', '检查结果', '记录结论'],
-        uncertainties: [],
-      },
-    }, { now: now(100) }).status, 'CASE_MODEL_RECORDED');
+      caseFlow: simpleCaseFlow(`${fixture.platform} 并行执行验证`, `${fixture.platform} 页面结果正常显示`),
+    }, { now: now(100) }).status, 'CASE_FLOW_RECORDED');
     const observed = run(fixture.execDir, {
       capability: 'observe',
       purpose: '采集当前页面现场',
@@ -160,12 +154,12 @@ if (process.argv[2] === '--worker') {
       basedOnSceneRef: observed.scene.sceneRef,
       channel: 'visual',
       observation: `${fixture.platform} 页面结果清晰可见`,
-      expectationRefs: ['E1'],
+      checkNodeRefs: ['N2'],
     }, { now: now(300) }).status, 'VISUAL_INSPECTED');
     assert.strictEqual(run(fixture.execDir, {
       capability: 'recordResult',
       results: [{
-        expectationRef: 'E1',
+        checkNodeRef: 'N2',
         status: 'PASS',
         actual: `${fixture.platform} 页面结果正常显示`,
         evidence: { sceneRefs: [observed.scene.sceneRef] },

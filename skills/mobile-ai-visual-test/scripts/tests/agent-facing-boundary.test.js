@@ -22,7 +22,7 @@ assert.ok(AGENT_FACING_CAPABILITIES.includes('recordResult'));
 assertValid({
   capability: 'recordResult',
   results: [{
-    expectationRef: 'E1',
+    checkNodeRef: 'N1',
     status: 'PASS',
     actual: '目标内容可见',
     evidence: { sceneRefs: ['scene-0001'] },

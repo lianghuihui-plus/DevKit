@@ -19,19 +19,20 @@ function decisionEvents(execDir) {
 }
 
 function latestCaseContext(execDir) {
-  const model = require('./case-model-service').current(execDir);
-  if (!model) return null;
-  return {
-    summary: model.understanding,
-    preconditions: model.preconditions,
-    expectations: model.verificationPoints.map((item) => ({
+  const flow = require('./case-flow-service').current(execDir);
+  if (flow) return {
+    summary: flow.summary,
+    preconditions: [],
+    expectations: flow.nodes.filter((item) => item.type === 'CHECK').map((item) => ({
       id: item.ref,
       text: item.text,
-      verificationKind: 'DIRECT_OBSERVATION',
+      verificationKind: item.verificationKind,
+      sourceBasis: item.sourceBasis,
     })),
-    initialPlan: model.items,
-    uncertainties: model.uncertainties,
+    initialPlan: flow.nodes.map((item) => `${item.ref} ${item.type}: ${item.text}`),
+    uncertainties: flow.uncertainties,
   };
+  return null;
 }
 
 function normalizeDecision(value, context) {
@@ -74,7 +75,8 @@ function recordRequestNarrative(execDir, request, options = {}) {
       decisionId: store.nextId(execDir, 'decision'),
       requestedOperation: request.operation,
       sceneId: store.readCurrentScene(execDir)?.sceneId || null,
-      contextVersion: require('./case-model-service').currentRevision(execDir),
+      contextVersion: require('./case-flow-service').currentRevision(execDir)
+        || require('./case-model-service').currentRevision(execDir),
       decision,
       decisionFieldSources: fieldSources,
     }, options);
@@ -88,18 +90,20 @@ function recordRequestNarrative(execDir, request, options = {}) {
 function narrativeStatus(execDir) {
   const events = store.events(execDir);
   const decisions = decisionEvents(execDir);
-  const caseModel = require('./case-model-service').current(execDir);
+  const caseFlow = require('./case-flow-service').current(execDir);
   const context = latestCaseContext(execDir);
   const reviewedQueries = new Set(events.filter((event) => event.type === 'knowledgeReviewed').map((event) => event.queryId));
   const hasUnreviewedKnowledge = events.some((event) => event.type === 'knowledgeQueried' && !reviewedQueries.has(event.queryId));
-  const plan = caseModel ? { version: caseModel.revision, reason: caseModel.reason, items: caseModel.items } : null;
+  const plan = caseFlow
+    ? { version: caseFlow.revision, reason: caseFlow.reason, nodes: caseFlow.nodes, edges: caseFlow.edges }
+    : null;
   return {
     caseContext: context,
-    caseModel,
-    contextVersion: caseModel?.revision || null,
+    caseFlow,
+    contextVersion: caseFlow?.revision || null,
     latestPlan: plan,
     lastDecision: decisions.at(-1) || null,
-    recordingStatus: !context ? 'UNAVAILABLE' : !(plan?.items || []).length || hasUnreviewedKnowledge ? 'PARTIAL' : 'COMPLETE',
+    recordingStatus: !context ? 'UNAVAILABLE' : !plan || hasUnreviewedKnowledge ? 'PARTIAL' : 'COMPLETE',
     narrativeGapCount: 0,
   };
 }

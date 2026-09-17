@@ -25,20 +25,22 @@ function expectedLocalTime(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function runIndexFilters(html) {
+function runIndexFilters(html, options = {}) {
   const script = html.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'dashboard inline script');
   const listeners = new Map();
   const statusButtons = [...html.matchAll(/<button[^>]*data-case-filter="([^"]+)"[^>]*>/g)].map((match) => ({
     dataset: { caseFilter: match[1] },
     classList: { toggle() {} },
-    setAttribute() {},
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
     addEventListener(type, listener) { listeners.set(`status:${match[1]}:${type}`, listener); },
   }));
   const platformButtons = [...html.matchAll(/<button[^>]*data-platform-filter="([^"]+)"[^>]*>/g)].map((match) => ({
     dataset: { platformFilter: match[1] },
     classList: { toggle() {} },
-    setAttribute() {},
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
     addEventListener(type, listener) { listeners.set(`platform:${match[1]}:${type}`, listener); },
   }));
   const attribute = (tag, name) => tag.match(new RegExp(`${name}="([^"]*)"`))?.[1] || '';
@@ -60,9 +62,15 @@ function runIndexFilters(html) {
       platformRuns,
     };
   });
-  const search = { value: '', addEventListener() {} };
+  const search = { value: '', addEventListener(type, listener) { listeners.set(`search:${type}`, listener); } };
   const result = { textContent: '' };
   const empty = { hidden: true };
+  const storageValues = options.storageValues || {};
+  const sessionStorage = {
+    getItem(key) { return Object.hasOwn(storageValues, key) ? storageValues[key] : null; },
+    setItem(key, value) { storageValues[key] = String(value); },
+  };
+  const location = { pathname: options.pathname || '/workspace/index.html' };
   const document = {
     querySelectorAll(selector) {
       if (selector === '[data-case-filter]') return statusButtons;
@@ -71,7 +79,7 @@ function runIndexFilters(html) {
     },
     querySelector(selector) { return selector === '.search' ? search : selector === '.filter-result' ? result : empty; },
   };
-  vm.runInNewContext(script, { document });
+  vm.runInNewContext(script, { document, location, sessionStorage });
   return {
     clickStatus(status) {
       listeners.get(`status:${status}:click`)();
@@ -80,6 +88,19 @@ function runIndexFilters(html) {
     clickPlatform(platform) {
       listeners.get(`platform:${platform}:click`)();
       return cards.filter((card) => !card.hidden).length;
+    },
+    setSearch(value) {
+      search.value = value;
+      listeners.get('search:input')();
+      return cards.filter((card) => !card.hidden).length;
+    },
+    visibleCount() { return cards.filter((card) => !card.hidden).length; },
+    searchValue() { return search.value; },
+    activeStatus() {
+      return statusButtons.find((button) => button.attributes['aria-pressed'] === 'true')?.dataset.caseFilter;
+    },
+    activePlatform() {
+      return platformButtons.find((button) => button.attributes['aria-pressed'] === 'true')?.dataset.platformFilter;
     },
     visiblePlatforms() {
       return cards.filter((card) => !card.hidden)
@@ -300,6 +321,37 @@ assert.strictEqual(platformOnlyFilters.clickPlatform('ios'), 2, 'iOS cases');
 assert.deepStrictEqual(platformOnlyFilters.visiblePlatforms(), ['ios', 'ios']);
 assert.strictEqual(platformOnlyFilters.clickPlatform('ALL'), 3, 'all platform cases');
 assert.deepStrictEqual(platformOnlyFilters.visiblePlatforms(), ['harmony', 'android', 'harmony', 'ios', 'ios']);
+
+const persistedFilterStorage = {};
+const persistedFilters = runIndexFilters(combinedFilterHtml, {
+  pathname: '/report-workspace/index.html',
+  storageValues: persistedFilterStorage,
+});
+assert.strictEqual(persistedFilters.clickStatus('FAIL'), 3);
+assert.strictEqual(persistedFilters.clickPlatform('harmony'), 1);
+assert.strictEqual(persistedFilters.setSearch('苹果'), 1);
+const restoredFilters = runIndexFilters(combinedFilterHtml, {
+  pathname: '/report-workspace/index.html',
+  storageValues: persistedFilterStorage,
+});
+assert.strictEqual(restoredFilters.activeStatus(), 'FAIL');
+assert.strictEqual(restoredFilters.activePlatform(), 'harmony');
+assert.strictEqual(restoredFilters.searchValue(), '苹果');
+assert.strictEqual(restoredFilters.visibleCount(), 1);
+
+const invalidFilterStorage = {
+  'mavt-dashboard-filters:/report-workspace/index.html': JSON.stringify({
+    status: 'REMOVED_STATUS', platform: 'windows', query: '苹果',
+  }),
+};
+const filtersWithInvalidSelection = runIndexFilters(combinedFilterHtml, {
+  pathname: '/report-workspace/index.html',
+  storageValues: invalidFilterStorage,
+});
+assert.strictEqual(filtersWithInvalidSelection.activeStatus(), 'ALL');
+assert.strictEqual(filtersWithInvalidSelection.activePlatform(), 'ALL');
+assert.strictEqual(filtersWithInvalidSelection.searchValue(), '苹果');
+assert.strictEqual(filtersWithInvalidSelection.visibleCount(), 2);
 
 const isolatedStatuses = [
   ['PENDING', 'PENDING', '未执行'],

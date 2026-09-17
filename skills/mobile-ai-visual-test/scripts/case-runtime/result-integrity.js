@@ -14,12 +14,16 @@ const store = require('./store');
 const { loadValidationProfile } = require('../execution/contracts/validation-profile-contract');
 
 function aggregateVerdict(checks) {
-  const statuses = checks.map((check) => check.status);
+  const statuses = checks.map((check) => check.status).filter((status) => status !== 'NOT_APPLICABLE');
   if (statuses.includes('FAIL')) return 'FAIL';
   if (statuses.includes('BLOCKED')) return 'BLOCKED';
   if (statuses.includes('INCONCLUSIVE')) return 'INCONCLUSIVE';
   if (statuses.length && statuses.every((status) => status === 'PASS')) return 'PASS';
-  return null;
+  return checks.length && checks.every((check) => check.status === 'NOT_APPLICABLE') ? 'PASS' : null;
+}
+
+function checkRef(check) {
+  return check.checkNodeRef || check.expectationRef;
 }
 
 function canonicalFilePath(file) {
@@ -32,6 +36,10 @@ function canonicalFilePath(file) {
 }
 
 function validateVerdict(result, events) {
+  if (result.verdict === 'NOT_RUN') {
+    if (result.checks.length) throw contractError('CASE_RESULT_INVALID', 'NOT_RUN must not contain final checks');
+    return;
+  }
   if (['PASS', 'FAIL'].includes(result.verdict) && result.checks.length === 0) {
     throw contractError('CASE_RESULT_CHECKS_REQUIRED', `${result.verdict} requires at least one check`);
   }
@@ -56,15 +64,17 @@ function validateExpectationCoverage(execDir, result, events, suppliedExecution 
     throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
 
-  const caseModel = require('./case-model-service').current(execDir);
-  if (!caseModel?.verificationPoints?.length) {
-    throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult requires a current Case Model with ACTIVE verification points', {
-      missing: [{ field: 'caseModel', reason: '尚未形成本次用例理解与验证点' }],
+  const caseFlow = require('./case-flow-service').current(execDir);
+  const caseModel = caseFlow ? null : require('./case-model-service').current(execDir);
+  const expectations = caseFlow?.nodes?.filter((item) => item.type === 'CHECK') || caseModel?.verificationPoints || [];
+  if (!expectations.length) {
+    throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult requires a current Case Flow with CHECK nodes', {
+      missing: [{ field: 'caseFlow', reason: '尚未形成本次用例的 Case Flow 和 CHECK 节点' }],
     });
   }
   const missing = [];
-  const expectedRefs = caseModel.verificationPoints.map((item) => item.ref);
-  const suppliedRefs = result.checks.map((check) => check.expectationRef);
+  const expectedRefs = expectations.map((item) => item.ref);
+  const suppliedRefs = result.checks.map(checkRef);
   const duplicates = suppliedRefs.filter((ref, index) => suppliedRefs.indexOf(ref) !== index);
   const unknown = [...new Set(suppliedRefs.filter((ref) => !expectedRefs.includes(ref)))];
   const uncovered = expectedRefs.filter((ref) => !suppliedRefs.includes(ref));
@@ -75,8 +85,8 @@ function validateExpectationCoverage(execDir, result, events, suppliedExecution 
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult does not cover the current expectations', { missing });
   }
   return {
-    caseModelRevision: caseModel.revision,
-    expectations: caseModel.verificationPoints.map((item) => ({ ...item, id: item.ref })),
+    ...(caseFlow ? { caseFlowRevision: caseFlow.revision } : { caseModelRevision: caseModel.revision }),
+    expectations: expectations.map((item) => ({ ...item, id: item.ref })),
     coveredExpectationRefs: suppliedRefs,
     complete: true,
   };
@@ -100,12 +110,13 @@ function validateKnowledgeClosure(result, events, execution = null) {
     .map((event) => [event.technicalFactRef, event]));
   const referencedTechnicalFactRefs = new Set();
   for (const check of result.checks) {
-    const applicable = applicableByExpectation.get(check.expectationRef) || new Set();
+    const ref = checkRef(check);
+    const applicable = applicableByExpectation.get(ref) || new Set();
     const supplied = new Set(check.knowledgeRefs || []);
     for (const entryId of supplied) {
       if (!applicable.has(entryId)) {
         missing.push({
-          field: `checks.${check.expectationRef}.knowledgeRefs`,
+          field: `checks.${ref}.knowledgeRefs`,
           reason: `知识 ${entryId} 未在该验证点的调查中评估为 APPLICABLE`,
         });
       }
@@ -114,25 +125,25 @@ function validateKnowledgeClosure(result, events, execution = null) {
     const unknownTechnicalRefs = technicalRefs.filter((ref) => !technicalByRef.has(ref));
     if (unknownTechnicalRefs.length) {
       missing.push({
-        field: `checks.${check.expectationRef}.technicalRefs`,
+        field: `checks.${ref}.technicalRefs`,
         reason: `技术事实引用不存在：${unknownTechnicalRefs.join('、')}`,
       });
     }
     if (check.status !== 'BLOCKED' && technicalRefs.length) {
       missing.push({
-        field: `checks.${check.expectationRef}.technicalRefs`,
+        field: `checks.${ref}.technicalRefs`,
         reason: '只有被 Runtime 技术事实直接阻止的 BLOCKED 检查可以引用技术事实',
       });
     }
     const validTechnicalRefs = [];
     for (const ref of technicalRefs.filter((item) => technicalByRef.has(item))) {
-      const state = technicalFactState(technicalByRef.get(ref), events, execution, check.expectationRef);
+      const state = technicalFactState(technicalByRef.get(ref), events, execution, checkRef(check));
       if (state.state === 'VALID') {
         validTechnicalRefs.push(ref);
         referencedTechnicalFactRefs.add(ref);
       } else {
         missing.push({
-          field: `checks.${check.expectationRef}.technicalRefs`,
+          field: `checks.${checkRef(check)}.technicalRefs`,
           reason: `${ref} ${state.reason}`,
         });
       }
@@ -142,13 +153,13 @@ function validateKnowledgeClosure(result, events, execution = null) {
       || check.status === 'INCONCLUSIVE'
       || (check.status === 'BLOCKED' && validTechnicalRefs.length === 0)
     );
-    const associatedQueries = [...queries.values()].filter((event) => (event.expectationRefs || []).includes(check.expectationRef));
+    const associatedQueries = [...queries.values()].filter((event) => (event.expectationRefs || []).includes(ref));
     const completedReviews = associatedQueries.map((event) => reviews.get(event.queryId)).filter(Boolean);
     const completed = completedReviews.length > 0;
-    if (requiresInvestigation) requiredExpectationRefs.push(check.expectationRef);
-    if (completed) completedExpectationRefs.push(check.expectationRef);
+    if (requiresInvestigation) requiredExpectationRefs.push(ref);
+    if (completed) completedExpectationRefs.push(ref);
     const conclusion = investigationConclusion(completedReviews.map((event) => event.conclusion));
-    investigationByExpectation[check.expectationRef] = {
+    investigationByExpectation[ref] = {
       required: requiresInvestigation,
       status: conclusion || (requiresInvestigation ? 'MISSING' : 'NOT_REQUIRED'),
       queryIds: associatedQueries.map((event) => event.queryId),
@@ -156,7 +167,7 @@ function validateKnowledgeClosure(result, events, execution = null) {
     };
     if (requiresInvestigation && !completed) {
       missing.push({
-        field: `checks.${check.expectationRef}.knowledgeInvestigation`,
+        field: `checks.${ref}.knowledgeInvestigation`,
         reason: '负向结论前尚未完成与该验证点关联的知识调查',
         ...(associatedQueries.length ? { queryIds: associatedQueries.map((event) => event.queryId) } : {}),
       });
@@ -183,32 +194,33 @@ function validateSearchAbsence(execDir, result, execution, expectationCoverage =
   const missing = [];
   const expectationByRef = new Map((expectationCoverage?.expectations || []).map((item) => [item.id, item]));
   for (const check of result.checks) {
-    const searchFailure = expectationByRef.get(check.expectationRef)?.verificationKind === 'SEARCH_EXISTENCE'
+    const checkNodeRef = checkRef(check);
+    const searchFailure = expectationByRef.get(checkNodeRef)?.verificationKind === 'SEARCH_EXISTENCE'
       && check.status === 'FAIL';
     if (searchFailure && check.evidenceBasis?.type !== 'SEARCH_ABSENCE') {
-      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: '搜索型验证点的不存在结论必须引用完整列表覆盖' });
+      missing.push({ field: `checks.${checkNodeRef}.evidenceBasis`, reason: '搜索型验证点的不存在结论必须引用完整列表覆盖' });
       continue;
     }
     if (check.evidenceBasis?.type !== 'SEARCH_ABSENCE') continue;
     const ref = check.evidenceBasis.scrollContextRef;
     const sceneRef = check.evidenceBasis.sceneRef;
     if (!(check.sceneRefs || []).includes(sceneRef)) {
-      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: `覆盖 Scene ${sceneRef} 未被该检查引用` });
+      missing.push({ field: `checks.${checkNodeRef}.evidenceBasis`, reason: `覆盖 Scene ${sceneRef} 未被该检查引用` });
       continue;
     }
     const evidenceScene = readJson(path.join(execDir, 'scenes', `${sceneRef}.json`), null);
     const context = (evidenceScene?.scrollContexts || []).find((entry) => entry.id === ref);
     if (!context) {
-      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 不属于 Scene ${sceneRef}` });
+      missing.push({ field: `checks.${checkNodeRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 不属于 Scene ${sceneRef}` });
       continue;
     }
     if (context.generation !== execution.warmSessionGeneration) {
-      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 不属于当前 generation` });
+      missing.push({ field: `checks.${checkNodeRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 不属于当前 generation` });
     }
     if (context.trackingStatus !== 'TRACKING' || context.coverage !== 'CONTIGUOUS'
       || context.reachedStart !== 'CONFIRMED' || context.reachedEnd !== 'CONFIRMED'
       || context.absenceConclusionSupported !== true) {
-      missing.push({ field: `checks.${check.expectationRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 尚不能支持完整列表不存在结论` });
+      missing.push({ field: `checks.${checkNodeRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 尚不能支持完整列表不存在结论` });
     }
   }
   if (missing.length) throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult list search evidence is incomplete', { missing });
@@ -295,10 +307,16 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   validateCaseResult(result);
   const events = store.events(execDir);
   validateVerdict(result, events);
-  const expectationCoverage = validateExpectationCoverage(execDir, result, events, execution);
+  const notRun = result.verdict === 'NOT_RUN';
+  const expectationCoverage = notRun
+    ? { caseFlowRevision: result.caseFlowRevision, expectations: [], coveredExpectationRefs: [], complete: true }
+    : validateExpectationCoverage(execDir, result, events, execution);
   const validationProfile = loadValidationProfile(execDir, execution);
-  const knowledgeCoverage = validateKnowledgeClosure(result, events, execution);
-  const searchCoverage = validateSearchAbsence(execDir, result, execution, expectationCoverage);
+  const knowledgeCoverage = notRun
+    ? { queryIds: [], reviewedQueryIds: [], applicableEntryIds: [], referencedTechnicalFactRefs: [], investigation: null }
+    : validateKnowledgeClosure(result, events, execution);
+  const searchCoverage = notRun ? { searchAbsenceRefs: [] }
+    : validateSearchAbsence(execDir, result, execution, expectationCoverage);
   const sceneEvents = events.filter((event) => event.type === 'sceneObserved');
   const byScene = new Map(sceneEvents.map((event) => [event.sceneId, event]));
   if (byScene.size !== sceneEvents.length) throw contractError('CASE_RESULT_SCENE_INVALID', 'Scene event identities must be unique');
@@ -369,10 +387,19 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
       files.add(ref);
     }
   }
-  const refs = [...new Set(result.checks.flatMap((check) => check.sceneRefs || []))];
+  const refs = [...new Set([
+    ...result.checks.flatMap((check) => check.sceneRefs || []),
+    ...(result.notRunEvidence?.sceneRefs || []),
+  ])];
   const unknown = refs.filter((ref) => !byScene.has(ref));
   if (unknown.length) throw contractError('CASE_RESULT_SCENE_UNKNOWN', `CaseResult references unknown scenes: ${unknown.join(', ')}`);
-  const visualInspectionCoverage = validateVisualInspectionCoverage(execDir, result, events, byScene, validationProfile);
+  const knownTechnical = new Set(events.map((event) => event.technicalFactRef).filter(Boolean));
+  const unknownTechnical = (result.notRunEvidence?.technicalRefs || []).filter((ref) => !knownTechnical.has(ref));
+  if (unknownTechnical.length) {
+    throw contractError('EVIDENCE_REFERENCE_INVALID', `unknown technical refs: ${unknownTechnical.join(', ')}`);
+  }
+  const visualInspectionCoverage = notRun ? { required: false, inspectedSceneRefs: [] }
+    : validateVisualInspectionCoverage(execDir, result, events, byScene, validationProfile);
   return {
     files: [...files].sort(), events, result, sceneRefs: refs,
     technicalFacts: technicalFacts(events), expectationCoverage, knowledgeCoverage, searchCoverage,

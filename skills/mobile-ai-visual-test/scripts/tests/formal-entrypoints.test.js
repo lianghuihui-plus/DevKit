@@ -76,6 +76,7 @@ assert.strictEqual(Object.prototype.hasOwnProperty.call(contract, 'schemaVersion
 assert.strictEqual(contract.profile, undefined);
 assert.deepStrictEqual(contract.requiredResources, [
   'prompts/case-agent.md',
+  'references/case-reasoning.md',
   'references/case-runtime.md',
   'references/case-runtime/methods/observe.md',
   'references/case-runtime/methods/inspect.md',

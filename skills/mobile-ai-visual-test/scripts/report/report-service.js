@@ -15,6 +15,7 @@ const { assertWorkspace } = require('../lib/workspace');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { deriveExecutionTiming } = require('../lib/execution-timing');
 const { recoverRetryRequiredPublications } = require('./publication-state');
+const { projectCaseStatus } = require('../lib/case-status-projection');
 
 const PLATFORM_ORDER = ['android', 'ios', 'harmony'];
 
@@ -94,9 +95,10 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
   }
   const narrative = buildExecutionNarrative(report);
   const sourceCurrent = report.execution?.sourceSha === currentCase.identity.sourceSha;
+  const projectedStatus = projectCaseStatus({ ...report, sourceCurrent });
   return {
     platform,
-    status: sourceCurrent ? (display.status === 'INCONCLUSIVE' ? 'UNKNOWN' : display.status || 'NOT_RUN') : 'NEEDS_RERUN',
+    status: projectedStatus === 'INCONCLUSIVE' ? 'UNKNOWN' : projectedStatus,
     verdict: sourceCurrent ? display.verdict || null : null,
     verdictBasis: sourceCurrent ? display.verdictBasis || null : null,
     executionStatus: sourceCurrent ? display.executionStatus || null : null,

@@ -5,10 +5,13 @@ const { TARGET_STATES } = require('../lib/app-provisioning');
 const { validateAgentJson } = require('../lib/agent-json-contract');
 const { AGENT_CONTRACT_DEFINITIONS, OPERATION_CONTRACT, RUNTIME_OPERATIONS } = require('./runtime-operation-contract');
 
-const VERDICTS = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
-const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
-const RESULT_FIELDS = new Set(['verdict', 'summary', 'checks', 'uncertainties', 'caseModelRevision']);
-const CHECK_FIELDS = new Set(['expectationRef', 'status', 'actual', 'sceneRefs', 'knowledgeRefs', 'technicalRefs', 'evidenceBasis']);
+const VERDICTS = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_RUN']);
+const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE']);
+const RESULT_FIELDS = new Set([
+  'verdict', 'summary', 'checks', 'uncertainties', 'caseModelRevision', 'caseFlowRevision',
+  'notRunReason', 'notRunEvidence',
+]);
+const CHECK_FIELDS = new Set(['expectationRef', 'checkNodeRef', 'status', 'actual', 'sceneRefs', 'knowledgeRefs', 'technicalRefs', 'evidenceBasis']);
 const VERIFICATION_KINDS = new Set(['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE']);
 const DECISION_FIELDS = new Set([
   'assessment', 'observation', 'conclusion', 'purpose', 'expectedOutcome',
@@ -73,10 +76,29 @@ function validateCaseResult(value) {
   if (value.caseModelRevision !== undefined && (!Number.isInteger(value.caseModelRevision) || value.caseModelRevision < 1)) {
     throw contractError('CASE_RESULT_INVALID', 'caseModelRevision must be a positive integer');
   }
+  if (value.caseFlowRevision !== undefined && (!Number.isInteger(value.caseFlowRevision) || value.caseFlowRevision < 1)) {
+    throw contractError('CASE_RESULT_INVALID', 'caseFlowRevision must be a positive integer');
+  }
+  if (value.caseModelRevision !== undefined && value.caseFlowRevision !== undefined) {
+    throw contractError('CASE_RESULT_INVALID', 'CaseResult cannot contain both caseModelRevision and caseFlowRevision');
+  }
+  if (value.verdict === 'NOT_RUN') {
+    ensureString(value.notRunReason, 'notRunReason', 'CASE_RESULT_INVALID');
+    const evidence = ensureObject(value.notRunEvidence, 'notRunEvidence', 'CASE_RESULT_INVALID');
+    ensureOnlyFields(evidence, new Set(['sceneRefs', 'technicalRefs']), 'notRunEvidence');
+    const sceneRefs = validateStringArray(evidence.sceneRefs, 'notRunEvidence.sceneRefs');
+    const technicalRefs = validateStringArray(evidence.technicalRefs, 'notRunEvidence.technicalRefs');
+    if (!sceneRefs.length && !technicalRefs.length) throw contractError('CASE_RESULT_INVALID', 'NOT_RUN requires evidence');
+    if (value.checks?.length) throw contractError('CASE_RESULT_INVALID', 'NOT_RUN must not contain final checks');
+  } else if (value.notRunReason !== undefined || value.notRunEvidence !== undefined) {
+    throw contractError('CASE_RESULT_INVALID', 'notRunReason and notRunEvidence are only valid for NOT_RUN');
+  }
   ensureArray(value.checks, 'checks', 'CASE_RESULT_INVALID').forEach((check, index) => {
     ensureObject(check, `checks[${index}]`, 'CASE_RESULT_INVALID');
     ensureOnlyFields(check, CHECK_FIELDS, `checks[${index}]`);
-    ensureString(check.expectationRef, `checks[${index}].expectationRef`, 'CASE_RESULT_INVALID');
+    const refs = [check.expectationRef, check.checkNodeRef].filter((item) => item !== undefined);
+    if (refs.length !== 1) throw contractError('CASE_RESULT_INVALID', `checks[${index}] requires exactly one result reference`);
+    ensureString(refs[0], `checks[${index}].resultRef`, 'CASE_RESULT_INVALID');
     if (!CHECK_STATUSES.includes(check.status)) {
       throw contractError('CASE_RESULT_INVALID', `checks[${index}].status must be one of ${CHECK_STATUSES.join(', ')}`);
     }

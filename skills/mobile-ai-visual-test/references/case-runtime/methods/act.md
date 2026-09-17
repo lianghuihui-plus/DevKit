@@ -3,7 +3,7 @@
 基于当前 Scene 执行一个 ActionRef，并采集新 Scene。
 
 ```typescript
-act({ capability: "act", basedOnSceneRef: string, actionRef: string, input?: object, purpose: string })
+act({ capability: "act", basedOnSceneRef: string, actionRef: string, input?: object, purpose: string, flowContext?: object })
 ```
 
 ## 参数
@@ -15,6 +15,7 @@ act({ capability: "act", basedOnSceneRef: string, actionRef: string, input?: obj
 | `actionRef` | 是 | `string` | 控件、屏幕或视觉动作引用 |
 | `purpose` | 是 | `string` | 业务动作目的 |
 | `input` | 否/条件 | `object` | 动作类型对应输入 |
+| `flowContext` | 否/条件 | `object` | 当前 Case Flow 节点和可选分支选择 |
 
 ## 条件要求
 

@@ -15,7 +15,7 @@
 
 - Scene、控件、键盘和滚动状态来自当前 Runtime 响应。
 - 用户选择和目标绑定来自当前 Coordinator 探测事实。
-- 验证点引用来自 Case Model 变更回执或 continuation brief。
+- 用例、平台和设备选择来自 Coordinator 响应或当前用户输入。
 
 ## 按需文档
 

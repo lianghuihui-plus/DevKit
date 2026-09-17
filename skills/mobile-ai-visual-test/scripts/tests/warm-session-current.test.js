@@ -13,6 +13,7 @@ const { executeFacadeRequest: run } = require('../case-runtime/runtime-broker');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
+const { simpleCaseFlow } = require('./simple-case-flow');
 
 process.env.MAVT_SELF_TEST = '1';
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -66,22 +67,15 @@ function completeCase(started, index) {
   const observed = run(started.execDir, { operation: 'observe' }, { runner, now: at });
   assert.strictEqual(observed.status, 'SCENE');
   const planned = runAgentFacing(started.execDir, {
-    capability: 'plan', caseModel: {
-      baseRevision: null,
-      understanding: `验证第 ${index} 个暖会话用例`,
-      preconditions: [],
-      verificationPoints: [{ text: '目标页面正常显示' }],
-      items: ['观察当前页面', '检查截图', '提交结果'],
-      uncertainties: [],
-    },
+    capability: 'plan', caseFlow: simpleCaseFlow(`验证第 ${index} 个暖会话用例`, '目标页面正常显示'),
   }, { now: at });
-  assert.strictEqual(planned.status, 'CASE_MODEL_RECORDED');
+  assert.strictEqual(planned.status, 'CASE_FLOW_RECORDED');
   const visualInspection = run(started.execDir, {
     operation: 'inspectVisual',
     basedOnSceneId: observed.scene.sceneId,
     decision: {
       purpose: `检查第 ${index} 个暖会话用例截图`,
-      expectationRefs: ['E1'],
+      expectationRefs: ['N2'],
       observation: '截图显示目标页面',
     },
   }, { now: at });
@@ -91,11 +85,11 @@ function completeCase(started, index) {
     basedOnSceneId: observed.scene.sceneId,
     decision: {
       observation: '目标页面可见', conclusion: '验证点已满足', purpose: '提交最终结论',
-      expectedOutcome: '结果与当前 Scene 关联', expectationRefs: ['E1'],
+      expectedOutcome: '结果与当前 Scene 关联', expectationRefs: ['N2'],
     },
     result: {
       verdict: 'PASS', summary: '目标页面正常显示',
-      checks: [{ expectationRef: 'E1', status: 'PASS', actual: '目标页面可见', sceneRefs: [observed.scene.sceneId] }],
+      checks: [{ checkNodeRef: 'N2', status: 'PASS', actual: '目标页面可见', sceneRefs: [observed.scene.sceneId] }],
       uncertainties: [],
     },
   }, { now: at });

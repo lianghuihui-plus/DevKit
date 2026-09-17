@@ -15,6 +15,7 @@ const { createInitialStatePreflight } = require('../lib/app-provisioning');
 const { readExecutionReport, selectExecutionDir } = require('../lib/execution-reader');
 const { refreshCommittedCaseReports } = require('../report/report-service');
 const { createTestWorkspace } = require('./current-fixture');
+const { simpleCaseFlow } = require('./simple-case-flow');
 
 process.env.MAVT_SELF_TEST = '1';
 
@@ -85,15 +86,8 @@ function runner(command, args, options) {
 
 assert.strictEqual(run(started.execDir, {
   capability: 'plan',
-  caseModel: {
-    baseRevision: null,
-    understanding: source,
-    preconditions: [],
-    verificationPoints: [{ text: '首页标题正常显示' }],
-    items: ['观察首页', '检查标题', '记录验证结果'],
-    uncertainties: [],
-  },
-}, { now: '2026-09-16T01:00:00.100Z' }).status, 'CASE_MODEL_RECORDED');
+  caseFlow: simpleCaseFlow(source, '首页标题正常显示'),
+}, { now: '2026-09-16T01:00:00.100Z' }).status, 'CASE_FLOW_RECORDED');
 
 const observed = run(started.execDir, { capability: 'observe', purpose: '采集首页现场' }, {
   runner,
@@ -105,12 +99,12 @@ assert.strictEqual(run(started.execDir, {
   basedOnSceneRef: observed.scene.sceneRef,
   channel: 'visual',
   observation: '首页标题清晰可见',
-  expectationRefs: ['E1'],
+  checkNodeRefs: ['N2'],
 }, { now: '2026-09-16T01:00:00.300Z' }).status, 'VISUAL_INSPECTED');
 assert.strictEqual(run(started.execDir, {
   capability: 'recordResult',
   results: [{
-    expectationRef: 'E1',
+    checkNodeRef: 'N2',
     status: 'PASS',
     actual: '首页标题正常显示',
     evidence: { sceneRefs: [observed.scene.sceneRef] },

@@ -3,7 +3,7 @@
 查询知识，或登记指定 query 的候选复核结果。
 
 ```typescript
-knowledge({ capability: "knowledge", basedOnSceneRef: string, query?: string, expectationRefs?: string[], queryId?: string, conclusion?: "APPLICABLE_FOUND" | "NO_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT", assessments?: object[] })
+knowledge({ capability: "knowledge", basedOnSceneRef: string, query?: string, checkNodeRefs?: string[], flowContext?: object, queryId?: string, conclusion?: "APPLICABLE_FOUND" | "NO_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT", assessments?: object[] })
 ```
 
 ## 参数
@@ -14,9 +14,10 @@ knowledge({ capability: "knowledge", basedOnSceneRef: string, query?: string, ex
 | `basedOnSceneRef` | 是 | `string` | 当前 Scene |
 | `query` | 否/条件 | `string` | 待调查问题 |
 | `queryId` | 否/条件 | `string` | 已有查询引用 |
-| `expectationRefs` | 否/条件 | `string[]` | 相关验证点 |
+| `checkNodeRefs` | 否/条件 | `string[]` | 相关 CHECK 节点 |
 | `conclusion` | 否/条件 | `"APPLICABLE_FOUND" | "NO_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT"` | 候选复核结论 |
 | `assessments` | 否/条件 | `object[]` | 逐候选适用性判断 |
+| `flowContext` | 否/条件 | `object` | 当前 Case Flow 节点和可选分支选择 |
 
 ## 条件要求
 

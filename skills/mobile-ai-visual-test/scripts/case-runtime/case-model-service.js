@@ -3,6 +3,8 @@
 const { contractError, ensureArray, ensureObject, ensureString } = require('../lib/contract-utils');
 const store = require('./store');
 
+const VERIFICATION_KINDS = new Set(['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE']);
+
 function strings(value, label) {
   return ensureArray(value, label, 'CASE_MODEL_INVALID')
     .map((item, index) => ensureString(item, `${label}[${index}]`, 'CASE_MODEL_INVALID').trim());
@@ -33,11 +35,16 @@ function normalizeVerificationPoints(value, previous, events) {
   const resolved = [];
   for (const [index, valueItem] of supplied.entries()) {
     const item = ensureObject(valueItem, `verificationPoints[${index}]`, 'CASE_MODEL_INVALID');
-    const unsupported = Object.keys(item).filter((field) => !['ref', 'text'].includes(field));
+    const unsupported = Object.keys(item).filter((field) => !['ref', 'text', 'verificationKind'].includes(field));
     if (unsupported.length) {
       throw contractError('CASE_MODEL_INVALID', `verificationPoints[${index}] contains unsupported fields: ${unsupported.join(', ')}`);
     }
     const text = ensureString(item.text, `verificationPoints[${index}].text`, 'CASE_MODEL_INVALID').trim();
+    const verificationKind = item.verificationKind === undefined ? 'DIRECT_OBSERVATION'
+      : ensureString(item.verificationKind, `verificationPoints[${index}].verificationKind`, 'CASE_MODEL_INVALID').trim();
+    if (!VERIFICATION_KINDS.has(verificationKind)) {
+      throw contractError('CASE_MODEL_INVALID', `verificationPoints[${index}].verificationKind is invalid`);
+    }
     let ref = item.ref === undefined ? null : ensureString(item.ref, `verificationPoints[${index}].ref`, 'CASE_MODEL_INVALID').trim();
     if (ref && (!active.has(ref) || retired.has(ref))) {
       throw contractError('CASE_MODEL_VERIFICATION_REF_INVALID', `verification point ${ref} is not active in the current Case Model`);
@@ -46,7 +53,7 @@ function normalizeVerificationPoints(value, previous, events) {
     if (resolved.some((entry) => entry.ref === ref)) {
       throw contractError('CASE_MODEL_VERIFICATION_REF_INVALID', `verification point ${ref} is duplicated`);
     }
-    resolved.push({ ref, text, status: 'ACTIVE' });
+    resolved.push({ ref, text, verificationKind, status: 'ACTIVE' });
   }
   return resolved;
 }

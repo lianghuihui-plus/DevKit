@@ -83,19 +83,28 @@ ActionRef 对当前 Scene 不成立。
 
 **处理：** 根据本次响应的动态事实修正输入或等待状态变化后重新调用；不要重放结果未知的设备动作。
 
-<a id="error-case-model-required"></a>
-## CASE_MODEL_REQUIRED
+<a id="error-case-flow-required"></a>
+## CASE_FLOW_REQUIRED
 
-当前 execution 尚无 Case Model。
+当前 execution 尚无 Case Flow。
 
 **可重试：** 是
 
 **处理：** 根据本次响应的动态事实修正输入或等待状态变化后重新调用；不要重放结果未知的设备动作。
 
-<a id="error-case-model-revision-conflict"></a>
-## CASE_MODEL_REVISION_CONFLICT
+<a id="error-case-flow-revision-conflict"></a>
+## CASE_FLOW_REVISION_CONFLICT
 
-Case Model baseRevision 不是当前 revision。
+Case Flow baseRevision 不是当前 revision。
+
+**可重试：** 是
+
+**处理：** 根据本次响应的动态事实修正输入或等待状态变化后重新调用；不要重放结果未知的设备动作。
+
+<a id="error-case-flow-context-invalid"></a>
+## CASE_FLOW_CONTEXT_INVALID
+
+flowContext 的节点或分支不属于当前 Case Flow revision。
 
 **可重试：** 是
 
@@ -104,7 +113,7 @@ Case Model baseRevision 不是当前 revision。
 <a id="error-expectation-unknown"></a>
 ## EXPECTATION_UNKNOWN
 
-ExpectationRef 不属于当前 ACTIVE 模型。
+checkNodeRef 不属于当前 Case Flow 的 CHECK 节点。
 
 **可重试：** 是
 

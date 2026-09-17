@@ -9,7 +9,7 @@ const BATCH_STATUSES = new Set([
 ]);
 const CASE_STATUSES = new Set(['PENDING', 'RUNNING', 'COMPLETED', 'BLOCKED', 'CANCELLED', 'SKIPPED']);
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'BLOCKED', 'CANCELLED']);
-const VERDICTS = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']);
+const VERDICTS = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_RUN']);
 const BATCH_SCHEMA_VERSION = 8;
 
 function invalid(message) {

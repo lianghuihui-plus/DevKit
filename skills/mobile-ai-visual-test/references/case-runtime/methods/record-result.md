@@ -45,7 +45,7 @@ recordResult({ capability: "recordResult", results: object[] })
   "capability": "recordResult",
   "results": [
     {
-      "expectationRef": "E1",
+      "checkNodeRef": "N1",
       "status": "PASS",
       "actual": "目标结果可见",
       "evidence": {

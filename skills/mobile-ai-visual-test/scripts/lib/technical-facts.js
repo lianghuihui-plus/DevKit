@@ -98,7 +98,7 @@ function technicalFactView(fact, events = [], execution = null, expectationRef =
 function referencedTechnicalFacts(result, events = [], execution = null) {
   const requested = new Set((result?.checks || []).flatMap((check) => check.technicalRefs || []));
   const expectationByRef = new Map((result?.checks || []).flatMap((check) =>
-    (check.technicalRefs || []).map((ref) => [ref, check.expectationRef])));
+    (check.technicalRefs || []).map((ref) => [ref, check.checkNodeRef || check.expectationRef])));
   return technicalFacts(events).filter((event) => requested.has(event.technicalFactRef)
     && technicalFactState(event, events, execution, expectationByRef.get(event.technicalFactRef)).state === 'VALID');
 }
