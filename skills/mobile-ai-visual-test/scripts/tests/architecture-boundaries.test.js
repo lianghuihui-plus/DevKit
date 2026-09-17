@@ -22,7 +22,7 @@ assert.strictEqual(fs.existsSync(path.join(root, 'scripts/lib/readers/current-ex
 
 assert.deepStrictEqual(roleResources('case-executor'), [
   'prompts/case-agent.md',
-  'references/case-reasoning.md',
+  'references/case-execution-principles.md',
   'references/case-runtime.md',
   'references/case-runtime/methods/observe.md',
   'references/case-runtime/methods/inspect.md',

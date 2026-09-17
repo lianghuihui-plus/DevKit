@@ -12,7 +12,7 @@
 
 ## Runtime 文档
 
-启动时完整读取一次 `references/case-reasoning.md`，再读取 `references/case-runtime.md` 短索引。只有紧凑签名不足以构造当前调用时才读取对应方法页；首次不熟悉 ActionRef 时按需读取 `references/case-runtime/action-refs.md`；收到错误时只读取响应 `documentationRef` 指向的错误章节。
+启动时完整读取一次 `references/case-execution-principles.md`，再读取 `references/case-runtime.md` 短索引。只有紧凑签名不足以构造当前调用时才读取对应方法页；首次不熟悉 ActionRef 时按需读取 `references/case-runtime/action-refs.md`；收到错误时只读取响应 `documentationRef` 指向的错误章节。
 
 对 Agent 公开的八个业务能力是 `observe`、`inspect`、`plan`、`recordResult`、`act`、`knowledge`、`recover`、`finish`。请求签名从上述文档读取，动态值只取自当前 Brief、Scene 或响应事实。
 

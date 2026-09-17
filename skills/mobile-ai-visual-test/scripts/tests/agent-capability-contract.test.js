@@ -73,7 +73,7 @@ assert.deepStrictEqual(Object.keys(CASE_PUBLIC_CONTRACT.methods), AGENT_FACING_C
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
 assert.ok(AGENT_FACING_CAPABILITIES.length <= 8, 'Case Agent active capability budget is 8');
 assertExamples(CASE_PUBLIC_CONTRACT.methods, validateAgentFacingRequest, { forbidPaths: true });
-assert.ok(roleResources('case-executor').includes('references/case-reasoning.md'));
+assert.ok(roleResources('case-executor').includes('references/case-execution-principles.md'));
 
 assert.strictEqual(RUNTIME_INTERFACE_KIND, 'INTERNAL');
 assert.strictEqual(COORDINATOR_INTERNAL_INTERFACE_KIND, 'INTERNAL');
