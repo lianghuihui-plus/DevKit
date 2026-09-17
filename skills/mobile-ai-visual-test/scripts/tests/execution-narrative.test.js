@@ -91,6 +91,15 @@ assert.match(markdown, /当时推进目标：E1 目标内容显示/);
 assert.doesNotMatch(markdown, /当时推进目标：E1 目标内容显示 \[PASS\]/);
 assert.match(markdown, /相关步骤：步骤 1、步骤 2、步骤 3/);
 
+const sourcePanelHtml = renderCurrentContextHtml({ identity: { title: '原始用例展示' } }, {
+  ...report,
+  latest: '/tmp/execution-narrative-source-panel',
+  sourceText: '# 用例正文\n\n仅展示原始用例内容。',
+  display: { verdict: 'PASS', durationMs: 5000 },
+});
+assert.match(sourcePanelHtml, /data-panel-view="source" hidden><article class="case-document"><h3>用例正文<\/h3>/);
+assert.doesNotMatch(sourcePanelHtml, /class="document-meta"|>source\.md<|SHA-256/);
+
 const filterDiagnostics = {
   scannedCount: 1,
   compatibleCount: 0,
@@ -327,6 +336,19 @@ assert.deepStrictEqual(caseFlowNarrative.steps[0].flowContext, { nodeRef: 'N1', 
 const caseFlowHtml = renderCurrentContextHtml({ identity: { title: 'Case Flow 用例' } }, caseFlowReport);
 assert.match(caseFlowHtml, /data-panel-view="case-flow"/);
 assert.match(caseFlowHtml, /L1/);
+assert.match(caseFlowHtml, /class="case-flow-diagram"/);
+assert.match(caseFlowHtml, /class="case-flow-overview"/);
+assert.match(caseFlowHtml, /data-flow-preview[^>]*data-flow-preview-mode="compact"/);
+assert.match(caseFlowHtml, /class="case-flow-diagram"[^>]*data-flow-direction="TB"/);
+assert.match(caseFlowHtml, /data-open-flow[^>]*aria-label="放大查看执行流程"/);
+assert.match(caseFlowHtml, /<dialog class="flow-viewer" id="flow-dialog"/);
+assert.match(caseFlowHtml, /id="flow-fit"/);
+assert.match(caseFlowHtml, /class="case-flow-node decision visited"[^>]*data-flow-node="N1"/);
+assert.match(caseFlowHtml, /data-flow-edge="L1"[^>]*data-flow-selected="true"[^>]*data-flow-condition="未出现可选弹窗"/);
+assert.match(caseFlowHtml, /data-flow-edge="L2"[^>]*data-flow-selected="false"[^>]*data-flow-condition="出现并已处理弹窗"/);
+assert.match(caseFlowHtml, /data-flow-edge="L3"[^>]*data-flow-selected="true"/);
+assert.match(caseFlowHtml, /class="case-flow-node check visited"[^>]*data-flow-node="N2"/);
+assert.doesNotMatch(caseFlowHtml, />连接与分支</);
 assert.doesNotMatch(caseFlowHtml, /data-panel-view="understanding"/);
 const caseFlowMarkdown = renderCurrentContextMarkdown({ identity: { title: 'Case Flow 用例' } }, caseFlowReport);
 assert.match(caseFlowMarkdown, /## Case Flow/);

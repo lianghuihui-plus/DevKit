@@ -1079,7 +1079,7 @@ const contextHtml = fs.readFileSync(path.join(caseDir, 'platforms', 'harmony', '
 assert.match(contextHtml, /目标内容正常显示/);
 assert.match(contextHtml, /页面保持在目标 App/);
 assert.match(contextHtml, /Runtime 请求错误/);
-for (const text of ['结果概览', 'Case Flow', '连接与分支', '修订记录', '为什么做', '预期效果', '实际效果', '2\/2', '详细日志']) {
+for (const text of ['结果概览', 'Case Flow', '执行流程', '修订记录', '为什么做', '预期效果', '实际效果', '2\/2', '详细日志']) {
   assert.ok(contextHtml.includes(text), text);
 }
 const validationProfilePath = path.join(started.execDir, 'validation-profile.snapshot.json');
