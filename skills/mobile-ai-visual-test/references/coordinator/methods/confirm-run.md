@@ -2,8 +2,12 @@
 
 选择当前环境、平台设备或确认完整目标绑定。
 
+## 调用分支
+
 ```typescript
-confirmRun({ capability: "confirmRun", decision: "CONFIRM_BINDING", userInstruction?: string, platform?: "harmony" | "android" | "ios", deviceId?: string, binding?: object })
+confirmRun({ capability: "confirmRun", decision: "USE_CURRENT", userInstruction: string })
+confirmRun({ capability: "confirmRun", decision: "SELECT_PLATFORM", platform: "harmony" | "android" | "ios", deviceId?: string })
+confirmRun({ capability: "confirmRun", decision: "CONFIRM_BINDING", userInstruction: string, binding: object })
 ```
 
 ## 参数
@@ -11,7 +15,7 @@ confirmRun({ capability: "confirmRun", decision: "CONFIRM_BINDING", userInstruct
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
 | `capability` | 是 | `"confirmRun"` | 固定为 confirmRun |
-| `decision` | 是 | `"CONFIRM_BINDING"` | 互斥确认分支 |
+| `decision` | 是 | `"USE_CURRENT" | "SELECT_PLATFORM" | "CONFIRM_BINDING"` | 互斥确认分支 |
 | `userInstruction` | 否/条件 | `string` | 用户确认原文 |
 | `platform` | 否/条件 | `"harmony" | "android" | "ios"` | 目标平台 |
 | `deviceId` | 否/条件 | `string` | 响应要求时选择的设备 |
@@ -40,13 +44,13 @@ confirmRun({ capability: "confirmRun", decision: "CONFIRM_BINDING", userInstruct
 
 ## 错误
 
-- [`COORDINATOR_INPUT_INVALID`](../errors.md#error-coordinator-input-invalid)
-- [`COORDINATOR_STATE_INVALID`](../errors.md#error-coordinator-state-invalid)
-- [`DECISION_NOT_ALLOWED`](../errors.md#error-decision-not-allowed)
-- [`ENVIRONMENT_NOT_READY`](../errors.md#error-environment-not-ready)
-- [`IOS_SIGNING_REQUIRED`](../errors.md#error-ios-signing-required)
-- [`INPUT_CAPABILITY_NOT_READY`](../errors.md#error-input-capability-not-ready)
-- [`COORDINATOR_TECHNICAL`](../errors.md#error-coordinator-technical)
+- [`COORDINATOR_INPUT_INVALID`](../errors/input-state.md#error-coordinator-input-invalid)
+- [`COORDINATOR_STATE_INVALID`](../errors/input-state.md#error-coordinator-state-invalid)
+- [`DECISION_NOT_ALLOWED`](../errors/input-state.md#error-decision-not-allowed)
+- [`ENVIRONMENT_NOT_READY`](../errors/environment.md#error-environment-not-ready)
+- [`IOS_SIGNING_REQUIRED`](../errors/environment.md#error-ios-signing-required)
+- [`INPUT_CAPABILITY_NOT_READY`](../errors/environment.md#error-input-capability-not-ready)
+- [`COORDINATOR_TECHNICAL`](../errors/batch.md#error-coordinator-technical)
 
 ## 最小示例
 

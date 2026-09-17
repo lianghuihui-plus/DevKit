@@ -19,7 +19,7 @@ const lifecycle = require('../case-runtime/lifecycle');
 const { closurePath } = require('../lib/execution-closure');
 const { findActiveExecutions, readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { claimDispatch, claimTokenFor } = require('../lib/dispatch-lease');
-const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
+const { createTestExecutionRequest, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-batch-reconcile-'));

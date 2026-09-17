@@ -52,6 +52,7 @@ expectCode(() => validateCaseResult({ ...result, schemaVersion: 1 }), 'CASE_RESU
 expectCode(() => validateCaseResult({ ...result, executionStatus: 'COMPLETED' }), 'CASE_RESULT_INVALID');
 expectCode(() => validateCaseResult({ ...result, verdictBasis: 'DIRECT_EVIDENCE' }), 'CASE_RESULT_INVALID');
 expectCode(() => validateCaseResult({ ...result, technicalFailureCode: 'ANY' }), 'CASE_RESULT_INVALID');
+expectCode(() => validateCaseResult({ ...result, caseModelRevision: 1 }), 'CASE_RESULT_INVALID');
 expectCode(() => validateCaseResult({ ...result, checks: [{ ...result.checks[0], expectationRef: '' }] }), 'CASE_RESULT_INVALID');
 expectCode(() => validateCaseResult({ ...result, checks: [{ ...result.checks[0], expectation: '非协议字段' }] }), 'CASE_RESULT_INVALID');
 

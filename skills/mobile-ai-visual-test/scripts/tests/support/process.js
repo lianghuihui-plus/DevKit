@@ -3,7 +3,7 @@
 const childProcess = require('child_process');
 const path = require('path');
 
-const repo = path.resolve(__dirname, '../..');
+const repo = path.resolve(__dirname, '../../..');
 
 function run(command, args = [], options = {}) {
   return childProcess.execFileSync(command, args, {

@@ -82,6 +82,9 @@ for (const [operation, definition] of Object.entries(OPERATION_CONTRACT)) {
 }
 for (const [entrypoint, definition] of Object.entries(INTERFACE_CONTRACTS)) {
   assert.strictEqual(definition.interfaceKind, 'INTERNAL', `${entrypoint} Coordinator contract must be internal`);
+  assert.ok(definition.module, `${entrypoint} must have a documentation module`);
+  assert.ok(definition.access, `${entrypoint} must have an access mode`);
+  assert.ok(definition.roles.length > 0, `${entrypoint} must name its allowed roles`);
 }
 
 for (const prompt of ['SKILL.md', 'prompts/case-agent.md']) {
@@ -96,6 +99,8 @@ assert.match(read('SKILL.md'), /技术异常/);
 assert.match(read('SKILL.md'), /读取.*日志/);
 assert.match(read('SKILL.md'), /不直接修改.*Batch.*Execution.*Result/);
 assert.match(read('SKILL.md'), /documentationRef/);
+assert.match(read('SKILL.md'), /普通执行.*不读取.*commands/);
+assert.match(read('references/interfaces.md'), /按需/);
 assert.doesNotMatch(read('SKILL.md'), /confirmChoices|confirmTemplate|retryWith|technicalContext\.resume/);
 assert.match(read('SKILL.md'), /app-packages\/ios/);
 assert.match(read('SKILL.md'), /执行协调 Agent.*不.*询问.*安装包/);

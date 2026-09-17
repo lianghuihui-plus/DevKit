@@ -17,7 +17,8 @@ const { readExecutionReport } = require('../lib/execution-reader');
 const { buildExecutionNarrative } = require('../report/execution-narrative');
 const { refreshCommittedCaseReports } = require('../report/report-service');
 const { acquireFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
+const { claimTokenFor } = require('../lib/dispatch-lease');
+const { createTestExecutionRequest, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
 
@@ -25,6 +26,7 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 const T0 = '2026-09-03T10:00:00.000Z';
 const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-case-runtime-')), 'workspace with spaces $literal');
 createTestWorkspace(root);
+const handoffClaimToken = (handoff) => claimTokenFor(JSON.parse(fs.readFileSync(handoff.path, 'utf8')));
 const transientLock = path.join(root, 'runs', 'transient-write.lock');
 fs.mkdirSync(path.dirname(transientLock), { recursive: true });
 fs.writeFileSync(transientLock, '');
@@ -121,6 +123,7 @@ const started = {
     sha256: startedResponse.handoff.sha256,
     executionId: startedResponse.executionId,
     caseProtocolSha: contract.protocolSha,
+    claimToken: handoffClaimToken(startedResponse.handoff),
   }).brief,
 };
 require('../case-runtime/case-flow-service').revise(started.execDir,
@@ -250,6 +253,7 @@ const continuationBrief = loadAgentHandoff({
   sha256: continuation.handoff.sha256,
   executionId: continuation.executionId,
   caseProtocolSha: started.execution.caseProtocolSha,
+  claimToken: handoffClaimToken(continuation.handoff),
 }).brief;
 assert.strictEqual(continuationBrief.mode, 'CONTINUATION');
 assert.strictEqual(continuationBrief.continuation.sequence, 2);
@@ -295,6 +299,7 @@ const activeBrief = loadAgentHandoff({
   sha256: activeHandoff.sha256,
   executionId: started.execution.executionId,
   caseProtocolSha: started.execution.caseProtocolSha,
+  claimToken: handoffClaimToken(activeHandoff),
 }).brief;
 const clientStatus = JSON.parse(childProcess.execSync(activeBrief.runtime.command, {
   cwd: os.tmpdir(), encoding: 'utf8', input: JSON.stringify({ capability: 'observe', unsupported: true }),

@@ -28,9 +28,9 @@ prepareRun({ capability: "prepareRun", workspace: string, caseNos: string[] })
 
 ## 错误
 
-- [`COORDINATOR_INPUT_INVALID`](../errors.md#error-coordinator-input-invalid)
-- [`COORDINATOR_STATE_INVALID`](../errors.md#error-coordinator-state-invalid)
-- [`COORDINATOR_TECHNICAL`](../errors.md#error-coordinator-technical)
+- [`COORDINATOR_INPUT_INVALID`](../errors/input-state.md#error-coordinator-input-invalid)
+- [`COORDINATOR_STATE_INVALID`](../errors/input-state.md#error-coordinator-state-invalid)
+- [`COORDINATOR_TECHNICAL`](../errors/batch.md#error-coordinator-technical)
 
 ## 最小示例
 

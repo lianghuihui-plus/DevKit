@@ -93,7 +93,7 @@ assert.strictEqual(invocationText.includes('received'), false);
 
 const rejectedResponse = {
   status: 'INPUT_INVALID', code: 'ACTION_NOT_AVAILABLE',
-  documentationRef: 'references/case-runtime/errors.md#error-action-not-available',
+  documentationRef: 'references/case-runtime/errors/scene-action.md#error-action-not-available',
   scene: { sceneRef: 'scene-0001', screenshot: { ref: 'screenshots/scene-0001.png' } },
 };
 telemetry.recordAgentFacing(execDir, {
@@ -107,7 +107,7 @@ const finishRequest = {
 };
 const finishResponse = {
   status: 'RESULT_INCOMPLETE', code: 'CASE_RESULT_INCOMPLETE',
-  documentationRef: 'references/case-runtime/errors.md#error-case-result-incomplete',
+  documentationRef: 'references/case-runtime/errors/flow-result.md#error-case-result-incomplete',
   readiness: { unresolved: [{ expectationRef: 'E2', reasons: ['RESULT_MISSING'] }] },
 };
 telemetry.recordAgentFacing(execDir, finishRequest, finishResponse, 15, {

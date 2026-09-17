@@ -327,7 +327,7 @@ function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = 
       executionId = current.execution?.executionId || null;
     }
   } else {
-    const overview = rootOverview(caseDir, caseJson, options.platforms || null);
+    const overview = rootOverview(caseDir, caseJson);
     contextMarkdown = overview.markdown;
     contextHtml = overview.html;
   }
@@ -359,6 +359,30 @@ function assertIndexLinks(rootDir, cases) {
   }
 }
 
+function batchPublicationResult(rootDir, batchId, cases, errors, projections) {
+  const contract = readJson(path.join(rootDir, 'runs', batchId, 'contract.json'), null);
+  const targets = Array.isArray(contract?.targets) ? contract.targets : [];
+  if (!targets.length || targets.some((target) => typeof target?.caseDir !== 'string' || !target.caseDir)) {
+    return { status: 'FAILED', errorCode: 'REPORT_PUBLICATION_INCOMPLETE', reason: 'batch target metadata is unavailable' };
+  }
+  const targetIdentities = new Set(targets.map((target) => canonicalExistingPath(target.caseDir)));
+  const errorIdentities = new Set([...errors.keys()].map(canonicalExistingPath));
+  const projectionIdentities = new Set([...projections.keys()].map(canonicalExistingPath));
+  const selected = cases.filter((item) => targetIdentities.has(canonicalExistingPath(item.caseDir)));
+  const incomplete = selected.length !== targetIdentities.size
+    || [...targetIdentities].some((identity) => errorIdentities.has(identity) || !projectionIdentities.has(identity))
+    || selected.some((item) => item.status === 'REPORT_ERROR');
+  if (incomplete) {
+    return { status: 'FAILED', errorCode: 'REPORT_PUBLICATION_INCOMPLETE', reason: 'batch target reports are incomplete' };
+  }
+  try {
+    assertIndexLinks(rootDir, selected);
+    return { status: 'PUBLISHED' };
+  } catch (error) {
+    return { status: 'FAILED', errorCode: 'REPORT_PUBLICATION_INCOMPLETE', reason: error.message || String(error) };
+  }
+}
+
 function renderIndexForRootUnlocked(rootDir) {
   const casesDir = path.join(rootDir, 'cases');
   const errors = new Map();
@@ -384,7 +408,9 @@ function renderIndexForRootUnlocked(rootDir) {
   const cases = collectIndexCases(rootDir, { errors, projections, publishErrors: true });
   assertIndexLinks(rootDir, cases);
   const indexPath = renderIndexArtifacts(rootDir, cases);
-  recoverRetryRequiredPublications(rootDir);
+  recoverRetryRequiredPublications(rootDir, {
+    republish: (batchId) => batchPublicationResult(rootDir, batchId, cases, errors, projections),
+  });
   return indexPath;
 }
 

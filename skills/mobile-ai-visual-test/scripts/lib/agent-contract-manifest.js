@@ -29,6 +29,10 @@ const ROLE_RESOURCES = Object.freeze({
     'references/case-runtime/methods/finish.md',
     'references/case-runtime/action-refs.md',
     'references/case-runtime/errors.md',
+    'references/case-runtime/errors/transport.md',
+    'references/case-runtime/errors/scene-action.md',
+    'references/case-runtime/errors/flow-result.md',
+    'references/case-runtime/errors/knowledge-recovery.md',
   ]),
   'batch-coordinator': Object.freeze([
     'SKILL.md',
@@ -38,6 +42,9 @@ const ROLE_RESOURCES = Object.freeze({
     'references/coordinator/methods/advance-run.md',
     'references/coordinator/methods/cancel-run.md',
     'references/coordinator/errors.md',
+    'references/coordinator/errors/input-state.md',
+    'references/coordinator/errors/environment.md',
+    'references/coordinator/errors/batch.md',
   ]),
 });
 
@@ -133,7 +140,6 @@ function implementationGroups(skillRoot, platform) {
     'scripts/lib/observation-model.js',
     'scripts/lib/scroll-context.js',
     'scripts/lib/technical-facts.js',
-    'scripts/lib/technical-context.js',
     'scripts/lib/warm-session-contract.js',
     'scripts/lib/workspace.js',
   ]) runtime.add(relative);

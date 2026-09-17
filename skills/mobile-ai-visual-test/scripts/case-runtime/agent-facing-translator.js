@@ -339,7 +339,6 @@ function projectAgentFacingResponse(execDir, response, request = null) {
   delete projected.result;
   delete projected.evidenceDiagnostics;
   delete projected.knowledgeUsage;
-  delete projected.caseModel;
   const scene = currentScene(execDir);
   if (request?.capability === 'inspect') delete projected.scene;
   else projected.scene = projectScene(scene);
@@ -360,7 +359,7 @@ function projectAgentFacingResponse(execDir, response, request = null) {
       }));
     }
   }
-  if (projected.action) projected.action = projectPreviousAction(projected.action, model);
+  if (projected.action) projected.action = projectPreviousAction(projected.action);
   if (projected.knowledgeInvestigation) {
     projected.knowledgeInvestigation = {
       ...projected.knowledgeInvestigation,

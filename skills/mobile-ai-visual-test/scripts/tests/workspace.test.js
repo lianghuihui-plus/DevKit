@@ -8,7 +8,7 @@ const os = require('os');
 const path = require('path');
 const { importSource } = require('../case/import-source');
 const { sourceSha } = require('../execution/contracts/case-contract');
-const { createTestWorkspace } = require('./current-fixture');
+const { createTestWorkspace } = require('./support/workspace-fixture');
 const {
   WORKSPACE_TYPE,
   ensureWorkspace,

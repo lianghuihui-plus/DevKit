@@ -12,7 +12,12 @@ cli_error() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --platform) platform="${2:-}"; shift 2 ;;
+    --platform)
+      [[ $# -ge 2 && -n "${2:-}" && "${2:-}" != --* ]] || cli_error "prepare-env 缺少 --platform 参数值"
+      [[ -z "$platform" ]] || cli_error "prepare-env 重复参数: --platform"
+      platform="$2"
+      shift 2
+      ;;
     *) args+=("$1"); shift ;;
   esac
 done

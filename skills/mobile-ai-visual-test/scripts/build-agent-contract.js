@@ -5,28 +5,11 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { implementationFiles, implementationGroups, roleEntrypoints, roleResources } = require('./lib/agent-contract-manifest');
-const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
-
-function usage() {
-  const error = new Error('AGENT_CONTRACT_CLI_INVALID: role and platform must match the command contract');
-  error.code = 'AGENT_CONTRACT_CLI_INVALID';
-  error.exitCode = 2;
-  throw error;
-}
+const { parseCoordinatorCliArgs, writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function parseArgs(args) {
-  const options = { skillRoot: path.resolve(__dirname, '..') };
-  for (let index = 0; index < args.length; index += 1) {
-    switch (args[index]) {
-      case '--role': options.role = args[++index]; break;
-      case '--platform': options.platform = String(args[++index] || '').trim().toLowerCase(); break;
-      case '--skill-root': options.skillRoot = path.resolve(args[++index]); break;
-      case '--verify-sha': options.verifySha = args[++index]; break;
-      default: usage();
-    }
-  }
-  if (!['case-executor', 'batch-coordinator'].includes(options.role)) usage();
-  if (!['harmony', 'android', 'ios'].includes(options.platform)) usage();
+  const options = parseCoordinatorCliArgs(args, 'scripts/build-agent-contract.js');
+  options.skillRoot = options.skillRoot ? path.resolve(options.skillRoot) : path.resolve(__dirname, '..');
   return options;
 }
 

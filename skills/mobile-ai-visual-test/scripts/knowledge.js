@@ -4,17 +4,11 @@
 const path = require('path');
 const { assertWorkspace } = require('./lib/workspace');
 const { validateKnowledgeRoots } = require('./lib/knowledge-query');
-const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
+const { parseCoordinatorCliArgs, writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function parseArgs(argv) {
-  if (argv[0] !== 'validate') throw new Error('KNOWLEDGE_CLI_INVALID: command must be validate');
-  const options = {};
-  for (let index = 1; index < argv.length; index += 1) {
-    if (argv[index] === '--workspace') options.workspace = path.resolve(argv[++index]);
-    else if (argv[index] === '--now') options.now = argv[++index];
-    else throw new Error(`KNOWLEDGE_CLI_INVALID: unknown option ${argv[index]}`);
-  }
-  if (!options.workspace) throw new Error('KNOWLEDGE_CLI_INVALID: --workspace is required');
+  const options = parseCoordinatorCliArgs(argv, 'scripts/knowledge.js');
+  options.workspace = path.resolve(options.workspace);
   return options;
 }
 

@@ -9,7 +9,7 @@ const { readExecutionReport } = require('../lib/execution-reader');
 const { formatDisplayTime } = require('../lib/display-format');
 const { buildExecutionTrace } = require('../report/execution-trace');
 const { renderCurrentContextHtml } = require('../report/current-report');
-const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
+const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-execution-trace-'));
@@ -34,7 +34,7 @@ assert.strictEqual(action.screenComparison.status, 'IDENTICAL');
 assert.strictEqual(action.intent, '打开目标并验证结果');
 assert.strictEqual(action.expectedOutcome, '页面展示目标结果');
 assert.deepStrictEqual(action.expectationAssessment, {
-  status: 'TARGETED', summary: 'E1', basis: '当时关联目标',
+  status: 'TARGETED', summary: 'N2', basis: '当时关联目标',
 });
 assert.strictEqual(action.agentAnalysis.status, 'EXPLICIT');
 
@@ -64,10 +64,10 @@ const html = renderCurrentContextHtml(secretFixture.caseJson, secretReport);
 assert.strictEqual(html.includes(secret), false);
 assert.ok(html.includes(formatDisplayTime(secretReport.execution.startedAt)));
 assert.strictEqual(html.includes(secretReport.execution.startedAt), false);
-for (const expected of ['结果概览', '原始用例', '用例理解', '执行计划', '执行过程', '详细日志', '本次执行未触发知识库查询', '验证点结果', '执行记录', '查看原始数据', 'shot-dialog', 'previous-shot', 'next-shot', 'data-log-filter="ACTION"', 'pointerdown', 'setPointerCapture']) {
+for (const expected of ['结果概览', '原始用例', 'Case Flow', '执行过程', '详细日志', '本次执行未触发知识库查询', '验证点结果', '执行记录', '查看原始数据', 'shot-dialog', 'previous-shot', 'next-shot', 'data-log-filter="ACTION"', 'pointerdown', 'setPointerCapture']) {
   assert.ok(html.includes(expected), expected);
 }
-assert.strictEqual((html.match(/role="tab"/g) || []).length, 6);
+assert.strictEqual((html.match(/role="tab"/g) || []).length, 5);
 for (const expected of ['class="verdict-banner', 'class="action-kind"', 'class="step-detail"', 'class="shot-compare', '输入测试内容', '页面展示目标结果']) {
   assert.ok(html.includes(expected), expected);
 }

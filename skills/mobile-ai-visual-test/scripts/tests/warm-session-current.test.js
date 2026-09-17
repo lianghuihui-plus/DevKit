@@ -12,8 +12,8 @@ const { run: runAgentFacing } = require('../case-runtime/agent-facing-client');
 const { executeFacadeRequest: run } = require('../case-runtime/runtime-broker');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
-const { simpleCaseFlow } = require('./simple-case-flow');
+const { createTestExecutionRequest, createTestWorkspace } = require('./support/workspace-fixture');
+const { simpleCaseFlow } = require('./support/case-flow');
 
 process.env.MAVT_SELF_TEST = '1';
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');

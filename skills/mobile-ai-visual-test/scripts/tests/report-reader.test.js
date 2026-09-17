@@ -13,7 +13,7 @@ const { findActiveExecutions } = require('../lib/execution-lifecycle');
 const { createExecutionClosure } = require('../lib/execution-closure');
 const { completionPaths, sha256File } = require('../lib/completion-contract');
 const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
-const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
+const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-reader-'));
@@ -57,17 +57,17 @@ for (const [verdict, fixture] of fixtures) {
   assert.ok(Number.isFinite(publicationTiming.reportPublicationDelayMs));
   assert.ok(html.includes(formatDuration(publicationTiming.reportPublicationDelayMs)), 'first publication includes its delay');
 
-  for (const text of ['## 原始用例', '## Agent 用例理解', '## 初始计划', '## 执行过程', '## 最终检查', '操作前观察', '操作后结论']) {
+  for (const text of ['## 原始用例', '## Case Flow', '### 节点', '### 连接与分支', '## 执行过程', '## 最终检查', '操作前观察', '操作后结论']) {
     assert.ok(markdown.includes(text), text);
   }
   for (const text of ['时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
     assert.ok(markdown.includes(text), `markdown ${text}`);
   }
   assert.ok(markdown.includes(`执行结论：${{ PASS: '通过', FAIL: '失败', INCONCLUSIVE: '无法判断', BLOCKED: '阻塞' }[verdict]}`));
-  for (const text of ['结果概览', '原始用例', '用例理解', '执行计划', '执行过程', '详细日志', '验证点结果', '执行记录', 'Runtime 请求错误', '用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
+  for (const text of ['结果概览', '原始用例', 'Case Flow', '执行过程', '详细日志', '验证点结果', '执行记录', 'Runtime 请求错误', '用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
     assert.ok(html.includes(text), text);
   }
-  assert.strictEqual((html.match(/role="tab"/g) || []).length, 6);
+  assert.strictEqual((html.match(/role="tab"/g) || []).length, 5);
   for (const hook of ['class="product-bar"', 'class="report-head"', 'class="report-tabs"', 'class="verdict-banner', 'class="metric-strip"', 'class="summary-columns"', 'class="process-layout"', 'class="step-list"', 'class="step-inspector"', 'class="logs-toolbar"']) {
     assert.ok(html.includes(hook), hook);
   }
@@ -81,7 +81,7 @@ for (const [verdict, fixture] of fixtures) {
   assert.ok(html.includes('pointerdown'));
   assert.ok(html.includes('setPointerCapture'));
   assert.ok(html.includes('输入类动作已脱敏'));
-  assert.ok(html.includes('data-panel="plan-panel"'));
+  assert.ok(html.includes('data-panel="case-flow-panel"'));
   assert.strictEqual(html.includes('data-panel="raw-panel"'), false);
   assert.ok(html.includes('data-log-filter="KNOWLEDGE"'));
   assert.ok(html.includes('data-log-search'));

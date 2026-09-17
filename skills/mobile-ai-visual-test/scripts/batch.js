@@ -10,6 +10,7 @@ const {
   commitCurrentCase,
   initializeBatch,
   loadBatch,
+  loadBatchForMaintenance,
   reconcileBatch,
   recordFinalizationStep,
   startCurrentCase,
@@ -23,11 +24,13 @@ const {
 const { loadExecutionRequest } = require('./lib/run-control');
 const { refreshBatchIndex, refreshCommittedCaseReports } = require('./report/report-service');
 const { readPublicationState, recordPublicationAttempt } = require('./report/publication-state');
-const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
+const {
+  coordinatorCliErrorResponse,
+  parseCoordinatorCliArgs,
+  writeCoordinatorCliError,
+} = require('./lib/coordinator-interface-contract');
 
 const SKILL_ROOT = path.resolve(__dirname, '..');
-const COMMANDS = new Set(['init', 'bootstrap', 'reconcile', 'start', 'commit', 'status', 'cancel', 'teardown']);
-
 function fail(message) {
   const error = new Error(`BATCH_CLI_INVALID: ${message}`);
   error.exitCode = 2;
@@ -35,15 +38,7 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  const command = argv[0];
-  if (!COMMANDS.has(command)) fail(`unknown command: ${command || 'missing'}`);
-  const options = { command };
-  for (let index = 1; index < argv.length; index += 1) {
-    const flag = argv[index];
-    if (!flag.startsWith('--') || index + 1 >= argv.length || argv[index + 1].startsWith('--')) fail(`invalid option: ${flag}`);
-    options[flag.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = argv[++index];
-  }
-  if (!options.workspace || !options.batchId) fail('--workspace and --batch-id are required');
+  const options = parseCoordinatorCliArgs(argv, 'scripts/batch.js');
   options.workspace = path.resolve(options.workspace);
   return options;
 }
@@ -135,7 +130,7 @@ function publishTerminalReports(common, current) {
   const startedAt = Date.now();
   let publication;
   try {
-    const loaded = loadBatch(common.workspaceRoot, common.batchId, common);
+    const loaded = loadBatchForMaintenance(common.workspaceRoot, common.batchId);
     const refresh = current.refreshBatchIndex || refreshBatchIndex;
     refresh(common.workspaceRoot, loaded.contract.targets.map((target) => target.caseDir));
     publication = { status: 'PUBLISHED', durationMs: Date.now() - startedAt };
@@ -286,12 +281,12 @@ function execute(options) {
     }
     case 'commit': return cleanupTerminalPlatformRuntime(common, current, commitWithDashboard(common));
     case 'status': {
-      const loaded = loadBatch(options.workspace, options.batchId, common);
+      const loaded = loadBatchForMaintenance(options.workspace, options.batchId);
       return { ...loaded, platformRuntime: loadBatchPlatformRuntime(common) };
     }
     case 'cancel': return cancelBatch({ ...common, reason: options.reason });
     case 'teardown': {
-      const loaded = loadBatch(options.workspace, options.batchId, common);
+      const loaded = loadBatchForMaintenance(options.workspace, options.batchId);
       return {
         ...loaded,
         platformRuntimeCleanup: releaseBatchPlatformRuntime({ ...common, adapter: current.adapter }),
@@ -301,19 +296,20 @@ function execute(options) {
   }
 }
 
+function batchTechnicalResponse(error, options) {
+  return {
+    ...coordinatorCliErrorResponse(error, 'scripts/batch.js', options.command),
+    batchId: options.batchId,
+  };
+}
+
 function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   let response;
   try {
     response = execute(options);
   } catch (error) {
-    response = {
-      status: 'TECHNICAL',
-      code: error.code || 'BATCH_OPERATION_FAILED',
-      message: error.message || String(error),
-      batchId: options.batchId,
-      command: options.command,
-    };
+    response = batchTechnicalResponse(error, options);
   }
   process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
   return response;
@@ -326,6 +322,7 @@ if (require.main === module) {
 module.exports = {
   buildContract: (platform) => buildRoleContract('case-executor', platform),
   buildRoleContract,
+  batchTechnicalResponse,
   commitWithDashboard,
   cleanupTerminalPlatformRuntime,
   execute,

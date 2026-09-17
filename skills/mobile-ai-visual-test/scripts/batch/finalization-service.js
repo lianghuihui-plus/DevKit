@@ -6,8 +6,8 @@ const { contractError } = require('../lib/contract-utils');
 const { appendJsonl, findActiveExecutions, readJson, withFileLock } = require('../lib/execution-lifecycle');
 const { markClosed } = require('../lib/warm-session-contract');
 const caseRuntimeLifecycle = require('../case-runtime/lifecycle');
-const { loadBatch, readBatchState, saveBatch } = require('./state-repository');
-const { caseRuntimeDir, currentCase, protocolBindings } = require('./service-support');
+const { loadBatchForMaintenance, readBatchState, saveBatch } = require('./state-repository');
+const { caseRuntimeDir, currentCase } = require('./service-support');
 
 function commitBusinessTerminal(state, now = null) {
   const platformSettled = state.finalization?.platformReleased === true
@@ -22,7 +22,7 @@ function commitBusinessTerminal(state, now = null) {
 }
 
 function recordFinalizationStep(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
+  const loaded = loadBatchForMaintenance(options.workspaceRoot, options.batchId);
   return withFileLock(loaded.paths.lock, () => {
     const state = readBatchState(loaded.paths, loaded.contract);
     if (['COMPLETED', 'CANCELLED', 'BLOCKED'].includes(state.status)) return { state, idempotent: true };
@@ -73,7 +73,7 @@ function archiveBatchDrafts(paths, options = {}) {
 }
 
 function cancelBatch(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
+  const loaded = loadBatchForMaintenance(options.workspaceRoot, options.batchId);
   return withFileLock(loaded.paths.lock, () => {
     const state = readBatchState(loaded.paths, loaded.contract);
     if (state.status === 'CANCELLED') return { action: 'BATCH_CANCELLED', state, idempotent: true };

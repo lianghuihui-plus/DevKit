@@ -13,6 +13,7 @@ function canonicalJson(value) {
 function contractError(code, message, details = {}) {
   const error = new Error(`${code}: ${message}`);
   error.code = code;
+  error.errorKind = 'DOMAIN';
   error.failureCode = code;
   error.exitCode = 2;
   Object.assign(error, details);

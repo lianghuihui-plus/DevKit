@@ -149,7 +149,7 @@ assert.ok(validateAgentFacingRequest({
 })
   .some((item) => item.field === 'caseFlow.extra' && item.code === 'FIELD_UNSUPPORTED'));
 
-const projectedScene = projectScene(scene, { caseFlow: null });
+const projectedScene = projectScene(scene);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(projectedScene, 'schemaVersion'), false);
 assert.strictEqual(projectedScene.sceneRef, scene.sceneId);
 assert.deepStrictEqual(projectedScene.captureTiming, scene.captureTiming);
@@ -174,7 +174,7 @@ const projectedBudgetScene = projectScene({
     bounds: [0, index * 20, 400, index * 20 + 18],
     clickable: true, checkable: false, editable: false, enabled: true, visible: true,
   })),
-}, { caseFlow: null });
+});
 assert.strictEqual(projectedBudgetScene.controls.items.length, 24);
 assert.strictEqual(projectedBudgetScene.controls.truncated, true);
 assert.ok(Buffer.byteLength(JSON.stringify(projectedBudgetScene)) <= 12 * 1024,
@@ -233,7 +233,7 @@ scene.previousAction = {
 };
 writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 writeJsonAtomic(path.join(execDir, 'scenes', `${scene.sceneId}.json`), scene);
-const sceneWithAction = projectScene(scene, { caseFlow: plannedFlow });
+const sceneWithAction = projectScene(scene);
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.available, true);
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.coordinateSource, 'visual');
 assert.deepStrictEqual(sceneWithAction.previousAction.spatialEvidence.requested, {
@@ -423,7 +423,7 @@ assert.strictEqual(invalid.retryWith, undefined);
 assert.strictEqual(brokerCalls, 0, 'invalid Agent input must not reach the Runtime broker');
 assertCompactResponse(invalid);
 assert.strictEqual(invalid.protocol, 'agent-facing');
-assert.match(invalid.documentationRef, /references\/case-runtime\/errors\.md#error-/);
+assert.match(invalid.documentationRef, /references\/case-runtime\/errors\/scene-action\.md#error-action-input-invalid$/);
 const stalled = run(execDir, { capability: 'act', basedOnSceneRef: scene.sceneId, actionRef: 'record-button:longPress', purpose: '再次长按录入语音' }, { executeRequest });
 assert.strictEqual(stalled.status, 'AGENT_INPUT_STALLED');
 assert.strictEqual(stalled.code, 'AGENT_INPUT_STALLED');

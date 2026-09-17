@@ -4,19 +4,12 @@
 const fs = require('fs');
 const path = require('path');
 const { importDrafts } = require('./case/import-drafts');
-const { writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
+const { parseCoordinatorCliArgs, writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function main(argv = process.argv.slice(2)) {
-  let requestFile;
-  let workspace;
-  for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] === '--request-file') requestFile = path.resolve(argv[++index]);
-    else if (argv[index] === '--workspace') workspace = path.resolve(argv[++index]);
-    else throw new Error(`CASE_AUTHORING_CLI_INVALID: unknown argument ${argv[index]}`);
-  }
-  if (!requestFile || !workspace) {
-    throw new Error('CASE_AUTHORING_CLI_INVALID: --request-file and --workspace are required');
-  }
+  const options = parseCoordinatorCliArgs(argv, 'scripts/import-cases.js');
+  const requestFile = path.resolve(options.requestFile);
+  const workspace = path.resolve(options.workspace);
   let request;
   try {
     request = JSON.parse(fs.readFileSync(requestFile, 'utf8'));

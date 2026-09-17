@@ -65,8 +65,7 @@ function validateExpectationCoverage(execDir, result, events, suppliedExecution 
   }
 
   const caseFlow = require('./case-flow-service').current(execDir);
-  const caseModel = caseFlow ? null : require('./case-model-service').current(execDir);
-  const expectations = caseFlow?.nodes?.filter((item) => item.type === 'CHECK') || caseModel?.verificationPoints || [];
+  const expectations = caseFlow?.nodes?.filter((item) => item.type === 'CHECK') || [];
   if (!expectations.length) {
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult requires a current Case Flow with CHECK nodes', {
       missing: [{ field: 'caseFlow', reason: '尚未形成本次用例的 Case Flow 和 CHECK 节点' }],
@@ -85,7 +84,7 @@ function validateExpectationCoverage(execDir, result, events, suppliedExecution 
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult does not cover the current expectations', { missing });
   }
   return {
-    ...(caseFlow ? { caseFlowRevision: caseFlow.revision } : { caseModelRevision: caseModel.revision }),
+    caseFlowRevision: caseFlow.revision,
     expectations: expectations.map((item) => ({ ...item, id: item.ref })),
     coveredExpectationRefs: suppliedRefs,
     complete: true,

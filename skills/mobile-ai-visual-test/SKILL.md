@@ -15,6 +15,8 @@ Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handof
 
 启动时读取 `references/coordinator.md` 的方法短索引。只有紧凑签名不足以构造当前调用时才读取对应方法页；收到错误时只读取 `documentationRef` 指向的错误章节，不预读完整错误目录。
 
+普通执行协调 Agent 和 Case Agent 不读取 `references/commands.md`。只有 Authoring、维护或技术排障确实需要直接调用正式 CLI 时，才从该索引进入当前一个功能模块；不要预读其他模块。
+
 ## 正常执行入口
 
 先执行：
@@ -90,4 +92,4 @@ Coordinator 响应只提供错误原因、诊断、当前资源事实和 `docume
 
 ## Authoring 入口
 
-只有用户明确要求生成、导入或维护用例时，才读取 `references/case-authoring.md`，并按需读取 `references/interfaces.md` 的 Authoring 接口。用例来源的文件数量、文件格式和物理布局都不是用例边界；边界由 Authoring Agent 阅读内容后判断。普通执行不读取 Authoring 文档或 Case Agent Prompt。
+只有用户明确要求生成、导入或维护用例时，才读取 `references/case-authoring.md`，并按需从 `references/commands.md` 进入 Authoring 模块。用例来源的文件数量、文件格式和物理布局都不是用例边界；边界由 Authoring Agent 阅读内容后判断。普通执行不读取 Authoring 文档或 Case Agent Prompt。

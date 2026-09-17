@@ -3,6 +3,7 @@
 
 const assert = require('assert');
 const childProcess = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const suites = Object.freeze({
@@ -31,7 +32,6 @@ const suites = Object.freeze({
   publication: 'tests/publication-integrity.test.js',
   knowledge: 'tests/knowledge.test.js',
   knowledgeClosure: 'tests/knowledge-closure.test.js',
-  caseModel: 'tests/case-model-service.test.js',
   caseFlow: 'tests/case-flow-service.test.js',
   caseFlowResultIntegrity: 'tests/case-flow-result-integrity.test.js',
   caseStatusProjection: 'tests/case-status-projection.test.js',
@@ -53,10 +53,18 @@ const suites = Object.freeze({
   agentFacingPublicationFlow: 'tests/agent-facing-publication-flow.test.js',
   expectationResult: 'tests/expectation-result-service.test.js',
   agentFacingTransportParity: 'tests/agent-facing-transport-parity.test.js',
+  agentHandoff: 'tests/agent-handoff.test.js',
   coordinatorAgentFacing: 'tests/coordinator-agent-facing.test.js',
   executionFlowCombination: 'tests/execution-flow-combination.test.js',
   entrypoints: 'tests/formal-entrypoints.test.js',
 });
+
+const registeredFiles = Object.values(suites).sort();
+const testFiles = fs.readdirSync(path.join(__dirname, 'tests'))
+  .filter((name) => name.endsWith('.test.js'))
+  .map((name) => `tests/${name}`)
+  .sort();
+assert.deepStrictEqual(registeredFiles, testFiles, 'Every test suite must be registered in scripts/self-test.js');
 
 const requested = process.argv.slice(2);
 for (const name of requested) {

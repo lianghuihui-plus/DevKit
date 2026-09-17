@@ -12,7 +12,12 @@ cli_error() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --platform) platform="${2:-}"; shift 2 ;;
+    --platform)
+      [[ $# -ge 2 && -n "${2:-}" && "${2:-}" != --* ]] || cli_error "probe-env 缺少 --platform 参数值"
+      [[ -z "$platform" ]] || cli_error "probe-env 重复参数: --platform"
+      platform="$2"
+      shift 2
+      ;;
     --app|--bundle|--entry|--ability)
       cli_error "probe-env 只探测平台/设备能力，不接收 $1；目标 App 写入 environment confirmation binding"
       ;;

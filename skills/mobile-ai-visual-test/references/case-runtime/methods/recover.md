@@ -40,11 +40,11 @@ recover({ capability: "recover", basedOnSceneRef?: string, reason: string, targe
 
 ## 错误
 
-- [`AGENT_INPUT_INVALID`](../errors.md#error-agent-input-invalid)
-- [`BINDING_INVALID`](../errors.md#error-binding-invalid)
-- [`SCENE_CHANGED`](../errors.md#error-scene-changed)
-- [`APP_INITIAL_STATE_UNAVAILABLE`](../errors.md#error-app-initial-state-unavailable)
-- [`CASE_RUNTIME_TECHNICAL`](../errors.md#error-case-runtime-technical)
+- [`AGENT_INPUT_INVALID`](../errors/transport.md#error-agent-input-invalid)
+- [`BINDING_INVALID`](../errors/transport.md#error-binding-invalid)
+- [`SCENE_CHANGED`](../errors/scene-action.md#error-scene-changed)
+- [`APP_INITIAL_STATE_UNAVAILABLE`](../errors/knowledge-recovery.md#error-app-initial-state-unavailable)
+- [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 
 ## 最小示例
 

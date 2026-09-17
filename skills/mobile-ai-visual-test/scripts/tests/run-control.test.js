@@ -16,7 +16,7 @@ const {
 } = require('../lib/run-control');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { validateBinding } = require('../lib/batch-contract');
-const { createTestWorkspace } = require('./current-fixture');
+const { createTestWorkspace } = require('./support/workspace-fixture');
 
 const T0 = '2026-08-18T10:00:00.000Z';
 const T1 = '2026-08-18T10:01:00.000Z';

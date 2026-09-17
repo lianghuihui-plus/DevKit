@@ -12,7 +12,7 @@ const {
 } = require('../lib/action-spatial-evidence');
 const { inspectPng } = require('../lib/image-evidence');
 const { validateCaseRuntimeEvidenceGraph } = require('../case-runtime/result-integrity');
-const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
+const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
 

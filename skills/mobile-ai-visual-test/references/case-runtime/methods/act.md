@@ -40,14 +40,14 @@ act({ capability: "act", basedOnSceneRef: string, actionRef: string, input?: obj
 
 ## 错误
 
-- [`AGENT_INPUT_INVALID`](../errors.md#error-agent-input-invalid)
-- [`BINDING_INVALID`](../errors.md#error-binding-invalid)
-- [`SCENE_CHANGED`](../errors.md#error-scene-changed)
-- [`ACTION_NOT_AVAILABLE`](../errors.md#error-action-not-available)
-- [`ACTION_INPUT_INVALID`](../errors.md#error-action-input-invalid)
-- [`VISUAL_INSPECTION_REQUIRED`](../errors.md#error-visual-inspection-required)
-- [`ACTION_OUTCOME_UNKNOWN`](../errors.md#error-action-outcome-unknown)
-- [`CASE_RUNTIME_TECHNICAL`](../errors.md#error-case-runtime-technical)
+- [`AGENT_INPUT_INVALID`](../errors/transport.md#error-agent-input-invalid)
+- [`BINDING_INVALID`](../errors/transport.md#error-binding-invalid)
+- [`SCENE_CHANGED`](../errors/scene-action.md#error-scene-changed)
+- [`ACTION_NOT_AVAILABLE`](../errors/scene-action.md#error-action-not-available)
+- [`ACTION_INPUT_INVALID`](../errors/scene-action.md#error-action-input-invalid)
+- [`VISUAL_INSPECTION_REQUIRED`](../errors/scene-action.md#error-visual-inspection-required)
+- [`ACTION_OUTCOME_UNKNOWN`](../errors/scene-action.md#error-action-outcome-unknown)
+- [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 
 ## 最小示例
 

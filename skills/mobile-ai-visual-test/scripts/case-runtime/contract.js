@@ -8,7 +8,7 @@ const { AGENT_CONTRACT_DEFINITIONS, OPERATION_CONTRACT, RUNTIME_OPERATIONS } = r
 const VERDICTS = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_RUN']);
 const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE']);
 const RESULT_FIELDS = new Set([
-  'verdict', 'summary', 'checks', 'uncertainties', 'caseModelRevision', 'caseFlowRevision',
+  'verdict', 'summary', 'checks', 'uncertainties', 'caseFlowRevision',
   'notRunReason', 'notRunEvidence',
 ]);
 const CHECK_FIELDS = new Set(['expectationRef', 'checkNodeRef', 'status', 'actual', 'sceneRefs', 'knowledgeRefs', 'technicalRefs', 'evidenceBasis']);
@@ -73,14 +73,8 @@ function validateCaseResult(value) {
   ensureOnlyFields(value, RESULT_FIELDS, 'CaseResult');
   if (!VERDICTS.includes(value.verdict)) throw contractError('CASE_RESULT_INVALID', `verdict must be one of ${VERDICTS.join(', ')}`);
   ensureString(value.summary, 'summary', 'CASE_RESULT_INVALID');
-  if (value.caseModelRevision !== undefined && (!Number.isInteger(value.caseModelRevision) || value.caseModelRevision < 1)) {
-    throw contractError('CASE_RESULT_INVALID', 'caseModelRevision must be a positive integer');
-  }
   if (value.caseFlowRevision !== undefined && (!Number.isInteger(value.caseFlowRevision) || value.caseFlowRevision < 1)) {
     throw contractError('CASE_RESULT_INVALID', 'caseFlowRevision must be a positive integer');
-  }
-  if (value.caseModelRevision !== undefined && value.caseFlowRevision !== undefined) {
-    throw contractError('CASE_RESULT_INVALID', 'CaseResult cannot contain both caseModelRevision and caseFlowRevision');
   }
   if (value.verdict === 'NOT_RUN') {
     ensureString(value.notRunReason, 'notRunReason', 'CASE_RESULT_INVALID');

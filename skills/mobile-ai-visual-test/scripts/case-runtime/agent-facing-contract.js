@@ -110,32 +110,50 @@ const SCHEMAS = Object.freeze({
 });
 
 const PUBLIC_ERRORS = Object.freeze({
-  AGENT_INPUT_INVALID: { retryable: true, summary: '请求结构、类型或条件字段不合法。' },
-  AGENT_INPUT_STALLED: { retryable: false, summary: '同类输入错误连续发生，停止自动猜测。' },
-  PROTOCOL_MISMATCH: { retryable: false, summary: 'Prompt、文档、客户端或 execution 协议不一致。' },
+  AGENT_INPUT_INVALID: { group: 'transport', retryable: true, summary: '请求结构、类型或条件字段不合法。', recovery: '根据 issues 修正当前方法请求一次；字段只取自当前方法页和 Runtime 响应。' },
+  AGENT_INPUT_STALLED: { group: 'transport', retryable: false, summary: '同类输入错误连续发生，停止自动猜测。', recovery: '停止修改参数，读取当前方法页并核对绑定命令；仍不一致时保留请求和响应进行技术排障。' },
+  PROTOCOL_MISMATCH: { group: 'transport', retryable: false, summary: 'Prompt、文档、客户端或 execution 协议不一致。', recovery: '停止执行该 execution，保留 Loader 输出和摘要；使用当前 Skill 新建 execution，不修改旧 execution。' },
   BINDING_INVALID: {
+    group: 'transport',
     retryable: false,
     summary: 'Execution 或 dispatch 绑定无效。',
     recovery: '读取 facts.technical.code：sequence 不匹配时原样复用当前 Loader/Brief 中的 command；只有 HANDOFF_REPLACED 才表示该 dispatch 已被真实 continuation 取代；HANDOFF_NOT_CLAIMED 表示 Loader 尚未成功 claim。',
   },
-  SCENE_REQUIRED: { retryable: true, summary: '当前方法需要 Scene，但 execution 尚无 Scene。' },
-  SCENE_CHANGED: { retryable: true, summary: '动作所依据的 Scene 已不是当前 Scene。' },
-  ACTION_NOT_AVAILABLE: { retryable: true, summary: 'ActionRef 对当前 Scene 不成立。' },
-  ACTION_INPUT_INVALID: { retryable: true, summary: '动作输入缺失、越界或包含不支持字段。' },
-  VISUAL_INSPECTION_REQUIRED: { retryable: true, summary: '当前视觉动作或结论要求先登记图片事实。' },
-  CASE_FLOW_REQUIRED: { retryable: true, summary: '当前 execution 尚无 Case Flow。' },
-  CASE_FLOW_REVISION_CONFLICT: { retryable: true, summary: 'Case Flow baseRevision 不是当前 revision。' },
-  CASE_FLOW_CONTEXT_INVALID: { retryable: true, summary: 'flowContext 的节点或分支不属于当前 Case Flow revision。' },
-  EXPECTATION_UNKNOWN: { retryable: true, summary: 'checkNodeRef 不属于当前 Case Flow 的 CHECK 节点。' },
-  RECORD_RESULT_INVALID: { retryable: true, summary: '验证结果缺少有效证据或字段不符合当前验证点。' },
-  EVIDENCE_REFERENCE_INVALID: { retryable: true, summary: 'Scene、知识、技术或滚动证据引用无效。' },
-  KNOWLEDGE_QUERY_UNKNOWN: { retryable: true, summary: '知识 queryId 不存在或不属于当前 execution。' },
-  KNOWLEDGE_REVIEW_INVALID: { retryable: true, summary: '知识候选复核不满足当前 query 约束。' },
-  APP_INITIAL_STATE_UNAVAILABLE: { retryable: true, summary: '授权的初始状态准备未完成。' },
-  ACTION_OUTCOME_UNKNOWN: { retryable: false, summary: '动作可能已经投递，禁止自动重放。' },
-  CASE_RESULT_INCOMPLETE: { retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。' },
-  TIME_LIMIT: { retryable: false, summary: '已停止新的设备动作。' },
-  CASE_RUNTIME_TECHNICAL: { retryable: false, summary: '未归类的 execution 技术异常。' },
+  SCENE_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前方法需要 Scene，但 execution 尚无 Scene。', recovery: '先调用 observe 采集当前 Scene，再使用返回的 sceneRef 调用原方法。' },
+  SCENE_CHANGED: { group: 'scene-action', retryable: true, summary: '动作所依据的 Scene 已不是当前 Scene。', recovery: '调用 observe 获取新 Scene，重新 inspect 并从新 Scene 选择 ActionRef；不要复用旧动作。' },
+  ACTION_NOT_AVAILABLE: { group: 'scene-action', retryable: true, summary: 'ActionRef 对当前 Scene 不成立。', recovery: '读取当前 Scene 的 action 投影；必要时重新 observe，不手工拼接或猜测 ActionRef。' },
+  ACTION_INPUT_INVALID: { group: 'scene-action', retryable: true, summary: '动作输入缺失、越界或包含不支持字段。', recovery: '按当前 ActionRef 返回的输入约束修正 input；坐标使用 0 到 1 的归一化值。' },
+  VISUAL_INSPECTION_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前视觉动作或结论要求先登记图片事实。', recovery: '对同一 Scene 调用 inspect(channel="visual") 登记实际看到的事实，再重试视觉动作或结果记录。' },
+  CASE_FLOW_REQUIRED: { group: 'flow-result', retryable: true, summary: '当前 execution 尚无 Case Flow。', recovery: '读取原始用例并调用 plan 创建完整 Case Flow，然后从 entryNodeRef 开始执行。' },
+  CASE_FLOW_REVISION_CONFLICT: { group: 'flow-result', retryable: true, summary: 'Case Flow baseRevision 不是当前 revision。', recovery: '读取响应中的当前 Case Flow revision，合并仍需要的调整理由后基于该 revision 重新提交。' },
+  CASE_FLOW_CONTEXT_INVALID: { group: 'flow-result', retryable: true, summary: 'flowContext 的节点或分支不属于当前 Case Flow revision。', recovery: '使用当前 Case Flow 返回的 nodeRef 和 edgeRef；不要复用已 retired 的引用。' },
+  EXPECTATION_UNKNOWN: { group: 'flow-result', retryable: true, summary: 'checkNodeRef 不属于当前 Case Flow 的 CHECK 节点。', recovery: '从当前 Case Flow 选择现存 CHECK 节点引用；如检查点确需变更，先用 plan 记录理由并修订。' },
+  RECORD_RESULT_INVALID: { group: 'flow-result', retryable: true, summary: '验证结果缺少有效证据或字段不符合当前验证点。', recovery: '按响应 issues 补齐 actual 和匹配当前验证类型的证据；证据不足时使用 INCONCLUSIVE。' },
+  EVIDENCE_REFERENCE_INVALID: { group: 'flow-result', retryable: true, summary: 'Scene、知识、技术或滚动证据引用无效。', recovery: '只引用当前 execution 已登记并由 Runtime 返回的证据 ref；缺失时先采集或登记事实。' },
+  KNOWLEDGE_QUERY_UNKNOWN: { group: 'knowledge-recovery', retryable: true, summary: '知识 queryId 不存在或不属于当前 execution。', recovery: '先调用 knowledge(query) 创建查询，并使用该响应返回的 queryId 复核候选。' },
+  KNOWLEDGE_REVIEW_INVALID: { group: 'knowledge-recovery', retryable: true, summary: '知识候选复核不满足当前 query 约束。', recovery: '逐条覆盖当前 query 返回的候选并给出适用性原因，再提交同一 queryId。' },
+  APP_INITIAL_STATE_UNAVAILABLE: { group: 'knowledge-recovery', retryable: true, summary: '授权的初始状态准备未完成。', recovery: '读取 technical facts 确认制品、设备或平台准备失败原因；完成技术处置后重试同一 recover.targetState。' },
+  ACTION_OUTCOME_UNKNOWN: { group: 'scene-action', retryable: false, summary: '动作可能已经投递，禁止自动重放。', recovery: '禁止重放动作；先 observe 当前现场，并结合 action 落点证据判断下一步。' },
+  CASE_RESULT_INCOMPLETE: { group: 'flow-result', retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。', recovery: '读取未解决 CHECK 列表，补充观察或结果；无法形成确定判断时记录 INCONCLUSIVE 后再次 finish。' },
+  TIME_LIMIT: { group: 'flow-result', retryable: false, summary: '已停止新的设备动作。', recovery: '不再执行设备动作；使用已有证据收口可判断项，并披露未完成项和时间限制。' },
+  CASE_RUNTIME_TECHNICAL: { group: 'knowledge-recovery', retryable: false, summary: '未归类的 execution 技术异常。', recovery: '读取 technical.stage、logRefs 和 resourceFacts 排障；恢复后先 observe 核验现场，再回到原业务节点。' },
+});
+
+const TRANSPORTS = Object.freeze({
+  loaderCommand: {
+    summary: 'Case Agent 用于领取唯一 execution Handoff 的预绑定 Loader。',
+    input: '不附加输入。',
+    rule: '必须原样执行，不修改哈希、sequence、claim token 或路径。',
+    success: '返回 Case Prompt、Case Brief 和预绑定 Runtime Client。',
+    errors: ['BINDING_INVALID', 'PROTOCOL_MISMATCH'],
+  },
+  runtimeClient: {
+    summary: '当前 execution 的预绑定 Case Runtime Client。',
+    input: '每轮按 Brief 指示通过 requestPath 或 stdin 提交一个方法请求。',
+    rule: '必须原样使用命令绑定；业务字段只按当前方法页构造。',
+    success: '返回一个 Agent-facing Runtime 状态。',
+    errors: ['AGENT_INPUT_INVALID', 'AGENT_INPUT_STALLED', 'BINDING_INVALID', 'CASE_RUNTIME_TECHNICAL'],
+  },
 });
 
 function method(name, summary, requestSchema, parameterDescriptions, options = {}) {
@@ -240,11 +258,14 @@ const PUBLIC_CONTRACT = Object.freeze({
   protocol: AGENT_FACING_PROTOCOL,
   methods: PUBLIC_METHODS,
   errors: PUBLIC_ERRORS,
+  transports: TRANSPORTS,
 });
 
 function documentationRefFor(code) {
-  const normalized = String(code || 'CASE_RUNTIME_TECHNICAL').replace(/_/g, '-').toLowerCase();
-  return `references/case-runtime/errors.md#error-${normalized}`;
+  const documentedCode = PUBLIC_ERRORS[code] ? code : 'CASE_RUNTIME_TECHNICAL';
+  const normalized = documentedCode.replace(/_/g, '-').toLowerCase();
+  const definition = PUBLIC_ERRORS[documentedCode];
+  return `references/case-runtime/errors/${definition.group}.md#error-${normalized}`;
 }
 
 function schemaFor(request) {

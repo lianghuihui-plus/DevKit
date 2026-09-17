@@ -13,8 +13,8 @@ const { createCaseContract } = require('../execution/contracts/case-contract');
 const { createInitialStatePreflight } = require('../lib/app-provisioning');
 const { readExecutionReport } = require('../lib/execution-reader');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { createTestWorkspace } = require('./current-fixture');
-const { simpleCaseFlow } = require('./simple-case-flow');
+const { createTestWorkspace } = require('./support/workspace-fixture');
+const { simpleCaseFlow } = require('./support/case-flow');
 
 process.env.MAVT_SELF_TEST = '1';
 

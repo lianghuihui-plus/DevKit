@@ -20,8 +20,8 @@ const { run } = require('../case-runtime/agent-facing-client');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { refreshBatchIndex, renderIndexForRoot } = require('../report/report-service');
-const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
-const { simpleCaseFlow } = require('./simple-case-flow');
+const { createTestExecutionRequest, createTestWorkspace } = require('./support/workspace-fixture');
+const { simpleCaseFlow } = require('./support/case-flow');
 
 process.env.MAVT_SELF_TEST = '1';
 

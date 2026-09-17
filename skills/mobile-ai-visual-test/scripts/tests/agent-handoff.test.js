@@ -8,6 +8,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { canonicalJson } = require('../lib/contract-utils');
+const { loaderErrorResponse } = require('../case-agent-bootstrap');
 const { createAgentHandoff, loadAgentHandoff, loadPreparedAgentHandoff } = require('../batch/agent-handoff');
 const { assertActiveDispatch, claimDispatch, claimTokenFor } = require('../lib/dispatch-lease');
 
@@ -20,6 +21,18 @@ function digest(value) {
 }
 
 const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-agent-handoff-'));
+const loaderInputError = new Error('unknown option');
+loaderInputError.errorKind = 'INPUT';
+loaderInputError.issues = [{ fieldPath: 'unknown', code: 'UNKNOWN_ARGUMENT', expected: '--workspace' }];
+const loaderInputResponse = loaderErrorResponse(loaderInputError);
+assert.strictEqual(loaderInputResponse.status, 'REQUEST_INVALID');
+assert.match(loaderInputResponse.documentationRef, /errors\/transport\.md#error-agent-input-invalid$/);
+const loaderBindingError = new Error('handoff digest mismatch');
+loaderBindingError.code = 'HANDOFF_INTEGRITY_INVALID';
+const loaderBindingResponse = loaderErrorResponse(loaderBindingError);
+assert.strictEqual(loaderBindingResponse.status, 'TECHNICAL');
+assert.strictEqual(loaderBindingResponse.code, 'BINDING_INVALID');
+assert.match(loaderBindingResponse.documentationRef, /errors\/transport\.md#error-binding-invalid$/);
 const common = {
   workspaceRoot,
   batchId: 'batch-20260910',
@@ -40,7 +53,7 @@ try {
   assert.match(path.basename(initial.path), /^1-[a-f0-9]{64}\.json$/);
   assert.strictEqual(initial.loaderCommand.includes(common.casePrompt), false);
   assert.strictEqual(initial.loaderCommand.includes(JSON.stringify(common.brief)), false);
-  for (const option of ['--workspace', '--handoff', '--sha256', '--execution-id', '--case-protocol-sha']) {
+  for (const option of ['--workspace', '--handoff', '--sha256', '--execution-id', '--case-protocol-sha', '--claim-token']) {
     assert.strictEqual(initial.loaderCommand.includes(option), true, `loaderCommand must include ${option}`);
   }
   assert.strictEqual(fs.statSync(initial.path).mode & 0o777, 0o600);
@@ -71,6 +84,7 @@ try {
     sha256: initial.sha256,
     executionId: common.executionId,
     caseProtocolSha: common.caseProtocolSha,
+    claimToken: claimTokenFor(JSON.parse(persistedBefore)),
     now: common.now,
   });
   assert.deepStrictEqual(loaded, { casePrompt: common.casePrompt, brief: common.brief });
@@ -84,6 +98,7 @@ try {
   const claimedState = JSON.parse(fs.readFileSync(dispatchStatePath, 'utf8'));
   assert.strictEqual(claimedState.dispatches[initial.handoffId].status, 'CONSUMED');
   assert.ok(claimedState.dispatches[initial.handoffId].claimedAt);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(claimedState.dispatches[initial.handoffId], 'leaseUntil'), false);
   expectCode(() => loadAgentHandoff({
     workspaceRoot,
     handoffPath: initial.path,
@@ -110,8 +125,19 @@ try {
     sha256: continuation.sha256,
     executionId: common.executionId,
     caseProtocolSha: common.caseProtocolSha,
+    claimToken: claimTokenFor(JSON.parse(fs.readFileSync(continuation.path, 'utf8'))),
   }).brief.lastSceneId, 'scene-0004');
 
+  const cliWithoutClaim = spawnSync(process.execPath, [
+    path.resolve(__dirname, '../case-agent-bootstrap.js'),
+    '--workspace', workspaceRoot,
+    '--handoff', continuation.path,
+    '--sha256', continuation.sha256,
+    '--execution-id', common.executionId,
+    '--case-protocol-sha', common.caseProtocolSha,
+  ], { encoding: 'utf8' });
+  assert.strictEqual(cliWithoutClaim.status, 2);
+  assert.strictEqual(JSON.parse(cliWithoutClaim.stderr).issues[0].fieldPath, 'claim-token');
   const cli = spawnSync(process.execPath, [
     path.resolve(__dirname, '../case-agent-bootstrap.js'),
     '--workspace', workspaceRoot,
@@ -119,6 +145,7 @@ try {
     '--sha256', continuation.sha256,
     '--execution-id', common.executionId,
     '--case-protocol-sha', common.caseProtocolSha,
+    '--claim-token', claimTokenFor(JSON.parse(fs.readFileSync(continuation.path, 'utf8'))),
   ], { encoding: 'utf8' });
   assert.strictEqual(cli.status, 0, cli.stderr);
   assert.strictEqual(JSON.parse(cli.stdout).brief.lastSceneId, 'scene-0004');

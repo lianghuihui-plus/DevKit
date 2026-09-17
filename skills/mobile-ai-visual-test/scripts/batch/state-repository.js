@@ -31,13 +31,13 @@ function batchPaths(workspaceRoot, batchId) {
   };
 }
 
-function loadBatch(workspaceRoot, batchId, versions = {}) {
+function loadFrozenBatch(workspaceRoot, batchId, versions = null) {
   assertBatchWorkspace(workspaceRoot);
   const paths = batchPaths(workspaceRoot, batchId);
   const state = readJson(paths.state, null);
   const contract = readJson(paths.contract, null);
   if (!state || !contract) throw contractError('BATCH_NOT_INITIALIZED', `batch is not initialized: ${batchId}`);
-  assertBatchImplementation(contract, versions);
+  if (versions) assertBatchImplementation(contract, versions);
   if (state.batchId !== contract.batchId || state.contractSha !== contract.contractSha
     || state.runtimeSha !== contract.runtimeSha || state.adapterSha !== contract.adapterSha
     || state.coordinatorSha !== contract.coordinatorSha) {
@@ -75,6 +75,14 @@ function loadBatch(workspaceRoot, batchId, versions = {}) {
   return { paths, state, contract };
 }
 
+function loadBatch(workspaceRoot, batchId, versions = {}) {
+  return loadFrozenBatch(workspaceRoot, batchId, versions);
+}
+
+function loadBatchForMaintenance(workspaceRoot, batchId) {
+  return loadFrozenBatch(workspaceRoot, batchId);
+}
+
 function saveBatch(paths, state, now) {
   state.updatedAt = now || new Date().toISOString();
   validateBatchState(state, readJson(paths.contract), { schemaVersion: BATCH_SCHEMA_VERSION });
@@ -86,4 +94,4 @@ function readBatchState(paths, contract) {
   return validateBatchState(readJson(paths.state), contract, { schemaVersion: BATCH_SCHEMA_VERSION });
 }
 
-module.exports = { assertBatchWorkspace, batchPaths, loadBatch, readBatchState, saveBatch };
+module.exports = { assertBatchWorkspace, batchPaths, loadBatch, loadBatchForMaintenance, readBatchState, saveBatch };

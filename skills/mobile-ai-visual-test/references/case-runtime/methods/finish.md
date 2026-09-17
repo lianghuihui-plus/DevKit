@@ -2,8 +2,11 @@
 
 从 CHECK ledger 收口并完成用例。
 
+## 调用分支
+
 ```typescript
-finish({ capability: "finish", summary: string, uncertainties?: string[], flowContext?: object, outcome?: "NOT_RUN", reason?: string, evidence?: object })
+finish({ capability: "finish", summary: string, uncertainties?: string[], flowContext?: object })
+finish({ capability: "finish", outcome: "NOT_RUN", reason: string, evidence: object, summary: string, uncertainties?: string[], flowContext?: object })
 ```
 
 ## 参数
@@ -37,11 +40,11 @@ finish({ capability: "finish", summary: string, uncertainties?: string[], flowCo
 
 ## 错误
 
-- [`AGENT_INPUT_INVALID`](../errors.md#error-agent-input-invalid)
-- [`BINDING_INVALID`](../errors.md#error-binding-invalid)
-- [`CASE_FLOW_REQUIRED`](../errors.md#error-case-flow-required)
-- [`CASE_RESULT_INCOMPLETE`](../errors.md#error-case-result-incomplete)
-- [`CASE_RUNTIME_TECHNICAL`](../errors.md#error-case-runtime-technical)
+- [`AGENT_INPUT_INVALID`](../errors/transport.md#error-agent-input-invalid)
+- [`BINDING_INVALID`](../errors/transport.md#error-binding-invalid)
+- [`CASE_FLOW_REQUIRED`](../errors/flow-result.md#error-case-flow-required)
+- [`CASE_RESULT_INCOMPLETE`](../errors/flow-result.md#error-case-result-incomplete)
+- [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 
 ## 最小示例
 

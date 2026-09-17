@@ -92,6 +92,7 @@ function recordPublicationAttempt(workspaceRoot, batchId, scope, result, options
 }
 
 function recoverRetryRequiredPublications(workspaceRoot, options = {}) {
+  if (typeof options.republish !== 'function') return [];
   const runsRoot = path.join(workspaceRoot, 'runs');
   if (!fs.existsSync(runsRoot)) return [];
   const recovered = [];
@@ -106,10 +107,15 @@ function recoverRetryRequiredPublications(workspaceRoot, options = {}) {
     }
     if (current.status !== 'RETRY_REQUIRED') continue;
     try {
-      recordPublicationAttempt(workspaceRoot, name, 'batch', { status: 'PUBLISHED' }, options);
-      recovered.push(name);
-    } catch {
-      continue;
+      const result = options.republish(name, current);
+      const next = recordPublicationAttempt(workspaceRoot, name, 'batch', result, options);
+      if (next.status === 'PUBLISHED') recovered.push(name);
+    } catch (error) {
+      recordPublicationAttempt(workspaceRoot, name, 'batch', {
+        status: 'FAILED',
+        errorCode: error?.code || 'REPORT_PUBLICATION_INCOMPLETE',
+        reason: error?.message || String(error),
+      }, options);
     }
   }
   return recovered;

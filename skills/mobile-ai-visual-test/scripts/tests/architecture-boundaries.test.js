@@ -34,6 +34,10 @@ assert.deepStrictEqual(roleResources('case-executor'), [
   'references/case-runtime/methods/finish.md',
   'references/case-runtime/action-refs.md',
   'references/case-runtime/errors.md',
+  'references/case-runtime/errors/transport.md',
+  'references/case-runtime/errors/scene-action.md',
+  'references/case-runtime/errors/flow-result.md',
+  'references/case-runtime/errors/knowledge-recovery.md',
 ]);
 assert.deepStrictEqual(roleEntrypoints('case-executor'), [
   'scripts/case-runtime/agent-facing-client.js',
@@ -181,7 +185,7 @@ const iosContract = buildContract({ skillRoot: root, role: 'case-executor', plat
 assert.strictEqual(iosContract.implementationFiles.includes('scripts/platform/adapters/ios/lib/input-service.js'), true);
 assert.strictEqual(iosContract.implementationFiles.includes('scripts/platform/adapters/ios/lib/pointer-actions.js'), true);
 assert.strictEqual(caseContract.implementationFiles.includes('scripts/lib/app-provisioning.js'), true);
-assert.strictEqual(caseContract.implementationFiles.includes('scripts/case-runtime/case-model-service.js'), true);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/case-runtime/case-model-service.js'), false);
 assert.strictEqual(caseContract.implementationFiles.includes('scripts/execution/contracts/case-spec-contract.js'), false);
 assert.strictEqual(caseContract.implementationFiles.includes('scripts/execution/contracts/validation-profile-contract.js'), true);
 assert.strictEqual(caseContract.implementationFiles.includes('scripts/case-runtime/runtime-operation-contract.js'), true);
@@ -203,6 +207,9 @@ assert.deepStrictEqual(coordinatorContract.requiredResources, [
   'references/coordinator/methods/advance-run.md',
   'references/coordinator/methods/cancel-run.md',
   'references/coordinator/errors.md',
+  'references/coordinator/errors/input-state.md',
+  'references/coordinator/errors/environment.md',
+  'references/coordinator/errors/batch.md',
 ]);
 assert.strictEqual(read('references/interfaces.md').includes('## Case Runtime'), false);
 assert.strictEqual(read('references/interfaces.md').includes('runtime.requestPath'), false);

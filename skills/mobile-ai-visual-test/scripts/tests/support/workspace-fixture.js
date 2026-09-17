@@ -3,13 +3,13 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { buildContract } = require('../build-agent-contract');
-const { createCaseContract, validateCaseContract } = require('../execution/contracts/case-contract');
-const { completionPaths, sha256File, validatePublishedCompletion } = require('../lib/completion-contract');
-const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
-const { confirmEnvironment, createExecutionRequest } = require('../lib/run-control');
-const { appProvisioningSha, defaultAppProvisioning, preparationPolicySha, validatePreparationPolicy } = require('../lib/app-provisioning');
-const { createValidationProfile } = require('../execution/contracts/validation-profile-contract');
+const { buildContract } = require('../../build-agent-contract');
+const { createCaseContract, validateCaseContract } = require('../../execution/contracts/case-contract');
+const { completionPaths, sha256File, validatePublishedCompletion } = require('../../lib/completion-contract');
+const { buildExecutionArtifactManifest } = require('../../lib/execution-artifact-manifest');
+const { confirmEnvironment, createExecutionRequest } = require('../../lib/run-control');
+const { appProvisioningSha, defaultAppProvisioning, preparationPolicySha, validatePreparationPolicy } = require('../../lib/app-provisioning');
+const { createValidationProfile } = require('../../execution/contracts/validation-profile-contract');
 
 const TEST_WORKSPACE_TYPE = 'mobile-ai-visual-test-test-workspace';
 const FIXTURE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
@@ -51,7 +51,7 @@ function createTestExecutionRequest(root, batchId, binding, targets, options = {
   const frozenTargets = targets.map((target) => {
     let caseDir = target.caseDir;
     if (!caseDir && target.caseNo !== undefined) {
-      const { resolveCaseNo } = require('../lib/case-numbering');
+      const { resolveCaseNo } = require('../../lib/case-numbering');
       caseDir = resolveCaseNo(root, target.caseNo)?.caseDir;
     }
     const caseJson = JSON.parse(fs.readFileSync(path.join(caseDir, 'case.json'), 'utf8'));
@@ -80,7 +80,7 @@ function event(executionId, sequence, time, type, payload = {}) {
     sequence,
     time,
     type,
-    ...(!['executionStarted', 'caseModelRevised'].includes(type) ? { caseModelRevision: 1 } : {}),
+    ...(!['executionStarted', 'caseFlowRevised'].includes(type) ? { caseFlowRevision: 1 } : {}),
     ...payload,
   };
 }
@@ -112,7 +112,7 @@ function createCurrentFixture(root, options = {}) {
 
   const startedAt = '2026-08-13T10:00:00.000+08:00';
   const endedAt = '2026-08-13T10:00:05.000+08:00';
-  const currentContract = buildContract({ skillRoot: path.resolve(__dirname, '../..'), role: 'case-executor', platform });
+  const currentContract = buildContract({ skillRoot: path.resolve(__dirname, '../../..'), role: 'case-executor', platform });
   const appProvisioning = defaultAppProvisioning();
   const preparationPolicy = validatePreparationPolicy();
   const context = {
@@ -264,24 +264,32 @@ function createCurrentFixture(root, options = {}) {
   const decision = {
     observation: '当前页面显示目标入口', conclusion: '可以执行验证操作',
     purpose: action.type === 'inputText' ? '输入测试内容' : '打开目标并验证结果',
-    expectedOutcome: '页面展示目标结果', expectationRefs: ['E1'],
+    expectedOutcome: '页面展示目标结果', expectationRefs: ['N2'],
   };
   const finalDecision = {
     observation: '操作后已取得目标页面现场', conclusion: `验证结果为 ${verdict}`,
-    purpose: '完成用例并提交结论', expectedOutcome: '最终结果与现场证据关联', expectationRefs: ['E1'],
+    purpose: '完成用例并提交结论', expectedOutcome: '最终结果与现场证据关联', expectationRefs: ['N2'],
   };
   const events = [
     event(executionId, 1, startedAt, 'executionStarted', { generation: 1 }),
-    event(executionId, 2, startedAt, 'caseModelRevised', {
+    event(executionId, 2, startedAt, 'caseFlowRevised', {
       revision: 1,
-      reason: 'INITIAL_UNDERSTANDING',
+      reason: 'INITIAL_CASE_FLOW',
       basedOnSceneRef: null,
-      understanding: context.summary,
-      preconditions: context.preconditions,
-      verificationPoints: [{ ref: 'E1', text: context.expectations[0].text, status: 'ACTIVE' }],
-      retiredVerificationRefs: [],
-      items: context.initialPlan,
+      summary: context.summary,
+      entryNodeRef: 'N1',
+      nodes: [
+        { ref: 'N1', type: 'ACTION', text: context.initialPlan[0] },
+        { ref: 'N2', type: 'CHECK', text: context.expectations[0].text, verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例要求验证当前报告结果' },
+        { ref: 'N3', type: 'END', text: '结束用例并提交结论' },
+      ],
+      edges: [
+        { ref: 'L1', from: 'N1', to: 'N2' },
+        { ref: 'L2', from: 'N2', to: 'N3' },
+      ],
       uncertainties: context.uncertainties,
+      retiredNodeRefs: [],
+      retiredEdgeRefs: [],
     }),
     event(executionId, 3, '2026-08-13T10:00:01.000+08:00', 'sceneObserved', {
       sceneId: 'scene-0001', generation: 1, operationId: 'observation-0001', purpose: options.includePreparation ? 'INITIAL_SCENE' : 'CURRENT_SCENE',
@@ -312,17 +320,17 @@ function createCurrentFixture(root, options = {}) {
   ];
   events.push(event(executionId, events.length + 1, '2026-08-13T10:00:03.300+08:00', 'visualInspected', {
     sceneId: 'scene-0002', screenshotRef: afterRef, screenshotSha256: screenshotSha,
-    observation: '已查看操作后截图，页面现场可用于最终验证', expectationRefs: ['E1'],
+    observation: '已查看操作后截图，页面现场可用于最终验证', expectationRefs: ['N2'],
   }));
   let sequence = events.length + 1;
   if (['FAIL', 'INCONCLUSIVE', 'BLOCKED'].includes(verdict)) {
     events.push(event(executionId, sequence++, '2026-08-13T10:00:03.500+08:00', 'knowledgeQueried', {
       queryId: 'knowledge-0001', query: '当前结果异常', candidateRefs: [], candidates: [], candidateCount: 0,
-      decisionId: null, sceneId: 'scene-0002', contextVersion: 1, expectationRefs: ['E1'], truncated: false,
+      decisionId: null, sceneId: 'scene-0002', contextVersion: 1, expectationRefs: ['N2'], truncated: false,
     }));
     events.push(event(executionId, sequence++, '2026-08-13T10:00:03.600+08:00', 'knowledgeReviewed', {
       queryId: 'knowledge-0001', conclusion: 'NO_MATCH', assessments: [], automatic: true,
-      decisionId: null, sceneId: 'scene-0002', contextVersion: 1, expectationRefs: ['E1'],
+      decisionId: null, sceneId: 'scene-0002', contextVersion: 1, expectationRefs: ['N2'],
     }));
   }
   events.push(event(executionId, sequence++, '2026-08-13T10:00:04.000+08:00', 'agentDecisionRecorded', {
@@ -333,13 +341,13 @@ function createCurrentFixture(root, options = {}) {
   const needsScene = ['PASS', 'FAIL'].includes(verdict);
   const result = {
     verdict,
-    caseModelRevision: 1,
+    caseFlowRevision: 1,
     summary: options.summary || `${verdict} 当前报告结论`,
-    checks: [{ expectationRef: 'E1', status: checkStatus, actual: verdict === 'PASS' ? '页面符合预期' : `页面结果为 ${verdict}`, sceneRefs: needsScene ? ['scene-0002'] : [] }],
+    checks: [{ checkNodeRef: 'N2', status: checkStatus, actual: verdict === 'PASS' ? '页面符合预期' : `页面结果为 ${verdict}`, sceneRefs: needsScene ? ['scene-0002'] : [] }],
     uncertainties: options.uncertainties || (verdict === 'INCONCLUSIVE' ? ['目标状态仍不确定'] : []),
   };
   events.push(event(executionId, sequence, endedAt, 'caseFinished', {
-    verdict, checkCount: 1, expectationCount: 1, coveredExpectationRefs: ['E1'], unresolvedSceneRefs: [], decisionId: 'decision-0002',
+    verdict, checkCount: 1, expectationCount: 1, coveredExpectationRefs: ['N2'], unresolvedSceneRefs: [], decisionId: 'decision-0002',
   }));
   fs.writeFileSync(path.join(execDir, 'events.jsonl'), `${events.map((item) => JSON.stringify(item)).join('\n')}\n`);
   writeJson(path.join(execDir, 'result.json'), result);

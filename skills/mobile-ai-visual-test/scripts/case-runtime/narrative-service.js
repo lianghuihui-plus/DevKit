@@ -75,8 +75,7 @@ function recordRequestNarrative(execDir, request, options = {}) {
       decisionId: store.nextId(execDir, 'decision'),
       requestedOperation: request.operation,
       sceneId: store.readCurrentScene(execDir)?.sceneId || null,
-      contextVersion: require('./case-flow-service').currentRevision(execDir)
-        || require('./case-model-service').currentRevision(execDir),
+      contextVersion: require('./case-flow-service').currentRevision(execDir),
       decision,
       decisionFieldSources: fieldSources,
     }, options);

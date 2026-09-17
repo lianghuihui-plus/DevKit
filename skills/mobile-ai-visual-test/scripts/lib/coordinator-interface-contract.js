@@ -2,8 +2,24 @@
 'use strict';
 
 const { validateAgentJson } = require('./agent-json-contract');
+const { parseCliArgs } = require('./cli-args');
 
 const INTERNAL_INTERFACE_KIND = 'INTERNAL';
+const INTERFACE_ROUTING = Object.freeze({
+  'scripts/workspace.js': { module: 'workspace', access: 'DIRECT', roles: ['authoring', 'batch-coordinator', 'maintenance'] },
+  'scripts/import-case.js': { module: 'authoring', access: 'ON_DEMAND', roles: ['authoring'] },
+  'scripts/import-cases.js': { module: 'authoring', access: 'DIRECT', roles: ['authoring'] },
+  'scripts/build-agent-contract.js': { module: 'protocol-maintenance', access: 'ON_DEMAND', roles: ['maintenance'] },
+  'scripts/probe-env.sh': { module: 'environment', access: 'ON_DEMAND', roles: ['maintenance'] },
+  'scripts/prepare-env.sh': { module: 'environment', access: 'ON_DEMAND', roles: ['maintenance'] },
+  'scripts/environment.js': { module: 'environment', access: 'ON_DEMAND', roles: ['maintenance'] },
+  'scripts/app-artifact.js': { module: 'app-artifact', access: 'ON_DEMAND', roles: ['maintenance'] },
+  'scripts/execution-request.js': { module: 'execution', access: 'ON_DEMAND', roles: ['maintenance'] },
+  'scripts/knowledge.js': { module: 'knowledge', access: 'ON_DEMAND', roles: ['maintenance'] },
+  'scripts/batch.js': { module: 'execution', access: 'ON_DEMAND', roles: ['maintenance'] },
+  'scripts/render-context.js': { module: 'reporting', access: 'ON_DEMAND', roles: ['maintenance'] },
+  'scripts/render-index.js': { module: 'reporting', access: 'ON_DEMAND', roles: ['maintenance'] },
+});
 const PLATFORM_SCHEMA = { type: 'string', enum: ['harmony', 'android', 'ios'] };
 const STRING = { type: 'string', minLength: 1 };
 
@@ -272,10 +288,29 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
 };
 
 const INTERFACE_CONTRACTS = Object.freeze(Object.fromEntries(
-  Object.entries(INTERFACE_CONTRACT_DEFINITIONS).map(([entrypoint, definition]) => [entrypoint, Object.freeze({
-    interfaceKind: INTERNAL_INTERFACE_KIND,
-    ...definition,
-  })]),
+  Object.entries(INTERFACE_CONTRACT_DEFINITIONS).map(([entrypoint, definition]) => {
+    const routing = INTERFACE_ROUTING[entrypoint];
+    if (!routing) throw new Error(`COORDINATOR_INTERFACE_ROUTING_MISSING: ${entrypoint}`);
+    const scriptName = entrypoint.split('/').pop().replace(/\.[^.]+$/, '');
+    const normalizeToken = (token) => token === entrypoint ? `<skill-root>/${entrypoint}` : token;
+    const commands = definition.commands.map((item) => {
+      const anchor = `${scriptName}${item.name ? `-${item.name}` : ''}`;
+      return Object.freeze({
+        ...item,
+        usage: item.usage
+          .replace(/^node scripts\//, 'node <skill-root>/scripts/')
+          .replace(/^scripts\//, '<skill-root>/scripts/'),
+        example: item.example.map(normalizeToken),
+        documentationRef: `references/commands/${routing.module}.md#${anchor}`,
+      });
+    });
+    return [entrypoint, Object.freeze({
+      interfaceKind: INTERNAL_INTERFACE_KIND,
+      ...routing,
+      ...definition,
+      commands: Object.freeze(commands),
+    })];
+  }),
 ));
 
 function clone(value) {
@@ -297,13 +332,69 @@ function commandContract(entrypoint, commandName = null) {
   return definition.commands.find((item) => item.name === (commandName || null)) || definition.commands[0] || null;
 }
 
+function parseCoordinatorCliArgs(argv, entrypoint) {
+  const definition = INTERFACE_CONTRACTS[entrypoint];
+  if (!definition) throw coordinatorContractError(`unknown entrypoint: ${entrypoint}`);
+  const named = definition.commands.some((item) => item.name !== null);
+  const commandName = named ? argv[0] : null;
+  const contract = named
+    ? definition.commands.find((item) => item.name === commandName)
+    : definition.commands[0];
+  if (!contract) {
+    throw coordinatorContractError(`unknown command: ${commandName || 'missing'}`, [{
+      fieldPath: 'command',
+      code: 'UNKNOWN_COMMAND',
+      expected: `one of ${definition.commands.map((item) => item.name).join(', ')}`,
+    }]);
+  }
+  let parsed;
+  try {
+    parsed = parseCliArgs(named ? argv.slice(1) : argv, {
+      context: `${entrypoint}${commandName ? ` ${commandName}` : ''}`,
+      valueOptions: Object.keys(contract.flags).map((name) => `--${kebabFlag(name)}`),
+      maxPositionals: contract.positionals.length,
+    });
+  } catch (error) {
+    error.code = error.code || 'COORDINATOR_CLI_INVALID';
+    error.errorKind = 'INPUT';
+    throw error;
+  }
+  const values = {};
+  for (const [flag, value] of Object.entries(parsed.values)) {
+    values[flag.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = value;
+  }
+  contract.positionals.forEach((descriptor, index) => {
+    if (parsed.positionals[index] !== undefined) values[descriptor.name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = parsed.positionals[index];
+  });
+  for (const [name, descriptor] of Object.entries(contract.flags)) {
+    if (descriptor.required && !values[name]) {
+      throw coordinatorContractError(`--${kebabFlag(name)} is required`, [{ fieldPath: name, code: 'REQUIRED_FIELD_MISSING', expected: descriptor.description }]);
+    }
+    if (values[name] !== undefined && descriptor.enum && !descriptor.enum.includes(values[name])) {
+      throw coordinatorContractError(`--${kebabFlag(name)} has an invalid value`, [{ fieldPath: name, code: 'ENUM_INVALID', expected: descriptor.enum.join(' | ') }]);
+    }
+  }
+  contract.positionals.forEach((descriptor) => {
+    const name = descriptor.name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+    if (descriptor.required && !values[name]) {
+      throw coordinatorContractError(`${descriptor.name} is required`, [{ fieldPath: descriptor.name, code: 'REQUIRED_FIELD_MISSING', expected: descriptor.description }]);
+    }
+  });
+  return { ...(named ? { command: commandName } : {}), ...values };
+}
+
+function kebabFlag(value) {
+  return value.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+}
+
 function inferIssue(error, contract) {
   const message = error?.message || String(error);
   const flagMatch = message.match(/--([a-z][a-z0-9-]*)/i);
   const fieldPath = flagMatch ? flagMatch[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()) : 'arguments';
   const descriptor = contract?.flags?.[fieldPath];
   let code = 'INVALID_ARGUMENT';
-  if (/required|missing|缺少|需要/.test(message)) code = 'REQUIRED_FIELD_MISSING';
+  if (/duplicate|重复/.test(message)) code = 'DUPLICATE_ARGUMENT';
+  else if (/required|missing|缺少|需要/.test(message)) code = 'REQUIRED_FIELD_MISSING';
   else if (/invalid JSON/i.test(message)) code = 'INVALID_JSON';
   else if (/unknown|unsupported|未知/.test(message)) code = 'UNKNOWN_ARGUMENT';
   return {
@@ -313,22 +404,107 @@ function inferIssue(error, contract) {
   };
 }
 
+const INPUT_ERROR_CODES = new Set([
+  'AGENT_CONTRACT_CLI_INVALID',
+  'APP_ARTIFACT_CLI_INVALID',
+  'BATCH_CLI_INVALID',
+  'CASE_AUTHORING_CLI_INVALID',
+  'CASE_AUTHORING_INPUT_INVALID',
+  'CASE_IMPORT_CLI_INVALID',
+  'COORDINATOR_CLI_INVALID',
+  'COORDINATOR_INPUT_INVALID',
+  'ENVIRONMENT_CLI_INVALID',
+  'EXECUTION_REQUEST_CLI_INVALID',
+  'KNOWLEDGE_CLI_INVALID',
+  'REPORT_CONTEXT_CLI_INVALID',
+  'REPORT_INDEX_CLI_INVALID',
+  'WORKSPACE_CLI_INVALID',
+]);
+
+const COMMAND_ERROR_DEFINITIONS = Object.freeze({
+  BATCH_IMPLEMENTATION_MISMATCH: {
+    module: 'execution', retryable: false,
+    summary: '批次冻结的实现与当前 Skill 实现不同，不能继续业务执行。',
+    recovery: '不要修改批次文件或反复重试 reconcile；可以继续 status、cancel 和 teardown，若要继续业务执行则创建新批次。',
+  },
+  BATCH_PROTOCOL_MISMATCH: {
+    module: 'execution', retryable: false,
+    summary: '批次冻结的 Agent 协议与当前协议不同。',
+    recovery: '保留旧批次事实并通过 cancel、teardown 完成收尾；使用当前协议创建新批次执行。',
+  },
+  BATCH_BINDING_MISMATCH: {
+    module: 'execution', retryable: false,
+    summary: '批次状态与其冻结契约、目标或环境绑定不一致。',
+    recovery: '停止业务推进，不要直接编辑 JSON；保留批次文件进行诊断，只在所有权可证明时执行取消和资源清理。',
+  },
+  REPORT_PUBLICATION_INCOMPLETE: {
+    module: 'execution', retryable: true,
+    summary: '批次目标中至少一个用例报告尚未成功生成。',
+    recovery: '读取响应中的失败用例和报告错误，修复缺失或被占用的产物后重新执行 reconcile；在全部目标成功前不要把批次视为已发布。',
+  },
+  IOS_APPIUM_SERVICE_IN_USE: {
+    module: 'execution', retryable: true,
+    summary: 'iOS Appium 服务由另一个活动批次持有。',
+    recovery: '根据 diagnostic.resourceFacts 定位 owner batch，等待其终态或明确取消该批次；不要手工终止无法确认所有权的共享服务。',
+  },
+  PLATFORM_RUNTIME_RELEASE_FAILED: {
+    module: 'execution', retryable: true,
+    summary: '框架持有的平台运行资源未能完成释放。',
+    recovery: '保留 ownerKey、stage 和 logRefs，修复底层服务问题后重试 teardown；不得用新批次覆盖原所有权。',
+  },
+});
+
+function errorCode(error, fallback) {
+  return error?.code || String(error?.message || error).match(/^([A-Z][A-Z0-9_]+)/)?.[1] || fallback;
+}
+
+function commandErrorRef(entrypoint, suffix, code = null) {
+  const targeted = code ? COMMAND_ERROR_DEFINITIONS[code] : null;
+  if (targeted) return `references/commands/errors/${targeted.module}.md#error-${code.replace(/_/g, '-').toLowerCase()}`;
+  const definition = INTERFACE_CONTRACTS[entrypoint];
+  return definition ? `references/commands/errors/${definition.module}.md#${suffix}` : 'references/commands.md';
+}
+
 function coordinatorCliErrorResponse(error, entrypoint, commandName = null) {
   const contract = commandContract(entrypoint, commandName);
+  const code = errorCode(error, 'COORDINATOR_CLI_TECHNICAL');
+  const inputInvalid = error?.errorKind === 'INPUT' || INPUT_ERROR_CODES.has(code);
+  const domainError = !inputInvalid && error?.errorKind === 'DOMAIN';
+  if (!inputInvalid) {
+    const diagnostic = error?.diagnostic || {};
+    return {
+      status: domainError ? (error.status || 'FAILED') : 'TECHNICAL',
+      code,
+      message: error?.message || String(error),
+      command: `${entrypoint}${contract?.name ? ` ${contract.name}` : ''}`,
+      retryable: error?.retryable === true || diagnostic.retryable === true,
+      ...(domainError ? { category: 'DOMAIN' } : {
+        category: 'TECHNICAL',
+        technical: {
+          stage: diagnostic.stage || 'CLI_EXECUTION',
+          ...(diagnostic.logRefs ? { logRefs: diagnostic.logRefs } : {}),
+          ...(diagnostic.resourceFacts ? { resourceFacts: diagnostic.resourceFacts } : {}),
+        },
+      }),
+      documentationRef: commandErrorRef(entrypoint, domainError ? 'domain' : 'technical', code),
+    };
+  }
   return {
     status: 'REQUEST_INVALID',
-    code: error?.code || String(error?.message || error).match(/^([A-Z][A-Z0-9_]+)/)?.[1] || 'COORDINATOR_CLI_INVALID',
+    code,
     message: error?.message || String(error),
     command: `${entrypoint}${contract?.name ? ` ${contract.name}` : ''}`,
     issues: Array.isArray(error?.issues) && error.issues.length ? error.issues : [inferIssue(error, contract)],
     usage: contract?.usage || entrypoint,
     example: contract?.example || [],
+    documentationRef: contract?.documentationRef || commandErrorRef(entrypoint, 'request-invalid'),
   };
 }
 
 function coordinatorContractError(message, issues) {
   const error = new Error(`COORDINATOR_CLI_INVALID: ${message}`);
   error.code = 'COORDINATOR_CLI_INVALID';
+  error.errorKind = 'INPUT';
   error.exitCode = 2;
   error.issues = issues;
   return error;
@@ -372,20 +548,23 @@ if (require.main === module) {
   const entrypoint = entrypointIndex >= 0 ? process.argv[entrypointIndex + 1] : '';
   const commandName = commandIndex >= 0 ? process.argv[commandIndex + 1] : null;
   const message = messageIndex >= 0 ? process.argv[messageIndex + 1] : 'invalid arguments';
-  writeCoordinatorCliError(new Error(message), entrypoint, commandName);
+  writeCoordinatorCliError(coordinatorContractError(message), entrypoint, commandName);
 }
 
 module.exports = {
   APP_PROVISIONING_SCHEMA,
   BINDING_SCHEMA,
   BOOTSTRAP_POLICY_SCHEMA,
+  COMMAND_ERROR_DEFINITIONS,
   INTERFACE_CONTRACTS,
   INTERNAL_INTERFACE_KIND,
   PROBE_SCHEMA,
   TARGETS_SCHEMA,
   commandContract,
   coordinatorCliErrorResponse,
+  coordinatorContractError,
   parseCoordinatorJson,
+  parseCoordinatorCliArgs,
   projectCoordinatorCapabilities,
   writeCoordinatorCliError,
 };

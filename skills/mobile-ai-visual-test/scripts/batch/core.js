@@ -1,7 +1,7 @@
 'use strict';
 
 const { BATCH_SCHEMA_VERSION } = require('./state-contract');
-const { batchPaths, loadBatch } = require('./state-repository');
+const { batchPaths, loadBatch, loadBatchForMaintenance } = require('./state-repository');
 const { releaseRuntime } = require('./completion');
 const { initializeBatch } = require('./initialization-service');
 const { bootstrapBatch, startCurrentCase } = require('./dispatch-service');
@@ -19,6 +19,7 @@ module.exports = {
   currentCase,
   initializeBatch,
   loadBatch,
+  loadBatchForMaintenance,
   reconcileBatch,
   recordFinalizationStep,
   releaseRuntime,

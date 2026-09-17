@@ -7,7 +7,7 @@
 | 方法 | 用途 | 紧凑签名 |
 |---|---|---|
 | [`prepareRun`](coordinator/methods/prepare-run.md) | 为指定工作空间和用例创建一次 Coordinator run。 | `prepareRun({ capability: "prepareRun", workspace: string, caseNos: string[] })` |
-| [`confirmRun`](coordinator/methods/confirm-run.md) | 选择当前环境、平台设备或确认完整目标绑定。 | `confirmRun({ capability: "confirmRun", decision: "CONFIRM_BINDING", userInstruction?: string, platform?: "harmony" | "android" | "ios", deviceId?: string, binding?: object })` |
+| [`confirmRun`](coordinator/methods/confirm-run.md) | 选择当前环境、平台设备或确认完整目标绑定。 | `confirmRun({ capability: "confirmRun", decision: "USE_CURRENT", userInstruction: string }) / confirmRun({ capability: "confirmRun", decision: "SELECT_PLATFORM", platform: "harmony" | "android" | "ios", deviceId?: string }) / confirmRun({ capability: "confirmRun", decision: "CONFIRM_BINDING", userInstruction: string, binding: object })` |
 | [`advanceRun`](coordinator/methods/advance-run.md) | 推进或恢复当前 run 的确定性状态机。 | `advanceRun({ capability: "advanceRun" })` |
 | [`cancelRun`](coordinator/methods/cancel-run.md) | 仅在用户明确取消时停止当前 run。 | `cancelRun({ capability: "cancelRun", reason: string })` |
 

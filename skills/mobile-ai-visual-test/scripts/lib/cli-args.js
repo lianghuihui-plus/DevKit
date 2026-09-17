@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 
-function cliArgumentError(message) {
+function cliArgumentError(message, issue = null) {
   const error = new Error(message);
+  error.code = 'COORDINATOR_CLI_INVALID';
+  error.errorKind = 'INPUT';
   error.exitCode = 2;
+  if (issue) error.issues = [issue];
   return error;
 }
 
@@ -24,15 +27,21 @@ function parseCliArgs(argv, options = {}) {
     }
     if (!positionalOnly && String(arg).startsWith('-')) {
       if (booleanOptions.has(arg)) {
+        if (Object.prototype.hasOwnProperty.call(values, arg)) {
+          throw cliArgumentError(`${context} 重复参数: ${arg}`, { fieldPath: arg.slice(2), code: 'DUPLICATE_ARGUMENT', expected: 'the option exactly once' });
+        }
         values[arg] = true;
         continue;
       }
       if (!valueOptions.has(arg)) {
-        throw cliArgumentError(`${context} 未知参数: ${arg}`);
+        throw cliArgumentError(`${context} 未知参数: ${arg}`, { fieldPath: arg.slice(2), code: 'UNKNOWN_ARGUMENT', expected: `one of ${[...valueOptions, ...booleanOptions].join(', ')}` });
       }
       const value = argv[i + 1];
       if (value === undefined || String(value).startsWith('-')) {
-        throw cliArgumentError(`${context} 缺少参数值: ${arg}`);
+        throw cliArgumentError(`${context} 缺少参数值: ${arg}`, { fieldPath: arg.slice(2), code: 'REQUIRED_FIELD_MISSING', expected: 'a non-empty option value' });
+      }
+      if (Object.prototype.hasOwnProperty.call(values, arg)) {
+        throw cliArgumentError(`${context} 重复参数: ${arg}`, { fieldPath: arg.slice(2), code: 'DUPLICATE_ARGUMENT', expected: 'the option exactly once' });
       }
       values[arg] = value;
       i += 1;
@@ -40,7 +49,7 @@ function parseCliArgs(argv, options = {}) {
     }
     positionals.push(arg);
     if (positionals.length > maxPositionals) {
-      throw cliArgumentError(`${context} 不接受多余位置参数: ${arg}`);
+      throw cliArgumentError(`${context} 不接受多余位置参数: ${arg}`, { fieldPath: 'arguments', code: 'POSITIONAL_ARGUMENT_INVALID', expected: `at most ${maxPositionals} positional arguments` });
     }
   }
 

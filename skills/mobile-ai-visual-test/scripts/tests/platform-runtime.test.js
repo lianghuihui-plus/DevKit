@@ -34,7 +34,7 @@ const {
   commandMatchesWda,
   releaseWda,
 } = require('../platform/adapters/ios/lib/wda-lifecycle');
-const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
+const { createTestExecutionRequest, createTestWorkspace } = require('./support/workspace-fixture');
 const { markBootstrapFailed } = require('../lib/warm-session-contract');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -250,14 +250,13 @@ assert.strictEqual(managedReleaseCalls, 1);
 const changedImplementation = fixture('changed-implementation-release');
 acquireBatchPlatformRuntime(common(changedImplementation, managedAdapter));
 terminal(changedImplementation);
-assert.throws(() => releaseBatchPlatformRuntime({
+const releasedByChangedImplementation = releaseBatchPlatformRuntime({
   ...common(changedImplementation, managedAdapter),
   runtimeSha: 'case-runtime-current-implementation',
   adapterSha: 'platform-adapter-current-implementation',
   coordinatorSha: 'batch-coordinator-current-implementation',
-}), (error) => error.code === 'BATCH_IMPLEMENTATION_MISMATCH');
-const releasedByCurrentImplementation = releaseBatchPlatformRuntime(common(changedImplementation, managedAdapter));
-assert.strictEqual(releasedByCurrentImplementation.status, 'RELEASED');
+});
+assert.strictEqual(releasedByChangedImplementation.status, 'RELEASED');
 
 const external = fixture('external');
 let externalStopAttempted = false;

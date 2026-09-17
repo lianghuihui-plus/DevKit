@@ -3,12 +3,13 @@
 const fs = require('fs');
 const path = require('path');
 const { canonicalJson, contractError } = require('../lib/contract-utils');
+const { assertBatchImplementation } = require('../lib/batch-contract');
 const { findActiveExecutions, readJson, readJsonl, withFileLock } = require('../lib/execution-lifecycle');
 const { readActiveDispatch } = require('../lib/dispatch-lease');
 const { markDegraded } = require('../lib/warm-session-contract');
 const caseRuntimeLifecycle = require('../case-runtime/lifecycle');
 const { RECONCILE_RETRY_LIMIT, classifyReconcileError } = require('./reconcile-policy');
-const { loadBatch, readBatchState, saveBatch } = require('./state-repository');
+const { loadBatchForMaintenance, readBatchState, saveBatch } = require('./state-repository');
 const { caseRuntimeDir, currentCase, protocolBindings, stopBatch } = require('./service-support');
 const { commitBusinessTerminal } = require('./finalization-service');
 
@@ -43,7 +44,7 @@ function executionProgress(execDir, execution, runtime, dispatch) {
 }
 
 function reconcileBatch(options) {
-  const loaded = loadBatch(options.workspaceRoot, options.batchId, protocolBindings(options));
+  const loaded = loadBatchForMaintenance(options.workspaceRoot, options.batchId);
   return withFileLock(loaded.paths.lock, () => {
     const state = readBatchState(loaded.paths, loaded.contract);
     const terminalAction = { BLOCKED: 'BATCH_BLOCKED', CANCELLED: 'BATCH_CANCELLED', COMPLETED: 'BATCH_COMPLETE' }[state.status];
@@ -81,6 +82,7 @@ function reconcileBatch(options) {
       if (state.finalization.platformReleased !== true) return { action: 'RELEASE_PLATFORM', state };
       return stopBatch(loaded.paths, state, 'CORRUPTED', 'BATCH_FINALIZATION_INVALID', 'completed finalization checklist was not committed', { now: options.now });
     }
+    assertBatchImplementation(loaded.contract, protocolBindings(options));
     const requireDeviceSession = () => {
       const probed = probeWarmSession(state, loaded.contract, options.adapter, options.now);
       if (probed.state.warmSession.status !== 'DEGRADED') return null;

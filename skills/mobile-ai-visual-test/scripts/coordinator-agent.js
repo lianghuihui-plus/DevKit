@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { parseCliArgs } = require('./lib/cli-args');
 const {
   AGENT_FACING_PROTOCOL,
   documentationRefFor,
@@ -30,14 +31,16 @@ function inputError(message, issues = []) {
 function parseArgs(argv) {
   const command = argv[0];
   if (!COMMANDS.has(command)) throw inputError(`未知命令：${command || 'missing'}`);
-  const values = {};
-  for (let index = 1; index < argv.length; index += 1) {
-    const flag = argv[index];
-    if (!flag.startsWith('--') || index + 1 >= argv.length || argv[index + 1].startsWith('--')) {
-      throw inputError(`无效参数：${flag}`);
-    }
-    values[flag.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = argv[++index];
+  const allowed = command === 'prepare' ? ['--workspace', '--case-nos'] : ['--state'];
+  let parsed;
+  try {
+    parsed = parseCliArgs(argv.slice(1), { context: `coordinator-agent ${command}`, valueOptions: allowed, maxPositionals: 0 });
+  } catch (error) {
+    throw inputError(error.message, error.issues || []);
   }
+  const values = Object.fromEntries(Object.entries(parsed.values).map(([flag, value]) => [
+    flag.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), value,
+  ]));
   if (command === 'prepare') {
     if (!values.workspace || !values.caseNos) throw inputError('prepare 需要 --workspace 和 --case-nos');
     return {

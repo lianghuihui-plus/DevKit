@@ -6,7 +6,7 @@ const {
   createExecutionRequest,
   loadExecutionRequest,
 } = require('./lib/run-control');
-const { parseCoordinatorJson, writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
+const { parseCoordinatorCliArgs, parseCoordinatorJson, writeCoordinatorCliError } = require('./lib/coordinator-interface-contract');
 
 function fail(message) {
   const error = new Error(`EXECUTION_REQUEST_CLI_INVALID: ${message}`);
@@ -15,15 +15,7 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  const command = argv[0];
-  if (!['create', 'status'].includes(command)) fail(`unknown command: ${command || 'missing'}`);
-  const options = { command };
-  for (let index = 1; index < argv.length; index += 1) {
-    const flag = argv[index];
-    if (!flag.startsWith('--') || index + 1 >= argv.length || argv[index + 1].startsWith('--')) fail(`invalid option: ${flag}`);
-    options[flag.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = argv[++index];
-  }
-  if (!options.workspace || !options.batchId) fail('--workspace and --batch-id are required');
+  const options = parseCoordinatorCliArgs(argv, 'scripts/execution-request.js');
   options.workspace = path.resolve(options.workspace);
   return options;
 }

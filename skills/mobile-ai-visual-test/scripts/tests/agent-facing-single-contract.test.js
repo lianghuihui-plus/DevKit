@@ -29,7 +29,7 @@ assert.ok(caseContract.validateAgentFacingRequest({
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-single-contract-'));
 const requestPath = path.join(temp, 'request.json');
 fs.writeFileSync(requestPath, JSON.stringify({ capability: 'observe' }));
-assert.throws(() => parseRequest([], '', requestPath), /stdin/i);
+assert.throws(() => parseRequest([], ''), /stdin/i);
 fs.rmSync(temp, { recursive: true, force: true });
 
 assert.strictEqual(fs.existsSync(path.join(root, 'scripts/case-runtime/runtime-client.js')), false);

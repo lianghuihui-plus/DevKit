@@ -6,8 +6,6 @@ const path = require('path');
 const { canonicalJson, contractError } = require('./contract-utils');
 const { readJson, withFileLock, writeJsonAtomic } = require('./execution-lifecycle');
 
-const DEFAULT_LEASE_MS = 30 * 60 * 1000;
-
 function digest(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
@@ -117,14 +115,14 @@ function claimDispatch(directory, envelope, options = {}) {
     if (dispatch.status === 'REPLACED' || state.activeDispatchId !== dispatch.dispatchId) {
       throw contractError('HANDOFF_REPLACED', 'handoff was replaced by a newer continuation');
     }
-    const token = options.claimToken || claimTokenFor(envelope);
+    if (!String(options.claimToken || '').trim()) {
+      throw contractError('HANDOFF_CLAIM_REJECTED', 'handoff claim token is required');
+    }
+    const token = options.claimToken;
     if (digest(token) !== dispatch.claimTokenSha) throw contractError('HANDOFF_CLAIM_REJECTED', 'handoff claim token does not match');
     const now = options.now || new Date().toISOString();
     const wasConsumed = Boolean(dispatch.consumedAt);
-    if (!dispatch.claimedAt) {
-      dispatch.claimedAt = now;
-      dispatch.leaseUntil = new Date(Date.parse(now) + (options.leaseMs || DEFAULT_LEASE_MS)).toISOString();
-    }
+    if (!dispatch.claimedAt) dispatch.claimedAt = now;
     dispatch.status = 'CONSUMED';
     if (!dispatch.consumedAt) dispatch.consumedAt = now;
     writeJsonAtomic(paths.state, state);
@@ -133,7 +131,6 @@ function claimDispatch(directory, envelope, options = {}) {
 }
 
 module.exports = {
-  DEFAULT_LEASE_MS,
   assertActiveDispatch,
   claimDispatch,
   claimTokenFor,

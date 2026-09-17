@@ -31,12 +31,12 @@ recordResult({ capability: "recordResult", results: object[] })
 
 ## 错误
 
-- [`AGENT_INPUT_INVALID`](../errors.md#error-agent-input-invalid)
-- [`BINDING_INVALID`](../errors.md#error-binding-invalid)
-- [`EXPECTATION_UNKNOWN`](../errors.md#error-expectation-unknown)
-- [`EVIDENCE_REFERENCE_INVALID`](../errors.md#error-evidence-reference-invalid)
-- [`RECORD_RESULT_INVALID`](../errors.md#error-record-result-invalid)
-- [`CASE_RUNTIME_TECHNICAL`](../errors.md#error-case-runtime-technical)
+- [`AGENT_INPUT_INVALID`](../errors/transport.md#error-agent-input-invalid)
+- [`BINDING_INVALID`](../errors/transport.md#error-binding-invalid)
+- [`EXPECTATION_UNKNOWN`](../errors/flow-result.md#error-expectation-unknown)
+- [`EVIDENCE_REFERENCE_INVALID`](../errors/flow-result.md#error-evidence-reference-invalid)
+- [`RECORD_RESULT_INVALID`](../errors/flow-result.md#error-record-result-invalid)
+- [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 
 ## 最小示例
 

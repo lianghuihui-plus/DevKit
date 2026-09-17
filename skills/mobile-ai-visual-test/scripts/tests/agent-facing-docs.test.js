@@ -3,9 +3,21 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { PUBLIC_CONTRACT: caseContract } = require('../case-runtime/agent-facing-contract');
-const { PUBLIC_CONTRACT: coordinatorContract } = require('../coordinator/agent-facing-contract');
-const { buildDocs, outputFiles } = require('../build-agent-facing-docs');
+const {
+  PUBLIC_CONTRACT: caseContract,
+  documentationRefFor: caseDocumentationRefFor,
+} = require('../case-runtime/agent-facing-contract');
+const {
+  PUBLIC_CONTRACT: coordinatorContract,
+  documentationRefFor: coordinatorDocumentationRefFor,
+} = require('../coordinator/agent-facing-contract');
+const { roleResources } = require('../lib/agent-contract-manifest');
+const {
+  INTERFACE_CONTRACTS,
+  coordinatorCliErrorResponse,
+  coordinatorContractError,
+} = require('../lib/coordinator-interface-contract');
+const { assertLinks, buildDocs, outputFiles } = require('../build-agent-facing-docs');
 
 const root = path.resolve(__dirname, '../..');
 const requiredMethodFields = [
@@ -23,6 +35,11 @@ function assertContract(contract, expectedMethods) {
     assert.ok(Object.keys(method.parameterDescriptions).length > 0);
     for (const code of method.errorCodes) assert.ok(contract.errors[code], `${method.name} unknown error ${code}`);
   }
+  for (const [code, definition] of Object.entries(contract.errors)) {
+    assert.strictEqual(typeof definition.retryable, 'boolean', `${code} must declare retryable`);
+    assert.ok(definition.summary, `${code} must declare summary`);
+    assert.ok(definition.recovery, `${code} must declare targeted recovery`);
+  }
 }
 
 assertContract(caseContract, ['observe', 'inspect', 'plan', 'recordResult', 'act', 'knowledge', 'recover', 'finish']);
@@ -34,16 +51,39 @@ buildDocs({ root, check: true });
 
 const files = outputFiles({ root });
 for (const relative of [
+  'references/commands.md',
+  'references/commands/workspace.md',
+  'references/commands/authoring.md',
+  'references/commands/environment.md',
+  'references/commands/app-artifact.md',
+  'references/commands/execution.md',
+  'references/commands/knowledge.md',
+  'references/commands/reporting.md',
+  'references/commands/protocol-maintenance.md',
+  'references/commands/transports.md',
   'references/case-runtime.md',
   'references/case-runtime/action-refs.md',
   'references/case-runtime/errors.md',
+  'references/case-runtime/errors/scene-action.md',
   'references/coordinator.md',
   'references/coordinator/errors.md',
+  'references/coordinator/errors/environment.md',
 ]) assert.ok(files.has(relative), `missing generated output ${relative}`);
+
+for (const [entrypoint, definition] of Object.entries(INTERFACE_CONTRACTS)) {
+  assert.ok(definition.module, `${entrypoint} must declare module`);
+  assert.ok(['DIRECT', 'ON_DEMAND', 'PREBOUND'].includes(definition.access), `${entrypoint} must declare access`);
+  assert.ok(Array.isArray(definition.roles) && definition.roles.length, `${entrypoint} must declare roles`);
+  for (const command of definition.commands) {
+    assert.match(command.usage, /<skill-root>/, `${entrypoint} usage must be cwd independent`);
+    assert.ok(command.documentationRef, `${entrypoint} command must have documentationRef`);
+  }
+}
 
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const caseIndex = read('references/case-runtime.md');
 const coordinatorIndex = read('references/coordinator.md');
+const confirmRunPage = read('references/coordinator/methods/confirm-run.md');
 assert.ok(Buffer.byteLength(caseIndex) <= 6 * 1024);
 assert.ok(caseIndex.split('\n').length <= 160);
 assert.ok(Buffer.byteLength(coordinatorIndex) <= 4 * 1024);
@@ -51,5 +91,55 @@ assert.ok(coordinatorIndex.split('\n').length <= 120);
 assert.match(read('references/case-runtime/errors.md'), /<a id="error-action-not-available"><\/a>/);
 assert.match(read('references/coordinator/errors.md'), /<a id="error-environment-not-ready"><\/a>/);
 assert.doesNotMatch(caseIndex, /retryWith|nextCall|capability cards/i);
+assert.ok(Buffer.byteLength(read('references/commands.md')) <= 4 * 1024);
+assert.doesNotMatch(read('references/commands.md'), /--workspace|--batch-id/);
+assert.match(read('references/commands/execution.md'), /<skill-root>\/scripts\/batch\.js/);
+assert.match(confirmRunPage, /decision: "USE_CURRENT"/);
+assert.match(confirmRunPage, /decision: "SELECT_PLATFORM"/);
+assert.match(confirmRunPage, /decision: "CONFIRM_BINDING"/);
+assert.match(confirmRunPage, /## 调用分支/);
+assert.match(read('references/commands/execution.md'), /--targets-json '\[{"caseNo":"004"}\]'/);
+assert.match(read('references/commands/execution.md'), /--workspace '<workspace>'/);
+assert.match(read('references/commands/transports.md'), /原样执行/);
+assert.match(read('references/commands/transports.md'), /prepareCommand/);
+assert.throws(() => assertLinks(root, new Map([
+  ['references/source.md', '[missing](target.md#missing-anchor)'],
+  ['references/target.md', '# Present'],
+])), /broken anchor/);
+assert.strictEqual(caseDocumentationRefFor('ACTION_NOT_AVAILABLE'), 'references/case-runtime/errors/scene-action.md#error-action-not-available');
+assert.strictEqual(coordinatorDocumentationRefFor('ENVIRONMENT_NOT_READY'), 'references/coordinator/errors/environment.md#error-environment-not-ready');
+assert.ok(roleResources('case-executor').includes('references/case-runtime/errors/scene-action.md'));
+assert.ok(roleResources('batch-coordinator').includes('references/coordinator/errors/environment.md'));
+
+const inputResponse = coordinatorCliErrorResponse(
+  coordinatorContractError('unknown option: --workspcae'),
+  'scripts/batch.js',
+  'status',
+);
+assert.strictEqual(inputResponse.status, 'REQUEST_INVALID');
+assert.match(inputResponse.documentationRef, /references\/commands\/execution\.md#batch-status$/);
+
+const domainError = new Error('cached artifact metadata conflicts');
+domainError.code = 'APP_INSTALL_ARTIFACT_CONFLICT';
+domainError.errorKind = 'DOMAIN';
+const domainResponse = coordinatorCliErrorResponse(domainError, 'scripts/app-artifact.js', 'register');
+assert.strictEqual(domainResponse.status, 'FAILED');
+assert.strictEqual(domainResponse.code, 'APP_INSTALL_ARTIFACT_CONFLICT');
+assert.match(domainResponse.documentationRef, /references\/commands\/errors\/app-artifact\.md#domain$/);
+
+const implementationMismatch = new Error('batch belongs to a different runtimeSha');
+implementationMismatch.code = 'BATCH_IMPLEMENTATION_MISMATCH';
+implementationMismatch.errorKind = 'DOMAIN';
+const implementationMismatchResponse = coordinatorCliErrorResponse(implementationMismatch, 'scripts/batch.js', 'reconcile');
+assert.strictEqual(implementationMismatchResponse.retryable, false);
+assert.match(implementationMismatchResponse.documentationRef, /references\/commands\/errors\/execution\.md#error-batch-implementation-mismatch$/);
+assert.match(read('references/commands/errors/execution.md'), /## BATCH_IMPLEMENTATION_MISMATCH/);
+
+const technicalResponse = coordinatorCliErrorResponse(new Error('unexpected disk failure'), 'scripts/batch.js', 'status');
+assert.strictEqual(technicalResponse.status, 'TECHNICAL');
+assert.match(technicalResponse.documentationRef, /references\/commands\/errors\/execution\.md#technical$/);
+const systemError = new Error('missing file');
+systemError.code = 'ENOENT';
+assert.strictEqual(coordinatorCliErrorResponse(systemError, 'scripts/batch.js', 'status').status, 'TECHNICAL');
 
 console.log('agent-facing generated docs passed');

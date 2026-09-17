@@ -2,8 +2,11 @@
 
 查询知识，或登记指定 query 的候选复核结果。
 
+## 调用分支
+
 ```typescript
-knowledge({ capability: "knowledge", basedOnSceneRef: string, query?: string, checkNodeRefs?: string[], flowContext?: object, queryId?: string, conclusion?: "APPLICABLE_FOUND" | "NO_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT", assessments?: object[] })
+knowledge({ capability: "knowledge", basedOnSceneRef: string, query: string, checkNodeRefs?: string[], flowContext?: object })
+knowledge({ capability: "knowledge", basedOnSceneRef: string, queryId: string, conclusion: "APPLICABLE_FOUND" | "NO_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT", assessments: object[], flowContext?: object })
 ```
 
 ## 参数
@@ -42,12 +45,12 @@ knowledge({ capability: "knowledge", basedOnSceneRef: string, query?: string, ch
 
 ## 错误
 
-- [`AGENT_INPUT_INVALID`](../errors.md#error-agent-input-invalid)
-- [`BINDING_INVALID`](../errors.md#error-binding-invalid)
-- [`SCENE_REQUIRED`](../errors.md#error-scene-required)
-- [`KNOWLEDGE_QUERY_UNKNOWN`](../errors.md#error-knowledge-query-unknown)
-- [`KNOWLEDGE_REVIEW_INVALID`](../errors.md#error-knowledge-review-invalid)
-- [`CASE_RUNTIME_TECHNICAL`](../errors.md#error-case-runtime-technical)
+- [`AGENT_INPUT_INVALID`](../errors/transport.md#error-agent-input-invalid)
+- [`BINDING_INVALID`](../errors/transport.md#error-binding-invalid)
+- [`SCENE_REQUIRED`](../errors/scene-action.md#error-scene-required)
+- [`KNOWLEDGE_QUERY_UNKNOWN`](../errors/knowledge-recovery.md#error-knowledge-query-unknown)
+- [`KNOWLEDGE_REVIEW_INVALID`](../errors/knowledge-recovery.md#error-knowledge-review-invalid)
+- [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 
 ## 最小示例
 

@@ -6,9 +6,25 @@ const childProcess = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { commitWithDashboard } = require('../batch');
+const { batchTechnicalResponse, commitWithDashboard } = require('../batch');
 
 const repo = path.resolve(__dirname, '../..');
+const batchTechnical = batchTechnicalResponse(new Error('unexpected batch failure'), {
+  command: 'status',
+  batchId: 'batch-doc-ref',
+});
+assert.strictEqual(batchTechnical.status, 'TECHNICAL');
+assert.match(batchTechnical.documentationRef, /references\/commands\/errors\/execution\.md#technical$/);
+const versionMismatch = new Error('batch belongs to a different runtimeSha');
+versionMismatch.code = 'BATCH_IMPLEMENTATION_MISMATCH';
+versionMismatch.errorKind = 'DOMAIN';
+const batchVersionMismatch = batchTechnicalResponse(versionMismatch, {
+  command: 'reconcile',
+  batchId: 'batch-version-mismatch',
+});
+assert.strictEqual(batchVersionMismatch.status, 'FAILED');
+assert.strictEqual(batchVersionMismatch.retryable, false);
+assert.match(batchVersionMismatch.documentationRef, /references\/commands\/errors\/execution\.md#error-batch-implementation-mismatch$/);
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-formal-entrypoints-'));
 const workspace = path.join(temp, 'workspace');
 const input = path.join(temp, 'free-form.txt');
@@ -88,6 +104,10 @@ assert.deepStrictEqual(contract.requiredResources, [
   'references/case-runtime/methods/finish.md',
   'references/case-runtime/action-refs.md',
   'references/case-runtime/errors.md',
+  'references/case-runtime/errors/transport.md',
+  'references/case-runtime/errors/scene-action.md',
+  'references/case-runtime/errors/flow-result.md',
+  'references/case-runtime/errors/knowledge-recovery.md',
 ]);
 assert.deepStrictEqual(contract.allowedEntrypoints, [
   'scripts/case-runtime/agent-facing-client.js',
@@ -163,7 +183,7 @@ for (const fixture of [
   assert.ok(response.issues.length >= 1);
   if (fixture.compactError) {
     assert.strictEqual(response.protocol, 'agent-facing');
-    assert.match(response.documentationRef, /references\/coordinator\/errors\.md#/);
+    assert.match(response.documentationRef, /references\/coordinator\/errors\/input-state\.md#/);
     for (const field of ['command', 'usage', 'example', 'retryWith', 'nextCall']) {
       assert.strictEqual(Object.prototype.hasOwnProperty.call(response, field), false);
     }
@@ -172,6 +192,76 @@ for (const fixture of [
     assert.ok(response.usage);
     assert.ok(response.example.length);
   }
+}
+
+for (const fixture of [
+  ['scripts/app-artifact.js', 'register', '--unknown', 'value'],
+  ['scripts/batch.js', 'status', '--unknown', 'value'],
+  ['scripts/environment.js', 'status', '--unknown', 'value'],
+  ['scripts/execution-request.js', 'status', '--unknown', 'value'],
+  ['scripts/coordinator-agent.js', 'prepare', '--unknown', 'value'],
+]) {
+  const result = childProcess.spawnSync(process.execPath, fixture, {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { ...process.env, MAVT_SELF_TEST: '' },
+  });
+  assert.notStrictEqual(result.status, 0);
+  const response = JSON.parse(result.stderr);
+  assert.strictEqual(response.status, 'REQUEST_INVALID');
+  assert.ok(response.issues.some((issue) => issue.code === 'UNKNOWN_ARGUMENT'));
+  assert.ok(response.documentationRef);
+}
+
+const duplicateBatchFlag = childProcess.spawnSync(process.execPath, [
+  'scripts/batch.js', 'status', '--workspace', '/tmp/a', '--workspace', '/tmp/b', '--batch-id', 'batch-1',
+], { cwd: repo, encoding: 'utf8', env: { ...process.env, MAVT_SELF_TEST: '' } });
+assert.notStrictEqual(duplicateBatchFlag.status, 0);
+assert.ok(JSON.parse(duplicateBatchFlag.stderr).issues.some((issue) => issue.code === 'DUPLICATE_ARGUMENT'));
+
+const invalidArtifactPlatform = childProcess.spawnSync(process.execPath, [
+  'scripts/app-artifact.js', 'register', '--workspace', '/tmp/a', '--path', '/tmp/app',
+  '--platform', 'windows', '--app-id', 'app', '--version', '1', '--build', '1',
+], { cwd: repo, encoding: 'utf8', env: { ...process.env, MAVT_SELF_TEST: '' } });
+assert.notStrictEqual(invalidArtifactPlatform.status, 0);
+assert.ok(JSON.parse(invalidArtifactPlatform.stderr).issues.some((issue) => issue.code === 'ENUM_INVALID'));
+
+for (const fixture of [
+  ['scripts/workspace.js', '--cwd', '/tmp/a', '--cwd', '/tmp/b'],
+  ['scripts/import-case.js', '/tmp/input', '--workspace', '/tmp/a', '--workspace', '/tmp/b'],
+  ['scripts/import-cases.js', '--request-file', '/tmp/request', '--workspace', '/tmp/a', '--workspace', '/tmp/b'],
+  ['scripts/build-agent-contract.js', '--role', 'case-executor', '--role', 'batch-coordinator', '--platform', 'ios'],
+  ['scripts/knowledge.js', 'validate', '--workspace', '/tmp/a', '--workspace', '/tmp/b'],
+  ['scripts/render-context.js', '/tmp/case', '--platform', 'ios', '--platform', 'android'],
+]) {
+  const result = childProcess.spawnSync(process.execPath, fixture, {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { ...process.env, MAVT_SELF_TEST: '' },
+  });
+  assert.notStrictEqual(result.status, 0);
+  const response = JSON.parse(result.stderr);
+  assert.strictEqual(response.status, 'REQUEST_INVALID');
+  assert.ok(response.issues.some((issue) => issue.code === 'DUPLICATE_ARGUMENT'));
+}
+
+for (const fixture of [
+  ['scripts/probe-env.sh', '--platform', 'invalid', '--platform', 'invalid'],
+  ['scripts/prepare-env.sh', '--platform', 'invalid', '--platform', 'invalid'],
+]) {
+  const result = childProcess.spawnSync('bash', fixture, { cwd: repo, encoding: 'utf8', env: process.env });
+  assert.strictEqual(result.status, 2);
+  const response = JSON.parse(result.stderr);
+  assert.strictEqual(response.status, 'REQUEST_INVALID');
+  assert.ok(response.issues.some((issue) => issue.code === 'DUPLICATE_ARGUMENT'));
+}
+
+for (const script of ['scripts/probe-env.sh', 'scripts/prepare-env.sh']) {
+  const result = childProcess.spawnSync('bash', [script, '--platform'], { cwd: repo, encoding: 'utf8', env: process.env });
+  assert.strictEqual(result.status, 2);
+  const response = JSON.parse(result.stderr);
+  assert.strictEqual(response.status, 'REQUEST_INVALID');
+  assert.ok(response.issues.some((issue) => issue.code === 'REQUIRED_FIELD_MISSING'));
 }
 
 assert.strictEqual(fs.existsSync(path.join(repo, 'scripts/agent')), false);
@@ -214,10 +304,10 @@ const implicitBatch = childProcess.spawnSync(process.execPath, [
   'scripts/batch.js', 'init', '--workspace', workspace, '--batch-id', 'batch-implicit',
   '--binding-json', JSON.stringify(binding), '--targets-json', JSON.stringify(executionRequest.targets),
 ], { cwd: repo, encoding: 'utf8', env: { ...process.env, MAVT_SELF_TEST: '' } });
-assert.strictEqual(implicitBatch.status, 0);
-const implicitFailure = JSON.parse(implicitBatch.stdout);
-assert.strictEqual(implicitFailure.status, 'TECHNICAL');
-assert.match(implicitFailure.message, /no longer accepts --binding-json or --targets-json/);
+assert.notStrictEqual(implicitBatch.status, 0);
+const implicitFailure = JSON.parse(implicitBatch.stderr);
+assert.strictEqual(implicitFailure.status, 'REQUEST_INVALID');
+assert.ok(implicitFailure.issues.some((issue) => issue.code === 'UNKNOWN_ARGUMENT'));
 
 const profile = childProcess.spawnSync(process.execPath, [
   'scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony', '--profile', 'agent-driven',

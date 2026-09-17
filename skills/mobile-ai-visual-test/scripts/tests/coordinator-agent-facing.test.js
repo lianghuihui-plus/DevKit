@@ -23,7 +23,7 @@ const coordinatorAgent = require('../coordinator-agent');
 const { createCaseContract } = require('../execution/contracts/case-contract');
 const { confirmEnvironment } = require('../lib/run-control');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { createTestWorkspace } = require('./current-fixture');
+const { createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
 
@@ -244,7 +244,7 @@ assert.strictEqual(preparationError?.diagnostic?.stage, 'ENVIRONMENT_PREPARE');
 const preparationErrorResponse = coordinatorAgent.errorResponse(preparationError, 'confirm');
 assert.strictEqual(JSON.stringify(preparationErrorResponse).includes('IME'), false);
 assert.strictEqual(preparationErrorResponse.retryable, true);
-assert.match(preparationErrorResponse.documentationRef, /references\/coordinator\/errors\.md#error-input-capability-not-ready$/);
+assert.match(preparationErrorResponse.documentationRef, /references\/coordinator\/errors\/environment\.md#error-input-capability-not-ready$/);
 assertNoEmbeddedInstructions(preparationErrorResponse);
 assert.strictEqual(fs.existsSync(path.join(
   workspace, 'runs', 'batch-android-input-prepare-failure', 'execution-request.json',
@@ -578,7 +578,7 @@ assert.deepStrictEqual(blocked.facts, {
   statePath: blockedRun.statePath,
   technical: { code: 'PLATFORM_UNAVAILABLE', stage: 'BATCH' },
 });
-assert.match(blocked.documentationRef, /references\/coordinator\/errors\.md#error-platform-unavailable$/);
+assert.match(blocked.documentationRef, /references\/coordinator\/errors\/environment\.md#error-platform-unavailable$/);
 assertNoEmbeddedInstructions(blocked);
 const blockedAgain = advanceRun(blockedRun.statePath, {
   batchExecute: () => { throw new Error('stable BLOCKED must not re-enter Batch'); },

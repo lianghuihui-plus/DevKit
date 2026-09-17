@@ -1,5 +1,7 @@
 # 接口契约
 
+本页只做角色路由。按需读取当前角色的短索引，不在启动时加载全部命令、参数或错误说明。
+
 ## Agent-facing 主入口
 
 普通执行只使用：
@@ -28,6 +30,6 @@ request 只包含非空 `cases` 数组；每项只提交稳定 `sourceLocator`�
 
 以下入口由 Coordinator Facade 内部使用，或只在用户明确要求维护环境、制品和报告时使用：`build-agent-contract.js`、`probe-env.sh`、`prepare-env.sh`、`app-artifact.js`、`environment.js`、`execution-request.js`、`knowledge.js`、`batch.js`、`render-context.js`、`render-index.js`。
 
-普通执行的协调 Agent 不调用这些入口，也不读取其完整契约。Authoring 或维护流程需要调用时，以入口返回的机器契约、当前模板和错误响应为准。
+普通执行的协调 Agent 不调用这些入口，也不读取其完整契约。Authoring 或维护流程需要调用时，先读取 [命令模块索引](commands.md)，再只进入当前功能模块；收到错误时只读取响应中的 `documentationRef`。
 
 内部接口负责哈希绑定、快照、事务和证据校验。新 execution 使用当前 Runtime；已完成的历史 execution 不迁移、不补写，报告只读展示。

@@ -2,28 +2,16 @@
 'use strict';
 
 const path = require('path');
+const { parseCoordinatorCliArgs } = require('../lib/coordinator-interface-contract');
 const {
   normalizePlatform,
   rebuildCaseDerivedArtifacts,
 } = require('./report-service');
 
-function usage() {
-  const error = new Error('REPORT_CONTEXT_CLI_INVALID: case directory and optional platform must match the command contract');
-  error.code = 'REPORT_CONTEXT_CLI_INVALID';
-  error.exitCode = 2;
-  throw error;
-}
-
 function main(args = process.argv.slice(2)) {
-  const caseDir = args[0] ? path.resolve(args[0]) : null;
-  if (!caseDir) usage();
-  let platform = '';
-  for (let i = 1; i < args.length; i++) {
-    switch (args[i]) {
-      case '--platform': platform = normalizePlatform(args[++i]); if (!platform) usage(); break;
-      default: usage();
-    }
-  }
+  const options = parseCoordinatorCliArgs(args, 'scripts/render-context.js');
+  const caseDir = path.resolve(options.caseDir);
+  const platform = options.platform ? normalizePlatform(options.platform) : '';
 
   const rebuilt = rebuildCaseDerivedArtifacts(caseDir, platform ? { scope: 'platform', platform } : { scope: 'all' });
   const platformSegment = `${path.sep}platforms${path.sep}${platform}${path.sep}`;

@@ -12,7 +12,7 @@ const {
   normalizeActionProposal,
   validateActionExecution,
 } = require('../lib/action-contract');
-const { run, runAllowFailure } = require('./helpers');
+const { run, runAllowFailure } = require('./support/process');
 const { sessionCapabilities } = require('../platform/adapters/ios/lib/appium-client');
 const { pngSize, scaleVisualPoint, sourceViewport } = require('../platform/adapters/ios/lib/screen-space');
 const {

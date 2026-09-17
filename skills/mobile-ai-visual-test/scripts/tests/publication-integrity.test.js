@@ -21,7 +21,7 @@ const {
 const { writeCaseReports } = require('../report/report-service');
 const { withWorkspaceReportPublication } = require('../report/publication-lock');
 const { commitWithDashboard } = require('../batch');
-const { createCurrentFixture, createTestWorkspace } = require('./current-fixture');
+const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
 
@@ -246,15 +246,22 @@ assert.strictEqual(capped.attempts.at(-1).retryCount, 4);
 
 const retryRecoveryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-retry-recovery-'));
 createTestWorkspace(retryRecoveryRoot);
-createCurrentFixture(retryRecoveryRoot, { verdict: 'PASS', suffix: 'retry-recovery' });
+const retryRecoveryFixture = createCurrentFixture(retryRecoveryRoot, { verdict: 'PASS', suffix: 'retry-recovery' });
+writeJson(path.join(retryRecoveryRoot, 'runs', 'batch-retry-recovery', 'contract.json'), {
+  targets: [{ caseDir: retryRecoveryFixture.caseDir }],
+});
 recordPublicationAttempt(retryRecoveryRoot, 'batch-retry-recovery', 'batch', {
   status: 'FAILED', errorCode: 'EXECUTION_LOCKED', reason: 'temporary report lock',
+});
+recordPublicationAttempt(retryRecoveryRoot, 'batch-orphaned-retry', 'batch', {
+  status: 'FAILED', errorCode: 'EXECUTION_LOCKED', reason: 'target metadata is unavailable',
 });
 recordPublicationAttempt(retryRecoveryRoot, 'batch-degraded', 'batch', {
   status: 'FAILED', errorCode: 'REPORT_ARTIFACT_MISSING', reason: 'permanent missing artifact',
 });
 renderIndexForRoot(retryRecoveryRoot);
 assert.strictEqual(readPublicationState(retryRecoveryRoot, 'batch-retry-recovery').status, 'PUBLISHED');
+assert.strictEqual(readPublicationState(retryRecoveryRoot, 'batch-orphaned-retry').status, 'RETRY_REQUIRED');
 assert.strictEqual(readPublicationState(retryRecoveryRoot, 'batch-degraded').status, 'DEGRADED');
 
 const repairRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-repair-'));

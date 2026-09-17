@@ -15,7 +15,7 @@ const {
   createCurrentFixture,
   createTestExecutionRequest,
   createTestWorkspace,
-} = require('./current-fixture');
+} = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
 

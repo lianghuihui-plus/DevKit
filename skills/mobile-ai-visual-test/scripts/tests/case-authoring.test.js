@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { importDrafts } = require('../case/import-drafts');
-const { createTestWorkspace } = require('./current-fixture');
+const { createTestWorkspace } = require('./support/workspace-fixture');
 
 function workspaceSnapshot(root) {
   const casesRoot = path.join(root, 'cases');
@@ -111,7 +111,7 @@ const invalidCli = childProcess.spawnSync(process.execPath, ['scripts/import-cas
 assert.strictEqual(invalidCli.status, 2);
 const invalidCliResponse = JSON.parse(invalidCli.stderr);
 assert.match(invalidCliResponse.usage, /--request-file/);
-assert.ok(invalidCliResponse.example.includes('scripts/import-cases.js'));
+assert.ok(invalidCliResponse.example.includes('<skill-root>/scripts/import-cases.js'));
 
 const beforeInvalid = workspaceSnapshot(workspace);
 for (const request of [

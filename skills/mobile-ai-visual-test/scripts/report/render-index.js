@@ -7,6 +7,7 @@ const {
   renderIndexForRoot,
 } = require('./report-service');
 const { assertWorkspace } = require('../lib/workspace');
+const { parseCoordinatorCliArgs } = require('../lib/coordinator-interface-contract');
 
 function usage() {
   const error = new Error('REPORT_INDEX_CLI_INVALID: expected at most one workspace path');
@@ -16,8 +17,8 @@ function usage() {
 }
 
 function main(args = process.argv.slice(2)) {
-  if (args.length > 1 || args.some((argument) => argument.startsWith('--'))) usage();
-  const input = args[0] ? path.resolve(args[0]) : process.cwd();
+  const options = parseCoordinatorCliArgs(args, 'scripts/render-index.js');
+  const input = options.workspaceCwd ? path.resolve(options.workspaceCwd) : process.cwd();
   const rootDir = assertWorkspace(input).root;
   const casesRoot = path.join(rootDir, 'cases');
 

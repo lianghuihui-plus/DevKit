@@ -57,7 +57,7 @@ function commitCurrentCase(options) {
       writeJsonAtomic(loaded.paths.caseCommitDraft, draft);
     }
     if (options.interruptAfter === 'validation') throw new Error('MAVT_BATCH_COMMIT_INTERRUPTED: validation');
-    const runtime = releaseRuntime(execDir, options);
+    const runtime = releaseRuntime(execDir);
     if (draft.stage === 'VALIDATED') {
       draft.stage = 'RUNTIME_RELEASED';
       writeJsonAtomic(loaded.paths.caseCommitDraft, draft);

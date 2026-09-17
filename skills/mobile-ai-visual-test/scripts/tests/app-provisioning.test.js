@@ -26,7 +26,7 @@ const {
 } = require('../lib/app-provisioning');
 const { resolveStrategy } = require('../case-runtime/preparation-service');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { createTestExecutionRequest, createTestWorkspace } = require('./current-fixture');
+const { createTestExecutionRequest, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-app-provisioning-'));
