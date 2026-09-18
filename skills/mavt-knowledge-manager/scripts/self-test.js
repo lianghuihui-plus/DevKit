@@ -11,6 +11,7 @@ const suites = Object.freeze({
   store: 'tests/knowledge-store.test.js',
   transaction: 'tests/knowledge-transaction.test.js',
   cli: 'tests/cli.test.js',
+  docs: 'tests/skill-docs.test.js',
 });
 
 const registered = Object.values(suites).sort();

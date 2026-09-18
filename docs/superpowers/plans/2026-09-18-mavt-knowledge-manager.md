@@ -320,7 +320,7 @@ git commit -m "feat(knowledge-manager): add management CLI"
 - Consumes: CLI operations from Task 4
 - Produces: Skill trigger and exact Agent workflow for arbitrary input and MAVT Workspace maintenance
 
-- [ ] **Step 1: 写失败的 Skill 文档契约测试**
+- [x] **Step 1: 写失败的 Skill 文档契约测试**
 
 测试 frontmatter 名称、触发描述、任意输入、仅 MAVT Workspace、直接写入、所有操作、禁止推测、删除授权、prepare/apply、失败恢复和资源链接：
 
@@ -332,13 +332,13 @@ assert.match(read('references/writing-guide.md'), /不得猜测/);
 assert.match(read('references/knowledge-contract.md'), /可观察现象/);
 ```
 
-- [ ] **Step 2: 运行文档测试并确认失败**
+- [x] **Step 2: 运行文档测试并确认失败**
 
 Run: `node skills/mavt-knowledge-manager/scripts/tests/skill-docs.test.js`
 
 Expected: FAIL，因为 `SKILL.md` 不存在。
 
-- [ ] **Step 3: 编写紧凑的 `SKILL.md` 和按需引用文档**
+- [x] **Step 3: 编写紧凑的 `SKILL.md` 和按需引用文档**
 
 Frontmatter 固定为：
 
@@ -351,7 +351,7 @@ description: 当用户需要在 MAVT 工作空间中从任意可读取材料新�
 
 `SKILL.md` 只保留触发边界、入口、标准流程和安全规则；格式细节放入 `knowledge-contract.md`，编写判断放入 `writing-guide.md`，完整命令流程放入 `workflow.md`。
 
-- [ ] **Step 4: 添加可复用知识模板并注册测试**
+- [x] **Step 4: 添加可复用知识模板并注册测试**
 
 模板必须是合法但带明确占位说明的草稿资源，Agent 复制后必须替换所有 `<...>`：
 
@@ -376,7 +376,7 @@ Run: `node skills/mavt-knowledge-manager/scripts/self-test.js`
 
 Expected: 五个 suite 全部 PASS。
 
-- [ ] **Step 5: 提交 Skill 文档**
+- [x] **Step 5: 提交 Skill 文档**
 
 ```bash
 git add skills/mavt-knowledge-manager
