@@ -15,6 +15,10 @@ const LIST_META_FIELDS = new Set(['app', 'platform', 'version', 'page', 'operati
 const EXACT_META_FIELDS = new Set(['app', 'platform']);
 const SOFT_CONTEXT_FIELDS = new Set(['page', 'operation']);
 const APP_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+$/;
+const PLATFORM_VALUES = new Set(['harmony', 'android', 'ios']);
+const VERSION_EXACT_PATTERN = /^\d+(?:\.\d+)*(?:[-+][A-Za-z0-9._-]+)?$/;
+const VERSION_WILDCARD_PATTERN = /^\d+(?:\.\d+)*\.(?:x|\*)$/i;
+const VERSION_RANGE_PATTERN = /^\d+(?:\.\d+)*\s*-\s*\d+(?:\.\d+)*$/;
 const META_FIELDS = Object.freeze({
   app: 'app', platform: 'platform', version: 'version', page: 'page', operation: 'operation',
   'valid until': 'validUntil', 'conflicts with': 'conflictsWith',
@@ -30,6 +34,13 @@ function splitValues(value) {
 
 function contentSha(content) {
   return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+function isVersionExpression(value) {
+  const normalized = String(value).trim();
+  return VERSION_EXACT_PATTERN.test(normalized)
+    || VERSION_WILDCARD_PATTERN.test(normalized)
+    || VERSION_RANGE_PATTERN.test(normalized);
 }
 
 function assertInside(root, target, label = 'knowledge path') {
@@ -58,6 +69,16 @@ function parseMetadata(scope) {
   for (const appId of metadata.app || []) {
     if (!APP_ID_PATTERN.test(appId)) {
       throw contractError('KNOWLEDGE_ENTRY_INVALID', `App must use a stable appId such as com.example.app: ${appId}`);
+    }
+  }
+  for (const platform of metadata.platform || []) {
+    if (!PLATFORM_VALUES.has(normalizeText(platform))) {
+      throw contractError('KNOWLEDGE_ENTRY_INVALID', `Platform must be harmony, android, or ios: ${platform}`);
+    }
+  }
+  for (const version of metadata.version || []) {
+    if (!isVersionExpression(version)) {
+      throw contractError('KNOWLEDGE_ENTRY_INVALID', `Version is invalid: ${version}`);
     }
   }
   return metadata;

@@ -28,6 +28,9 @@ assert.match(batchVersionMismatch.documentationRef, /references\/commands\/error
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-formal-entrypoints-'));
 const workspace = path.join(temp, 'workspace');
 const input = path.join(temp, 'free-form.txt');
+assert.strictEqual(fs.existsSync(path.join(repo, 'scripts', 'knowledge.js')), false);
+assert.strictEqual(fs.existsSync(path.join(repo, 'references', 'commands', 'knowledge.md')), false);
+assert.strictEqual(fs.existsSync(path.join(repo, 'references', 'commands', 'errors', 'knowledge.md')), false);
 fs.mkdirSync(workspace);
 fs.writeFileSync(input, '看一下当前页面是否符合用例描述，不限定输入格式。\n');
 
@@ -167,7 +170,6 @@ for (const fixture of [
   { args: ['scripts/environment.js', 'unknown'], command: 'scripts/environment.js confirm' },
   { args: ['scripts/app-artifact.js', 'unknown'], command: 'scripts/app-artifact.js register' },
   { args: ['scripts/execution-request.js', 'unknown'], command: 'scripts/execution-request.js create' },
-  { args: ['scripts/knowledge.js', 'unknown'], command: 'scripts/knowledge.js validate' },
   { args: ['scripts/batch.js', 'unknown'], command: 'scripts/batch.js init' },
   { args: ['scripts/render-context.js'], command: 'scripts/render-context.js' },
   { args: ['scripts/render-index.js', workspace, '--unknown'], command: 'scripts/render-index.js' },
@@ -231,7 +233,6 @@ for (const fixture of [
   ['scripts/import-case.js', '/tmp/input', '--workspace', '/tmp/a', '--workspace', '/tmp/b'],
   ['scripts/import-cases.js', '--request-file', '/tmp/request', '--workspace', '/tmp/a', '--workspace', '/tmp/b'],
   ['scripts/build-agent-contract.js', '--role', 'case-executor', '--role', 'batch-coordinator', '--platform', 'ios'],
-  ['scripts/knowledge.js', 'validate', '--workspace', '/tmp/a', '--workspace', '/tmp/b'],
   ['scripts/render-context.js', '/tmp/case', '--platform', 'ios', '--platform', 'android'],
 ]) {
   const result = childProcess.spawnSync(process.execPath, fixture, {

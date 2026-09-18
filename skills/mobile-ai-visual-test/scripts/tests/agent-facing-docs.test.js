@@ -57,7 +57,6 @@ for (const relative of [
   'references/commands/environment.md',
   'references/commands/app-artifact.md',
   'references/commands/execution.md',
-  'references/commands/knowledge.md',
   'references/commands/reporting.md',
   'references/commands/protocol-maintenance.md',
   'references/commands/transports.md',
@@ -69,6 +68,10 @@ for (const relative of [
   'references/coordinator/errors.md',
   'references/coordinator/errors/environment.md',
 ]) assert.ok(files.has(relative), `missing generated output ${relative}`);
+assert.strictEqual(files.has('references/commands/knowledge.md'), false);
+assert.strictEqual(files.has('references/commands/errors/knowledge.md'), false);
+assert.strictEqual(fs.existsSync(path.join(root, 'references/commands/knowledge.md')), false);
+assert.strictEqual(fs.existsSync(path.join(root, 'references/commands/errors/knowledge.md')), false);
 
 for (const [entrypoint, definition] of Object.entries(INTERFACE_CONTRACTS)) {
   assert.ok(definition.module, `${entrypoint} must declare module`);
@@ -93,6 +96,7 @@ assert.match(read('references/coordinator/errors.md'), /<a id="error-environment
 assert.doesNotMatch(caseIndex, /retryWith|nextCall|capability cards/i);
 assert.ok(Buffer.byteLength(read('references/commands.md')) <= 4 * 1024);
 assert.doesNotMatch(read('references/commands.md'), /--workspace|--batch-id/);
+assert.doesNotMatch(read('references/commands.md'), /commands\/knowledge\.md/);
 assert.match(read('references/commands/execution.md'), /<skill-root>\/scripts\/batch\.js/);
 assert.match(confirmRunPage, /decision: "USE_CURRENT"/);
 assert.match(confirmRunPage, /decision: "SELECT_PLATFORM"/);
