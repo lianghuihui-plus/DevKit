@@ -186,6 +186,35 @@ function isExpired(validUntil, now = new Date()) {
   return validUntil < date.toISOString().slice(0, 10);
 }
 
+function warning(code, entry, field, message) {
+  return { code, entryId: entry.entryId, field, message };
+}
+
+function authoringWarnings(entry, options = {}) {
+  const warnings = [];
+  if (!(entry.metadata.app || []).length) {
+    warnings.push(warning('KNOWLEDGE_SCOPE_APP_MISSING', entry, 'App', 'App scope is not declared'));
+  }
+  if (!(entry.metadata.platform || []).length) {
+    warnings.push(warning('KNOWLEDGE_SCOPE_PLATFORM_MISSING', entry, 'Platform', 'Platform scope is not declared'));
+  }
+  if (isExpired(entry.metadata.validUntil, options.now)) {
+    warnings.push(warning('KNOWLEDGE_ENTRY_EXPIRED', entry, 'Valid until', `entry expired on ${entry.metadata.validUntil}`));
+  }
+  const symptom = normalizeText(entry.sections['可观察现象']).replace(/[\s，。；、,.!?！？：:]/g, '');
+  if (symptom.length < 12) {
+    warnings.push(warning('KNOWLEDGE_SYMPTOM_TOO_SHORT', entry, '可观察现象', 'observable symptom is shorter than 12 characters'));
+  }
+  const distinctive = symptom.replace(/页面|界面|显示|正常|内容|当前|出现|可见|存在|没有|未展示|入口|按钮/g, '');
+  if (distinctive.length < 4) {
+    warnings.push(warning('KNOWLEDGE_SYMPTOM_GENERIC', entry, '可观察现象', 'observable symptom lacks a distinctive business term'));
+  }
+  if (!/\b\d{4}-\d{2}-\d{2}\b/.test(entry.sections['追溯信息'])) {
+    warnings.push(warning('KNOWLEDGE_TRACE_DATE_MISSING', entry, '追溯信息', 'traceability does not contain a YYYY-MM-DD date'));
+  }
+  return warnings;
+}
+
 function validateKnowledgeEntries(entries, options = {}) {
   const ids = new Set();
   for (const entry of entries) {
@@ -212,13 +241,18 @@ function validateKnowledgeEntries(entries, options = {}) {
 
 function validateKnowledgeRoot(knowledgeRoot, options = {}) {
   const entries = loadKnowledgeEntries(knowledgeRoot);
-  return { entries, summary: validateKnowledgeEntries(entries, options), warnings: [] };
+  return {
+    entries,
+    summary: validateKnowledgeEntries(entries, options),
+    warnings: entries.flatMap((entry) => authoringWarnings(entry, options)),
+  };
 }
 
 module.exports = {
   KNOWLEDGE_CONTRACT_VERSION,
   MAX_KNOWLEDGE_FILE_BYTES,
   SECTION_NAMES,
+  authoringWarnings,
   contentSha,
   isExpired,
   loadKnowledgeEntries,

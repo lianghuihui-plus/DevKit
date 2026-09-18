@@ -110,7 +110,7 @@ git commit -m "feat(knowledge-manager): add standalone knowledge contract"
 - Produces: `showKnowledge(workspace, entryId, options?) -> EntryDetail`
 - Produces: `authoringWarnings(entry, { now? }) -> Warning[]`
 
-- [ ] **Step 1: 写失败测试，固定 inspect/list/show 和告警格式**
+- [x] **Step 1: 写失败测试，固定 inspect/list/show 和告警格式**
 
 ```js
 const inspection = inspectKnowledge(workspace, { now: '2026-09-18T00:00:00Z' });
@@ -125,13 +125,13 @@ expectCode(() => showKnowledge(workspace, 'K-missing'), 'KNOWLEDGE_ENTRY_NOT_FOU
 
 告警对象固定为 `{ code, entryId, field, message }`，覆盖缺失 App/Platform、过期、现象过短、缺少业务辨识词和追溯信息缺少日期。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: `node skills/mavt-knowledge-manager/scripts/tests/knowledge-store.test.js`
 
 Expected: FAIL，提示 `Cannot find module '../lib/knowledge-store'`。
 
-- [ ] **Step 3: 实现只读 Store 和告警**
+- [x] **Step 3: 实现只读 Store 和告警**
 
 ```js
 function inspectKnowledge(workspace, options = {}) {
@@ -144,13 +144,13 @@ function inspectKnowledge(workspace, options = {}) {
 
 `list` 只返回 ID、标题、相对路径、元数据、SHA、过期状态和告警码；`show` 返回完整内容。排序固定为 `entryId` 的 locale 顺序。
 
-- [ ] **Step 4: 运行 Store 和契约测试**
+- [x] **Step 4: 运行 Store 和契约测试**
 
 Run: `node skills/mavt-knowledge-manager/scripts/tests/knowledge-store.test.js && node skills/mavt-knowledge-manager/scripts/tests/knowledge-contract.test.js`
 
 Expected: 两个测试均 PASS。
 
-- [ ] **Step 5: 提交只读能力**
+- [x] **Step 5: 提交只读能力**
 
 ```bash
 git add skills/mavt-knowledge-manager/scripts/lib skills/mavt-knowledge-manager/scripts/tests
