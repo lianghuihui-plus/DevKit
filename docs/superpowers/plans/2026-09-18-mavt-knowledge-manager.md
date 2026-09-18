@@ -170,7 +170,7 @@ git commit -m "feat(knowledge-manager): add inspection operations"
 - Request: `{ schemaVersion: 1, reason: string, operations: Operation[] }`
 - Operation: `{ type: 'ADD', draftPath } | { type: 'UPDATE', entryId, draftPath } | { type: 'DELETE', entryId }`
 
-- [ ] **Step 1: 写失败测试，覆盖完整事务矩阵**
+- [x] **Step 1: 写失败测试，覆盖完整事务矩阵**
 
 测试新增、更新、删除、混合事务、重复 ID、修改 ID、不存在目标、存活冲突引用、一次事务内解除引用、过期 plan、备份和注入失败回滚：
 
@@ -186,13 +186,13 @@ expectCode(() => applyTransaction(workspace, requestPath, plan.planHash), 'KNOWL
 
 注入失败通过 `options.interruptAfter = 'writes'` 触发，测试必须断言所有原文件内容和目录清单完全恢复。
 
-- [ ] **Step 2: 运行事务测试并确认失败**
+- [x] **Step 2: 运行事务测试并确认失败**
 
 Run: `node skills/mavt-knowledge-manager/scripts/tests/knowledge-transaction.test.js`
 
 Expected: FAIL，提示 `Cannot find module '../lib/knowledge-transaction'`。
 
-- [ ] **Step 3: 实现请求规范化和预期最终状态校验**
+- [x] **Step 3: 实现请求规范化和预期最终状态校验**
 
 ```js
 function prepareTransaction(workspace, requestPath, options = {}) {
@@ -206,7 +206,7 @@ function prepareTransaction(workspace, requestPath, options = {}) {
 
 `planHash` 必须覆盖规范化请求、所有现有知识的 `entryId/relativePath/contentSha`、所有 draft 的 SHA 和最终变更集。
 
-- [ ] **Step 4: 实现备份、原子提交和失败恢复**
+- [x] **Step 4: 实现备份、原子提交和失败恢复**
 
 ```js
 function applyTransaction(workspace, requestPath, planHash, options = {}) {
@@ -228,13 +228,13 @@ function applyTransaction(workspace, requestPath, planHash, options = {}) {
 
 新增和替换使用同目录临时文件加 `renameSync`；备份位于 `.mavt/knowledge-maintenance/backups/<transactionId>/`，包含 `request.json`、`plan.json`、`result.json` 和原始文件。
 
-- [ ] **Step 5: 运行事务、Store 和契约测试**
+- [x] **Step 5: 运行事务、Store 和契约测试**
 
 Run: `node skills/mavt-knowledge-manager/scripts/tests/knowledge-transaction.test.js && node skills/mavt-knowledge-manager/scripts/tests/knowledge-store.test.js && node skills/mavt-knowledge-manager/scripts/tests/knowledge-contract.test.js`
 
 Expected: 全部 PASS。
 
-- [ ] **Step 6: 提交事务能力**
+- [x] **Step 6: 提交事务能力**
 
 ```bash
 git add skills/mavt-knowledge-manager/scripts/lib/knowledge-transaction.js skills/mavt-knowledge-manager/scripts/tests/knowledge-transaction.test.js
