@@ -253,7 +253,7 @@ git commit -m "feat(knowledge-manager): add atomic knowledge transactions"
 - Produces: JSON stdout success response
 - Produces: JSON stderr failure response `{ schemaVersion: 1, status: 'REQUEST_INVALID'|'FAILED', code, message, details? }`
 
-- [ ] **Step 1: 写失败的 CLI 测试**
+- [x] **Step 1: 写失败的 CLI 测试**
 
 ```js
 assert.strictEqual(run(['inspect', '--workspace', workspace]).status, 'VALID');
@@ -265,13 +265,13 @@ assert.strictEqual(run(['apply', '--workspace', workspace, '--request', request,
 assert.strictEqual(runFailure(['unknown']).code, 'COMMAND_INVALID');
 ```
 
-- [ ] **Step 2: 运行 CLI 测试并确认失败**
+- [x] **Step 2: 运行 CLI 测试并确认失败**
 
 Run: `node skills/mavt-knowledge-manager/scripts/tests/cli.test.js`
 
 Expected: FAIL，因为 `scripts/knowledge-manager.js` 不存在。
 
-- [ ] **Step 3: 实现严格参数解析和 JSON 响应**
+- [x] **Step 3: 实现严格参数解析和 JSON 响应**
 
 ```js
 const COMMANDS = new Set(['inspect', 'list', 'show', 'validate', 'prepare', 'apply']);
@@ -286,7 +286,7 @@ module.exports = { COMMANDS, COMMAND_FLAGS, main, parseArgs };
 
 不得使用第三方参数库；所有路径在进入业务模块前转为绝对路径。
 
-- [ ] **Step 4: 实现自测注册器并运行全部新 Skill 测试**
+- [x] **Step 4: 实现自测注册器并运行全部新 Skill 测试**
 
 `self-test.js` 必须断言 `scripts/tests/*.test.js` 全部注册：
 
@@ -298,7 +298,7 @@ Run: `node skills/mavt-knowledge-manager/scripts/self-test.js`
 
 Expected: PASS，列出四个 suite。
 
-- [ ] **Step 5: 提交 CLI**
+- [x] **Step 5: 提交 CLI**
 
 ```bash
 git add skills/mavt-knowledge-manager/scripts
