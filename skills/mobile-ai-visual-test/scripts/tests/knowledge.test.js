@@ -192,6 +192,8 @@ expectCode(() => validateKnowledgeRoots([skill, workspace]), 'KNOWLEDGE_CONFLICT
 expectCode(() => parseKnowledgeEntry('# K-bad-001 缺少章节\n\n## 适用范围\n内容'), 'KNOWLEDGE_ENTRY_INVALID');
 expectCode(() => parseKnowledgeEntry(entry('K-date-001', { validUntil: '2026/08/13' })), 'KNOWLEDGE_ENTRY_INVALID');
 expectCode(() => parseKnowledgeEntry(entry('K-app-name-001', { app: '测试应用' })), 'KNOWLEDGE_ENTRY_INVALID');
+expectCode(() => parseKnowledgeEntry(entry('K-platform-001', { platform: 'windows' })), 'KNOWLEDGE_ENTRY_INVALID');
+expectCode(() => parseKnowledgeEntry(entry('K-version-001', { version: 'latest' })), 'KNOWLEDGE_ENTRY_INVALID');
 expectCode(() => queryKnowledge({ roots: [skill, workspace], query: {} }), 'KNOWLEDGE_QUERY_INVALID');
 const outside = path.join(temp, 'outside.md');
 fs.writeFileSync(outside, entry('K-outside-001'));

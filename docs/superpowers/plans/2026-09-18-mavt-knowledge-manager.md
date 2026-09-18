@@ -394,7 +394,7 @@ git commit -m "docs(knowledge-manager): define agent authoring workflow"
 - Consumes only in DevKit test: MAVT 的 `parseKnowledgeEntry`
 - Produces: 开发期协议兼容门禁；不进入任何运行时模块
 
-- [ ] **Step 1: 写兼容测试并用刻意差异证明测试有效**
+- [x] **Step 1: 写兼容测试并用刻意差异证明测试有效**
 
 ```js
 for (const fixture of validFixtures) {
@@ -408,7 +408,7 @@ for (const fixture of invalidFixtures) {
 
 先加入一个 MAVT 当前会拒绝、管理器暂时接受的非法 Version fixture，确认测试 FAIL。
 
-- [ ] **Step 2: 对齐契约并确认兼容测试通过**
+- [x] **Step 2: 对齐契约并确认兼容测试通过**
 
 统一两个独立实现对 Platform 和 Version 的格式约束，但不得让任一运行时模块导入另一个 Skill。
 
@@ -416,7 +416,7 @@ Run: `node skills/mavt-knowledge-manager/scripts/tests/mavt-compatibility.test.j
 
 Expected: PASS，输出 `MAVT knowledge compatibility passed`。
 
-- [ ] **Step 3: 运行管理 Skill 全量自测并提交**
+- [x] **Step 3: 运行管理 Skill 全量自测并提交**
 
 Run: `node skills/mavt-knowledge-manager/scripts/self-test.js`
 

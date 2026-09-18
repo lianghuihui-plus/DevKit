@@ -12,6 +12,7 @@ const suites = Object.freeze({
   transaction: 'tests/knowledge-transaction.test.js',
   cli: 'tests/cli.test.js',
   docs: 'tests/skill-docs.test.js',
+  mavtCompatibility: 'tests/mavt-compatibility.test.js',
 });
 
 const registered = Object.values(suites).sort();
