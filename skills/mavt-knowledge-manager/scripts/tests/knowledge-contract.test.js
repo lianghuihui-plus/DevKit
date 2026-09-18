@@ -73,6 +73,17 @@ expectCode(() => assertMavtWorkspace(wrongType), 'WORKSPACE_INVALID');
 const initializing = path.join(temp, 'initializing');
 createWorkspace(initializing, { initializationState: 'INITIALIZING' });
 expectCode(() => assertMavtWorkspace(initializing), 'WORKSPACE_INVALID');
+const escapedKnowledge = path.join(temp, 'escaped-knowledge');
+fs.mkdirSync(escapedKnowledge);
+const linkedWorkspace = path.join(temp, 'linked-workspace');
+fs.mkdirSync(linkedWorkspace);
+fs.writeFileSync(path.join(linkedWorkspace, 'workspace.json'), `${JSON.stringify({
+  schemaVersion: 1,
+  type: 'mobile-ai-visual-test-workspace',
+  initializationState: 'READY',
+}, null, 2)}\n`);
+fs.symlinkSync(escapedKnowledge, path.join(linkedWorkspace, 'knowledge'));
+expectCode(() => assertMavtWorkspace(linkedWorkspace), 'WORKSPACE_INVALID');
 
 const parsed = parseKnowledgeEntry(knowledge('K-editor-001'), { relativePath: 'K-editor-001.md' });
 assert.strictEqual(parsed.entryId, 'K-editor-001');

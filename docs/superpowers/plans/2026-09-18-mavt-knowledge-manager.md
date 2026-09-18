@@ -499,7 +499,7 @@ git commit -m "refactor(mavt): separate knowledge maintenance"
 **Interfaces:**
 - Verifies the complete feature and both Skills' independence
 
-- [ ] **Step 1: 扫描残留维护入口和运行时交叉依赖**
+- [x] **Step 1: 扫描残留维护入口和运行时交叉依赖**
 
 Run:
 
@@ -510,19 +510,19 @@ rg -n "mobile-ai-visual-test|mavt-knowledge-manager" skills/mavt-knowledge-manag
 
 Expected: 第一条无结果；第二条业务库无跨 Skill `require` 或命令调用，只允许 Workspace 类型字符串。
 
-- [ ] **Step 2: 运行新 Skill 全量自测**
+- [x] **Step 2: 运行新 Skill 全量自测**
 
 Run: `node skills/mavt-knowledge-manager/scripts/self-test.js`
 
 Expected: 全部 suite PASS。
 
-- [ ] **Step 3: 运行 MAVT 全量自测**
+- [x] **Step 3: 运行 MAVT 全量自测**
 
 Run: `node skills/mobile-ai-visual-test/scripts/self-test.js`
 
 Expected: 全部 suite PASS。
 
-- [ ] **Step 4: 执行手工 CLI 冒烟测试**
+- [x] **Step 4: 执行手工 CLI 冒烟测试**
 
 在临时 MAVT Workspace 中依次执行 `inspect -> prepare ADD -> apply -> list -> show -> validate -> prepare UPDATE -> apply -> prepare DELETE -> apply`，并确认：
 
@@ -532,7 +532,7 @@ assert.strictEqual(finalValidation.entryCount, 0);
 assert.ok(deleteResult.backupPath.startsWith(path.join(workspace, '.mavt', 'knowledge-maintenance')));
 ```
 
-- [ ] **Step 5: 检查变更范围和提交最终修正**
+- [x] **Step 5: 检查变更范围和提交最终修正**
 
 Run: `git diff main...HEAD --check && git status --short && git log --oneline --decorate main..HEAD`
 

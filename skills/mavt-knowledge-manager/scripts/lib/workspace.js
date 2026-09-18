@@ -37,8 +37,12 @@ function assertMavtWorkspace(workspacePath) {
     throw managerError('WORKSPACE_INVALID', 'workspace initializationState must be READY');
   }
   const knowledgeRoot = path.join(root, 'knowledge');
-  if (!fs.existsSync(knowledgeRoot) || !fs.statSync(knowledgeRoot).isDirectory()) {
+  if (!fs.existsSync(knowledgeRoot)) {
     throw managerError('WORKSPACE_INVALID', 'workspace knowledge directory is required');
+  }
+  const knowledgeStat = fs.lstatSync(knowledgeRoot);
+  if (knowledgeStat.isSymbolicLink() || !knowledgeStat.isDirectory()) {
+    throw managerError('WORKSPACE_INVALID', 'workspace knowledge path must be a real directory');
   }
   return {
     root,

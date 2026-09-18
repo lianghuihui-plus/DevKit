@@ -85,6 +85,34 @@ assert.deepStrictEqual(run(['list', '--workspace', workspace]).entries.map((item
 assert.match(run(['show', '--workspace', workspace, '--entry-id', 'K-cli-001']).content, /^# K-cli-001/);
 assert.strictEqual(run(['validate', '--workspace', workspace]).entryCount, 1);
 
+const updateDraft = path.join(temp, 'update-draft.md');
+const updateRequest = path.join(temp, 'update-request.json');
+fs.writeFileSync(updateDraft, entry('K-cli-001').replace('该现象是已确认的平台差异。', '该现象已经复核并确认适用边界。'));
+fs.writeFileSync(updateRequest, `${JSON.stringify({
+  schemaVersion: 1,
+  reason: 'CLI 修改测试',
+  operations: [{ type: 'UPDATE', entryId: 'K-cli-001', draftPath: updateDraft }],
+}, null, 2)}\n`);
+const updatePlan = run(['prepare', '--workspace', workspace, '--request', updateRequest]);
+assert.strictEqual(run([
+  'apply', '--workspace', workspace, '--request', updateRequest, '--plan-hash', updatePlan.planHash,
+]).status, 'APPLIED');
+assert.match(run(['show', '--workspace', workspace, '--entry-id', 'K-cli-001']).content, /已经复核并确认适用边界/);
+
+const deleteRequest = path.join(temp, 'delete-request.json');
+fs.writeFileSync(deleteRequest, `${JSON.stringify({
+  schemaVersion: 1,
+  reason: 'CLI 删除测试',
+  operations: [{ type: 'DELETE', entryId: 'K-cli-001' }],
+}, null, 2)}\n`);
+const deletePlan = run(['prepare', '--workspace', workspace, '--request', deleteRequest]);
+const deleted = run([
+  'apply', '--workspace', workspace, '--request', deleteRequest, '--plan-hash', deletePlan.planHash,
+]);
+assert.strictEqual(deleted.status, 'APPLIED');
+assert.ok(deleted.backupPath.startsWith(path.join(workspace, '.mavt', 'knowledge-maintenance')));
+assert.strictEqual(run(['validate', '--workspace', workspace]).entryCount, 0);
+
 assert.strictEqual(runFailure(['unknown']).code, 'COMMAND_INVALID');
 assert.strictEqual(runFailure(['inspect']).code, 'ARGUMENT_REQUIRED');
 assert.strictEqual(runFailure(['inspect', '--workspace', workspace, '--workspace', workspace]).code, 'ARGUMENT_DUPLICATE');
