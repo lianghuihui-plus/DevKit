@@ -446,7 +446,7 @@ git commit -m "test(knowledge-manager): verify MAVT contract compatibility"
 - Preserves: `validateKnowledgeRoots` call in `scripts/lib/run-control.js`
 - Removes: public `scripts/knowledge.js validate` CLI and maintenance docs
 
-- [ ] **Step 1: 先修改 MAVT 边界测试，声明维护入口必须消失**
+- [x] **Step 1: 先修改 MAVT 边界测试，声明维护入口必须消失**
 
 ```js
 assert.strictEqual(fs.existsSync(path.join(repo, 'scripts/knowledge.js')), false);
@@ -456,13 +456,13 @@ assert.strictEqual(JSON.stringify(require('../lib/coordinator-interface-contract
 
 从非法入口 fixture、重复参数 fixture和 Agent-facing docs 列表中移除知识维护命令。
 
-- [ ] **Step 2: 运行相关测试并确认失败**
+- [x] **Step 2: 运行相关测试并确认失败**
 
 Run: `node skills/mobile-ai-visual-test/scripts/self-test.js entrypoints agentFacingDocs boundaries`
 
 Expected: FAIL，因为公开入口和文档仍存在。
 
-- [ ] **Step 3: 删除公开维护能力并精简运行时知识文档**
+- [x] **Step 3: 删除公开维护能力并精简运行时知识文档**
 
 删除三个维护文件和两个 manifest 定义；`references/knowledge.md` 只保留：
 
@@ -477,13 +477,13 @@ Expected: FAIL，因为公开入口和文档仍存在。
 
 不得删除或弱化查询硬条件、最多 5 条、过期不可 `APPLICABLE`、负向结论调查要求和冻结快照规则。
 
-- [ ] **Step 4: 运行 MAVT 知识和边界测试**
+- [x] **Step 4: 运行 MAVT 知识和边界测试**
 
 Run: `node skills/mobile-ai-visual-test/scripts/self-test.js knowledge knowledgeClosure caseRuntime entrypoints agentFacingDocs boundaries`
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交 MAVT 精简**
+- [x] **Step 5: 提交 MAVT 精简**
 
 ```bash
 git add -A skills/mobile-ai-visual-test

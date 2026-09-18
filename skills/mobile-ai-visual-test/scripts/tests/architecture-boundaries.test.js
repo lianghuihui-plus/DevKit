@@ -228,6 +228,7 @@ assert.match(casePrompt, /Handoff Loader/);
 assert.match(casePrompt, /checkNodeRefs.*只关联.*直接检查或调查/);
 assert.match(casePrompt, /finish.*Runtime 从 ledger 组装完整结果/);
 const implementation = implementationGroups(root, 'harmony');
+assert.strictEqual(implementation.coordinator.includes('scripts/knowledge.js'), false);
 assert.strictEqual(implementation.report.includes('scripts/execution/contracts/case-definition-contract.js'), false);
 assert.strictEqual(implementation.report.includes('scripts/execution/contracts/validation-profile-contract.js'), true);
 const platformSpecific = /\b(?:codex|spawn_agent|fork_turns|provider)\b/i;

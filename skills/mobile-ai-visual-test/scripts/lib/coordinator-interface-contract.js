@@ -15,7 +15,6 @@ const INTERFACE_ROUTING = Object.freeze({
   'scripts/environment.js': { module: 'environment', access: 'ON_DEMAND', roles: ['maintenance'] },
   'scripts/app-artifact.js': { module: 'app-artifact', access: 'ON_DEMAND', roles: ['maintenance'] },
   'scripts/execution-request.js': { module: 'execution', access: 'ON_DEMAND', roles: ['maintenance'] },
-  'scripts/knowledge.js': { module: 'knowledge', access: 'ON_DEMAND', roles: ['maintenance'] },
   'scripts/batch.js': { module: 'execution', access: 'ON_DEMAND', roles: ['maintenance'] },
   'scripts/render-context.js': { module: 'reporting', access: 'ON_DEMAND', roles: ['maintenance'] },
   'scripts/render-index.js': { module: 'reporting', access: 'ON_DEMAND', roles: ['maintenance'] },
@@ -249,12 +248,6 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
       command('status', 'Read an execution request', 'node scripts/execution-request.js status --workspace <workspace> --batch-id <id>', commonBatchFlags,
         ['node', 'scripts/execution-request.js', 'status', '--workspace', '<workspace>', '--batch-id', '<batch-id>'], ['current execution request']),
     ],
-  },
-  'scripts/knowledge.js': {
-    summary: 'Validate built-in and workspace knowledge before creating a new execution request',
-    commands: [command('validate', 'Validate knowledge roots', 'node scripts/knowledge.js validate --workspace <workspace> [--now <iso-time>]', {
-      workspace: flag(true, 'Workspace path', { value: '<workspace>' }), now: flag(false, 'Validation clock override', { value: '<iso-time>' }),
-    }, ['node', 'scripts/knowledge.js', 'validate', '--workspace', '<workspace>'], ['knowledge validation summary'])],
   },
   'scripts/batch.js': {
     summary: 'Drive the deterministic batch state machine',
