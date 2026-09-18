@@ -1,66 +1,66 @@
-# MAVT Knowledge Manager Design
+# MAVT 知识库管理 Skill 设计方案
 
-## Summary
+## 概述
 
-Create a new `mavt-knowledge-manager` Skill beside `mobile-ai-visual-test`. The new Skill owns every user-facing knowledge-maintenance workflow for a MAVT workspace: inspecting, adding, updating, deleting, and validating knowledge entries. It accepts arbitrary readable source material and relies on the Agent to extract the business meaning.
+在 `mobile-ai-visual-test` 同级新增 `mavt-knowledge-manager` Skill。新 Skill 负责 MAVT 工作空间中所有面向用户的知识库维护流程，包括查看、新增、修改、删除和校验知识条目。它接受任意可读取的输入材料，由 Agent 自主理解并提炼业务含义。
 
-MAVT remains a standalone, read-only consumer of knowledge. It keeps the parsing, defensive validation, retrieval, review, snapshot, and result-reference behavior required during test execution, but removes its public maintenance command and authoring guidance. Neither Skill calls or imports the other at runtime.
+MAVT 保持为可独立运行的知识库只读消费方。它保留测试执行期间必需的解析、防御性校验、检索、复核、快照和结果引用能力，但移除公开的维护命令和知识编写指导。两个 Skill 在运行时不互相调用或导入。
 
-## Goals
+## 目标
 
-- Let users ask an Agent to create or maintain knowledge from any readable input format.
-- Restrict all operations to a ready MAVT workspace and its `knowledge/` directory.
-- Support inspect, list, show, add, update, delete, and full validation workflows.
-- Write changes directly after the user's request authorizes the operation.
-- Prevent partial or invalid knowledge states through prospective validation and atomic commits.
-- Keep MAVT independently executable when the manager Skill is not installed.
-- Reduce MAVT's public documentation and commands to knowledge consumption only.
+- 用户可以要求 Agent 从任意可读取的输入生成或维护知识。
+- 所有操作仅允许作用于一个已就绪的 MAVT 工作空间及其 `knowledge/` 目录。
+- 支持查看、列表、详情、新增、修改、删除和全量校验。
+- 用户请求已经授权相应操作后，直接写入知识库。
+- 通过预期状态校验和原子提交，避免产生部分写入或无效知识状态。
+- 未安装知识库管理 Skill 时，MAVT 仍能独立执行。
+- 将 MAVT 的公开文档和命令收敛为仅负责知识消费。
 
-## Non-goals
+## 非目标
 
-- The manager does not execute MAVT cases or query knowledge for a case verdict.
-- The manager does not initialize or repair a MAVT workspace.
-- The manager does not prescribe source formats or implement source-specific importers.
-- The manager does not add vector search, embeddings, semantic similarity, or confidence scores.
-- The manager does not mutate frozen execution snapshots or published reports.
-- The first version does not rename knowledge entry IDs; an ID change is an explicit delete plus add.
+- 管理 Skill 不执行 MAVT 用例，也不为用例结论查询知识。
+- 管理 Skill 不初始化或修复 MAVT 工作空间。
+- 管理 Skill 不限制来源格式，也不实现特定来源格式的导入器。
+- 不引入向量检索、Embedding、语义相似度或可信度评分。
+- 不修改已经冻结的 execution 快照或已发布报告。
+- 第一版不支持直接重命名知识 ID；变更 ID 必须显式执行删除后新增。
 
-## Skill Boundary
+## Skill 职责边界
 
 ### `mavt-knowledge-manager`
 
-The manager owns:
+管理 Skill 负责：
 
-- Recognizing knowledge-maintenance intent.
-- Reading arbitrary user-provided material with the best available tools.
-- Deciding whether the request creates one entry, several entries, or updates existing entries.
-- Authoring guidance, templates, and recall-quality review.
-- Workspace knowledge discovery and deterministic CRUD operations.
-- Structural validation, reference validation, and authoring warnings.
-- Recoverable backups and operation summaries.
+- 识别知识库维护意图。
+- 使用适合的可用工具完整读取用户提供的任意材料。
+- 判断请求应生成一条、多条知识，还是更新已有知识。
+- 提供编写规范、模板和召回质量检查规则。
+- 发现工作空间知识并执行确定性的增删改查。
+- 执行结构校验、引用校验和编写质量告警。
+- 保存可恢复备份并输出操作摘要。
 
 ### `mobile-ai-visual-test`
 
-MAVT retains:
+MAVT 保留：
 
-- Read-only parsing of Skill and workspace knowledge roots.
-- Compatibility filtering, lexical retrieval, scoring, and candidate limits.
-- Defensive validation before freezing a new execution request.
-- Candidate snapshots, review conclusions, and result references.
-- Runtime-facing documentation that explains when and how knowledge is used.
+- 对 Skill 级和 Workspace 级知识目录的只读解析。
+- 兼容性过滤、词面召回、评分和候选数量限制。
+- 冻结新执行请求前的防御性校验。
+- 候选快照、复核结论和结果引用。
+- 说明何时以及如何使用知识的运行时文档。
 
-MAVT removes:
+MAVT 移除：
 
-- The public `scripts/knowledge.js validate` maintenance entry point.
-- The knowledge module from the maintenance command index and CLI manifest.
-- Maintenance-oriented command and error documentation.
-- Templates and instructions for creating or editing knowledge entries.
+- 公开的 `scripts/knowledge.js validate` 维护入口。
+- 维护命令索引和 CLI manifest 中的知识库模块。
+- 面向知识维护者的命令和错误文档。
+- 创建或修改知识条目的模板与说明。
 
-Defensive validation remains internal to MAVT because malformed input must be rejected before execution. It is consumption safety, not a user-facing maintenance capability.
+防御性校验仍保留在 MAVT 内部，因为损坏的知识必须在执行前被拒绝；它属于知识消费安全，不属于面向用户的维护能力。
 
-## Workspace Constraint
+## 工作空间约束
 
-Every manager operation requires an explicit `--workspace` path. The manager reads `<workspace>/workspace.json` and accepts only:
+管理 Skill 的每个操作都必须显式接收 `--workspace` 路径。管理器读取 `<workspace>/workspace.json`，并且只接受：
 
 ```json
 {
@@ -70,63 +70,63 @@ Every manager operation requires an explicit `--workspace` path. The manager rea
 }
 ```
 
-The manager never creates a workspace. Knowledge writes are restricted to `<workspace>/knowledge/`; symlinks and paths escaping that directory are rejected.
+管理 Skill 不创建工作空间。知识写入只能发生在 `<workspace>/knowledge/` 内；符号链接和逃逸出该目录的路径都会被拒绝。
 
-## Knowledge Contract
+## 知识文件契约
 
-The interoperable file protocol remains Markdown knowledge contract version 1:
+两个 Skill 之间互操作的文件协议保持为 Markdown 知识契约第 1 版：
 
-1. The first line is `# K-<stable-id> <title>`.
-2. Exactly four non-empty level-two sections appear in this order:
+1. 第一行是 `# K-<stable-id> <title>`。
+2. 必须严格按照以下顺序包含四个非空二级章节：
    - `适用范围`
    - `可观察现象`
    - `结论与处理建议`
    - `追溯信息`
-3. Supported scope metadata is `App`, `Platform`, `Version`, `Page`, `Operation`, `Valid until`, and `Conflicts with`.
-4. Comma-separated values are allowed for list metadata.
-5. Unknown scope facts are omitted rather than guessed.
-6. Every file contains one entry and every entry ID is unique across the workspace knowledge root.
+3. 支持的适用范围字段为 `App`、`Platform`、`Version`、`Page`、`Operation`、`Valid until` 和 `Conflicts with`。
+4. 列表型元数据可以使用英文逗号分隔多个值。
+5. 未知的适用范围事实应当省略，不得猜测。
+6. 每个文件只包含一个条目，Workspace 知识目录中的条目 ID 必须唯一。
 
-The manager's authoring guide is the canonical user-facing explanation of this contract. MAVT keeps only the parser behavior needed to consume it. Both implementations identify the protocol as version 1 in code and tests.
+管理 Skill 的编写指南是该契约面向用户的权威说明。MAVT 只保留消费此契约所需的解析行为。两个实现均在代码和测试中将协议标识为第 1 版。
 
-## Authoring Rules
+## 知识编写规则
 
-The Agent applies these semantic rules before invoking deterministic writes:
+调用确定性写入前，Agent 必须应用以下语义规则：
 
-- One entry describes one independently applicable observable phenomenon or rule.
-- Prefer updating an existing entry when scope, phenomenon, and conclusion describe the same rule.
-- Split source material when conclusions, scope, expiration, or traceability differ.
-- Use stable App IDs, never product display names, in `App` metadata.
-- Include only source-supported platform, version, page, operation, expiration, and conflict facts.
-- Put objective, observable UI facts in `可观察现象`.
-- Put explanation, decision boundaries, and recommended handling in `结论与处理建议`.
-- Put source, confirmation method, owner, and date in `追溯信息`.
-- Preserve common page, control, message, and symptom wording in the title and observable section so lexical retrieval can find the entry.
-- Do not manufacture traceability or convert an uncertain statement into a confirmed rule.
+- 一条知识只描述一个可以独立判断适用性的可观察现象或规则。
+- 当适用范围、现象和结论描述的是同一规则时，优先更新已有条目。
+- 当结论、适用范围、有效期或追溯信息不同时，应拆分为不同条目。
+- `App` 元数据使用稳定 App ID，不能使用产品展示名。
+- 只写入来源材料能够支持的平台、版本、页面、操作、有效期和冲突关系。
+- `可观察现象` 只记录客观、可从业务现场核对的 UI 事实。
+- `结论与处理建议` 记录解释、判断边界和推荐处理方式。
+- `追溯信息` 记录来源、确认方式、责任人和日期。
+- 在标题和“可观察现象”中保留常见页面名、控件名、提示文案和现象说法，使词面检索能够召回。
+- 不得编造追溯信息，也不得将不确定描述提升为已确认规则。
 
-## Deterministic Interface
+## 确定性操作接口
 
-The public entry point is:
+公开入口为：
 
 ```bash
 node <skill-root>/scripts/knowledge-manager.js <operation> --workspace <workspace> [...]
 ```
 
-Supported operations:
+支持以下操作：
 
-- `inspect`: summarize workspace validity, entry count, expired entries, and validation status.
-- `list`: return compact metadata for all entries.
-- `show --entry-id <id>`: return one exact entry and its path.
-- `validate`: perform full structural and reference validation and return non-blocking authoring warnings.
-- `prepare --request <json-path>`: validate a proposed transaction without changing the workspace and return its exact effects plus a `planHash`.
-- `apply --request <json-path> --plan-hash <hash>`: revalidate the unchanged plan, commit atomically, and run post-commit validation.
+- `inspect`：汇总工作空间有效性、条目数量、过期条目和校验状态。
+- `list`：返回所有条目的紧凑元数据。
+- `show --entry-id <id>`：返回一个精确条目及其路径。
+- `validate`：执行完整的结构和引用校验，并返回非阻塞的编写质量告警。
+- `prepare --request <json-path>`：在不修改工作空间的情况下校验预期事务，返回准确影响范围和 `planHash`。
+- `apply --request <json-path> --plan-hash <hash>`：重新确认计划未变化，原子提交并执行提交后校验。
 
-The request document contains a non-empty `reason` and an ordered list of operations:
+请求文件包含非空的 `reason` 和有序操作列表：
 
 ```json
 {
   "schemaVersion": 1,
-  "reason": "Record the confirmed HarmonyOS behavior",
+  "reason": "记录已确认的 HarmonyOS 行为",
   "operations": [
     { "type": "ADD", "draftPath": "/absolute/path/to/K-editor-001.md" },
     { "type": "UPDATE", "entryId": "K-editor-002", "draftPath": "/absolute/path/to/replacement.md" },
@@ -135,113 +135,113 @@ The request document contains a non-empty `reason` and an ordered list of operat
 }
 ```
 
-`ADD` fails when the ID already exists. `UPDATE` fails when the ID does not exist or the replacement changes the ID. `DELETE` fails when the ID does not exist or another surviving entry references it through `Conflicts with`. Multiple operations are validated against one prospective final state, allowing related changes to commit together.
+`ADD` 在 ID 已存在时失败。`UPDATE` 在 ID 不存在或替换内容改变 ID 时失败。`DELETE` 在 ID 不存在，或仍保留的其他条目通过 `Conflicts with` 引用它时失败。多个操作基于同一个预期最终状态完成校验，因此相关变更可以在一个事务内一起提交。
 
-New entries use `<workspace>/knowledge/<entryId>.md`. Updates preserve the existing relative path. Operations never edit Skill-level built-in knowledge.
+新增条目写入 `<workspace>/knowledge/<entryId>.md`。更新操作保留已有相对路径。所有操作都不能修改 Skill 内置知识。
 
-## Mutation Safety
+## 写入安全
 
-`prepare` captures hashes of all affected files and the current knowledge index. `apply` rejects stale plans when any relevant file changed after preparation.
+`prepare` 记录所有受影响文件及当前知识索引的哈希。任何相关文件在准备后发生变化时，`apply` 都会拒绝过期计划。
 
-Before committing, the manager validates the complete prospective knowledge root. It then:
+提交前，管理器先对完整的预期知识目录执行校验，然后：
 
-1. Creates `<workspace>/.mavt/knowledge-maintenance/backups/<transactionId>/`.
-2. Stores the request, plan, and original content of updated or deleted entries.
-3. Writes additions and replacements through same-directory temporary files and atomic renames.
-4. Removes deleted entries only after all replacement files are ready.
-5. Runs full validation against the committed state.
-6. Restores the backup if commit or post-commit validation fails.
-7. Writes a transaction result containing before and after content hashes.
+1. 创建 `<workspace>/.mavt/knowledge-maintenance/backups/<transactionId>/`。
+2. 保存请求、计划以及被更新或删除条目的原始内容。
+3. 通过同目录临时文件和原子重命名写入新增及替换内容。
+4. 所有替换文件准备完成后才删除目标条目。
+5. 对已提交状态执行全量校验。
+6. 提交或提交后校验失败时，从备份恢复原始状态。
+7. 写入包含变更前后内容哈希的事务结果。
 
-Backups make update and delete recoverable in workspaces that are not Git repositories. The Skill reports the backup path after every modifying transaction.
+备份使非 Git 工作空间中的更新和删除也可以恢复。每次修改事务完成后，Skill 都要报告备份路径。
 
-## Authoring Workflow
+## Agent 编写流程
 
-When triggered, the Agent:
+触发 Skill 后，Agent 执行：
 
-1. Resolves the user-specified workspace and runs `inspect`.
-2. Reads all user-provided sources completely using appropriate available tools.
-3. Runs `list` and selectively uses `show` to find overlaps and conflicts.
-4. Drafts one or more complete entries outside the live `knowledge/` directory.
-5. Self-reviews scope accuracy, observability, traceability, and lexical recall terms.
-6. Builds a transaction request and runs `prepare`.
-7. Corrects all blocking errors and reviews warnings.
-8. Applies the prepared plan without an extra confirmation for authorized add or update requests.
-9. Deletes only when the user's request explicitly authorizes deletion of the resolved entry.
-10. Reports changed IDs, paths, validation results, warnings, and backup location.
+1. 解析用户指定的工作空间并运行 `inspect`。
+2. 使用适合的可用工具完整读取用户提供的所有来源。
+3. 运行 `list`，并按需使用 `show` 检查重复、重叠和冲突。
+4. 在正式 `knowledge/` 目录以外起草一条或多条完整知识。
+5. 自查适用范围准确性、可观察性、可追溯性和词面召回关键词。
+6. 构造事务请求并运行 `prepare`。
+7. 修复所有阻塞错误并审查告警。
+8. 对用户已经授权的新增或修改请求，无需追加确认，直接应用准备好的计划。
+9. 只有用户请求明确授权删除已解析出的目标条目时才允许删除。
+10. 报告变更 ID、路径、校验结果、告警和备份位置。
 
-If the Agent cannot establish a trustworthy conclusion or traceable source, it must explain the missing evidence instead of writing speculative knowledge.
+如果 Agent 无法形成可信结论或找到可追溯来源，应说明缺少的证据，不得写入推测性知识。
 
-## Validation
+## 校验规则
 
-Blocking validation covers:
+阻塞性校验包括：
 
-- Workspace marker and readiness.
-- Safe paths, regular files, and forbidden symlinks.
-- Maximum file size.
-- Heading, fixed section order, and non-empty sections.
-- Stable unique entry IDs.
-- Supported metadata syntax and App ID shape.
-- Platform values, version expressions, and date format.
-- Existing, non-self conflict references.
-- Transaction operation conflicts and final-state validity.
+- 工作空间标记和就绪状态。
+- 安全路径、普通文件和禁止符号链接。
+- 文件大小上限。
+- 标题、固定章节顺序和章节非空。
+- 稳定且唯一的条目 ID。
+- 支持的元数据语法和 App ID 格式。
+- Platform 值、Version 表达式和日期格式。
+- 冲突引用必须存在且不能自引用。
+- 事务操作之间不存在冲突，最终状态合法。
 
-Non-blocking authoring warnings cover:
+非阻塞的编写质量告警包括：
 
-- Missing `App` or `Platform` scope.
-- Expired entries.
-- Very short observable descriptions.
-- Observable text with no distinctive business term beyond generic UI wording.
-- Missing date-like traceability information.
+- 未声明 `App` 或 `Platform` 适用范围。
+- 条目已经过期。
+- 可观察现象描述过短。
+- 可观察文本除通用 UI 用语外没有明显业务关键词。
+- 追溯信息中没有类似日期的内容。
 
-Warnings never invent facts and do not prevent an explicitly requested operation.
+告警不能补造事实，也不会阻止用户明确要求的操作。
 
-## Compatibility Strategy
+## 兼容性策略
 
-The Skills have no runtime imports, command calls, or installation dependency on one another. Compatibility is maintained as a protocol concern:
+两个 Skill 在运行时没有互相导入、命令调用或安装依赖。兼容性作为文件协议问题维护：
 
-- Each Skill has standalone contract tests using equivalent valid and invalid fixtures.
-- A DevKit-only interoperability test runs when both source directories are present and verifies that manager-produced entries are accepted by MAVT's read-only parser.
-- Changes to the knowledge file contract require updating both implementations and the interoperability fixtures in one DevKit change.
-- Retrieval semantics remain owned and tested only by MAVT; authoring-quality warnings remain owned and tested only by the manager.
+- 每个 Skill 使用等价的合法和非法 fixture 独立执行契约测试。
+- 当两个源码目录同时存在时，DevKit 专用互操作测试验证管理 Skill 生成的条目能够被 MAVT 只读解析器接受。
+- 任何知识文件契约变更必须在同一个 DevKit 变更中同步更新两个实现和互操作 fixture。
+- 检索语义只由 MAVT 维护和测试；编写质量告警只由管理 Skill 维护和测试。
 
-## MAVT Migration
+## MAVT 迁移范围
 
-The MAVT change will:
+MAVT 将执行以下调整：
 
-1. Remove `scripts/knowledge.js` and its public command-manifest entry.
-2. Remove `references/commands/knowledge.md` and maintenance-only error references.
-3. Remove the knowledge row from `references/commands.md`.
-4. Rewrite `references/knowledge.md` as a compact runtime-consumption reference.
-5. Keep internal parsing and `validateKnowledgeRoots` for execution preflight.
-6. Keep query, review, snapshot, integrity, and report behavior unchanged.
-7. Adjust entry-point and documentation-boundary tests for the reduced public surface.
+1. 删除 `scripts/knowledge.js` 及其公开命令 manifest 定义。
+2. 删除 `references/commands/knowledge.md` 和仅用于维护的错误文档。
+3. 从 `references/commands.md` 移除 knowledge 行。
+4. 将 `references/knowledge.md` 改写为紧凑的运行时消费说明。
+5. 保留内部解析和 `validateKnowledgeRoots`，用于执行前防御性校验。
+6. 保持查询、复核、快照、结果完整性和报告行为不变。
+7. 调整入口点和文档边界测试，使其匹配缩减后的公开能力。
 
-Existing workspace knowledge remains valid and requires no migration.
+已有 Workspace 知识保持有效，无需迁移。
 
-## Testing
+## 测试范围
 
-The manager test suite will cover:
+管理 Skill 测试覆盖：
 
-- Workspace acceptance and rejection.
-- Valid and invalid entry parsing.
-- List and show behavior.
-- Add, update, delete, and mixed transactions.
-- Duplicate IDs, ID-changing updates, missing targets, and conflict references.
-- Stale `planHash` rejection.
-- Atomic rollback after an injected failure.
-- Backup contents and transaction result hashes.
-- Warnings versus blocking failures.
-- Safe path and symlink rejection.
-- Standalone execution without importing MAVT.
+- 接受和拒绝不同工作空间状态。
+- 解析合法和非法知识条目。
+- `list` 和 `show` 行为。
+- 新增、修改、删除和混合事务。
+- 重复 ID、修改 ID、不存在目标和冲突引用。
+- 拒绝过期 `planHash`。
+- 注入失败后的原子回滚。
+- 备份内容和事务结果哈希。
+- 告警与阻塞错误的边界。
+- 安全路径和符号链接拒绝。
+- 不导入 MAVT 时仍能独立运行。
 
-MAVT's existing full self-test remains the regression gate. A DevKit interoperability test verifies the shared file protocol without introducing a runtime dependency.
+MAVT 现有全量自测继续作为回归门禁。DevKit 互操作测试用于验证共享文件协议，但不形成运行时依赖。
 
-## Development Isolation
+## 开发隔离
 
-Implementation occurs only in:
+实现只在以下位置进行：
 
-- Branch: `codex/add-mavt-knowledge-manager`
-- Worktree: `/Users/cm/GitProj/DevKit-worktrees/add-mavt-knowledge-manager`
+- 分支：`codex/add-mavt-knowledge-manager`
+- Worktree：`/Users/cm/GitProj/DevKit-worktrees/add-mavt-knowledge-manager`
 
-The worktree version of the new Skill will not be linked into the active Codex skill directory. Installation or linking occurs only after the branch is reviewed and integrated, so the currently running MAVT installation remains unchanged during development.
+开发期间不把 worktree 中的新 Skill 链接到当前 Codex Skill 目录。只有分支经过审核并完成集成后才安装或链接，因此当前正在运行的 MAVT 不会受开发过程影响。
