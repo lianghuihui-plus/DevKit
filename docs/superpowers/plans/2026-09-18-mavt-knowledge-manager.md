@@ -41,7 +41,7 @@
 - Produces: `validateKnowledgeEntries(entries, { now? }) -> { entryCount, expiredCount }`
 - Produces: `validateKnowledgeRoot(knowledgeRoot, { now? }) -> { entries, summary, warnings }`
 
-- [ ] **Step 1: 写失败测试，固定 Workspace 和知识契约**
+- [x] **Step 1: 写失败测试，固定 Workspace 和知识契约**
 
 测试必须覆盖 READY Workspace、缺少 marker、错误 type、非 READY、合法条目、章节乱序、重复 ID、非法 App ID、非法 Platform、非法 Version、非法日期、缺失冲突引用、自冲突、超大文件和符号链接：
 
@@ -54,13 +54,13 @@ expectCode(() => validateKnowledgeRoot(symlinkRoot), 'KNOWLEDGE_PATH_INVALID');
 assert.strictEqual(assertMavtWorkspace(workspace).knowledgeRoot, path.join(workspace, 'knowledge'));
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: `node skills/mavt-knowledge-manager/scripts/tests/knowledge-contract.test.js`
 
 Expected: FAIL，提示 `Cannot find module '../lib/knowledge-contract'`。
 
-- [ ] **Step 3: 实现错误、Workspace 和契约模块**
+- [x] **Step 3: 实现错误、Workspace 和契约模块**
 
 `knowledge-contract.js` 必须独立实现知识格式，不导入 MAVT：
 
@@ -83,13 +83,13 @@ module.exports = {
 
 Version 只接受精确数字版本、末段 `x/*` 通配符或数字范围；Platform 只接受三种平台；每个文件最大 `512 * 1024` 字节。
 
-- [ ] **Step 4: 运行契约测试并确认通过**
+- [x] **Step 4: 运行契约测试并确认通过**
 
 Run: `node skills/mavt-knowledge-manager/scripts/tests/knowledge-contract.test.js`
 
 Expected: PASS，输出 `knowledge contract passed`。
 
-- [ ] **Step 5: 提交契约实现**
+- [x] **Step 5: 提交契约实现**
 
 ```bash
 git add skills/mavt-knowledge-manager/scripts/lib skills/mavt-knowledge-manager/scripts/tests/knowledge-contract.test.js
