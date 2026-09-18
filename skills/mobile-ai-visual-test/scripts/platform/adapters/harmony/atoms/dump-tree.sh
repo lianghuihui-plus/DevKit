@@ -33,9 +33,28 @@ fi
 
 dump_variants=("with-m")
 if [[ -n "$bundle" ]]; then
-  dump_variants=("with-m-bundle" "with-m" "bundle")
+  dump_variants+=("with-m-bundle" "bundle")
 fi
 dump_variants+=("default")
+
+layout_is_usable() {
+  node -e '
+const fs = require("fs");
+function hasPositiveBounds(node) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return false;
+  const bounds = String(node.attributes?.bounds || node.bounds || "");
+  const match = bounds.match(/^\[(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\]\[(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\]$/);
+  if (match && Number(match[3]) > Number(match[1]) && Number(match[4]) > Number(match[2])) return true;
+  return Array.isArray(node.children) && node.children.some(hasPositiveBounds);
+}
+try {
+  const root = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  process.exit(hasPositiveBounds(root) ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+' "$1"
+}
 
 for variant in "${dump_variants[@]}"; do
   dump_args=(shell uitest dumpLayout -p "$remote")
@@ -53,6 +72,10 @@ for variant in "${dump_variants[@]}"; do
   "${hdc_prefix[@]}" "${dump_args[@]}" >>"$log_file" 2>&1 || true
   rm -f "$out"
   if "${hdc_prefix[@]}" file recv "$remote" "$out" >>"$log_file" 2>&1 && [[ -s "$out" ]]; then
+    if ! layout_is_usable "$out"; then
+      printf '[layout] rejected unusable layout: %s\n' "$variant" >>"$log_file"
+      continue
+    fi
     printf '[layout] success with variant: %s\n' "$variant" >>"$log_file"
     node -e '
 const path = require("path");
