@@ -21,6 +21,15 @@
 <a id="error-knowledge-review-invalid"></a>- [`KNOWLEDGE_REVIEW_INVALID`](errors/knowledge-recovery.md#error-knowledge-review-invalid)：知识候选复核不满足当前 query 约束。
 <a id="error-app-initial-state-unavailable"></a>- [`APP_INITIAL_STATE_UNAVAILABLE`](errors/knowledge-recovery.md#error-app-initial-state-unavailable)：授权的初始状态准备未完成。
 <a id="error-action-outcome-unknown"></a>- [`ACTION_OUTCOME_UNKNOWN`](errors/scene-action.md#error-action-outcome-unknown)：动作可能已经投递，禁止自动重放。
+<a id="error-plan-invalid"></a>- [`PLAN_INVALID`](errors/plan.md#error-plan-invalid)：命令计划不满足步数、时限、引用或定位类型约束。
+<a id="error-plan-step-failed"></a>- [`PLAN_STEP_FAILED`](errors/plan.md#error-plan-step-failed)：计划在指定步骤发生确定性技术失败。
+<a id="error-plan-submission-conflict"></a>- [`PLAN_SUBMISSION_CONFLICT`](errors/plan.md#error-plan-submission-conflict)：同一 submissionId 对应了不同的规范化请求。
+<a id="error-plan-record-incomplete"></a>- [`PLAN_RECORD_INCOMPLETE`](errors/plan.md#error-plan-record-incomplete)：计划快照缺失、未终结或摘要校验失败。
+<a id="error-locator-unsupported"></a>- [`LOCATOR_UNSUPPORTED`](errors/plan.md#error-locator-unsupported)：当前 Runtime 不支持所声明的定位类型。
+<a id="error-target-not-found"></a>- [`TARGET_NOT_FOUND`](errors/plan.md#error-target-not-found)：声明的 Scene、控件或定位目标不存在。
+<a id="error-plan-check-failed"></a>- [`PLAN_CHECK_FAILED`](errors/plan.md#error-plan-check-failed)：技术检查无法执行或谓词不受支持。
+<a id="error-plan-action-outcome-unknown"></a>- [`PLAN_ACTION_OUTCOME_UNKNOWN`](errors/plan.md#error-plan-action-outcome-unknown)：计划动作可能已投递，结果未知。
+<a id="error-plan-timeout"></a>- [`PLAN_TIMEOUT`](errors/plan.md#error-plan-timeout)：计划未能在声明的有限时限内完成。
 <a id="error-case-result-incomplete"></a>- [`CASE_RESULT_INCOMPLETE`](errors/flow-result.md#error-case-result-incomplete)：Ledger 仍有 unresolved 或 conflicts。
 <a id="error-time-limit"></a>- [`TIME_LIMIT`](errors/flow-result.md#error-time-limit)：已停止新的设备动作。
 <a id="error-case-runtime-technical"></a>- [`CASE_RUNTIME_TECHNICAL`](errors/knowledge-recovery.md#error-case-runtime-technical)：未归类的 execution 技术异常。

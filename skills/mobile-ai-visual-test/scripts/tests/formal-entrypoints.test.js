@@ -102,6 +102,7 @@ assert.deepStrictEqual(contract.requiredResources, [
   'references/case-runtime/methods/plan.md',
   'references/case-runtime/methods/record-result.md',
   'references/case-runtime/methods/act.md',
+  'references/case-runtime/methods/run-plan.md',
   'references/case-runtime/methods/knowledge.md',
   'references/case-runtime/methods/recover.md',
   'references/case-runtime/methods/finish.md',
@@ -109,6 +110,7 @@ assert.deepStrictEqual(contract.requiredResources, [
   'references/case-runtime/errors.md',
   'references/case-runtime/errors/transport.md',
   'references/case-runtime/errors/scene-action.md',
+  'references/case-runtime/errors/plan.md',
   'references/case-runtime/errors/flow-result.md',
   'references/case-runtime/errors/knowledge-recovery.md',
 ]);

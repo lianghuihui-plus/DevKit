@@ -153,6 +153,7 @@ function execute(execDir, request, options = {}) {
       const recoveredTransactions = [
         ...require('./preparation-service').recoverPendingPreparation(execDir, { ...options, allowFinalized: true }),
         ...require('./recovery-service').recoverPendingTransactions(execDir, { ...options, allowFinalized: true }),
+        ...require('./plan-service').recoverInterruptedPlans(execDir, { ...options, allowFinalized: true }),
       ];
       const pendingFinish = resultService.resumePendingFinish(execDir, { ...options, openInvocation: invocation });
       if (request.operation === 'status') {
@@ -216,7 +217,7 @@ function execute(execDir, request, options = {}) {
       if (request.operation === 'recover' && recoveredRecovery) {
         return { ...recoveredRecovery.response, remainingMs: budget.remainingMs };
       }
-      if (budget.exhausted && ['prepare', 'observe', 'act', 'recover'].includes(request.operation)) {
+      if (budget.exhausted && ['prepare', 'observe', 'act', 'runPlan', 'recover'].includes(request.operation)) {
         return { status: 'TIME_LIMIT', remainingMs: 0, technicalFactRef: budget.technicalFactRef, scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)) };
       }
       let response;
@@ -246,6 +247,9 @@ function execute(execDir, request, options = {}) {
       else if (request.operation === 'prepare') response = require('./preparation-service').prepare(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
       else if (request.operation === 'act') response = actionService.act(execDir, enrichedRequest, runtimeOptions);
+      else if (request.operation === 'runPlan') response = require('./plan-service').runPlan(execDir, enrichedRequest, {
+        ...runtimeOptions, remainingMs: budget.remainingMs, lockHeld: true,
+      });
       else if (request.operation === 'inspectVisual') response = require('./visual-inspection-service').inspectVisual(execDir, enrichedRequest, options);
       else if (request.operation === 'inspectScene') response = require('./scene-inspection-service').inspectScene(execDir, enrichedRequest, options);
       else if (request.operation === 'knowledge') response = knowledgeService.knowledge(execDir, enrichedRequest, options);
@@ -314,6 +318,7 @@ function reconcileExecution(execDir, options = {}) {
     const recoveredTransactions = [
       ...require('./preparation-service').recoverPendingPreparation(execDir, { ...options, allowFinalized: true }),
       ...require('./recovery-service').recoverPendingTransactions(execDir, { ...options, allowFinalized: true }),
+      ...require('./plan-service').recoverInterruptedPlans(execDir, { ...options, allowFinalized: true }),
     ];
     const finish = resultService.resumePendingFinish(execDir, options);
     return { recoveredTransactions, finish, status: runtimeStatus(execDir) };

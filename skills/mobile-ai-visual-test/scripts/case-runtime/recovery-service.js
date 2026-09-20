@@ -82,6 +82,10 @@ function recoverPendingTransactions(execDir, options = {}) {
           action: draft.action,
           command: unknown ? { status: 'UNKNOWN' } : draft.deviceResult.command,
           deviceExecution: unknown ? { status: 'UNVERIFIED' } : draft.deviceResult.deviceExecution,
+          evidence: {
+            sceneRefs: { before: draft.sceneId },
+            screenshotRefs: [store.readCurrentScene(execDir)?.screenshot?.ref].filter(Boolean),
+          },
           ...(!unknown && draft.spatialEvidenceRef ? {
             spatialEvidence: projectActionSpatialEvidence(execDir, draft.spatialEvidenceRef, {
               operationId: draft.operationId,
@@ -99,7 +103,7 @@ function recoverPendingTransactions(execDir, options = {}) {
           lifecycle: observed.scene.previousAction.lifecycle,
           command: observed.scene.previousAction.command,
           deviceExecution: observed.scene.previousAction.deviceExecution,
-          observedEffect: observed.scene.previousAction.observedEffect,
+          evidence: observed.scene.previousAction.evidence,
           duringActionObservation: draft.duringActionObservation || null,
           spatialEvidenceRef: draft.spatialEvidenceRef || null,
         }, options);
@@ -107,7 +111,7 @@ function recoverPendingTransactions(execDir, options = {}) {
       const observedDraft = actionTransactions.transitionAction(execDir, draft, draft.status, 'OBSERVED', {
         outcome: unknown ? 'UNKNOWN' : 'RECORDED',
         sceneIdAfter: observed.scene.sceneId,
-        observedEffect: observed.scene.previousAction?.observedEffect || null,
+        evidence: observed.scene.previousAction?.evidence || null,
       });
       actionTransactions.completeAction(execDir, observedDraft, { recoveredAfterInterruption: true });
       const response = unknown

@@ -29,6 +29,7 @@ assert.deepStrictEqual(roleResources('case-executor'), [
   'references/case-runtime/methods/plan.md',
   'references/case-runtime/methods/record-result.md',
   'references/case-runtime/methods/act.md',
+  'references/case-runtime/methods/run-plan.md',
   'references/case-runtime/methods/knowledge.md',
   'references/case-runtime/methods/recover.md',
   'references/case-runtime/methods/finish.md',
@@ -36,6 +37,7 @@ assert.deepStrictEqual(roleResources('case-executor'), [
   'references/case-runtime/errors.md',
   'references/case-runtime/errors/transport.md',
   'references/case-runtime/errors/scene-action.md',
+  'references/case-runtime/errors/plan.md',
   'references/case-runtime/errors/flow-result.md',
   'references/case-runtime/errors/knowledge-recovery.md',
 ]);
@@ -50,7 +52,7 @@ assert.strictEqual(fs.existsSync(path.join(root, 'prompts/main-agent.md')), fals
 assert.strictEqual(COORDINATOR_INTERFACE_KIND, 'AGENT_FACING');
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
 assert.ok(COORDINATOR_CAPABILITIES.length <= 4, 'Main Agent active capability budget is 4');
-assert.ok(AGENT_FACING_CAPABILITIES.length <= 8, 'Case Agent active capability budget is 8');
+assert.ok(AGENT_FACING_CAPABILITIES.length <= 9, 'Case Agent active capability budget is 9');
 
 const casePrompt = read('prompts/case-agent.md');
 for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkpointId', 'turnId']) {
@@ -62,8 +64,8 @@ assert.match(casePrompt, /case\.source/);
 assert.match(casePrompt, /Case Flow/);
 assert.match(casePrompt, /checkNodeRef/);
 assert.match(casePrompt, /view_image/);
-assert.match(casePrompt, /八个业务能力/);
-assert.match(casePrompt, /observe.*inspect.*plan.*recordResult.*act.*knowledge.*recover.*finish/);
+assert.match(casePrompt, /九个业务能力/);
+assert.match(casePrompt, /observe.*inspect.*plan.*recordResult.*act.*runPlan.*knowledge.*recover.*finish/);
 assert.match(casePrompt, /动态值只取自当前 Brief、Scene 或响应/);
 assert.doesNotMatch(casePrompt, /retryWith|nextCall|technicalContext/);
 assert.match(casePrompt, /控件树为空.*不得.*页面空白/);
@@ -78,7 +80,7 @@ assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);
 for (const internalField of ['basedOnSceneId', 'capabilityId', 'inspectVisual', 'inspectScene', 'knowledgeReview', 'contractDefinitions', 'allowedOperations']) {
   assert.strictEqual(casePrompt.includes(internalField), false, `Case Prompt must not expose internal field ${internalField}`);
 }
-assert.deepStrictEqual(AGENT_OPERATIONS, ['observe', 'act', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
+assert.deepStrictEqual(AGENT_OPERATIONS, ['observe', 'act', 'runPlan', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
 assert.deepStrictEqual(AGENT_OPERATIONS, Object.entries(OPERATION_CONTRACT)
   .filter(([, definition]) => definition.agentAccessible).map(([operation]) => operation));
 for (const [operation, definition] of Object.entries(OPERATION_CONTRACT)) {
@@ -289,17 +291,12 @@ const afterTechnicalFacts = buildContract({ skillRoot: digestRoot, role: 'case-e
 assert.notStrictEqual(afterTechnicalFacts.runtimeSha, afterReport.runtimeSha);
 assert.notStrictEqual(afterTechnicalFacts.reportRendererSha, afterReport.reportRendererSha);
 assert.strictEqual(afterTechnicalFacts.adapterSha, afterReport.adapterSha);
-fs.appendFileSync(path.join(digestRoot, 'scripts/lib/observation-consistency.js'), '\n// observation consistency digest boundary fixture\n');
-const afterObservationConsistency = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
-assert.notStrictEqual(afterObservationConsistency.runtimeSha, afterTechnicalFacts.runtimeSha);
-assert.notStrictEqual(afterObservationConsistency.reportRendererSha, afterTechnicalFacts.reportRendererSha);
-assert.strictEqual(afterObservationConsistency.adapterSha, afterTechnicalFacts.adapterSha);
 fs.appendFileSync(path.join(digestRoot, 'scripts/platform/adapters/harmony/probe.sh'), '\n# adapter digest boundary fixture\n');
 const harmonyAfterAdapter = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
 const androidAfterAdapter = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'android' });
-assert.notStrictEqual(harmonyAfterAdapter.adapterSha, afterObservationConsistency.adapterSha);
-assert.strictEqual(harmonyAfterAdapter.runtimeSha, afterObservationConsistency.runtimeSha);
-assert.strictEqual(harmonyAfterAdapter.coordinatorSha, afterObservationConsistency.coordinatorSha);
+assert.notStrictEqual(harmonyAfterAdapter.adapterSha, afterTechnicalFacts.adapterSha);
+assert.strictEqual(harmonyAfterAdapter.runtimeSha, afterTechnicalFacts.runtimeSha);
+assert.strictEqual(harmonyAfterAdapter.coordinatorSha, afterTechnicalFacts.coordinatorSha);
 assert.strictEqual(androidAfterAdapter.adapterSha, androidBefore.adapterSha);
 fs.rmSync(digestRoot, { recursive: true, force: true });
 

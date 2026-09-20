@@ -176,7 +176,7 @@ for (const hidden of ['basedOnSceneId', 'capabilityId', 'contractDefinitions', '
 assert.strictEqual(fs.statSync(started.runtime.entry).mode & 0o111, 0o111);
 assert.deepStrictEqual(started.runtime.status, 'READY');
 assert.strictEqual(Object.prototype.hasOwnProperty.call(started.runtime.broker, 'schemaVersion'), false);
-assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
+assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'runPlan', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
 assert.strictEqual(started.execution.caseProcessingStartedAt, T0);
 assert.strictEqual(started.execution.handoffReadyAt, T0);
 assert.strictEqual(started.execution.handoffConsumedAt, undefined, 'loader reads the handoff without consuming it');
@@ -643,7 +643,12 @@ assert.strictEqual(second.status, 'SCENE');
 assert.strictEqual(second.action.lifecycle.status, 'COMPLETED');
 assert.strictEqual(second.action.command.status, 'ACCEPTED');
 assert.strictEqual(second.action.deviceExecution.status, 'UNVERIFIED');
-assert.strictEqual(second.action.observedEffect.status, 'UNCHANGED');
+assert.strictEqual(second.action.observedEffect, undefined);
+assert.deepStrictEqual(second.action.evidence.sceneRefs, { before: 'scene-0001', after: 'scene-0002' });
+assert.deepStrictEqual(second.action.evidence.screenshotRefs, [
+  'screenshots/observation-0001.png',
+  'screenshots/observation-0002.png',
+]);
 assert.strictEqual(second.scene.sceneId, 'scene-0002');
 assert.strictEqual(observationCount, 2);
 const narrativeStatus = run(started.execDir, { operation: 'status' });

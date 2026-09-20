@@ -18,6 +18,20 @@ function assertInvalid(request, field, message) {
 }
 
 assert.ok(AGENT_FACING_CAPABILITIES.includes('recordResult'));
+assert.ok(AGENT_FACING_CAPABILITIES.includes('runPlan'));
+
+assertValid({
+  capability: 'runPlan',
+  submissionId: 'submission-1',
+  basedOnSceneRef: 'scene-0001',
+  purpose: '完成短时交互',
+  maxDurationMs: 2500,
+  onFailure: 'STOP',
+  steps: [
+    { id: 'tap', type: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] } },
+    { id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false },
+  ],
+});
 
 assertValid({
   capability: 'recordResult',

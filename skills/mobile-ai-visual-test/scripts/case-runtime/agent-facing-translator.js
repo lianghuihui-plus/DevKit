@@ -116,6 +116,9 @@ function contextualIssues(execDir, request, scene) {
       if (!allowedFilters.includes(field)) issues.push(issue(`filter.${field}`, `${request.channel} 检查不支持该过滤字段`, 'FIELD_UNSUPPORTED'));
     }
   }
+  if (request.capability === 'runPlan' && scene && request.basedOnSceneRef !== scene.sceneId) {
+    issues.push(issue('basedOnSceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
+  }
   if (request.capability === 'act' && scene) {
     if (request.basedOnSceneRef && request.basedOnSceneRef !== scene.sceneId) {
       issues.push(issue('basedOnSceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
@@ -258,6 +261,18 @@ function translateAgentFacingRequest(execDir, request) {
         }),
       ...(request.actionRef.endsWith(':longPress') && request.input?.duringActionAtMs !== undefined
         ? { observationPolicy: { duringActionAtMs: request.input.duringActionAtMs } } : {}),
+      decision: { purpose: request.purpose, expectationRefs: [] },
+    };
+  } else if (request.capability === 'runPlan') {
+    translated = {
+      operation: 'runPlan',
+      submissionId: request.submissionId,
+      basedOnSceneId: request.basedOnSceneRef,
+      purpose: request.purpose,
+      maxDurationMs: request.maxDurationMs,
+      onFailure: request.onFailure,
+      steps: request.steps,
+      ...flowContext,
       decision: { purpose: request.purpose, expectationRefs: [] },
     };
   } else if (request.capability === 'knowledge' && request.queryId) {

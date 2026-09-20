@@ -5,7 +5,7 @@ const { initialStateStrategy } = require('../lib/app-provisioning');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
 const AGENT_FACING_PROTOCOL = 'agent-facing';
-const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'inspect', 'plan', 'recordResult', 'act', 'knowledge', 'recover', 'finish']);
+const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
 const STRING = { type: 'string', minLength: 1 };
 const STRING_ARRAY = { type: 'array', items: STRING };
 const POINT = { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0, maximum: 1 } };
@@ -88,6 +88,12 @@ const SCHEMAS = Object.freeze({
     capability: { const: 'act' }, basedOnSceneRef: STRING, actionRef: STRING,
     input: INPUT, purpose: STRING, flowContext: FLOW_CONTEXT,
   }, ['capability', 'basedOnSceneRef', 'actionRef', 'purpose']),
+  runPlan: object({
+    capability: { const: 'runPlan' }, submissionId: STRING, basedOnSceneRef: STRING,
+    purpose: STRING, maxDurationMs: { type: 'integer', minimum: 1 }, onFailure: { enum: ['STOP', 'CONTINUE'] },
+    steps: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object' } },
+    flowContext: FLOW_CONTEXT,
+  }, ['capability', 'submissionId', 'basedOnSceneRef', 'purpose', 'maxDurationMs', 'onFailure', 'steps']),
   knowledgeQuery: object({
     capability: { const: 'knowledge' }, basedOnSceneRef: STRING, query: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
   }, ['capability', 'basedOnSceneRef', 'query']),
@@ -134,6 +140,15 @@ const PUBLIC_ERRORS = Object.freeze({
   KNOWLEDGE_REVIEW_INVALID: { group: 'knowledge-recovery', retryable: true, summary: '知识候选复核不满足当前 query 约束。', recovery: '逐条覆盖当前 query 返回的候选并给出适用性原因，再提交同一 queryId。' },
   APP_INITIAL_STATE_UNAVAILABLE: { group: 'knowledge-recovery', retryable: true, summary: '授权的初始状态准备未完成。', recovery: '读取 technical facts 确认制品、设备或平台准备失败原因；完成技术处置后重试同一 recover.targetState。' },
   ACTION_OUTCOME_UNKNOWN: { group: 'scene-action', retryable: false, summary: '动作可能已经投递，禁止自动重放。', recovery: '禁止重放动作；先 observe 当前现场，并结合 action 落点证据判断下一步。' },
+  PLAN_INVALID: { group: 'plan', retryable: true, summary: '命令计划不满足步数、时限、引用或定位类型约束。', recovery: '按 issues 修正有限步骤和前向引用；不要添加循环、脚本或未注册定位类型。' },
+  PLAN_STEP_FAILED: { group: 'plan', retryable: true, summary: '计划在指定步骤发生确定性技术失败。', recovery: '检查已完成前缀、失败步骤和证据；根据当前 Scene 重新形成新的 submissionId。' },
+  PLAN_SUBMISSION_CONFLICT: { group: 'plan', retryable: false, summary: '同一 submissionId 对应了不同的规范化请求。', recovery: '原请求重试必须保持内容不变；业务上确需新计划时使用新的 submissionId。' },
+  PLAN_RECORD_INCOMPLETE: { group: 'plan', retryable: false, summary: '计划快照缺失、未终结或摘要校验失败。', recovery: '停止重放可能已执行的动作，保留 execution 进行技术排障。' },
+  LOCATOR_UNSUPPORTED: { group: 'plan', retryable: true, summary: '当前 Runtime 不支持所声明的定位类型。', recovery: '改用当前 Scene 可验证的 ELEMENT_REF、POINT 或 REGION；不能可靠定位时交回 Agent。' },
+  TARGET_NOT_FOUND: { group: 'plan', retryable: true, summary: '声明的 Scene、控件或定位目标不存在。', recovery: '查看计划已采集的 Scene 证据，重新选择可验证引用；不要猜测目标坐标。' },
+  PLAN_CHECK_FAILED: { group: 'plan', retryable: true, summary: '技术检查无法执行或谓词不受支持。', recovery: '只使用文档列出的确定性技术谓词；业务判断留给 Agent。' },
+  PLAN_ACTION_OUTCOME_UNKNOWN: { group: 'plan', retryable: false, summary: '计划动作可能已投递，结果未知。', recovery: '禁止重放计划或动作；先检查已有证据并 observe 当前现场。' },
+  PLAN_TIMEOUT: { group: 'plan', retryable: true, summary: '计划未能在声明的有限时限内完成。', recovery: '检查已完成前缀和各步耗时；缩短计划或在新 Scene 上使用新的 submissionId。' },
   CASE_RESULT_INCOMPLETE: { group: 'flow-result', retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。', recovery: '读取未解决 CHECK 列表，补充观察或结果；无法形成确定判断时记录 INCONCLUSIVE 后再次 finish。' },
   TIME_LIMIT: { group: 'flow-result', retryable: false, summary: '已停止新的设备动作。', recovery: '不再执行设备动作；使用已有证据收口可判断项，并披露未完成项和时间限制。' },
   CASE_RUNTIME_TECHNICAL: { group: 'knowledge-recovery', retryable: false, summary: '未归类的 execution 技术异常。', recovery: '读取 technical.stage、logRefs 和 resourceFacts 排障；恢复后先 observe 核验现场，再回到原业务节点。' },
@@ -219,6 +234,22 @@ const PUBLIC_METHODS = Object.freeze({
     idempotency: '已投递且结果未知的动作永不重放。',
     minimalExample: { capability: 'act', basedOnSceneRef: 'scene-1', actionRef: 'button-1:tap', purpose: '继续' },
   }),
+  runPlan: method('runPlan', '连续执行受约束的短时动作、等待、采集、定位和技术检查计划。', SCHEMAS.runPlan, {
+    capability: '固定为 runPlan', submissionId: '本次计划提交的幂等键', basedOnSceneRef: '当前 Scene',
+    purpose: '计划的业务目的', maxDurationMs: '计划总时限', onFailure: 'STOP 或受限 CONTINUE',
+    steps: '最多 12 个声明式步骤', flowContext: '当前 Case Flow 节点和可选分支选择',
+  }, {
+    contextualValidationRules: ['Runtime 只执行确定性命令并返回证据；视觉变化和业务结论由 Agent 判断。'],
+    successStatuses: ['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'PLAN_INVALID', 'PLAN_STEP_FAILED', 'PLAN_SUBMISSION_CONFLICT', 'PLAN_RECORD_INCOMPLETE', 'LOCATOR_UNSUPPORTED', 'TARGET_NOT_FOUND', 'PLAN_CHECK_FAILED', 'PLAN_ACTION_OUTCOME_UNKNOWN', 'PLAN_TIMEOUT', 'CASE_RUNTIME_TECHNICAL'],
+    sideEffects: ['按顺序投递计划中的设备动作', '保存步骤事件和 Scene 证据'],
+    idempotency: '相同 submissionId 和请求摘要返回原计划；未知动作结果永不重放。',
+    minimalExample: {
+      capability: 'runPlan', submissionId: 'run-plan-1', basedOnSceneRef: 'scene-1', purpose: '完成短时交互',
+      maxDurationMs: 2500, onFailure: 'STOP',
+      steps: [{ id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false }],
+    },
+  }),
   knowledge: method('knowledge', '查询知识，或登记指定 query 的候选复核结果。', { oneOf: [SCHEMAS.knowledgeQuery, SCHEMAS.knowledgeReview] }, {
     capability: '固定为 knowledge', basedOnSceneRef: '当前 Scene', query: '待调查问题', queryId: '已有查询引用',
     checkNodeRefs: '相关 CHECK 节点', conclusion: '候选复核结论', assessments: '逐候选适用性判断', flowContext: '当前 Case Flow 节点和可选分支选择',
@@ -282,16 +313,28 @@ function messageFor(issue) {
 }
 
 function validateAgentFacingRequest(request) {
-  return validateAgentJson(request, schemaFor(request)).map((issue) => ({
+  const issues = validateAgentJson(request, schemaFor(request)).map((issue) => ({
     field: issue.fieldPath || 'request',
     message: messageFor(issue),
     code: issue.code,
   }));
-}
-
-function screenComparison(effect) {
-  return effect?.status === 'CHANGED' ? 'DIFFERENT'
-    : effect?.status === 'UNCHANGED' ? 'IDENTICAL' : 'UNAVAILABLE';
+  if (!issues.length && request?.capability === 'runPlan') {
+    try {
+      require('./plan-contract').validatePlanRequest({
+        operation: 'runPlan', submissionId: request.submissionId, basedOnSceneId: request.basedOnSceneRef,
+        purpose: request.purpose, maxDurationMs: request.maxDurationMs, onFailure: request.onFailure,
+        steps: request.steps, ...(request.flowContext ? { flowContext: request.flowContext } : {}),
+        decision: { purpose: request.purpose, expectationRefs: [] },
+      });
+    } catch (error) {
+      return (error.issues || []).map((item) => ({
+        field: item.fieldPath === 'basedOnSceneId' ? 'basedOnSceneRef' : item.fieldPath,
+        message: `计划字段应为 ${item.expected}`,
+        code: item.code,
+      }));
+    }
+  }
+  return issues;
 }
 
 function projectPreviousAction(previousAction) {
@@ -302,7 +345,7 @@ function projectPreviousAction(previousAction) {
   const commandStatus = previousAction.command?.status;
   const deliveryStatus = unknown ? 'UNKNOWN'
     : commandStatus === 'REJECTED' ? 'NOT_SENT'
-      : previousAction.observedEffect || commandStatus === 'ACCEPTED' ? 'RESULT_RECORDED'
+      : commandStatus === 'ACCEPTED' ? 'RESULT_RECORDED'
         : previousAction.deliveryStatus || 'UNKNOWN';
   const annotatedScreenshotPath = previousAction.spatialEvidence?.annotatedScreenshot?.path
     || previousAction.spatialEvidence?.annotatedScreenshotPath;
@@ -312,7 +355,7 @@ function projectPreviousAction(previousAction) {
     type: previousAction.action?.type || previousAction.type || 'unknown',
     deliveryStatus,
     outcomeKnown: deliveryStatus !== 'UNKNOWN',
-    screenComparison: screenComparison(previousAction.observedEffect),
+    ...(previousAction.evidence ? { evidence: previousAction.evidence } : {}),
     ...(spatial ? {
       spatialEvidence: {
         available: true,

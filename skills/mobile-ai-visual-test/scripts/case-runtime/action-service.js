@@ -1,7 +1,6 @@
 'use strict';
 
 const { invokeDeviceOperation } = require('../platform/device-port');
-const { classifyActionEffect } = require('../lib/observation-consistency');
 const { sanitizeAdapterActionResult } = require('../lib/action-result');
 const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { resolveAction } = require('./capability-catalog');
@@ -25,6 +24,16 @@ function duringActionObservation(request, deviceResult) {
   };
 }
 
+function actionEvidence(beforeScene, afterScene = null) {
+  const sceneRefs = { before: beforeScene.sceneId };
+  const screenshotRefs = [beforeScene.screenshot.ref];
+  if (afterScene) {
+    sceneRefs.after = afterScene.sceneId;
+    screenshotRefs.push(afterScene.screenshot.ref);
+  }
+  return { sceneRefs, screenshotRefs: [...new Set(screenshotRefs)] };
+}
+
 function completedAction(operationId, action, adapterResult, beforeScene, afterScene, spatialEvidence = null, duringObservation = null) {
   return {
     operationId,
@@ -32,11 +41,7 @@ function completedAction(operationId, action, adapterResult, beforeScene, afterS
     action: redactedAction(action),
     command: adapterResult.command,
     deviceExecution: adapterResult.deviceExecution,
-    observedEffect: {
-      ...classifyActionEffect(beforeScene, afterScene, operationId),
-      beforeSceneRef: beforeScene.sceneId,
-      afterSceneRef: afterScene.sceneId,
-    },
+    evidence: actionEvidence(beforeScene, afterScene),
     ...(spatialEvidence ? { spatialEvidence } : {}),
     ...(duringObservation ? { duringActionObservation: duringObservation } : {}),
   };
@@ -50,7 +55,7 @@ function persistedActionResult(actionResult) {
   };
 }
 
-function act(execDir, request, options = {}) {
+function dispatchAction(execDir, request, options = {}) {
   const execution = store.loadExecution(execDir);
   const scene = store.readCurrentScene(execDir);
   if (!scene) return sceneService.observe(execDir, options);
@@ -69,6 +74,8 @@ function act(execDir, request, options = {}) {
     action: redactedAction(resolved.action),
     intent: request.decision?.purpose || null,
     decisionId: request.decisionId || null,
+    planId: request.planId || null,
+    stepId: request.stepId || null,
     createdAt: options.now || new Date().toISOString(),
   });
   store.appendEvent(execDir, 'actionRequested', {
@@ -78,6 +85,8 @@ function act(execDir, request, options = {}) {
     intent: request.decision?.purpose || null,
     expectedOutcome: request.decision?.expectedOutcome || null,
     decisionId: request.decisionId || null,
+    planId: request.planId || null,
+    stepId: request.stepId || null,
   }, options);
   let deviceResult;
   try {
@@ -110,35 +119,21 @@ function act(execDir, request, options = {}) {
       code: error.code || 'DEVICE_ACTION_FAILED',
       message: error.message || String(error),
       decisionId: request.decisionId || null,
+      planId: request.planId || null,
+      stepId: request.stepId || null,
     }, options);
-    try {
-      const observed = sceneService.observe(execDir, {
-        ...options,
-        purpose: 'AFTER_UNKNOWN_ACTION',
-        relatedOperationId: operationId,
-        previousAction: {
-          operationId,
-          lifecycle: { status: 'UNKNOWN' },
-          action: redactedAction(resolved.action),
-          command: { status: 'UNKNOWN' },
-          deviceExecution: { status: 'UNVERIFIED' },
-        },
+    throw Object.assign(error, {
+      actionOutcome: 'UNKNOWN',
+      operationId,
+      technicalFactRef: technicalFact.technicalFactRef,
+      actionDispatch: {
+        beforeScene: scene,
+        action: redactedAction(resolved.action),
         decisionId: request.decisionId || null,
-      });
-      transaction = transactions.transitionAction(execDir, transaction, 'DISPATCHED', 'OBSERVED', {
-        outcome: 'UNKNOWN',
-        error: { code: error.code || 'DEVICE_ACTION_FAILED', message: error.message || String(error) },
-        sceneIdAfter: observed.scene.sceneId,
-      });
-      transactions.completeAction(execDir, transaction);
-      return { ...observed, action: { operationId, status: 'UNKNOWN', technicalFactRef: technicalFact.technicalFactRef } };
-    } catch (observeError) {
-      throw Object.assign(observeError, {
-        code: observeError.code || 'POST_ACTION_OBSERVE_FAILED',
-        actionOutcome: 'UNKNOWN',
-        operationId,
-      });
-    }
+        planId: request.planId || null,
+        stepId: request.stepId || null,
+      },
+    });
   }
   const spatialEvidence = deviceResult.spatialEvidenceRef
     ? projectActionSpatialEvidence(execDir, deviceResult.spatialEvidenceRef, {
@@ -146,30 +141,98 @@ function act(execDir, request, options = {}) {
       actionType: resolved.action.type,
     })
     : null;
+  const adapterResult = sanitizeAdapterActionResult(deviceResult.adapterResult);
+  const action = {
+    operationId,
+    lifecycle: { status: 'RESULT_RECORDED' },
+    action: redactedAction(resolved.action),
+    command: adapterResult.command,
+    deviceExecution: adapterResult.deviceExecution,
+    evidence: actionEvidence(scene),
+    ...(spatialEvidence ? { spatialEvidence } : {}),
+    ...(duringActionObservation(request, deviceResult) ? { duringActionObservation: duringActionObservation(request, deviceResult) } : {}),
+  };
+  return {
+    status: 'ACTION_DISPATCHED',
+    operationId,
+    beforeScene: scene,
+    action,
+    adapterResult,
+    transaction,
+    ...(request.planId ? { planId: request.planId } : {}),
+    ...(request.stepId ? { stepId: request.stepId } : {}),
+  };
+}
+
+function act(execDir, request, options = {}) {
+  let dispatched;
+  try {
+    dispatched = dispatchAction(execDir, request, options);
+  } catch (error) {
+    if (error.actionOutcome !== 'UNKNOWN' || !error.actionDispatch) throw error;
+    const dispatch = error.actionDispatch;
+    try {
+      const observed = sceneService.observe(execDir, {
+        ...options,
+        purpose: 'AFTER_UNKNOWN_ACTION',
+        relatedOperationId: error.operationId,
+        previousAction: {
+          operationId: error.operationId,
+          lifecycle: { status: 'UNKNOWN' },
+          action: dispatch.action,
+          command: { status: 'UNKNOWN' },
+          deviceExecution: { status: 'UNVERIFIED' },
+          evidence: actionEvidence(dispatch.beforeScene),
+        },
+        decisionId: dispatch.decisionId,
+      });
+      let transaction = transactions.readAction(execDir, error.operationId);
+      transaction = transactions.transitionAction(execDir, transaction, 'DISPATCHED', 'OBSERVED', {
+        outcome: 'UNKNOWN',
+        error: { code: error.code || 'DEVICE_ACTION_FAILED', message: error.message || String(error) },
+        sceneIdAfter: observed.scene.sceneId,
+      });
+      transactions.completeAction(execDir, transaction);
+      return { ...observed, action: { operationId: error.operationId, status: 'UNKNOWN', technicalFactRef: error.technicalFactRef } };
+    } catch (observeError) {
+      throw Object.assign(observeError, {
+        code: observeError.code || 'POST_ACTION_OBSERVE_FAILED',
+        actionOutcome: 'UNKNOWN',
+        operationId: error.operationId,
+      });
+    }
+  }
+  if (dispatched.status !== 'ACTION_DISPATCHED') return dispatched;
+  const {
+    operationId, beforeScene: scene, action: dispatchedAction,
+    adapterResult, transaction: recordedTransaction,
+  } = dispatched;
+  let transaction = recordedTransaction;
   const observed = sceneService.observe(execDir, {
     ...options,
     purpose: 'POST_ACTION',
     relatedOperationId: operationId,
-    preAdapterDelayMs: resolved.action.type === 'wait' ? 0 : 500,
+    preAdapterDelayMs: dispatchedAction.action.type === 'wait' ? 0 : 500,
     previousAction: {
       operationId,
       lifecycle: { status: 'COMPLETED' },
-      action: redactedAction(resolved.action),
-      command: deviceResult.adapterResult.command,
-      deviceExecution: deviceResult.adapterResult.deviceExecution,
-      ...(spatialEvidence ? { spatialEvidence } : {}),
+      action: dispatchedAction.action,
+      command: dispatchedAction.command,
+      deviceExecution: dispatchedAction.deviceExecution,
+      evidence: dispatchedAction.evidence,
+      ...(dispatchedAction.spatialEvidence ? { spatialEvidence: dispatchedAction.spatialEvidence } : {}),
     },
     decisionId: request.decisionId || null,
   });
   const observedScene = store.readCurrentScene(execDir);
   const actionResult = completedAction(
     operationId,
-    resolved.action,
-    sanitizeAdapterActionResult(deviceResult.adapterResult),
+    dispatchedAction.action,
+    adapterResult,
     scene,
     observedScene,
-    spatialEvidence,
-    duringActionObservation(request, deviceResult),
+    dispatchedAction.spatialEvidence,
+    dispatchedAction.duringActionObservation,
   );
   observedScene.previousAction = actionResult;
   store.writeScene(execDir, observedScene);
@@ -178,14 +241,16 @@ function act(execDir, request, options = {}) {
     operationId,
     sceneId: scene.sceneId,
     sceneIdAfter: observed.scene.sceneId,
-    action: redactedAction(resolved.action),
+    action: dispatchedAction.action,
     lifecycle: actionResult.lifecycle,
     command: actionResult.command,
     deviceExecution: actionResult.deviceExecution,
-    observedEffect: actionResult.observedEffect,
+    evidence: actionResult.evidence,
     duringActionObservation: actionResult.duringActionObservation || null,
-    spatialEvidenceRef: deviceResult.spatialEvidenceRef || null,
+    spatialEvidenceRef: transaction.spatialEvidenceRef || null,
     decisionId: request.decisionId || null,
+    planId: request.planId || null,
+    stepId: request.stepId || null,
   }, options);
   transaction = transactions.transitionAction(execDir, transaction, 'RESULT_RECORDED', 'OBSERVED', {
     sceneIdAfter: observed.scene.sceneId,
@@ -195,4 +260,4 @@ function act(execDir, request, options = {}) {
   return { ...observed, action: actionResult };
 }
 
-module.exports = { act, redactedAction };
+module.exports = { act, dispatchAction, redactedAction };

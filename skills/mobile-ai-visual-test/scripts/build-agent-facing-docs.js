@@ -210,7 +210,7 @@ function assertBudget(relative, content) {
   if (relative === 'references/coordinator.md' && (bytes > 4 * 1024 || lines > 120)) throw new Error(`${relative} exceeds 4 KiB/120 lines`);
   if (relative.includes('/methods/') && bytes > 5 * 1024) throw new Error(`${relative} exceeds 5 KiB`);
   if (relative.endsWith('/action-refs.md') && bytes > 6 * 1024) throw new Error(`${relative} exceeds 6 KiB`);
-  if (relative.endsWith('/errors.md') && bytes > 4 * 1024) throw new Error(`${relative} exceeds 4 KiB`);
+  if (relative.endsWith('/errors.md') && bytes > 6 * 1024) throw new Error(`${relative} exceeds 6 KiB`);
   if (relative.startsWith('references/commands/') && bytes > 8 * 1024) throw new Error(`${relative} exceeds 8 KiB`);
   if (relative.includes('/errors/') && bytes > 8 * 1024) throw new Error(`${relative} exceeds 8 KiB`);
   if (relative === 'references/commands.md' && bytes > 4 * 1024) throw new Error(`${relative} exceeds 4 KiB`);

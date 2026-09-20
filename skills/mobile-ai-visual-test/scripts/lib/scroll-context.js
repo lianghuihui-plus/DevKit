@@ -29,13 +29,17 @@ function directionFor(action) {
   return Number(action.fromY) > Number(action.toY) ? 'DOWN' : 'UP';
 }
 
-function coherentMovement(direction, beforeItems, afterItems, shared) {
+function sharedVerticalDeltas(beforeItems, afterItems, shared) {
   const before = new Map((beforeItems || []).map((item) => [item.anchorKey, item]));
   const after = new Map((afterItems || []).map((item) => [item.anchorKey, item]));
-  const deltas = (shared || []).filter((key) => before.has(key) && after.has(key))
+  return (shared || []).filter((key) => before.has(key) && after.has(key))
     .map((key) => Number(after.get(key).bounds[1]) - Number(before.get(key).bounds[1]))
     .filter((value) => Math.abs(value) >= 2);
-  if (!deltas.length) return true;
+}
+
+function coherentMovement(direction, beforeItems, afterItems, shared) {
+  const deltas = sharedVerticalDeltas(beforeItems, afterItems, shared);
+  if (!deltas.length) return false;
   return direction === 'DOWN' ? deltas.some((value) => value < 0) : deltas.some((value) => value > 0);
 }
 
@@ -107,7 +111,8 @@ function continueContext(prior, beforeContainer, afterContainer, previousAction,
   const direction = directionFor(action);
   if (!direction || previousAction.command?.status !== 'ACCEPTED') return null;
   const shared = sharedEvidence(beforeContainer.items, afterContainer.items);
-  const effect = previousAction.observedEffect?.status;
+  const noSignificantMovement = sameAnchorSequence(beforeContainer.items, afterContainer.items)
+    && sharedVerticalDeltas(beforeContainer.items, afterContainer.items, shared.shared).length === 0;
   const noProgress = { ...(prior.noProgress || { UP: 0, DOWN: 0 }) };
   let coverage = prior.coverage;
   let searchedAbove = prior.searchedAbove;
@@ -115,13 +120,12 @@ function continueContext(prior, beforeContainer, afterContainer, previousAction,
   let reachedStart = prior.reachedStart;
   let reachedEnd = prior.reachedEnd;
   if (prior.lastDirection && prior.lastDirection !== direction) noProgress[direction] = 0;
-  if (effect === 'UNCHANGED' && shared.continuous) {
+  if (shared.continuous && noSignificantMovement) {
     noProgress[direction] = (noProgress[direction] || 0) + 1;
     const boundary = noProgress[direction] >= 2 ? 'CONFIRMED' : 'PROBABLE';
     if (direction === 'UP') reachedStart = boundary;
     else reachedEnd = boundary;
-  } else if (effect === 'CHANGED' && shared.continuous
-    && coherentMovement(direction, beforeContainer.items, afterContainer.items, shared.shared)) {
+  } else if (shared.continuous && coherentMovement(direction, beforeContainer.items, afterContainer.items, shared.shared)) {
     noProgress.UP = 0;
     noProgress.DOWN = 0;
     if (direction === 'UP') searchedAbove = true;

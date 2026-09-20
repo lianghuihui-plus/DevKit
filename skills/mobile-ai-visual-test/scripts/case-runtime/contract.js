@@ -186,6 +186,17 @@ function validateRuntimeRequest(value) {
     }
     if (value.visual?.gesture === 'longPress') validateLongPressTiming(value.visual.durationMs, value.observationPolicy);
   }
+  if (operation === 'runPlan') {
+    try {
+      require('./plan-contract').validatePlanRequest(value);
+    } catch (error) {
+      throw contractError('CASE_RUNTIME_REQUEST_INVALID', error.message, {
+        issues: error.issues,
+        fieldPath: error.issues?.[0]?.fieldPath,
+        expected: error.issues?.[0]?.expected,
+      });
+    }
+  }
   if (operation === 'inspectVisual') {
     ensureString(value.basedOnSceneId, 'basedOnSceneId', 'CASE_RUNTIME_REQUEST_INVALID');
     if (value.decision === undefined) {

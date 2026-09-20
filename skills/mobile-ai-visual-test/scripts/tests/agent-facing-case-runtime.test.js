@@ -48,7 +48,7 @@ writeJsonAtomic(path.join(execDir, 'runtime.json'), {
   status: 'READY',
   entry: path.join(execDir, 'agent-facing-client.js'),
   broker: {
-    allowedOperations: ['observe', 'act', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status'],
+    allowedOperations: ['observe', 'act', 'runPlan', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status'],
   },
 });
 const scene = {
@@ -103,7 +103,7 @@ function assertCompactResponse(value) {
   }
 }
 
-assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'inspect', 'plan', 'recordResult', 'act', 'knowledge', 'recover', 'finish']);
+assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
 const initialState = projectInitialState({
   platform: 'ios',
   initialStateRequirement: { targetState: 'KEEP_EXISTING' },
@@ -244,7 +244,7 @@ assert.deepStrictEqual(sceneWithAction.previousAction.spatialEvidence.dispatched
 });
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.deviceActual, null);
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.coordinateTransform, undefined);
-assert.strictEqual(sceneWithAction.previousAction.screenComparison, 'IDENTICAL');
+assert.strictEqual(sceneWithAction.previousAction.screenComparison, undefined);
 assert.strictEqual(sceneWithAction.previousAction.observedEffect, undefined);
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.annotatedScreenshotPath,
   scene.previousAction.spatialEvidence.annotatedScreenshot.path);

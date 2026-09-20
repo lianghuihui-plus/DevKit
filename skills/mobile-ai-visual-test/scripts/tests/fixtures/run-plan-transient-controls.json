@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "visibleWindowMs": 3000,
+  "fullSceneCaptureMs": 4500,
+  "screenshotCaptureMs": 100,
+  "settleMs": 300,
+  "revealPoint": [0.5, 0.5],
+  "lockPoint": [0.098, 0.501]
+}

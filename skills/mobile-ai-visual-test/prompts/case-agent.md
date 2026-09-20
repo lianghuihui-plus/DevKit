@@ -14,7 +14,7 @@
 
 启动时完整读取一次 `references/case-execution-principles.md`，再读取 `references/case-runtime.md` 短索引。只有紧凑签名不足以构造当前调用时才读取对应方法页；首次不熟悉 ActionRef 时按需读取 `references/case-runtime/action-refs.md`；收到错误时只读取响应 `documentationRef` 指向的错误章节。
 
-对 Agent 公开的八个业务能力是 `observe`、`inspect`、`plan`、`recordResult`、`act`、`knowledge`、`recover`、`finish`。请求签名从上述文档读取，动态值只取自当前 Brief、Scene 或响应事实。
+对 Agent 公开的九个业务能力是 `observe`、`inspect`、`plan`、`recordResult`、`act`、`runPlan`、`knowledge`、`recover`、`finish`。请求签名从上述文档读取，动态值只取自当前 Brief、Scene 或响应事实。
 
 Runtime 调用使用 Brief 中预绑定的 `runtime.command`，通过 stdin 一次提交一个 JSON 请求。使用带引号的 heredoc，避免 `$`、反引号和换行被 Shell 展开。
 
@@ -29,12 +29,13 @@ Runtime 调用使用 Brief 中预绑定的 `runtime.command`，通过 stdin 一�
 7. 根据 Scene 的控件事实和 ActionRef 文档构造动作。优先使用控件动作；目标只在截图中可见时使用 `visual:*`，并确保该 Scene 已登记视觉事实。
 8. Scene 提供 editable 控件时优先使用目标级 `inputText` 一次输入完整文本。输入依赖由 Runtime 自动准备和恢复；不要逐个点击软键盘，也不要自行安装或切换输入组件。
 9. `inspect` 和 `knowledge` 的 `checkNodeRefs` 只关联本次直接检查或调查的 CHECK；可用 `flowContext` 记录当前节点，选择 DECISION 分支时同时提供该节点发出的 `selectedEdgeRef`。
-10. 每次动作后查看新 Scene 和 `previousAction`。Runtime 只返回投递与画面变化事实，不判断动作是否命中业务目标。
-11. 结果异常、动作无效果、证据冲突或怀疑点错/滑错时，先打开上一动作标注图并用 `inspect(channel="action")` 登记落点或轨迹事实；如果现场可能已经变化，再调用一次 `observe` 获取新截图和控件树，确认后才纠正动作、修改计划或形成结论。
-12. 现场无法解释、重复尝试无进展、无法形成下一步或结论、需要平台/版本/账号/配置规则支撑，或准备形成负向结论时调用 `knowledge`。
-13. 需要空本地状态或首次安装状态时调用 `recover.targetState`。三端由 Runtime 统一处理，不提供、询问或操作安装包；前置状态无法建立时根据错误原因和对应文档处理。
-14. 形成 CHECK 判断时尽快通过独立 `recordResult` 保存，并使用 `checkNodeRef` 引用真实 Scene、知识或技术事实。未进入的条件分支明确记为 `NOT_APPLICABLE` 并说明原因，不得形成 FAIL。
-15. 正常 `finish` 只提交摘要和仍需披露的不确定性，Runtime 从 ledger 组装完整结果；若已观察后确认用例级前置条件不满足，使用显式 `outcome: "NOT_RUN"` 并提供原因和已登记 Scene/技术事实引用。
+10. 每次普通动作后查看新 Scene 和 `previousAction`。Runtime 只返回动作投递状态与前后 Scene/截图证据，不判断截图是否变化，也不判断动作是否命中业务目标。
+11. 对视频控制栏、Toast、短时弹窗等不能跨越一次 Agent 决策周期的 UI，可提交有限 `runPlan` 让 Runtime 连续执行动作、等待、采集、确定性定位和技术检查。Runtime 不做视觉语义定位；不支持的 locator 必须停止，不能猜测。需要两次有间隔的点击时显式使用 `act / wait / act`，不能用 `doubleTap` 替代。
+12. 结果异常、动作无效果、证据冲突或怀疑点错/滑错时，先打开上一动作标注图并用 `inspect(channel="action")` 登记落点或轨迹事实；如果现场可能已经变化，再调用一次 `observe` 获取新截图和控件树，确认后才纠正动作、修改计划或形成结论。
+13. 现场无法解释、重复尝试无进展、无法形成下一步或结论、需要平台/版本/账号/配置规则支撑，或准备形成负向结论时调用 `knowledge`。
+14. 需要空本地状态或首次安装状态时调用 `recover.targetState`。三端由 Runtime 统一处理，不提供、询问或操作安装包；前置状态无法建立时根据错误原因和对应文档处理。
+15. 形成 CHECK 判断时尽快通过独立 `recordResult` 保存，并使用 `checkNodeRef` 引用真实 Scene、知识或技术事实。未进入的条件分支明确记为 `NOT_APPLICABLE` 并说明原因，不得形成 FAIL。
+16. 正常 `finish` 只提交摘要和仍需披露的不确定性，Runtime 从 ledger 组装完整结果；若已观察后确认用例级前置条件不满足，使用显式 `outcome: "NOT_RUN"` 并提供原因和已登记 Scene/技术事实引用。
 
 ## 错误与恢复
 

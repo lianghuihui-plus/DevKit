@@ -24,6 +24,7 @@ const ROLE_RESOURCES = Object.freeze({
     'references/case-runtime/methods/plan.md',
     'references/case-runtime/methods/record-result.md',
     'references/case-runtime/methods/act.md',
+    'references/case-runtime/methods/run-plan.md',
     'references/case-runtime/methods/knowledge.md',
     'references/case-runtime/methods/recover.md',
     'references/case-runtime/methods/finish.md',
@@ -31,6 +32,7 @@ const ROLE_RESOURCES = Object.freeze({
     'references/case-runtime/errors.md',
     'references/case-runtime/errors/transport.md',
     'references/case-runtime/errors/scene-action.md',
+    'references/case-runtime/errors/plan.md',
     'references/case-runtime/errors/flow-result.md',
     'references/case-runtime/errors/knowledge-recovery.md',
   ]),
@@ -72,6 +74,7 @@ const REPORT_ONLY_LIB_FILES = new Set([
 
 const PLATFORM_ENTRYPOINTS = Object.freeze([
   'scripts/platform/action.sh',
+  'scripts/platform/capture.sh',
   'scripts/platform/observe.sh',
   'scripts/platform/prepare-app.sh',
   'scripts/platform/probe-env.sh',
@@ -135,7 +138,6 @@ function implementationGroups(skillRoot, platform) {
     'scripts/lib/action-spatial-evidence.js',
     'scripts/lib/knowledge-query.js',
     'scripts/lib/layout-observation.js',
-    'scripts/lib/observation-consistency.js',
     'scripts/lib/observation-model.js',
     'scripts/lib/scroll-context.js',
     'scripts/lib/technical-facts.js',
@@ -172,7 +174,6 @@ function implementationGroups(skillRoot, platform) {
     'scripts/lib/execution-artifact-manifest.js',
     'scripts/lib/action-spatial-evidence.js',
     'scripts/lib/image-evidence.js',
-    'scripts/lib/observation-consistency.js',
     'scripts/lib/technical-facts.js',
   ]) report.add(relative);
 

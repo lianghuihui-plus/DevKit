@@ -42,7 +42,7 @@ function assertContract(contract, expectedMethods) {
   }
 }
 
-assertContract(caseContract, ['observe', 'inspect', 'plan', 'recordResult', 'act', 'knowledge', 'recover', 'finish']);
+assertContract(caseContract, ['observe', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
 assertContract(coordinatorContract, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun']);
 assert.deepStrictEqual(caseContract.methods.observe.successStatuses, ['SCENE']);
 assert.deepStrictEqual(caseContract.methods.act.successStatuses, ['SCENE']);

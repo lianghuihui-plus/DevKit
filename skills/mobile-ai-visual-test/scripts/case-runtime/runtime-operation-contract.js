@@ -264,6 +264,23 @@ const OPERATION_CONTRACT = deepFreeze({
     ],
     responses: ['SCENE', 'SCENE_CHANGED', 'RECOVERY_APPLIED', 'TIME_LIMIT', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
+  runPlan: defineOperation({
+    agentAccessible: true,
+    summary: 'Execute a bounded declarative action/capture/locate/check plan under one Runtime lock.',
+    whenToUse: ['A short-lived UI state cannot survive another Agent decision cycle.'],
+    requestSchema: operationSchema('runPlan', {
+      submissionId: STRING, basedOnSceneId: STRING, purpose: STRING,
+      maxDurationMs: { type: 'integer', minimum: 1 }, onFailure: { enum: ['STOP', 'CONTINUE'] },
+      steps: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object' } },
+      decision: { $ref: 'decision' },
+    }, ['operation', 'submissionId', 'basedOnSceneId', 'purpose', 'maxDurationMs', 'onFailure', 'steps']),
+    examples: [example('transient-controls', {
+      operation: 'runPlan', submissionId: 'run-plan-033-attempt-01', basedOnSceneId: 'scene-0012',
+      purpose: '唤起视频控制栏并解除童锁', maxDurationMs: 2500, onFailure: 'STOP',
+      steps: [{ id: 'controls', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false }],
+    })],
+    responses: ['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED', 'REQUEST_INVALID', 'TECHNICAL'],
+  }),
   inspectVisual: defineOperation({
     agentAccessible: true,
     summary: 'Register a visual observation after the Agent has actually opened a Scene screenshot.',

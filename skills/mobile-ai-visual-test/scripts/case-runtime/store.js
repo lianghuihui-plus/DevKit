@@ -41,6 +41,11 @@ function events(execDir) {
 }
 
 function appendEvent(execDir, type, payload = {}, options = {}) {
+  const reserved = ['schemaVersion', 'eventId', 'executionId', 'sequence', 'time', 'type'];
+  const overridden = reserved.filter((field) => Object.prototype.hasOwnProperty.call(payload, field));
+  if (overridden.length) {
+    throw contractError('CASE_RUNTIME_EVENT_INVALID', `event payload cannot override reserved fields: ${overridden.join(', ')}`);
+  }
   const execution = loadExecution(execDir, { allowFinalized: options.allowFinalized === true });
   const current = events(execDir);
   const time = options.now || new Date().toISOString();
@@ -81,11 +86,11 @@ function readCurrentScene(execDir) {
   return readJson(paths(execDir).currentScene, null);
 }
 
-function writeScene(execDir, scene) {
+function writeScene(execDir, scene, options = {}) {
   const target = paths(execDir);
   fs.mkdirSync(target.scenes, { recursive: true });
   writeJsonAtomic(path.join(target.scenes, `${scene.sceneId}.json`), scene);
-  writeJsonAtomic(target.currentScene, scene);
+  if (options.promote !== false) writeJsonAtomic(target.currentScene, scene);
   return scene;
 }
 

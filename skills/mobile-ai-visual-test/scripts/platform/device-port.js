@@ -72,6 +72,10 @@ function observationAdapterArgs(binding, execDir, operationId) {
   return [...environmentAdapterArgs(binding, 'observe'), '--out', path.resolve(execDir), '--label', operationId];
 }
 
+function captureAdapterArgs(binding, execDir, operationId) {
+  return [...environmentAdapterArgs(binding, 'observe'), '--out', path.resolve(execDir), '--label', operationId];
+}
+
 function defaultRunner(command, args, options = {}) {
   const preAdapterDelayMs = Number.isInteger(options.preAdapterDelayMs) && options.preAdapterDelayMs > 0
     ? options.preAdapterDelayMs : 0;
@@ -129,7 +133,7 @@ function parseAdapterOutput(result, kind) {
     }
     throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', `${kind} adapter did not return one JSON result`);
   }
-  const expectedType = { ACTION: 'actionResult', OBSERVE: 'observation', PREPARATION: 'appPreparationResult' }[kind];
+  const expectedType = { ACTION: 'actionResult', OBSERVE: 'observation', CAPTURE: 'capture', PREPARATION: 'appPreparationResult' }[kind];
   if (result.status !== 0 && value?.type !== expectedType) {
     throw contractError('DEVICE_ADAPTER_FAILED', String(result.stderr || `${kind} adapter exited with ${result.status}`).trim());
   }
@@ -137,17 +141,48 @@ function parseAdapterOutput(result, kind) {
 }
 
 function assertResultBinding(result, binding, kind) {
-  const expectedType = kind === 'ACTION' ? 'actionResult' : 'observation';
+  const expectedType = kind === 'ACTION' ? 'actionResult' : kind === 'CAPTURE' ? 'capture' : 'observation';
   const expectedSchemaVersion = kind === 'ACTION' ? 2 : 1;
   if (!result || result.schemaVersion !== expectedSchemaVersion || result.type !== expectedType || result.platform !== binding.platform) {
     throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', `${kind} adapter result identity is invalid`);
   }
   if (kind === 'ACTION') validateAdapterActionResult(result);
-  const label = kind === 'ACTION' ? 'action result' : 'observation';
+  const label = kind === 'ACTION' ? 'action result' : kind === 'CAPTURE' ? 'capture result' : 'observation';
   const expectedDevice = binding.deviceId;
   if (result.device?.id !== expectedDevice) throw contractError('DEVICE_RESULT_BINDING_MISMATCH', `${label} does not confirm the frozen device`);
   if (result.app?.appId !== binding.appId) throw contractError('DEVICE_RESULT_BINDING_MISMATCH', `${label} does not confirm the frozen App`);
   return result;
+}
+
+function invokeScreenshotCapture(execDir, validated, options = {}) {
+  const { execution } = validated.context;
+  const frozenBinding = resolveTargetBinding(execDir, execution);
+  const invoke = (binding) => {
+    const command = path.join(path.resolve(__dirname, '../..'), 'scripts', 'platform', 'capture.sh');
+    const args = captureAdapterArgs(binding, execDir, validated.operationId);
+    const runner = options.runner || defaultRunner;
+    const timeoutMs = Math.max(1, Math.min(
+      operationTimeoutMs(execution, options.now),
+      Number.isInteger(options.timeoutMs) ? options.timeoutMs : Number.MAX_SAFE_INTEGER,
+    ));
+    const raw = runner(command, args, { timeoutMs, kind: 'CAPTURE', binding, preAdapterDelayMs: 0 });
+    const adapterResult = parseAdapterOutput(raw, 'CAPTURE');
+    assertResultBinding(adapterResult, binding, 'CAPTURE');
+    return { binding, adapterResult, evidence: validateObservationArtifacts(execDir, adapterResult) };
+  };
+  if (frozenBinding.platform !== 'ios') return invoke(frozenBinding);
+  const runtime = JSON.parse(fs.readFileSync(path.join(execDir, 'runtime.json'), 'utf8'));
+  return withCurrentIosSession(runtime.sessionRef, 'OBSERVE', (session) => invoke({
+    ...frozenBinding,
+    appiumSessionId: session.sessionId,
+    appiumSessionCapabilities: session.capabilities || {},
+  }), {
+    binding: frozenBinding,
+    runner: options.runner || defaultRunner,
+    timeoutMs: Number.isInteger(options.timeoutMs) ? options.timeoutMs : operationTimeoutMs(execution, options.now),
+    now: options.now,
+    operationId: validated.operationId,
+  });
 }
 
 function validateObservationArtifacts(execDir, result) {
@@ -346,8 +381,10 @@ module.exports = {
   invokeAppPreparation,
   actionAdapterArgs,
   assertResultBinding,
+  captureAdapterArgs,
   defaultRunner,
   invokeDeviceOperation,
+  invokeScreenshotCapture,
   invokeAppRestart,
   observationAdapterArgs,
   operationTimeoutMs,

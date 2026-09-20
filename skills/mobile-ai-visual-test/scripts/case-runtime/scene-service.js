@@ -1,7 +1,6 @@
 'use strict';
 
 const { buildObservationView } = require('../lib/observation-model');
-const { classifyActionEffect } = require('../lib/observation-consistency');
 const { updateScrollContexts } = require('../lib/scroll-context');
 const { invokeDeviceOperation } = require('../platform/device-port');
 const { buildCapabilities } = require('./capability-catalog');
@@ -12,15 +11,21 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
   const sceneId = `scene-${String(store.events(execDir).filter((event) => event.type === 'sceneObserved').length + 1).padStart(4, '0')}`;
   const normalizedPreviousAction = previousAction && previousScene ? {
     ...previousAction,
-    observedEffect: {
-      ...classifyActionEffect(previousScene, view, previousAction.operationId),
-      beforeSceneRef: previousScene.sceneId,
-      afterSceneRef: sceneId,
+    evidence: {
+      sceneRefs: {
+        before: previousAction.evidence?.sceneRefs?.before || previousScene.sceneId,
+        after: sceneId,
+      },
+      screenshotRefs: [...new Set([
+        ...(previousAction.evidence?.screenshotRefs || [previousScene.screenshot.ref]),
+        view.screenshot.ref,
+      ])],
     },
   } : previousAction;
   const scene = {
     schemaVersion: 2,
     sceneId,
+    captureMode: 'FULL_SCENE',
     generation: execution.warmSessionGeneration,
     warmSessionRef: {
       sessionId: execution.warmSessionId,
@@ -69,6 +74,12 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
     scrollContexts: [],
     visual: { gestures: ['tap', 'doubleTap', 'longPress', 'swipe'], coordinates: 'normalized-0-to-1' },
     previousAction: normalizedPreviousAction,
+    source: {
+      operation: optionsSource(previousAction, observation),
+      planId: observation.planId || null,
+      stepId: observation.stepId || null,
+      operationId: observation.operationId,
+    },
   };
   scene.scrollContexts = updateScrollContexts({
     previousScene,
@@ -79,6 +90,11 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
   });
   scene.capabilities = buildCapabilities(scene, execution.platform);
   return scene;
+}
+
+function optionsSource(previousAction, observation) {
+  if (observation.planId) return 'runPlan';
+  return previousAction ? 'act' : 'observe';
 }
 
 function countByKind(values) {
@@ -147,9 +163,10 @@ function observe(execDir, options = {}) {
     technicalSignals: result.technicalSignals || null,
     time: options.now || result.time || new Date().toISOString(),
     ...(options.relatedOperationId ? { relatedOperationId: options.relatedOperationId } : {}),
+    ...(options.planId ? { planId: options.planId, stepId: options.stepId || null } : {}),
   };
   const scene = sceneFromObservation(execDir, observation, execution, options.previousAction || null, previousScene);
-  store.writeScene(execDir, scene);
+  store.writeScene(execDir, scene, { promote: options.promote !== false });
   store.appendEvent(execDir, 'sceneObserved', {
     sceneId: scene.sceneId,
     generation: scene.generation,
@@ -163,6 +180,10 @@ function observe(execDir, options = {}) {
     layoutRef: scene.layoutRef,
     app: scene.app,
     technicalSignals: observation.technicalSignals,
+    captureMode: scene.captureMode,
+    promoted: options.promote !== false,
+    planId: options.planId || null,
+    stepId: options.stepId || null,
   }, { now: observation.time, allowFinalized: options.allowFinalized === true });
   return { status: 'SCENE', scene: projectSceneSummary(scene) };
 }

@@ -197,12 +197,11 @@ const item = (anchorKey, top) => ({ anchorKey, bounds: [0, top, 1000, top + 100]
 const container = (items) => ({
   contextKey: 'works-selected', containerKey: 'works-list', bounds, axis: 'VERTICAL', items,
 });
-const swipe = (direction, effect) => ({
+const swipe = (direction) => ({
   action: direction === 'UP'
     ? { type: 'swipe', fromY: 200, toY: 500 }
     : { type: 'swipe', fromY: 500, toY: 200 },
   command: { status: 'ACCEPTED' },
-  observedEffect: { status: effect },
 });
 function next(previousScene, items, previousAction, sceneId) {
   const scrollContainers = [container(items)];
@@ -214,32 +213,32 @@ function next(previousScene, items, previousAction, sceneId) {
 
 let tracked = next(null, [item('B', 100), item('C', 200), item('D', 300)], null, 'scene-0001');
 assert.deepStrictEqual(tracked.scrollContexts[0].unexploredDirections, ['UP', 'DOWN']);
-tracked = next(tracked, [item('A', 100), item('B', 200), item('C', 300)], swipe('UP', 'CHANGED'), 'scene-0002');
+tracked = next(tracked, [item('A', 100), item('B', 200), item('C', 300)], swipe('UP'), 'scene-0002');
 assert.strictEqual(tracked.scrollContexts[0].searchedAbove, true);
-tracked = next(tracked, [item('A', 100), item('B', 200), item('C', 300)], swipe('UP', 'UNCHANGED'), 'scene-0003');
+tracked = next(tracked, [item('A', 100), item('B', 200), item('C', 300)], swipe('UP'), 'scene-0003');
 assert.strictEqual(tracked.scrollContexts[0].reachedStart, 'PROBABLE');
-tracked = next(tracked, [item('A', 100), item('B', 200), item('C', 300)], swipe('UP', 'UNCHANGED'), 'scene-0004');
+tracked = next(tracked, [item('A', 100), item('B', 200), item('C', 300)], swipe('UP'), 'scene-0004');
 assert.strictEqual(tracked.scrollContexts[0].reachedStart, 'CONFIRMED');
-tracked = next(tracked, [item('B', 100), item('C', 200), item('D', 300)], swipe('DOWN', 'CHANGED'), 'scene-0005');
-tracked = next(tracked, [item('C', 100), item('D', 200), item('E', 300)], swipe('DOWN', 'CHANGED'), 'scene-0006');
+tracked = next(tracked, [item('B', 100), item('C', 200), item('D', 300)], swipe('DOWN'), 'scene-0005');
+tracked = next(tracked, [item('C', 100), item('D', 200), item('E', 300)], swipe('DOWN'), 'scene-0006');
 assert.strictEqual(tracked.scrollContexts[0].searchedBelow, true);
-tracked = next(tracked, [item('C', 100), item('D', 200), item('E', 300)], swipe('DOWN', 'UNCHANGED'), 'scene-0007');
-tracked = next(tracked, [item('C', 100), item('D', 200), item('E', 300)], swipe('DOWN', 'UNCHANGED'), 'scene-0008');
+tracked = next(tracked, [item('C', 100), item('D', 200), item('E', 300)], swipe('DOWN'), 'scene-0007');
+tracked = next(tracked, [item('C', 100), item('D', 200), item('E', 300)], swipe('DOWN'), 'scene-0008');
 assert.strictEqual(tracked.scrollContexts[0].reachedEnd, 'CONFIRMED');
 assert.strictEqual(tracked.scrollContexts[0].coverage, 'CONTIGUOUS');
 assert.deepStrictEqual(tracked.scrollContexts[0].unexploredDirections, []);
 assert.strictEqual(tracked.scrollContexts[0].absenceConclusionSupported, true);
 
 let nonConsecutive = next(null, [item('B', 100), item('C', 200), item('D', 300)], null, 'scene-streak-1');
-nonConsecutive = next(nonConsecutive, [item('B', 100), item('C', 200), item('D', 300)], swipe('UP', 'UNCHANGED'), 'scene-streak-2');
-nonConsecutive = next(nonConsecutive, [item('C', 100), item('D', 200), item('E', 300)], swipe('DOWN', 'CHANGED'), 'scene-streak-3');
-nonConsecutive = next(nonConsecutive, [item('C', 100), item('D', 200), item('E', 300)], swipe('UP', 'UNCHANGED'), 'scene-streak-4');
+nonConsecutive = next(nonConsecutive, [item('B', 100), item('C', 200), item('D', 300)], swipe('UP'), 'scene-streak-2');
+nonConsecutive = next(nonConsecutive, [item('C', 100), item('D', 200), item('E', 300)], swipe('DOWN'), 'scene-streak-3');
+nonConsecutive = next(nonConsecutive, [item('C', 100), item('D', 200), item('E', 300)], swipe('UP'), 'scene-streak-4');
 assert.strictEqual(nonConsecutive.scrollContexts[0].reachedStart, 'PROBABLE');
 
 const gapped = next(
   next(null, [item('A', 100), item('B', 200)], null, 'scene-gap-1'),
   [item('X', 100), item('Y', 200)],
-  swipe('DOWN', 'CHANGED'),
+  swipe('DOWN'),
   'scene-gap-2',
 );
 assert.strictEqual(gapped.scrollContexts[0].coverage, 'GAPPED');
@@ -254,7 +253,7 @@ const confirmedBeforeRefresh = {
 const refreshed = next(
   confirmedBeforeRefresh,
   [item('NEW-1', 100), item('NEW-2', 200)],
-  { action: { type: 'wait' }, command: { status: 'ACCEPTED' }, observedEffect: { status: 'CHANGED' } },
+  { action: { type: 'wait' }, command: { status: 'ACCEPTED' } },
   'scene-refresh',
 );
 assert.strictEqual(refreshed.scrollContexts[0].reachedStart, 'UNKNOWN');
