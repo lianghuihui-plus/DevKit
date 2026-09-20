@@ -203,12 +203,7 @@ function projectCurrentNarrative(report) {
         lifecycle: actionResult.lifecycle || null,
         command: actionResult.command || null,
         deviceExecution: actionResult.deviceExecution || null,
-        screenComparison: actionResult.observedEffect ? {
-          status: actionResult.observedEffect.status === 'CHANGED' ? 'DIFFERENT'
-            : actionResult.observedEffect.status === 'UNCHANGED' ? 'IDENTICAL' : 'UNAVAILABLE',
-          beforeSceneRef: actionResult.observedEffect.beforeSceneRef || null,
-          afterSceneRef: actionResult.observedEffect.afterSceneRef || null,
-        } : null,
+        evidence: actionResult.evidence || null,
         duringActionObservation: actionResult.duringActionObservation || null,
       } : null,
       spatialEvidence: actionResult?.spatialEvidenceRef

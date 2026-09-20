@@ -273,7 +273,7 @@ const multiPlatformHtml = renderCurrentIndexHtml(root, [{
   executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', reason: '不同平台结果需要分别展示。',
   durationMs: 3000, contextHref: 'cases/multi/CONTEXT.html',
   platforms: [
-    { platform: 'harmony', status: 'PASS', verdict: 'PASS', executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', durationBasis: 'CASE_TOTAL', durationMs: 1000, coverage: '3/3', contextHref: 'cases/multi/platforms/harmony/CONTEXT.html', schemaFamily: 'current', phaseDurations: { coordinatorPreparationMs: 100, initialStatePreparationMs: 200, handoffPreparationMs: 100, handoffSchedulingMs: 100, caseAgentPhaseMs: 500, reportPublicationDelayMs: 50 }, currentMetrics: { counts: { actions: 3, observations: 4, agentDecisions: 3, narrativeGaps: 0, knowledgeQueries: 2 }, executionRecoveryCount: 0 } },
+    { platform: 'harmony', status: 'PASS', verdict: 'PASS', executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', durationBasis: 'CASE_TOTAL', durationMs: 1000, coverage: '3/3', contextHref: 'cases/multi/platforms/harmony/CONTEXT.html', schemaFamily: 'current', phaseDurations: { coordinatorPreparationMs: 100, initialStatePreparationMs: 200, handoffPreparationMs: 100, handoffSchedulingMs: 100, caseAgentPhaseMs: 500, reportPublicationDelayMs: 50 }, currentMetrics: { counts: { actions: 3, observations: 4, agentDecisions: 3, narrativeGaps: 0, knowledgeQueries: 2 }, executionRecoveryCount: 0, planMetrics: { schemaVersion: 1, planCount: 2, partialCount: 1, interruptedCount: 0, transientCaptureCount: 3 } } },
     { platform: 'android', status: 'FAIL', verdict: 'FAIL', executionStatus: 'COMPLETED', verdictBasis: 'TECHNICAL_CONSTRAINT', durationMs: 2000, coverage: '2/3', contextHref: 'cases/multi/platforms/android/CONTEXT.html', schemaFamily: 'current', currentMetrics: { counts: { actions: 5, observations: 6, agentDecisions: 5, narrativeGaps: 1, knowledgeQueries: 4 }, warmSessionReused: true, executionRecoveryCount: 1 } },
   ],
 }]);
@@ -282,7 +282,7 @@ assert.strictEqual((multiPlatformHtml.match(/class="common-stat"/g) || []).lengt
 assert.strictEqual((multiPlatformHtml.match(/aria-label="查看执行报告"/g) || []).length, 2);
 assert.ok(multiPlatformHtml.includes('1 通 · 1 失 · 0 阻 · 0 无法判断 · 0 无法执行 · 1 未执行'));
 assert.ok(multiPlatformHtml.includes('查看用例内容'));
-for (const text of ['动作 / 观察', '验证点', '恢复', '用例总耗时', '开始时间', '结束时间']) assert.ok(multiPlatformHtml.includes(text), text);
+for (const text of ['动作 / 观察', '验证点', '恢复', '计划 / 失败', '瞬时截图', '2 / 1', '3', '用例总耗时', '开始时间', '结束时间']) assert.ok(multiPlatformHtml.includes(text), text);
 for (const text of ['时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟']) {
   assert.strictEqual(multiPlatformHtml.includes(text), false, text);
 }

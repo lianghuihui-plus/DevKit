@@ -38,6 +38,58 @@ function metrics(execution, result, events, endedAt, execDir = null, options = {
   };
   const knowledgeEvents = events.filter((event) => event.type === 'knowledgeQueried');
   const knowledgeReviews = events.filter((event) => event.type === 'knowledgeReviewed');
+  const requestedPlans = events.filter((event) => event.type === 'planRequested');
+  const terminalPlans = events.filter((event) => ['planCompleted', 'planInterrupted'].includes(event.type));
+  const planStatuses = terminalPlans.map((event) => event.status);
+  const partialCount = planStatuses.filter((status) => status === 'PLAN_PARTIAL').length;
+  const interruptedCount = planStatuses.filter((status) => status === 'PLAN_INTERRUPTED').length;
+  const storedPlans = execDir ? require('./plan-service').readPlans(execDir) : [];
+  const storedPlanById = new Map(storedPlans.map((record) => [record.planId, record]));
+  const stepEventsByPlan = new Map(requestedPlans.map((event) => [event.planId, events.filter((candidate) =>
+    ['planStepCompleted', 'planStepFailed'].includes(candidate.type) && candidate.planId === event.planId)]));
+  const runMetrics = requestedPlans.map((requested) => {
+    const terminal = terminalPlans.find((event) => event.planId === requested.planId) || {};
+    const record = storedPlanById.get(requested.planId);
+    const steps = record?.steps || stepEventsByPlan.get(requested.planId) || [];
+    const durationFor = (type) => steps.filter((step) => (step.type || step.stepType) === type)
+      .reduce((sum, step) => sum + Math.max(0, Number(step.durationMs) || 0), 0);
+    const sceneEvents = events.filter((event) => event.type === 'sceneObserved' && event.planId === requested.planId);
+    return {
+      planId: requested.planId,
+      status: record?.status || terminal.status || 'PLAN_INTERRUPTED',
+      elapsedMs: Math.max(0, Number(record?.elapsedMs ?? terminal.elapsedMs) || 0),
+      completedStepCount: steps.filter((step) => step.status === 'COMPLETED').length,
+      failedStepId: steps.find((step) => step.status === 'FAILED')?.stepId || null,
+      screenshotOnlyCaptureCount: sceneEvents.filter((event) => event.captureMode === 'SCREENSHOT_ONLY').length,
+      actionStepCount: steps.filter((step) => (step.type || step.stepType) === 'act').length,
+      waitMs: durationFor('wait'),
+      captureMs: durationFor('capture'),
+      locateMs: durationFor('locate'),
+      checkMs: durationFor('check'),
+      startedAt: record?.startedAt || requested.time || null,
+      endedAt: record?.endedAt || terminal.time || null,
+      recordSha256: record?.integrity?.recordSha256 || terminal.recordSha256 || null,
+    };
+  });
+  const planMetrics = requestedPlans.length ? {
+    schemaVersion: 1,
+    runCount: requestedPlans.length,
+    planCount: requestedPlans.length,
+    completedCount: planStatuses.filter((status) => status === 'PLAN_COMPLETED').length,
+    partialCount,
+    interruptedCount,
+    failedCount: partialCount + interruptedCount,
+    screenshotOnlyCaptureCount: events.filter((event) => event.type === 'sceneObserved' && event.captureMode === 'SCREENSHOT_ONLY').length,
+    transientCaptureCount: events.filter((event) => event.type === 'sceneObserved' && event.captureMode === 'SCREENSHOT_ONLY').length,
+    actionStepCount: runMetrics.reduce((sum, run) => sum + run.actionStepCount, 0),
+    waitMs: runMetrics.reduce((sum, run) => sum + run.waitMs, 0),
+    captureMs: runMetrics.reduce((sum, run) => sum + run.captureMs, 0),
+    locateMs: runMetrics.reduce((sum, run) => sum + run.locateMs, 0),
+    checkMs: runMetrics.reduce((sum, run) => sum + run.checkMs, 0),
+    stepCount: events.filter((event) => ['planStepCompleted', 'planStepFailed'].includes(event.type)).length,
+    totalDurationMs: terminalPlans.reduce((sum, event) => sum + Math.max(0, Number(event.elapsedMs) || 0), 0),
+    runs: runMetrics,
+  } : null;
   return {
     schemaVersion: 3,
     executionId: execution.executionId,
@@ -83,6 +135,7 @@ function metrics(execution, result, events, endedAt, execDir = null, options = {
       agentDecisions: count('agentDecisionRecorded'),
       narrativeGaps: count('narrativeGap'),
     },
+    ...(planMetrics ? { planMetrics } : {}),
     knowledgeUsage: {
       queryIds: knowledgeEvents.map((event) => event.queryId),
       reviewedQueryIds: knowledgeReviews.map((event) => event.queryId),

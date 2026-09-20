@@ -178,13 +178,16 @@ function renderStatus(value) {
 function renderPlatformRun(platform) {
   const verdict = dashboardVerdict(platform);
   const counts = platform.currentMetrics?.counts || {};
+  const plans = platform.currentMetrics?.planMetrics || {};
+  const planFailures = Number.isFinite(plans.failedCount)
+    ? plans.failedCount : (Number(plans.partialCount) || 0) + (Number(plans.interruptedCount) || 0);
   const executionState = executionStatusLabel(platform.executionStatus);
   const unavailable = platform.readability && platform.readability !== 'READABLE';
   const detail = unavailable ? platform.reason || executionState : `${executionState} · ${basisLabel(platform.verdictBasis)}`;
   return `<article class="platform-run ${escapeHtml(platform.platform)}" data-platform-run="${escapeHtml(platform.platform)}">
     <div class="run-platform"><span class="platform-token">${escapeHtml(PLATFORM_TOKENS[platform.platform] || '?')}</span><div><b>${escapeHtml(displayPlatform(platform.platform))}</b><small>${escapeHtml(detail)}</small></div></div>
     ${renderStatus(verdict)}
-    <dl><div class="time-metric"><dt>用例总耗时</dt><dd>${escapeHtml(formatDuration(platform.durationMs))}</dd></div><div class="time-metric"><dt>开始时间</dt><dd>${escapeHtml(formatDisplayTime(platform.startedAt))}</dd></div><div class="time-metric"><dt>结束时间</dt><dd>${escapeHtml(formatDisplayTime(platform.endedAt))}</dd></div><div><dt>动作 / 观察</dt><dd>${metricValue(counts.actions)} / ${metricValue(counts.observations)}</dd></div><div><dt>验证点</dt><dd>${escapeHtml(platform.coverage || '-')}</dd></div><div><dt>恢复</dt><dd>${metricValue(platform.currentMetrics?.executionRecoveryCount)}</dd></div></dl>
+    <dl><div class="time-metric"><dt>用例总耗时</dt><dd>${escapeHtml(formatDuration(platform.durationMs))}</dd></div><div class="time-metric"><dt>开始时间</dt><dd>${escapeHtml(formatDisplayTime(platform.startedAt))}</dd></div><div class="time-metric"><dt>结束时间</dt><dd>${escapeHtml(formatDisplayTime(platform.endedAt))}</dd></div><div><dt>动作 / 观察</dt><dd>${metricValue(counts.actions)} / ${metricValue(counts.observations)}</dd></div><div><dt>计划 / 失败</dt><dd>${metricValue(plans.planCount)} / ${metricValue(planFailures)}</dd></div><div><dt>瞬时截图</dt><dd>${metricValue(plans.transientCaptureCount)}</dd></div><div><dt>验证点</dt><dd>${escapeHtml(platform.coverage || '-')}</dd></div><div><dt>恢复</dt><dd>${metricValue(platform.currentMetrics?.executionRecoveryCount)}</dd></div></dl>
     <a class="report-button" href="${escapeHtml(platform.contextHref)}" title="查看 ${escapeHtml(displayPlatform(platform.platform))} 执行报告" aria-label="查看执行报告"><span aria-hidden="true">↗</span></a>
   </article>`;
 }

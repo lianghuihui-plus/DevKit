@@ -3,9 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 const { displayAction } = require('../lib/display-format');
-const { classifyActionEffect } = require('../lib/observation-consistency');
 const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { buildExecutionNarrative } = require('./execution-narrative');
+const { assertPlanIntegrity } = require('../case-runtime/plan-service');
 
 const STATE_CHANGING_ACTIONS = new Set(['tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard']);
 const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '无法执行' });
@@ -83,6 +83,10 @@ function sceneEntry(report, event, index) {
     summary: screenshot ? '已取得当前页面现场' : '当前现场缺少截图',
     observationPurpose: event.purpose || 'CURRENT_SCENE',
     relatedOperationId: event.relatedOperationId || null,
+    captureMode: event.captureMode || scene?.captureMode || 'FULL_SCENE',
+    promoted: event.promoted !== false,
+    planId: event.planId || scene?.source?.planId || null,
+    stepId: event.stepId || scene?.source?.stepId || null,
     outcome: { status: screenshot ? 'SUCCEEDED' : 'FAILED', code: screenshot ? null : 'SCREENSHOT_MISSING', summary: screenshot ? '截图可用于当前执行' : '截图不可用于业务判断' },
     observation: {
       ref: screenshot,
@@ -107,13 +111,36 @@ function actionOutcome(event) {
     return { status: 'FAILED', code: event.deviceExecution.failureCode || null, summary: event.deviceExecution.message || '设备操作效果已确认不符合请求' };
   }
   if (!event.command) return { status: 'UNCERTAIN', code: null, summary: '动作结果缺少分层执行事实' };
-  const effect = event.observedEffect?.status || 'UNKNOWN';
   const device = event.deviceExecution?.status || 'UNVERIFIED';
   return {
     status: 'OBSERVED',
     code: null,
-    summary: `命令${event.command.status === 'ACCEPTED' ? '已接受' : '状态未知'}；设备执行${device === 'VERIFIED' ? '已验证' : device === 'NOT_EXECUTED' ? '未执行' : '未验证'}；界面${effect === 'CHANGED' ? '已变化' : effect === 'UNCHANGED' ? '未观察到变化' : '变化未知'}`,
+    summary: `命令${event.command.status === 'ACCEPTED' ? '已接受' : '状态未知'}；设备执行${device === 'VERIFIED' ? '已验证' : device === 'NOT_EXECUTED' ? '未执行' : '未验证'}`,
   };
+}
+
+function planEventEntry(event, index) {
+  const base = {
+    sequence: index + 1, time: event.time || '', durationMs: event.durationMs ?? event.elapsedMs ?? null,
+    phase: 'EXECUTE', category: 'PLAN', operationId: null, planId: event.planId || null,
+    stepId: event.stepId || null, raw: sanitizeOperationValue(event),
+  };
+  if (event.type === 'planRequested') {
+    return { ...base, title: `Runtime 命令计划 ${event.planId}`, summary: '已接受并开始顺序执行', outcome: { status: 'RUNNING', code: null, summary: '计划执行中' } };
+  }
+  if (event.type === 'planStepStarted') {
+    return { ...base, title: `计划步骤 ${event.stepId}`, summary: `${event.stepType || 'unknown'} 已开始`, outcome: { status: 'RUNNING', code: null, summary: '步骤执行中' } };
+  }
+  if (event.type === 'planStepCompleted') {
+    return { ...base, title: `计划步骤 ${event.stepId}`, summary: `${event.stepType || 'unknown'} · ${event.durationMs || 0}ms`, outcome: { status: 'SUCCEEDED', code: null, summary: '技术步骤已完成' } };
+  }
+  if (event.type === 'planStepFailed') {
+    return { ...base, title: `计划步骤 ${event.stepId}`, summary: event.error?.message || '技术步骤失败', outcome: { status: 'FAILED', code: event.error?.code || 'PLAN_STEP_FAILED', summary: event.error?.message || '' } };
+  }
+  if (event.type === 'planCompleted') {
+    return { ...base, title: `Runtime 命令计划 ${event.planId}`, summary: event.status || 'PLAN_COMPLETED', outcome: { status: 'SUCCEEDED', code: null, summary: '计划执行完成' } };
+  }
+  return { ...base, title: `Runtime 命令计划 ${event.planId}`, summary: event.failure?.message || event.status || 'PLAN_INTERRUPTED', outcome: { status: 'FAILED', code: event.failure?.code || event.status || 'PLAN_INTERRUPTED', summary: event.failure?.message || '计划未完整执行' } };
 }
 
 function retrySafety(action, outcome) {
@@ -127,6 +154,9 @@ function retrySafety(action, outcome) {
 
 function eventEntry(event, index) {
   const base = { sequence: index + 1, time: event.time || '', durationMs: null, phase: 'EXECUTE', operationId: event.operationId || null, raw: sanitizeOperationValue(event) };
+  if (['planRequested', 'planStepStarted', 'planStepCompleted', 'planStepFailed', 'planCompleted', 'planInterrupted'].includes(event.type)) {
+    return planEventEntry(event, index);
+  }
   switch (event.type) {
     case 'caseFlowRevised':
       return { ...base, phase: 'UNDERSTAND', category: 'UNDERSTANDING', title: event.revision === 1 ? 'Agent 已形成 Case Flow' : 'Agent 已修订 Case Flow', summary: event.summary || '', caseFlowRevision: event.revision, reason: event.reason || '' };
@@ -171,6 +201,58 @@ function eventEntry(event, index) {
   }
 }
 
+function projectPlans(report, events) {
+  const terminal = new Map(events.filter((event) => ['planCompleted', 'planInterrupted'].includes(event.type))
+    .map((event) => [event.planId, event]));
+  const requested = events.filter((event) => event.type === 'planRequested');
+  return requested.map((event) => {
+    const ref = safeRef(event.planRecordRef || terminal.get(event.planId)?.planRecordRef);
+    const record = ref ? readJson(path.join(report.latest, ref), null) : null;
+    if (!record) {
+      return {
+        planId: event.planId, status: terminal.get(event.planId)?.status || 'PLAN_INTERRUPTED',
+        planRecordRef: ref, steps: [], evidence: null, technicalFacts: [],
+        integrity: { status: 'INVALID', code: 'PLAN_RECORD_INCOMPLETE' },
+      };
+    }
+    let integrity = { status: 'VALID', recordSha256: record.integrity?.recordSha256 || null };
+    try {
+      assertPlanIntegrity(record);
+    } catch (error) {
+      integrity = { status: 'INVALID', code: error.code || 'PLAN_RECORD_INCOMPLETE', message: error.message };
+    }
+    const steps = (record.steps || []).map((step) => {
+      const factRef = (step.outputRefs || []).map(safeRef)
+        .find((ref) => ref?.startsWith('operations/plan-evidence/check-')) || safeRef(step.technicalFactRef);
+      return {
+        ...sanitizeOperationValue(step),
+        technicalFact: factRef ? sanitizeOperationValue(readJson(path.join(report.latest, factRef), null)) : null,
+      };
+    });
+    const durationFor = (type) => steps.filter((step) => step.type === type)
+      .reduce((sum, step) => sum + Math.max(0, Number(step.durationMs) || 0), 0);
+    return sanitizeOperationValue({
+      planId: record.planId,
+      purpose: record.purpose || '',
+      status: record.status,
+      planRecordRef: ref,
+      startedAt: record.startedAt || null,
+      endedAt: record.endedAt || null,
+      elapsedMs: record.elapsedMs || 0,
+      remainingMs: record.remainingMs || 0,
+      steps,
+      evidence: record.evidence || null,
+      technicalFacts: record.technicalFacts || [],
+      timing: {
+        actionMs: durationFor('act'), waitMs: durationFor('wait'), captureMs: durationFor('capture'),
+        locateMs: durationFor('locate'), checkMs: durationFor('check'),
+      },
+      failure: record.failure || null,
+      integrity,
+    });
+  });
+}
+
 function expectationAssessment(report, action) {
   const refs = action.decision?.expectationRefs || [];
   if (!refs.length) return { status: 'NOT_TARGETED', summary: '该操作未直接推进验证点', basis: '当时关联目标' };
@@ -202,6 +284,7 @@ function buildExecutionTrace(report) {
         title: decision.purpose || request.intent || actionLabel(action?.type), intent: decision.purpose || request.intent || null,
         expectedOutcome: decision.expectedOutcome || request.expectedOutcome || null, summary: outcome.summary,
         action, decision, outcome,
+        evidence: sanitizeOperationValue(event.evidence || null),
         spatialEvidence: event.spatialEvidenceRef
           ? sanitizeOperationValue(projectActionSpatialEvidence(report.latest, event.spatialEvidenceRef, {
             operationId: event.operationId,
@@ -241,16 +324,13 @@ function buildExecutionTrace(report) {
     action.beforeObservation = before?.observation || null;
     action.afterObservation = after?.observation ? { ...after.observation, sceneId: after.sceneId } : null;
     action.postActionArtifacts = after?.artifacts || null;
-    const comparison = classifyActionEffect(
-      before ? { screenshot: { sha256: before.observation?.sha256 } } : null,
-      after ? { screenshot: { sha256: after.observation?.sha256 } } : null,
-      action.operationId,
-    );
-    action.screenComparison = {
-      status: comparison.status === 'CHANGED' ? 'DIFFERENT'
-        : comparison.status === 'UNCHANGED' ? 'IDENTICAL' : 'UNAVAILABLE',
-      beforeSceneRef: before?.sceneId || null,
-      afterSceneRef: after?.sceneId || null,
+    action.evidence = {
+      ...(action.evidence || {}),
+      sceneRefs: {
+        before: action.evidence?.sceneRefs?.before || before?.sceneId || null,
+        after: action.evidence?.sceneRefs?.after || after?.sceneId || null,
+      },
+      screenshotRefs: action.evidence?.screenshotRefs || [before?.artifacts?.screenshot, after?.artifacts?.screenshot].filter(Boolean),
     };
     action.expectationAssessment = expectationAssessment(report, action);
     const followingDecision = entries.find((entry) => entry.sequence > (after?.sequence || action.sequence) && entry.category === 'DECISION');
@@ -262,6 +342,7 @@ function buildExecutionTrace(report) {
   const screenshots = observations.filter((entry) => entry.artifacts?.screenshot).map((entry, index) => ({
     id: `screenshot-${index + 1}`, index, ref: entry.artifacts.screenshot, operationId: entry.operationId,
     time: entry.time, phase: entry.phase, purpose: entry.observationPurpose, title: entry.title,
+    captureMode: entry.captureMode, promoted: entry.promoted, planId: entry.planId, stepId: entry.stepId,
   }));
   const screenshotByRef = new Map(screenshots.map((shot) => [shot.ref, shot]));
   for (const entry of observations) entry.screenshot = screenshotByRef.get(entry.artifacts?.screenshot) || null;
@@ -312,6 +393,7 @@ function buildExecutionTrace(report) {
     entries,
     pathEntries: entries.filter((entry) => entry.category !== 'RESULT' && !(entry.category === 'OBSERVATION' && entry.relatedOperationId)),
     screenshots,
+    plans: projectPlans(report, events),
     recoveryAnchor,
     narrative: buildExecutionNarrative(report),
     counts: {

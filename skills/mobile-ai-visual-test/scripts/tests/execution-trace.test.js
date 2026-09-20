@@ -30,7 +30,11 @@ assert.strictEqual(action.spatialEvidence.coordinateTransform, 'MATCHED');
 assert.strictEqual(action.spatialEvidence.certainty, 'DISPATCH_ONLY');
 assert.strictEqual(action.spatialEvidenceScreenshot.ref, 'action-spatial-evidence/action-0001.svg');
 assert.strictEqual(action.spatialEvidenceScreenshot.baseRef, undefined);
-assert.strictEqual(action.screenComparison.status, 'IDENTICAL');
+assert.strictEqual(action.screenComparison, undefined);
+assert.deepStrictEqual(action.evidence.sceneRefs, {
+  before: 'scene-0001',
+  after: 'scene-0002',
+});
 assert.strictEqual(action.intent, '打开目标并验证结果');
 assert.strictEqual(action.expectedOutcome, '页面展示目标结果');
 assert.deepStrictEqual(action.expectationAssessment, {
