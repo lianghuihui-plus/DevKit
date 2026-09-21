@@ -282,11 +282,11 @@ function executePlan(execDir, request, options = {}) {
         record.evidence.screenshotRefs.push(scene.screenshot.ref);
         output = { sceneRef: scene.sceneId, screenshotRef: scene.screenshot.ref, captureMode: 'FULL_SCENE' };
       } else if (step.type === 'locate') {
-        const located = locate(execDir, step, { planId, sourceRef: resolved.sourceRef });
+        const located = locate(execDir, resolved, { planId, sourceRef: resolved.sourceRef });
         record.evidence.locatorRefs.push(located.locatorRef);
         output = { ...located.resolution, locatorRef: located.locatorRef, sourceSceneRef: resolved.sourceRef };
       } else if (step.type === 'check') {
-        const checked = check(execDir, step, {
+        const checked = check(execDir, resolved, {
           planId, sourceRef: resolved.sourceRef,
           references: new Set(Object.values(Object.fromEntries(outputs)).flatMap((item) => Object.values(item || {}).filter((value) => typeof value === 'string'))),
         });

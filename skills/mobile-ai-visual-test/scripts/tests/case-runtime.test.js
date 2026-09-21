@@ -74,24 +74,25 @@ const frozenCaseSpec = {
   ambiguities: [],
 };
 function caseFlowRevision(baseRevision, actionText, reason) {
+  const actionRef = baseRevision === null ? 'N1' : 'N5';
   return {
     baseRevision,
     summary: frozenCaseSpec.summary,
-    entryNodeRef: 'N1',
+    entryNodeRef: actionRef,
     nodes: [
-      { ref: 'N1', type: 'ACTION', text: actionText },
+      { ref: actionRef, type: 'ACTION', text: actionText },
       {
         ref: 'N2', type: 'CHECK', text: frozenCaseSpec.expectations[0].text,
-        verificationKind: 'DIRECT_OBSERVATION', sourceBasis: sourceText,
+        verificationKind: 'DIRECT_OBSERVATION', sourceBasis: sourceText, requirement: 'REQUIRED',
       },
       {
         ref: 'N3', type: 'CHECK', text: frozenCaseSpec.expectations[1].text,
-        verificationKind: 'DIRECT_OBSERVATION', sourceBasis: sourceText,
+        verificationKind: 'DIRECT_OBSERVATION', sourceBasis: sourceText, requirement: 'REQUIRED',
       },
       { ref: 'N4', type: 'END', text: '用例完成' },
     ],
     edges: [
-      { ref: 'L1', from: 'N1', to: 'N2' },
+      { ref: baseRevision === null ? 'L1' : 'L4', from: actionRef, to: 'N2' },
       { ref: 'L2', from: 'N2', to: 'N3' },
       { ref: 'L3', from: 'N3', to: 'N4' },
     ],
@@ -128,7 +129,7 @@ const started = {
 };
 require('../case-runtime/case-flow-service').revise(started.execDir,
   caseFlowRevision(null, '观察当前页面并等待稳定'), { now: T0 });
-assert.strictEqual(started.execution.schemaVersion, 12);
+assert.strictEqual(started.execution.schemaVersion, 13);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(started.brief, 'schemaVersion'), false);
 const validationProfile = JSON.parse(fs.readFileSync(path.join(started.execDir, 'validation-profile.snapshot.json'), 'utf8'));
 assert.strictEqual(started.execution.validationProfileSha, validationProfile.profileSha);
@@ -825,7 +826,7 @@ const afterRecoveryObserve = run(started.execDir, {
 assert.strictEqual(afterRecoveryObserve.status, 'SCENE');
 assert.strictEqual(afterRecoveryObserve.narrative.contextVersion, 3);
 assert.strictEqual(afterRecoveryObserve.narrative.latestPlan.version, 3);
-assert.deepStrictEqual(afterRecoveryObserve.narrative.latestPlan.nodes.map((item) => item.ref), ['N1', 'N2', 'N3', 'N4']);
+assert.deepStrictEqual(afterRecoveryObserve.narrative.latestPlan.nodes.map((item) => item.ref), ['N5', 'N2', 'N3', 'N4']);
 assert.deepStrictEqual(afterRecoveryObserve.narrative.caseContext.expectations.map((item) => item.id), ['N2', 'N3']);
 assert.strictEqual(afterRecoveryObserve.narrative.warnings.length, 0);
 assert.strictEqual(resumedDeviceResultCount, 1);
@@ -1072,7 +1073,6 @@ const finalizedBatch = recordFinalizationStep({
 assert.strictEqual(finalizedBatch.state.status, 'COMPLETED');
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'BATCH_COMPLETE');
 const report = readExecutionReport(started.execDir);
-assert.strictEqual(report.schemaFamily, 'current');
 assert.strictEqual(report.display.verdict, 'PASS');
 assert.ok(report.events.some((event) => event.type === 'caseFlowRevised'));
 assert.ok(report.events.some((event) => event.type === 'actionSpatialInspected'));
@@ -1089,12 +1089,12 @@ const contextHtml = fs.readFileSync(path.join(caseDir, 'platforms', 'harmony', '
 assert.match(contextHtml, /目标内容正常显示/);
 assert.match(contextHtml, /页面保持在目标 App/);
 assert.match(contextHtml, /Runtime 请求错误/);
-for (const text of ['结果概览', 'Case Flow', '执行流程', '修订记录', '为什么做', '预期效果', '实际效果', '2\/2', '详细日志']) {
+for (const text of ['结果概览', '用例流程', 'Baseline Flow', '执行轨迹', '检查点', '为什么做', '预期效果', '实际效果', '2\/2', '详细日志']) {
   assert.ok(contextHtml.includes(text), text);
 }
 const validationProfilePath = path.join(started.execDir, 'validation-profile.snapshot.json');
 const frozenValidationProfile = fs.readFileSync(validationProfilePath, 'utf8');
-fs.writeFileSync(validationProfilePath, frozenValidationProfile.replace('NEGATIVE_CHECKS', 'DISABLED'));
+fs.writeFileSync(validationProfilePath, frozenValidationProfile.replace('"knowledgeClosurePolicy": "OPTIONAL"', '"knowledgeClosurePolicy": "DISABLED"'));
 const changedProfileReport = readExecutionReport(started.execDir);
 assert.strictEqual(changedProfileReport.completionError !== null, true);
 assert.strictEqual(changedProfileReport.display.failureCode, 'EXECUTION_COMPLETION_INVALID');

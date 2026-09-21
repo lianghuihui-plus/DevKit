@@ -23,7 +23,10 @@ finish({ capability: "finish", outcome: "NOT_RUN", reason: string, evidence: obj
 
 ## 上下文校验
 
-- 正常收口由 Runtime 从 ledger 组装；NOT_RUN 必须提供原因和已登记证据。
+- 正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。
+- WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。
+- FAIL、INCONCLUSIVE、BLOCKED 和 WAIVED 不强制知识调查；已提交的证据引用仍必须有效。
+- NOT_RUN 必须提供原因和已登记证据。
 
 ## 成功状态
 

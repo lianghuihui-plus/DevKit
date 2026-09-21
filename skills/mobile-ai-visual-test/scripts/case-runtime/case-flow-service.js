@@ -1,10 +1,12 @@
 'use strict';
 
-const { contractError, ensureArray, ensureObject, ensureString } = require('../lib/contract-utils');
+const crypto = require('crypto');
+const { canonicalJson, contractError, ensureArray, ensureObject, ensureString } = require('../lib/contract-utils');
 const store = require('./store');
 
 const NODE_TYPES = new Set(['ACTION', 'DECISION', 'CHECK', 'END']);
 const VERIFICATION_KINDS = new Set(['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE']);
+const CHECK_REQUIREMENTS = new Set(['REQUIRED', 'CONDITIONAL']);
 
 function strings(value, label) {
   return ensureArray(value, label, 'CASE_FLOW_INVALID')
@@ -17,6 +19,79 @@ function history(execDir) {
 
 function current(execDir) {
   return history(execDir).at(-1) || null;
+}
+
+function baseline(execDir) {
+  return history(execDir)[0] || null;
+}
+
+function requestSha256(value) {
+  return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
+}
+
+function normalizedRequestFromEvent(event) {
+  if (event.requestNormalized) return event.requestNormalized;
+  return {
+    baseRevision: event.revision === 1 ? null : event.revision - 1,
+    summary: event.summary,
+    entryNodeRef: event.entryNodeRef,
+    nodes: event.nodes,
+    edges: event.edges,
+    uncertainties: event.uncertainties || [],
+    reason: event.revision === 1 ? null : event.reason,
+  };
+}
+
+function matchingPreparedRevision(events, prepared) {
+  const normalized = canonicalJson(prepared.requestNormalized);
+  const digest = requestSha256(prepared.requestNormalized);
+  const matchingDigest = events.filter((event) => event.requestSha256 === digest);
+  for (const event of matchingDigest) {
+    if (canonicalJson(normalizedRequestFromEvent(event)) !== normalized) {
+      throw contractError('CASE_FLOW_REQUEST_DIGEST_COLLISION', 'Case Flow request digest matches different normalized content');
+    }
+  }
+  return matchingDigest[0] || null;
+}
+
+function historyForBaseRevision(events, baseRevision) {
+  if (baseRevision === null) return [];
+  const index = events.findIndex((event) => event.revision === baseRevision);
+  return index >= 0 ? events.slice(0, index + 1) : events;
+}
+
+function matchingRevision(execDir, value) {
+  const events = history(execDir);
+  try {
+    const input = ensureObject(value, 'caseFlow', 'CASE_FLOW_INVALID');
+    const prepared = prepareRevisionWithHistory(execDir, value, historyForBaseRevision(events, input.baseRevision));
+    return matchingPreparedRevision(events, prepared);
+  } catch (error) {
+    if (error?.code === 'CASE_FLOW_REQUEST_DIGEST_COLLISION') throw error;
+    return null;
+  }
+}
+
+function checkpointRegistry(execDir) {
+  const events = history(execDir);
+  const currentRefs = new Set((events.at(-1)?.nodes || []).filter((node) => node.type === 'CHECK').map((node) => node.ref));
+  const introduced = new Map();
+  for (const event of events) {
+    for (const node of (event.nodes || []).filter((item) => item.type === 'CHECK')) {
+      if (!introduced.has(node.ref)) {
+        introduced.set(node.ref, { ...node, introducedRevision: event.revision, baseline: event.revision === 1 });
+      }
+    }
+  }
+  return [...introduced.values()].map((item) => {
+    const retired = events.find((event) => event.revision > item.introducedRevision
+      && !(event.nodes || []).some((node) => node.type === 'CHECK' && node.ref === item.ref));
+    return {
+      ...item,
+      active: currentRefs.has(item.ref),
+      ...(retired ? { retiredRevision: retired.revision } : {}),
+    };
+  });
 }
 
 function ensureRef(value, label, pattern, code) {
@@ -40,7 +115,7 @@ function normalizeNodes(value, previous, events) {
     seen.add(ref);
     const type = ensureString(item.type, `nodes[${index}].type`, 'CASE_FLOW_INVALID').trim();
     if (!NODE_TYPES.has(type)) throw contractError('CASE_FLOW_INVALID', `nodes[${index}].type is invalid`);
-    const allowed = new Set(['ref', 'type', 'text', ...(type === 'CHECK' ? ['verificationKind', 'sourceBasis'] : []),
+    const allowed = new Set(['ref', 'type', 'text', ...(type === 'CHECK' ? ['verificationKind', 'sourceBasis', 'requirement', 'applicability'] : []),
       ...(type === 'DECISION' ? ['sourceBasis'] : [])]);
     const unsupported = Object.keys(item).filter((field) => !allowed.has(field));
     if (unsupported.length) {
@@ -57,16 +132,52 @@ function normalizeNodes(value, previous, events) {
         throw contractError('CASE_FLOW_INVALID', `nodes[${index}].verificationKind is invalid`);
       }
       node.verificationKind = kind;
+      const requirement = ensureString(item.requirement, `nodes[${index}].requirement`, 'CASE_FLOW_INVALID').trim();
+      if (!CHECK_REQUIREMENTS.has(requirement)) {
+        throw contractError('CASE_FLOW_INVALID', `nodes[${index}].requirement is invalid`);
+      }
+      node.requirement = requirement;
+      if (requirement === 'CONDITIONAL') {
+        node.applicability = ensureString(item.applicability, `nodes[${index}].applicability`, 'CASE_FLOW_INVALID').trim();
+        if (!node.applicability) throw contractError('CASE_FLOW_INVALID', `nodes[${index}].applicability must not be empty`);
+      } else if (Object.prototype.hasOwnProperty.call(item, 'applicability')) {
+        throw contractError('CASE_FLOW_INVALID', `nodes[${index}].applicability is only valid for CONDITIONAL checks`);
+      }
     }
     return node;
   });
-  if (!nodes.some((node) => node.type === 'CHECK')) {
+  if (!previous && !nodes.some((node) => node.type === 'CHECK')) {
     throw contractError('CASE_FLOW_INVALID', 'Case Flow must contain at least one CHECK node');
   }
   if (!nodes.some((node) => node.type === 'END')) {
     throw contractError('CASE_FLOW_INVALID', 'Case Flow must contain at least one END node');
   }
   return nodes;
+}
+
+function validateStableIdentities(events, nodes, edges) {
+  if (!events.length) return;
+  const baselineEvent = events[0];
+  const nodeByRef = new Map(nodes.map((node) => [node.ref, node]));
+  const edgeByRef = new Map(edges.map((edge) => [edge.ref, edge]));
+  const stableNodes = new Map((baselineEvent.nodes || []).map((node) => [node.ref, node]));
+  for (const event of events) {
+    for (const node of (event.nodes || []).filter((item) => item.type === 'CHECK')) {
+      if (!stableNodes.has(node.ref)) stableNodes.set(node.ref, node);
+    }
+  }
+  for (const [ref, original] of stableNodes) {
+    const candidate = nodeByRef.get(ref);
+    if (candidate && canonicalJson(candidate) !== canonicalJson(original)) {
+      throw contractError('CASE_FLOW_NODE_IDENTITY_CHANGED', `node ${ref} cannot change its original meaning`);
+    }
+  }
+  for (const original of baselineEvent.edges || []) {
+    const candidate = edgeByRef.get(original.ref);
+    if (candidate && canonicalJson(candidate) !== canonicalJson(original)) {
+      throw contractError('CASE_FLOW_EDGE_IDENTITY_CHANGED', `edge ${original.ref} cannot change its original meaning`);
+    }
+  }
 }
 
 function normalizeEdges(value, nodes, previous, events) {
@@ -156,12 +267,11 @@ function validateGraph(entryNodeRef, nodes, edges) {
   }
 }
 
-function prepareRevision(execDir, value) {
+function prepareRevisionWithHistory(execDir, value, events) {
   const input = ensureObject(value, 'caseFlow', 'CASE_FLOW_INVALID');
   const allowed = new Set(['baseRevision', 'summary', 'entryNodeRef', 'nodes', 'edges', 'uncertainties', 'reason']);
   const unsupported = Object.keys(input).filter((field) => !allowed.has(field));
   if (unsupported.length) throw contractError('CASE_FLOW_INVALID', `caseFlow contains unsupported fields: ${unsupported.join(', ')}`);
-  const events = history(execDir);
   const previous = events.at(-1) || null;
   const expected = previous?.revision || null;
   if (input.baseRevision !== expected) {
@@ -172,29 +282,44 @@ function prepareRevision(execDir, value) {
   }
   const nodes = normalizeNodes(input.nodes, previous, events);
   const edges = normalizeEdges(input.edges, nodes, previous, events);
+  validateStableIdentities(events, nodes, edges);
   const entryNodeRef = ensureString(input.entryNodeRef, 'entryNodeRef', 'CASE_FLOW_INVALID').trim();
   validateGraph(entryNodeRef, nodes, edges);
   const activeNodeRefs = new Set(nodes.map((node) => node.ref));
   const activeEdgeRefs = new Set(edges.map((edge) => edge.ref));
   const newlyRetiredNodeRefs = (previous?.nodes || []).map((node) => node.ref).filter((ref) => !activeNodeRefs.has(ref));
   const newlyRetiredEdgeRefs = (previous?.edges || []).map((edge) => edge.ref).filter((ref) => !activeEdgeRefs.has(ref));
+  const requestNormalized = {
+    baseRevision: input.baseRevision,
+    summary: ensureString(input.summary, 'summary', 'CASE_FLOW_INVALID').trim(),
+    entryNodeRef,
+    nodes,
+    edges,
+    uncertainties: strings(input.uncertainties, 'uncertainties'),
+    reason: previous ? String(input.reason).trim() : null,
+  };
   return {
     previous,
     newlyRetiredNodeRefs,
     newlyRetiredEdgeRefs,
+    requestNormalized,
     event: {
       revision: events.length + 1,
       reason: previous ? String(input.reason).trim() : 'INITIAL_CASE_FLOW',
-      basedOnSceneRef: store.readCurrentScene(execDir)?.sceneId || null,
-      summary: ensureString(input.summary, 'summary', 'CASE_FLOW_INVALID').trim(),
-      entryNodeRef,
-      nodes,
-      edges,
-      uncertainties: strings(input.uncertainties, 'uncertainties'),
+      basedOnSceneRef: previous ? store.readCurrentScene(execDir)?.sceneId || null : null,
+      summary: requestNormalized.summary,
+      entryNodeRef: requestNormalized.entryNodeRef,
+      nodes: requestNormalized.nodes,
+      edges: requestNormalized.edges,
+      uncertainties: requestNormalized.uncertainties,
       retiredNodeRefs: [...new Set([...(previous?.retiredNodeRefs || []), ...newlyRetiredNodeRefs])],
       retiredEdgeRefs: [...new Set([...(previous?.retiredEdgeRefs || []), ...newlyRetiredEdgeRefs])],
     },
   };
+}
+
+function prepareRevision(execDir, value) {
+  return prepareRevisionWithHistory(execDir, value, history(execDir));
 }
 
 function commitRevision(execDir, prepared, options = {}) {
@@ -204,6 +329,8 @@ function commitRevision(execDir, prepared, options = {}) {
   const event = existing || store.appendEvent(execDir, 'caseFlowRevised', {
     ...prepared.event,
     submissionId: options.submissionId || null,
+    requestSha256: options.requestSha256 || null,
+    requestNormalized: prepared.requestNormalized,
   }, options);
   const previous = prepared.previous || history(execDir).filter((item) => item.sequence < event.sequence).at(-1) || null;
   const invalidatedResultRefs = require('./expectation-result-service')
@@ -211,6 +338,7 @@ function commitRevision(execDir, prepared, options = {}) {
   return {
     status: 'CASE_FLOW_RECORDED',
     caseFlow: event,
+    ...(existing ? { idempotent: true } : {}),
     caseFlowChange: {
       revision: event.revision,
       retiredNodeRefs: prepared.newlyRetiredNodeRefs || [],
@@ -221,7 +349,30 @@ function commitRevision(execDir, prepared, options = {}) {
 }
 
 function revise(execDir, value, options = {}) {
-  return commitRevision(execDir, prepareRevision(execDir, value), options);
+  const events = history(execDir);
+  const input = ensureObject(value, 'caseFlow', 'CASE_FLOW_INVALID');
+  const prepared = prepareRevisionWithHistory(execDir, value, historyForBaseRevision(events, input.baseRevision));
+  const digest = requestSha256(prepared.requestNormalized);
+  const existing = matchingPreparedRevision(events, prepared);
+  if (existing) {
+    const previous = events.filter((event) => event.sequence < existing.sequence).at(-1) || null;
+    return {
+      status: 'CASE_FLOW_RECORDED',
+      caseFlow: existing,
+      idempotent: true,
+      caseFlowChange: {
+        revision: existing.revision,
+        retiredNodeRefs: (existing.retiredNodeRefs || []).filter((ref) => !(previous?.retiredNodeRefs || []).includes(ref)),
+        retiredEdgeRefs: (existing.retiredEdgeRefs || []).filter((ref) => !(previous?.retiredEdgeRefs || []).includes(ref)),
+        invalidatedResultRefs: [],
+      },
+    };
+  }
+  const currentRevision = events.at(-1)?.revision || null;
+  if (input.baseRevision !== currentRevision) {
+    throw contractError('CASE_FLOW_REVISION_CONFLICT', `baseRevision ${input.baseRevision} does not match current revision ${currentRevision}`);
+  }
+  return commitRevision(execDir, prepared, { ...options, requestSha256: digest });
 }
 
 function currentRevision(execDir) {
@@ -247,4 +398,15 @@ function validateFlowContext(execDir, value) {
   return { nodeRef, selectedEdgeRef };
 }
 
-module.exports = { commitRevision, current, currentRevision, history, prepareRevision, revise, validateFlowContext };
+module.exports = {
+  baseline,
+  checkpointRegistry,
+  commitRevision,
+  current,
+  currentRevision,
+  history,
+  matchingRevision,
+  prepareRevision,
+  revise,
+  validateFlowContext,
+};

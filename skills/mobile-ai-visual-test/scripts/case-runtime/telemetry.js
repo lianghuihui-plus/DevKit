@@ -83,7 +83,7 @@ function recordSpan(execDir, name, durationMs, details = {}, options = {}) {
 
 function recordAgentFacing(execDir, request, response, durationMs, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 12 || execution.finalized === true) return;
+  if (execution?.schemaVersion !== 13 || execution.finalized === true) return;
   fs.mkdirSync(telemetryDir(execDir), { recursive: true });
   appendJsonl(agentFacingFile(execDir), {
     schemaVersion: 1,

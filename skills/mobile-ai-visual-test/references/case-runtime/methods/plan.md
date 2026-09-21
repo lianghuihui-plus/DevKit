@@ -16,10 +16,13 @@ plan({ capability: "plan", caseFlow: object })
 ## 条件要求
 
 - 首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。
+- CHECK 必须声明 REQUIRED 或 CONDITIONAL；CONDITIONAL 必须提供 applicability。
 
 ## 上下文校验
 
-- 语义不变的节点和边保留 ref；retired ref 不得复用。
+- 首次 revision 是只基于原始用例的 Baseline Flow，不写入当前 Scene 的现场适配。
+- Baseline 节点和边不可改义；既有 CHECK 不可改义，现场适配或语义修正使用新 ref。
+- 修订可改变 Working Flow 导航，但删除 Baseline CHECK 不会取消其最终处置责任。
 
 ## 成功状态
 
@@ -31,12 +34,15 @@ plan({ capability: "plan", caseFlow: object })
 
 ## 幂等性
 
-相同 submission 只写一次 revision。
+规范化后语义等价的 Case Flow 请求只写一次 revision，幂等键由框架内部派生。
 
 ## 错误
 
 - [`AGENT_INPUT_INVALID`](../errors/transport.md#error-agent-input-invalid)
 - [`BINDING_INVALID`](../errors/transport.md#error-binding-invalid)
+- [`CASE_FLOW_REVISION_CONFLICT`](../errors/flow-result.md#error-case-flow-revision-conflict)
+- [`CASE_FLOW_NODE_IDENTITY_CHANGED`](../errors/flow-result.md#error-case-flow-node-identity-changed)
+- [`CASE_FLOW_EDGE_IDENTITY_CHANGED`](../errors/flow-result.md#error-case-flow-edge-identity-changed)
 - [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 
 ## 最小示例
@@ -54,7 +60,8 @@ plan({ capability: "plan", caseFlow: object })
         "type": "CHECK",
         "text": "结果可见",
         "verificationKind": "DIRECT_OBSERVATION",
-        "sourceBasis": "原始用例预期"
+        "sourceBasis": "原始用例预期",
+        "requirement": "REQUIRED"
       },
       {
         "ref": "N2",

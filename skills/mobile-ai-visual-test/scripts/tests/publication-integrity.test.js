@@ -20,6 +20,7 @@ const {
 } = require('../report/report-service');
 const { writeCaseReports } = require('../report/report-service');
 const { withWorkspaceReportPublication } = require('../report/publication-lock');
+const { publishReportBundle, validatePublishedReportBundle } = require('../report/report-publisher');
 const { commitWithDashboard } = require('../batch');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
@@ -114,6 +115,33 @@ function readRefreshResult(refresh) {
   assert.deepStrictEqual(result, { ok: true });
 }
 
+const dependencyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-dependency-'));
+const dependencyReportDir = path.join(dependencyRoot, 'cases', 'case-1', 'platforms', 'ios');
+const dependencySource = path.join(dependencyRoot, 'vendor-source.js');
+fs.writeFileSync(dependencySource, 'window.fixtureDependency=true;\n');
+publishReportBundle(dependencyReportDir, { 'CONTEXT.html': '<!doctype html>\n' }, { schemaVersion: 1 }, {
+  workspaceRoot: dependencyRoot,
+  dependencies: [{ sourcePath: dependencySource, workspaceRelativePath: 'report-assets/fixture-abc.js' }],
+});
+const dependencyMetadata = validatePublishedReportBundle(dependencyReportDir, { workspaceRoot: dependencyRoot });
+assert.strictEqual(dependencyMetadata.dependencies['report-assets/fixture-abc.js'].bytes, fs.statSync(dependencySource).size);
+assert.strictEqual(fs.readFileSync(path.join(dependencyRoot, 'report-assets', 'fixture-abc.js'), 'utf8'), 'window.fixtureDependency=true;\n');
+fs.appendFileSync(path.join(dependencyRoot, 'report-assets', 'fixture-abc.js'), 'changed');
+expectCode(() => validatePublishedReportBundle(dependencyReportDir, { workspaceRoot: dependencyRoot }), 'REPORT_DEPENDENCY_CHANGED');
+expectCode(() => publishReportBundle(dependencyReportDir, { 'CONTEXT.html': 'x' }, { schemaVersion: 1 }, {
+  workspaceRoot: dependencyRoot,
+  dependencies: [{ sourcePath: dependencySource, workspaceRelativePath: '../outside.js' }],
+}), 'REPORT_DEPENDENCY_PATH_INVALID');
+
+const symlinkDependencyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-dependency-symlink-'));
+const symlinkDependencyOutside = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-dependency-outside-'));
+fs.symlinkSync(symlinkDependencyOutside, path.join(symlinkDependencyRoot, 'report-assets'), 'dir');
+expectCode(() => publishReportBundle(path.join(symlinkDependencyRoot, 'reports', 'case-1'), { 'CONTEXT.html': 'x' }, { schemaVersion: 1 }, {
+  workspaceRoot: symlinkDependencyRoot,
+  dependencies: [{ sourcePath: dependencySource, workspaceRelativePath: 'report-assets/fixture-escape.js' }],
+}), 'REPORT_DEPENDENCY_PATH_INVALID');
+assert.strictEqual(fs.existsSync(path.join(symlinkDependencyOutside, 'fixture-escape.js')), false);
+
 const published = fixture('published');
 const manifest = buildExecutionArtifactManifest(published.execDir);
 assert.ok(manifest.files.some((entry) => entry.path === 'result.json'));
@@ -129,6 +157,25 @@ expectCode(() => validateExecutionArtifactManifest(published.execDir), 'EXECUTIO
 const missing = fixture('missing');
 fs.unlinkSync(path.join(missing.execDir, 'result.json'));
 expectCode(() => buildExecutionArtifactManifest(missing.execDir), 'EXECUTION_ARTIFACT_MISSING');
+
+const symlinkFile = fixture('symlink-file');
+const symlinkFileTarget = path.join(symlinkFile.execDir, 'screenshots', 'scene-0001.png');
+const symlinkFileSource = path.join(symlinkFile.execDir, 'screenshots', 'scene-0001-source.png');
+fs.renameSync(symlinkFileTarget, symlinkFileSource);
+fs.symlinkSync(symlinkFileSource, symlinkFileTarget, 'file');
+expectCode(() => buildExecutionArtifactManifest(symlinkFile.execDir), 'EXECUTION_ARTIFACT_PATH_INVALID');
+
+const symlinkDirectory = fixture('symlink-directory');
+const symlinkDirectorySource = path.join(symlinkDirectory.execDir, 'screenshots-source');
+fs.renameSync(path.join(symlinkDirectory.execDir, 'screenshots'), symlinkDirectorySource);
+fs.symlinkSync(symlinkDirectorySource, path.join(symlinkDirectory.execDir, 'screenshots'), 'dir');
+expectCode(() => buildExecutionArtifactManifest(symlinkDirectory.execDir), 'EXECUTION_ARTIFACT_PATH_INVALID');
+
+const danglingSymlink = fixture('dangling-symlink');
+const danglingTarget = path.join(danglingSymlink.execDir, 'screenshots', 'scene-0001.png');
+fs.unlinkSync(danglingTarget);
+fs.symlinkSync(path.join(danglingSymlink.execDir, 'screenshots', 'missing.png'), danglingTarget, 'file');
+expectCode(() => buildExecutionArtifactManifest(danglingSymlink.execDir), 'EXECUTION_ARTIFACT_PATH_INVALID');
 
 const unsettled = fixture('unsettled');
 writeJson(path.join(unsettled.execDir, 'transactions', 'action-0001.draft.json'), { status: 'PREPARED' });

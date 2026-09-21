@@ -17,6 +17,45 @@ function isSafeRelativeArtifact(value) {
   return Boolean(normalized) && !path.isAbsolute(normalized) && !normalized.split('/').includes('..');
 }
 
+function lstatIfPresent(file) {
+  try {
+    return fs.lstatSync(file);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function assertInsideExecutionRoot(execDir, target, displayValue) {
+  const resolvedRoot = path.resolve(execDir);
+  let rootStat;
+  try {
+    rootStat = fs.lstatSync(resolvedRoot);
+  } catch {
+    throw contractError('EXECUTION_ARTIFACT_PATH_INVALID', `execution directory does not exist: ${resolvedRoot}`);
+  }
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw contractError('EXECUTION_ARTIFACT_PATH_INVALID', `execution directory must be a real directory: ${resolvedRoot}`);
+  }
+  const canonicalRoot = fs.realpathSync.native(resolvedRoot);
+  const relative = path.relative(resolvedRoot, target);
+  let current = resolvedRoot;
+  for (const part of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    const stat = lstatIfPresent(current);
+    if (!stat) break;
+    if (stat.isSymbolicLink()) {
+      throw contractError('EXECUTION_ARTIFACT_PATH_INVALID', `execution artifact must not use symbolic links: ${displayValue}`);
+    }
+  }
+  let existing = target;
+  while (!lstatIfPresent(existing) && existing !== resolvedRoot) existing = path.dirname(existing);
+  const canonicalExisting = fs.realpathSync.native(existing);
+  if (canonicalExisting !== canonicalRoot && !canonicalExisting.startsWith(`${canonicalRoot}${path.sep}`)) {
+    throw contractError('EXECUTION_ARTIFACT_PATH_INVALID', `execution artifact escapes canonical execution directory: ${displayValue}`);
+  }
+}
+
 function resolveArtifact(execDir, value) {
   if (!isSafeRelativeArtifact(value)) throw contractError('EVIDENCE_PATH_INVALID', `unsafe artifact path: ${value}`);
   const resolvedRoot = path.resolve(execDir);
@@ -24,6 +63,7 @@ function resolveArtifact(execDir, value) {
   if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${path.sep}`)) {
     throw contractError('EVIDENCE_PATH_INVALID', `artifact escapes execution directory: ${value}`);
   }
+  assertInsideExecutionRoot(execDir, resolved, value);
   return resolved;
 }
 

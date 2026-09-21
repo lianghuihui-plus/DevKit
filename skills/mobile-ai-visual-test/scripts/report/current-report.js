@@ -4,6 +4,7 @@ const { displayAction, formatDuration } = require('../lib/display-format');
 const { buildExecutionNarrative } = require('./execution-narrative');
 const { renderCurrentContextHtml } = require('./current-report-html');
 const { renderSourceMarkdown } = require('./source-markdown');
+const { projectCaseFlowViews } = require('./case-flow-projection');
 
 const VERDICT_LABELS = Object.freeze({
   PASS: '通过',
@@ -64,18 +65,17 @@ function renderCurrentContextMarkdown(caseJson, report) {
   const display = report.display || {};
   const phases = display.phaseDurations || {};
   const narrative = buildExecutionNarrative(report);
+  const views = projectCaseFlowViews(report);
   const modelLines = narrative.modelKind === 'CASE_FLOW' ? [
-    '## Case Flow', '',
-    `- 版本：${narrative.caseFlow?.revision || '-'}`,
-    `- 摘要：${narrative.caseFlow?.summary || '未记录'}`,
-    `- 入口：${narrative.caseFlow?.entryNodeRef || '-'}`,
-    `- 不确定项：${narrative.caseFlow?.uncertainties?.join('；') || '无'}`, '',
+    '## 用例流程', '',
+    `- 基线版本：${views.baselineFlow?.revision || '-'}`,
+    `- 摘要：${views.baselineFlow?.summary || '未记录'}`,
+    `- 入口：${views.baselineFlow?.entryNodeRef || '-'}`,
+    `- 不确定项：${views.baselineFlow?.uncertainties?.join('；') || '无'}`, '',
     '### 节点', '',
-    ...((narrative.caseFlow?.nodes || []).map((node) => `- ${node.ref} [${node.type}] ${node.text}${node.sourceBasis ? `；依据：${node.sourceBasis}` : ''}`)), '',
+    ...((views.baselineFlow?.nodes || []).map((node) => `- ${node.ref} [${node.type}] ${node.text}${node.requirement ? `；责任：${node.requirement}` : ''}${node.applicability ? `；适用条件：${node.applicability}` : ''}${node.sourceBasis ? `；依据：${node.sourceBasis}` : ''}`)), '',
     '### 连接与分支', '',
-    ...((narrative.caseFlow?.edges || []).map((edge) => `- ${edge.ref} ${edge.from} -> ${edge.to}${edge.condition ? `；条件：${edge.condition}` : ''}`)), '',
-    '### 修订记录', '',
-    ...((narrative.caseFlowHistory || []).map((item) => `- 版本 ${item.revision}：${item.reason || 'Agent 修订'}`)),
+    ...((views.baselineFlow?.edges || []).map((edge) => `- ${edge.ref} ${edge.from} -> ${edge.to}${edge.condition ? `；条件：${edge.condition}` : ''}`)),
   ] : [
     '## Agent 用例理解', '', narrative.understanding?.summary || '未记录', '',
     `- 前置条件：${narrative.understanding?.preconditions?.join('；') || '无'}`,
@@ -114,7 +114,12 @@ function renderCurrentContextMarkdown(caseJson, report) {
         `  - ${update.items.join('；') || '未记录后续计划'}`);
     }
   }
-  lines.push('', '## 执行过程', '');
+  lines.push('', '## 执行轨迹', '');
+  if (views.executionTrace.nodes.length) {
+    lines.push('### 轨迹摘要', '', ...views.executionTrace.nodes.map((node) =>
+      `- ${node.ref} ${node.operation}：${node.purpose}${node.baselineNodeRef ? `；基线节点：${node.baselineNodeRef}` : node.adaptation ? '；现场适配' : ''}${node.attemptCount > 1 ? `；尝试 ${node.attemptCount} 次` : ''}`), '');
+  }
+  lines.push('### 执行详情', '');
   for (const step of narrative.steps) {
     lines.push(`${step.number}. ${step.purpose || step.operation}`,
       `   - 操作前观察：${step.observation || '未记录'}`,
@@ -139,11 +144,26 @@ function renderCurrentContextMarkdown(caseJson, report) {
     `- 现场观察：${narrative.finalDecision?.observation || '未记录'}`,
     `- 判断结论：${narrative.finalDecision?.conclusion || '未记录'}`,
     `- 收口目的：${narrative.finalDecision?.purpose || '未记录'}`,
-    '', '## 最终检查', '');
-  for (const check of narrative.checks) {
-    lines.push(`- [${check.status}] ${check.expectation}`, `  - 实际结果：${check.actual || check.reason || '未记录'}`, `  - 知识调查：${KNOWLEDGE_INVESTIGATION_LABELS[check.knowledgeInvestigation?.status] || '未记录'}`, `  - 相关步骤：${(check.relatedSteps || []).map((step) => `步骤 ${step.number}`).join('、') || '无'}`, `  - 现场证据：${(check.sceneRefs || []).join('、') || '无'}`, `  - 知识依据：${(check.knowledgeRefs || []).join('、') || '无'}`);
-    if (check.technicalFacts.length) {
-      for (const fact of check.technicalFacts) {
+    '', '## 检查点', '');
+  const narrativeChecks = new Map(narrative.checks.map((check) => [check.expectationRef, check]));
+  const ledger = views.checkpointLedger.length ? views.checkpointLedger : narrative.checks.map((check) => ({
+    checkpointRef: check.expectationRef, text: check.expectation, disposition: check.status,
+    actual: check.actual, reason: check.reason, sceneRefs: check.sceneRefs,
+    knowledgeRefs: check.knowledgeRefs, technicalRefs: check.technicalRefs,
+  }));
+  for (const checkpoint of ledger) {
+    const check = narrativeChecks.get(checkpoint.checkpointRef) || {};
+    lines.push(`- [${checkpoint.disposition}] ${checkpoint.checkpointRef} ${checkpoint.text}`,
+      `  - 责任：${checkpoint.requirement || 'UNKNOWN'}`,
+      `  - 实际结果：${checkpoint.actual || '未记录'}`,
+      ...(checkpoint.reason ? [`  - 豁免理由：${checkpoint.reason}`] : []),
+      `  - 知识调查：${KNOWLEDGE_INVESTIGATION_LABELS[check.knowledgeInvestigation?.status] || '未记录'}`,
+      `  - 相关步骤：${(check.relatedSteps || []).map((step) => `步骤 ${step.number}`).join('、') || '无'}`,
+      `  - 现场证据：${(checkpoint.sceneRefs || []).join('、') || '无'}`,
+      `  - 知识依据：${(checkpoint.knowledgeRefs || []).join('、') || '无'}`);
+    const facts = check.technicalFacts || [];
+    if (facts.length) {
+      for (const fact of facts) {
         lines.push(`  - 技术事实：${fact.ref} [${fact.state === 'VALID' ? '有效' : '无效'}] ${fact.code} · ${fact.message}`,
           `    - 时间：${fact.time || '-'}；操作：${fact.operation || '-'}${fact.operationId ? ` / ${fact.operationId}` : ''}；Scene：${fact.sceneId || '-'}；generation：${fact.generation ?? '-'}`,
           `    - 状态说明：${fact.stateReason}`);

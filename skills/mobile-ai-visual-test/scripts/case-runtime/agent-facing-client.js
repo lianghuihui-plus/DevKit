@@ -10,7 +10,7 @@ const {
   projectAgentFacingResponse,
   translateAgentFacingRequest,
 } = require('./agent-facing-translator');
-const { AGENT_FACING_PROTOCOL, documentationRefFor, validateAgentFacingRequest } = require('./agent-facing-contract');
+const { AGENT_FACING_PROTOCOL, PUBLIC_CONTRACT, documentationRefFor, validateAgentFacingRequest } = require('./agent-facing-contract');
 const telemetry = require('./telemetry');
 
 const STATE_FILE = 'agent-facing-state.json';
@@ -92,17 +92,17 @@ function invalidResponse(execDir, request, issues) {
 function executeRun(execDir, request, options = {}) {
   const resolved = path.resolve(execDir);
   const execution = readJson(path.join(resolved, 'execution.json'), null);
-  if (execution?.schemaVersion !== 12) {
+  if (execution?.schemaVersion !== 13) {
     return {
       protocol: AGENT_FACING_PROTOCOL,
       status: 'TECHNICAL',
       code: 'PROTOCOL_MISMATCH',
-      message: `当前执行格式无效：期望 schema 12，实际为 ${execution?.schemaVersion || 'unknown'}`,
+      message: `当前执行格式无效：期望 schema 13，实际为 ${execution?.schemaVersion || 'unknown'}`,
       retryable: false,
       facts: {
         executionRef: execution?.executionId || path.basename(resolved),
         executionSchemaVersion: execution?.schemaVersion || null,
-        requiredSchemaVersion: 12,
+        requiredSchemaVersion: 13,
       },
       documentationRef: documentationRefFor('PROTOCOL_MISMATCH'),
     };
@@ -148,6 +148,21 @@ function executeRun(execDir, request, options = {}) {
   const executeRequest = options.executeRequest || executeFacadeRequest;
   const response = executeRequest(resolved, internal, options);
   if (response?.status === 'REQUEST_INVALID') {
+    if (PUBLIC_CONTRACT.errors[response.code]) {
+      const rejected = invalidResponse(resolved, request, response.issues || [{
+        field: request.capability === 'plan' ? 'caseFlow' : 'request',
+        code: response.code,
+        message: response.message || response.code,
+      }]);
+      return {
+        ...rejected,
+        status: 'INPUT_INVALID',
+        code: response.code,
+        message: response.message || rejected.message,
+        retryable: PUBLIC_CONTRACT.errors[response.code].retryable,
+        documentationRef: documentationRefFor(response.code),
+      };
+    }
     return {
       protocol: AGENT_FACING_PROTOCOL,
       status: 'TECHNICAL',

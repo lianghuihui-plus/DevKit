@@ -101,7 +101,7 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
     type: 'object', required: ['status', 'actual'], additionalProperties: false,
     properties: {
       checkNodeRef: STRING,
-      status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE'] }, actual: STRING,
+      status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE', 'WAIVED'] }, actual: STRING, reason: STRING,
       sceneRefs: STRING_ARRAY, knowledgeRefs: STRING_ARRAY, technicalRefs: STRING_ARRAY,
       evidenceBasis: { $ref: 'searchAbsenceEvidence' },
     },
@@ -110,8 +110,8 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
     type: 'object', required: ['expectationRef', 'status', 'actual'], additionalProperties: false,
     properties: {
       expectationRef: STRING,
-      status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE'] },
-      actual: STRING,
+      status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE', 'WAIVED'] },
+      actual: STRING, reason: STRING,
       evidence: {
         type: 'object', additionalProperties: false,
         properties: {
@@ -145,6 +145,7 @@ const AGENT_CONTRACT_DEFINITIONS = deepFreeze({
           properties: {
             ref: STRING, type: { enum: ['ACTION', 'DECISION', 'CHECK', 'END'] }, text: STRING,
             sourceBasis: STRING, verificationKind: { enum: ['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE'] },
+            requirement: { enum: ['REQUIRED', 'CONDITIONAL'] }, applicability: STRING,
           },
         },
       },
@@ -376,7 +377,7 @@ const OPERATION_CONTRACT = deepFreeze({
       caseFlow: {
         baseRevision: null, summary: '验证目标结果', entryNodeRef: 'N1',
         nodes: [
-          { ref: 'N1', type: 'CHECK', text: '目标结果可见', sourceBasis: '原始用例预期', verificationKind: 'DIRECT_OBSERVATION' },
+          { ref: 'N1', type: 'CHECK', text: '目标结果可见', sourceBasis: '原始用例预期', verificationKind: 'DIRECT_OBSERVATION', requirement: 'REQUIRED' },
           { ref: 'N2', type: 'END', text: '完成' },
         ],
         edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [],

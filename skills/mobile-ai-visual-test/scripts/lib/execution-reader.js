@@ -8,8 +8,21 @@ const { referencedTechnicalFacts } = require('./technical-facts');
 const { deriveExecutionTiming } = require('./execution-timing');
 const currentExecution = require('./readers/current-execution');
 const { projectCaseStatus } = require('./case-status-projection');
+const { resolveArtifact } = require('./execution-evidence');
 
 const currentContracts = new Map();
+const EXECUTION_CONTROL_FILES = [
+  'execution.json',
+  'completion.json',
+  'artifact-manifest.json',
+  'result.json',
+  'metrics.json',
+  'case.snapshot.json',
+  'source.snapshot.md',
+  'events.jsonl',
+  'binding.snapshot.json',
+  'validation-profile.snapshot.json',
+];
 
 function readJson(file, fallback = null) {
   if (!fs.existsSync(file)) return fallback;
@@ -19,6 +32,22 @@ function readJson(file, fallback = null) {
 function readJsonl(file) {
   if (!fs.existsSync(file)) return [];
   return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+}
+
+function controlPath(execDir, relative) {
+  return resolveArtifact(execDir, relative);
+}
+
+function readControlJson(execDir, relative, fallback = null) {
+  return readJson(controlPath(execDir, relative), fallback);
+}
+
+function readControlJsonl(execDir, relative) {
+  return readJsonl(controlPath(execDir, relative));
+}
+
+function assertControlPaths(execDir) {
+  for (const relative of EXECUTION_CONTROL_FILES) controlPath(execDir, relative);
 }
 
 function currentContract(platform, skillRoot = path.resolve(__dirname, '../..')) {
@@ -33,13 +62,8 @@ function assertExecutionSchema(execution) {
   return currentExecution.assertSchema(execution);
 }
 
-function readerFor(execution) {
-  assertExecutionSchema(execution);
-  return currentExecution;
-}
-
 function assertCurrentExecution(execution, options = {}) {
-  assertExecutionSchema(execution);
+  currentExecution.assertSchema(execution);
   let contract;
   try {
     contract = options.contract || currentContract(execution.platform, options.skillRoot);
@@ -57,7 +81,7 @@ function assertCurrentExecution(execution, options = {}) {
 }
 
 function assertReadableCompletedExecution(execution) {
-  return assertExecutionSchema(execution);
+  return currentExecution.assertSchema(execution);
 }
 
 function timingPublication(execDir, execution) {
@@ -146,7 +170,7 @@ function invalidCompletionDisplayModel(result, metrics, execution, message) {
 
 function emptyExecutionReport(execDir = null) {
   return {
-    latest: execDir, readability: null, schemaFamily: null, execution: null, snapshot: null, sourceText: '',
+    latest: execDir, readability: null, execution: null, snapshot: null, sourceText: '',
     rawResult: null, result: null, metrics: null, events: [], completion: null,
     completionError: null, display: null,
   };
@@ -155,7 +179,7 @@ function emptyExecutionReport(execDir = null) {
 function executionSelection(execDir, workspaceRoot = null) {
   let execution;
   try {
-    execution = readJson(path.join(execDir, 'execution.json'), null);
+    execution = readControlJson(execDir, 'execution.json', null);
   } catch (error) {
     return {
       execDir,
@@ -171,7 +195,9 @@ function executionSelection(execDir, workspaceRoot = null) {
       time: fs.statSync(execDir).mtimeMs,
     };
   }
-  if (!currentExecution.supports(execution)) {
+  try {
+    assertExecutionSchema(execution);
+  } catch {
     const time = Date.parse(execution?.endedAt || execution?.startedAt || 0) || fs.statSync(execDir).mtimeMs;
     return {
       execDir,
@@ -187,11 +213,23 @@ function executionSelection(execDir, workspaceRoot = null) {
       time,
     };
   }
-  const closure = workspaceRoot && execution.finalized !== true
-    ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
-    : null;
-  const result = readJson(path.join(execDir, 'result.json'), null);
-  const completion = readJson(path.join(execDir, 'completion.json'), null);
+  let closure;
+  let result;
+  let completion;
+  try {
+    closure = workspaceRoot && execution.finalized !== true
+      ? require('./execution-closure').readExecutionClosure(workspaceRoot, execDir, execution)
+      : null;
+    result = readControlJson(execDir, 'result.json', null);
+    completion = readControlJson(execDir, 'completion.json', null);
+  } catch (error) {
+    const time = Date.parse(execution?.endedAt || execution?.startedAt || 0) || fs.statSync(execDir).mtimeMs;
+    return {
+      execDir, execution, result: null, completion: null, closure: null, priority: -1,
+      state: 'DATA_INVALID', readability: 'DATA_INVALID', errorCode: error.code || 'REPORT_DATA_INVALID',
+      reason: error.message || String(error), time,
+    };
+  }
   let priority = 1;
   let state = 'ACTIVE';
   if (execution.status === 'CANCELLED') { priority = 3; state = 'CANCELLED'; }
@@ -234,7 +272,6 @@ function unavailableExecutionReport(selection) {
     }
     : { executionId: path.basename(selection.execDir), platform: null, startedAt: '', endedAt: '' };
   report.readability = selection.readability;
-  report.schemaFamily = selection.readability === 'FORMAT_UNSUPPORTED' ? 'unsupported' : 'invalid';
   report.execution = execution;
   report.display = {
     status: selection.readability === 'FORMAT_UNSUPPORTED' ? 'NEEDS_RERUN' : 'REPORT_DATA_INVALID',
@@ -265,21 +302,20 @@ function readExecutionReport(execDir) {
   const report = emptyExecutionReport(execDir);
   try {
     const execution = selection.execution;
-    const completion = readJson(path.join(execDir, 'completion.json'), null);
-    const reader = readerFor(execution);
-    report.execution = execution?.finalized === true && completion
+    assertControlPaths(execDir);
+    const completion = readControlJson(execDir, 'completion.json', null);
+    const closure = selection.closure || require('./execution-closure').executionClosureForDir(execDir);
+    report.execution = execution?.finalized === true || closure
       ? assertReadableCompletedExecution(execution)
       : assertCurrentExecution(execution);
     report.readability = 'READABLE';
-    report.schemaFamily = 'current';
-    report.readerFamily = reader.READER_FAMILY;
-    report.snapshot = readJson(path.join(execDir, 'case.snapshot.json'), null);
-    report.rawResult = readJson(path.join(execDir, 'result.json'), null);
-    report.metrics = readJson(path.join(execDir, 'metrics.json'), null);
+    report.snapshot = readControlJson(execDir, 'case.snapshot.json', null);
+    report.rawResult = readControlJson(execDir, 'result.json', null);
+    report.metrics = readControlJson(execDir, 'metrics.json', null);
     report.completion = completion;
-    report.events = readJsonl(path.join(execDir, 'events.jsonl'));
-    report.closure = require('./execution-closure').executionClosureForDir(execDir);
-    const sourcePath = path.join(execDir, 'source.snapshot.md');
+    report.events = readControlJsonl(execDir, 'events.jsonl');
+    report.closure = closure;
+    const sourcePath = controlPath(execDir, 'source.snapshot.md');
     report.sourceText = fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '';
   } catch (error) {
     return unavailableExecutionReport({
@@ -290,15 +326,28 @@ function readExecutionReport(execDir) {
     });
   }
 
+  if (report.closure) {
+    const interruptedStatus = projectCaseStatus(report);
+    report.rawResult = null;
+    report.result = null;
+    report.completion = null;
+    report.display = {
+      status: interruptedStatus, verdict: null,
+      executionStatus: interruptedStatus === 'BLOCKED' ? 'TECHNICALLY_BLOCKED' : 'NOT_RUN', verdictBasis: null,
+      summary: interruptedStatus === 'BLOCKED' ? 'Case Agent 接管后执行中断，未形成测试结论' : '执行未由 Case Agent 接管，未形成测试结论',
+      uncertainties: [], failureCode: report.closure.reasonCode || null, failedStep: null,
+      ...displayTiming(report.execution, report.metrics), endedAt: report.execution.endedAt || '', stepsSummary: '-', metrics: null,
+    };
+    return report;
+  }
+
   if (!report.rawResult) {
     const cancelled = report.execution.status === 'CANCELLED';
-    const interruptedStatus = projectCaseStatus(report);
     report.display = {
-      status: cancelled ? 'CANCELLED' : report.closure ? interruptedStatus : 'RUNNING', verdict: null,
-      executionStatus: cancelled ? 'CANCELLED' : report.closure ? (interruptedStatus === 'BLOCKED' ? 'TECHNICALLY_BLOCKED' : 'NOT_RUN') : 'RUNNING', verdictBasis: null,
-      summary: cancelled ? `执行已取消：${report.execution.cancellation?.reason || '用户取消'}`
-        : report.closure ? (interruptedStatus === 'BLOCKED' ? 'Case Agent 接管后执行中断，未形成测试结论' : '执行未由 Case Agent 接管，未形成测试结论') : '用例执行中',
-      uncertainties: [], failureCode: cancelled ? null : report.closure?.reasonCode || null, failedStep: null,
+      status: cancelled ? 'CANCELLED' : 'RUNNING', verdict: null,
+      executionStatus: cancelled ? 'CANCELLED' : 'RUNNING', verdictBasis: null,
+      summary: cancelled ? `执行已取消：${report.execution.cancellation?.reason || '用户取消'}` : '用例执行中',
+      uncertainties: [], failureCode: null, failedStep: null,
       ...displayTiming(report.execution, report.metrics), endedAt: report.execution.endedAt || '', stepsSummary: '-', metrics: null,
     };
     return report;

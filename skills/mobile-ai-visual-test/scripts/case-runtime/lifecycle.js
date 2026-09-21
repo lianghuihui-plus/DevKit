@@ -25,7 +25,7 @@ const {
   isSupportedBroker,
 } = require('./runtime-operation-contract');
 
-const EXECUTION_SCHEMA_VERSION = 12;
+const EXECUTION_SCHEMA_VERSION = 13;
 
 function createBoundAgentFacingClient(execDir) {
   const entry = path.join(execDir, 'agent-facing-client.js');

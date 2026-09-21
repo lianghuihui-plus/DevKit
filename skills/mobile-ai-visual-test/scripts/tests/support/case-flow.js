@@ -11,6 +11,8 @@ function simpleCaseFlow(summary, checkText, options = {}) {
         ref: 'N2', type: 'CHECK', text: checkText,
         verificationKind: options.verificationKind || 'DIRECT_OBSERVATION',
         sourceBasis: options.sourceBasis || '原始用例预期',
+        requirement: options.requirement || 'REQUIRED',
+        ...(options.requirement === 'CONDITIONAL' ? { applicability: options.applicability || '原始用例声明的条件成立' } : {}),
       },
       { ref: 'N3', type: 'END', text: '用例完成' },
     ],

@@ -21,4 +21,4 @@ ExecutionRequest 只接受用例选择，不接受 Agent 生成的 inline Case F
 
 Case Flow 由 Case Agent 在 execution 内通过 `plan` 生成，所有 revision 追加到 `events.jsonl`，不写回 `case.json` 或 `source.md`。语义不变的节点和边保留 `N` / `L` 引用，取消的引用不复用。
 
-当前 Reader 只接受当前 execution schema。其他格式不迁移、不补写、不继续执行，也不通过当前 Reader 转换；看板只从当前可发布 execution 中选择最新结果，取消记录不能覆盖较新的已发布结果。
+当前唯一支持的 execution 格式为 schema 13。历史 execution 不迁移、不补写、不可继续执行或展示，统一标记为不支持并要求重跑；旧工作空间目录和原始用例仍可创建新的 schema 13 execution。

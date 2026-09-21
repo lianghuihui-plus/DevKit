@@ -52,9 +52,9 @@ Authoring Agent 使用适合来源格式的工具完整读取输入，自主形�
 
 ### 2.3 Case Agent
 
-Case Agent 从 Handoff 获得 execution 写入所有权、原始用例、环境摘要、当前 Scene、已有 Case Flow、Case Prompt 和预绑定 Runtime Client。正常业务执行只面对八个能力：
+Case Agent 从 Handoff 获得 execution 写入所有权、原始用例、环境摘要、当前 Scene、已有 Case Flow、Case Prompt 和预绑定 Runtime Client。正常业务执行只面对九个能力：
 
-- `observe`、`inspect`、`plan`、`recordResult`
+- `observe`、`inspect`、`plan`、`runPlan`、`recordResult`
 - `act`、`knowledge`、`recover`、`finish`
 
 Case Agent 自己理解用例、制定和调整 Case Flow、调查现场、形成检查结果并收口，不把业务判断交回执行协调 Agent 审批。
@@ -171,11 +171,11 @@ completion.json
 
 Execution 收口、平台资源释放、Batch 业务终态和报告发布是独立事实。报告失败不会把已完成 Batch 改回等待态；只有冻结目标的报告全部成功、没有报告错误且链接有效，发布状态才能成为 `PUBLISHED`。
 
-Narrative Projector 从事件生成步骤、Case Flow revision、分支与检查结果，Renderer 只消费 ViewModel，不回写 execution。历史 Case Model 只由报告层只读投影，不能由当前 Case Agent 继续执行或提交结果。
+Narrative Projector 从当前 execution 事件生成步骤、Case Flow revision、分支与检查结果，Renderer 只消费 ViewModel，不回写 execution。
 
 ## 8. 版本与兼容边界
 
-当前 Execution schema 为 12。Runtime、Batch、Reader 和 Report 只接受当前 execution schema，不提供旧数据转换或补写分支。旧工作空间目录和原始用例仍可创建当前格式的新 Run；旧 execution 保持原样，只在当前 Reader 支持的范围内展示。
+当前唯一支持的 Execution schema 为 13。Runtime、Batch、Reader 和 Report 都只处理 schema 13；旧工作空间目录和原始用例仍可创建 schema 13 的新 Run，历史 execution 保持原样并明确显示为不支持、需要重跑。
 
 协议摘要按角色和模块分组。修改报告不改变 Runtime 摘要，修改单个平台 Adapter 不改变其他平台。schema 标识只属于独立持久化根或真实跨进程协议，内部模块不维护并行版本。
 

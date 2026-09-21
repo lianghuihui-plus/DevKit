@@ -99,6 +99,19 @@ assert.strictEqual(captureCalls, 2);
 assert.throws(() => runPlan(fixture.execDir, { ...request, purpose: '不同计划' }, options),
   (error) => error.code === 'PLAN_SUBMISSION_CONFLICT');
 
+const resolvedCheckReference = runPlan(fixture.execDir, {
+  operation: 'runPlan', submissionId: 'resolved-check-reference', basedOnSceneId: 'scene-0002',
+  purpose: '检查前一步定位证据引用存在', maxDurationMs: 2500, onFailure: 'STOP',
+  steps: [
+    { id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false },
+    { id: 'lock', type: 'locate', sourceRef: '$shot.sceneRef', locator: { kind: 'POINT', point: [0.098, 0.501] } },
+    { id: 'check', type: 'check', sourceRef: '$shot.sceneRef', predicate: { kind: 'REFERENCE_EXISTS', reference: '$lock.locatorRef' } },
+  ],
+}, options);
+assert.strictEqual(resolvedCheckReference.status, 'PLAN_COMPLETED');
+assert.deepStrictEqual(resolvedCheckReference.steps.map((step) => step.status), ['COMPLETED', 'COMPLETED', 'COMPLETED']);
+assert.deepStrictEqual(resolvedCheckReference.steps[2].inputRefs, ['$shot.sceneRef', '$lock.locatorRef']);
+
 const continueResult = runPlan(fixture.execDir, {
   operation: 'runPlan', submissionId: 'continue-technical-plan', basedOnSceneId: 'scene-0002',
   purpose: '保留失败前缀并继续独立技术步骤', maxDurationMs: 2500, onFailure: 'CONTINUE',

@@ -13,9 +13,16 @@ recordResult({ capability: "recordResult", results: object[] })
 | `capability` | 是 | `"recordResult"` | 固定为 recordResult |
 | `results` | 是 | `object[]` | 已形成判断的验证结果和证据引用 |
 
+## 条件要求
+
+- WAIVED 必须提供独立非空 reason；其他状态不得提供 reason。
+- NOT_APPLICABLE 只允许用于 CONDITIONAL 检查点。
+
 ## 上下文校验
 
 - 所有结果先完整校验；任一结果无效时整批不写入。
+- Baseline CHECK 始终可处置；补充 CHECK 仅在最终 Working Flow 中活跃时进入结束闭环。
+- 知识、Scene 和技术事实可支撑豁免，但 Runtime 不要求知识命中，也不判断豁免理由是否充分。
 
 ## 成功状态
 

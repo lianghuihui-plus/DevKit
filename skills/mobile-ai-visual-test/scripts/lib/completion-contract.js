@@ -8,6 +8,7 @@ const { validateExecutionArtifactManifest } = require('./execution-artifact-mani
 const { canonicalJson, contractError } = require('./contract-utils');
 const { sourceSha, validateCaseContract } = require('../execution/contracts/case-contract');
 const { readJson } = require('./execution-lifecycle');
+const { resolveArtifact } = require('./execution-evidence');
 
 function sha256File(file) {
   if (!fs.existsSync(file)) throw new Error(`Missing completion artifact: ${file}`);
@@ -57,8 +58,8 @@ function validateCompletionBinding(value, expected) {
 function validateExecutionSnapshotBindings(execDir, execution, snapshot) {
   try {
     validateCaseContract(snapshot);
-    const sourceText = fs.readFileSync(path.join(execDir, 'source.snapshot.md'), 'utf8');
-    const binding = readJson(path.join(execDir, 'binding.snapshot.json'), null);
+    const sourceText = fs.readFileSync(resolveArtifact(execDir, 'source.snapshot.md'), 'utf8');
+    const binding = readJson(resolveArtifact(execDir, 'binding.snapshot.json'), null);
     if (snapshot.identity.caseKey == null
       || snapshot.identity.sourceSha !== sourceSha(sourceText)
       || snapshot.identity.sourceSha !== execution.sourceSha
@@ -76,7 +77,7 @@ function validateExecutionSnapshotBindings(execDir, execution, snapshot) {
 function validatePublishedCompletion(execDir, completion, artifacts) {
   const paths = completionPaths(execDir);
   const { execution, result, metrics, snapshot } = artifacts;
-  if (execution?.schemaVersion !== 12 || !execution.finalized || !result || !metrics || !snapshot) {
+  if (execution?.schemaVersion !== 13 || !execution.finalized || !result || !metrics || !snapshot) {
     throw new Error('Execution completion artifacts are incomplete or unsupported');
   }
   validateExecutionSnapshotBindings(execDir, execution, snapshot);

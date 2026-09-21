@@ -10,12 +10,14 @@ const { buildExecutionNarrative } = require('./execution-narrative');
 const { renderIndexArtifacts } = require('./index-renderer');
 const { reportRendererInfo } = require('./renderer-manifest');
 const { publishReportBundle } = require('./report-publisher');
+const { mermaidAssetInfo } = require('./report-assets');
 const { withWorkspaceReportPublication } = require('./publication-lock');
 const { assertWorkspace } = require('../lib/workspace');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { deriveExecutionTiming } = require('../lib/execution-timing');
 const { recoverRetryRequiredPublications } = require('./publication-state');
 const { projectCaseStatus } = require('../lib/case-status-projection');
+const { projectCaseFlowViews } = require('./case-flow-projection');
 
 const PLATFORM_ORDER = ['android', 'ios', 'harmony'];
 
@@ -120,11 +122,11 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
       recordingStatus: 'UNAVAILABLE',
       sourceCurrent: null,
       readability: report.readability,
-      schemaFamily: report.schemaFamily,
       contextPath: path.join(caseRuntimeDir(caseDir, platform), 'CONTEXT.html'),
     };
   }
   const narrative = buildExecutionNarrative(report);
+  const flowViews = projectCaseFlowViews(report);
   const sourceCurrent = report.execution?.sourceSha === currentCase.identity.sourceSha;
   const projectedStatus = projectCaseStatus({ ...report, sourceCurrent });
   return {
@@ -143,11 +145,11 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
     reason: sourceCurrent ? display.summary || '' : '用例原文已更新，已有执行结果不再代表当前用例',
     failureCode: sourceCurrent ? display.failureCode || '' : 'CASE_SOURCE_CHANGED',
     currentMetrics: sourceCurrent ? report.metrics || null : null,
-    coverage: sourceCurrent ? `${narrative.coverage.covered}/${narrative.coverage.total}` : '-',
+    coverage: sourceCurrent ? `${flowViews.coverage.covered}/${flowViews.coverage.total}` : '-',
+    checkpointMetrics: sourceCurrent ? flowViews.coverage : null,
     recordingStatus: sourceCurrent ? narrative.recordingStatus : 'UNAVAILABLE',
     sourceCurrent,
     readability: report.readability,
-    schemaFamily: report.schemaFamily,
     contextPath: path.join(caseRuntimeDir(caseDir, platform), 'CONTEXT.html'),
   };
 }
@@ -203,6 +205,13 @@ function latestSummary(platforms) {
 
 function aggregateCase(platforms) {
   const readable = platforms.filter((entry) => entry.readability === 'READABLE');
+  const reportIssues = platforms.filter((entry) => entry.readability !== 'READABLE').map((entry) => ({
+    platform: entry.platform,
+    readability: entry.readability || 'DATA_INVALID',
+    status: entry.status || 'REPORT_DATA_INVALID',
+    errorCode: entry.failureCode || 'REPORT_DATA_INVALID',
+    reason: entry.reason || '执行报告不可读取',
+  }));
   const considered = readable.length ? readable : platforms;
   const status = readable.length
     ? aggregateStatus(readable)
@@ -213,6 +222,8 @@ function aggregateCase(platforms) {
   const timeSource = latestSummary(considered) || statusSource;
   return {
     ...(statusSource || {}), status,
+    reportHealth: reportIssues.length ? (readable.length ? 'DEGRADED' : 'UNAVAILABLE') : 'HEALTHY',
+    reportIssues,
     latestExecutionId: timeSource?.latestExecutionId || '',
     startedAt: timeSource?.startedAt || '',
     endedAt: timeSource?.endedAt || '',
@@ -238,6 +249,8 @@ function reportErrorModel(rootDir, caseDir, error) {
     caseKey: caseJson.identity?.caseKey || '',
     title: caseJson.identity?.title || path.basename(caseDir),
     platforms: [], status: 'REPORT_ERROR', verdict: null, reason: error.message || String(error),
+    reportHealth: 'UNAVAILABLE',
+    reportIssues: [{ platform: null, readability: 'DATA_INVALID', status: 'REPORT_ERROR', errorCode: error.code || 'REPORT_DATA_INVALID', reason: error.message || String(error) }],
     reportErrorCode: error.code || 'REPORT_DATA_INVALID',
     contextHref: path.relative(rootDir, path.join(caseDir, 'CONTEXT.html')).replace(/\\/g, '/'),
   };
@@ -382,12 +395,16 @@ function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = 
     schemaVersion: 1, scope: options.platform ? 'platform-case' : 'case', platform: options.platform || null,
     executionId, ...reportRendererInfo(),
   };
-  publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata);
+  const publicationOptions = options.platform ? {
+    workspaceRoot: caseRootFromCaseDir(caseDir),
+    dependencies: [mermaidAssetInfo()],
+  } : {};
+  publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata, publicationOptions);
   if (needsPublicationTiming && recordCaseReportPublicationTiming(caseDir, current, options)) {
     current = readExecutionReport(current.latest);
     contextMarkdown = renderCurrentContextMarkdown(snapshot, current);
     contextHtml = renderCurrentContextHtml(snapshot, current);
-    publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata);
+    publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata, publicationOptions);
   }
   return { context: path.join(runtimeDir, 'CONTEXT.md'), contextHtml: path.join(runtimeDir, 'CONTEXT.html') };
 }

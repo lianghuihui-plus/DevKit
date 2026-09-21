@@ -533,6 +533,17 @@ assert.strictEqual(completeWithReportRetry.status, 'COMPLETE');
 assert.strictEqual(completeWithReportRetry.outcome, 'COMPLETED');
 assert.strictEqual(completeWithReportRetry.reportStatus, 'RETRY_REQUIRED');
 assert.strictEqual(completeWithReportRetry.reportPath, undefined);
+writeJsonAtomic(path.join(workspace, 'runs', 'batch-report-retry-terminal', 'report-publication.json'), {
+  schemaVersion: 1,
+  batchId: 'batch-report-retry-terminal',
+  status: 'PUBLISHED',
+  attempts: [],
+});
+const completeAfterReportRecovery = advanceRun(retryPublicationRun.statePath);
+assert.strictEqual(completeAfterReportRecovery.status, 'COMPLETE');
+assert.strictEqual(completeAfterReportRecovery.outcome, 'COMPLETED');
+assert.strictEqual(completeAfterReportRecovery.reportStatus, 'PUBLISHED');
+assert.strictEqual(completeAfterReportRecovery.reportPath, path.join(workspace, 'index.html'));
 
 function prepareConfirmedRun(batchId) {
   const start = prepareRun({ capability: 'prepareRun', workspace, caseNos: ['014'] }, { batchId });
@@ -563,6 +574,29 @@ assert.strictEqual(cancelled.reportPath, undefined);
 assert.strictEqual(cancelled.reportErrorCode, 'REPORT_RENDERER_INVALID');
 assert.deepStrictEqual(cancelCalls, ['cancel', 'reconcile']);
 assert.strictEqual(loadCoordinatorState(cancelledRun.statePath).updatedAt, '2026-09-11T04:00:00.000Z');
+
+const interruptedCancellationRun = prepareConfirmedRun('batch-coordinator-cancel-interrupted');
+assert.throws(() => cancelRun(interruptedCancellationRun.statePath, {
+  capability: 'cancelRun', reason: '取消落盘后模拟进程中断',
+}, {
+  batchExecute: (input) => {
+    if (input.command === 'cancel') return { state: { status: 'CANCELLING' } };
+    throw new Error('MAVT_TEST_INTERRUPT_AFTER_CANCELLING');
+  },
+}), /MAVT_TEST_INTERRUPT_AFTER_CANCELLING/);
+assert.strictEqual(loadCoordinatorState(interruptedCancellationRun.statePath).phase, 'CANCELLING');
+const resumedCancellation = advanceRun(interruptedCancellationRun.statePath, {
+  batchExecute: (input) => {
+    assert.strictEqual(input.command, 'reconcile');
+    return {
+      action: 'BATCH_CANCELLED', state: { status: 'CANCELLED' },
+      publicationState: { status: 'PUBLISHED' },
+    };
+  },
+});
+assert.strictEqual(resumedCancellation.status, 'COMPLETE');
+assert.strictEqual(resumedCancellation.outcome, 'CANCELLED');
+assert.strictEqual(loadCoordinatorState(interruptedCancellationRun.statePath).phase, 'COMPLETE');
 
 const blockedRun = prepareConfirmedRun('batch-coordinator-blocked');
 const blocked = advanceRun(blockedRun.statePath, {

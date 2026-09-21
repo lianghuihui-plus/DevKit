@@ -92,7 +92,7 @@ assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeOperationContract
 assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeBroker, 'LEGACY_AGENT_OPERATIONS'), false);
 assert.strictEqual(read('scripts/case-runtime/runtime-operation-contract.js').includes('BROKER_OPERATION_SETS'), false);
 assert.strictEqual(read('scripts/coordinator/agent-facing-service.js').includes('COORDINATOR_SCHEMA_VERSION'), false);
-assert.match(read('scripts/case-runtime/agent-facing-client.js'), /schemaVersion !== 12/);
+assert.match(read('scripts/case-runtime/agent-facing-client.js'), /schemaVersion !== 13/);
 assert.strictEqual(read('scripts/report/execution-trace.js').includes('legacyCoordinateAudit'), false);
 assert.strictEqual(read('scripts/report/execution-trace.js').includes('event.coordinateAudit'), false);
 assert.strictEqual(read('scripts/lib/execution-timing.js').includes('EXECUTION_LEGACY'), false);
@@ -214,6 +214,9 @@ assert.deepStrictEqual(coordinatorContract.requiredResources, [
   'references/coordinator/errors/batch.md',
 ]);
 assert.strictEqual(read('references/interfaces.md').includes('## Case Runtime'), false);
+for (const retired of ['function caseFlowRanks', 'function renderCaseFlow(', 'function flowViewer(', '.case-flow-', '.flow-viewer']) {
+  assert.strictEqual(read('scripts/report/current-report-html.js').includes(retired), false, `retired flow renderer remains: ${retired}`);
+}
 assert.strictEqual(read('references/interfaces.md').includes('runtime.requestPath'), false);
 assert.match(read('references/interfaces.md'), /scripts\/coordinator-agent\.js/);
 assert.match(read('references/interfaces.md'), /Authoring 接口/);

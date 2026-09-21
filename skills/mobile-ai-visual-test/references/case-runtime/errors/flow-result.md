@@ -29,14 +29,32 @@ flowContext 的节点或分支不属于当前 Case Flow revision。
 
 **处理：** 使用当前 Case Flow 返回的 nodeRef 和 edgeRef；不要复用已 retired 的引用。
 
-<a id="error-expectation-unknown"></a>
-## EXPECTATION_UNKNOWN
+<a id="error-case-flow-node-identity-changed"></a>
+## CASE_FLOW_NODE_IDENTITY_CHANGED
 
-checkNodeRef 不属于当前 Case Flow 的 CHECK 节点。
+Case Flow 节点 ref 被用于不同含义。
 
 **可重试：** 是
 
-**处理：** 从当前 Case Flow 选择现存 CHECK 节点引用；如检查点确需变更，先用 plan 记录理由并修订。
+**处理：** 保留 Baseline 节点和既有 CHECK 的原始含义；现场适配或语义修正使用新的节点 ref 后重新提交。
+
+<a id="error-case-flow-edge-identity-changed"></a>
+## CASE_FLOW_EDGE_IDENTITY_CHANGED
+
+Baseline Flow 边 ref 的端点或条件被改写。
+
+**可重试：** 是
+
+**处理：** 保留 Baseline 边的 from、to 和 condition；分支语义变化时使用新的边 ref 后重新提交。
+
+<a id="error-expectation-unknown"></a>
+## EXPECTATION_UNKNOWN
+
+checkNodeRef 不属于可处置的 CHECK 节点。
+
+**可重试：** 是
+
+**处理：** 使用 Baseline CHECK 或最终 Working Flow 中仍活跃的补充 CHECK；已退休的补充检查点只能保留历史结果。
 
 <a id="error-record-result-invalid"></a>
 ## RECORD_RESULT_INVALID
@@ -63,7 +81,7 @@ Ledger 仍有 unresolved 或 conflicts。
 
 **可重试：** 是
 
-**处理：** 读取未解决 CHECK 列表，补充观察或结果；无法形成确定判断时记录 INCONCLUSIVE 后再次 finish。
+**处理：** 逐项处置全部 Baseline CHECK 和最终活跃的补充 CHECK；可用 PASS、FAIL、BLOCKED、INCONCLUSIVE、条件检查的 NOT_APPLICABLE，或提供理由的 WAIVED。
 
 <a id="error-time-limit"></a>
 ## TIME_LIMIT

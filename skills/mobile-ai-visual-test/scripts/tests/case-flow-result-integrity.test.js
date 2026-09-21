@@ -22,6 +22,22 @@ const pass = validateResultIntegrity(fixture.execDir, {
 assert.strictEqual(pass.result.verdict, 'PASS');
 assert.strictEqual(pass.graph.expectationCoverage.caseFlowRevision, 1);
 
+const waived = validateResultIntegrity(fixture.execDir, {
+  verdict: 'PASS', summary: '目标检查本次获得豁免', caseFlowRevision: 1,
+  checks: [{ checkNodeRef: 'N2', status: 'WAIVED', actual: '本次未执行', reason: '已确认本次执行例外' }],
+  uncertainties: [],
+});
+assert.strictEqual(waived.result.verdict, 'PASS');
+assert.strictEqual(waived.result.checks[0].reason, '已确认本次执行例外');
+assert.throws(() => validateResultIntegrity(fixture.execDir, {
+  verdict: 'PASS', summary: '缺少豁免理由', caseFlowRevision: 1,
+  checks: [{ checkNodeRef: 'N2', status: 'WAIVED', actual: '本次未执行' }], uncertainties: [],
+}), (error) => error?.code === 'CASE_RESULT_INVALID');
+assert.throws(() => validateResultIntegrity(fixture.execDir, {
+  verdict: 'PASS', summary: '必检项不能标记为未适用', caseFlowRevision: 1,
+  checks: [{ checkNodeRef: 'N2', status: 'NOT_APPLICABLE', actual: '未进入' }], uncertainties: [],
+}), (error) => error?.code === 'CASE_RESULT_INCOMPLETE');
+
 const notRun = validateResultIntegrity(fixture.execDir, {
   verdict: 'NOT_RUN', summary: '前置条件不满足', caseFlowRevision: 1, checks: [], uncertainties: [],
   notRunReason: '当前账号没有所需权益',

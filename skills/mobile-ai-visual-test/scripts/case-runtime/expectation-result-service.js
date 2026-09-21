@@ -7,23 +7,33 @@ const { readJson } = require('../lib/execution-lifecycle');
 const { technicalFacts, technicalFactState } = require('../lib/technical-facts');
 const store = require('./store');
 
-const STATUSES = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE']);
+const STATUSES = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE', 'WAIVED']);
 
 function normalizeExpectationText(value) {
   return String(value || '').replace(/\r\n?/g, '\n').trim();
 }
 
-function expectationSemanticHash(text, verificationKind = 'DIRECT_OBSERVATION', sourceBasis = '', type = 'CHECK') {
-  const input = canonicalJson({ type, text: normalizeExpectationText(text), verificationKind, sourceBasis: normalizeExpectationText(sourceBasis) });
+function expectationSemanticHash(text, verificationKind = 'DIRECT_OBSERVATION', sourceBasis = '', type = 'CHECK', requirement = 'REQUIRED', applicability = '') {
+  const input = canonicalJson({
+    type,
+    text: normalizeExpectationText(text),
+    verificationKind,
+    sourceBasis: normalizeExpectationText(sourceBasis),
+    requirement,
+    applicability: normalizeExpectationText(applicability),
+  });
   return `expectation-semantic-${crypto.createHash('sha256').update(input).digest('hex')}`;
 }
 
-function activeExpectations(execDir, suppliedFlow = null) {
-  const flow = suppliedFlow || require('./case-flow-service').current(execDir);
-  return new Map((flow?.nodes || []).filter((item) => item.type === 'CHECK')
+function activeExpectations(execDir) {
+  const registry = require('./case-flow-service').checkpointRegistry(execDir)
+    .filter((item) => item.baseline || item.active);
+  return new Map(registry
     .map((item) => [item.ref, {
       ...item,
-      semanticHash: expectationSemanticHash(item.text, item.verificationKind, item.sourceBasis, item.type),
+      semanticHash: expectationSemanticHash(
+        item.text, item.verificationKind, item.sourceBasis, item.type, item.requirement, item.applicability,
+      ),
     }]));
 }
 
@@ -74,8 +84,8 @@ function validateEvidenceRefs(execDir, evidence, expectationRef, status) {
   if (invalidKnowledge.length) {
     throw contractError('EVIDENCE_REFERENCE_INVALID', `knowledge refs are not applicable to ${expectationRef}: ${invalidKnowledge.join(', ')}`);
   }
-  if (status !== 'BLOCKED' && evidence.technicalRefs.length) {
-    throw contractError('EVIDENCE_REFERENCE_INVALID', 'technical refs are only valid for BLOCKED results');
+  if (!['BLOCKED', 'WAIVED'].includes(status) && evidence.technicalRefs.length) {
+    throw contractError('EVIDENCE_REFERENCE_INVALID', 'technical refs are only valid for BLOCKED or WAIVED results');
   }
   const execution = readJson(path.join(execDir, 'execution.json'), null);
   const technicalByRef = new Map(technicalFacts(events)
@@ -98,11 +108,11 @@ function fsSceneIds(execDir) {
 
 function prepareExpectationResults(execDir, values, options = {}) {
   const list = ensureArray(values || [], 'expectationResults', 'EXPECTATION_RESULT_INVALID');
-  const expectations = activeExpectations(execDir, options.caseFlow);
+  const expectations = activeExpectations(execDir);
   const seen = new Set();
   return list.map((value, index) => {
     const input = ensureObject(value, `expectationResults[${index}]`, 'EXPECTATION_RESULT_INVALID');
-    const allowed = new Set(['expectationRef', 'status', 'actual', 'evidence']);
+    const allowed = new Set(['expectationRef', 'status', 'actual', 'reason', 'evidence']);
     const unsupported = Object.keys(input).filter((field) => !allowed.has(field));
     if (unsupported.length) throw contractError('EXPECTATION_RESULT_INVALID', `expectation result contains unsupported fields: ${unsupported.join(', ')}`);
     const expectationRef = ensureString(input.expectationRef, `expectationResults[${index}].expectationRef`, 'EXPECTATION_RESULT_INVALID').trim();
@@ -110,12 +120,25 @@ function prepareExpectationResults(execDir, values, options = {}) {
     if (seen.has(expectationRef)) throw contractError('EXPECTATION_RESULT_INVALID', `duplicate expectation result ${expectationRef}`);
     seen.add(expectationRef);
     if (!STATUSES.has(input.status)) throw contractError('EXPECTATION_RESULT_INVALID', `invalid status for ${expectationRef}`);
+    if (input.status === 'NOT_APPLICABLE' && expectations.get(expectationRef).requirement !== 'CONDITIONAL') {
+      throw contractError('EXPECTATION_RESULT_INVALID', `NOT_APPLICABLE is only valid for CONDITIONAL expectation ${expectationRef}`);
+    }
+    const reason = input.status === 'WAIVED'
+      ? ensureString(input.reason, `expectationResults[${index}].reason`, 'EXPECTATION_RESULT_INVALID').trim()
+      : null;
+    if (input.status === 'WAIVED' && !reason) {
+      throw contractError('EXPECTATION_RESULT_INVALID', `reason is required for waived expectation ${expectationRef}`);
+    }
+    if (input.status !== 'WAIVED' && Object.prototype.hasOwnProperty.call(input, 'reason')) {
+      throw contractError('EXPECTATION_RESULT_INVALID', `reason is only valid for WAIVED expectation ${expectationRef}`);
+    }
     const evidence = normalizeEvidence(input.evidence, index);
     validateEvidenceRefs(execDir, evidence, expectationRef, input.status);
     return {
       expectationRef,
       status: input.status,
       actual: ensureString(input.actual, `expectationResults[${index}].actual`, 'EXPECTATION_RESULT_INVALID').trim(),
+      ...(reason ? { reason } : {}),
       evidence,
       expectationSemanticHash: expectations.get(expectationRef).semanticHash,
     };
@@ -144,14 +167,6 @@ function checkClosure(execDir, result) {
   if (['PASS', 'FAIL'].includes(result.status) && !(result.evidence?.sceneRefs || []).length) reasons.push('EVIDENCE_REQUIRED');
   const inspected = new Set(events.filter((event) => event.type === 'visualInspected').map((event) => event.sceneId));
   if ((result.evidence?.sceneRefs || []).some((ref) => !inspected.has(ref))) reasons.push('VISUAL_INSPECTION_REQUIRED');
-  const needsKnowledge = result.status === 'FAIL' || result.status === 'INCONCLUSIVE'
-    || (result.status === 'BLOCKED' && !(result.evidence?.technicalRefs || []).length);
-  if (needsKnowledge) {
-    const queries = events.filter((event) => event.type === 'knowledgeQueried'
-      && (event.expectationRefs || []).includes(result.expectationRef));
-    const reviewed = new Set(events.filter((event) => event.type === 'knowledgeReviewed').map((event) => event.queryId));
-    if (!queries.some((event) => reviewed.has(event.queryId))) reasons.push('KNOWLEDGE_REQUIRED');
-  }
   if (result.evidence?.evidenceBasis) {
     const scene = require('../lib/execution-lifecycle').readJson(
       require('path').join(store.paths(execDir).scenes, `${result.evidence.evidenceBasis.sceneRef}.json`), null,
@@ -167,8 +182,8 @@ function commitPreparedResults(execDir, prepared, options = {}) {
   const idempotent = [];
   for (const item of prepared) {
     const existing = currentResultFor(execDir, item.expectationRef, item.expectationSemanticHash);
-    if (existing && canonicalJson({ status: existing.status, actual: existing.actual, evidence: existing.evidence })
-      === canonicalJson({ status: item.status, actual: item.actual, evidence: item.evidence })) {
+    if (existing && canonicalJson({ status: existing.status, actual: existing.actual, reason: existing.reason || null, evidence: existing.evidence })
+      === canonicalJson({ status: item.status, actual: item.actual, reason: item.reason || null, evidence: item.evidence })) {
       idempotent.push(item.expectationRef);
       continue;
     }
@@ -180,6 +195,7 @@ function commitPreparedResults(execDir, prepared, options = {}) {
       expectationRef: item.expectationRef,
       status: item.status,
       actual: item.actual,
+      ...(item.reason ? { reason: item.reason } : {}),
       evidence: item.evidence,
       expectationSemanticHash: item.expectationSemanticHash,
       closure: { state: closure.length ? 'UNRESOLVED' : 'RESOLVED', reasons: closure },
@@ -232,10 +248,10 @@ function invalidateForCaseFlowChange(execDir, previous, next, options = {}) {
   const invalidated = [];
   for (const oldPoint of (previous.nodes || []).filter((item) => item.type === 'CHECK')) {
     const nextPoint = nextByRef.get(oldPoint.ref);
-    const oldHash = expectationSemanticHash(oldPoint.text, oldPoint.verificationKind, oldPoint.sourceBasis, oldPoint.type);
+    const oldHash = expectationSemanticHash(oldPoint.text, oldPoint.verificationKind, oldPoint.sourceBasis, oldPoint.type, oldPoint.requirement, oldPoint.applicability);
     const nextHash = nextPoint
-      ? expectationSemanticHash(nextPoint.text, nextPoint.verificationKind, nextPoint.sourceBasis, nextPoint.type) : null;
-    const reason = !nextPoint ? 'EXPECTATION_RETIRED' : oldHash !== nextHash ? 'SEMANTICS_CHANGED' : null;
+      ? expectationSemanticHash(nextPoint.text, nextPoint.verificationKind, nextPoint.sourceBasis, nextPoint.type, nextPoint.requirement, nextPoint.applicability) : null;
+    const reason = nextPoint && oldHash !== nextHash ? 'SEMANTICS_CHANGED' : null;
     if (!reason) continue;
     const latest = currentResultFor(execDir, oldPoint.ref, oldHash);
     if (!latest) continue;
@@ -290,7 +306,7 @@ function conflictCodes(execDir, item) {
     !technicalByRef.has(ref)
     || technicalFactState(technicalByRef.get(ref), events, execution, item.expectationRef).state !== 'VALID'
   ))) codes.push('TECHNICAL_FACT_NO_LONGER_VALID');
-  if (item.result.status !== 'BLOCKED' && (item.result.evidence?.technicalRefs || []).length) {
+  if (!['BLOCKED', 'WAIVED'].includes(item.result.status) && (item.result.evidence?.technicalRefs || []).length) {
     codes.push('RESULT_STATUS_EVIDENCE_CONFLICT');
   }
   return [...new Set(codes)];
@@ -330,13 +346,15 @@ function buildCaseResultFromLedger(execDir, values) {
   if (!readiness.ready) throw contractError('CASE_RESULT_INCOMPLETE', 'Expectation ledger is incomplete', { readiness });
   const flow = require('./case-flow-service').current(execDir);
   const ledger = currentLedger(execDir);
-  const points = flow.nodes.filter((item) => item.type === 'CHECK');
+  const points = require('./case-flow-service').checkpointRegistry(execDir)
+    .filter((item) => item.baseline || item.active);
   const checks = points.map((point) => {
     const result = ledger[point.ref].result;
     return {
       checkNodeRef: point.ref,
       status: result.status,
       actual: result.actual,
+      ...(result.reason ? { reason: result.reason } : {}),
       ...(result.evidence.sceneRefs.length ? { sceneRefs: result.evidence.sceneRefs } : {}),
       ...(result.evidence.knowledgeRefs.length ? { knowledgeRefs: result.evidence.knowledgeRefs } : {}),
       ...(result.evidence.technicalRefs.length ? { technicalRefs: result.evidence.technicalRefs } : {}),

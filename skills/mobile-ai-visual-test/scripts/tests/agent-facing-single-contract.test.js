@@ -15,8 +15,8 @@ const { parseRequest } = require('../case-runtime/agent-facing-client');
 
 assert.strictEqual(caseContract.AGENT_FACING_PROTOCOL, 'agent-facing');
 assert.strictEqual(coordinatorContract.AGENT_FACING_PROTOCOL, 'agent-facing');
-assert.strictEqual(currentExecution.SCHEMA_VERSION, 12);
-assert.deepStrictEqual(Object.keys(currentExecution).sort(), ['READER_FAMILY', 'SCHEMA_VERSION', 'assertSchema', 'supports']);
+assert.strictEqual(currentExecution.SCHEMA_VERSION, 13);
+assert.deepStrictEqual(Object.keys(currentExecution).sort(), ['SCHEMA_VERSION', 'assertSchema']);
 
 for (const name of ['capabilityCards', 'finishTemplate', 'projectActions']) {
   assert.strictEqual(Object.prototype.hasOwnProperty.call(caseContract, name), false, `${name} must not be public`);

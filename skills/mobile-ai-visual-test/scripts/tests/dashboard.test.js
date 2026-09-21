@@ -273,8 +273,8 @@ const multiPlatformHtml = renderCurrentIndexHtml(root, [{
   executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', reason: '不同平台结果需要分别展示。',
   durationMs: 3000, contextHref: 'cases/multi/CONTEXT.html',
   platforms: [
-    { platform: 'harmony', status: 'PASS', verdict: 'PASS', executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', durationBasis: 'CASE_TOTAL', durationMs: 1000, coverage: '3/3', contextHref: 'cases/multi/platforms/harmony/CONTEXT.html', schemaFamily: 'current', phaseDurations: { coordinatorPreparationMs: 100, initialStatePreparationMs: 200, handoffPreparationMs: 100, handoffSchedulingMs: 100, caseAgentPhaseMs: 500, reportPublicationDelayMs: 50 }, currentMetrics: { counts: { actions: 3, observations: 4, agentDecisions: 3, narrativeGaps: 0, knowledgeQueries: 2 }, executionRecoveryCount: 0, planMetrics: { schemaVersion: 1, planCount: 2, partialCount: 1, interruptedCount: 0, transientCaptureCount: 3 } } },
-    { platform: 'android', status: 'FAIL', verdict: 'FAIL', executionStatus: 'COMPLETED', verdictBasis: 'TECHNICAL_CONSTRAINT', durationMs: 2000, coverage: '2/3', contextHref: 'cases/multi/platforms/android/CONTEXT.html', schemaFamily: 'current', currentMetrics: { counts: { actions: 5, observations: 6, agentDecisions: 5, narrativeGaps: 1, knowledgeQueries: 4 }, warmSessionReused: true, executionRecoveryCount: 1 } },
+    { platform: 'harmony', status: 'PASS', verdict: 'PASS', executionStatus: 'COMPLETED', verdictBasis: 'DIRECT_EVIDENCE', durationBasis: 'CASE_TOTAL', durationMs: 1000, coverage: '3/3', contextHref: 'cases/multi/platforms/harmony/CONTEXT.html', phaseDurations: { coordinatorPreparationMs: 100, initialStatePreparationMs: 200, handoffPreparationMs: 100, handoffSchedulingMs: 100, caseAgentPhaseMs: 500, reportPublicationDelayMs: 50 }, currentMetrics: { counts: { actions: 3, observations: 4, agentDecisions: 3, narrativeGaps: 0, knowledgeQueries: 2 }, executionRecoveryCount: 0, planMetrics: { schemaVersion: 1, planCount: 2, partialCount: 1, interruptedCount: 0, transientCaptureCount: 3 } } },
+    { platform: 'android', status: 'FAIL', verdict: 'FAIL', executionStatus: 'COMPLETED', verdictBasis: 'TECHNICAL_CONSTRAINT', durationMs: 2000, coverage: '2/3', contextHref: 'cases/multi/platforms/android/CONTEXT.html', currentMetrics: { counts: { actions: 5, observations: 6, agentDecisions: 5, narrativeGaps: 1, knowledgeQueries: 4 }, warmSessionReused: true, executionRecoveryCount: 1 } },
   ],
 }]);
 assert.strictEqual((multiPlatformHtml.match(/class="platform-run /g) || []).length, 2);
@@ -287,6 +287,19 @@ for (const text of ['时长口径', '协调准备', '初始态准备', '交接�
   assert.strictEqual(multiPlatformHtml.includes(text), false, text);
 }
 for (const text of ['3 / 4', '5 / 6', '3/3', '2/3', '直接证据', '技术约束', '1 秒', '2 秒']) assert.ok(multiPlatformHtml.includes(text), text);
+
+const passWithWaiverHtml = renderCurrentIndexHtml(root, [{
+  caseNo: '98', title: '带豁免通过用例', caseKey: 'ck-pass-with-waiver', status: 'PASS', verdict: 'PASS',
+  contextHref: 'cases/waiver/CONTEXT.html',
+  platforms: [{
+    platform: 'harmony', status: 'PASS', verdict: 'PASS', executionStatus: 'COMPLETED',
+    verdictBasis: 'DIRECT_EVIDENCE', coverage: '2/2', contextHref: 'cases/waiver/platforms/harmony/CONTEXT.html',
+    checkpointMetrics: { total: 2, covered: 2, waived: 1, passWithWaivers: true },
+  }],
+}]);
+assert.ok(passWithWaiverHtml.includes('通过 · 含 1 个豁免'));
+assert.ok(passWithWaiverHtml.includes('data-case-filter="PASS_WITH_WAIVERS"'));
+assert.strictEqual(runIndexFilters(passWithWaiverHtml).clickStatus('PASS_WITH_WAIVERS'), 1);
 
 const combinedFilterHtml = renderCurrentIndexHtml(root, [
   {
@@ -382,8 +395,8 @@ const isolatedStatusHtml = renderCurrentIndexHtml(root, isolatedStatuses.map(([s
 })));
 assert.deepStrictEqual(
   [...isolatedStatusHtml.matchAll(/data-case-filter="([^"]+)"/g)].map((match) => match[1]),
-  ['ALL', 'PASS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE', 'NOT_RUN', 'PENDING'],
-  'dashboard filters must match the six result statuses shown in the summary',
+  ['ALL', 'PASS', 'PASS_WITH_WAIVERS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE', 'NOT_RUN', 'PENDING'],
+  'dashboard filters must include the report-only pass-with-waivers projection',
 );
 for (const [, , label] of isolatedStatuses) assert.ok(isolatedStatusHtml.includes(label), label);
 const isolatedStatusFilters = runIndexFilters(isolatedStatusHtml);
@@ -492,6 +505,36 @@ assert.strictEqual(require('../report/report-service').collectIndexCases(root)
   .find((item) => item.caseKey === corruptFixture.caseJson.identity.caseKey).status, 'REPORT_DATA_INVALID');
 assert.strictEqual(isolatedMetadata.reportErrors.length, 0);
 for (const fixture of fixtures) assert.strictEqual(fs.existsSync(path.join(fixture.runtimeDir, 'CONTEXT.html')), true);
+
+const mixedHealthRoot = path.join(temp, 'mixed-report-health');
+createTestWorkspace(mixedHealthRoot);
+const mixedHarmony = createCurrentFixture(mixedHealthRoot, {
+  verdict: 'PASS', platform: 'harmony', suffix: 'mixed-report-health', title: '多端报告健康用例',
+});
+const mixedAndroid = createCurrentFixture(mixedHealthRoot, {
+  verdict: 'PASS', platform: 'android', suffix: 'mixed-report-health', title: '多端报告健康用例',
+});
+const corruptAndroidDir = path.join(mixedAndroid.runtimeDir, 'executions', 'execution-corrupt-newest');
+fs.mkdirSync(corruptAndroidDir, { recursive: true });
+fs.writeFileSync(path.join(corruptAndroidDir, 'execution.json'), '{ invalid json');
+renderIndexForRoot(mixedHealthRoot);
+const mixedHealthCase = require('../report/report-service').collectIndexCases(mixedHealthRoot)[0];
+assert.strictEqual(mixedHealthCase.status, 'PASS');
+assert.strictEqual(mixedHealthCase.verdict, 'PASS');
+assert.strictEqual(mixedHealthCase.reportHealth, 'DEGRADED');
+assert.deepStrictEqual(mixedHealthCase.reportIssues.map((issue) => ({
+  platform: issue.platform, readability: issue.readability,
+})), [{ platform: 'android', readability: 'DATA_INVALID' }]);
+const mixedHealthHtml = fs.readFileSync(path.join(mixedHealthRoot, 'index.html'), 'utf8');
+assert.ok(mixedHealthHtml.includes('报告健康异常'));
+assert.ok(mixedHealthHtml.includes('Android'));
+const mixedHealthMetadata = JSON.parse(fs.readFileSync(path.join(mixedHealthRoot, 'report-metadata.json'), 'utf8'));
+assert.strictEqual(mixedHealthMetadata.reportHealth.status, 'DEGRADED');
+assert.strictEqual(mixedHealthMetadata.reportHealth.caseCount, 1);
+assert.strictEqual(mixedHealthMetadata.reportHealth.issueCount, 1);
+assert.deepStrictEqual(mixedHealthMetadata.reportHealth.cases[0].issues.map((issue) => ({
+  platform: issue.platform, readability: issue.readability,
+})), [{ platform: 'android', readability: 'DATA_INVALID' }]);
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('dashboard passed');

@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { canonicalJson, contractError, sha256 } = require('./contract-utils');
 const { readJson, writeJsonAtomic } = require('./execution-lifecycle');
-const { sha256File } = require('./execution-evidence');
+const { resolveArtifact, sha256File } = require('./execution-evidence');
 const { validateExecutionEvidenceGraph } = require('./execution-evidence-graph');
 
 const MANIFEST_FILE = 'artifact-manifest.json';
@@ -25,16 +25,20 @@ function manifestPath(execDir) {
 }
 
 function walkFiles(root, relative = '') {
-  const absolute = path.join(root, relative);
+  const absolute = relative ? resolveArtifact(root, relative) : path.resolve(root);
   if (!fs.existsSync(absolute)) return [];
-  const stat = fs.statSync(absolute);
+  const stat = fs.lstatSync(absolute);
+  if (stat.isSymbolicLink()) {
+    throw contractError('EXECUTION_ARTIFACT_PATH_INVALID', `execution artifact must not use symbolic links: ${relative}`);
+  }
   if (stat.isFile()) return [relative.replace(/\\/g, '/')];
+  if (!stat.isDirectory()) return [];
   return fs.readdirSync(absolute).sort().flatMap((name) => walkFiles(root, path.join(relative, name)));
 }
 
 function executionArtifactFiles(execDir) {
-  const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 12) {
+  const execution = readJson(resolveArtifact(execDir, 'execution.json'), null);
+  if (execution?.schemaVersion !== 13) {
     throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
   return walkFiles(execDir).filter((relative) => {
@@ -46,7 +50,7 @@ function executionArtifactFiles(execDir) {
 }
 
 function requiredArtifactFiles(execution) {
-  if (execution?.schemaVersion !== 12) {
+  if (execution?.schemaVersion !== 13) {
     throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
   return [...CURRENT_ROOT_FILES];
@@ -54,7 +58,7 @@ function requiredArtifactFiles(execution) {
 
 function assertRequiredArtifacts(execDir, execution) {
   for (const relative of requiredArtifactFiles(execution)) {
-    const file = path.join(execDir, relative);
+    const file = resolveArtifact(execDir, relative);
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
       throw contractError('EXECUTION_ARTIFACT_MISSING', `required artifact is missing: ${relative}`);
     }
@@ -62,7 +66,7 @@ function assertRequiredArtifacts(execDir, execution) {
 }
 
 function buildExecutionArtifactManifest(execDir, options = {}) {
-  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  const execution = readJson(resolveArtifact(execDir, 'execution.json'), null);
   if (!execution?.finalized) throw contractError('EXECUTION_NOT_FINALIZED', 'artifact manifest requires a finalized execution');
   const unsettledDrafts = walkFiles(execDir).filter((relative) => relative.endsWith('.draft.json'));
   if (unsettledDrafts.length) {
@@ -79,7 +83,7 @@ function buildExecutionArtifactManifest(execDir, options = {}) {
   };
   validateExecutionEvidenceGraph(execDir, { hashFile });
   const files = executionArtifactFiles(execDir).map((relative) => {
-    const file = path.join(execDir, relative);
+    const file = resolveArtifact(execDir, relative);
     return { path: relative, bytes: fs.statSync(file).size, sha256: hashFile(file) };
   });
   if (!files.length) throw contractError('EXECUTION_ARTIFACT_MANIFEST_INVALID', 'artifact manifest cannot be empty');
@@ -102,13 +106,13 @@ function validateExecutionArtifactManifest(execDir, expectedFileSha = null, opti
     if (!hashCache.has(absolute)) hashCache.set(absolute, rawHashFile(absolute));
     return hashCache.get(absolute);
   };
-  const file = manifestPath(execDir);
+  const file = resolveArtifact(execDir, MANIFEST_FILE);
   if (!fs.existsSync(file)) throw contractError('EXECUTION_ARTIFACT_MANIFEST_MISSING', 'published execution artifact manifest is missing');
   if (expectedFileSha && hashFile(file) !== expectedFileSha) {
     throw contractError('EXECUTION_ARTIFACT_MANIFEST_CHANGED', 'execution artifact manifest changed after publication');
   }
   const value = readJson(file, null);
-  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  const execution = readJson(resolveArtifact(execDir, 'execution.json'), null);
   if (value?.schemaVersion !== 1 || value.executionId !== execution?.executionId || !Array.isArray(value.files) || !value.files.length) {
     throw contractError('EXECUTION_ARTIFACT_MANIFEST_INVALID', 'execution artifact manifest binding is invalid');
   }
@@ -129,7 +133,7 @@ function validateExecutionArtifactManifest(execDir, expectedFileSha = null, opti
     if (!entry?.path || path.isAbsolute(entry.path) || entry.path.split('/').includes('..')) {
       throw contractError('EXECUTION_ARTIFACT_MANIFEST_INVALID', 'execution artifact manifest contains an unsafe path');
     }
-    const artifact = path.join(execDir, entry.path);
+    const artifact = resolveArtifact(execDir, entry.path);
     if (!fs.existsSync(artifact) || !fs.statSync(artifact).isFile()) {
       throw contractError('EXECUTION_ARTIFACT_MISSING', `published execution artifact is missing: ${entry.path}`);
     }

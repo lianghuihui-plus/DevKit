@@ -8,6 +8,7 @@ const path = require('path');
 const { readExecutionReport } = require('../lib/execution-reader');
 const { formatDisplayTime } = require('../lib/display-format');
 const { buildExecutionTrace } = require('../report/execution-trace');
+const { flowMermaid, projectCaseFlowViews } = require('../report/case-flow-projection');
 const { renderCurrentContextHtml } = require('../report/current-report');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
@@ -54,6 +55,82 @@ assert.strictEqual(trace.narrative.steps.length, 1);
 assert.strictEqual(trace.narrative.finalDecision.conclusion, '验证结果为 PASS');
 assert.strictEqual(trace.narrative.coverage.covered, 1);
 
+const initialFlowEvent = report.events.find((event) => event.type === 'caseFlowRevised');
+const revisedFlowEvent = {
+  ...initialFlowEvent,
+  sequence: 100,
+  revision: 2,
+  reason: '现场发现版本更新弹窗',
+  basedOnSceneRef: 'scene-0001',
+  entryNodeRef: 'N4',
+  nodes: [
+    { ref: 'N4', type: 'ACTION', text: '关闭版本更新弹窗' },
+    ...initialFlowEvent.nodes,
+  ],
+  edges: [
+    { ref: 'L4', from: 'N4', to: initialFlowEvent.entryNodeRef },
+    ...initialFlowEvent.edges,
+  ],
+};
+const projectedViews = projectCaseFlowViews({
+  ...report,
+  events: [...report.events, revisedFlowEvent, {
+    type: 'agentDecisionRecorded', sequence: 101, decisionId: 'decision-adaptation',
+    requestedOperation: 'act',
+    decision: { purpose: '关闭版本更新弹窗', expectationRefs: [] },
+  }, {
+    type: 'flowContextRecorded', sequence: 102, decisionId: 'decision-adaptation',
+    requestedOperation: 'act', nodeRef: 'N4', selectedEdgeRef: 'L4',
+  }],
+});
+assert.strictEqual(projectedViews.baselineFlow.revision, 1);
+assert.strictEqual(projectedViews.baselineFlow.nodes.some((node) => node.ref === 'N4'), false);
+assert.strictEqual(projectedViews.workingFlow.revision, 2);
+assert.strictEqual(projectedViews.workingFlow.nodes.some((node) => node.ref === 'N4'), true);
+assert.strictEqual(projectedViews.checkpointLedger[0].checkpointRef, 'N2');
+assert.strictEqual(projectedViews.checkpointLedger[0].baseline, true);
+assert.strictEqual(projectedViews.executionTrace.nodes.at(-1).adaptation, true);
+assert.strictEqual(projectedViews.executionTrace.nodes.at(-1).flowNodeRef, 'N4');
+assert.match(flowMermaid(projectedViews.baselineFlow, projectedViews.checkpointLedger), /^flowchart TB/m);
+assert.match(flowMermaid(projectedViews.baselineFlow, projectedViews.checkpointLedger), /F_N3\(\[/);
+assert.doesNotMatch(flowMermaid(projectedViews.baselineFlow, projectedViews.checkpointLedger), /F_N3\(\(/);
+assert.doesNotMatch(flowMermaid(projectedViews.baselineFlow, projectedViews.checkpointLedger), /\bclass\s+\S+\s+end\b|\bclassDef\s+end\b/);
+assert.strictEqual(flowMermaid({ ...projectedViews.baselineFlow, summary: '%%{init:恶意指令}%%' }, []).includes('%%{'), false);
+
+const supplementalFlow = {
+  ...revisedFlowEvent,
+  sequence: 103,
+  revision: 3,
+  reason: '新增现场补充检查',
+  nodes: [...revisedFlowEvent.nodes, {
+    ref: 'N5', type: 'CHECK', text: '补充检查弹窗已关闭', sourceBasis: '现场适配',
+    verificationKind: 'DIRECT_OBSERVATION', requirement: 'REQUIRED',
+  }],
+};
+const retiredSupplementalFlow = {
+  ...revisedFlowEvent,
+  sequence: 105,
+  revision: 4,
+  reason: '补充检查退出当前导航',
+  retiredNodeRefs: ['N5'],
+};
+const historicalViews = projectCaseFlowViews({
+  ...report,
+  events: [...report.events, revisedFlowEvent, supplementalFlow, {
+    type: 'expectationResultUpdated', sequence: 104, resultUpdateId: 'result-update-supplemental',
+    expectationRef: 'N5', status: 'WAIVED', actual: '现场已由其他证据覆盖', reason: '补充检查不再需要重复执行',
+    evidence: { sceneRefs: ['scene-0002'], knowledgeRefs: [], technicalRefs: [] },
+  }, retiredSupplementalFlow],
+});
+const retiredCheckpoint = historicalViews.checkpointLedger.find((item) => item.checkpointRef === 'N5');
+assert.strictEqual(retiredCheckpoint.active, false);
+assert.strictEqual(retiredCheckpoint.disposition, 'WAIVED');
+assert.strictEqual(retiredCheckpoint.reason, '补充检查不再需要重复执行');
+assert.deepStrictEqual(retiredCheckpoint.sceneRefs, ['scene-0002']);
+assert.strictEqual(historicalViews.coverage.total, 1);
+assert.strictEqual(historicalViews.coverage.registryTotal, 2);
+assert.strictEqual(historicalViews.coverage.waived, 0);
+
 const secret = 'super-secret-input';
 const secretFixture = createCurrentFixture(workspace, {
   verdict: 'PASS', suffix: 'trace-secret', sourceText: '# 测试用例\n\n**模块**：搜索',
@@ -68,10 +145,29 @@ const html = renderCurrentContextHtml(secretFixture.caseJson, secretReport);
 assert.strictEqual(html.includes(secret), false);
 assert.ok(html.includes(formatDisplayTime(secretReport.execution.startedAt)));
 assert.strictEqual(html.includes(secretReport.execution.startedAt), false);
-for (const expected of ['结果概览', '原始用例', 'Case Flow', '执行过程', '详细日志', '本次执行未触发知识库查询', '验证点结果', '执行记录', '查看原始数据', 'shot-dialog', 'previous-shot', 'next-shot', 'data-log-filter="ACTION"', 'pointerdown', 'setPointerCapture']) {
+for (const expected of ['结果概览', '原始用例', '用例流程', '执行轨迹', '检查点', '详细日志', '本次执行未触发知识库查询', '验证点结果', '执行记录', '查看原始数据', 'shot-dialog', 'previous-shot', 'next-shot', 'data-log-filter="ACTION"', 'pointerdown', 'setPointerCapture', 'class="mermaid"', 'securityLevel:\'strict\'', 'graph-fallback']) {
   assert.ok(html.includes(expected), expected);
 }
+assert.match(html, /theme:'base',htmlLabels:false,flowchart:\{useMaxWidth:true,htmlLabels:false\}/);
+assert.ok(html.includes('await window.mermaid.render('));
+assert.strictEqual(html.includes('await window.mermaid.run('), false);
+assert.ok(html.includes('function mermaidSvgUsable(svg)'));
+assert.ok(html.includes('initializeMermaid();\nasync function renderMermaidPanel'));
+assert.ok(html.includes("querySelector('[data-mermaid-source]>svg')"));
+for (const expected of [
+  'data-mermaid-kind="baseline"',
+  'data-mermaid-kind="trace"',
+  'data-flow-node-detail="N2"',
+  'data-open-checkpoint="N2"',
+  'data-checkpoint-ref="N2"',
+  'data-select-checkpoint="N2"',
+  'data-checkpoint-ledger',
+  'function decorateMermaidNodes(stage,svg)',
+  'function activateMermaidNode(node)',
+]) assert.ok(html.includes(expected), expected);
 assert.strictEqual((html.match(/role="tab"/g) || []).length, 5);
+assert.strictEqual(html.includes('data-report-tab="checkpoints"'), false);
+assert.strictEqual(html.includes('data-panel-view="checkpoints"'), false);
 for (const expected of ['class="verdict-banner', 'class="action-kind"', 'class="step-detail"', 'class="shot-compare', '输入测试内容', '页面展示目标结果']) {
   assert.ok(html.includes(expected), expected);
 }
@@ -82,12 +178,20 @@ for (const expected of [
   '.process-layout{display:grid;grid-template-columns:minmax(310px,.72fr) minmax(580px,1.28fr);height:',
   '.step-list{min-height:0;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain',
   '.step-inspector{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain',
+  '.flow-workspace{display:grid;grid-template-columns:minmax(420px,1.15fr) minmax(360px,.85fr)',
+  '.flow-information-column{min-width:0',
+  '@media(max-width:920px){.flow-workspace{grid-template-columns:1fr}',
   'function revealStepInList(selected)',
   'selected.getBoundingClientRect()',
   'list.scrollTop-=listRect.top-selectedRect.top',
   'list.scrollTop+=selectedRect.bottom-listRect.bottom',
 ]) assert.ok(html.includes(expected), expected);
-assert.strictEqual((html.match(/scrollIntoView\(/g) || []).length, 1, 'only the external workspace jump may scroll the page');
+assert.strictEqual((html.match(/workspace\?\.scrollIntoView\(\{block:'start'\}\)/g) || []).length, 2, 'trace jumps should reveal the execution workspace');
+assert.ok(html.includes("document.querySelector('[data-flow-node-detail=\"'+ref+'\"]')?.scrollIntoView({block:'nearest'})"));
+assert.ok(html.includes("row.scrollIntoView({block:'center'})"));
+assert.ok(html.includes("document.querySelectorAll('[data-select-checkpoint]')"));
+assert.ok(html.includes("tab.setAttribute('aria-selected',String(active))"));
+assert.strictEqual(html.includes('&quot;stepIndex&quot;:null'), false, 'trace nodes without an inspector target must not advertise click navigation');
 assert.ok(html.includes("document.querySelectorAll('[data-step]').forEach(row=>row.addEventListener('click',()=>selectStep(row.dataset.step)));"));
 
 const degradedFixture = createCurrentFixture(workspace, {

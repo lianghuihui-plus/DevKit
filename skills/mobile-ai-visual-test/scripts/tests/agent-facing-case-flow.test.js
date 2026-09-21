@@ -16,7 +16,7 @@ const execDir = path.join(temp, 'execution');
 fs.mkdirSync(path.join(execDir, 'scenes'), { recursive: true });
 fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
 writeJsonAtomic(path.join(execDir, 'execution.json'), {
-  schemaVersion: 12, runtime: 'case-runtime', executionId: 'execution-case-flow-agent',
+  schemaVersion: 13, runtime: 'case-runtime', executionId: 'execution-case-flow-agent',
   platform: 'ios', status: 'RUNNING', finalized: false,
 });
 const scene = {
@@ -34,8 +34,8 @@ const caseFlow = {
   entryNodeRef: 'N1',
   nodes: [
     { ref: 'N1', type: 'DECISION', text: '是否满足前置条件', sourceBasis: '原始用例前置条件' },
-    { ref: 'N2', type: 'CHECK', text: '目标结果可见', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期' },
-    { ref: 'N3', type: 'CHECK', text: '可选弹窗正确', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原文若出现则检查' },
+    { ref: 'N2', type: 'CHECK', text: '目标结果可见', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' },
+    { ref: 'N3', type: 'CHECK', text: '可选弹窗正确', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原文若出现则检查', requirement: 'CONDITIONAL', applicability: '进入可选弹窗分支' },
     { ref: 'N4', type: 'END', text: '完成' },
   ],
   edges: [

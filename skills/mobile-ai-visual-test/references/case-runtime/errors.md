@@ -14,7 +14,9 @@
 <a id="error-case-flow-required"></a>- [`CASE_FLOW_REQUIRED`](errors/flow-result.md#error-case-flow-required)：当前 execution 尚无 Case Flow。
 <a id="error-case-flow-revision-conflict"></a>- [`CASE_FLOW_REVISION_CONFLICT`](errors/flow-result.md#error-case-flow-revision-conflict)：Case Flow baseRevision 不是当前 revision。
 <a id="error-case-flow-context-invalid"></a>- [`CASE_FLOW_CONTEXT_INVALID`](errors/flow-result.md#error-case-flow-context-invalid)：flowContext 的节点或分支不属于当前 Case Flow revision。
-<a id="error-expectation-unknown"></a>- [`EXPECTATION_UNKNOWN`](errors/flow-result.md#error-expectation-unknown)：checkNodeRef 不属于当前 Case Flow 的 CHECK 节点。
+<a id="error-case-flow-node-identity-changed"></a>- [`CASE_FLOW_NODE_IDENTITY_CHANGED`](errors/flow-result.md#error-case-flow-node-identity-changed)：Case Flow 节点 ref 被用于不同含义。
+<a id="error-case-flow-edge-identity-changed"></a>- [`CASE_FLOW_EDGE_IDENTITY_CHANGED`](errors/flow-result.md#error-case-flow-edge-identity-changed)：Baseline Flow 边 ref 的端点或条件被改写。
+<a id="error-expectation-unknown"></a>- [`EXPECTATION_UNKNOWN`](errors/flow-result.md#error-expectation-unknown)：checkNodeRef 不属于可处置的 CHECK 节点。
 <a id="error-record-result-invalid"></a>- [`RECORD_RESULT_INVALID`](errors/flow-result.md#error-record-result-invalid)：验证结果缺少有效证据或字段不符合当前验证点。
 <a id="error-evidence-reference-invalid"></a>- [`EVIDENCE_REFERENCE_INVALID`](errors/flow-result.md#error-evidence-reference-invalid)：Scene、知识、技术或滚动证据引用无效。
 <a id="error-knowledge-query-unknown"></a>- [`KNOWLEDGE_QUERY_UNKNOWN`](errors/knowledge-recovery.md#error-knowledge-query-unknown)：知识 queryId 不存在或不属于当前 execution。

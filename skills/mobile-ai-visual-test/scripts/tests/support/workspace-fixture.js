@@ -125,7 +125,7 @@ function createCurrentFixture(root, options = {}) {
   const validationProfile = createValidationProfile();
   writeJson(path.join(execDir, 'validation-profile.snapshot.json'), validationProfile);
   const execution = {
-    schemaVersion: 12,
+    schemaVersion: 13,
     runtime: 'case-runtime',
     executionId,
     batchId: `batch-${suffix}`,
@@ -280,7 +280,7 @@ function createCurrentFixture(root, options = {}) {
       entryNodeRef: 'N1',
       nodes: [
         { ref: 'N1', type: 'ACTION', text: context.initialPlan[0] },
-        { ref: 'N2', type: 'CHECK', text: context.expectations[0].text, verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例要求验证当前报告结果' },
+        { ref: 'N2', type: 'CHECK', text: context.expectations[0].text, verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例要求验证当前报告结果', requirement: 'REQUIRED' },
         { ref: 'N3', type: 'END', text: '结束用例并提交结论' },
       ],
       edges: [
@@ -337,13 +337,20 @@ function createCurrentFixture(root, options = {}) {
     decisionId: 'decision-0002', requestedOperation: 'finish', sceneId: 'scene-0002', contextVersion: 1, decision: finalDecision,
   }));
 
-  const checkStatus = verdict;
-  const needsScene = ['PASS', 'FAIL'].includes(verdict);
+  const checkStatus = options.checkStatus || verdict;
+  const needsScene = ['PASS', 'FAIL'].includes(checkStatus);
+  const checkReason = checkStatus === 'WAIVED' ? (options.checkReason || '测试夹具豁免理由') : null;
   const result = {
     verdict,
     caseFlowRevision: 1,
     summary: options.summary || `${verdict} 当前报告结论`,
-    checks: [{ checkNodeRef: 'N2', status: checkStatus, actual: verdict === 'PASS' ? '页面符合预期' : `页面结果为 ${verdict}`, sceneRefs: needsScene ? ['scene-0002'] : [] }],
+    checks: [{
+      checkNodeRef: 'N2',
+      status: checkStatus,
+      actual: options.checkActual || (checkStatus === 'PASS' ? '页面符合预期' : `页面结果为 ${checkStatus}`),
+      ...(checkReason ? { reason: checkReason } : {}),
+      sceneRefs: needsScene ? ['scene-0002'] : [],
+    }],
     uncertainties: options.uncertainties || (verdict === 'INCONCLUSIVE' ? ['目标状态仍不确定'] : []),
   };
   events.push(event(executionId, sequence, endedAt, 'caseFinished', {

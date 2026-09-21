@@ -10,11 +10,11 @@
 node <skill-root>/scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>
 ```
 
-首次调用优先使用 Workspace 响应中已绑定绝对脚本路径和工作区的 `coordinatorFacade.prepareUsage`，只替换用例编号。之后以当前响应中的能力卡、模板和预绑定命令为调用事实源，不在文档中复制字段清单。
+首次调用使用 Workspace 响应中的绝对 `coordinatorFacade.command`，追加 `prepare --workspace <workspace> --case-nos <用例编号>`。之后只使用 Coordinator 响应返回的预绑定 `commands` 推进、确认或取消，不自行调用底层 Batch 与 Runtime 接口。
 
 Coordinator 返回 `NEED_USER_CONFIRMATION`、`NEED_CASE_AGENT`、`WAITING`、`TECHNICAL`、`COMPLETE` 或 `BLOCKED`。需要委托时只暴露不透明 `loaderCommand` 与固定 `delegationPrompt`；主 Agent 不读取 Handoff 正文。
 
-`<skill-root>/scripts/workspace.js --cwd <workspace>` 用于校验或初始化 Workspace，并返回四个能力的 `coordinatorFacade`。脚本路径属于技能目录，`--cwd` 属于测试工作区；响应中的 `coordinatorFacade.command` 可从任意当前目录重新校验该工作区，`coordinatorFacade.prepareUsage` 是已绑定工作区的绝对 Facade 启动命令。它不返回底层 CLI 参数 Schema。
+`<skill-root>/scripts/workspace.js --cwd <workspace>` 用于校验或初始化 Workspace，并返回 Coordinator Facade 的绝对 `command`、协议类型和文档入口。脚本路径属于技能目录，`--cwd` 属于测试工作区；Facade 可从任意当前目录调用，但 Workspace 路径仍由 `prepare` 请求显式绑定。它不返回底层 CLI 参数 Schema。
 
 ## Authoring 接口
 
@@ -32,4 +32,4 @@ request 只包含非空 `cases` 数组；每项只提交稳定 `sourceLocator`�
 
 普通执行的协调 Agent 不调用这些入口，也不读取其完整契约。Authoring 或维护流程需要调用时，先读取 [命令模块索引](commands.md)，再只进入当前功能模块；收到错误时只读取响应中的 `documentationRef`。
 
-内部接口负责哈希绑定、快照、事务和证据校验。新 execution 使用当前 Runtime；已完成的历史 execution 不迁移、不补写，报告只读展示。
+内部接口负责哈希绑定、快照、事务和证据校验。新 execution 使用当前 Runtime；历史 execution 不迁移、不补写，也不由报告兼容展示。

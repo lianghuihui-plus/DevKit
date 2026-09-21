@@ -39,8 +39,13 @@ const CASE_FLOW_NODE = {
     object({ ref: STRING, type: { const: 'DECISION' }, text: STRING, sourceBasis: STRING }, ['ref', 'type', 'text', 'sourceBasis']),
     object({
       ref: STRING, type: { const: 'CHECK' }, text: STRING, sourceBasis: STRING,
+      verificationKind: { enum: ['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE'] }, requirement: { const: 'REQUIRED' },
+    }, ['ref', 'type', 'text', 'sourceBasis', 'verificationKind', 'requirement']),
+    object({
+      ref: STRING, type: { const: 'CHECK' }, text: STRING, sourceBasis: STRING,
       verificationKind: { enum: ['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE'] },
-    }, ['ref', 'type', 'text', 'sourceBasis', 'verificationKind']),
+      requirement: { const: 'CONDITIONAL' }, applicability: STRING,
+    }, ['ref', 'type', 'text', 'sourceBasis', 'verificationKind', 'requirement', 'applicability']),
     object({ ref: STRING, type: { const: 'END' }, text: STRING }, ['ref', 'type', 'text']),
   ],
 };
@@ -62,8 +67,9 @@ const RESULT_EVIDENCE = object({
 }, []);
 const RESULT_REQUEST = object({
   checkNodeRef: STRING,
-  status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE'] },
+  status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE', 'WAIVED'] },
   actual: STRING,
+  reason: STRING,
   evidence: RESULT_EVIDENCE,
 }, ['checkNodeRef', 'status', 'actual']);
 const NOT_RUN_EVIDENCE = object({ sceneRefs: STRING_ARRAY, technicalRefs: STRING_ARRAY }, ['sceneRefs', 'technicalRefs']);
@@ -133,7 +139,9 @@ const PUBLIC_ERRORS = Object.freeze({
   CASE_FLOW_REQUIRED: { group: 'flow-result', retryable: true, summary: '当前 execution 尚无 Case Flow。', recovery: '读取原始用例并调用 plan 创建完整 Case Flow，然后从 entryNodeRef 开始执行。' },
   CASE_FLOW_REVISION_CONFLICT: { group: 'flow-result', retryable: true, summary: 'Case Flow baseRevision 不是当前 revision。', recovery: '读取响应中的当前 Case Flow revision，合并仍需要的调整理由后基于该 revision 重新提交。' },
   CASE_FLOW_CONTEXT_INVALID: { group: 'flow-result', retryable: true, summary: 'flowContext 的节点或分支不属于当前 Case Flow revision。', recovery: '使用当前 Case Flow 返回的 nodeRef 和 edgeRef；不要复用已 retired 的引用。' },
-  EXPECTATION_UNKNOWN: { group: 'flow-result', retryable: true, summary: 'checkNodeRef 不属于当前 Case Flow 的 CHECK 节点。', recovery: '从当前 Case Flow 选择现存 CHECK 节点引用；如检查点确需变更，先用 plan 记录理由并修订。' },
+  CASE_FLOW_NODE_IDENTITY_CHANGED: { group: 'flow-result', retryable: true, summary: 'Case Flow 节点 ref 被用于不同含义。', recovery: '保留 Baseline 节点和既有 CHECK 的原始含义；现场适配或语义修正使用新的节点 ref 后重新提交。' },
+  CASE_FLOW_EDGE_IDENTITY_CHANGED: { group: 'flow-result', retryable: true, summary: 'Baseline Flow 边 ref 的端点或条件被改写。', recovery: '保留 Baseline 边的 from、to 和 condition；分支语义变化时使用新的边 ref 后重新提交。' },
+  EXPECTATION_UNKNOWN: { group: 'flow-result', retryable: true, summary: 'checkNodeRef 不属于可处置的 CHECK 节点。', recovery: '使用 Baseline CHECK 或最终 Working Flow 中仍活跃的补充 CHECK；已退休的补充检查点只能保留历史结果。' },
   RECORD_RESULT_INVALID: { group: 'flow-result', retryable: true, summary: '验证结果缺少有效证据或字段不符合当前验证点。', recovery: '按响应 issues 补齐 actual 和匹配当前验证类型的证据；证据不足时使用 INCONCLUSIVE。' },
   EVIDENCE_REFERENCE_INVALID: { group: 'flow-result', retryable: true, summary: 'Scene、知识、技术或滚动证据引用无效。', recovery: '只引用当前 execution 已登记并由 Runtime 返回的证据 ref；缺失时先采集或登记事实。' },
   KNOWLEDGE_QUERY_UNKNOWN: { group: 'knowledge-recovery', retryable: true, summary: '知识 queryId 不存在或不属于当前 execution。', recovery: '先调用 knowledge(query) 创建查询，并使用该响应返回的 queryId 复核候选。' },
@@ -149,7 +157,7 @@ const PUBLIC_ERRORS = Object.freeze({
   PLAN_CHECK_FAILED: { group: 'plan', retryable: true, summary: '技术检查无法执行或谓词不受支持。', recovery: '只使用文档列出的确定性技术谓词；业务判断留给 Agent。' },
   PLAN_ACTION_OUTCOME_UNKNOWN: { group: 'plan', retryable: false, summary: '计划动作可能已投递，结果未知。', recovery: '禁止重放计划或动作；先检查已有证据并 observe 当前现场。' },
   PLAN_TIMEOUT: { group: 'plan', retryable: true, summary: '计划未能在声明的有限时限内完成。', recovery: '检查已完成前缀和各步耗时；缩短计划或在新 Scene 上使用新的 submissionId。' },
-  CASE_RESULT_INCOMPLETE: { group: 'flow-result', retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。', recovery: '读取未解决 CHECK 列表，补充观察或结果；无法形成确定判断时记录 INCONCLUSIVE 后再次 finish。' },
+  CASE_RESULT_INCOMPLETE: { group: 'flow-result', retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。', recovery: '逐项处置全部 Baseline CHECK 和最终活跃的补充 CHECK；可用 PASS、FAIL、BLOCKED、INCONCLUSIVE、条件检查的 NOT_APPLICABLE，或提供理由的 WAIVED。' },
   TIME_LIMIT: { group: 'flow-result', retryable: false, summary: '已停止新的设备动作。', recovery: '不再执行设备动作；使用已有证据收口可判断项，并披露未完成项和时间限制。' },
   CASE_RUNTIME_TECHNICAL: { group: 'knowledge-recovery', retryable: false, summary: '未归类的 execution 技术异常。', recovery: '读取 technical.stage、logRefs 和 resourceFacts 排障；恢复后先 observe 核验现场，再回到原业务节点。' },
 });
@@ -207,16 +215,18 @@ const PUBLIC_METHODS = Object.freeze({
   plan: method('plan', '创建或修订完整 Case Flow。', SCHEMAS.plan, {
     capability: '固定为 plan', caseFlow: '完整 Case Flow 快照',
   }, {
-    conditionalRequirements: ['首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。'],
-    contextualValidationRules: ['语义不变的节点和边保留 ref；retired ref 不得复用。'],
+    conditionalRequirements: ['首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。', 'CHECK 必须声明 REQUIRED 或 CONDITIONAL；CONDITIONAL 必须提供 applicability。'],
+    contextualValidationRules: ['首次 revision 是只基于原始用例的 Baseline Flow，不写入当前 Scene 的现场适配。', 'Baseline 节点和边不可改义；既有 CHECK 不可改义，现场适配或语义修正使用新 ref。', '修订可改变 Working Flow 导航，但删除 Baseline CHECK 不会取消其最终处置责任。'],
     successStatuses: ['CASE_FLOW_RECORDED'], sideEffects: ['追加 Case Flow revision'],
-    idempotency: '相同 submission 只写一次 revision。',
-    minimalExample: { capability: 'plan', caseFlow: { baseRevision: null, summary: '验证目标', entryNodeRef: 'N1', nodes: [{ ref: 'N1', type: 'CHECK', text: '结果可见', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期' }, { ref: 'N2', type: 'END', text: '完成' }], edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [] } },
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REVISION_CONFLICT', 'CASE_FLOW_NODE_IDENTITY_CHANGED', 'CASE_FLOW_EDGE_IDENTITY_CHANGED', 'CASE_RUNTIME_TECHNICAL'],
+    idempotency: '规范化后语义等价的 Case Flow 请求只写一次 revision，幂等键由框架内部派生。',
+    minimalExample: { capability: 'plan', caseFlow: { baseRevision: null, summary: '验证目标', entryNodeRef: 'N1', nodes: [{ ref: 'N1', type: 'CHECK', text: '结果可见', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' }, { ref: 'N2', type: 'END', text: '完成' }], edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [] } },
   }),
   recordResult: method('recordResult', '独立记录验证点结果，不采集 Scene、不执行动作。', SCHEMAS.recordResult, {
     capability: '固定为 recordResult', results: '已形成判断的验证结果和证据引用',
   }, {
-    contextualValidationRules: ['所有结果先完整校验；任一结果无效时整批不写入。'],
+    conditionalRequirements: ['WAIVED 必须提供独立非空 reason；其他状态不得提供 reason。', 'NOT_APPLICABLE 只允许用于 CONDITIONAL 检查点。'],
+    contextualValidationRules: ['所有结果先完整校验；任一结果无效时整批不写入。', 'Baseline CHECK 始终可处置；补充 CHECK 仅在最终 Working Flow 中活跃时进入结束闭环。', '知识、Scene 和技术事实可支撑豁免，但 Runtime 不要求知识命中，也不判断豁免理由是否充分。'],
     successStatuses: ['RESULTS_RECORDED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID', 'RECORD_RESULT_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['追加 expectation result 事件'], idempotency: '相同结果重复提交不追加重复事件。',
@@ -276,7 +286,7 @@ const PUBLIC_METHODS = Object.freeze({
     capability: '固定为 finish', summary: '最终摘要', uncertainties: '仍需披露的不确定性', outcome: '仅前置条件不满足时使用 NOT_RUN',
     reason: 'NOT_RUN 的业务原因', evidence: 'NOT_RUN 引用的已登记 Scene 或技术事实', flowContext: '实际到达的 END 节点',
   }, {
-    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；NOT_RUN 必须提供原因和已登记证据。'],
+    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', 'FAIL、INCONCLUSIVE、BLOCKED 和 WAIVED 不强制知识调查；已提交的证据引用仍必须有效。', 'NOT_RUN 必须提供原因和已登记证据。'],
     successStatuses: ['COMPLETED', 'RESULT_INCOMPLETE'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',

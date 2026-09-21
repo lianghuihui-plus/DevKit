@@ -88,9 +88,8 @@ function executeResult(verdict, options = {}) {
     initialObserve: false,
     now: '2026-09-04T02:00:00.000Z',
   });
-  assert.strictEqual(started.execution.schemaVersion, 12);
+  assert.strictEqual(started.execution.schemaVersion, 13);
   assert.ok(started.execution.validationProfileSha);
-  assert.strictEqual(readExecutionReport(started.execDir).readerFamily, 'current-execution');
   const planned = run(started.execDir, {
     capability: 'plan', caseFlow: simpleCaseFlow(source, '目标页面符合用例预期'),
   }, { now: '2026-09-04T02:00:00.500Z' });
@@ -115,17 +114,6 @@ function executeResult(verdict, options = {}) {
     assert.strictEqual(technical.status, 'TECHNICAL');
     assert.match(technical.technicalFactRef, /^technical-fact-\d{4}$/);
     technicalFactRef = technical.technicalFactRef;
-  }
-
-  if (verdict !== 'PASS' && !options.technical) {
-    const knowledge = run(started.execDir, {
-      capability: 'knowledge',
-      basedOnSceneRef: observed.scene.sceneRef,
-      query: `${verdict} 现场是否存在已知解释`,
-      checkNodeRefs: ['N2'],
-    }, { now: '2026-09-04T02:00:01.500Z' });
-    assert.strictEqual(knowledge.status, 'KNOWLEDGE');
-    assert.strictEqual(knowledge.candidates.length, 0);
   }
 
   const check = {

@@ -28,7 +28,7 @@ fs.mkdirSync(path.join(execDir, 'transactions'), { recursive: true });
 fs.writeFileSync(path.join(execDir, 'source.snapshot.md'), '长按录音按钮并验证录音状态');
 fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
 writeJsonAtomic(path.join(execDir, 'execution.json'), {
-  schemaVersion: 12,
+  schemaVersion: 13,
   runtime: 'case-runtime',
   executionId: 'execution-agent-facing',
   platform: 'harmony',
@@ -141,7 +141,7 @@ assert.ok(validateAgentFacingRequest({
   capability: 'plan', caseFlow: {
     baseRevision: null, summary: '验证首页', entryNodeRef: 'N1',
     nodes: [
-      { ref: 'N1', type: 'CHECK', text: '首页正常', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期' },
+      { ref: 'N1', type: 'CHECK', text: '首页正常', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' },
       { ref: 'N2', type: 'END', text: '完成' },
     ],
     edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [], extra: true,
@@ -195,8 +195,8 @@ const initialPlanRequest = {
     baseRevision: null, summary: '验证语音录入过程和结果', entryNodeRef: 'N1',
     nodes: [
       { ref: 'N1', type: 'ACTION', text: '长按录音按钮' },
-      { ref: 'N2', type: 'CHECK', text: '显示录音状态', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期' },
-      { ref: 'N3', type: 'CHECK', text: '完成语音录入', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期' },
+      { ref: 'N2', type: 'CHECK', text: '显示录音状态', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' },
+      { ref: 'N3', type: 'CHECK', text: '完成语音录入', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' },
       { ref: 'N4', type: 'END', text: '完成' },
     ],
     edges: [
@@ -217,6 +217,14 @@ const plannedFlow = require('../case-runtime/case-flow-service').current(execDir
 assert.deepStrictEqual(plannedFlow.nodes.map((item) => item.ref), ['N1', 'N2', 'N3', 'N4']);
 assert.deepStrictEqual(plannedFlow.nodes.filter((item) => item.type === 'CHECK').map((item) => item.ref), ['N2', 'N3']);
 assert.strictEqual(planned.caseState.caseFlowRevision, 1);
+const replayedPlan = run(execDir, initialPlanRequest, { now: '2026-09-11T00:00:01.700Z' });
+assert.strictEqual(replayedPlan.status, 'CASE_FLOW_RECORDED');
+assert.strictEqual(replayedPlan.idempotent, true);
+assert.strictEqual(replayedPlan.caseFlow.revision, 1);
+for (const internalField of ['requestSha256', 'requestNormalized', 'submissionId']) {
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(replayedPlan.caseFlow, internalField), false, internalField);
+}
+assert.strictEqual(runtimeStore.events(execDir).filter((event) => event.type === 'caseFlowRevised').length, 1);
 
 fs.mkdirSync(path.join(execDir, 'screenshots'), { recursive: true });
 fs.writeFileSync(path.join(execDir, 'screenshots', 'scene-0007.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
@@ -353,8 +361,15 @@ const revisedPlan = run(execDir, {
     ...initialPlanRequest.caseFlow,
     baseRevision: 1,
     reason: '权限弹窗改变了执行路径和验证条件',
-    nodes: initialPlanRequest.caseFlow.nodes.map((node) => node.ref === 'N2'
-      ? { ...node, text: '权限处理后显示录音状态' } : node),
+    entryNodeRef: 'N5',
+    nodes: [
+      { ref: 'N5', type: 'ACTION', text: '处理现场权限弹窗' },
+      ...initialPlanRequest.caseFlow.nodes,
+    ],
+    edges: [
+      { ref: 'L4', from: 'N5', to: 'N1' },
+      ...initialPlanRequest.caseFlow.edges,
+    ],
   },
 }, { now: '2026-09-11T00:00:03.100Z' });
 assert.strictEqual(revisedPlan.status, 'CASE_FLOW_RECORDED');
@@ -461,6 +476,25 @@ assert.strictEqual(guidedTechnical.nextCall, undefined);
 assert.strictEqual(guidedTechnical.diagnostic, undefined);
 assert.match(guidedTechnical.documentationRef, /error-scene-changed$/);
 assertCompactResponse(guidedTechnical);
+
+const executionPath = path.join(execDir, 'execution.json');
+const currentExecution = readJson(executionPath);
+writeJsonAtomic(executionPath, { ...currentExecution, schemaVersion: 12 });
+const schemaMismatch = run(execDir, { capability: 'observe' }, { executeRequest });
+assert.strictEqual(schemaMismatch.code, 'PROTOCOL_MISMATCH');
+assert.strictEqual(schemaMismatch.facts.requiredSchemaVersion, 13);
+writeJsonAtomic(executionPath, currentExecution);
+
+const immutableFlowError = run(execDir, { capability: 'plan', caseFlow: {
+  baseRevision: 1, reason: '错误地复用节点 ID', summary: '修改基线', entryNodeRef: 'N1',
+  nodes: [{ ref: 'N1', type: 'ACTION', text: '改变后的含义' }, { ref: 'N4', type: 'END', text: '完成' }],
+  edges: [{ ref: 'L1', from: 'N1', to: 'N4' }], uncertainties: [],
+} }, { executeRequest: () => ({
+  status: 'REQUEST_INVALID', code: 'CASE_FLOW_NODE_IDENTITY_CHANGED', message: 'node N1 cannot change its original meaning',
+}) });
+assert.strictEqual(immutableFlowError.status, 'INPUT_INVALID');
+assert.strictEqual(immutableFlowError.code, 'CASE_FLOW_NODE_IDENTITY_CHANGED');
+assert.match(immutableFlowError.documentationRef, /error-case-flow-node-identity-changed$/);
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('agent-facing Case Runtime passed');

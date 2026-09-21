@@ -20,7 +20,7 @@ function fixture(platform) {
     ...(platform === 'ios' ? {} : { entry: 'EntryAbility' }),
   };
   const execution = {
-    schemaVersion: 12, runtime: 'case-runtime', executionId: `execution-${platform}`,
+    schemaVersion: 13, runtime: 'case-runtime', executionId: `execution-${platform}`,
     platform, targetBinding: binding, targetBindingSha: bindingSha(binding),
     batchContractSha: 'batch-contract-fixture', startedAt: '2026-09-20T00:00:00.000Z',
   };

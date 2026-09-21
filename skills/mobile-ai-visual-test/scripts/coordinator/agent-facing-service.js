@@ -15,6 +15,7 @@ const {
   validateEnvironmentConfirmation,
 } = require('../lib/run-control');
 const { readJson, withFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { readPublicationState, statePath: publicationStatePath } = require('../report/publication-state');
 const {
   AGENT_FACING_PROTOCOL,
   documentationRefFor,
@@ -145,8 +146,18 @@ function reportPublicationResponse(publication = null) {
   };
 }
 
+function currentTerminalPublication(state, fallback = state.reportPublication) {
+  const file = publicationStatePath(state.workspace, state.batchId);
+  if (!fs.existsSync(file)) return fallback;
+  try {
+    return readPublicationState(state.workspace, state.batchId);
+  } catch {
+    return fallback;
+  }
+}
+
 function completedResponse(state, outcome, publication = state.reportPublication) {
-  const report = reportPublicationResponse(publication);
+  const report = reportPublicationResponse(currentTerminalPublication(state, publication));
   return {
     status: 'COMPLETE',
     outcome,
@@ -157,7 +168,7 @@ function completedResponse(state, outcome, publication = state.reportPublication
 }
 
 function blockedResponse(state) {
-  const report = reportPublicationResponse(state.reportPublication);
+  const report = reportPublicationResponse(currentTerminalPublication(state));
   const diagnostic = state.terminalFailure?.diagnostic;
   const code = state.terminalFailure?.code || 'BATCH_BLOCKED';
   return {
@@ -724,8 +735,8 @@ function advanceUnlocked(state, options = {}) {
   if (state.phase === 'INITIALIZING_RUN') return resumeInitialization(state, options);
   if (state.phase === 'NEED_BINDING_CONFIRMATION') return bindingConfirmationResponse(state, options);
   if (state.phase === 'NEED_ENVIRONMENT_DECISION') return environmentDecisionResponse(state, options);
-  if (!['BATCH_READY', 'WAITING_FOR_CASE_AGENT', 'WAITING_FOR_PLATFORM_RUNTIME'].includes(state.phase)) {
-    return environmentDecisionResponse(state, options);
+  if (!['BATCH_READY', 'WAITING_FOR_CASE_AGENT', 'WAITING_FOR_PLATFORM_RUNTIME', 'CANCELLING'].includes(state.phase)) {
+    throw coordinatorError(`Coordinator 状态不可推进：${state.phase || 'missing'}`, [], 'COORDINATOR_STATE_INVALID');
   }
   return advanceBatch(state, options);
 }

@@ -16,6 +16,7 @@ const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-ma
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
+
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-reader-'));
 const workspace = path.join(temp, 'workspace');
 createTestWorkspace(workspace);
@@ -35,8 +36,6 @@ for (const verdict of ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']) {
 
 for (const [verdict, fixture] of fixtures) {
   const report = readExecutionReport(fixture.execDir);
-  assert.strictEqual(report.schemaFamily, 'current');
-  assert.strictEqual(report.readerFamily, 'current-execution');
   assert.strictEqual(report.display.verdict, verdict);
   assert.strictEqual(report.display.executionStatus, fixture.metrics.executionStatus);
   assert.strictEqual(report.display.summary, fixture.result.summary);
@@ -51,24 +50,28 @@ for (const [verdict, fixture] of fixtures) {
   const metadata = JSON.parse(fs.readFileSync(path.join(path.dirname(paths.context), 'report-metadata.json'), 'utf8'));
   assert.strictEqual(metadata.artifacts['CONTEXT.md'].sha256, crypto.createHash('sha256').update(markdown).digest('hex'));
   assert.strictEqual(metadata.artifacts['CONTEXT.html'].sha256, crypto.createHash('sha256').update(html).digest('hex'));
+  const mermaidDependency = Object.entries(metadata.dependencies || {}).find(([name]) => /^report-assets\/mermaid-[0-9a-f]{64}\.min\.js$/.test(name));
+  assert.ok(mermaidDependency, 'platform report publishes a content-addressed Mermaid dependency');
+  assert.strictEqual(mermaidDependency[1].bytes > 1000000, true);
   assert.strictEqual(fs.existsSync(path.join(path.dirname(paths.context), 'report-publication.draft.json')), false);
   const publication = JSON.parse(fs.readFileSync(path.join(workspace, 'runs', report.execution.batchId, 'report-publication.json'), 'utf8'));
   const publicationTiming = publication.caseTimings[report.execution.executionId];
   assert.ok(Number.isFinite(publicationTiming.reportPublicationDelayMs));
   assert.ok(html.includes(formatDuration(publicationTiming.reportPublicationDelayMs)), 'first publication includes its delay');
 
-  for (const text of ['## 原始用例', '## Case Flow', '### 节点', '### 连接与分支', '## 执行过程', '## 最终检查', '操作前观察', '操作后结论']) {
+  for (const text of ['## 原始用例', '## 用例流程', '### 节点', '### 连接与分支', '## 执行轨迹', '## 检查点', '操作前观察', '操作后结论']) {
     assert.ok(markdown.includes(text), text);
   }
   for (const text of ['时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
     assert.ok(markdown.includes(text), `markdown ${text}`);
   }
   assert.ok(markdown.includes(`执行结论：${{ PASS: '通过', FAIL: '失败', INCONCLUSIVE: '无法判断', BLOCKED: '阻塞' }[verdict]}`));
-  for (const text of ['结果概览', '原始用例', 'Case Flow', '执行过程', '详细日志', '验证点结果', '执行记录', 'Runtime 请求错误', '用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
+  for (const text of ['结果概览', '原始用例', '用例流程', '执行轨迹', '检查点', '详细日志', '验证点结果', '执行记录', 'Runtime 请求错误', '用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
     assert.ok(html.includes(text), text);
   }
   assert.strictEqual((html.match(/role="tab"/g) || []).length, 5);
-  for (const hook of ['class="product-bar"', 'class="report-head"', 'class="report-tabs"', 'class="verdict-banner', 'class="metric-strip"', 'class="summary-columns"', 'class="process-layout"', 'class="step-list"', 'class="step-inspector"', 'class="logs-toolbar"']) {
+  assert.strictEqual(html.includes('data-panel-view="checkpoints"'), false);
+  for (const hook of ['class="product-bar"', 'class="report-head"', 'class="report-tabs"', 'class="verdict-banner', 'class="metric-strip"', 'class="summary-columns"', 'class="flow-workspace"', 'class="process-layout"', 'class="step-list"', 'class="step-inspector"', 'class="logs-toolbar"']) {
     assert.ok(html.includes(hook), hook);
   }
   assert.ok(html.includes('shot-dialog'));
@@ -82,6 +85,16 @@ for (const [verdict, fixture] of fixtures) {
   assert.ok(html.includes('setPointerCapture'));
   assert.ok(html.includes('输入类动作已脱敏'));
   assert.ok(html.includes('data-panel="case-flow-panel"'));
+  assert.ok(html.includes('data-checkpoint-requirement="REQUIRED"'));
+  assert.ok(html.includes('data-checkpoint-filter="INCONCLUSIVE"'));
+  assert.ok(html.includes('data-checkpoint-filter="BLOCKED"'));
+  assert.ok(html.includes('data-open-mermaid'));
+  assert.ok(html.includes('id="mermaid-dialog"'));
+  assert.ok(html.includes('id="mermaid-zoom-in"'));
+  assert.ok(html.includes('id="mermaid-fit"'));
+  for (const retired of ['data-open-flow', 'id="flow-dialog"', 'case-flow-preview', 'flow-viewer']) {
+    assert.strictEqual(html.includes(retired), false, retired);
+  }
   assert.strictEqual(html.includes('data-panel="raw-panel"'), false);
   assert.ok(html.includes('data-log-filter="KNOWLEDGE"'));
   assert.ok(html.includes('data-log-search'));
@@ -108,6 +121,31 @@ for (const [verdict, fixture] of fixtures) {
   assert.strictEqual(html.includes('<img src=x onerror=alert(1)>'), false);
   assert.strictEqual(html.includes('<b>不是 HTML</b>'), false);
 }
+
+const waiverFixture = createCurrentFixture(workspace, {
+  verdict: 'PASS',
+  suffix: 'pass-with-waiver',
+  checkStatus: 'WAIVED',
+  checkActual: '本次未执行该检查点',
+  checkReason: '当前版本存在已确认的平台限制',
+});
+const waiverReport = readExecutionReport(waiverFixture.execDir);
+const waiverPaths = writeCaseReports(waiverFixture.caseDir, waiverFixture.caseJson, {}, [], waiverReport, {
+  platform: 'harmony',
+  skipRootOverview: true,
+});
+const waiverMarkdown = fs.readFileSync(waiverPaths.context, 'utf8');
+const waiverHtml = fs.readFileSync(waiverPaths.contextHtml, 'utf8');
+for (const text of ['## 用例流程', '## 执行轨迹', '## 检查点', '[WAIVED]', '豁免理由：当前版本存在已确认的平台限制']) {
+  assert.ok(waiverMarkdown.includes(text), text);
+}
+assert.strictEqual(waiverMarkdown.includes('## Case Flow'), false);
+assert.strictEqual(waiverMarkdown.includes('## 执行过程'), false);
+assert.ok(waiverHtml.includes('通过 · 含 1 个豁免'));
+assert.ok(waiverHtml.includes('豁免理由'));
+const waiverIndexItem = collectIndexCases(workspace).find((item) => item.caseKey === waiverFixture.caseJson.identity.caseKey);
+assert.strictEqual(waiverIndexItem.platforms[0].checkpointMetrics.waived, 1);
+assert.strictEqual(waiverIndexItem.platforms[0].checkpointMetrics.passWithWaivers, true);
 
 const timingFixture = fixtures.get('PASS');
 const timingExecutionPath = path.join(timingFixture.execDir, 'execution.json');
@@ -177,7 +215,7 @@ assert.strictEqual(blockedByReferencedRuntime.verdictBasis, 'TECHNICAL_CONSTRAIN
 assert.strictEqual(blockedByReferencedRuntime.failureCode, 'AUTOMATION_CONNECTION_LOST');
 
 const indexCases = collectIndexCases(workspace);
-assert.strictEqual(indexCases.length, 4);
+assert.strictEqual(indexCases.length, 5);
 assert.ok(indexCases.some((item) => item.status === 'PASS'));
 assert.ok(indexCases.some((item) => item.status === 'FAIL'));
 assert.ok(indexCases.some((item) => item.status === 'BLOCKED'));
@@ -265,13 +303,26 @@ assert.strictEqual(unsupportedNewestReport.readability, 'FORMAT_UNSUPPORTED');
 assert.strictEqual(unsupportedNewestReport.display.status, 'NEEDS_RERUN');
 assert.strictEqual(unsupportedNewestReport.display.failureCode, 'FORMAT_UNSUPPORTED');
 const isolatedCases = collectIndexCases(workspace);
-assert.strictEqual(isolatedCases.length, fixtures.size);
+assert.strictEqual(isolatedCases.length, fixtures.size + 1);
 assert.strictEqual(isolatedCases.filter((item) => item.status === 'REPORT_ERROR').length, 0);
 assert.strictEqual(
   isolatedCases.find((item) => item.caseKey === passFixture.caseJson.identity.caseKey).status,
   'PASS',
   'an unsupported execution must not replace the last published dashboard snapshot before publication',
 );
+
+const symlinkAfterPublication = createCurrentFixture(workspace, {
+  verdict: 'PASS', suffix: 'symlink-after-publication',
+});
+const publishedScreenshot = path.join(symlinkAfterPublication.execDir, 'screenshots', 'scene-0001.png');
+const replacementScreenshot = path.join(symlinkAfterPublication.execDir, 'screenshots', 'scene-0001-copy.png');
+fs.copyFileSync(publishedScreenshot, replacementScreenshot);
+fs.unlinkSync(publishedScreenshot);
+fs.symlinkSync(replacementScreenshot, publishedScreenshot, 'file');
+const symlinkDamaged = readExecutionReport(symlinkAfterPublication.execDir);
+assert.ok(symlinkDamaged.completionError.includes('EXECUTION_ARTIFACT_PATH_INVALID'));
+assert.strictEqual(symlinkDamaged.sourceText, '');
+assert.strictEqual(symlinkDamaged.events.length, 0);
 
 const extraArtifact = path.join(passFixture.execDir, 'screenshots', 'extra-after-publication.png');
 fs.writeFileSync(extraArtifact, Buffer.from('not part of the published artifact set'));
@@ -302,6 +353,20 @@ fs.writeFileSync(path.join(previousSchemaDir, 'execution.json'), JSON.stringify(
 const previousSchemaReport = readExecutionReport(previousSchemaDir);
 assert.strictEqual(previousSchemaReport.readability, 'FORMAT_UNSUPPORTED');
 assert.strictEqual(previousSchemaReport.display.summary, '历史结果格式不支持，需要重跑');
+
+const legacySchemaDir = path.join(temp, 'legacy-schema-12-execution');
+fs.cpSync(passFixture.execDir, legacySchemaDir, { recursive: true });
+const legacyExecutionPath = path.join(legacySchemaDir, 'execution.json');
+const legacyExecution = {
+  ...JSON.parse(fs.readFileSync(legacyExecutionPath, 'utf8')),
+  schemaVersion: 12,
+};
+fs.writeFileSync(legacyExecutionPath, `${JSON.stringify(legacyExecution, null, 2)}\n`);
+const legacyReport = readExecutionReport(legacySchemaDir);
+assert.strictEqual(legacyReport.readability, 'FORMAT_UNSUPPORTED');
+assert.strictEqual(legacyReport.display.status, 'NEEDS_RERUN');
+assert.strictEqual(legacyReport.display.verdict, null);
+assert.throws(() => assertCurrentExecution({ ...legacyExecution, schemaVersion: 12 }), (error) => error?.code === 'FORMAT_UNSUPPORTED');
 
 const invalidRuntimeDir = path.join(temp, 'invalid-runtime');
 const invalidExecutionDir = path.join(invalidRuntimeDir, 'executions', 'invalid-execution');
@@ -347,6 +412,42 @@ const staleActiveExecution = {
   endedAt: undefined,
 };
 assert.throws(() => assertCurrentExecution(staleActiveExecution), (error) => error?.code === 'AGENT_PROTOCOL_MISMATCH');
+
+const closedStaleFixture = createCurrentFixture(historicalWorkspace, {
+  verdict: 'PASS', suffix: 'closed-stale-bindings',
+});
+const closedStaleExecutionPath = path.join(closedStaleFixture.execDir, 'execution.json');
+const closedStaleExecution = {
+  ...closedStaleFixture.execution,
+  caseProtocolSha: 'agent-protocol-closed-stale',
+  runtimeSha: 'case-runtime-closed-stale',
+  adapterSha: 'adapter-closed-stale',
+  finalized: false,
+  lifecycle: 'RUNNING',
+  status: 'RUNNING',
+  phase: 'EXECUTE',
+  endedAt: undefined,
+};
+fs.writeFileSync(closedStaleExecutionPath, `${JSON.stringify(closedStaleExecution, null, 2)}\n`);
+fs.writeFileSync(path.join(closedStaleFixture.execDir, 'result.json'), `${JSON.stringify({
+  verdict: 'PASS',
+  summary: '收尾中断时留下的半写结果，不可作为业务结论',
+}, null, 2)}\n`);
+for (const name of ['metrics.json', 'completion.json', 'artifact-manifest.json']) {
+  fs.rmSync(path.join(closedStaleFixture.execDir, name), { force: true });
+}
+createExecutionClosure(historicalWorkspace, closedStaleFixture.execDir, {
+  closedByRuntimeSha: passFixture.execution.runtimeSha,
+  closedByAdapterSha: passFixture.execution.adapterSha,
+  replacementBatchId: 'batch-closed-stale-replacement',
+  now: '2026-08-21T12:01:00.000Z',
+});
+const closedStaleReport = readExecutionReport(closedStaleFixture.execDir);
+assert.strictEqual(closedStaleReport.readability, 'READABLE');
+assert.strictEqual(closedStaleReport.closure.reasonCode, 'IMPLEMENTATION_REPLACED');
+assert.strictEqual(closedStaleReport.rawResult, null);
+assert.strictEqual(closedStaleReport.result, null);
+assert.strictEqual(closedStaleReport.display.status, 'NOT_RUN');
 
 const pendingWorkspace = path.join(temp, 'pending-workspace');
 createTestWorkspace(pendingWorkspace);

@@ -6,7 +6,7 @@ const { readJson } = require('./execution-lifecycle');
 
 function validateExecutionEvidenceGraph(execDir, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 12) {
+  if (execution?.schemaVersion !== 13) {
     throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
   const graph = require('../case-runtime/result-integrity').validateCaseRuntimeEvidenceGraph(execDir, null, options);

@@ -6,12 +6,12 @@ const { validateAgentJson } = require('../lib/agent-json-contract');
 const { AGENT_CONTRACT_DEFINITIONS, OPERATION_CONTRACT, RUNTIME_OPERATIONS } = require('./runtime-operation-contract');
 
 const VERDICTS = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_RUN']);
-const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE']);
+const CHECK_STATUSES = Object.freeze(['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE', 'WAIVED']);
 const RESULT_FIELDS = new Set([
   'verdict', 'summary', 'checks', 'uncertainties', 'caseFlowRevision',
   'notRunReason', 'notRunEvidence',
 ]);
-const CHECK_FIELDS = new Set(['expectationRef', 'checkNodeRef', 'status', 'actual', 'sceneRefs', 'knowledgeRefs', 'technicalRefs', 'evidenceBasis']);
+const CHECK_FIELDS = new Set(['expectationRef', 'checkNodeRef', 'status', 'actual', 'reason', 'sceneRefs', 'knowledgeRefs', 'technicalRefs', 'evidenceBasis']);
 const VERIFICATION_KINDS = new Set(['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE']);
 const DECISION_FIELDS = new Set([
   'assessment', 'observation', 'conclusion', 'purpose', 'expectedOutcome',
@@ -97,6 +97,11 @@ function validateCaseResult(value) {
       throw contractError('CASE_RESULT_INVALID', `checks[${index}].status must be one of ${CHECK_STATUSES.join(', ')}`);
     }
     ensureString(check.actual, `checks[${index}].actual`, 'CASE_RESULT_INVALID');
+    if (check.status === 'WAIVED') {
+      ensureString(check.reason, `checks[${index}].reason`, 'CASE_RESULT_INVALID');
+    } else if (check.reason !== undefined) {
+      throw contractError('CASE_RESULT_INVALID', `checks[${index}].reason is only valid for WAIVED`);
+    }
     if (check.evidenceBasis !== undefined) {
       const basis = ensureObject(check.evidenceBasis, `checks[${index}].evidenceBasis`, 'CASE_RESULT_INVALID');
       ensureOnlyFields(basis, new Set(['type', 'sceneRef', 'scrollContextRef']), `checks[${index}].evidenceBasis`);

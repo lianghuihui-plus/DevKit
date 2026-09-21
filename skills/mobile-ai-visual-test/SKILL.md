@@ -81,7 +81,11 @@ Coordinator 响应只提供错误原因、诊断、当前资源事实和 `docume
 - 执行协调 Agent 不执行 Case Agent Loader，不读取 `source.md`、Handoff 正文、Case Prompt、Scene、截图、控件树、知识调查正文或 Case Agent 的 `runtime.capabilities`。
 - 执行协调 Agent 不向 Case Agent 转述原文、截图路径、控件树、知识内容或自己的业务判断。
 - Handoff 只绑定唯一 execution、协议摘要和写入所有权，并直接向 Case Agent 提供原始用例、当前 Scene、已有 Case Flow 及预绑定 Runtime Client。
-- Case Agent 自己生成和修订本次用例理解、验证点与计划；修订只要求记录理由，不由执行协调 Agent 审批。
+- Case Agent 首次 `plan` 只根据原始用例生成不可变语义的 Baseline Flow；当前 Scene 中的弹窗、恢复、重试和绕路进入后续 Working Flow revision 或 Execution Trace。
+- Case Agent 自己判断条件适用性和检查点结果；Runtime 只校验结构、枚举、生命周期与引用，不理解自然语言条件，也不审批业务判断或豁免理由。
+- Baseline CHECK 即使从后续 Working Flow 移除仍必须最终处置；Agent 可用带独立理由的 `WAIVED` 豁免，条件检查未触发时使用 `NOT_APPLICABLE`。
+- 知识、Scene 和技术事实可以支撑检查结果或豁免；未查询知识不阻止 `FAIL`、`INCONCLUSIVE`、`BLOCKED` 或 `WAIVED` 收口，已提交引用仍必须有效。
+- `runPlan` 只批量执行确定性动作、采集和技术检查；其技术 check 不自动完成业务 CHECK，Agent 必须读取证据后调用 `recordResult`。
 - 三端输入由 Case Runtime 统一发布目标级 `inputText`，Case Agent 复制 Scene 动作即可完成目标聚焦和整段输入；无目标焦点输入只是 Scene 无法识别输入控件时的兜底。
 - 输入依赖由 Runtime 自动准备、校验和恢复，执行协调 Agent 与 Case Agent 不安装、启用或切换平台输入组件。
 - Handoff 与职责隔离不是操作系统安全沙箱。正常流程优先使用框架；技术异常时两个 Agent 都可在各自职责和授权范围内独立调查，随后回到框架核验与持久化。

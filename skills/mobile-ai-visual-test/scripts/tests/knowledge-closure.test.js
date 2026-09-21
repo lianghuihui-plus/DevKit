@@ -37,20 +37,14 @@ const nemoPass = {
 assert.deepStrictEqual(validateKnowledgeClosure(nemoPass, nemoEvents).applicableEntryIds, ['K-editor-001']);
 
 const fail = { verdict: 'FAIL', checks: [{ expectationRef: 'E1', status: 'FAIL', actual: '目标缺失', sceneRefs: ['scene-0002'] }] };
-assert.throws(() => validateKnowledgeClosure(fail, []),
-  (error) => error.code === 'CASE_RESULT_INCOMPLETE'
-    && error.missing.some((item) => item.field === 'checks.E1.knowledgeInvestigation'));
-assert.throws(() => validateKnowledgeClosure(fail, [
+assert.doesNotThrow(() => validateKnowledgeClosure(fail, []));
+assert.doesNotThrow(() => validateKnowledgeClosure(fail, [
   query('knowledge-pending-0001', ['E1'], [{ entryId: 'K-pending-001', expired: false }]),
-]), (error) => error.code === 'CASE_RESULT_INCOMPLETE'
-  && error.missing.some((item) => item.field === 'checks.E1.knowledgeInvestigation'
-    && JSON.stringify(item.queryIds) === JSON.stringify(['knowledge-pending-0001'])));
-assert.throws(() => validateKnowledgeClosure({
+]));
+assert.doesNotThrow(() => validateKnowledgeClosure({
   verdict: 'INCONCLUSIVE',
   checks: [{ expectationRef: 'E1', status: 'INCONCLUSIVE', actual: '现场不足以判断', sceneRefs: [] }],
-}, []),
-(error) => error.code === 'CASE_RESULT_INCOMPLETE'
-  && error.missing.some((item) => item.field === 'checks.E1.knowledgeInvestigation'));
+}, []));
 
 const noMatchEvents = [
   query('knowledge-0002', ['E1']),
@@ -76,9 +70,7 @@ const transientTechnicalEvents = [
   },
   { sequence: 2, executionId: execution.executionId, type: 'sceneObserved', sceneId: 'scene-0002', generation: 2, screenshotRef: 'screenshots/scene-0002.png' },
 ];
-assert.throws(() => validateKnowledgeClosure(blocked, transientTechnicalEvents, execution),
-  (error) => error.code === 'CASE_RESULT_INCOMPLETE'
-    && error.missing.some((item) => item.field === 'checks.E1.knowledgeInvestigation'));
+assert.doesNotThrow(() => validateKnowledgeClosure(blocked, transientTechnicalEvents, execution));
 assert.throws(() => validateKnowledgeClosure({
   verdict: 'BLOCKED',
   checks: [{ ...blocked.checks[0], actual: '设备连接中断，无法继续验证', technicalRefs: ['technical-fact-0001'] }],

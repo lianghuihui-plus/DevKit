@@ -1,7 +1,6 @@
 'use strict';
 
-const SCHEMA_VERSION = 12;
-const READER_FAMILY = 'current-execution';
+const SCHEMA_VERSION = 13;
 
 function supports(execution) {
   return execution?.schemaVersion === SCHEMA_VERSION && execution.runtime === 'case-runtime';
@@ -16,4 +15,4 @@ function assertSchema(execution) {
   return execution;
 }
 
-module.exports = { READER_FAMILY, SCHEMA_VERSION, assertSchema, supports };
+module.exports = { SCHEMA_VERSION, assertSchema };

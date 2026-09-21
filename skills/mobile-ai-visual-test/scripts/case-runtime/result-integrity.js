@@ -14,12 +14,12 @@ const store = require('./store');
 const { loadValidationProfile } = require('../execution/contracts/validation-profile-contract');
 
 function aggregateVerdict(checks) {
-  const statuses = checks.map((check) => check.status).filter((status) => status !== 'NOT_APPLICABLE');
+  const statuses = checks.map((check) => check.status).filter((status) => !['NOT_APPLICABLE', 'WAIVED'].includes(status));
   if (statuses.includes('FAIL')) return 'FAIL';
   if (statuses.includes('BLOCKED')) return 'BLOCKED';
   if (statuses.includes('INCONCLUSIVE')) return 'INCONCLUSIVE';
   if (statuses.length && statuses.every((status) => status === 'PASS')) return 'PASS';
-  return checks.length && checks.every((check) => check.status === 'NOT_APPLICABLE') ? 'PASS' : null;
+  return checks.length && checks.every((check) => ['NOT_APPLICABLE', 'WAIVED'].includes(check.status)) ? 'PASS' : null;
 }
 
 function checkRef(check) {
@@ -60,12 +60,13 @@ function validateVerdict(result, events) {
 
 function validateExpectationCoverage(execDir, result, events, suppliedExecution = null) {
   const execution = suppliedExecution || readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 12) {
+  if (!execution || execution.schemaVersion !== 13) {
     throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
 
-  const caseFlow = require('./case-flow-service').current(execDir);
-  const expectations = caseFlow?.nodes?.filter((item) => item.type === 'CHECK') || [];
+  const caseFlowService = require('./case-flow-service');
+  const caseFlow = caseFlowService.current(execDir);
+  const expectations = caseFlowService.checkpointRegistry(execDir).filter((item) => item.baseline || item.active);
   if (!expectations.length) {
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult requires a current Case Flow with CHECK nodes', {
       missing: [{ field: 'caseFlow', reason: '尚未形成本次用例的 Case Flow 和 CHECK 节点' }],
@@ -80,6 +81,13 @@ function validateExpectationCoverage(execDir, result, events, suppliedExecution 
   for (const ref of [...new Set(duplicates)]) missing.push({ field: `checks.${ref}`, reason: '同一验证点只能提交一个最终检查' });
   for (const ref of unknown) missing.push({ field: `checks.${ref}`, reason: '引用了当前用例理解中不存在的验证点' });
   for (const ref of uncovered) missing.push({ field: `checks.${ref}`, reason: '验证点没有最终检查结果' });
+  const expectationByRef = new Map(expectations.map((item) => [item.ref, item]));
+  for (const check of result.checks) {
+    const ref = checkRef(check);
+    if (check.status === 'NOT_APPLICABLE' && expectationByRef.get(ref)?.requirement !== 'CONDITIONAL') {
+      missing.push({ field: `checks.${ref}.status`, reason: '只有条件检查点可以标记为 NOT_APPLICABLE' });
+    }
+  }
   if (missing.length) {
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult does not cover the current expectations', { missing });
   }
@@ -128,7 +136,7 @@ function validateKnowledgeClosure(result, events, execution = null) {
         reason: `技术事实引用不存在：${unknownTechnicalRefs.join('、')}`,
       });
     }
-    if (check.status !== 'BLOCKED' && technicalRefs.length) {
+    if (!['BLOCKED', 'WAIVED'].includes(check.status) && technicalRefs.length) {
       missing.push({
         field: `checks.${ref}.technicalRefs`,
         reason: '只有被 Runtime 技术事实直接阻止的 BLOCKED 检查可以引用技术事实',
@@ -147,11 +155,7 @@ function validateKnowledgeClosure(result, events, execution = null) {
         });
       }
     }
-    const requiresInvestigation = (
-      check.status === 'FAIL'
-      || check.status === 'INCONCLUSIVE'
-      || (check.status === 'BLOCKED' && validTechnicalRefs.length === 0)
-    );
+    const requiresInvestigation = false;
     const associatedQueries = [...queries.values()].filter((event) => (event.expectationRefs || []).includes(ref));
     const completedReviews = associatedQueries.map((event) => reviews.get(event.queryId)).filter(Boolean);
     const completed = completedReviews.length > 0;
@@ -357,7 +361,7 @@ function validatePlanEvidenceGraph(execDir, suppliedEvents = null, suppliedScene
 
 function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (!execution || execution.schemaVersion !== 12) {
+  if (!execution || execution.schemaVersion !== 13) {
     throw contractError('FORMAT_UNSUPPORTED', 'This execution was created by an unsupported format and must be run again');
   }
   const result = suppliedResult || readJson(path.join(execDir, 'result.json'), null);

@@ -1,11 +1,11 @@
 'use strict';
 
 const fs = require('fs');
-const path = require('path');
 const { canonicalJson, contractError, ensureObject, sha256 } = require('../../lib/contract-utils');
 const { readJson } = require('../../lib/execution-lifecycle');
+const { resolveArtifact } = require('../../lib/execution-evidence');
 
-const VALIDATION_PROFILE_SCHEMA_VERSION = 1;
+const VALIDATION_PROFILE_SCHEMA_VERSION = 2;
 const PROFILE_FILE = 'validation-profile.snapshot.json';
 
 function validationProfileSha(value) {
@@ -20,9 +20,9 @@ function validateValidationProfile(value) {
     throw contractError('VALIDATION_PROFILE_SCHEMA_UNSUPPORTED', `unsupported validation profile schema: ${value.schemaVersion ?? 'missing'}`);
   }
   const expected = {
-    resultContractVersion: 1,
+    resultContractVersion: 2,
     visualInspectionPolicy: 'REQUIRED_FOR_REFERENCED_SCENES',
-    knowledgeClosurePolicy: 'NEGATIVE_CHECKS',
+    knowledgeClosurePolicy: 'OPTIONAL',
     searchCoveragePolicy: 'CONTINUOUS_BOTH_BOUNDARIES',
     evidenceGraphVersion: 1,
     technicalFactPolicyVersion: 1,
@@ -39,9 +39,9 @@ function validateValidationProfile(value) {
 function createValidationProfile() {
   const value = {
     schemaVersion: VALIDATION_PROFILE_SCHEMA_VERSION,
-    resultContractVersion: 1,
+    resultContractVersion: 2,
     visualInspectionPolicy: 'REQUIRED_FOR_REFERENCED_SCENES',
-    knowledgeClosurePolicy: 'NEGATIVE_CHECKS',
+    knowledgeClosurePolicy: 'OPTIONAL',
     searchCoveragePolicy: 'CONTINUOUS_BOTH_BOUNDARIES',
     evidenceGraphVersion: 1,
     technicalFactPolicyVersion: 1,
@@ -51,10 +51,10 @@ function createValidationProfile() {
 }
 
 function loadValidationProfile(execDir, execution) {
-  if (execution?.schemaVersion !== 12) {
+  if (execution?.schemaVersion !== 13) {
     throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
-  const file = path.join(execDir, PROFILE_FILE);
+  const file = resolveArtifact(execDir, PROFILE_FILE);
   if (!fs.existsSync(file)) throw contractError('VALIDATION_PROFILE_MISSING', 'validation profile snapshot is missing');
   const profile = validateValidationProfile(readJson(file, null));
   if (execution.validationProfileSha !== profile.profileSha) {

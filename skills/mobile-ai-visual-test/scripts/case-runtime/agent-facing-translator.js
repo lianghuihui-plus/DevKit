@@ -36,7 +36,8 @@ function caseFlow(execDir) {
 }
 
 function knownExpectations(execDir) {
-  return new Set((caseFlow(execDir)?.nodes || []).filter((item) => item.type === 'CHECK').map((item) => item.ref));
+  return new Set(require('./case-flow-service').checkpointRegistry(execDir)
+    .filter((item) => item.baseline || item.active).map((item) => item.ref));
 }
 
 function validateExpectationRefs(execDir, refs, field = 'expectationRefs') {
@@ -76,7 +77,10 @@ function contextualIssues(execDir, request, scene) {
   }
   if (request.capability === 'plan' && currentPlan(execDir) && !request.reason) {
     const reason = request.caseFlow?.reason || request.reason;
-    if (!reason) issues.push(issue(request.caseFlow ? 'caseFlow.reason' : 'reason', '修订 Case Flow 时必须说明原因', 'REQUIRED'));
+    const replay = request.caseFlow
+      ? require('./case-flow-service').matchingRevision(execDir, request.caseFlow)
+      : null;
+    if (!reason && !replay) issues.push(issue(request.caseFlow ? 'caseFlow.reason' : 'reason', '修订 Case Flow 时必须说明原因', 'REQUIRED'));
   }
   issues.push(...validateExpectationRefs(execDir, request.checkNodeRefs, 'checkNodeRefs'));
   if (request.flowContext !== undefined) {
@@ -354,6 +358,12 @@ function projectAgentFacingResponse(execDir, response, request = null) {
   delete projected.result;
   delete projected.evidenceDiagnostics;
   delete projected.knowledgeUsage;
+  if (projected.caseFlow && typeof projected.caseFlow === 'object') {
+    projected.caseFlow = { ...projected.caseFlow };
+    delete projected.caseFlow.requestSha256;
+    delete projected.caseFlow.requestNormalized;
+    delete projected.caseFlow.submissionId;
+  }
   const scene = currentScene(execDir);
   if (request?.capability === 'inspect') delete projected.scene;
   else projected.scene = projectScene(scene);

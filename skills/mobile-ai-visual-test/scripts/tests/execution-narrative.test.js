@@ -305,7 +305,7 @@ const caseFlowReport = {
       reason: 'INITIAL_CASE_FLOW', summary: '验证条件分支', entryNodeRef: 'N1', uncertainties: [],
       nodes: [
         { ref: 'N1', type: 'DECISION', text: '是否出现可选弹窗', sourceBasis: '原文若出现则检查' },
-        { ref: 'N2', type: 'CHECK', text: '目标入口可见', sourceBasis: '原始用例预期', verificationKind: 'DIRECT_OBSERVATION' },
+        { ref: 'N2', type: 'CHECK', text: '目标入口可见', sourceBasis: '原始用例预期', verificationKind: 'DIRECT_OBSERVATION', requirement: 'REQUIRED' },
         { ref: 'N3', type: 'END', text: '完成' },
       ],
       edges: [
@@ -340,22 +340,16 @@ assert.deepStrictEqual(caseFlowNarrative.steps[0].flowContext, { nodeRef: 'N1', 
 const caseFlowHtml = renderCurrentContextHtml({ identity: { title: 'Case Flow 用例' } }, caseFlowReport);
 assert.match(caseFlowHtml, /data-panel-view="case-flow"/);
 assert.match(caseFlowHtml, /L1/);
-assert.match(caseFlowHtml, /class="case-flow-diagram"/);
-assert.match(caseFlowHtml, /class="case-flow-overview"/);
-assert.match(caseFlowHtml, /data-flow-preview[^>]*data-flow-preview-mode="compact"/);
-assert.match(caseFlowHtml, /class="case-flow-diagram"[^>]*data-flow-direction="TB"/);
-assert.match(caseFlowHtml, /data-open-flow[^>]*aria-label="放大查看执行流程"/);
-assert.match(caseFlowHtml, /<dialog class="flow-viewer" id="flow-dialog"/);
-assert.match(caseFlowHtml, /id="flow-fit"/);
-assert.match(caseFlowHtml, /class="case-flow-node decision visited"[^>]*data-flow-node="N1"/);
-assert.match(caseFlowHtml, /data-flow-edge="L1"[^>]*data-flow-selected="true"[^>]*data-flow-condition="未出现可选弹窗"/);
-assert.match(caseFlowHtml, /data-flow-edge="L2"[^>]*data-flow-selected="false"[^>]*data-flow-condition="出现并已处理弹窗"/);
-assert.match(caseFlowHtml, /data-flow-edge="L3"[^>]*data-flow-selected="true"/);
-assert.match(caseFlowHtml, /class="case-flow-node check visited"[^>]*data-flow-node="N2"/);
+assert.match(caseFlowHtml, /class="mermaid" data-mermaid-source/);
+assert.match(caseFlowHtml, /flowchart TB/);
+assert.match(caseFlowHtml, /未出现可选弹窗/);
+assert.match(caseFlowHtml, /class="graph-fallback"/);
+assert.match(caseFlowHtml, /securityLevel:'strict'/);
 assert.doesNotMatch(caseFlowHtml, />连接与分支</);
 assert.doesNotMatch(caseFlowHtml, /data-panel-view="understanding"/);
 const caseFlowMarkdown = renderCurrentContextMarkdown({ identity: { title: 'Case Flow 用例' } }, caseFlowReport);
-assert.match(caseFlowMarkdown, /## Case Flow/);
+assert.match(caseFlowMarkdown, /## 用例流程/);
+assert.match(caseFlowMarkdown, /## 执行轨迹/);
 assert.doesNotMatch(caseFlowMarkdown, /## Agent 用例理解/);
 
 console.log('execution narrative passed');

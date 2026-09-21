@@ -10,7 +10,7 @@ const { metrics } = require('../case-runtime/result-service');
 const { deriveExecutionTiming } = require('../lib/execution-timing');
 
 const execDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-metrics-'));
-fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 12, finalized: false }));
+fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 13, finalized: false }));
 let nowMs = 1000;
 const clock = () => nowMs;
 const invocation = telemetry.beginInvocation(execDir, 'act', {
