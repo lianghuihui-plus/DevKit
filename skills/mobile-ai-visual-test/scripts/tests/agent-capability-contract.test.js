@@ -112,11 +112,15 @@ assert.match(read('prompts/case-agent.md'), /recover\.targetState.*三端.*Runti
 assert.match(read('prompts/case-agent.md'), /不.*提供.*安装包/);
 assert.match(read('prompts/case-agent.md'), /前置状态.*无法建立.*错误原因/);
 assert.match(read('prompts/case-agent.md'), /ACTION_OUTCOME_UNKNOWN.*禁止.*重放/);
+assert.match(read('prompts/case-agent.md'), /结果已知.*安全重放.*有限重试/);
+assert.match(read('prompts/case-agent.md'), /ACTION_EFFECT_MISMATCH.*产品 FAIL/);
+assert.match(read('prompts/case-agent.md'), /verificationAttempts.*核验采样.*动作重放/);
+assert.match(read('references/failure-policy.md'), /结果已知.*安全重放.*有限重试/);
 assert.match(read('prompts/case-agent.md'), /editable.*优先.*inputText/);
 assert.match(read('prompts/case-agent.md'), /不要.*逐个点击软键盘/);
 assert.match(read('SKILL.md'), /目标级.*inputText/);
-assert.match(read('prompts/case-agent.md'), /输入依赖.*Runtime.*自动/);
-assert.match(read('SKILL.md'), /输入依赖.*Runtime.*自动/);
+assert.match(read('prompts/case-agent.md'), /输入组件依赖.*Runtime.*自动/);
+assert.match(read('SKILL.md'), /输入组件依赖.*Runtime.*自动/);
 assert.doesNotMatch(read('prompts/case-agent.md'), /MAVT Input IME|mavtInputIme|androidImeNotReady/);
 assert.doesNotMatch(read('SKILL.md'), /MAVT Input IME|mavtInputIme|androidImeNotReady/);
 assert.match(read('references/failure-policy.md'), /APP_INITIAL_STATE_UNAVAILABLE.*原生.*安装态/);

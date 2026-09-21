@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { dispatchAction } = require('../case-runtime/action-service');
+const { buildCapabilities } = require('../case-runtime/capability-catalog');
 const { sceneFromObservation } = require('../case-runtime/scene-service');
 const store = require('../case-runtime/store');
 const transactions = require('../case-runtime/transaction-manager');
@@ -66,6 +67,48 @@ assert.strictEqual(result.action.observedEffect, undefined);
 assert.deepStrictEqual(result.action.evidence.sceneRefs, { before: 'scene-0002' });
 assert.deepStrictEqual(result.action.evidence.screenshotRefs, ['screenshots/scene-0002.png']);
 assert.strictEqual(store.events(fixture.execDir).filter((event) => event.type === 'sceneObserved').length, beforeSceneEvents);
+
+const inputScene = store.readCurrentScene(fixture.execDir);
+inputScene.elements = [{
+  id: 'account-field', text: '账号', role: 'TextField', bounds: [80, 210, 360, 270],
+  clickable: false, checkable: false, editable: true, enabled: true, visible: true, focused: false,
+}];
+inputScene.capabilities = buildCapabilities(inputScene, 'harmony');
+store.writeScene(fixture.execDir, inputScene);
+const inputResult = dispatchAction(fixture.execDir, {
+  basedOnSceneId: inputScene.sceneId,
+  capabilityId: `${inputScene.sceneId}:inputText:account-field`,
+  input: { text: '13223222360', mode: 'replace' },
+  decision: { purpose: '输入账号' },
+}, {
+  now: '2026-09-20T10:00:01.000Z',
+  invokeDeviceOperation: () => ({
+    adapterResult: {
+      schemaVersion: 2,
+      type: 'actionResult',
+      platform: 'harmony',
+      action: 'inputText',
+      command: { status: 'ACCEPTED', transport: 'HDC_UITEST', elapsedMs: 50 },
+      deviceExecution: {
+        status: 'FAILED', verification: 'INPUT_EFFECT', failureCode: 'ACTION_EFFECT_MISMATCH',
+        actualTouchPoint: null,
+      },
+      failureCode: 'ACTION_EFFECT_MISMATCH',
+      inputEffect: {
+        status: 'MISMATCH', attempts: 7, settledMs: 7652,
+        expectedLength: 11, observedLength: 5,
+        expectedText: '13223222360', actualText: '13223',
+      },
+    },
+  }),
+});
+assert.strictEqual(inputResult.action.failureCode, 'ACTION_EFFECT_MISMATCH');
+assert.deepStrictEqual(inputResult.action.inputEffect, {
+  status: 'MISMATCH', attempts: 7, settledMs: 7652,
+  expectedLength: 11, observedLength: 5,
+});
+assert.strictEqual(JSON.stringify(inputResult.action).includes('13223222360'), false);
+assert.strictEqual(JSON.stringify(inputResult.action).includes('13223'), false);
 
 const transaction = transactions.readAction(fixture.execDir, result.operationId);
 assert.strictEqual(transaction.status, 'RESULT_RECORDED');

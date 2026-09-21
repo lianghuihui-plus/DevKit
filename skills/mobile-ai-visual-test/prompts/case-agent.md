@@ -22,20 +22,21 @@ Runtime 调用使用 Brief 中预绑定的 `runtime.command`，通过 stdin 一�
 
 1. 保持“看图、决策、操作、再看图”的因果顺序；不要跨过需要新 Scene 才能作出的业务判断。
 2. 使用 Brief 已带的 Scene；没有 Scene 或现场可能在框架外变化时调用 `observe`。
-3. 阅读 `case.source` 后使用 `plan` 形成一个完整 Case Flow，以 `ACTION / DECISION / CHECK / END` 表达操作、条件分支、检查点和结束路径；不要再分别生成用例理解和线性计划。
-4. 节点和边使用稳定的 `N` / `L` 引用；语义未变时保留引用，取消的引用不得复用。现场与当前流程不一致时可提交完整新 revision，并说明触发修订的新事实或理解变化。
-5. 截图和结构信息是并列证据。控件树为空或缺失、截图与结构冲突、实际结果异常、操作无效果，或权限弹窗、Toast、遮罩、浮层、键盘、长按过程、动画和纯视觉结果出现时，必须使用 `view_image` 实际打开截图；控件树为空不得直接判断页面空白。
-6. 打开截图后，用 `inspect(channel="visual")` 登记实际看到的事实。未看图片不得登记。
-7. 根据 Scene 的控件事实和 ActionRef 文档构造动作。优先使用控件动作；目标只在截图中可见时使用 `visual:*`，并确保该 Scene 已登记视觉事实。
-8. Scene 提供 editable 控件时优先使用目标级 `inputText` 一次输入完整文本。输入依赖由 Runtime 自动准备和恢复；不要逐个点击软键盘，也不要自行安装或切换输入组件。
-9. `inspect` 和 `knowledge` 的 `checkNodeRefs` 只关联本次直接检查或调查的 CHECK；可用 `flowContext` 记录当前节点，选择 DECISION 分支时同时提供该节点发出的 `selectedEdgeRef`。
-10. 每次普通动作后查看新 Scene 和 `previousAction`。Runtime 只返回动作投递状态与前后 Scene/截图证据，不判断截图是否变化，也不判断动作是否命中业务目标。
-11. 对视频控制栏、Toast、短时弹窗等不能跨越一次 Agent 决策周期的 UI，可提交有限 `runPlan` 让 Runtime 连续执行动作、等待、采集、确定性定位和技术检查。Runtime 不做视觉语义定位；不支持的 locator 必须停止，不能猜测。需要两次有间隔的点击时显式使用 `act / wait / act`，不能用 `doubleTap` 替代。
-12. 结果异常、动作无效果、证据冲突或怀疑点错/滑错时，先打开上一动作标注图并用 `inspect(channel="action")` 登记落点或轨迹事实；如果现场可能已经变化，再调用一次 `observe` 获取新截图和控件树，确认后才纠正动作、修改计划或形成结论。
-13. 现场无法解释、重复尝试无进展、无法形成下一步或结论、需要平台/版本/账号/配置规则支撑，或准备形成负向结论时调用 `knowledge`。
-14. 需要空本地状态或首次安装状态时调用 `recover.targetState`。三端由 Runtime 统一处理，不提供、询问或操作安装包；前置状态无法建立时根据错误原因和对应文档处理。
-15. 形成 CHECK 判断时尽快通过独立 `recordResult` 保存，并使用 `checkNodeRef` 引用真实 Scene、知识或技术事实。未进入的条件分支明确记为 `NOT_APPLICABLE` 并说明原因，不得形成 FAIL。
-16. 正常 `finish` 只提交摘要和仍需披露的不确定性，Runtime 从 ledger 组装完整结果；若已观察后确认用例级前置条件不满足，使用显式 `outcome: "NOT_RUN"` 并提供原因和已登记 Scene/技术事实引用。
+3. 完整阅读 `case.source` 后再确定条件作用域，并使用 `plan` 形成一个完整 Case Flow，以 `ACTION / DECISION / CHECK / END` 表达操作、条件分支、检查点和结束路径；不要按步骤顺序边读边建模，也不要再分别生成用例理解和线性计划。
+4. 提交 `plan` 前枚举原始用例允许的每条路径：同一业务事实不能既作为 DECISION 又先作为会让正常分支失败的 REQUIRED CHECK；每个正常 END 都必须能处置全部检查点且不天然依赖 FAIL 或 WAIVED。
+5. 节点和边使用稳定的 `N` / `L` 引用；语义未变时保留引用，取消的引用不得复用。现场与当前流程不一致时可提交完整新 revision，并说明触发修订的新事实或理解变化。
+6. 截图和结构信息是并列证据。控件树为空或缺失、截图与结构冲突、实际结果异常、操作无效果，或权限弹窗、Toast、遮罩、浮层、键盘、长按过程、动画和纯视觉结果出现时，必须使用 `view_image` 实际打开截图；控件树为空不得直接判断页面空白。
+7. 打开截图后，用 `inspect(channel="visual")` 登记实际看到的事实。未看图片不得登记。
+8. 根据 Scene 的控件事实和 ActionRef 文档构造动作。优先使用控件动作；目标只在截图中可见时使用 `visual:*`，并确保该 Scene 已登记视觉事实。
+9. Scene 提供 editable 控件时优先使用目标级 `inputText` 一次输入完整文本。输入组件依赖由 Runtime 自动准备和恢复，但文本是否完整写入以 `previousAction.technicalResult` 为准；不要逐个点击软键盘，也不要自行安装或切换输入组件。
+10. `inspect` 和 `knowledge` 的 `checkNodeRefs` 只关联本次直接检查或调查的 CHECK；可用 `flowContext` 记录当前节点，选择 DECISION 分支时同时提供该节点发出的 `selectedEdgeRef`。
+11. 每次普通动作后查看新 Scene 和 `previousAction`。Runtime 返回动作投递状态、确定性技术执行/核验结果与前后 Scene/截图证据，不判断截图是否变化，也不判断动作是否命中业务目标；`inputEffect.verificationAttempts` 表示核验采样次数，不表示动作重放次数。
+12. 对视频控制栏、Toast、短时弹窗等不能跨越一次 Agent 决策周期的 UI，可提交有限 `runPlan` 让 Runtime 连续执行动作、等待、采集、确定性定位和技术检查。Runtime 不做视觉语义定位；不支持的 locator 必须停止，不能猜测。需要两次有间隔的点击时显式使用 `act / wait / act`，不能用 `doubleTap` 替代。
+13. 结果异常时先区分技术执行失败与业务结果不符合。`previousAction.technicalResult` 表明结果已知、原动作可安全重放且现场仍适用时，优先进行一次有限重试；怀疑点错/滑错或空间动作无效果时，再打开上一动作标注图并用 `inspect(channel="action")` 登记落点或轨迹事实。现场可能已经变化时先 `observe`，不得把可恢复的单次动作异常直接写成最终结论。
+14. 现场无法解释、有限恢复后仍无进展、无法形成下一步或结论、需要平台/版本/账号/配置等业务规则支撑，或准备形成业务负向结论时调用 `knowledge`。已有明确技术失败且只是决定恢复或形成 BLOCKED 时，不为满足流程而查询知识库。
+15. 需要空本地状态或首次安装状态时调用 `recover.targetState`。三端由 Runtime 统一处理，不提供、询问或操作安装包；前置状态无法建立时根据错误原因和对应文档处理。
+16. 形成 CHECK 判断时尽快通过独立 `recordResult` 保存，并使用 `checkNodeRef` 引用真实 Scene、知识或技术事实。未进入的条件分支明确记为 `NOT_APPLICABLE` 并说明原因，不得形成 FAIL。
+17. 正常 `finish` 只提交摘要和仍需披露的不确定性，Runtime 从 ledger 组装完整结果；若已观察后确认用例级前置条件不满足，使用显式 `outcome: "NOT_RUN"` 并提供原因和已登记 Scene/技术事实引用。
 
 ## 错误与恢复
 
@@ -43,6 +44,7 @@ Runtime 调用使用 Brief 中预绑定的 `runtime.command`，通过 stdin 一�
 - `SCENE_CHANGED`：重新查看当前 Scene；如果现场可能继续变化，调用 `observe` 后再判断。
 - `ACTION_NOT_AVAILABLE` 或 `ACTION_INPUT_INVALID`：根据当前 Scene 和方法签名修正动作；该失败不会隐式保存业务判断。
 - `ACTION_OUTCOME_UNKNOWN`：先观察确认，禁止自动重放可能已经生效的动作。
+- `ACTION_EFFECT_MISMATCH`：这是结果已知的技术动作失败，不得直接形成产品 FAIL；`replace` 输入等可安全重放动作在确认当前目标后进行一次有限重试，仍失败则引用技术事实形成 BLOCKED。
 - `CASE_RESULT_INCOMPLETE`：只处理 readiness 中列出的缺失证据、知识调查、视觉登记或冲突，不全量复审已 resolved 项。
 - `TIME_LIMIT`：停止新设备动作，仍可调查已有事实并尝试收口。
 - 技术异常无法安全恢复时不能改报为产品 FAIL；有有效技术事实时形成 BLOCKED，否则证据不足时形成 INCONCLUSIVE。

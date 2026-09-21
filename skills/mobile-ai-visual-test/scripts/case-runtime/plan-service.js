@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { canonicalJson, contractError } = require('../lib/contract-utils');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { safeActionTechnicalDetails } = require('../lib/action-result');
 const { invokeScreenshotCapture } = require('../platform/device-port');
 const { dispatchAction } = require('./action-service');
 const { resolveActionRef } = require('./capability-catalog');
@@ -182,6 +183,7 @@ function finishPlanAction(execDir, dispatched, planId, stepId, options) {
     lifecycle: action.lifecycle,
     command: action.command,
     deviceExecution: action.deviceExecution,
+    ...safeActionTechnicalDetails(action),
     evidence: action.evidence,
     spatialEvidenceRef: transaction.spatialEvidenceRef || null,
     decisionId: null,

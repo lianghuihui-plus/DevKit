@@ -1,7 +1,7 @@
 'use strict';
 
 const { invokeDeviceOperation } = require('../platform/device-port');
-const { sanitizeAdapterActionResult } = require('../lib/action-result');
+const { safeActionTechnicalDetails, sanitizeAdapterActionResult } = require('../lib/action-result');
 const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { resolveAction } = require('./capability-catalog');
 const { validateLongPressTiming } = require('./contract');
@@ -41,6 +41,7 @@ function completedAction(operationId, action, adapterResult, beforeScene, afterS
     action: redactedAction(action),
     command: adapterResult.command,
     deviceExecution: adapterResult.deviceExecution,
+    ...safeActionTechnicalDetails(adapterResult),
     evidence: actionEvidence(beforeScene, afterScene),
     ...(spatialEvidence ? { spatialEvidence } : {}),
     ...(duringObservation ? { duringActionObservation: duringObservation } : {}),
@@ -148,6 +149,7 @@ function dispatchAction(execDir, request, options = {}) {
     action: redactedAction(resolved.action),
     command: adapterResult.command,
     deviceExecution: adapterResult.deviceExecution,
+    ...safeActionTechnicalDetails(adapterResult),
     evidence: actionEvidence(scene),
     ...(spatialEvidence ? { spatialEvidence } : {}),
     ...(duringActionObservation(request, deviceResult) ? { duringActionObservation: duringActionObservation(request, deviceResult) } : {}),
@@ -245,6 +247,7 @@ function act(execDir, request, options = {}) {
     lifecycle: actionResult.lifecycle,
     command: actionResult.command,
     deviceExecution: actionResult.deviceExecution,
+    ...safeActionTechnicalDetails(actionResult),
     evidence: actionResult.evidence,
     duringActionObservation: actionResult.duringActionObservation || null,
     spatialEvidenceRef: transaction.spatialEvidenceRef || null,

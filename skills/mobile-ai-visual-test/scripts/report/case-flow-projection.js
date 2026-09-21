@@ -202,18 +202,4 @@ function flowMermaid(flow, ledger = [], direction = 'TB') {
   return lines.join('\n');
 }
 
-function traceMermaid(trace, direction = 'TB') {
-  const lines = [`flowchart ${direction === 'LR' ? 'LR' : 'TB'}`];
-  for (const node of trace?.nodes || []) {
-    const id = mermaidId(node.ref, 'X_');
-    const attempts = node.attemptCount > 1 ? ` · ${node.attemptCount} attempts` : '';
-    lines.push(`  ${id}["${mermaidText(`${node.operation} · ${node.purpose}${attempts}`)}"]`);
-    lines.push(`  class ${id} ${node.adaptation ? 'adaptation' : 'trace'}`);
-  }
-  for (const edge of trace?.edges || []) lines.push(`  ${mermaidId(edge.from, 'X_')} --> ${mermaidId(edge.to, 'X_')}`);
-  lines.push('  classDef trace fill:#ffffff,stroke:#0e6873,color:#17212b');
-  lines.push('  classDef adaptation fill:#fff7e8,stroke:#a96f13,color:#4b3511,stroke-dasharray:5 3');
-  return lines.join('\n');
-}
-
-module.exports = { flowMermaid, projectCaseFlowViews, traceMermaid };
+module.exports = { flowMermaid, projectCaseFlowViews };

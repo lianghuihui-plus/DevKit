@@ -50,6 +50,28 @@ function sanitizeAdapterActionResult(value) {
   return normalized;
 }
 
+function safeActionTechnicalDetails(value) {
+  const rawEffect = value?.inputEffect;
+  const inputEffect = {};
+  if (rawEffect && typeof rawEffect === 'object' && !Array.isArray(rawEffect)) {
+    if (typeof rawEffect.status === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(rawEffect.status)) {
+      inputEffect.status = rawEffect.status;
+    }
+    for (const field of ['attempts', 'settledMs', 'expectedLength', 'observedLength']) {
+      if (Number.isFinite(rawEffect[field]) && rawEffect[field] >= 0) inputEffect[field] = rawEffect[field];
+    }
+  }
+  const rawFailureCode = value?.failureCode
+    || value?.deviceExecution?.failureCode
+    || value?.command?.failureCode;
+  const failureCode = typeof rawFailureCode === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/.test(rawFailureCode)
+    ? rawFailureCode : null;
+  return {
+    ...(failureCode ? { failureCode } : {}),
+    ...(Object.keys(inputEffect).length ? { inputEffect } : {}),
+  };
+}
+
 function normalizeAdapterActionResult(value, context = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'action adapter result must be an object');
@@ -110,6 +132,7 @@ module.exports = {
   COMMAND_STATUSES,
   DEVICE_EXECUTION_STATUSES,
   normalizeAdapterActionResult,
+  safeActionTechnicalDetails,
   sanitizeAdapterActionResult,
   validateAdapterActionResult,
 };

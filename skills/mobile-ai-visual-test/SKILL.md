@@ -87,7 +87,7 @@ Coordinator 响应只提供错误原因、诊断、当前资源事实和 `docume
 - 知识、Scene 和技术事实可以支撑检查结果或豁免；未查询知识不阻止 `FAIL`、`INCONCLUSIVE`、`BLOCKED` 或 `WAIVED` 收口，已提交引用仍必须有效。
 - `runPlan` 只批量执行确定性动作、采集和技术检查；其技术 check 不自动完成业务 CHECK，Agent 必须读取证据后调用 `recordResult`。
 - 三端输入由 Case Runtime 统一发布目标级 `inputText`，Case Agent 复制 Scene 动作即可完成目标聚焦和整段输入；无目标焦点输入只是 Scene 无法识别输入控件时的兜底。
-- 输入依赖由 Runtime 自动准备、校验和恢复，执行协调 Agent 与 Case Agent 不安装、启用或切换平台输入组件。
+- 输入组件依赖由 Runtime 自动准备、校验和恢复，执行协调 Agent 与 Case Agent 不安装、启用或切换平台输入组件；文本投递是否完整由 Case Agent 根据 `previousAction` 的技术核验事实判断并决定有限恢复。
 - Handoff 与职责隔离不是操作系统安全沙箱。正常流程优先使用框架；技术异常时两个 Agent 都可在各自职责和授权范围内独立调查，随后回到框架核验与持久化。
 
 固定委托文本由 Facade 响应提供，保持独立角色语义：“你是独立 Case Agent。执行给定的 `loaderCommand`，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。”

@@ -5,7 +5,11 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { normalizeAdapterActionResult, validateAdapterActionResult } = require('../lib/action-result');
+const {
+  normalizeAdapterActionResult,
+  safeActionTechnicalDetails,
+  validateAdapterActionResult,
+} = require('../lib/action-result');
 const { updateScrollContexts } = require('../lib/scroll-context');
 const { classifyRuntimeDisplay, startupDisplayRequirement } = require('../lib/startup-display');
 const { buildCapabilities, resolveAction } = require('../case-runtime/capability-catalog');
@@ -45,6 +49,20 @@ assert.strictEqual(mismatchedInput.command.status, 'ACCEPTED');
 assert.strictEqual(mismatchedInput.deviceExecution.status, 'FAILED');
 assert.strictEqual(mismatchedInput.deviceExecution.verification, 'INPUT_EFFECT');
 assert.strictEqual(mismatchedInput.deviceExecution.failureCode, 'ACTION_EFFECT_MISMATCH');
+assert.deepStrictEqual(safeActionTechnicalDetails({
+  ...mismatchedInput,
+  inputEffect: {
+    status: 'MISMATCH', attempts: 7, settledMs: 7652,
+    expectedLength: 11, observedLength: 5,
+    expectedText: 'private-value', actualText: 'private', reason: 'private-value',
+  },
+}), {
+  failureCode: 'ACTION_EFFECT_MISMATCH',
+  inputEffect: {
+    status: 'MISMATCH', attempts: 7, settledMs: 7652,
+    expectedLength: 11, observedLength: 5,
+  },
+});
 const sanitizedInput = normalizeAdapterActionResult({
   type: 'actionResult', action: 'inputText', ok: true,
   inputEffect: { status: 'VERIFIED', expectedText: 'private-value', actualText: 'private-value' },

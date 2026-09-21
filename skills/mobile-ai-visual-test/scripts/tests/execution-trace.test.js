@@ -156,7 +156,6 @@ assert.ok(html.includes('initializeMermaid();\nasync function renderMermaidPanel
 assert.ok(html.includes("querySelector('[data-mermaid-source]>svg')"));
 for (const expected of [
   'data-mermaid-kind="baseline"',
-  'data-mermaid-kind="trace"',
   'data-flow-node-detail="N2"',
   'data-open-checkpoint="N2"',
   'data-checkpoint-ref="N2"',
@@ -165,6 +164,8 @@ for (const expected of [
   'function decorateMermaidNodes(stage,svg)',
   'function activateMermaidNode(node)',
 ]) assert.ok(html.includes(expected), expected);
+assert.strictEqual(html.includes('data-mermaid-kind="trace"'), false);
+assert.strictEqual(html.includes('<h2>实际执行轨迹</h2>'), false);
 assert.strictEqual((html.match(/role="tab"/g) || []).length, 5);
 assert.strictEqual(html.includes('data-report-tab="checkpoints"'), false);
 assert.strictEqual(html.includes('data-panel-view="checkpoints"'), false);
@@ -186,7 +187,8 @@ for (const expected of [
   'list.scrollTop-=listRect.top-selectedRect.top',
   'list.scrollTop+=selectedRect.bottom-listRect.bottom',
 ]) assert.ok(html.includes(expected), expected);
-assert.strictEqual((html.match(/workspace\?\.scrollIntoView\(\{block:'start'\}\)/g) || []).length, 2, 'trace jumps should reveal the execution workspace');
+assert.strictEqual((html.match(/workspace\?\.scrollIntoView\(\{block:'start'\}\)/g) || []).length, 1, 'step jumps should reveal the execution workspace');
+assert.strictEqual(html.includes("kind==='trace'"), false);
 assert.ok(html.includes("document.querySelector('[data-flow-node-detail=\"'+ref+'\"]')?.scrollIntoView({block:'nearest'})"));
 assert.ok(html.includes("row.scrollIntoView({block:'center'})"));
 assert.ok(html.includes("document.querySelectorAll('[data-select-checkpoint]')"));

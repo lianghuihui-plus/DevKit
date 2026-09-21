@@ -2,6 +2,7 @@
 
 const { validateAgentJson } = require('../lib/agent-json-contract');
 const { initialStateStrategy } = require('../lib/app-provisioning');
+const { safeActionTechnicalDetails } = require('../lib/action-result');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
 const AGENT_FACING_PROTOCOL = 'agent-facing';
@@ -216,7 +217,14 @@ const PUBLIC_METHODS = Object.freeze({
     capability: '固定为 plan', caseFlow: '完整 Case Flow 快照',
   }, {
     conditionalRequirements: ['首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。', 'CHECK 必须声明 REQUIRED 或 CONDITIONAL；CONDITIONAL 必须提供 applicability。'],
-    contextualValidationRules: ['首次 revision 是只基于原始用例的 Baseline Flow，不写入当前 Scene 的现场适配。', 'Baseline 节点和边不可改义；既有 CHECK 不可改义，现场适配或语义修正使用新 ref。', '修订可改变 Working Flow 导航，但删除 Baseline CHECK 不会取消其最终处置责任。'],
+    contextualValidationRules: [
+      '首次 revision 是只基于原始用例的 Baseline Flow，不写入当前 Scene 的现场适配。',
+      '提交首次 Flow 前完整阅读原始用例，结合后置的“若/如果/未出现则”等语句确定条件作用域。',
+      '原始用例允许某事实的不同取值分别进入正常路径时，该事实只建 DECISION；分支内验证建 CONDITIONAL CHECK，同一业务事实不得再建导致另一正常分支失败的 REQUIRED CHECK。',
+      '提交前逐条检查原始用例允许的正常 END 路径；任何正常 END 都不得天然要求某个 REQUIRED CHECK 为 FAIL 或依赖 WAIVED 才能收口。',
+      'Baseline 节点和边不可改义；既有 CHECK 不可改义，现场适配或语义修正使用新 ref。',
+      '修订可改变 Working Flow 导航，但删除 Baseline CHECK 不会取消其最终处置责任。',
+    ],
     successStatuses: ['CASE_FLOW_RECORDED'], sideEffects: ['追加 Case Flow revision'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REVISION_CONFLICT', 'CASE_FLOW_NODE_IDENTITY_CHANGED', 'CASE_FLOW_EDGE_IDENTITY_CHANGED', 'CASE_RUNTIME_TECHNICAL'],
     idempotency: '规范化后语义等价的 Case Flow 请求只写一次 revision，幂等键由框架内部派生。',
@@ -360,11 +368,33 @@ function projectPreviousAction(previousAction) {
   const annotatedScreenshotPath = previousAction.spatialEvidence?.annotatedScreenshot?.path
     || previousAction.spatialEvidence?.annotatedScreenshotPath;
   const spatial = previousAction.spatialEvidence;
+  const deviceExecution = previousAction.deviceExecution;
+  const persistedTechnicalDetails = safeActionTechnicalDetails(previousAction);
+  const persistedInputEffect = persistedTechnicalDetails.inputEffect;
+  const technicalDetails = {
+    ...(persistedTechnicalDetails.failureCode ? { failureCode: persistedTechnicalDetails.failureCode } : {}),
+    ...(persistedInputEffect ? {
+      inputEffect: {
+        ...(persistedInputEffect.status ? { status: persistedInputEffect.status } : {}),
+        ...(persistedInputEffect.attempts !== undefined ? { verificationAttempts: persistedInputEffect.attempts } : {}),
+        ...(persistedInputEffect.settledMs !== undefined ? { verificationElapsedMs: persistedInputEffect.settledMs } : {}),
+        ...(persistedInputEffect.expectedLength !== undefined ? { expectedLength: persistedInputEffect.expectedLength } : {}),
+        ...(persistedInputEffect.observedLength !== undefined ? { observedLength: persistedInputEffect.observedLength } : {}),
+      },
+    } : {}),
+  };
   return {
     operationRef: previousAction.operationRef || previousAction.operationId,
     type: previousAction.action?.type || previousAction.type || 'unknown',
     deliveryStatus,
     outcomeKnown: deliveryStatus !== 'UNKNOWN',
+    ...(deviceExecution || Object.keys(technicalDetails).length ? {
+      technicalResult: {
+        ...(deviceExecution?.status ? { deviceStatus: deviceExecution.status } : {}),
+        ...(deviceExecution?.verification ? { verification: deviceExecution.verification } : {}),
+        ...technicalDetails,
+      },
+    } : {}),
     ...(previousAction.evidence ? { evidence: previousAction.evidence } : {}),
     ...(spatial ? {
       spatialEvidence: {

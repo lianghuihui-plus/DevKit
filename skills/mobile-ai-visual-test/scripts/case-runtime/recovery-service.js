@@ -9,7 +9,7 @@ const { commitRecoveryGeneration } = require('../session/warm-session-store');
 const sceneService = require('./scene-service');
 const store = require('./store');
 const actionTransactions = require('./transaction-manager');
-const { sanitizeAdapterActionResult } = require('../lib/action-result');
+const { safeActionTechnicalDetails, sanitizeAdapterActionResult } = require('../lib/action-result');
 const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 
 function commitGeneration(execDir, execution, nextGeneration, now) {
@@ -82,6 +82,7 @@ function recoverPendingTransactions(execDir, options = {}) {
           action: draft.action,
           command: unknown ? { status: 'UNKNOWN' } : draft.deviceResult.command,
           deviceExecution: unknown ? { status: 'UNVERIFIED' } : draft.deviceResult.deviceExecution,
+          ...(!unknown ? safeActionTechnicalDetails(draft.deviceResult) : {}),
           evidence: {
             sceneRefs: { before: draft.sceneId },
             screenshotRefs: [store.readCurrentScene(execDir)?.screenshot?.ref].filter(Boolean),
@@ -103,6 +104,7 @@ function recoverPendingTransactions(execDir, options = {}) {
           lifecycle: observed.scene.previousAction.lifecycle,
           command: observed.scene.previousAction.command,
           deviceExecution: observed.scene.previousAction.deviceExecution,
+          ...safeActionTechnicalDetails(observed.scene.previousAction),
           evidence: observed.scene.previousAction.evidence,
           duringActionObservation: draft.duringActionObservation || null,
           spatialEvidenceRef: draft.spatialEvidenceRef || null,

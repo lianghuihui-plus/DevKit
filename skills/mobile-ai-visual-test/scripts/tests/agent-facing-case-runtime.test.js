@@ -256,6 +256,32 @@ assert.strictEqual(sceneWithAction.previousAction.screenComparison, undefined);
 assert.strictEqual(sceneWithAction.previousAction.observedEffect, undefined);
 assert.strictEqual(sceneWithAction.previousAction.spatialEvidence.annotatedScreenshotPath,
   scene.previousAction.spatialEvidence.annotatedScreenshot.path);
+scene.previousAction = {
+  operationId: 'action-0002',
+  action: { type: 'inputText', text: '[REDACTED]' },
+  command: { status: 'ACCEPTED' },
+  deviceExecution: {
+    status: 'FAILED', verification: 'INPUT_EFFECT', failureCode: 'ACTION_EFFECT_MISMATCH',
+  },
+  failureCode: 'ACTION_EFFECT_MISMATCH',
+  inputEffect: {
+    status: 'MISMATCH', attempts: 7, settledMs: 7652,
+    expectedLength: 11, observedLength: 5,
+    expectedText: '13223222360', actualText: '13223',
+  },
+};
+const sceneWithInputMismatch = projectScene(scene);
+assert.deepStrictEqual(sceneWithInputMismatch.previousAction.technicalResult, {
+  deviceStatus: 'FAILED',
+  verification: 'INPUT_EFFECT',
+  failureCode: 'ACTION_EFFECT_MISMATCH',
+  inputEffect: {
+    status: 'MISMATCH', verificationAttempts: 7, verificationElapsedMs: 7652,
+    expectedLength: 11, observedLength: 5,
+  },
+});
+assert.strictEqual(JSON.stringify(sceneWithInputMismatch).includes('13223222360'), false);
+assert.strictEqual(JSON.stringify(sceneWithInputMismatch).includes('13223'), false);
 const actionInspection = run(execDir, {
   capability: 'inspect', basedOnSceneRef: scene.sceneId, channel: 'action', observation: '滑动轨迹位于目标卡片区域上方', checkNodeRefs: ['N2'],
 }, { now: '2026-09-11T00:00:01.700Z' });

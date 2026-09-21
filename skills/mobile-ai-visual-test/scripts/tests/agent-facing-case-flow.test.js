@@ -5,9 +5,16 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { validateAgentFacingRequest } = require('../case-runtime/agent-facing-contract');
+const {
+  PUBLIC_CONTRACT,
+  validateAgentFacingRequest,
+} = require('../case-runtime/agent-facing-contract');
 const { translateAgentFacingRequest } = require('../case-runtime/agent-facing-translator');
 const caseFlowService = require('../case-runtime/case-flow-service');
+const {
+  applyExpectationResults,
+  buildCaseResultFromLedger,
+} = require('../case-runtime/expectation-result-service');
 const store = require('../case-runtime/store');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 
@@ -30,22 +37,34 @@ store.appendEvent(execDir, 'sceneObserved', { sceneId: 'scene-1', screenshotRef:
 
 const caseFlow = {
   baseRevision: null,
-  summary: '验证条件分支',
+  summary: '验证首次启动授权条件分支',
   entryNodeRef: 'N1',
   nodes: [
-    { ref: 'N1', type: 'DECISION', text: '是否满足前置条件', sourceBasis: '原始用例前置条件' },
-    { ref: 'N2', type: 'CHECK', text: '目标结果可见', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' },
-    { ref: 'N3', type: 'CHECK', text: '可选弹窗正确', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原文若出现则检查', requirement: 'CONDITIONAL', applicability: '进入可选弹窗分支' },
-    { ref: 'N4', type: 'END', text: '完成' },
+    { ref: 'N1', type: 'ACTION', text: '启动 App' },
+    { ref: 'N2', type: 'DECISION', text: '是否出现系统权限弹窗', sourceBasis: '执行步骤 2 和步骤 6' },
+    { ref: 'N3', type: 'CHECK', text: '系统权限弹窗包含权限相关文案', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '执行步骤 2', requirement: 'CONDITIONAL', applicability: '系统权限弹窗出现' },
+    { ref: 'N4', type: 'ACTION', text: '点击允许' },
+    { ref: 'N5', type: 'CHECK', text: '系统权限弹窗关闭', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '执行步骤 4', requirement: 'CONDITIONAL', applicability: '系统权限弹窗出现且已点击允许' },
+    { ref: 'N6', type: 'CHECK', text: '出现青少年守护相关文案弹窗', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '执行步骤 5', requirement: 'CONDITIONAL', applicability: '系统权限弹窗出现且已点击允许' },
+    { ref: 'N7', type: 'END', text: '未出现权限弹窗，跳过授权并正常结束' },
+    { ref: 'N8', type: 'END', text: '授权分支完成' },
   ],
   edges: [
-    { ref: 'L1', from: 'N1', to: 'N2', condition: '满足前置条件' },
-    { ref: 'L2', from: 'N1', to: 'N3', condition: '进入可选分支' },
-    { ref: 'L3', from: 'N2', to: 'N4' },
+    { ref: 'L1', from: 'N1', to: 'N2' },
+    { ref: 'L2', from: 'N2', to: 'N3', condition: '出现' },
+    { ref: 'L3', from: 'N2', to: 'N7', condition: '未出现' },
     { ref: 'L4', from: 'N3', to: 'N4' },
+    { ref: 'L5', from: 'N4', to: 'N5' },
+    { ref: 'L6', from: 'N5', to: 'N6' },
+    { ref: 'L7', from: 'N6', to: 'N8' },
   ],
   uncertainties: [],
 };
+
+const planRules = PUBLIC_CONTRACT.methods.plan.contextualValidationRules;
+assert.ok(planRules.some((rule) => rule.includes('完整阅读') && rule.includes('条件作用域')));
+assert.ok(planRules.some((rule) => rule.includes('同一业务事实') && rule.includes('DECISION') && rule.includes('CHECK')));
+assert.ok(planRules.some((rule) => rule.includes('正常 END') && rule.includes('REQUIRED CHECK')));
 
 const plan = { capability: 'plan', caseFlow };
 assert.deepStrictEqual(validateAgentFacingRequest(plan), []);
@@ -57,29 +76,42 @@ assert.ok(validateAgentFacingRequest({ capability: 'plan', caseModel: {} })
 
 caseFlowService.revise(execDir, caseFlow);
 assert.deepStrictEqual(translateAgentFacingRequest(execDir, {
-  capability: 'observe', purpose: '确认分支', flowContext: { nodeRef: 'N1', selectedEdgeRef: 'L1' },
+  capability: 'observe', purpose: '确认分支', flowContext: { nodeRef: 'N2', selectedEdgeRef: 'L3' },
 }), {
-  operation: 'observe', flowContext: { nodeRef: 'N1', selectedEdgeRef: 'L1' },
+  operation: 'observe', flowContext: { nodeRef: 'N2', selectedEdgeRef: 'L3' },
   decision: { purpose: '确认分支', expectationRefs: [] },
 });
 assert.throws(() => translateAgentFacingRequest(execDir, {
-  capability: 'observe', flowContext: { nodeRef: 'N2', selectedEdgeRef: 'L3' },
+  capability: 'observe', flowContext: { nodeRef: 'N3', selectedEdgeRef: 'L3' },
 }), (error) => error?.code === 'AGENT_INPUT_INVALID'
   && error.issues.some((item) => item.code === 'CASE_FLOW_CONTEXT_INVALID'));
 assert.deepStrictEqual(validateAgentFacingRequest({
   capability: 'recordResult',
-  results: [{ checkNodeRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未进入可选分支', evidence: {} }],
+  results: [{ checkNodeRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未出现系统权限弹窗', evidence: {} }],
 }), []);
 assert.deepStrictEqual(translateAgentFacingRequest(execDir, {
   capability: 'recordResult',
-  results: [{ checkNodeRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未进入可选分支', evidence: {} }],
+  results: [{ checkNodeRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未出现系统权限弹窗', evidence: {} }],
 }), {
   operation: 'recordExpectationResults',
-  results: [{ expectationRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未进入可选分支', evidence: {} }],
+  results: [{ expectationRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未出现系统权限弹窗', evidence: {} }],
 });
 assert.ok(validateAgentFacingRequest({
   capability: 'recordResult', results: [{ expectationRef: 'N3', status: 'PASS', actual: '可见' }],
 }).some((item) => item.field.includes('expectationRef')));
+
+applyExpectationResults(execDir, [
+  { expectationRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未出现系统权限弹窗', evidence: {} },
+  { expectationRef: 'N5', status: 'NOT_APPLICABLE', actual: '未进入授权操作分支', evidence: {} },
+  { expectationRef: 'N6', status: 'NOT_APPLICABLE', actual: '未进入授权后的守护弹窗分支', evidence: {} },
+]);
+const skippedAuthorization = buildCaseResultFromLedger(execDir, {
+  summary: '未出现系统权限弹窗，按原始用例分支跳过授权并正常结束', uncertainties: [],
+});
+assert.strictEqual(skippedAuthorization.verdict, 'PASS');
+assert.deepStrictEqual(skippedAuthorization.checks.map((item) => item.status), [
+  'NOT_APPLICABLE', 'NOT_APPLICABLE', 'NOT_APPLICABLE',
+]);
 
 assert.deepStrictEqual(validateAgentFacingRequest({
   capability: 'finish', outcome: 'NOT_RUN', reason: '账号不具备前置条件',
