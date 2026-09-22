@@ -12,6 +12,7 @@ const caseContract = require('../case-runtime/agent-facing-contract');
 const coordinatorContract = require('../coordinator/agent-facing-contract');
 const currentExecution = require('../lib/readers/current-execution');
 const { parseRequest } = require('../case-runtime/agent-facing-client');
+const { validateAgentJson } = require('../lib/agent-json-contract');
 const {
   AGENT_FACING_PROTOCOL,
   AGENT_FACING_STATUSES,
@@ -26,9 +27,20 @@ assert.deepStrictEqual([...AGENT_FACING_STATUSES], ['SUCCEEDED', 'REJECTED', 'FA
 assert.ok(Object.isFrozen(AGENT_FACING_STATUSES));
 assert.deepStrictEqual(RESOURCE_DESCRIPTOR_SCHEMA.required, ['ref', 'type', 'role']);
 assert.strictEqual(RESOURCE_DESCRIPTOR_SCHEMA.additionalProperties, false);
-assert.deepStrictEqual(requestEnvelopeSchema({
-  observe: { type: 'object', additionalProperties: false },
-}).required, ['operation', 'input']);
+const envelopeSchema = requestEnvelopeSchema({
+  act: {
+    type: 'object', required: ['target'], additionalProperties: false,
+    properties: { target: { type: 'string', minLength: 1 } },
+  },
+  read: {
+    type: 'object', required: ['ref'], additionalProperties: false,
+    properties: { ref: { type: 'string', minLength: 1 } },
+  },
+});
+assert.strictEqual(envelopeSchema.oneOf.length, 2);
+assert.strictEqual(validateAgentJson({ operation: 'act', input: { target: 'button-1' } }, envelopeSchema).length, 0);
+assert.ok(validateAgentJson({ operation: 'act', input: { ref: 'scene-1' } }, envelopeSchema).length > 0,
+  'operation must select its corresponding input schema');
 assert.deepStrictEqual(successEnvelope({ operation: 'observe' }), {
   protocol: 'agent-facing', status: 'SUCCEEDED', operation: 'observe', result: {}, resources: [],
 });
@@ -45,6 +57,16 @@ assert.deepStrictEqual(successEnvelope({
   result: { outcome: 'SCENE_CAPTURED' }, data: { ref: 'scene-1', type: 'scene', content: {} },
   resources: [{ ref: 'screenshot-1', type: 'screenshot', role: 'visual_evidence' }],
 });
+assert.deepStrictEqual(successEnvelope({
+  operation: 'observe',
+  data: { ref: 'scene-1', type: 'scene', content: {} },
+  resources: [{ ref: 'scene-1', type: 'scene', role: 'state_after_action' }],
+}).resources, [], 'the primary resource must not be repeated in resources');
+assert.throws(() => successEnvelope({
+  operation: 'observe',
+  data: { ref: 'scene-1', type: 'scene', content: {} },
+  resources: [{ ref: 'scene-1', type: 'screenshot', role: 'visual_evidence' }],
+}), /data\.type.*resources.*type/i);
 assert.deepStrictEqual(errorEnvelope({
   status: 'REJECTED', operation: 'act', code: 'AGENT_INPUT_INVALID', retryable: true,
 }), {

@@ -94,27 +94,48 @@ function requestEnvelopeSchema(operationSchemas) {
   }
   for (const operation of operations) objectValue(operationSchemas[operation], `operationSchemas.${operation}`);
   return Object.freeze({
-    type: 'object',
-    required: ['operation', 'input'],
-    additionalProperties: false,
-    properties: Object.freeze({
-      operation: Object.freeze({ type: 'string', enum: Object.freeze([...operations]) }),
-      input: Object.freeze({ oneOf: Object.freeze(operations.map((operation) => operationSchemas[operation])) }),
-    }),
+    oneOf: Object.freeze(operations.map((operation) => Object.freeze({
+      type: 'object',
+      required: ['operation', 'input'],
+      additionalProperties: false,
+      properties: Object.freeze({
+        operation: Object.freeze({ const: operation }),
+        input: operationSchemas[operation],
+      }),
+    }))),
   });
+}
+
+function associatedResources(primaryData, resources) {
+  if (!Array.isArray(resources)) throw new TypeError('resources must be an array');
+  const associated = [];
+  resources.forEach((resource, index) => {
+    const descriptor = resourceDescriptor(resource, index);
+    if (descriptor.ref === primaryData.ref) {
+      if (descriptor.type !== primaryData.type) {
+        throw new TypeError('data.type must match resources type when refs are equal');
+      }
+      return;
+    }
+    associated.push(descriptor);
+  });
+  return uniqueResources(associated);
 }
 
 function successEnvelope(options) {
   unsupportedOptions(options, ['operation', 'result', 'data', 'resources'], 'successEnvelope');
   const result = options.result === undefined ? {} : objectValue(options.result, 'result');
+  const data = options.data === undefined ? undefined : resourceData(options.data);
   const envelope = {
     protocol: AGENT_FACING_PROTOCOL,
     status: 'SUCCEEDED',
     operation: operationValue(options.operation),
     result: { ...result },
-    resources: uniqueResources(options.resources === undefined ? [] : options.resources),
+    resources: data
+      ? associatedResources(data, options.resources === undefined ? [] : options.resources)
+      : uniqueResources(options.resources === undefined ? [] : options.resources),
   };
-  if (options.data !== undefined) envelope.data = resourceData(options.data);
+  if (data) envelope.data = data;
   return Object.freeze(envelope);
 }
 
