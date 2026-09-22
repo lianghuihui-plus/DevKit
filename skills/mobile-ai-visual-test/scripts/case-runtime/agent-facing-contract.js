@@ -209,7 +209,7 @@ const PUBLIC_METHODS = Object.freeze({
     purpose: '本次观察目的', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
     responseProjection: projection(['sceneRef'], 'scene', SCENE_RESOURCES),
-    successStatuses: ['SCENE'], sideEffects: ['采集一个新 Scene'],
+    successStatuses: ['SCENE_CAPTURED'], sideEffects: ['采集一个新 Scene'],
     idempotency: '设备采集不重放未知 effect；重复 observe 生成新的现场事实。', minimalExample: { operation: 'observe', input: {} },
   }),
   read: method('read', '按原样引用读取一个资源。', SCHEMAS.read, { ref: '当前绑定发布的资源引用' }, {

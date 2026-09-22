@@ -326,12 +326,12 @@ function publicErrorStatus(response) {
     || response.action?.outcomeKnown === false || response.action?.deliveryStatus === 'UNKNOWN'
     || response.action?.status === 'UNKNOWN' || response.action?.command?.status === 'UNKNOWN') return 'UNKNOWN';
   if (['REJECTED', 'REQUEST_INVALID', 'INPUT_INVALID', 'SCENE_CHANGED', 'RESULT_INCOMPLETE'].includes(response.status)) return 'REJECTED';
-  if (['FAILED', 'TECHNICAL', 'TIME_LIMIT', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'].includes(response.status)
+  if (['FAILED', 'TECHNICAL', 'TIME_LIMIT'].includes(response.status)
     || response.action?.command?.status === 'REJECTED' || response.action?.deviceExecution?.status === 'FAILED') return 'FAILED';
   return null;
 }
 
-function projectAgentFacingError(response, request = null, resources = []) {
+function projectAgentFacingError(response, request = null, resources = [], provided = {}) {
   const status = publicErrorStatus(response) || 'FAILED';
   const operation = Object.hasOwn(PUBLIC_CONTRACT.methods, request?.operation) ? request.operation : null;
   const failureCode = response.code || response.action?.failureCode || response.action?.deviceExecution?.failureCode;
@@ -341,6 +341,7 @@ function projectAgentFacingError(response, request = null, resources = []) {
   const definition = PUBLIC_CONTRACT.errors[code];
   return errorEnvelope({
     operation, status, code,
+    result: projectResponseResult(response, request, provided).result,
     retryable: status === 'UNKNOWN' ? false : (response.retryable ?? definition.retryable),
     ...(response.issues ? { issues: response.issues.map((item) => ({
       field: item.field || item.fieldPath || 'request',
@@ -353,15 +354,11 @@ function projectAgentFacingError(response, request = null, resources = []) {
   });
 }
 
-function projectAgentFacingResponse(execDir, response, request = null, options = {}) {
-  const provided = options.resourceProvider?.(execDir, response, request) || {};
-  const failure = publicErrorStatus(response);
-  if (failure) return projectAgentFacingError(response, request, provided.resources || response.resources || []);
-  const outcome = response.result?.outcome || response.status;
+function projectResponseResult(response, request, provided = {}) {
+  const internalOutcome = response.result?.outcome || response.status;
+  const outcome = request?.operation === 'observe' && internalOutcome === 'SCENE' ? 'SCENE_CAPTURED' : internalOutcome;
   const projection = responseProjection(request, outcome);
-  if (!projection) return projectAgentFacingError({ status: 'FAILED', code: 'CASE_RUNTIME_TECHNICAL' }, request);
-  // The resource provider owns persistence and canonical content. No current Scene/global
-  // state is appended here, and no reference is synthesized by the wire projector.
+  if (!projection) return { projection: null, result: {} };
   const inspection = response.visualInspection || response.actionInspection || {};
   const action = response.action ? projectPreviousAction(response.action) : null;
   const values = {
@@ -381,18 +378,30 @@ function projectAgentFacingResponse(execDir, response, request = null, options =
     outcomeKnown: action?.outcomeKnown,
     candidateCount: response.candidateCount ?? response.candidates?.length,
     reviewRequired: response.reviewRequired,
-    conclusion: response.conclusion || request?.input?.conclusion,
-    verificationRequired: request?.operation === 'recover' && request.input?.mode === 'external' ? true : undefined,
+    conclusion: response.conclusion || (response.status === 'KNOWLEDGE_REVIEWED' ? request?.input?.conclusion : undefined),
+    verificationRequired: response.status === 'EXTERNAL_ACTION_RECORDED' ? true : undefined,
     preparationState: response.preparationState,
     executionId: response.executionId,
     verdict: response.verdict,
     ...response.result,
     ...provided.result,
+    outcome,
   };
   const scalar = (value) => value === null || ['string', 'number', 'boolean'].includes(typeof value);
   const result = Object.fromEntries(projection.resultFields
     .filter((field) => scalar(values[field]) || (Array.isArray(values[field]) && values[field].every(scalar)))
     .map((field) => [field, values[field]]));
+  return { projection, result };
+}
+
+function projectAgentFacingResponse(execDir, response, request = null, options = {}) {
+  // The resource provider owns persistence and canonical content. No current Scene/global
+  // state is appended here, and no reference is synthesized by the wire projector.
+  const provided = options.resourceProvider?.(execDir, response, request) || {};
+  const failure = publicErrorStatus(response);
+  if (failure) return projectAgentFacingError(response, request, provided.resources || response.resources || [], provided);
+  const { projection, result } = projectResponseResult(response, request, provided);
+  if (!projection) return projectAgentFacingError({ status: 'FAILED', code: 'CASE_RUNTIME_TECHNICAL' }, request);
   const candidateData = provided.data || response.data;
   const primaryType = projection.primaryResourceType === '$resourceType'
     ? result.resourceType : projection.primaryResourceType;

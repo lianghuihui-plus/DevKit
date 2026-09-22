@@ -363,6 +363,7 @@ const observed = projectAgentFacingResponse(execDir, {
   resources: [{ ref: 'scene-0007', type: 'scene', role: 'primary' }, { ref: 'shot-real', type: 'screenshot', role: 'visual' }],
 }, request('observe'));
 assertEnvelope(observed);
+assert.strictEqual(observed.result.outcome, 'SCENE_CAPTURED');
 assert.deepStrictEqual(observed.data, canonicalScene);
 assert.deepStrictEqual(observed.resources, [{ ref: 'shot-real', type: 'screenshot', role: 'visual' }]);
 const provided = projectAgentFacingResponse(execDir, { status: 'SCENE' }, request('observe'), {
@@ -410,6 +411,35 @@ const nestedScalar = projectAgentFacingResponse(execDir, {
   status: 'CASE_FLOW_RECORDED', result: { revision: { fullInternalSnapshot: scene } },
 }, initialPlanRequest);
 assert.strictEqual(nestedScalar.result.revision, undefined, 'allowlisted scalar fields cannot leak complex internal objects');
+
+for (const outcome of ['PLAN_PARTIAL', 'PLAN_INTERRUPTED']) {
+  const knownPlan = projectAgentFacingResponse(execDir, {
+    status: outcome, outcomeKnown: true, code: outcome === 'PLAN_PARTIAL' ? 'PLAN_CHECK_FAILED' : 'PLAN_TIMEOUT',
+    planId: 'plan-known', data: { ref: 'plan-result-known', type: 'planResult', content: { steps: ['complete evidence'] } },
+  }, request('runPlan'));
+  assertEnvelope(knownPlan);
+  assert.strictEqual(knownPlan.result.outcome, outcome);
+  assert.strictEqual(knownPlan.result.planId, 'plan-known');
+  assert.strictEqual(knownPlan.data.type, 'planResult');
+}
+const unknownPlan = projectAgentFacingResponse(execDir, {
+  status: 'PLAN_INTERRUPTED', outcomeKnown: false, planId: 'plan-unknown', idempotent: true,
+  result: { scene: { huge: true }, planId: 'plan-unknown', unexpected: 'must not leak' },
+  data: { ref: 'plan-result-unknown', type: 'planResult', content: { huge: true } },
+}, request('runPlan'), {
+  resourceProvider: () => ({ result: { planResultRef: 'plan-result-unknown', unexpected: 'must not leak' } }),
+});
+assertEnvelope(unknownPlan, 'UNKNOWN');
+assert.deepStrictEqual(unknownPlan.result, {
+  outcome: 'PLAN_INTERRUPTED', planResultRef: 'plan-result-unknown', planId: 'plan-unknown', idempotent: true,
+});
+assert.strictEqual(unknownPlan.data, undefined);
+assert.strictEqual(unknownPlan.error.retryable, false);
+const rejectedAct = projectAgentFacingResponse(execDir, {
+  status: 'SCENE_CHANGED', result: { sceneRef: scene.sceneId, revision: 999, action: { huge: true } },
+}, request('act'));
+assertEnvelope(rejectedAct, 'REJECTED');
+assert.deepStrictEqual(rejectedAct.result, { outcome: 'SCENE_CHANGED', sceneRef: scene.sceneId });
 
 // read bypasses the effect broker and remains available after finalization.
 const missing = run(execDir, request('read', { ref: 'unknown' }), { executeRequest });
