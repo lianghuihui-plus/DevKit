@@ -6,6 +6,7 @@ const { AGENT_FACING_PROTOCOL, AGENT_FACING_STATUSES, RESOURCE_DESCRIPTOR_SCHEMA
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
 const COORDINATOR_CAPABILITIES = Object.freeze(['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun', 'read']);
 const STRING = { type: 'string', minLength: 1 };
+const RESOURCE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:[^:]+:.+$' };
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', additionalProperties: false, properties, required });
 const BINDING = object({
   platform: { enum: ['harmony', 'android', 'ios'] }, deviceId: STRING, appId: STRING, entry: STRING,
@@ -19,7 +20,7 @@ const INPUT_SCHEMAS = Object.freeze({
     object({ decision: { const: 'SELECT_PLATFORM' }, platform: { enum: ['harmony', 'android', 'ios'] }, deviceId: STRING }, ['decision', 'platform']),
     object({ decision: { const: 'CONFIRM_BINDING' }, userInstruction: STRING, binding: BINDING }),
   ] },
-  advanceRun: object({}), cancelRun: object({ reason: STRING }), read: object({ ref: STRING }),
+  advanceRun: object({}), cancelRun: object({ reason: STRING }), read: object({ ref: RESOURCE_REF }),
 });
 const REQUEST_SCHEMA = requestEnvelopeSchema(INPUT_SCHEMAS);
 const RESOURCE_CATALOG = Object.freeze({

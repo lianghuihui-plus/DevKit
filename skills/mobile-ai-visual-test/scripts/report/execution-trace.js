@@ -160,8 +160,6 @@ function eventEntry(event, index) {
   switch (event.type) {
     case 'caseFlowRevised':
       return { ...base, phase: 'UNDERSTAND', category: 'UNDERSTANDING', title: event.revision === 1 ? 'Agent 已形成 Case Flow' : 'Agent 已修订 Case Flow', summary: event.summary || '', caseFlowRevision: event.revision, reason: event.reason || '' };
-    case 'caseModelRevised':
-      return { ...base, phase: 'UNDERSTAND', category: 'UNDERSTANDING', title: event.revision === 1 ? 'Agent 已形成用例理解与初始计划' : 'Agent 已修订用例理解或计划', summary: event.understanding || '', caseModelRevision: event.revision, reason: event.reason || '' };
     case 'agentDecisionRecorded':
       return { ...base, category: 'DECISION', title: event.decision?.purpose || 'Agent 业务决策', summary: decisionField(event, 'conclusion') || '', decisionId: event.decisionId, intent: event.decision?.purpose || null, expectedOutcome: decisionField(event, 'expectedOutcome') || null };
     case 'flowContextRecorded':

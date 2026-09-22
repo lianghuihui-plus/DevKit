@@ -264,7 +264,6 @@ function projectLayout(parsed, observationRef, screenshot = {}, adapterSignals =
       && (entry.clickable || entry.checkable || entry.editable || entry.hasOwnText))
     .sort((left, right) => Number(right.clickable || right.checkable || right.editable) - Number(left.clickable || left.checkable || left.editable)
       || left.depth - right.depth)
-    .slice(0, 240)
     .map((entry) => ({
       ref: elementRef(observationRef, entry.stateKey),
       text: entry.text,

@@ -68,6 +68,18 @@ assert.strictEqual(adapterOnlyKeyboard.signals.coordinateConsistency, 'MISMATCH'
 assert.strictEqual(iosBeforeProjection.elements.some((entry) => /Key/.test(entry.role)), false);
 assert.strictEqual(iosBeforeProjection.elements.find((entry) => entry.secure).maskedLength, 6);
 
+const largeLayout = parseLayout(JSON.stringify({
+  attributes: { type: 'Root', bounds: '[0,0][1000,2000]', visible: 'true' },
+  children: Array.from({ length: 260 }, (_, index) => ({
+    attributes: {
+      type: 'Button', text: `控件 ${index}`, bounds: `[0,${index}][100,${index + 1}]`,
+      clickable: 'true', visible: 'true',
+    },
+    children: [],
+  })),
+}));
+assert.strictEqual(projectLayout(largeLayout, 'large-observation', { width: 1000, height: 2000 }).elements.length, 260);
+
 const malformed = parseLayout('<hierarchy><node></hierarchy>');
 assert.strictEqual(malformed.usable, false);
 assert.strictEqual(malformed.diagnostics[0].code, 'LAYOUT_PARSE_FAILED');

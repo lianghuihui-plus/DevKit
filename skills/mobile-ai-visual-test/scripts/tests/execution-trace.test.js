@@ -226,13 +226,13 @@ const protocolEntry = protocolTrace.entries.find((entry) => entry.category === '
 assert.strictEqual(protocolEntry.time, '2026-08-13T10:00:00.100Z');
 assert.strictEqual(protocolEntry.outcome.code, 'CASE_RUNTIME_REQUEST_INVALID');
 
-const legacyDecisionTrace = buildExecutionTrace({
+const sourceAwareDecisionTrace = buildExecutionTrace({
   latest: protocolDir,
   execution: {},
   events: [{
     sequence: 1,
     type: 'agentDecisionRecorded',
-    decisionId: 'decision-legacy-fallback',
+    decisionId: 'decision-source-fallback',
     requestedOperation: 'observe',
     decision: {
       purpose: '确认目标页面', assessment: '确认目标页面', observation: '确认目标页面',
@@ -243,10 +243,10 @@ const legacyDecisionTrace = buildExecutionTrace({
   metrics: null,
   display: {},
 });
-const legacyDecisionEntry = legacyDecisionTrace.entries.find((entry) => entry.category === 'DECISION');
-assert.strictEqual(legacyDecisionEntry.title, '确认目标页面');
-assert.strictEqual(legacyDecisionEntry.summary, '');
-assert.strictEqual(legacyDecisionEntry.expectedOutcome, null);
+const sourceAwareDecisionEntry = sourceAwareDecisionTrace.entries.find((entry) => entry.category === 'DECISION');
+assert.strictEqual(sourceAwareDecisionEntry.title, '确认目标页面');
+assert.strictEqual(sourceAwareDecisionEntry.summary, '');
+assert.strictEqual(sourceAwareDecisionEntry.expectedOutcome, null);
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('execution-trace passed');

@@ -102,7 +102,8 @@ assert.strictEqual(observed.data.type, 'scene');
 // Exercise the real Facade, broker, action dispatch, and observation failure path.
 const unknownDir = path.join(temp, 'unknown-action');
 fs.cpSync(started.execDir, unknownDir, { recursive: true });
-const unknownScene = require('../case-runtime/agent-resource-store').publishScene(unknownDir, observed.data.content.sceneId);
+const unknownSceneId = require('../case-runtime/store').readCurrentScene(unknownDir).sceneId;
+const unknownScene = require('../case-runtime/agent-resource-store').publishScene(unknownDir, unknownSceneId);
 let deviceDispatches = 0;
 let followupCaptures = 0;
 const unknown = run(unknownDir, {

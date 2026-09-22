@@ -68,7 +68,7 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 {
   "operation": "act",
   "input": {
-    "sceneRef": "scene-1",
+    "sceneRef": "mavt:0123456789abcdef01234567:scene:scene-1",
     "action": {
       "ref": "button-1:tap"
     }

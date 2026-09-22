@@ -17,6 +17,7 @@ const { validateLongPressTiming, validateRuntimeRequest } = require('../case-run
 const { validateSearchAbsence } = require('../case-runtime/result-integrity');
 const { actionAdapterArgs } = require('../platform/device-port');
 const { sanitizeTransactionValue } = require('../case-runtime/transaction-manager');
+const { redactRequest } = require('../case-runtime/telemetry');
 
 const normalizedTap = normalizeAdapterActionResult({
   schemaVersion: 1,
@@ -76,6 +77,18 @@ const sanitizedTransaction = sanitizeTransactionValue({
   deviceResult: { inputEffect: { expectedText: 'transaction-private', actualText: 'transaction-private' } },
 });
 assert.strictEqual(JSON.stringify(sanitizedTransaction).includes('transaction-private'), false);
+const redactedPlanRequest = redactRequest({
+  operation: 'runPlan',
+  input: {
+    steps: [{
+      id: 'login', type: 'act', actionRef: 'field:inputText',
+      input: { text: 'telemetry-private', expectedText: 'telemetry-private' },
+    }],
+  },
+});
+assert.strictEqual(JSON.stringify(redactedPlanRequest).includes('telemetry-private'), false);
+assert.strictEqual(redactedPlanRequest.input.steps[0].input.text, '[REDACTED]');
+assert.strictEqual(redactedPlanRequest.input.steps[0].input.expectedText, '[REDACTED]');
 
 assert.strictEqual(classifyRuntimeDisplay(2232, 1008).displayClass, 'PHONE_LIKE');
 assert.strictEqual(classifyRuntimeDisplay(1008, 2232).displayClass, 'PHONE_LIKE');

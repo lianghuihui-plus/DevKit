@@ -8,6 +8,7 @@ function pathFor(parent, field) {
 function expectedFor(schema) {
   if (schema.const !== undefined) return JSON.stringify(schema.const);
   if (schema.enum) return schema.enum.join(' | ');
+  if (schema.type === 'string' && schema.pattern) return `string matching ${schema.pattern}`;
   if (schema.type === 'string' && schema.minLength) return 'non-empty string';
   if (schema.type === 'integer') {
     return schema.minimum === undefined ? 'integer' : `integer >= ${schema.minimum}`;
@@ -75,6 +76,9 @@ function validateAgentJson(value, schema, definitions = {}, fieldPath = '') {
 
   if (schema.type === 'string' && schema.minLength && value.length < schema.minLength) {
     issues.push(issue(fieldPath, expectedFor(schema), 'MIN_LENGTH'));
+  }
+  if (schema.type === 'string' && schema.pattern && !new RegExp(schema.pattern).test(value)) {
+    issues.push(issue(fieldPath, expectedFor(schema), 'PATTERN_MISMATCH'));
   }
   if (['integer', 'number'].includes(schema.type)) {
     if (schema.minimum !== undefined && value < schema.minimum) issues.push(issue(fieldPath, expectedFor(schema), 'MINIMUM'));

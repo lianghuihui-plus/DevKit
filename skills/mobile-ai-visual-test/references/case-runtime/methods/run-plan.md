@@ -78,7 +78,7 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
   "operation": "runPlan",
   "input": {
     "submissionId": "run-plan-1",
-    "sceneRef": "scene-1",
+    "sceneRef": "mavt:0123456789abcdef01234567:scene:scene-1",
     "purpose": "完成短时交互",
     "maxDurationMs": 2500,
     "onFailure": "STOP",

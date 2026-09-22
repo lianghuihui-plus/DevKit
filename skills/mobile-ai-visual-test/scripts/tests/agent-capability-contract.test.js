@@ -67,6 +67,8 @@ assert.deepStrictEqual(Object.keys(COORDINATOR_PUBLIC_CONTRACT.methods), COORDIN
 assert.strictEqual(COORDINATOR_INTERFACE_KIND, 'AGENT_FACING');
 assert.deepStrictEqual(COORDINATOR_CAPABILITIES, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun', 'read']);
 assertExamples(COORDINATOR_PUBLIC_CONTRACT.methods, validateCoordinatorRequest);
+assert.ok(validateCoordinatorRequest({ operation: 'read', input: { ref: 'run-summary-1' } })
+  .some((item) => item.field === 'input.ref' && item.code === 'PATTERN_MISMATCH'));
 
 assert.strictEqual(CASE_PUBLIC_CONTRACT.protocol, 'agent-facing');
 assert.deepStrictEqual(Object.keys(CASE_PUBLIC_CONTRACT.methods), AGENT_FACING_CAPABILITIES);

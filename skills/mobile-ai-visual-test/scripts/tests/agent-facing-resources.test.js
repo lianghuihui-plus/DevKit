@@ -29,6 +29,7 @@ const { dir, scene } = fixture('execution-a');
 const observed = run(dir, { operation: 'observe', input: {} }, { executeRequest: () => ({ status: 'SCENE', scene }) });
 assert.strictEqual(observed.status, 'SUCCEEDED');
 assert.strictEqual(observed.data.type, 'scene');
+assert.strictEqual(Object.hasOwn(observed.data.content, 'sceneId'), false);
 assert.ok(!observed.data.ref.includes(encodeURIComponent(path.resolve(dir))));
 assert.ok(observed.data.content.actions.length > 70, 'all published actions are retained');
 assert.strictEqual(observed.data.content.layout, undefined);
@@ -56,7 +57,7 @@ assert.strictEqual(Object.hasOwn(previousActionScene.data.content.previousAction
 const other = fixture('execution-b');
 assert.throws(() => resources.readPublishedResource(other.dir, observed.data.ref), { code: 'RESOURCE_SCOPE_MISMATCH' });
 assert.throws(() => resources.readPublishedResource(dir, 'not-published'), { code: 'RESOURCE_UNKNOWN' });
-assert.strictEqual(run(dir, { operation: 'read', input: { ref: 'not-published' } }).error.code, 'RESOURCE_UNKNOWN');
+assert.strictEqual(run(dir, { operation: 'read', input: { ref: resources.resourceRef(dir, 'scene', 'not-published') } }).error.code, 'RESOURCE_UNKNOWN');
 assert.strictEqual(run(other.dir, { operation: 'read', input: { ref: observed.data.ref } }).status, 'REJECTED');
 assert.strictEqual(require('../case-runtime/agent-facing-translator').translateAgentFacingRequest(dir, {
   operation: 'act', input: { sceneRef: observed.data.ref, action: { ref: 'e0:tap' } },

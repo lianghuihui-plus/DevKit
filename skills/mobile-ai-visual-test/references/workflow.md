@@ -32,7 +32,7 @@ Handoff 绑定唯一 execution、dispatch sequence 和写入所有权，并直�
 
 Case Agent 读取原始用例和当前 Scene，使用 `plan` 形成 Case Flow，以 `ACTION / DECISION / CHECK / END` 保存操作、条件分支、检查点和结束路径。revision 1 不需要理由；后续可改写、新增、合并或取消，并提交完整新版本与非空理由。执行调用可通过 `flowContext` 关联当时节点和 Agent 选择的分支。
 
-截图与控件树是并列能力。视觉现场先用 `view_image` 查看，再用 `inspect(channel=visual)` 登记；操作异常时可查看上一动作落点标注图，并用 `inspect(channel=action)` 登记客观坐标事实。框架不判断是否命中业务目标。
+截图与控件树是并列能力。Scene 返回关联的 `screenshotRef`、`layoutRef` 和 `elementSetRef`，完整内容统一用 `read(ref)` 获取；视觉现场先用 `view_image` 查看，再用 `inspect(mode="visual")` 登记；操作异常时可查看上一动作落点标注图，并用 `inspect(mode="action")` 登记客观坐标事实。框架不判断是否命中业务目标。
 
 Case Agent 可以用 `recover.targetState` 请求 execution 已授权的目标 App 状态，或用 `recover.externalAction` 登记框架外技术处置。Android、HarmonyOS 在底层清数据；iOS 按需从 `app-packages/ios` 唯一匹配、校验并冻结安装包后重装。Agent 不处理平台安装参数；一般框架外声明后重新 `observe`，初始态准备失败则根据错误文档和当前准备事实重试，并由新 Scene 验证。
 

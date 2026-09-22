@@ -52,10 +52,11 @@ Authoring Agent 使用适合来源格式的工具完整读取输入，自主形�
 
 ### 2.3 Case Agent
 
-Case Agent 从 Handoff 获得 execution 写入所有权、原始用例、环境摘要、当前 Scene、已有 Case Flow、Case Prompt 和预绑定 Runtime Client。正常业务执行只面对九个能力：
+Case Agent 从 Handoff 获得 execution 写入所有权、原始用例、环境摘要、当前 Scene、已有 Case Flow、Case Prompt 和预绑定 Runtime Client。正常业务执行只面对九个业务能力和一个统一资源读取能力：
 
 - `observe`、`inspect`、`plan`、`runPlan`、`recordResult`
 - `act`、`knowledge`、`recover`、`finish`
+- `read`：按 Runtime 返回的 typed ref 读取完整资源
 
 Case Agent 自己理解用例、制定和调整 Case Flow、调查现场、形成检查结果并收口，不把业务判断交回执行协调 Agent 审批。
 
@@ -92,6 +93,14 @@ sequenceDiagram
   C->>C: commit / release / publish
 ```
 
+### 3.1 Agent-facing 协议
+
+Coordinator 与 Case Runtime 对 Agent 使用同一请求外壳 `{operation,input}` 和同一响应外壳 `{protocol,status,operation,result,resources,data?,error?}`。`result` 只放业务状态、标识和计数等简单事实；当前操作的主复杂结果完整放入 `data`；其他复杂数据只发布带类型、作用域和完整性信息的资源描述，由 Agent 将原样 `ref` 交回同一绑定 Facade 的 `read(ref)` 读取。
+
+资源正文不因体积被截断或抽样，同一响应也不重复内联主资源和关联资源。资源引用是不透明且不可变的能力凭据，不能从文件路径、领域 ID 或文字拼接，也不能跨 Coordinator 与 Case Runtime 作用域使用。`read` 只读取已发布资源，不改变业务状态；execution 完成后仍可读取已发布资源。
+
+公开请求、响应投影、资源目录和错误码由各 Facade 的 Agent-facing contract 定义，`references/coordinator.md`、`references/case-runtime.md` 及其子页由契约生成，是 Agent 调用签名和恢复方式的事实来源。Facade 负责把公开操作翻译为内部命令并投影响应；Runtime Core 不根据 Agent 可能需要什么来裁剪数据，也不推测下一步操作。
+
 Handoff 是一次性身份与启动绑定，不是业务预处理结果。Loader 原样携带 claim token；dispatch 使用 `PREPARED / CONSUMED / REPLACED` 和 sequence 绑定唯一 execution，不使用超时租约。Coordinator 只依据持久化状态判断是否等待结果，不虚构宿主 Agent 的运行状态。
 
 初始化步骤持久化在 Coordinator run 中，命令中断后从首个缺失步骤恢复。业务推进必须匹配 Batch 冻结的实现、协议、目标与环境；`status`、`cancel`、终态收尾和所有权明确的资源释放使用维护读取，不因当前 Skill 实现摘要变化而失去清理能力。
@@ -100,15 +109,17 @@ Handoff 是一次性身份与启动绑定，不是业务预处理结果。Loader
 
 ### 4.1 Case Flow
 
-Case Flow 同时表达用例理解与执行导航，由 `ACTION / DECISION / CHECK / END` 节点、条件边、`uncertainties`、`revision` 和修订理由组成。首次 `plan` 创建 revision 1，后续提交完整快照并说明调整理由。
+Case Flow 同时表达用例理解与执行导航，由 `ACTION / DECISION / CHECK / END` 节点、条件边、`uncertainties`、`revision` 和修订理由组成。首次 `plan` 创建 revision 1 并冻结为 Baseline Flow；后续提交完整快照形成最新 Working Flow 并说明调整理由。报告固定展示 Baseline Flow 及其检查点，同时用事件轨迹和修订信息呈现实际执行，不用 Working Flow 覆盖或弱化原始用例语义。
 
-Runtime 校验图结构、引用、revision、证据和结果闭环，不理解自然语言条件，也不审批业务计划。事件绑定当时的 Case Flow revision、节点和选择边，因此报告可以还原执行过程中实际采用的理解。
+Baseline 中的 CHECK 始终需要处置；最终 Working Flow 中仍活跃的补充 CHECK 也需要处置。未进入适用分支的 `CONDITIONAL` CHECK 可记为 `NOT_APPLICABLE`；Agent 可将检查点记为 `WAIVED`，但必须提交独立理由，且不能用豁免代替恢复、掩盖已确认的失败或绕过证据不足。Runtime 校验图结构、引用、revision、状态适用性、证据和结果闭环，不理解自然语言条件、不判断豁免理由是否充分，也不审批业务计划。事件绑定当时的 Case Flow revision、节点和选择边，因此报告可以还原执行过程中实际采用的理解。
 
 ### 4.2 Scene 与调查能力
 
 Scene 是设备现场事实，不是计划或结论。`observe` 显式采集 Scene，`act` 执行一个动作后自动采集新 Scene。内部 Scene 完整保存截图、布局、控件、动作能力、系统信号、滚动上下文和上一动作事实。
 
-Agent-facing Scene 提供紧凑摘要；Case Agent 可用 `inspect(channel=elements|layout)` 读取完整结构，用 `inspect(channel=visual)` 登记实际看到的图片事实，用 `inspect(channel=action)` 检查动作落点。纯视觉内容、系统弹窗、Toast、遮罩、键盘、动画、长按过程及证据冲突不能仅依赖控件树判断。
+Agent-facing Scene 提供紧凑摘要和关联资源引用；Case Agent 将返回的 `layoutRef` 或 `elementSetRef` 原样交给 `read(ref)` 读取完整结构，用 `inspect(mode="visual")` 登记实际看到的图片事实，用 `inspect(mode="action")` 登记动作落点事实。纯视觉内容、系统弹窗、Toast、遮罩、键盘、动画、长按过程及证据冲突不能仅依赖控件树判断。
+
+`runPlan` 用于童锁等短时交互窗口：Case Agent 一次提交由动作、等待、采集、确定性定位、技术检查和证据检查点组成的有界命令序列，Runtime 在计划内部连续执行，避免每个步骤都等待一次 Agent 决策。定位只解析已声明的元素、点或区域，技术检查只验证采集可用、元素状态、前台状态或引用存在等确定性事实；它们不识别业务目标，也不产生业务 CHECK 结论。Agent 读取计划证据后仍须自行判断并通过 `recordResult` 记录结果。
 
 坐标动作保存请求坐标、实际投递坐标、可选设备触点、坐标换算、标注截图和整屏像素比较。Runtime 只陈述投递和画面事实，不判断 Agent 是否选对目标或动作是否达到业务预期。
 
@@ -175,7 +186,7 @@ Narrative Projector 从当前 execution 事件生成步骤、Case Flow revision�
 
 ## 8. 版本与兼容边界
 
-当前唯一支持的 Execution schema 为 13。Runtime、Batch、Reader 和 Report 都只处理 schema 13；旧工作空间目录和原始用例仍可创建 schema 13 的新 Run，历史 execution 保持原样并明确显示为不支持、需要重跑。
+当前唯一支持的 Execution schema 为 14。Runtime、Batch、Reader 和 Report 都只处理 schema 14；旧工作空间目录和原始用例仍可创建 schema 14 的新 Run，历史 execution 保持原样并明确显示为不支持、需要重跑。
 
 协议摘要按角色和模块分组。修改报告不改变 Runtime 摘要，修改单个平台 Adapter 不改变其他平台。schema 标识只属于独立持久化根或真实跨进程协议，内部模块不维护并行版本。
 

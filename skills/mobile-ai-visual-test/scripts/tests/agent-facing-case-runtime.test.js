@@ -18,6 +18,7 @@ const {
 } = require('../case-runtime/agent-facing-translator');
 const { run } = require('../case-runtime/agent-facing-client');
 const runtimeStore = require('../case-runtime/store');
+const agentResources = require('../case-runtime/agent-resource-store');
 const { createActionSpatialEvidence, projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 
@@ -87,8 +88,13 @@ const scene = {
   visual: { gestures: ['tap', 'doubleTap', 'longPress', 'swipe'], coordinates: 'normalized-0-to-1' },
   previousAction: null,
 };
-writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
-writeJsonAtomic(path.join(execDir, 'scenes', `${scene.sceneId}.json`), scene);
+fs.mkdirSync(path.join(execDir, 'screenshots'), { recursive: true });
+fs.writeFileSync(path.join(execDir, 'screenshots', 'scene-0007.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
+scene.screenshot.sha256 = require('crypto').createHash('sha256').update(fs.readFileSync(path.join(execDir, 'screenshots', 'scene-0007.png'))).digest('hex');
+const prePlanScene = { ...scene, sceneId: 'scene-preplan' };
+writeJsonAtomic(path.join(execDir, 'current-scene.json'), prePlanScene);
+writeJsonAtomic(path.join(execDir, 'scenes', `${prePlanScene.sceneId}.json`), prePlanScene);
+const prePlanSceneRef = agentResources.publishScene(execDir, prePlanScene.sceneId).data.ref;
 
 
 function request(operation, input = {}) { return { operation, input }; }
@@ -138,9 +144,12 @@ assert.ok(validateAgentFacingRequest(request('plan', {}))
 assert.ok(validateAgentFacingRequest({ capability: 'observe' })
   .some((item) => item.field === 'operation' && item.code === 'FIELD_REQUIRED'));
 const actionBeforePlan = translateAgentFacingRequest(execDir, request('act', {
-  sceneRef: scene.sceneId, action: { ref: 'record-button:longPress', input: { durationMs: 1200 } },
+  sceneRef: prePlanSceneRef,
+  action: { ref: 'record-button:longPress', input: { durationMs: 1200 } },
 }));
 assert.strictEqual(actionBeforePlan.operation, 'act', 'the wire migration must not add a planning gate');
+writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
+writeJsonAtomic(path.join(execDir, 'scenes', `${scene.sceneId}.json`), scene);
 assert.throws(() => translateAgentFacingRequest(execDir, request('finish', { mode: 'complete', summary: '无法继续' })),
   (error) => error.code === 'AGENT_INPUT_INVALID' && error.issues.some((item) => item.code === 'CASE_FLOW_REQUIRED'));
 
@@ -169,9 +178,6 @@ assert.strictEqual(replayedPlan.result.idempotent, true);
 assert.strictEqual(replayedPlan.result.revision, 1);
 assert.strictEqual(runtimeStore.events(execDir).filter((event) => event.type === 'caseFlowRevised').length, 1);
 
-fs.mkdirSync(path.join(execDir, 'screenshots'), { recursive: true });
-fs.writeFileSync(path.join(execDir, 'screenshots', 'scene-0007.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
-scene.screenshot.sha256 = require('crypto').createHash('sha256').update(fs.readFileSync(path.join(execDir, 'screenshots', 'scene-0007.png'))).digest('hex');
 const spatialRef = createActionSpatialEvidence(execDir, {
   operationId: 'action-0001',
   action: { type: 'swipe', fromX: 0, fromY: 0, toX: 0, toY: 0, coordinateSource: 'visual' },
@@ -184,6 +190,7 @@ scene.previousAction = {
 };
 writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 writeJsonAtomic(path.join(execDir, 'scenes', scene.sceneId + '.json'), scene);
+const sceneRef = agentResources.publishScene(execDir, scene.sceneId).data.ref;
 const previous = projectPreviousAction(scene.previousAction);
 assert.strictEqual(previous.spatialEvidence.available, true);
 assert.deepStrictEqual(previous.spatialEvidence.requested, { from: { x: 0, y: 0 }, to: { x: 0, y: 0 } });
@@ -209,7 +216,7 @@ assert.deepStrictEqual(inputMismatch.technicalResult, {
 assert.ok(!JSON.stringify(inputMismatch).includes('13223'));
 
 const inspected = run(execDir, request('inspect', {
-  mode: 'action', sceneRef: scene.sceneId, observation: '滑动轨迹位于目标卡片区域上方', checkNodeRefs: ['N2'],
+  mode: 'action', sceneRef, observation: '滑动轨迹位于目标卡片区域上方', checkNodeRefs: ['N2'],
 }), { now: '2026-09-11T00:00:01.700Z' });
 assertEnvelope(inspected);
 assert.strictEqual(inspected.result.outcome, 'ACTION_SPATIAL_OBSERVATION_RECORDED');
@@ -228,7 +235,7 @@ assert.strictEqual(runtimeStore.events(execDir).find((event) => event.type === '
 
 // Coordinates remain autonomous Agent choices, guarded only by existing visual inspection.
 assert.throws(() => translateAgentFacingRequest(execDir, request('act', {
-  sceneRef: scene.sceneId, action: { type: 'tap', target: { point: [0.2, 0.4] } },
+  sceneRef, action: { type: 'tap', target: { point: [0.2, 0.4] } },
 })), (error) => error.issues.some((item) => item.code === 'VISUAL_INSPECTION_REQUIRED'));
 runtimeStore.appendEvent(execDir, 'visualInspected', {
   inspectionId: 'inspection-translation-fixture', sceneId: scene.sceneId,
@@ -237,32 +244,32 @@ runtimeStore.appendEvent(execDir, 'visualInspected', {
 });
 const translations = [
   [request('observe'), { operation: 'observe' }],
-  [request('read', { ref: 'scene-1' }), { operation: 'read', ref: 'scene-1' }],
-  [request('inspect', { mode: 'visual', sceneRef: scene.sceneId, observation: '页面显示系统权限弹窗', checkNodeRefs: ['N2'] }), {
+  [request('read', { ref: sceneRef }), { operation: 'read', ref: sceneRef }],
+  [request('inspect', { mode: 'visual', sceneRef, observation: '页面显示系统权限弹窗', checkNodeRefs: ['N2'] }), {
     operation: 'inspectVisual', basedOnSceneId: scene.sceneId,
     decision: { purpose: '记录当前截图的视觉事实', expectationRefs: ['N2'], observation: '页面显示系统权限弹窗' },
   }],
-  [request('act', { sceneRef: scene.sceneId, action: { ref: 'record-button:longPress', input: { durationMs: 1200 } }, purpose: '长按录入语音' }), {
+  [request('act', { sceneRef, action: { ref: 'record-button:longPress', input: { durationMs: 1200 } }, purpose: '长按录入语音' }), {
     operation: 'act', basedOnSceneId: scene.sceneId, capabilityId: 'scene-0007:longPress:record-button', input: { durationMs: 1200 },
     decision: { purpose: '长按录入语音', expectationRefs: [] },
   }],
-  [request('act', { sceneRef: scene.sceneId, action: { ref: 'message-input:inputText', input: { text: '测试', mode: 'replace' } }, purpose: '输入消息' }), {
+  [request('act', { sceneRef, action: { ref: 'message-input:inputText', input: { text: '测试', mode: 'replace' } }, purpose: '输入消息' }), {
     operation: 'act', basedOnSceneId: scene.sceneId, capabilityId: 'scene-0007:inputText:message-input', input: { text: '测试', mode: 'replace' },
     decision: { purpose: '输入消息', expectationRefs: [] },
   }],
-  [request('act', { sceneRef: scene.sceneId, action: { type: 'tap', target: { point: [0.5, 0.4] } }, purpose: '点击截图中的按钮' }), {
+  [request('act', { sceneRef, action: { type: 'tap', target: { point: [0.5, 0.4] } }, purpose: '点击截图中的按钮' }), {
     operation: 'act', basedOnSceneId: scene.sceneId, visual: { gesture: 'tap', point: [0.5, 0.4] },
     decision: { purpose: '点击截图中的按钮', expectationRefs: [] },
   }],
-  [request('act', { sceneRef: scene.sceneId, action: { type: 'swipe', target: { from: [0.5, 0.8], to: [0.5, 0.2] } }, purpose: '向上滚动' }), {
+  [request('act', { sceneRef, action: { type: 'swipe', target: { from: [0.5, 0.8], to: [0.5, 0.2] } }, purpose: '向上滚动' }), {
     operation: 'act', basedOnSceneId: scene.sceneId, visual: { gesture: 'swipe', from: [0.5, 0.8], to: [0.5, 0.2] },
     decision: { purpose: '向上滚动', expectationRefs: [] },
   }],
-  [request('knowledge', { mode: 'query', sceneRef: scene.sceneId, query: '权限弹窗出现后语音录入无法继续', checkNodeRefs: ['N2'] }), {
+  [request('knowledge', { mode: 'query', sceneRef, query: '权限弹窗出现后语音录入无法继续', checkNodeRefs: ['N2'] }), {
     operation: 'knowledge', basedOnSceneId: scene.sceneId, query: '权限弹窗出现后语音录入无法继续',
     decision: { purpose: '调查当前异常的已知解释和处理规则', expectationRefs: ['N2'] },
   }],
-  [request('recover', { mode: 'restart', sceneRef: scene.sceneId, reason: '目标 App 卡死' }), {
+  [request('recover', { mode: 'restart', sceneRef, reason: '目标 App 卡死' }), {
     operation: 'recover', basedOnSceneId: scene.sceneId, reason: '目标 App 卡死',
   }],
   [request('recover', { mode: 'prepare', targetState: 'FRESH_INSTALL', reason: '初始状态' }), {
@@ -278,7 +285,7 @@ for (const action of [
   { ref: 'record-button:tap', input: {} },
   { ref: 'visual:tap', input: { point: [0.5, 0.5] } },
   { ref: 'record-button:longPress' },
-]) assert.throws(() => translateAgentFacingRequest(execDir, request('act', { sceneRef: scene.sceneId, action })),
+]) assert.throws(() => translateAgentFacingRequest(execDir, request('act', { sceneRef, action })),
   (error) => error.code === 'AGENT_INPUT_INVALID');
 
 fs.mkdirSync(path.join(execDir, 'knowledge'), { recursive: true });
@@ -289,7 +296,7 @@ runtimeStore.appendEvent(execDir, 'knowledgeQueried', {
   candidates: [{ entryId: 'K-voice-001', title: '语音权限规则', snapshotRef: 'knowledge/k.md', expired: false }],
 });
 const review = request('knowledge', {
-  mode: 'review', sceneRef: scene.sceneId, queryId: 'knowledge-0001', conclusion: 'APPLICABLE_FOUND',
+  mode: 'review', sceneRef, queryId: 'knowledge-0001', conclusion: 'APPLICABLE_FOUND',
   assessments: [{ entryId: 'K-voice-001', status: 'APPLICABLE', reason: '当前权限弹窗与规则一致' }],
 });
 const translatedReview = translateAgentFacingRequest(execDir, review);
@@ -301,6 +308,7 @@ assertEnvelope(completedReview);
 assert.strictEqual(completedReview.result.outcome, 'KNOWLEDGE_REVIEWED');
 assert.strictEqual(completedReview.result.conclusion, 'APPLICABLE_FOUND');
 assert.strictEqual(runtimeStore.events(execDir).filter((event) => event.type === 'knowledgeReviewed').length, 1);
+const knowledgeDocumentRef = agentResources.publishArtifact(execDir, 'knowledgeDocument', 'knowledge/k.md').data.ref;
 
 const unexplainedPlanUpdate = run(execDir, request('plan', {
   caseFlow: { ...initialPlanRequest.input.caseFlow, baseRevision: 1 },
@@ -316,19 +324,21 @@ assertEnvelope(revisedPlan);
 assert.strictEqual(revisedPlan.result.revision, 2);
 
 const resultsRequest = request('recordResult', { results: [
-  { checkNodeRef: 'N2', status: 'PASS', actual: '权限处理后显示录音状态', evidence: { sceneRefs: [scene.sceneId] } },
-  { checkNodeRef: 'N3', status: 'INCONCLUSIVE', actual: '当前现场不足以确认完整录音结果', evidence: { sceneRefs: [scene.sceneId] } },
+  { checkNodeRef: 'N2', status: 'PASS', actual: '权限处理后显示录音状态', evidence: { sceneRefs: [sceneRef], knowledgeRefs: [knowledgeDocumentRef] } },
+  { checkNodeRef: 'N3', status: 'INCONCLUSIVE', actual: '当前现场不足以确认完整录音结果', evidence: { sceneRefs: [sceneRef] } },
 ] });
 const recorded = run(execDir, resultsRequest);
 assertEnvelope(recorded);
 assert.strictEqual(recorded.result.outcome, 'RESULTS_RECORDED');
 assert.strictEqual(recorded.data, undefined);
+assert.deepStrictEqual(runtimeStore.events(execDir).filter((event) => event.type === 'expectationResultUpdated')
+  .find((event) => event.expectationRef === 'N2').evidence.knowledgeRefs, ['K-voice-001']);
 const repeated = run(execDir, resultsRequest);
 assertEnvelope(repeated);
 assert.deepStrictEqual(repeated.result.idempotentCheckNodeIds, ['N2', 'N3']);
 const resultCount = runtimeStore.events(execDir).filter((event) => event.type === 'expectationResultUpdated').length;
 const invalidResults = run(execDir, request('recordResult', { results: [
-  resultsRequest.input.results[0], { checkNodeRef: 'N9', status: 'PASS', actual: '未知验证点', evidence: { sceneRefs: [scene.sceneId] } },
+  resultsRequest.input.results[0], { checkNodeRef: 'N9', status: 'PASS', actual: '未知验证点', evidence: { sceneRefs: [sceneRef] } },
 ] }));
 assertEnvelope(invalidResults, 'REJECTED');
 assert.strictEqual(invalidResults.error.code, 'EXPECTATION_UNKNOWN');
@@ -336,7 +346,7 @@ assert.strictEqual(runtimeStore.events(execDir).filter((event) => event.type ===
 
 let brokerCalls = 0;
 const executeRequest = () => { brokerCalls += 1; return { status: 'SCENE', scene }; };
-const invalidAction = request('act', { sceneRef: scene.sceneId, action: { ref: 'record-button:longPress' } });
+const invalidAction = request('act', { sceneRef, action: { ref: 'record-button:longPress' } });
 const invalid = run(execDir, invalidAction, { executeRequest });
 assertEnvelope(invalid, 'REJECTED');
 assert.strictEqual(invalid.error.code, 'ACTION_INPUT_INVALID');
@@ -378,10 +388,10 @@ const onlyRecord = projectAgentFacingResponse(execDir, { ...injection, status: '
 assertEnvelope(onlyRecord);
 assert.deepStrictEqual(onlyRecord.resources, []);
 assert.strictEqual(onlyRecord.data, undefined);
-const canonicalScene = { ref: 'scene-0007', type: 'scene', content: { sceneRef: 'scene-0007', controls: ['all controls'] } };
+const canonicalScene = { ref: sceneRef, type: 'scene', content: { sceneRef, controls: ['all controls'] } };
 const observed = projectAgentFacingResponse(execDir, {
-  status: 'SCENE', data: canonicalScene, result: { sceneRef: 'scene-0007' },
-  resources: [{ ref: 'scene-0007', type: 'scene', role: 'primary' }, { ref: 'shot-real', type: 'screenshot', role: 'visual' }],
+  status: 'SCENE', data: canonicalScene, result: { sceneRef },
+  resources: [{ ref: sceneRef, type: 'scene', role: 'primary' }, { ref: 'shot-real', type: 'screenshot', role: 'visual' }],
 }, request('observe'));
 assertEnvelope(observed);
 assert.strictEqual(observed.result.outcome, 'SCENE_CAPTURED');
@@ -473,7 +483,7 @@ assertEnvelope(rejectedAct, 'REJECTED');
 assert.deepStrictEqual(rejectedAct.result, { outcome: 'SCENE_CHANGED', sceneRef: scene.sceneId });
 
 // read bypasses the effect broker and remains available after finalization.
-const missing = run(execDir, request('read', { ref: 'unknown' }), { executeRequest });
+const missing = run(execDir, request('read', { ref: agentResources.resourceRef(execDir, 'scene', 'unknown') }), { executeRequest });
 assertEnvelope(missing, 'REJECTED');
 assert.strictEqual(missing.error.code, 'RESOURCE_UNKNOWN');
 const executionPath = path.join(execDir, 'execution.json');

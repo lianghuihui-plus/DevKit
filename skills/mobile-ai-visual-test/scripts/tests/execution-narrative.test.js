@@ -8,14 +8,17 @@ const { renderCurrentContextHtml, renderCurrentContextMarkdown } = require('../r
 const report = {
   execution: { executionId: 'execution-narrative' },
   events: [
-    { sequence: 1, time: '2026-09-04T01:00:00.000Z', type: 'caseContextRecorded', contextVersion: 1, reason: 'INITIAL_UNDERSTANDING', caseContext: {
-      summary: '验证目标页面内容', preconditions: ['App 已启动'],
-      expectations: [{ id: 'E1', text: '目标内容显示' }], initialPlan: ['进入目标页面', '验证内容'], uncertainties: [],
-    } },
+    { sequence: 1, time: '2026-09-04T01:00:00.000Z', type: 'caseFlowRevised', revision: 1, reason: 'INITIAL_CASE_FLOW',
+      summary: '验证目标页面内容', entryNodeRef: 'N1', uncertainties: [],
+      nodes: [
+        { ref: 'N1', type: 'ACTION', text: '进入目标页面' },
+        { ref: 'E1', type: 'CHECK', text: '目标内容显示', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' },
+        { ref: 'N2', type: 'END', text: '完成' },
+      ],
+      edges: [{ ref: 'L1', from: 'N1', to: 'E1' }, { ref: 'L2', from: 'E1', to: 'N2' }] },
     { sequence: 2, time: '2026-09-04T01:00:01.000Z', type: 'sceneObserved', sceneId: 'scene-0001', screenshotRef: 'screenshots/scene-0001.png', app: { inTargetApp: true } },
     { sequence: 3, time: '2026-09-04T01:00:02.000Z', type: 'agentDecisionRecorded', decisionId: 'decision-0001', requestedOperation: 'act', sceneId: 'scene-0001', decision: {
       observation: '当前页面显示目标入口', conclusion: '可以进入目标页', purpose: '打开目标页面', expectedOutcome: '目标内容出现', expectationRefs: ['E1'],
-      planUpdate: { reason: '入口已直接出现', next: ['打开目标页面', '验证内容'] },
     } },
     { sequence: 4, time: '2026-09-04T01:00:02.100Z', type: 'actionRequested', operationId: 'action-0001', decisionId: 'decision-0001', sceneId: 'scene-0001', action: { type: 'tap', target: '目标入口' } },
     { sequence: 5, time: '2026-09-04T01:00:02.200Z', type: 'actionCompleted', operationId: 'action-0001', decisionId: 'decision-0001', lifecycle: { status: 'COMPLETED' }, command: { status: 'ACCEPTED' }, deviceExecution: { status: 'UNVERIFIED' }, observedEffect: { status: 'CHANGED' }, evidence: { sceneRefs: { before: 'scene-0001', after: 'scene-0002' }, screenshotRefs: ['screenshots/scene-0001.png', 'screenshots/scene-0002.png'] } },
@@ -41,22 +44,21 @@ const report = {
   ],
   result: {
     verdict: 'PASS', summary: '目标内容正常显示',
-    checks: [{ expectationRef: 'E1', status: 'PASS', actual: '目标内容已显示', sceneRefs: ['scene-0002'], knowledgeRefs: ['K-target-001'] }], uncertainties: [],
+    checks: [{ checkNodeRef: 'E1', status: 'PASS', actual: '目标内容已显示', sceneRefs: ['scene-0002'], knowledgeRefs: ['K-target-001'] }], uncertainties: [],
   },
 };
 
 const narrative = buildExecutionNarrative(report);
 assert.strictEqual(narrative.available, true);
-assert.strictEqual(narrative.modelKind, 'LEGACY_CASE_MODEL');
+assert.strictEqual(narrative.modelKind, 'CASE_FLOW');
 assert.strictEqual(narrative.recordingStatus, 'COMPLETE');
 assert.strictEqual(narrative.recordingComplete, undefined);
 assert.strictEqual(narrative.understanding.summary, '验证目标页面内容');
-assert.strictEqual(narrative.understandingHistory.length, 1);
-assert.deepStrictEqual(narrative.initialPlan.items, ['进入目标页面', '验证内容']);
-assert.strictEqual(narrative.plan.version, 2);
-assert.strictEqual(narrative.plan.reason, '入口已直接出现');
-assert.deepStrictEqual(narrative.plan.items, ['打开目标页面', '验证内容']);
-assert.strictEqual(narrative.planHistory.length, 2);
+assert.strictEqual(narrative.understandingHistory.length, 0);
+assert.deepStrictEqual(narrative.initialPlan.items, ['N1 ACTION: 进入目标页面', 'E1 CHECK: 目标内容显示', 'N2 END: 完成']);
+assert.strictEqual(narrative.plan.version, 1);
+assert.strictEqual(narrative.plan.reason, 'INITIAL_CASE_FLOW');
+assert.strictEqual(narrative.planHistory.length, 1);
 assert.strictEqual(narrative.steps.length, 3);
 assert.strictEqual(narrative.steps[0].action.status, 'OBSERVED');
 assert.strictEqual(narrative.steps[0].action.result.command.status, 'ACCEPTED');
@@ -163,62 +165,6 @@ const incomplete = buildExecutionNarrative({ execution: {}, events: [], result: 
 assert.strictEqual(incomplete.available, false);
 assert.strictEqual(incomplete.recordingStatus, 'UNAVAILABLE');
 
-const emptyPlan = buildExecutionNarrative({
-  execution: { executionId: 'execution-empty-plan' },
-  events: [{
-    sequence: 1, type: 'caseContextRecorded', contextVersion: 1, reason: 'INITIAL_UNDERSTANDING',
-    caseContext: { ...report.events[0].caseContext, initialPlan: [] },
-  }],
-  result: { checks: [] },
-});
-assert.strictEqual(emptyPlan.recordingStatus, 'PARTIAL');
-
-const agentAuthoredInitialPlan = buildExecutionNarrative({
-  execution: { executionId: 'execution-agent-plan' },
-  events: [
-    {
-      sequence: 1, time: '2026-09-04T01:00:00.000Z', type: 'caseContextRecorded', contextVersion: 1, reason: 'FROZEN_CASE_SPEC',
-      caseContext: { ...report.events[0].caseContext, initialPlan: [] },
-    },
-    {
-      sequence: 2, time: '2026-09-04T01:00:01.000Z', type: 'agentDecisionRecorded', decisionId: 'decision-plan', requestedOperation: 'recordPlan',
-      decision: { purpose: '记录执行计划', expectationRefs: [], planUpdate: { reason: 'INITIAL_PLAN', next: ['观察首页', '验证目标内容'] } },
-    },
-  ],
-  result: { checks: [] },
-});
-assert.deepStrictEqual(agentAuthoredInitialPlan.initialPlan.items, ['观察首页', '验证目标内容']);
-assert.strictEqual(agentAuthoredInitialPlan.initialPlan.version, 1);
-assert.strictEqual(agentAuthoredInitialPlan.plan.version, 1);
-assert.strictEqual(agentAuthoredInitialPlan.planHistory.length, 1);
-assert.strictEqual(agentAuthoredInitialPlan.recordingStatus, 'COMPLETE');
-
-const understandingRevisionReport = {
-  latest: '/tmp/execution-understanding-revision',
-  execution: { executionId: 'execution-understanding-revision' },
-  events: [
-    report.events[0],
-    {
-      ...report.events[0], sequence: 2, contextVersion: 2, reason: 'CLARIFIED_EXPECTATION',
-      caseContext: {
-        ...report.events[0].caseContext,
-        summary: '补充理解目标页面内容',
-        initialPlan: ['这不是显式计划调整'],
-      },
-    },
-  ],
-  result: { verdict: 'PASS', summary: '目标内容正常显示', checks: [], uncertainties: [] },
-  display: { verdict: 'PASS', durationMs: 5000 },
-  sourceText: '验证目标页面内容',
-};
-const understandingRevision = buildExecutionNarrative(understandingRevisionReport);
-assert.strictEqual(understandingRevision.understandingHistory.length, 2);
-assert.strictEqual(understandingRevision.planHistory.length, 1);
-assert.strictEqual(understandingRevision.plan.version, 1);
-assert.deepStrictEqual(understandingRevision.plan.items, ['进入目标页面', '验证内容']);
-assert.strictEqual(renderCurrentContextHtml({ identity: { title: '理解修订用例' } }, understandingRevisionReport)
-  .includes('<h3>计划调整</h3>'), false);
-
 const technicalNarrative = buildExecutionNarrative({
   execution: { executionId: 'execution-technical', warmSessionGeneration: 1 },
   events: [...report.events, {
@@ -248,12 +194,12 @@ const technicalReport = {
   display: { verdict: 'BLOCKED', durationMs: 5000 }, sourceText: '验证目标页面内容',
 };
 const technicalMarkdown = renderCurrentContextMarkdown({ identity: { title: '技术阻塞用例' } }, technicalReport);
-assert.match(technicalMarkdown, /计划调整/);
+assert.match(technicalMarkdown, /用例流程/);
 assert.match(technicalMarkdown, /ADAPTER_DISCONNECTED/);
 assert.match(technicalMarkdown, /设备连接中断/);
 assert.match(technicalMarkdown, /有效/);
 const technicalHtml = renderCurrentContextHtml({ identity: { title: '技术阻塞用例' } }, technicalReport);
-for (const text of ['计划调整', 'ADAPTER_DISCONNECTED', '设备连接中断', 'observe', '有效']) assert.ok(technicalHtml.includes(text), text);
+for (const text of ['用例流程', 'ADAPTER_DISCONNECTED', '设备连接中断', 'observe', '有效']) assert.ok(technicalHtml.includes(text), text);
 
 const observeNarrative = buildExecutionNarrative({
   execution: { executionId: 'execution-observe' },
@@ -268,14 +214,14 @@ const observeNarrative = buildExecutionNarrative({
 assert.strictEqual(observeNarrative.steps[0].afterScene.sceneId, 'scene-observe-after');
 assert.strictEqual(observeNarrative.steps[0].processState, 'OBSERVED');
 
-const legacyFallbackNarrative = buildExecutionNarrative({
-  execution: { executionId: 'execution-legacy-fallback' },
+const sourceFallbackNarrative = buildExecutionNarrative({
+  execution: { executionId: 'execution-source-fallback' },
   events: [
     report.events[0],
     {
       sequence: 2,
       type: 'agentDecisionRecorded',
-      decisionId: 'decision-legacy-fallback',
+      decisionId: 'decision-source-fallback',
       requestedOperation: 'observe',
       sceneId: 'scene-0001',
       decision: {
@@ -290,11 +236,11 @@ const legacyFallbackNarrative = buildExecutionNarrative({
   ],
   result: report.result,
 });
-assert.strictEqual(legacyFallbackNarrative.steps[0].purpose, '确认目标页面');
-assert.strictEqual(legacyFallbackNarrative.steps[0].assessment, '');
-assert.strictEqual(legacyFallbackNarrative.steps[0].observation, '');
-assert.strictEqual(legacyFallbackNarrative.steps[0].conclusion, '');
-assert.strictEqual(legacyFallbackNarrative.steps[0].expectedOutcome, '');
+assert.strictEqual(sourceFallbackNarrative.steps[0].purpose, '确认目标页面');
+assert.strictEqual(sourceFallbackNarrative.steps[0].assessment, '');
+assert.strictEqual(sourceFallbackNarrative.steps[0].observation, '');
+assert.strictEqual(sourceFallbackNarrative.steps[0].conclusion, '');
+assert.strictEqual(sourceFallbackNarrative.steps[0].expectedOutcome, '');
 
 const caseFlowReport = {
   latest: '/tmp/execution-case-flow',
@@ -334,7 +280,6 @@ const caseFlowReport = {
 const caseFlowNarrative = buildExecutionNarrative(caseFlowReport);
 assert.strictEqual(caseFlowNarrative.modelKind, 'CASE_FLOW');
 assert.strictEqual(caseFlowNarrative.caseFlow.revision, 1);
-assert.strictEqual(caseFlowNarrative.caseModel, null);
 assert.strictEqual(caseFlowNarrative.checks[0].expectationRef, 'N2');
 assert.deepStrictEqual(caseFlowNarrative.steps[0].flowContext, { nodeRef: 'N1', selectedEdgeRef: 'L1' });
 const caseFlowHtml = renderCurrentContextHtml({ identity: { title: 'Case Flow 用例' } }, caseFlowReport);

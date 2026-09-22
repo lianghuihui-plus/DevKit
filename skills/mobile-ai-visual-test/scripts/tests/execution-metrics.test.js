@@ -147,7 +147,8 @@ const facade = require('../case-runtime/agent-facing-client');
 const sharedTelemetry = require('../lib/agent-facing-telemetry');
 fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 14, finalized: true }));
 const readResource = () => ({ data: readResponse.data, resources: readResponse.resources });
-const finalRead = facade.run(execDir, { operation: 'read', input: { ref: 'private-ref' } }, { readResource });
+const privateRef = 'mavt:0123456789abcdef01234567:caseBrief:private-ref';
+const finalRead = facade.run(execDir, { operation: 'read', input: { ref: privateRef } }, { readResource });
 assert.strictEqual(finalRead.status, 'SUCCEEDED');
 const recordedFinalRead = sharedTelemetry.readAgentFacingEvents(telemetry.agentFacingFile(execDir)).at(-1);
 assert.strictEqual(recordedFinalRead.responseBytes, bytes(finalRead));
@@ -166,7 +167,7 @@ const stderrWrite = process.stderr.write;
 let diagnostic = '';
 try {
   process.stderr.write = (value) => { diagnostic += value; return true; };
-  const stillReadable = facade.run(brokenTelemetryDir, { operation: 'read', input: { ref: 'private-ref' } }, { readResource });
+  const stillReadable = facade.run(brokenTelemetryDir, { operation: 'read', input: { ref: privateRef } }, { readResource });
   assert.deepStrictEqual(stillReadable, finalRead, 'telemetry I/O failure cannot alter the business response');
 } finally { process.stderr.write = stderrWrite; }
 assert.ok(diagnostic.includes('AGENT_PROTOCOL_TELEMETRY_UNAVAILABLE'));

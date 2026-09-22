@@ -11,21 +11,6 @@ function latest(items) {
   return items.slice().sort(bySequence).at(-1) || null;
 }
 
-function modelContext(event) {
-  if (!event) return null;
-  return {
-    summary: event.understanding,
-    preconditions: event.preconditions || [],
-    expectations: (event.verificationPoints || []).filter((item) => item.status !== 'CANCELLED').map((item) => ({
-      id: item.ref,
-      text: item.text,
-      verificationKind: item.verificationKind || 'DIRECT_OBSERVATION',
-    })),
-    initialPlan: event.items || [],
-    uncertainties: event.uncertainties || [],
-  };
-}
-
 function flowContext(event) {
   if (!event) return null;
   return {
@@ -43,7 +28,7 @@ function flowContext(event) {
 }
 
 function modelForEvent(models, event) {
-  const explicitRevision = Number(event?.caseFlowRevision || event?.caseModelRevision || 0);
+  const explicitRevision = Number(event?.caseFlowRevision || 0);
   if (explicitRevision) return models.find((model) => model.revision === explicitRevision) || null;
   return models.filter((model) => Number(model.sequence || 0) <= Number(event?.sequence || 0)).at(-1) || null;
 }
@@ -65,7 +50,7 @@ function decisionField(event, field) {
   const source = event?.decisionFieldSources?.[field];
   if (source === 'AGENT_AUTHORED') return decision[field];
   if (source === 'NOT_PROVIDED') return ['expectationRefs', 'uncertainties'].includes(field) ? [] : null;
-  if (['purpose', 'expectationRefs', 'planUpdate', 'knowledgeReview', 'uncertainties'].includes(field)) return decision[field];
+  if (['purpose', 'expectationRefs', 'knowledgeReview', 'uncertainties'].includes(field)) return decision[field];
   const value = decision[field];
   return typeof value === 'string' && value && value !== decision.purpose ? value : null;
 }
@@ -98,18 +83,12 @@ function investigationStatus(expectationRef, report, events, reviews) {
 function projectCurrentNarrative(report) {
   const events = Array.isArray(report.events) ? report.events.slice().sort(bySequence) : [];
   const flowEvents = events.filter((event) => event.type === 'caseFlowRevised');
-  const modelEvents = events.filter((event) => event.type === 'caseModelRevised');
-  const legacyContextEvents = events.filter((event) => event.type === 'caseContextRecorded');
   const decisions = events.filter((event) => event.type === 'agentDecisionRecorded');
-  const executionDecisions = decisions.filter((event) => !['finish', 'recordPlan'].includes(event.requestedOperation));
+  const executionDecisions = decisions.filter((event) => event.requestedOperation !== 'finish');
   const finalDecisionEvent = latest(decisions.filter((event) => event.requestedOperation === 'finish'));
   const gaps = events.filter((event) => event.type === 'narrativeGap');
   const latestFlow = latest(flowEvents);
-  const latestModel = latestFlow || latest(modelEvents);
-  const modelKind = latestFlow ? 'CASE_FLOW' : 'LEGACY_CASE_MODEL';
-  const latestLegacyContext = latest(legacyContextEvents);
-  const context = latestFlow ? flowContext(latestFlow)
-    : modelContext(latestModel) || latestLegacyContext?.caseContext || null;
+  const context = flowContext(latestFlow);
   const scenes = new Map(events.filter((event) => event.type === 'sceneObserved').map((event) => [event.sceneId, event]));
   const requestedActions = events.filter((event) => event.type === 'actionRequested');
   const actionResults = events.filter((event) => ['actionCompleted', 'actionOutcomeUnknown'].includes(event.type));
@@ -128,25 +107,9 @@ function projectCurrentNarrative(report) {
   const flowContextByDecision = new Map(events.filter((event) => event.type === 'flowContextRecorded' && event.decisionId)
     .map((event) => [event.decisionId, event]));
 
-  const planHistory = flowEvents.length ? flowEvents.map((event) => ({
+  const planHistory = flowEvents.map((event) => ({
     version: event.revision, time: event.time, reason: event.reason,
     items: (event.nodes || []).map((item) => `${item.ref} ${item.type}: ${item.text}`), decisionId: null,
-  })) : modelEvents.length ? modelEvents.map((event) => ({
-    version: event.revision, time: event.time, reason: event.reason, items: event.items || [], decisionId: null,
-  })) : [];
-  if (!modelEvents.length) {
-    const firstContext = legacyContextEvents[0] || null;
-    if (firstContext?.caseContext?.initialPlan?.length) {
-      planHistory.push({ version: 1, time: firstContext.time, reason: firstContext.reason, items: firstContext.caseContext.initialPlan, decisionId: null });
-    }
-    for (const event of decisions.filter((item) => item.decision?.planUpdate)) {
-      planHistory.push({ version: planHistory.length + 1, time: event.time, reason: event.decision.planUpdate.reason, items: event.decision.planUpdate.next, decisionId: event.decisionId });
-    }
-  }
-  const understandingHistory = flowEvents.length ? [] : modelEvents.length ? modelEvents.map((event) => ({
-    version: event.revision, time: event.time, reason: event.reason, caseContext: modelContext(event), retiredVerificationRefs: event.retiredVerificationRefs || [],
-  })) : legacyContextEvents.map((event) => ({
-    version: event.contextVersion, time: event.time, reason: event.reason, caseContext: event.caseContext,
   }));
   const initialPlan = planHistory[0] || null;
 
@@ -172,7 +135,7 @@ function projectCurrentNarrative(report) {
   }));
   const steps = executionDecisions.map((event, index) => {
     const decision = event.decision || {};
-    const stepModel = modelForEvent(latestFlow ? flowEvents : modelEvents, event);
+    const stepModel = modelForEvent(flowEvents, event);
     const stepExpectations = new Map(((stepModel?.nodes || []).filter((item) => item.type === 'CHECK')
       .concat(stepModel?.verificationPoints || context?.expectations || [])).map((item) => [item.ref || item.id, item]));
     const stepFlowContext = flowContextByDecision.get(event.decisionId) || null;
@@ -215,7 +178,7 @@ function projectCurrentNarrative(report) {
       spatialInspection: spatialInspection ? {
         observation: spatialInspection.observation,
         time: spatialInspection.time,
-        caseModelRevision: spatialInspection.caseModelRevision || null,
+        caseFlowRevision: spatialInspection.caseFlowRevision || null,
         expectationRefs: spatialInspection.expectationRefs || [],
       } : null,
     } : null;
@@ -236,13 +199,11 @@ function projectCurrentNarrative(report) {
         ref,
         text: stepExpectations.get(ref)?.text || ref,
       })),
-      caseModelRevision: stepModel?.revision || null,
       caseFlowRevision: event.caseFlowRevision || stepFlowContext?.caseFlowRevision || null,
       flowContext: stepFlowContext ? {
         nodeRef: stepFlowContext.nodeRef,
         selectedEdgeRef: stepFlowContext.selectedEdgeRef || null,
       } : null,
-      planUpdate: modelEvents.length ? null : decision.planUpdate || null,
       action: actionView,
       knowledge: knowledge ? {
         queryId: knowledge.queryId,
@@ -289,14 +250,13 @@ function projectCurrentNarrative(report) {
     : gaps.length || !initialPlan?.items.length || hasUnreviewedKnowledge ? 'PARTIAL' : 'COMPLETE';
   return {
     available: Boolean(context),
-    modelKind,
+    modelKind: 'CASE_FLOW',
     recordingStatus,
-    contextVersion: latestModel?.revision || latestLegacyContext?.contextVersion || null,
-    caseModel: modelKind === 'LEGACY_CASE_MODEL' ? latestModel : null,
+    contextVersion: latestFlow?.revision || null,
     caseFlow: latestFlow,
     caseFlowHistory: flowEvents,
     understanding: context,
-    understandingHistory,
+    understandingHistory: [],
     initialPlan,
     plan: latest(planHistory),
     planHistory,

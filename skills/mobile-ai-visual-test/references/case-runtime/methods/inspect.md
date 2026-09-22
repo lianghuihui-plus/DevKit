@@ -62,9 +62,9 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 ## 最小示例
 
 ```json
-{"operation":"inspect","input":{"mode":"visual","sceneRef":"scene-1","observation":"目标按钮可见"}}
+{"operation":"inspect","input":{"mode":"visual","sceneRef":"mavt:0123456789abcdef01234567:scene:scene-1","observation":"目标按钮可见"}}
 ```
 
 ```json
-{"operation":"inspect","input":{"mode":"action","sceneRef":"scene-1","observation":"上一动作标注落在目标内"}}
+{"operation":"inspect","input":{"mode":"action","sceneRef":"mavt:0123456789abcdef01234567:scene:scene-1","observation":"上一动作标注落在目标内"}}
 ```

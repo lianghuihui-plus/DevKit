@@ -117,7 +117,7 @@ function projectSource(type, raw, params, source) {
     const { projectPreviousAction } = require('./agent-facing-contract');
     const previous = raw.previousAction ? projectPreviousAction(raw.previousAction) : null;
     return {
-      sceneId: raw.sceneId, sceneRef: params.sceneRef, capturedAt: raw.capturedAt, generation: raw.generation,
+      sceneRef: params.sceneRef, capturedAt: raw.capturedAt, generation: raw.generation,
       ...params.refs, targetApp: raw.app || {}, signals: raw.signals || {}, conflicts: raw.conflicts || [],
       interactionContext: { scrollContexts: raw.scrollContexts || [], keyboard: raw.signals?.keyboard || {}, visual: raw.visual || {} },
       actions: buildCapabilities(raw, params.platform).map((action) => ({ ref: actionRefFor(action), label: action.label,
@@ -425,7 +425,17 @@ function provideOperationResources(execDir, response, request) {
 
 function resolveRequestReferences(execDir, value, field = '') {
   if (typeof value === 'string' && /Refs?$/.test(field) && value.startsWith('mavt:')) {
-    return readPublishedResource(execDir, value).id;
+    const resource = readPublishedResource(execDir, value);
+    if (field === 'knowledgeRefs') {
+      const entryIds = [...new Set(store.events(execDir)
+        .filter((event) => event.type === 'knowledgeQueried')
+        .flatMap((event) => event.candidates || [])
+        .filter((candidate) => candidate.snapshotRef === resource.id)
+        .map((candidate) => candidate.entryId))];
+      if (entryIds.length !== 1) throw contractError('EVIDENCE_REFERENCE_INVALID', 'knowledge resource does not identify one candidate');
+      return entryIds[0];
+    }
+    return resource.id;
   }
   if (Array.isArray(value)) return value.map((item) => resolveRequestReferences(execDir, item, field));
   if (!value || typeof value !== 'object') return value;

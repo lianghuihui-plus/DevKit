@@ -10,6 +10,15 @@ const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
 const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
 const STRING = { type: 'string', minLength: 1 };
 const STRING_ARRAY = { type: 'array', items: STRING };
+const RESOURCE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:[^:]+:.+$' };
+const RESOURCE_REF_ARRAY = { type: 'array', items: RESOURCE_REF };
+const SCENE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:scene:.+$' };
+const SCENE_REF_ARRAY = { type: 'array', items: SCENE_REF };
+const KNOWLEDGE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:knowledgeDocument:.+$' };
+const KNOWLEDGE_REF_ARRAY = { type: 'array', items: KNOWLEDGE_REF };
+const TECHNICAL_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:technicalFact:.+$' };
+const TECHNICAL_REF_ARRAY = { type: 'array', items: TECHNICAL_REF };
+const EXAMPLE_SCENE_REF = 'mavt:0123456789abcdef01234567:scene:scene-1';
 const POINT = { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0, maximum: 1 } };
 
 function object(properties, required) {
@@ -64,10 +73,10 @@ const CASE_FLOW_UPDATE = object({
   reason: STRING,
 }, ['baseRevision', 'summary', 'entryNodeRef', 'nodes', 'edges', 'uncertainties']);
 const RESULT_EVIDENCE = object({
-  sceneRefs: STRING_ARRAY,
-  knowledgeRefs: STRING_ARRAY,
-  technicalRefs: STRING_ARRAY,
-  searchAbsence: object({ sceneRef: STRING, scrollContextRef: STRING }, ['sceneRef', 'scrollContextRef']),
+  sceneRefs: SCENE_REF_ARRAY,
+  knowledgeRefs: KNOWLEDGE_REF_ARRAY,
+  technicalRefs: TECHNICAL_REF_ARRAY,
+  searchAbsence: object({ sceneRef: SCENE_REF, scrollContextRef: STRING }, ['sceneRef', 'scrollContextRef']),
 }, []);
 const RESULT_REQUEST = object({
   checkNodeRef: STRING,
@@ -76,16 +85,16 @@ const RESULT_REQUEST = object({
   reason: STRING,
   evidence: RESULT_EVIDENCE,
 }, ['checkNodeRef', 'status', 'actual']);
-const NOT_RUN_EVIDENCE = object({ sceneRefs: STRING_ARRAY, technicalRefs: STRING_ARRAY }, ['sceneRefs', 'technicalRefs']);
+const NOT_RUN_EVIDENCE = object({ sceneRefs: SCENE_REF_ARRAY, technicalRefs: TECHNICAL_REF_ARRAY }, ['sceneRefs', 'technicalRefs']);
 const FLOW_CONTEXT = object({ nodeRef: STRING, selectedEdgeRef: STRING }, ['nodeRef']);
 
 const SCHEMAS = Object.freeze({
   observe: object({
     purpose: STRING, flowContext: FLOW_CONTEXT,
   }, []),
-  read: object({ ref: STRING }, ['ref']),
+  read: object({ ref: RESOURCE_REF }, ['ref']),
   inspect: { type: 'object', oneOf: ['visual', 'action'].map((mode) => object({
-    mode: { const: mode }, sceneRef: STRING,
+    mode: { const: mode }, sceneRef: SCENE_REF,
     observation: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
   }, ['mode', 'sceneRef', 'observation'])) },
   plan: object({ caseFlow: CASE_FLOW_UPDATE }, ['caseFlow']),
@@ -93,24 +102,24 @@ const SCHEMAS = Object.freeze({
     results: { type: 'array', minItems: 1, items: RESULT_REQUEST },
   }, ['results']),
   act: object({
-    sceneRef: STRING, action: ACTION, purpose: STRING, flowContext: FLOW_CONTEXT,
+    sceneRef: SCENE_REF, action: ACTION, purpose: STRING, flowContext: FLOW_CONTEXT,
   }, ['sceneRef', 'action']),
   runPlan: object({
-    submissionId: STRING, sceneRef: STRING,
+    submissionId: STRING, sceneRef: SCENE_REF,
     purpose: STRING, maxDurationMs: { type: 'integer', minimum: 1, maximum: MAX_PLAN_DURATION_MS }, onFailure: { enum: ['STOP', 'CONTINUE'] },
     steps: { type: 'array', minItems: 1, maxItems: MAX_PLAN_STEPS, items: PLAN_STEP_SCHEMA },
     flowContext: FLOW_CONTEXT,
   }, ['submissionId', 'sceneRef', 'purpose', 'maxDurationMs', 'onFailure', 'steps']),
   knowledgeQuery: object({
-    mode: { const: 'query' }, sceneRef: STRING, query: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
+    mode: { const: 'query' }, sceneRef: SCENE_REF, query: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
   }, ['mode', 'sceneRef', 'query']),
   knowledgeReview: object({
-    mode: { const: 'review' }, sceneRef: STRING, queryId: STRING,
+    mode: { const: 'review' }, sceneRef: SCENE_REF, queryId: STRING,
     conclusion: { enum: ['APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT'] },
     assessments: { type: 'array', items: ASSESSMENT }, flowContext: FLOW_CONTEXT,
   }, ['mode', 'sceneRef', 'queryId', 'conclusion', 'assessments']),
   recover: { type: 'object', oneOf: [
-    object({ mode: { const: 'restart' }, sceneRef: STRING, reason: STRING, flowContext: FLOW_CONTEXT }, ['mode', 'sceneRef', 'reason']),
+    object({ mode: { const: 'restart' }, sceneRef: SCENE_REF, reason: STRING, flowContext: FLOW_CONTEXT }, ['mode', 'sceneRef', 'reason']),
     object({ mode: { const: 'prepare' }, reason: STRING, targetState: { enum: ['APP_LOCAL_STATE_EMPTY', 'FRESH_INSTALL'] }, flowContext: FLOW_CONTEXT }, ['mode', 'reason', 'targetState']),
     object({ mode: { const: 'external' }, reason: STRING, externalAction: EXTERNAL_ACTION, flowContext: FLOW_CONTEXT }, ['mode', 'reason', 'externalAction']),
   ] },
@@ -231,8 +240,8 @@ const PUBLIC_METHODS = Object.freeze({
     contextualValidationRules: ['历史 Scene 可登记事实；读取资源使用 read。'],
     successStatuses: ['VISUAL_OBSERVATION_RECORDED', 'ACTION_SPATIAL_OBSERVATION_RECORDED'],
     sideEffects: ['visual/action 追加事实事件'], idempotency: '相同 submission 不重复追加事实。',
-    minimalExample: { operation: 'inspect', input: { mode: 'visual', sceneRef: 'scene-1', observation: '目标按钮可见' } },
-    additionalExamples: [{ mode: 'action', sceneRef: 'scene-1', observation: '上一动作标注落在目标内' }],
+    minimalExample: { operation: 'inspect', input: { mode: 'visual', sceneRef: EXAMPLE_SCENE_REF, observation: '目标按钮可见' } },
+    additionalExamples: [{ mode: 'action', sceneRef: EXAMPLE_SCENE_REF, observation: '上一动作标注落在目标内' }],
   }),
   plan: method('plan', '创建或修订完整 Case Flow。', SCHEMAS.plan, {
     caseFlow: '完整 Case Flow 快照',
@@ -257,7 +266,7 @@ const PUBLIC_METHODS = Object.freeze({
     successStatuses: ['RESULTS_RECORDED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID', 'RECORD_RESULT_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['追加 expectation result 事件'], idempotency: '相同结果重复提交不追加重复事件。',
-    minimalExample: { operation: 'recordResult', input: { results: [{ checkNodeRef: 'N1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: ['scene-1'] } }] } },
+    minimalExample: { operation: 'recordResult', input: { results: [{ checkNodeRef: 'N1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: [EXAMPLE_SCENE_REF] } }] } },
   }),
   act: method('act', '基于当前 Scene 执行一个 ActionRef，并采集新 Scene。', SCHEMAS.act, {
     sceneRef: '当前 Scene', action: '发布的 ActionRef 或 Agent 自主视觉坐标动作',
@@ -270,7 +279,7 @@ const PUBLIC_METHODS = Object.freeze({
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'ACTION_NOT_AVAILABLE', 'ACTION_INPUT_INVALID', 'VISUAL_INSPECTION_REQUIRED', 'ACTION_OUTCOME_UNKNOWN', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['最多投递一个设备动作', '采集新 Scene'],
     idempotency: '已投递且结果未知的动作永不重放。',
-    minimalExample: { operation: 'act', input: { sceneRef: 'scene-1', action: { ref: 'button-1:tap' } } },
+    minimalExample: { operation: 'act', input: { sceneRef: EXAMPLE_SCENE_REF, action: { ref: 'button-1:tap' } } },
   }),
   runPlan: method('runPlan', '连续执行受约束的短时动作、等待、采集、定位和技术检查计划。', SCHEMAS.runPlan, {
     submissionId: '本次计划提交的幂等键', sceneRef: '当前 Scene',
@@ -285,7 +294,7 @@ const PUBLIC_METHODS = Object.freeze({
     sideEffects: ['按顺序投递计划中的设备动作', '保存步骤事件和 Scene 证据'],
     idempotency: '相同 submissionId 和请求摘要返回原计划；未知动作结果永不重放。',
     minimalExample: {
-      operation: 'runPlan', input: { submissionId: 'run-plan-1', sceneRef: 'scene-1', purpose: '完成短时交互',
+      operation: 'runPlan', input: { submissionId: 'run-plan-1', sceneRef: EXAMPLE_SCENE_REF, purpose: '完成短时交互',
       maxDurationMs: 2500, onFailure: 'STOP',
       steps: [{ id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false }] },
     },
@@ -303,8 +312,8 @@ const PUBLIC_METHODS = Object.freeze({
     successStatuses: ['KNOWLEDGE', 'KNOWLEDGE_REVIEWED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_REQUIRED', 'KNOWLEDGE_QUERY_UNKNOWN', 'KNOWLEDGE_REVIEW_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['保存查询或复核事件'], idempotency: '重复 queryId 复核按内部事件规则处理。',
-    minimalExample: { operation: 'knowledge', input: { mode: 'query', sceneRef: 'scene-1', query: '解释当前异常' } },
-    additionalExamples: [{ mode: 'review', sceneRef: 'scene-1', queryId: 'query-1', conclusion: 'NO_APPLICABLE', assessments: [] }],
+    minimalExample: { operation: 'knowledge', input: { mode: 'query', sceneRef: EXAMPLE_SCENE_REF, query: '解释当前异常' } },
+    additionalExamples: [{ mode: 'review', sceneRef: EXAMPLE_SCENE_REF, queryId: 'query-1', conclusion: 'NO_APPLICABLE', assessments: [] }],
   }),
   recover: method('recover', '建立授权的 App 初始状态、重启恢复或登记框架外事实。', SCHEMAS.recover, {
     mode: 'restart、prepare 或 external', sceneRef: '重启恢复所依据的 Scene', reason: '恢复原因',
@@ -320,7 +329,7 @@ const PUBLIC_METHODS = Object.freeze({
     successStatuses: ['SCENE', 'EXTERNAL_ACTION_RECORDED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'APP_INITIAL_STATE_UNAVAILABLE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['执行授权恢复或保存外部事实'], idempotency: '由现有恢复事务保证。',
-    minimalExample: { operation: 'recover', input: { mode: 'restart', sceneRef: 'scene-1', reason: '目标 App 无法继续交互' } },
+    minimalExample: { operation: 'recover', input: { mode: 'restart', sceneRef: EXAMPLE_SCENE_REF, reason: '目标 App 无法继续交互' } },
     additionalExamples: [
       { mode: 'prepare', reason: '用例要求空本地状态', targetState: 'APP_LOCAL_STATE_EMPTY' },
       { mode: 'external', reason: '登记已执行技术恢复', externalAction: { summary: '已重启自动化服务' } },
@@ -336,7 +345,7 @@ const PUBLIC_METHODS = Object.freeze({
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',
     minimalExample: { operation: 'finish', input: { mode: 'complete', summary: '验证完成' } },
-    additionalExamples: [{ mode: 'notRun', reason: '必要执行条件无法在当前 execution 内建立且没有安全继续路径', summary: '未运行', evidence: { sceneRefs: ['scene-1'], technicalRefs: [] } }],
+    additionalExamples: [{ mode: 'notRun', reason: '必要执行条件无法在当前 execution 内建立且没有安全继续路径', summary: '未运行', evidence: { sceneRefs: [EXAMPLE_SCENE_REF], technicalRefs: [] } }],
   }),
 });
 

@@ -75,9 +75,9 @@ input.assessments: Array<{ entryId: string; status: "APPLICABLE" | "NOT_APPLICAB
 ## 最小示例
 
 ```json
-{"operation":"knowledge","input":{"mode":"query","sceneRef":"scene-1","query":"解释当前异常"}}
+{"operation":"knowledge","input":{"mode":"query","sceneRef":"mavt:0123456789abcdef01234567:scene:scene-1","query":"解释当前异常"}}
 ```
 
 ```json
-{"operation":"knowledge","input":{"mode":"review","sceneRef":"scene-1","queryId":"query-1","conclusion":"NO_APPLICABLE","assessments":[]}}
+{"operation":"knowledge","input":{"mode":"review","sceneRef":"mavt:0123456789abcdef01234567:scene:scene-1","queryId":"query-1","conclusion":"NO_APPLICABLE","assessments":[]}}
 ```

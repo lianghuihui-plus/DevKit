@@ -118,7 +118,10 @@ function projectionSection(projection, condition = '成功') {
 
 function resourcesPage(title, contract) {
   const rows = Object.entries(contract.resourceCatalog).map(([type, definition]) => `| \`${type}\` | ${definition.summary} |`).join('\n');
-  return `# ${title} 资源目录\n\n资源引用来自 \`data.ref\`、\`resources[].ref\` 或明确标注的资源字段；原样传给返回该引用的绑定 Facade：\n\n\`\`\`json\n${JSON.stringify(contract.methods.read.minimalExample, null, 2)}\n\`\`\`\n\n读取返回完整主数据 \`data\`，关联复杂数据仍为 \`resources\` 中的类型化引用；不截断、抽样或内联复制关联资源。\`$resourceType\` 表示所读资源类型，\`$declaredResources\` 表示该资源声明的关联资源。引用不可拼接、跨作用域使用或替换为流程节点、边和操作 ID。\n\n| 类型 | 内容 |\n|---|---|\n${rows}\n\n错误中的 \`documentationRef\` 和 \`operationDocumentationRef\` 是静态文档路径，使用宿主文件读取能力打开，不传给 \`read\`。\n`;
+  const evidenceRefs = contract.resourceCatalog.scene
+    ? '\n\n证据字段同样只接受已发布引用：`sceneRef` / `sceneRefs` 使用 `scene` ref，`knowledgeRefs` 使用适用候选的 `knowledgeDocumentRef`，`technicalRefs` 使用 `technicalFact` ref。`ActionRef`、`checkNodeRef`、`queryId` 和 `scrollContextRef` 是响应内容中的领域标识，不传给 `read`。'
+    : '';
+  return `# ${title} 资源目录\n\n资源引用来自 \`data.ref\`、\`resources[].ref\` 或明确标注的资源字段；原样传给返回该引用的绑定 Facade：\n\n\`\`\`json\n${JSON.stringify(contract.methods.read.minimalExample, null, 2)}\n\`\`\`\n\n读取返回完整主数据 \`data\`，关联复杂数据仍为 \`resources\` 中的类型化引用；不截断、抽样或内联复制关联资源。\`$resourceType\` 表示所读资源类型，\`$declaredResources\` 表示该资源声明的关联资源。引用不可拼接、跨作用域使用或替换为流程节点、边和操作 ID。${evidenceRefs}\n\n| 类型 | 内容 |\n|---|---|\n${rows}\n\n错误中的 \`documentationRef\` 和 \`operationDocumentationRef\` 是静态文档路径，使用宿主文件读取能力打开，不传给 \`read\`。\n`;
 }
 
 function serviceIndex(title, contract, baseDirectory, extraLinks = []) {

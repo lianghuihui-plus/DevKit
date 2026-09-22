@@ -258,7 +258,9 @@ for (const retired of ['function caseFlowRanks', 'function renderCaseFlow(', 'fu
   assert.strictEqual(read('scripts/report/current-report-html.js').includes(retired), false, `retired flow renderer remains: ${retired}`);
 }
 assert.strictEqual(read('references/interfaces.md').includes('runtime.requestPath'), false);
-assert.match(read('references/interfaces.md'), /scripts\/coordinator-agent\.js/);
+assert.match(read('references/interfaces.md'), /scripts\/workspace\.js/);
+assert.match(read('references/interfaces.md'), /stdin.*prepareRun/);
+assert.doesNotMatch(read('references/interfaces.md'), /coordinator-agent\.js prepare|预绑定 `commands`/);
 assert.match(read('references/interfaces.md'), /Authoring 接口/);
 assert.match(read('references/interfaces.md'), /scripts\/import-cases\.js/);
 assert.match(read('SKILL.md'), /references\/case-authoring\.md/);

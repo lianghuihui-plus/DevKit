@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { appendJsonl, readJson, readJsonl } = require('../lib/execution-lifecycle');
 const protocolTelemetry = require('../lib/agent-facing-telemetry');
+const { sanitizeTransactionValue } = require('./transaction-manager');
 
 function telemetryDir(execDir) {
   return path.join(execDir, 'telemetry');
@@ -27,8 +28,7 @@ function clock(options = {}) {
 
 function redactRequest(request) {
   if (!request || typeof request !== 'object') return null;
-  const value = JSON.parse(JSON.stringify(request));
-  if (value.input?.text !== undefined) value.input.text = '[REDACTED]';
+  const value = sanitizeTransactionValue(JSON.parse(JSON.stringify(request)));
   if (value.result) value.result = { verdict: value.result.verdict };
   return value;
 }

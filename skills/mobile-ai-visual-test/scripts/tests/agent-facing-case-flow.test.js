@@ -16,11 +16,13 @@ const {
   buildCaseResultFromLedger,
 } = require('../case-runtime/expectation-result-service');
 const store = require('../case-runtime/store');
+const { publishScene } = require('../case-runtime/agent-resource-store');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-agent-case-flow-'));
 const execDir = path.join(temp, 'execution');
 fs.mkdirSync(path.join(execDir, 'scenes'), { recursive: true });
+fs.mkdirSync(path.join(execDir, 'screenshots'), { recursive: true });
 fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
 writeJsonAtomic(path.join(execDir, 'execution.json'), {
   schemaVersion: 14, runtime: 'case-runtime', executionId: 'execution-case-flow-agent',
@@ -28,12 +30,14 @@ writeJsonAtomic(path.join(execDir, 'execution.json'), {
 });
 const scene = {
   sceneId: 'scene-1', capturedAt: '2026-09-17T02:00:00.000Z',
-  screenshot: { ref: 'screenshots/scene-1.png', path: '/tmp/scene-1.png', width: 1, height: 1 },
+  screenshot: { ref: 'screenshots/scene-1.png', path: path.join(execDir, 'screenshots/scene-1.png'), width: 1, height: 1 },
   app: { inTargetApp: true }, elements: [], scrollContexts: [], visual: { gestures: [] }, signals: {}, conflicts: [],
 };
+fs.writeFileSync(scene.screenshot.path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
 writeJsonAtomic(path.join(execDir, 'scenes', 'scene-1.json'), scene);
 writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 store.appendEvent(execDir, 'sceneObserved', { sceneId: 'scene-1', screenshotRef: scene.screenshot.ref, app: scene.app });
+const sceneRef = publishScene(execDir, scene.sceneId).data.ref;
 
 const caseFlow = {
   baseRevision: null,
@@ -62,9 +66,14 @@ const caseFlow = {
 };
 
 const planRules = PUBLIC_CONTRACT.methods.plan.contextualValidationRules;
-assert.ok(planRules.some((rule) => rule.includes('完整阅读') && rule.includes('条件作用域')));
-assert.ok(planRules.some((rule) => rule.includes('同一业务事实') && rule.includes('DECISION') && rule.includes('CHECK')));
-assert.ok(planRules.some((rule) => rule.includes('正常 END') && rule.includes('REQUIRED CHECK')));
+assert.ok(planRules.some((rule) => rule.includes('Baseline') && rule.includes('不可改义')));
+assert.ok(planRules.some((rule) => rule.includes('Working Flow') && rule.includes('Baseline CHECK')));
+const caseAgentPrompt = fs.readFileSync(path.join(__dirname, '../../prompts/case-agent.md'), 'utf8');
+const executionPrinciples = fs.readFileSync(path.join(__dirname, '../../references/case-execution-principles.md'), 'utf8');
+assert.match(caseAgentPrompt, /启动时完整读取 `references\/case-execution-principles\.md`/);
+assert.match(executionPrinciples, /完整阅读原始用例后再划分条件作用域/);
+assert.match(executionPrinciples, /建为 DECISION，分支内验证建为 CONDITIONAL CHECK/);
+assert.match(executionPrinciples, /每条正常 END 路径必须能处置 REQUIRED CHECK/);
 
 const plan = { operation: 'plan', input: { caseFlow } };
 assert.deepStrictEqual(validateAgentFacingRequest(plan), []);
@@ -117,11 +126,11 @@ assert.deepStrictEqual(skippedAuthorization.checks.map((item) => item.status), [
 
 assert.deepStrictEqual(validateAgentFacingRequest({
   operation: 'finish', input: { mode: 'notRun', reason: '账号不具备前置条件',
-    evidence: { sceneRefs: ['scene-1'], technicalRefs: [] }, summary: '未进入目标业务验证', uncertainties: [] },
+    evidence: { sceneRefs: [sceneRef], technicalRefs: [] }, summary: '未进入目标业务验证', uncertainties: [] },
 }), []);
 const notRun = translateAgentFacingRequest(execDir, {
   operation: 'finish', input: { mode: 'notRun', reason: '账号不具备前置条件',
-    evidence: { sceneRefs: ['scene-1'], technicalRefs: [] }, summary: '未进入目标业务验证', uncertainties: [] },
+    evidence: { sceneRefs: [sceneRef], technicalRefs: [] }, summary: '未进入目标业务验证', uncertainties: [] },
 });
 assert.strictEqual(notRun.result.verdict, 'NOT_RUN');
 assert.deepStrictEqual(notRun.result.checks, []);

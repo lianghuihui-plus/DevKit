@@ -7,14 +7,14 @@
 普通执行只使用：
 
 ```bash
-node <skill-root>/scripts/coordinator-agent.js prepare --workspace <workspace> --case-nos <014,015>
+node <skill-root>/scripts/workspace.js --cwd <workspace>
 ```
 
-首次调用使用 Workspace 响应中的绝对 `coordinatorFacade.command`，追加 `prepare --workspace <workspace> --case-nos <用例编号>`。之后只使用 Coordinator 响应返回的预绑定 `commands` 推进、确认或取消，不自行调用底层 Batch 与 Runtime 接口。
+Workspace 响应返回绑定该工作空间的绝对 `coordinatorFacade.command`。原样执行该命令，并通过 stdin 一次提交 `{"operation":"prepareRun","input":{"caseNos":["014","015"]}}`；不要追加子命令、工作空间路径或用例参数。之后原样复用响应 `result.command`，通过同一 `{operation,input}` 协议调用 `confirmRun`、`advanceRun`、`cancelRun` 或 `read`，不自行调用底层 Batch 与 Runtime 接口。
 
-Coordinator 返回 `NEED_USER_CONFIRMATION`、`NEED_CASE_AGENT`、`WAITING`、`TECHNICAL`、`COMPLETE` 或 `BLOCKED`。需要委托时只暴露不透明 `loaderCommand` 与固定 `delegationPrompt`；主 Agent 不读取 Handoff 正文。
+Coordinator 使用统一响应 envelope；业务状态位于 `result.outcome`，包括 `NEED_USER_CONFIRMATION`、`NEED_CASE_AGENT`、`WAITING`、`CONFIRMED`、`COMPLETE` 或 `BLOCKED`。复杂数据位于 `data`，关联数据只通过 `resources[].ref` 暴露并统一用 `read(ref)` 获取。需要委托时，`caseDispatch` 主资源提供不透明 `loaderCommand` 与固定 `delegationPrompt`；执行协调 Agent 不读取 Handoff 正文。
 
-`<skill-root>/scripts/workspace.js --cwd <workspace>` 用于校验或初始化 Workspace，并返回 Coordinator Facade 的绝对 `command`、协议类型和文档入口。脚本路径属于技能目录，`--cwd` 属于测试工作区；Facade 可从任意当前目录调用，但 Workspace 路径仍由 `prepare` 请求显式绑定。它不返回底层 CLI 参数 Schema。
+`<skill-root>/scripts/workspace.js --cwd <workspace>` 用于校验或初始化 Workspace，并返回 Coordinator Facade 的绝对 `command`、协议类型和文档入口。脚本路径属于技能目录，`--cwd` 属于测试工作区；Facade 可从任意当前目录调用，工作空间已由返回的 command 绑定。它不返回底层 CLI 参数 Schema。
 
 ## Authoring 接口
 

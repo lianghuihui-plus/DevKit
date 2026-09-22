@@ -8,6 +8,7 @@ const path = require('path');
 const { projectPreviousAction } = require('../case-runtime/agent-facing-contract');
 const { projectAgentFacingResponse, translateAgentFacingRequest } = require('../case-runtime/agent-facing-translator');
 const store = require('../case-runtime/store');
+const resources = require('../case-runtime/agent-resource-store');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -18,9 +19,10 @@ const executionPath = path.join(fixture.execDir, 'execution.json');
 const execution = JSON.parse(fs.readFileSync(executionPath, 'utf8'));
 fs.writeFileSync(executionPath, `${JSON.stringify({ ...execution, finalized: false, status: 'RUNNING', lifecycle: 'RUNNING' }, null, 2)}\n`);
 store.writeScene(fixture.execDir, JSON.parse(fs.readFileSync(path.join(fixture.execDir, 'scenes', 'scene-0002.json'), 'utf8')));
+const sceneRef = resources.publishScene(fixture.execDir, 'scene-0002').data.ref;
 
 const publicRequest = {
-  operation: 'runPlan', input: { submissionId: 'run-plan-033-attempt-01', sceneRef: 'scene-0002',
+  operation: 'runPlan', input: { submissionId: 'run-plan-033-attempt-01', sceneRef,
   purpose: '唤起视频控制栏并解除童锁', maxDurationMs: 2500, onFailure: 'STOP',
   steps: [
     { id: 'reveal', type: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] } },

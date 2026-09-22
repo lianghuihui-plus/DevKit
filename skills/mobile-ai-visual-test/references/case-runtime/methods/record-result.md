@@ -71,7 +71,7 @@ input.results: Array<{ checkNodeRef: string; status: "PASS" | "FAIL" | "INCONCLU
         "actual": "目标结果可见",
         "evidence": {
           "sceneRefs": [
-            "scene-1"
+            "mavt:0123456789abcdef01234567:scene:scene-1"
           ]
         }
       }

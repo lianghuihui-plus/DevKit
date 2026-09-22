@@ -79,7 +79,7 @@ input.externalAction: { summary: string; tool?: string }
 ## 最小示例
 
 ```json
-{"operation":"recover","input":{"mode":"restart","sceneRef":"scene-1","reason":"目标 App 无法继续交互"}}
+{"operation":"recover","input":{"mode":"restart","sceneRef":"mavt:0123456789abcdef01234567:scene:scene-1","reason":"目标 App 无法继续交互"}}
 ```
 
 ```json

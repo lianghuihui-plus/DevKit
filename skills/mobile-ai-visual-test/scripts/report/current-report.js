@@ -66,7 +66,7 @@ function renderCurrentContextMarkdown(caseJson, report) {
   const phases = display.phaseDurations || {};
   const narrative = buildExecutionNarrative(report);
   const views = projectCaseFlowViews(report);
-  const modelLines = narrative.modelKind === 'CASE_FLOW' ? [
+  const modelLines = [
     '## 用例流程', '',
     `- 基线版本：${views.baselineFlow?.revision || '-'}`,
     `- 摘要：${views.baselineFlow?.summary || '未记录'}`,
@@ -76,14 +76,6 @@ function renderCurrentContextMarkdown(caseJson, report) {
     ...((views.baselineFlow?.nodes || []).map((node) => `- ${node.ref} [${node.type}] ${node.text}${node.requirement ? `；责任：${node.requirement}` : ''}${node.applicability ? `；适用条件：${node.applicability}` : ''}${node.sourceBasis ? `；依据：${node.sourceBasis}` : ''}`)), '',
     '### 连接与分支', '',
     ...((views.baselineFlow?.edges || []).map((edge) => `- ${edge.ref} ${edge.from} -> ${edge.to}${edge.condition ? `；条件：${edge.condition}` : ''}`)),
-  ] : [
-    '## Agent 用例理解', '', narrative.understanding?.summary || '未记录', '',
-    `- 前置条件：${narrative.understanding?.preconditions?.join('；') || '无'}`,
-    `- 验证点：${narrative.understanding?.expectations?.map((item) => `${item.id} ${item.text}`).join('；') || '未记录'}`,
-    `- 不确定项：${narrative.understanding?.uncertainties?.join('；') || '无'}`,
-    `- 理解记录：${narrative.understandingHistory.length} 个版本`, '',
-    '## 初始计划', '',
-    ...(narrative.initialPlan?.items?.length ? narrative.initialPlan.items.map((item, index) => `${index + 1}. ${item}`) : ['- 未记录']),
   ];
   const lines = [
     `# ${caseJson.identity?.caseNo ? `${caseJson.identity.caseNo} · ` : ''}${caseJson.identity?.title || '未命名用例'}`, '',
@@ -106,14 +98,6 @@ function renderCurrentContextMarkdown(caseJson, report) {
     '## 原始用例', '', report.sourceText || '未记录', '',
     ...modelLines,
   ];
-  const planUpdates = narrative.modelKind === 'CASE_FLOW' ? [] : narrative.planHistory.slice(1);
-  if (planUpdates.length) {
-    lines.push('', '## 计划调整', '');
-    for (const update of planUpdates) {
-      lines.push(`- 版本 ${update.version}：${update.reason || 'Agent 调整计划'}`,
-        `  - ${update.items.join('；') || '未记录后续计划'}`);
-    }
-  }
   lines.push('', '## 执行轨迹', '');
   if (views.executionTrace.nodes.length) {
     lines.push('### 轨迹摘要', '', ...views.executionTrace.nodes.map((node) =>
@@ -138,7 +122,6 @@ function renderCurrentContextMarkdown(caseJson, report) {
     if (step.knowledge?.candidateCount === 0 && step.knowledge.filterDiagnostics) {
       lines.push(`   - 未命中诊断：${knowledgeFilterSummary(step.knowledge.filterDiagnostics)}`);
     }
-    if (step.planUpdate) lines.push(`   - 计划调整：${step.planUpdate.reason}；${step.planUpdate.next.join('；')}`);
   }
   lines.push('', '## 最终判断', '',
     `- 现场观察：${narrative.finalDecision?.observation || '未记录'}`,
