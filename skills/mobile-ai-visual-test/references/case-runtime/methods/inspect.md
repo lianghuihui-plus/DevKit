@@ -1,22 +1,31 @@
 # CaseRuntime.inspect
 
-登记视觉事实，或按需读取 elements 或 layout。
+登记 Agent 已观察到的视觉或动作事实。
+
+签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
+
+## 调用分支
 
 ```typescript
-inspect({ capability: "inspect", basedOnSceneRef: string, channel: "visual" | "action" | "elements" | "layout", observation?: string, checkNodeRefs?: string[], flowContext?: object, filter?: object })
+inspect({ mode: "visual", sceneRef: string, observation: string, checkNodeRefs?: string[], flowContext?: object })
+inspect({ mode: "action", sceneRef: string, observation: string, checkNodeRefs?: string[], flowContext?: object })
 ```
 
 ## 参数
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `capability` | 是 | `"inspect"` | 固定为 inspect |
-| `basedOnSceneRef` | 是 | `string` | 被检查的 Scene |
-| `channel` | 是 | `"visual" | "action" | "elements" | "layout"` | 检查通道 |
-| `observation` | 否/条件 | `string` | visual/action 通道看到的事实 |
+| `sceneRef` | 是 | `string` | 被检查的 Scene |
+| `mode` | 是 | `"visual" \| "action"` | visual 或 action |
+| `observation` | 是 | `string` | 实际看到的事实 |
 | `checkNodeRefs` | 否/条件 | `string[]` | 相关 CHECK 节点 |
-| `filter` | 否/条件 | `object` | elements 过滤器 |
 | `flowContext` | 否/条件 | `object` | 当前 Case Flow 节点和可选分支选择 |
+
+## 结构字段
+
+```typescript
+input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
+```
 
 ## 条件要求
 
@@ -24,13 +33,17 @@ inspect({ capability: "inspect", basedOnSceneRef: string, channel: "visual" | "a
 
 ## 上下文校验
 
-- 历史 Scene 可登记事实；读取通道只返回所请求投影。
+- 历史 Scene 可登记事实；读取资源使用 read。
 
 ## 成功状态
 
-- `VISUAL_INSPECTED`
-- `ACTION_SPATIAL_INSPECTED`
-- `SCENE_INSPECTION`
+- `SUCCEEDED`
+
+### 成功
+
+- 简单结果：`outcome`、`sceneRef`、`inspectionId`、`checkNodeIds`。
+- 主数据：无。
+- 关联资源：`scene`、`screenshot`、`actionSpatialEvidence`。
 
 ## 副作用
 
@@ -49,9 +62,9 @@ inspect({ capability: "inspect", basedOnSceneRef: string, channel: "visual" | "a
 ## 最小示例
 
 ```json
-{
-  "capability": "inspect",
-  "basedOnSceneRef": "scene-1",
-  "channel": "elements"
-}
+{"operation":"inspect","input":{"mode":"visual","sceneRef":"scene-1","observation":"目标按钮可见"}}
+```
+
+```json
+{"operation":"inspect","input":{"mode":"action","sceneRef":"scene-1","observation":"上一动作标注落在目标内"}}
 ```

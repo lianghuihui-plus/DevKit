@@ -2,16 +2,23 @@
 
 独立记录验证点结果，不采集 Scene、不执行动作。
 
+签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
+
 ```typescript
-recordResult({ capability: "recordResult", results: object[] })
+recordResult({ results: object[] })
 ```
 
 ## 参数
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `capability` | 是 | `"recordResult"` | 固定为 recordResult |
 | `results` | 是 | `object[]` | 已形成判断的验证结果和证据引用 |
+
+## 结构字段
+
+```typescript
+input.results: Array<{ checkNodeRef: string; status: "PASS" | "FAIL" | "INCONCLUSIVE" | "BLOCKED" | "NOT_APPLICABLE" | "WAIVED"; actual: string; reason?: string; evidence?: { sceneRefs?: Array<string>; knowledgeRefs?: Array<string>; technicalRefs?: Array<string>; searchAbsence?: { sceneRef: string; scrollContextRef: string } } }>
+```
 
 ## 条件要求
 
@@ -26,7 +33,13 @@ recordResult({ capability: "recordResult", results: object[] })
 
 ## 成功状态
 
-- `RESULTS_RECORDED`
+- `SUCCEEDED`
+
+### 成功
+
+- 简单结果：`outcome`、`recordedResultRefs`、`idempotentCheckNodeIds`。
+- 主数据：无。
+- 关联资源：`checkpointResult`、`checkpointLedger`。
 
 ## 副作用
 
@@ -49,18 +62,20 @@ recordResult({ capability: "recordResult", results: object[] })
 
 ```json
 {
-  "capability": "recordResult",
-  "results": [
-    {
-      "checkNodeRef": "N1",
-      "status": "PASS",
-      "actual": "目标结果可见",
-      "evidence": {
-        "sceneRefs": [
-          "scene-1"
-        ]
+  "operation": "recordResult",
+  "input": {
+    "results": [
+      {
+        "checkNodeRef": "N1",
+        "status": "PASS",
+        "actual": "目标结果可见",
+        "evidence": {
+          "sceneRefs": [
+            "scene-1"
+          ]
+        }
       }
-    }
-  ]
+    ]
+  }
 }
 ```

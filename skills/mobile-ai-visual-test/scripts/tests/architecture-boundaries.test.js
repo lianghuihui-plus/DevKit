@@ -27,10 +27,12 @@ for (const forbiddenDependency of [
 
 assert.strictEqual(fs.existsSync(path.join(root, 'scripts/lib/readers/current-execution.js')), true);
 
-assert.deepStrictEqual(roleResources('case-executor'), [
+assert.deepStrictEqual(roleResources('case-executor').sort(), [
   'prompts/case-agent.md',
   'references/case-execution-principles.md',
   'references/case-runtime.md',
+  'references/case-runtime/resources.md',
+  'references/case-runtime/methods/read.md',
   'references/case-runtime/methods/observe.md',
   'references/case-runtime/methods/inspect.md',
   'references/case-runtime/methods/plan.md',
@@ -47,7 +49,8 @@ assert.deepStrictEqual(roleResources('case-executor'), [
   'references/case-runtime/errors/plan.md',
   'references/case-runtime/errors/flow-result.md',
   'references/case-runtime/errors/knowledge-recovery.md',
-]);
+  'references/case-runtime/errors/runtime.md',
+].sort());
 assert.deepStrictEqual(roleEntrypoints('case-executor'), [
   'scripts/case-runtime/agent-facing-client.js',
   'scripts/case-runtime/mcp-server.js',
@@ -58,27 +61,27 @@ assert.strictEqual(roleResources('batch-coordinator')[0], 'SKILL.md');
 assert.strictEqual(fs.existsSync(path.join(root, 'prompts/main-agent.md')), false);
 assert.strictEqual(COORDINATOR_INTERFACE_KIND, 'AGENT_FACING');
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
-assert.ok(COORDINATOR_CAPABILITIES.length <= 4, 'Main Agent active capability budget is 4');
-assert.ok(AGENT_FACING_CAPABILITIES.length <= 9, 'Case Agent active capability budget is 9');
+assert.ok(COORDINATOR_CAPABILITIES.includes('read'));
+assert.ok(AGENT_FACING_CAPABILITIES.includes('read'));
 
 const casePrompt = read('prompts/case-agent.md');
 for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkpointId', 'turnId']) {
   assert.strictEqual(casePrompt.includes(obsolete), false, `Case Prompt must not expose ${obsolete}`);
 }
-assert.match(casePrompt, /独立负责 Handoff Loader 返回的一个 execution/);
+assert.match(casePrompt, /独立负责 Handoff Loader 返回的.*一个 execution/);
 assert.match(casePrompt, /本次用例理解与计划/);
 assert.match(casePrompt, /case\.source/);
 assert.match(casePrompt, /Case Flow/);
 assert.match(casePrompt, /checkNodeRef/);
 assert.match(casePrompt, /view_image/);
-assert.match(casePrompt, /九个业务能力/);
+assert.match(casePrompt, /统一 `read`/);
 assert.match(casePrompt, /observe.*inspect.*plan.*recordResult.*act.*runPlan.*knowledge.*recover.*finish/);
 assert.match(casePrompt, /动态值只取自当前 Brief、Scene 或响应/);
 assert.doesNotMatch(casePrompt, /retryWith|nextCall|technicalContext/);
 assert.match(casePrompt, /控件树为空.*不得.*页面空白/);
 assert.match(casePrompt, /权限弹窗/);
 assert.match(casePrompt, /长按过程/);
-assert.match(casePrompt, /inspect\(channel="action"\)/);
+assert.match(casePrompt, /inspect\(mode="action"\)/);
 assert.match(casePrompt, /previousAction/);
 assert.match(casePrompt, /有效技术事实.*BLOCKED.*证据不足.*INCONCLUSIVE/);
 assert.match(casePrompt, /首选能力.*不是排他的工具边界/);
@@ -108,7 +111,7 @@ for (const hidden of ['CLEAR_APP_DATA', 'REINSTALL_APP', 'artifactPath', 'appium
 }
 const promptRequests = [...casePrompt.matchAll(/```json\s*([\s\S]*?)```/g)].map((match) => JSON.parse(match[1]));
 assert.strictEqual(promptRequests.length, 0, 'Runtime request schemas belong in runtime.capabilities, not the prompt');
-assert.match(casePrompt, /stdin.*一次提交一个 JSON 请求/);
+assert.match(casePrompt, /stdin.*一次提交.*operation,input/);
 for (const request of promptRequests) assert.doesNotThrow(() => validateRuntimeRequest(request));
 for (const request of promptRequests) if (request.decision) assert.doesNotThrow(() => validateDecision(request.decision));
 assert.doesNotThrow(() => validateDecision({ purpose: '检查结果', expectationRefs: ['E1'] }));
@@ -135,7 +138,7 @@ assert.strictEqual(mainPrompt.includes('可重试的报告发布'), false, 'repo
 assert.strictEqual(mainPrompt.includes('coordinatorCapabilities'), false);
 assert.strictEqual(mainPrompt.includes('batch bootstrap'), false);
 assert.strictEqual(mainPrompt.includes('batch start'), false);
-assert.match(mainPrompt, /执行协调 Agent.*不读取.*Case Agent.*runtime\.capabilities/);
+assert.match(mainPrompt, /执行协调 Agent.*不执行 Case Agent Loader.*不读取.*Handoff 正文/);
 assert.match(mainPrompt, /documentationRef/);
 assert.doesNotMatch(mainPrompt, /confirmChoices|confirmTemplate|retryWith|technicalContext\.resume/);
 assert.match(mainPrompt, /首选入口.*不是.*排他能力边界/);
@@ -208,9 +211,11 @@ assert.strictEqual(coordinatorContract.implementationFiles.includes('prompts/cas
 assert.strictEqual(coordinatorContract.allowedEntrypoints.includes('scripts/app-artifact.js'), false);
 assert.strictEqual(coordinatorContract.implementationFiles.includes('scripts/app-artifact.js'), true);
 assert.strictEqual(coordinatorContract.requiredResources.includes('references/knowledge.md'), false);
-assert.deepStrictEqual(coordinatorContract.requiredResources, [
+assert.deepStrictEqual([...coordinatorContract.requiredResources].sort(), [
   'SKILL.md',
   'references/coordinator.md',
+  'references/coordinator/resources.md',
+  'references/coordinator/methods/read.md',
   'references/coordinator/methods/prepare-run.md',
   'references/coordinator/methods/confirm-run.md',
   'references/coordinator/methods/advance-run.md',
@@ -219,7 +224,8 @@ assert.deepStrictEqual(coordinatorContract.requiredResources, [
   'references/coordinator/errors/input-state.md',
   'references/coordinator/errors/environment.md',
   'references/coordinator/errors/batch.md',
-]);
+  'references/coordinator/errors/resources.md',
+].sort());
 assert.strictEqual(read('references/interfaces.md').includes('## Case Runtime'), false);
 for (const retired of ['function caseFlowRanks', 'function renderCaseFlow(', 'function flowViewer(', '.case-flow-', '.flow-viewer']) {
   assert.strictEqual(read('scripts/report/current-report-html.js').includes(retired), false, `retired flow renderer remains: ${retired}`);
@@ -286,7 +292,7 @@ const caseAfterDocs = buildContract({ skillRoot: digestRoot, role: 'case-executo
 assert.notStrictEqual(caseAfterDocs.protocolSha, harmonyBefore.protocolSha);
 const coordinatorInterfaceFile = path.join(digestRoot, 'scripts/coordinator/agent-facing-contract.js');
 fs.writeFileSync(coordinatorInterfaceFile, fs.readFileSync(coordinatorInterfaceFile, 'utf8')
-  .replace('为指定工作空间和用例创建一次 Coordinator run。', '为已选择工作空间和用例创建一次 Coordinator run。'));
+  .replace('在绑定工作空间中创建一次 run。', '在当前绑定工作空间中创建一次 run。'));
 const coordinatorAfterInterface = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
 assert.notStrictEqual(coordinatorAfterInterface.protocolSha, coordinatorAfterKnowledge.protocolSha);
 assert.strictEqual(buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' }).protocolSha, caseAfterDocs.protocolSha);

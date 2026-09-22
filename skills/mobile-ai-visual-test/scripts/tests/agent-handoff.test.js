@@ -25,14 +25,14 @@ const loaderInputError = new Error('unknown option');
 loaderInputError.errorKind = 'INPUT';
 loaderInputError.issues = [{ fieldPath: 'unknown', code: 'UNKNOWN_ARGUMENT', expected: '--workspace' }];
 const loaderInputResponse = loaderErrorResponse(loaderInputError);
-assert.strictEqual(loaderInputResponse.status, 'REQUEST_INVALID');
-assert.match(loaderInputResponse.documentationRef, /errors\/transport\.md#error-agent-input-invalid$/);
+assert.strictEqual(loaderInputResponse.status, 'REJECTED');
+assert.match(loaderInputResponse.error.documentationRef, /errors\/transport\.md#error-agent-input-invalid$/);
 const loaderBindingError = new Error('handoff digest mismatch');
 loaderBindingError.code = 'HANDOFF_INTEGRITY_INVALID';
 const loaderBindingResponse = loaderErrorResponse(loaderBindingError);
-assert.strictEqual(loaderBindingResponse.status, 'TECHNICAL');
-assert.strictEqual(loaderBindingResponse.code, 'BINDING_INVALID');
-assert.match(loaderBindingResponse.documentationRef, /errors\/transport\.md#error-binding-invalid$/);
+assert.strictEqual(loaderBindingResponse.status, 'REJECTED');
+assert.strictEqual(loaderBindingResponse.error.code, 'BINDING_INVALID');
+assert.match(loaderBindingResponse.error.documentationRef, /errors\/transport\.md#error-binding-invalid$/);
 const common = {
   workspaceRoot,
   batchId: 'batch-20260910',
@@ -68,7 +68,7 @@ try {
   const successfulRetry = spawnSync('/bin/sh', ['-c', retryHandoff.loaderCommand], { encoding: 'utf8' });
   assert.strictEqual(successfulRetry.status, 0, successfulRetry.stderr);
   assert.strictEqual(JSON.parse(fs.readFileSync(retryStatePath, 'utf8')).dispatches[retryHandoff.handoffId].status, 'CONSUMED');
-  assert.strictEqual(resourceStore.readPublishedResource(retryExecDir, JSON.parse(successfulRetry.stdout).caseBriefRef).data.type, 'caseBrief');
+  assert.strictEqual(resourceStore.readPublishedResource(retryExecDir, JSON.parse(successfulRetry.stdout).data.ref).data.type, 'caseBrief');
 
   const initial = createAgentHandoff(common);
   assert.deepStrictEqual(Object.keys(initial).sort(), ['handoffId', 'loaderCommand', 'path', 'schemaVersion', 'sha256']);
@@ -163,7 +163,7 @@ try {
     '--case-protocol-sha', common.caseProtocolSha,
   ], { encoding: 'utf8' });
   assert.strictEqual(cliWithoutClaim.status, 2);
-  assert.strictEqual(JSON.parse(cliWithoutClaim.stderr).issues[0].fieldPath, 'claim-token');
+  assert.strictEqual(JSON.parse(cliWithoutClaim.stderr).error.issues[0].field, 'claim-token');
   const cli = spawnSync(process.execPath, [
     path.resolve(__dirname, '../case-agent-bootstrap.js'),
     '--workspace', workspaceRoot,
@@ -174,9 +174,18 @@ try {
     '--claim-token', claimTokenFor(JSON.parse(fs.readFileSync(continuation.path, 'utf8'))),
   ], { encoding: 'utf8' });
   assert.strictEqual(cli.status, 0, cli.stderr);
-  assert.strictEqual(JSON.parse(cli.stdout).brief.lastSceneId, 'scene-0004');
-  assert.deepStrictEqual(require('../case-runtime/agent-resource-store').readPublishedResource(boundExecutionDir, JSON.parse(cli.stdout).caseBriefRef).data.content,
-    JSON.parse(cli.stdout).brief);
+  const bootstrap = JSON.parse(cli.stdout);
+  assert.deepStrictEqual(Object.keys(bootstrap).sort(), ['data', 'operation', 'protocol', 'resources', 'result', 'status']);
+  assert.strictEqual(bootstrap.status, 'SUCCEEDED');
+  assert.strictEqual(bootstrap.operation, 'bootstrap');
+  assert.strictEqual(bootstrap.result.outcome, 'CASE_BRIEF_READY');
+  assert.deepStrictEqual(bootstrap.result, { outcome: 'CASE_BRIEF_READY', executionId: common.executionId,
+    dispatchMode: 'CONTINUATION', dispatchSequence: 2 });
+  assert.strictEqual(bootstrap.data.type, 'caseBrief');
+  assert.strictEqual(bootstrap.data.content.lastSceneId, 'scene-0004');
+  assert.strictEqual(bootstrap.data.content.casePrompt, common.casePrompt);
+  assert.deepStrictEqual(require('../case-runtime/agent-resource-store').readPublishedResource(boundExecutionDir, bootstrap.data.ref).data.content,
+    bootstrap.data.content);
   assert.strictEqual(fs.readFileSync(initial.path, 'utf8'), persistedBefore, 'bootstrap must be read-only');
   expectCode(() => loadAgentHandoff({
     workspaceRoot,

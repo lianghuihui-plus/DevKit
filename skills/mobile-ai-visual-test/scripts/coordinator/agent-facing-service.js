@@ -26,7 +26,7 @@ const { successEnvelope } = require('../lib/agent-facing-envelope');
 const resources = require('./agent-resource-store');
 
 const SKILL_ROOT = path.resolve(__dirname, '../..');
-const CASE_AGENT_PROMPT = '你是独立 Case Agent。执行给定的 loaderCommand，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。';
+const CASE_AGENT_PROMPT = '你是独立 Case Agent。原样执行给定的 loaderCommand，读取响应 data.content 中的 caseBrief 并遵循其中 casePrompt；只处理 Brief 绑定的 execution，完成后返回最终摘要。';
 const PLATFORMS = Object.freeze(['harmony', 'android', 'ios']);
 
 function coordinatorError(message, issues = [], code = 'COORDINATOR_INPUT_INVALID') {

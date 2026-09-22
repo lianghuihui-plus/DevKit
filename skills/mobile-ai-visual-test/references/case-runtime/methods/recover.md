@@ -2,20 +2,33 @@
 
 建立授权的 App 初始状态、重启恢复或登记框架外事实。
 
+签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
+
+## 调用分支
+
 ```typescript
-recover({ capability: "recover", basedOnSceneRef?: string, reason: string, targetState?: "APP_LOCAL_STATE_EMPTY" | "FRESH_INSTALL", externalAction?: object, flowContext?: object })
+recover({ mode: "restart", sceneRef: string, reason: string, flowContext?: object })
+recover({ mode: "prepare", reason: string, targetState: "APP_LOCAL_STATE_EMPTY" | "FRESH_INSTALL", flowContext?: object })
+recover({ mode: "external", reason: string, externalAction: object, flowContext?: object })
 ```
 
 ## 参数
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `capability` | 是 | `"recover"` | 固定为 recover |
-| `basedOnSceneRef` | 否/条件 | `string` | 重启恢复所依据的 Scene |
+| `mode` | 是 | `"restart" \| "prepare" \| "external"` | restart、prepare 或 external |
+| `sceneRef` | 否/条件 | `string` | 重启恢复所依据的 Scene |
 | `reason` | 是 | `string` | 恢复原因 |
-| `targetState` | 否/条件 | `"APP_LOCAL_STATE_EMPTY" | "FRESH_INSTALL"` | 授权的目标 App 状态 |
+| `targetState` | 否/条件 | `"APP_LOCAL_STATE_EMPTY" \| "FRESH_INSTALL"` | 授权的目标 App 状态 |
 | `externalAction` | 否/条件 | `object` | 已实际完成的框架外事实 |
 | `flowContext` | 否/条件 | `object` | 异常发生时正在处理的 Case Flow 节点 |
+
+## 结构字段
+
+```typescript
+input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
+input.externalAction: { summary: string; tool?: string }
+```
 
 ## 条件要求
 
@@ -27,8 +40,25 @@ recover({ capability: "recover", basedOnSceneRef?: string, reason: string, targe
 
 ## 成功状态
 
-- `SCENE`
-- `EXTERNAL_ACTION_RECORDED`
+- `SUCCEEDED`
+
+### 成功 / mode=restart
+
+- 简单结果：`outcome`、`sceneRef`、`preparationState`。
+- 主数据：`scene`。
+- 关联资源：`screenshot`、`layout`、`elementSet`、`technicalFact`。
+
+### 成功 / mode=prepare
+
+- 简单结果：`outcome`、`sceneRef`、`preparationState`。
+- 主数据：`scene`。
+- 关联资源：`screenshot`、`layout`、`elementSet`、`technicalFact`。
+
+### 成功 / mode=external
+
+- 简单结果：`outcome`、`externalActionDeclarationRef`、`verificationRequired`。
+- 主数据：无。
+- 关联资源：`externalActionDeclaration`、`technicalFact`。
 
 ## 副作用
 
@@ -49,8 +79,13 @@ recover({ capability: "recover", basedOnSceneRef?: string, reason: string, targe
 ## 最小示例
 
 ```json
-{
-  "capability": "recover",
-  "reason": "目标 App 无法继续交互"
-}
+{"operation":"recover","input":{"mode":"restart","sceneRef":"scene-1","reason":"目标 App 无法继续交互"}}
+```
+
+```json
+{"operation":"recover","input":{"mode":"prepare","reason":"用例要求空本地状态","targetState":"APP_LOCAL_STATE_EMPTY"}}
+```
+
+```json
+{"operation":"recover","input":{"mode":"external","reason":"登记已执行技术恢复","externalAction":{"summary":"已重启自动化服务"}}}
 ```

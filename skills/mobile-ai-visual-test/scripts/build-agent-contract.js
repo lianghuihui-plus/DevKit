@@ -79,7 +79,7 @@ function implementationDigest(skillRoot, role, platform) {
 }
 
 function buildContract(options) {
-  const resources = roleResources(options.role);
+  const resources = roleResources(options.role, options.skillRoot);
   const entrypoints = roleEntrypoints(options.role);
   const capabilities = options.role === 'batch-coordinator'
     ? coordinatorCapabilities(options.skillRoot, entrypoints) : null;

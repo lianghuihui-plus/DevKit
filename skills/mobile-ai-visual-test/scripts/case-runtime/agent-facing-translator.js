@@ -348,11 +348,14 @@ function projectAgentFacingError(response, request = null, resources = [], provi
     ...(response.issues ? { issues: response.issues.map((item) => ({
       field: item.field || item.fieldPath || 'request',
       code: item.code || 'INVALID',
+      ...(item.expected !== undefined ? { expected: item.expected } : {}),
       ...(item.message ? { message: item.message } : {}),
     })) } : {}),
     resources: resources.filter((resource) => (definition.resourceTypes || []).includes(resource.type)),
     documentationRef: documentationRefFor(code),
-    ...(operation ? { operationDocumentationRef: `references/case-runtime/methods/${operation}.md` } : {}),
+    ...(operation && ((status === 'REJECTED' && response.issues?.length)
+      || ['AGENT_INPUT_INVALID', 'AGENT_INPUT_STALLED'].includes(code))
+      ? { operationDocumentationRef: `references/case-runtime/methods/${operation.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}.md` } : {}),
   });
 }
 

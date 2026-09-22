@@ -70,15 +70,31 @@ const summaries = {
   prepareRun: '在绑定工作空间中创建一次 run。', confirmRun: '确认当前环境、选择平台设备或确认绑定。',
   advanceRun: '推进当前确定性状态机。', cancelRun: '按用户要求取消当前 run。', read: '完整读取当前 run 已发布的不可变资源。',
 };
+const parameterDescriptions = {
+  prepareRun: { caseNos: '用户指定的用例编号列表。' },
+  confirmRun: { decision: '当前 runDecision 允许的确认分支。', userInstruction: '用户对使用当前环境或目标绑定的明确确认原文。',
+    platform: '用户选择的平台。', deviceId: '当前探测事实中的设备标识；多设备时必须明确选择。',
+    binding: '用户确认的目标设备与应用绑定。', 'binding.platform': '已选择的平台。',
+    'binding.deviceId': '已确认的设备标识。', 'binding.appId': '已确认的目标应用标识。',
+    'binding.entry': 'HarmonyOS 应用入口。', 'binding.deviceType': 'iOS 模拟器或真机。',
+    'binding.deviceFormFactor': '设备形态。', 'binding.xcodeOrgId': '用户确认的 iOS 签名团队。',
+    'binding.xcodeSigningId': 'iOS 签名身份。', 'binding.updatedWDABundleId': 'WDA 签名 Bundle ID。' },
+  advanceRun: {}, cancelRun: { reason: '用户取消本次测试的原因。' },
+  read: { ref: '原样复制当前绑定 Facade 返回的资源 ref；不能使用领域 ID 或文档路径。' },
+};
 const PUBLIC_METHODS = Object.freeze(Object.fromEntries(COORDINATOR_CAPABILITIES.map((name) => [name, Object.freeze({
   name, summary: summaries[name], inputSchema: INPUT_SCHEMAS[name],
   requestSchema: requestEnvelopeSchema({ [name]: INPUT_SCHEMAS[name] }).oneOf[0],
-  parameterDescriptions: { operation: `固定为 ${name}`, input: '当前操作的业务参数；绑定作用域由 command 提供。' },
+  parameterDescriptions: parameterDescriptions[name],
   conditionalRequirements: name === 'confirmRun' ? ['三个 decision 分支不得混用字段。'] : [],
   contextualValidationRules: [], successStatuses: ['SUCCEEDED'], errorCodes: Object.keys(PUBLIC_ERRORS),
   sideEffects: name === 'read' ? [] : ['保存当前 run 的确定性进度'],
   idempotency: name === 'prepareRun' ? '创建新 run。' : name === 'read' ? '只读，不推进状态。' : 'advanceRun/cancelRun 终态复用原 runSummary；confirmRun 终态拒绝。',
   minimalExample: { operation: name, input: examples[name] }, responseProjection: name === 'read' ? PROJECTIONS[name] : { outcomes: PROJECTIONS[name] },
+  minimalExamples: [examples[name], ...(name === 'confirmRun' ? [
+    { decision: 'USE_CURRENT', userInstruction: '确认使用当前环境' },
+    { decision: 'CONFIRM_BINDING', userInstruction: '确认使用目标设备和应用', binding: { platform: 'harmony', deviceId: 'device-1', appId: 'com.example.app' } },
+  ] : [])].map((input) => ({ operation: name, input })),
 })])));
 const TRANSPORTS = Object.freeze({
   prepareCommand: { summary: '绑定 workspace 的启动命令。', input: 'stdin 提交一次 {operation,input}；prepareRun.input 只包含 caseNos。', rule: '原样执行 Workspace 提供的 command。', success: 'SUCCEEDED', errors: ['COORDINATOR_INPUT_INVALID', 'COORDINATOR_TECHNICAL'] },
@@ -97,7 +113,7 @@ function operationDocumentationRefFor(operation) {
 }
 function validateCoordinatorRequest(request) {
   const schema = PUBLIC_METHODS[request?.operation]?.requestSchema || REQUEST_SCHEMA;
-  return validateAgentJson(request, schema).map((issue) => ({ field: issue.fieldPath || 'request',
+  return validateAgentJson(request, schema).map((issue) => ({ field: issue.fieldPath || 'request', expected: issue.expected,
     message: issue.code === 'REQUIRED' ? `必须提供 ${issue.fieldPath}` : `${issue.fieldPath || 'request'} 应为 ${issue.expected}`, code: issue.code }));
 }
 module.exports = { AGENT_FACING_INTERFACE_KIND, AGENT_FACING_PROTOCOL, COORDINATOR_CAPABILITIES, PUBLIC_CONTRACT,

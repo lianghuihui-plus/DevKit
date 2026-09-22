@@ -2,29 +2,38 @@
 
 查询知识，或登记指定 query 的候选复核结果。
 
+签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
+
 ## 调用分支
 
 ```typescript
-knowledge({ capability: "knowledge", basedOnSceneRef: string, query: string, checkNodeRefs?: string[], flowContext?: object })
-knowledge({ capability: "knowledge", basedOnSceneRef: string, queryId: string, conclusion: "APPLICABLE_FOUND" | "NO_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT", assessments: object[], flowContext?: object })
+knowledge({ mode: "query", sceneRef: string, query: string, checkNodeRefs?: string[], flowContext?: object })
+knowledge({ mode: "review", sceneRef: string, queryId: string, conclusion: "APPLICABLE_FOUND" | "NO_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT", assessments: object[], flowContext?: object })
 ```
 
 ## 参数
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `capability` | 是 | `"knowledge"` | 固定为 knowledge |
-| `basedOnSceneRef` | 是 | `string` | 当前 Scene |
+| `mode` | 是 | `"query" \| "review"` | query 或 review |
+| `sceneRef` | 是 | `string` | 当前 Scene |
 | `query` | 否/条件 | `string` | 待调查问题 |
 | `queryId` | 否/条件 | `string` | 已有查询引用 |
 | `checkNodeRefs` | 否/条件 | `string[]` | 相关 CHECK 节点 |
-| `conclusion` | 否/条件 | `"APPLICABLE_FOUND" | "NO_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT"` | 候选复核结论 |
+| `conclusion` | 否/条件 | `"APPLICABLE_FOUND" \| "NO_APPLICABLE" \| "CONFLICTING" \| "INSUFFICIENT"` | 候选复核结论 |
 | `assessments` | 否/条件 | `object[]` | 逐候选适用性判断 |
 | `flowContext` | 否/条件 | `object` | 当前 Case Flow 节点和可选分支选择 |
 
+## 结构字段
+
+```typescript
+input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
+input.assessments: Array<{ entryId: string; status: "APPLICABLE" | "NOT_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT"; reason: string }>
+```
+
 ## 条件要求
 
-- query 与 queryId 两种模式互斥。
+- mode=query 和 mode=review 的字段不能混用。
 
 ## 上下文校验
 
@@ -32,8 +41,19 @@ knowledge({ capability: "knowledge", basedOnSceneRef: string, queryId: string, c
 
 ## 成功状态
 
-- `KNOWLEDGE`
-- `KNOWLEDGE_REVIEWED`
+- `SUCCEEDED`
+
+### 成功 / mode=query
+
+- 简单结果：`outcome`、`knowledgeQueryRef`、`candidateSetRef`、`candidateCount`、`reviewRequired`。
+- 主数据：`candidateSet`。
+- 关联资源：`knowledgeQuery`、`knowledgeDocument`。
+
+### 成功 / mode=review
+
+- 简单结果：`outcome`、`knowledgeQueryRef`、`knowledgeReviewRef`、`conclusion`、`idempotent`。
+- 主数据：无。
+- 关联资源：`knowledgeQuery`、`candidateSet`、`knowledgeReview`。
 
 ## 副作用
 
@@ -55,9 +75,9 @@ knowledge({ capability: "knowledge", basedOnSceneRef: string, queryId: string, c
 ## 最小示例
 
 ```json
-{
-  "capability": "knowledge",
-  "basedOnSceneRef": "scene-1",
-  "query": "解释当前异常"
-}
+{"operation":"knowledge","input":{"mode":"query","sceneRef":"scene-1","query":"解释当前异常"}}
+```
+
+```json
+{"operation":"knowledge","input":{"mode":"review","sceneRef":"scene-1","queryId":"query-1","conclusion":"NO_APPLICABLE","assessments":[]}}
 ```

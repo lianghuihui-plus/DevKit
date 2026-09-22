@@ -2,6 +2,33 @@
 
 只在响应指向本页时读取对应错误章节。
 
+<a id="error-case-runtime-finalized"></a>
+## CASE_RUNTIME_FINALIZED
+
+Execution 已完成，只能读取已保存资源。
+
+**可重试：** 否
+
+**处理：** 使用 read 读取已有资源。
+
+<a id="error-resource-unknown"></a>
+## RESOURCE_UNKNOWN
+
+资源引用尚未发布。
+
+**可重试：** 是
+
+**处理：** 原样复制当前绑定发布的资源 ref。
+
+<a id="error-resource-scope-mismatch"></a>
+## RESOURCE_SCOPE_MISMATCH
+
+资源引用属于其他作用域。
+
+**可重试：** 否
+
+**处理：** 使用发布该引用的已绑定 command。
+
 <a id="error-agent-input-invalid"></a>
 ## AGENT_INPUT_INVALID
 
@@ -36,4 +63,4 @@ Execution 或 dispatch 绑定无效。
 
 **可重试：** 否
 
-**处理：** 读取 facts.technical.code：sequence 不匹配时原样复用当前 Loader/Brief 中的 command；只有 HANDOFF_REPLACED 才表示该 dispatch 已被真实 continuation 取代；HANDOFF_NOT_CLAIMED 表示 Loader 尚未成功 claim。
+**处理：** 按 technicalFact 资源核对绑定：sequence 不匹配时原样复用当前 Loader/Brief 中的 command；只有 HANDOFF_REPLACED 才表示该 dispatch 已被真实 continuation 取代；HANDOFF_NOT_CLAIMED 表示 Loader 尚未成功 claim。

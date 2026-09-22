@@ -2,16 +2,23 @@
 
 创建或修订完整 Case Flow。
 
+签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
+
 ```typescript
-plan({ capability: "plan", caseFlow: object })
+plan({ caseFlow: object })
 ```
 
 ## 参数
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `capability` | 是 | `"plan"` | 固定为 plan |
 | `caseFlow` | 是 | `object` | 完整 Case Flow 快照 |
+
+## 结构字段
+
+```typescript
+input.caseFlow: { baseRevision: number | null; summary: string; entryNodeRef: string; nodes: Array<{ ref: string; type: "ACTION"; text: string } | { ref: string; type: "DECISION"; text: string; sourceBasis: string } | { ref: string; type: "CHECK"; text: string; sourceBasis: string; verificationKind: "DIRECT_OBSERVATION" | "SEARCH_EXISTENCE"; requirement: "REQUIRED" } | { ref: string; type: "CHECK"; text: string; sourceBasis: string; verificationKind: "DIRECT_OBSERVATION" | "SEARCH_EXISTENCE"; requirement: "CONDITIONAL"; applicability: string } | { ref: string; type: "END"; text: string }>; edges: Array<{ ref: string; from: string; to: string; condition?: string }>; uncertainties: Array<string>; reason?: string }
+```
 
 ## 条件要求
 
@@ -29,7 +36,13 @@ plan({ capability: "plan", caseFlow: object })
 
 ## 成功状态
 
-- `CASE_FLOW_RECORDED`
+- `SUCCEEDED`
+
+### 成功
+
+- 简单结果：`outcome`、`caseFlowRef`、`revision`、`idempotent`、`retiredNodeIds`、`retiredEdgeIds`、`invalidatedResultRefs`。
+- 主数据：无。
+- 关联资源：`caseFlow`、`checkpointLedger`、`checkpointResult`。
 
 ## 副作用
 
@@ -52,34 +65,36 @@ plan({ capability: "plan", caseFlow: object })
 
 ```json
 {
-  "capability": "plan",
-  "caseFlow": {
-    "baseRevision": null,
-    "summary": "验证目标",
-    "entryNodeRef": "N1",
-    "nodes": [
-      {
-        "ref": "N1",
-        "type": "CHECK",
-        "text": "结果可见",
-        "verificationKind": "DIRECT_OBSERVATION",
-        "sourceBasis": "原始用例预期",
-        "requirement": "REQUIRED"
-      },
-      {
-        "ref": "N2",
-        "type": "END",
-        "text": "完成"
-      }
-    ],
-    "edges": [
-      {
-        "ref": "L1",
-        "from": "N1",
-        "to": "N2"
-      }
-    ],
-    "uncertainties": []
+  "operation": "plan",
+  "input": {
+    "caseFlow": {
+      "baseRevision": null,
+      "summary": "验证目标",
+      "entryNodeRef": "N1",
+      "nodes": [
+        {
+          "ref": "N1",
+          "type": "CHECK",
+          "text": "结果可见",
+          "verificationKind": "DIRECT_OBSERVATION",
+          "sourceBasis": "原始用例预期",
+          "requirement": "REQUIRED"
+        },
+        {
+          "ref": "N2",
+          "type": "END",
+          "text": "完成"
+        }
+      ],
+      "edges": [
+        {
+          "ref": "L1",
+          "from": "N1",
+          "to": "N2"
+        }
+      ],
+      "uncertainties": []
+    }
   }
 }
 ```

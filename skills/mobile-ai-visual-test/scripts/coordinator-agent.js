@@ -37,7 +37,9 @@ function errorResponse(error, operation = null, stalled = false, resources = [])
     code, retryable: PUBLIC_CONTRACT.errors[code].retryable,
     resources: resources.filter((resource) => PUBLIC_CONTRACT.errors[code].resourceTypes.includes(resource.type)),
     ...(error.issues?.length ? { issues: error.issues } : {}),
-    documentationRef: documentationRefFor(code), operationDocumentationRef: operationDocumentationRefFor(operation) });
+    documentationRef: documentationRefFor(code),
+    ...(['COORDINATOR_INPUT_INVALID', 'AGENT_INPUT_STALLED'].includes(code) && PUBLIC_CONTRACT.methods[operation]
+      ? { operationDocumentationRef: operationDocumentationRefFor(operation) } : {}) });
 }
 function main(argv = process.argv.slice(2), options = {}) {
   let parsed;

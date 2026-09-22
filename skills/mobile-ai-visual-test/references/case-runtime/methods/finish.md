@@ -2,24 +2,32 @@
 
 从 CHECK ledger 收口并完成用例。
 
+签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
+
 ## 调用分支
 
 ```typescript
-finish({ capability: "finish", summary: string, uncertainties?: string[], flowContext?: object })
-finish({ capability: "finish", outcome: "NOT_RUN", reason: string, evidence: object, summary: string, uncertainties?: string[], flowContext?: object })
+finish({ mode: "complete", summary: string, uncertainties?: string[], flowContext?: object })
+finish({ mode: "notRun", reason: string, evidence: object, summary: string, uncertainties?: string[], flowContext?: object })
 ```
 
 ## 参数
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `capability` | 是 | `"finish"` | 固定为 finish |
+| `mode` | 是 | `"complete" \| "notRun"` | complete 或 notRun |
 | `summary` | 是 | `string` | 最终摘要 |
 | `uncertainties` | 否/条件 | `string[]` | 仍需披露的不确定性 |
-| `outcome` | 否/条件 | `"NOT_RUN"` | 仅前置条件不满足时使用 NOT_RUN |
 | `reason` | 否/条件 | `string` | NOT_RUN 的业务原因 |
 | `evidence` | 否/条件 | `object` | NOT_RUN 引用的已登记 Scene 或技术事实 |
 | `flowContext` | 否/条件 | `object` | 实际到达的 END 节点 |
+
+## 结构字段
+
+```typescript
+input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
+input.evidence: { sceneRefs: Array<string>; technicalRefs: Array<string> }
+```
 
 ## 上下文校验
 
@@ -30,8 +38,13 @@ finish({ capability: "finish", outcome: "NOT_RUN", reason: string, evidence: obj
 
 ## 成功状态
 
-- `COMPLETED`
-- `RESULT_INCOMPLETE`
+- `SUCCEEDED`
+
+### 成功
+
+- 简单结果：`outcome`、`executionId`、`verdict`、`caseResultRef`、`idempotent`。
+- 主数据：无。
+- 关联资源：`caseResult`、`checkpointLedger`、`technicalFact`。
 
 ## 副作用
 
@@ -52,8 +65,9 @@ finish({ capability: "finish", outcome: "NOT_RUN", reason: string, evidence: obj
 ## 最小示例
 
 ```json
-{
-  "capability": "finish",
-  "summary": "验证完成"
-}
+{"operation":"finish","input":{"mode":"complete","summary":"验证完成"}}
+```
+
+```json
+{"operation":"finish","input":{"mode":"notRun","reason":"用例前置条件不满足","summary":"未运行","evidence":{"sceneRefs":["scene-1"],"technicalRefs":[]}}}
 ```

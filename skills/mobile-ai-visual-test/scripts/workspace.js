@@ -13,7 +13,8 @@ function main(argv = process.argv.slice(2)) {
   const result = ensureWorkspace(path.resolve(options.cwd));
   const numbering = ensureWorkspaceCaseNumbers(result.root);
   if (numbering.changed) renderIndexForRoot(result.root);
-  const coordinatorCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve(__dirname, 'coordinator-agent.js'))}`;
+  const quote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
+  const coordinatorCommand = `${quote(process.execPath)} ${quote(path.resolve(__dirname, 'coordinator-agent.js'))} --workspace ${quote(result.root)}`;
   process.stdout.write(`${JSON.stringify({
     ...result,
     caseNumbering: numbering,

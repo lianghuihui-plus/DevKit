@@ -19,40 +19,23 @@ const ROLE_RESOURCES = Object.freeze({
     'prompts/case-agent.md',
     'references/case-execution-principles.md',
     'references/case-runtime.md',
-    'references/case-runtime/methods/observe.md',
-    'references/case-runtime/methods/inspect.md',
-    'references/case-runtime/methods/plan.md',
-    'references/case-runtime/methods/record-result.md',
-    'references/case-runtime/methods/act.md',
-    'references/case-runtime/methods/run-plan.md',
-    'references/case-runtime/methods/knowledge.md',
-    'references/case-runtime/methods/recover.md',
-    'references/case-runtime/methods/finish.md',
+    'references/case-runtime/resources.md',
     'references/case-runtime/action-refs.md',
     'references/case-runtime/errors.md',
-    'references/case-runtime/errors/transport.md',
-    'references/case-runtime/errors/scene-action.md',
-    'references/case-runtime/errors/plan.md',
-    'references/case-runtime/errors/flow-result.md',
-    'references/case-runtime/errors/knowledge-recovery.md',
   ]),
   'batch-coordinator': Object.freeze([
     'SKILL.md',
     'references/coordinator.md',
-    'references/coordinator/methods/prepare-run.md',
-    'references/coordinator/methods/confirm-run.md',
-    'references/coordinator/methods/advance-run.md',
-    'references/coordinator/methods/cancel-run.md',
+    'references/coordinator/resources.md',
     'references/coordinator/errors.md',
-    'references/coordinator/errors/input-state.md',
-    'references/coordinator/errors/environment.md',
-    'references/coordinator/errors/batch.md',
   ]),
 });
 
 const SHARED_IMPLEMENTATION_FILES = new Set([
   'scripts/build-agent-contract.js',
+  'scripts/case-agent-bootstrap.js',
   'scripts/lib/agent-contract-manifest.js',
+  'scripts/lib/agent-facing-envelope.js',
   'scripts/lib/app-provisioning.js',
   'scripts/lib/contract-utils.js',
   'scripts/lib/dispatch-lease.js',
@@ -107,9 +90,17 @@ function walkFiles(root, relative) {
   return values;
 }
 
-function roleResources(role) {
+function roleResources(role, skillRoot = path.resolve(__dirname, '../..')) {
   if (!ROLE_RESOURCES[role]) throw new Error(`Unsupported Agent role: ${role}`);
-  return [...ROLE_RESOURCES[role]];
+  const directory = role === 'case-executor' ? 'case-runtime' : 'coordinator';
+  const resolved = require.resolve(path.join(skillRoot, `scripts/${directory}/agent-facing-contract.js`));
+  delete require.cache[resolved];
+  const { PUBLIC_CONTRACT } = require(resolved);
+  const slug = (name) => name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+  return [...ROLE_RESOURCES[role],
+    ...Object.keys(PUBLIC_CONTRACT.methods).map((name) => `references/${directory}/methods/${slug(name)}.md`),
+    ...new Set(Object.values(PUBLIC_CONTRACT.errors).map((definition) => `references/${directory}/errors/${definition.group || 'general'}.md`)),
+  ];
 }
 
 function roleEntrypoints(role) {

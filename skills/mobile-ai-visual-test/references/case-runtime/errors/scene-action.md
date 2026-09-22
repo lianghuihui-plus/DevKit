@@ -38,6 +38,15 @@ ActionRef 对当前 Scene 不成立。
 
 **处理：** 按当前 ActionRef 返回的输入约束修正 input；坐标使用 0 到 1 的归一化值。
 
+<a id="error-action-effect-mismatch"></a>
+## ACTION_EFFECT_MISMATCH
+
+动作结果已知，但技术核验未满足所请求的输入效果。
+
+**可重试：** 是
+
+**处理：** 读取动作技术证据和当前 Scene；Agent 判断可安全重试时有限重试，不直接据此判定产品 FAIL。
+
 <a id="error-visual-inspection-required"></a>
 ## VISUAL_INSPECTION_REQUIRED
 
@@ -45,7 +54,7 @@ ActionRef 对当前 Scene 不成立。
 
 **可重试：** 是
 
-**处理：** 对同一 Scene 调用 inspect(channel="visual") 登记实际看到的事实，再重试视觉动作或结果记录。
+**处理：** 对同一 Scene 调用 inspect(mode="visual") 登记实际看到的事实，再重试视觉动作或结果记录。
 
 <a id="error-action-outcome-unknown"></a>
 ## ACTION_OUTCOME_UNKNOWN

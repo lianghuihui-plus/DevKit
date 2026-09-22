@@ -1,24 +1,17 @@
-# Case Runtime ActionRef
+# Case Runtime 动作目标
 
-ActionRef 是 Runtime 发布事实的稳定引用，Agent 不解析内部 capabilityId。
+发布的 ActionRef 或 Agent 自主视觉坐标动作。ActionRef 原样取自已发布控件或屏幕事实；Agent 可以自主选择任意归一化坐标。Runtime 不判断视觉目标或业务意图。
 
-## 格式
+## 动作分支
 
-| 类型 | 格式 | 示例 |
-|---|---|---|
-| 控件动作 | `<elementRef>:<actionType>` | `button-1:tap` |
-| 全局动作 | `screen:<actionType>` | `screen:swipeUp` |
-| 视觉动作 | `visual:<gesture>` | `visual:longPress` |
+```typescript
+action: { ref: string; input?: { durationMs?: number; text?: string; mode?: "replace" | "append"; ms?: number } }
+action: { type: "tap" | "doubleTap"; target: { point: Array<number> } }
+action: { type: "longPress"; target: { point: Array<number> }; durationMs: number }
+action: { type: "swipe"; target: { from: Array<number>; to: Array<number> } }
+```
 
-## 控件映射
+坐标必须在 0 到 1 范围内；视觉动作先读取截图并通过 `inspect(mode="visual")` 登记事实。完整请求及响应见 [act](methods/act.md)。
 
-- `clickable`：`tap`、`doubleTap`、`longPress`。
-- `checkable`：`tap`、`toggle`。
-- `editable`：`tap`、`inputText`。
-- 多个属性同时成立时取并集。
-
-## 动态约束
-
-- 屏幕动作由 `interactionContext` 的滚动、焦点和键盘事实约束。
-- 视觉动作必须出现在 `interactionContext.visualGestures`，且 Scene 已通过 `inspect(channel="visual")` 登记视觉事实。
-- Runtime 在完整当前 Scene 上重建能力；无效引用返回 `ACTION_NOT_AVAILABLE`，不会返回整份替代动作目录。
+- action.ref 与 action.type 互斥；ActionRef 所需 action.input 字段必须存在。
+- ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。

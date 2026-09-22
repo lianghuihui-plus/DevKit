@@ -8,10 +8,7 @@ const path = require('path');
 const { canonicalJson, contractError } = require('../lib/contract-utils');
 const store = require('./store');
 
-const TYPES = new Set(['caseBrief', 'scene', 'screenshot', 'layout', 'elementSet', 'caseFlow',
-  'checkpointLedger', 'checkpointResult', 'knowledgeQuery', 'candidateSet', 'knowledgeDocument',
-  'knowledgeReview', 'actionSpatialEvidence', 'planResult', 'planEvidence',
-  'externalActionDeclaration', 'technicalFact', 'caseResult']);
+const TYPES = new Set(Object.keys(require('./agent-facing-contract').PUBLIC_CONTRACT.resourceCatalog));
 const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const jsonHash = (value) => hash(canonicalJson(value));
 const fail = (message) => contractError('RESOURCE_INTEGRITY_INVALID', message);
@@ -110,7 +107,7 @@ function sourceValue(execDir, source) {
 }
 
 function projectSource(type, raw, params, source) {
-  if (type === 'caseBrief') return raw.brief;
+  if (type === 'caseBrief') return { ...raw.brief, casePrompt: raw.casePrompt };
   if (type === 'elementSet') return raw.elements || [];
   if (type === 'layout') return source.field ? raw[source.field] : raw;
   if (type === 'screenshot') return { path: source.file, width: params.width, height: params.height,

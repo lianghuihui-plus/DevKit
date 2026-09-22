@@ -63,8 +63,8 @@ assert.strictEqual(fs.existsSync(path.join(workspace, 'flows')), false);
 assert.strictEqual(initialized.coordinatorFacade.interfaceKind, 'AGENT_FACING');
 assert.strictEqual(initialized.coordinatorFacade.protocol, 'agent-facing');
 assert.strictEqual(initialized.coordinatorFacade.documentation, 'references/coordinator.md');
-assert.strictEqual(initialized.coordinatorFacade.command,
-  `${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(repo, 'scripts', 'coordinator-agent.js'))}`);
+assert.match(initialized.coordinatorFacade.command, /coordinator-agent\.js.*--workspace/);
+assert.ok(initialized.coordinatorFacade.command.includes(workspace));
 assert.deepStrictEqual(Object.keys(initialized.coordinatorFacade).sort(), ['command', 'documentation', 'interfaceKind', 'protocol']);
 assert.strictEqual(initialized.coordinatorCapabilities, undefined);
 assert.strictEqual(JSON.stringify(initialized.coordinatorFacade).includes('definitionRef'), false);
@@ -78,25 +78,29 @@ assert.strictEqual(fs.existsSync(imported.contextHtml), true);
 assert.ok(fs.readFileSync(imported.contextHtml, 'utf8').includes('看一下当前页面是否符合用例描述'));
 assert.ok(fs.readFileSync(path.join(workspace, 'index.html'), 'utf8').includes('查看用例内容'));
 const preparedFromWorkspace = childProcess.spawnSync(
-  `${initialized.coordinatorFacade.command} prepare --workspace ${JSON.stringify(path.resolve(workspace))} --case-nos ${imported.caseJson.identity.caseNo}`,
+  initialized.coordinatorFacade.command,
   {
     cwd: workspace,
     encoding: 'utf8',
     env: { ...process.env, MAVT_SELF_TEST: '' },
     shell: true,
+    input: JSON.stringify({ operation: 'prepareRun', input: { caseNos: [imported.caseJson.identity.caseNo] } }),
   },
 );
 assert.strictEqual(preparedFromWorkspace.status, 0, preparedFromWorkspace.stderr);
-assert.strictEqual(JSON.parse(preparedFromWorkspace.stdout).status, 'NEED_USER_CONFIRMATION');
+assert.strictEqual(JSON.parse(preparedFromWorkspace.stdout).status, 'SUCCEEDED');
+assert.strictEqual(JSON.parse(preparedFromWorkspace.stdout).result.outcome, 'NEED_USER_CONFIRMATION');
 fs.rmSync(path.join(workspace, 'runs'), { recursive: true, force: true });
 
 const contract = run(['scripts/build-agent-contract.js', '--role', 'case-executor', '--platform', 'harmony']);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(contract, 'schemaVersion'), false);
 assert.strictEqual(contract.profile, undefined);
-assert.deepStrictEqual(contract.requiredResources, [
+assert.deepStrictEqual([...contract.requiredResources].sort(), [
   'prompts/case-agent.md',
   'references/case-execution-principles.md',
   'references/case-runtime.md',
+  'references/case-runtime/resources.md',
+  'references/case-runtime/methods/read.md',
   'references/case-runtime/methods/observe.md',
   'references/case-runtime/methods/inspect.md',
   'references/case-runtime/methods/plan.md',
@@ -113,7 +117,8 @@ assert.deepStrictEqual(contract.requiredResources, [
   'references/case-runtime/errors/plan.md',
   'references/case-runtime/errors/flow-result.md',
   'references/case-runtime/errors/knowledge-recovery.md',
-]);
+  'references/case-runtime/errors/runtime.md',
+].sort());
 assert.deepStrictEqual(contract.allowedEntrypoints, [
   'scripts/case-runtime/agent-facing-client.js',
   'scripts/case-runtime/mcp-server.js',
@@ -182,12 +187,12 @@ for (const fixture of [
     env: { ...process.env, MAVT_SELF_TEST: '' },
   });
   assert.notStrictEqual(result.status, 0, `${fixture.command} invalid call must fail`);
-  const response = JSON.parse(result.stderr);
-  assert.strictEqual(response.status, 'REQUEST_INVALID');
-  assert.ok(response.issues.length >= 1);
+  const response = JSON.parse(fixture.compactError ? result.stdout : result.stderr);
+  assert.strictEqual(response.status, fixture.compactError ? 'REJECTED' : 'REQUEST_INVALID');
+  assert.ok((fixture.compactError ? response.error.issues : response.issues).length >= 1);
   if (fixture.compactError) {
     assert.strictEqual(response.protocol, 'agent-facing');
-    assert.match(response.documentationRef, /references\/coordinator\/errors\/input-state\.md#/);
+    assert.match(response.error.documentationRef, /references\/coordinator\/errors\/input-state\.md#/);
     for (const field of ['command', 'usage', 'example', 'retryWith', 'nextCall']) {
       assert.strictEqual(Object.prototype.hasOwnProperty.call(response, field), false);
     }
@@ -203,7 +208,7 @@ for (const fixture of [
   ['scripts/batch.js', 'status', '--unknown', 'value'],
   ['scripts/environment.js', 'status', '--unknown', 'value'],
   ['scripts/execution-request.js', 'status', '--unknown', 'value'],
-  ['scripts/coordinator-agent.js', 'prepare', '--unknown', 'value'],
+  ['scripts/coordinator-agent.js', '--unknown', 'value'],
 ]) {
   const result = childProcess.spawnSync(process.execPath, fixture, {
     cwd: repo,
@@ -211,10 +216,12 @@ for (const fixture of [
     env: { ...process.env, MAVT_SELF_TEST: '' },
   });
   assert.notStrictEqual(result.status, 0);
-  const response = JSON.parse(result.stderr);
-  assert.strictEqual(response.status, 'REQUEST_INVALID');
-  assert.ok(response.issues.some((issue) => issue.code === 'UNKNOWN_ARGUMENT'));
-  assert.ok(response.documentationRef);
+  const isFacade = fixture[0] === 'scripts/coordinator-agent.js';
+  const response = JSON.parse(isFacade ? result.stdout : result.stderr);
+  assert.strictEqual(response.status, isFacade ? 'REJECTED' : 'REQUEST_INVALID');
+  const error = isFacade ? response.error : response;
+  assert.ok(error.issues.some((issue) => issue.code === (isFacade ? 'INVALID_ARGUMENT' : 'UNKNOWN_ARGUMENT')));
+  assert.ok(error.documentationRef);
 }
 
 const duplicateBatchFlag = childProcess.spawnSync(process.execPath, [

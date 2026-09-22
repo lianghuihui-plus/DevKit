@@ -3,9 +3,10 @@
 const { validateAgentJson } = require('../lib/agent-json-contract');
 const { initialStateStrategy } = require('../lib/app-provisioning');
 const { safeActionTechnicalDetails } = require('../lib/action-result');
+const { AGENT_FACING_PROTOCOL, AGENT_FACING_STATUSES, RESOURCE_DESCRIPTOR_SCHEMA, requestEnvelopeSchema } = require('../lib/agent-facing-envelope');
+const { PLAN_STEP_SCHEMA, MAX_PLAN_STEPS, MAX_PLAN_DURATION_MS } = require('./plan-contract');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
-const AGENT_FACING_PROTOCOL = 'agent-facing';
 const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
 const STRING = { type: 'string', minLength: 1 };
 const STRING_ARRAY = { type: 'array', items: STRING };
@@ -96,8 +97,8 @@ const SCHEMAS = Object.freeze({
   }, ['sceneRef', 'action']),
   runPlan: object({
     submissionId: STRING, sceneRef: STRING,
-    purpose: STRING, maxDurationMs: { type: 'integer', minimum: 1 }, onFailure: { enum: ['STOP', 'CONTINUE'] },
-    steps: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object' } },
+    purpose: STRING, maxDurationMs: { type: 'integer', minimum: 1, maximum: MAX_PLAN_DURATION_MS }, onFailure: { enum: ['STOP', 'CONTINUE'] },
+    steps: { type: 'array', minItems: 1, maxItems: MAX_PLAN_STEPS, items: PLAN_STEP_SCHEMA },
     flowContext: FLOW_CONTEXT,
   }, ['submissionId', 'sceneRef', 'purpose', 'maxDurationMs', 'onFailure', 'steps']),
   knowledgeQuery: object({
@@ -172,7 +173,7 @@ const TRANSPORTS = Object.freeze({
     summary: 'Case Agent 用于领取唯一 execution Handoff 的预绑定 Loader。',
     input: '不附加输入。',
     rule: '必须原样执行，不修改哈希、sequence、claim token 或路径。',
-    success: '返回 Case Prompt、Case Brief 和预绑定 Runtime Client。',
+    success: 'SUCCEEDED；唯一 caseBrief 主数据包含冻结 prompt 和预绑定 Runtime Client。',
     errors: ['BINDING_INVALID', 'PROTOCOL_MISMATCH'],
   },
   runtimeClient: {
@@ -188,15 +189,17 @@ function method(name, summary, requestSchema, parameterDescriptions, options = {
   return Object.freeze({
     name,
     summary,
-    requestSchema,
+    inputSchema: requestSchema,
+    requestSchema: requestEnvelopeSchema({ [name]: requestSchema }).oneOf[0],
     parameterDescriptions,
     conditionalRequirements: options.conditionalRequirements || [],
     contextualValidationRules: options.contextualValidationRules || [],
-    successStatuses: options.successStatuses || [],
+    successStatuses: ['SUCCEEDED'],
     errorCodes: options.errorCodes || ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: options.sideEffects || [],
     idempotency: options.idempotency || 'Read-only.',
     minimalExample: options.minimalExample,
+    minimalExamples: [options.minimalExample, ...(options.additionalExamples || []).map((input) => ({ operation: name, input }))],
     responseProjection: options.responseProjection,
   });
 }
@@ -229,6 +232,7 @@ const PUBLIC_METHODS = Object.freeze({
     successStatuses: ['VISUAL_INSPECTED', 'ACTION_SPATIAL_INSPECTED'],
     sideEffects: ['visual/action 追加事实事件'], idempotency: '相同 submission 不重复追加事实。',
     minimalExample: { operation: 'inspect', input: { mode: 'visual', sceneRef: 'scene-1', observation: '目标按钮可见' } },
+    additionalExamples: [{ mode: 'action', sceneRef: 'scene-1', observation: '上一动作标注落在目标内' }],
   }),
   plan: method('plan', '创建或修订完整 Case Flow。', SCHEMAS.plan, {
     caseFlow: '完整 Case Flow 快照',
@@ -274,10 +278,11 @@ const PUBLIC_METHODS = Object.freeze({
   }),
   runPlan: method('runPlan', '连续执行受约束的短时动作、等待、采集、定位和技术检查计划。', SCHEMAS.runPlan, {
     submissionId: '本次计划提交的幂等键', sceneRef: '当前 Scene',
-    purpose: '计划的业务目的', maxDurationMs: '计划总时限', onFailure: 'STOP 或受限 CONTINUE',
+    purpose: '计划的业务目的', maxDurationMs: `计划总时限，1 到 ${MAX_PLAN_DURATION_MS} 毫秒`, onFailure: 'STOP 或受限 CONTINUE',
     steps: '最多 12 个声明式步骤', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
     responseProjection: projection(['planResultRef', 'planId', 'idempotent'], 'planResult', ['scene', 'screenshot', 'actionSpatialEvidence', 'planEvidence', 'technicalFact']),
+    conditionalRequirements: ['步骤 id 唯一；$<stepId>.<field> 只能引用已完成的先前步骤。capture 输出 sceneRef，locate 输出 point，可用于 act.input.pointRef。', '包含 act 时 onFailure 必须为 STOP。需要间隔点击时使用 act/wait/act。'],
     contextualValidationRules: ['Runtime 只执行确定性命令并返回证据；视觉变化和业务结论由 Agent 判断。'],
     successStatuses: ['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'PLAN_INVALID', 'PLAN_STEP_FAILED', 'PLAN_SUBMISSION_CONFLICT', 'PLAN_RECORD_INCOMPLETE', 'LOCATOR_UNSUPPORTED', 'TARGET_NOT_FOUND', 'PLAN_CHECK_FAILED', 'PLAN_ACTION_OUTCOME_UNKNOWN', 'PLAN_TIMEOUT', 'CASE_RUNTIME_TECHNICAL'],
@@ -303,6 +308,7 @@ const PUBLIC_METHODS = Object.freeze({
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_REQUIRED', 'KNOWLEDGE_QUERY_UNKNOWN', 'KNOWLEDGE_REVIEW_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['保存查询或复核事件'], idempotency: '重复 queryId 复核按内部事件规则处理。',
     minimalExample: { operation: 'knowledge', input: { mode: 'query', sceneRef: 'scene-1', query: '解释当前异常' } },
+    additionalExamples: [{ mode: 'review', sceneRef: 'scene-1', queryId: 'query-1', conclusion: 'NO_APPLICABLE', assessments: [] }],
   }),
   recover: method('recover', '建立授权的 App 初始状态、重启恢复或登记框架外事实。', SCHEMAS.recover, {
     mode: 'restart、prepare 或 external', sceneRef: '重启恢复所依据的 Scene', reason: '恢复原因',
@@ -319,6 +325,10 @@ const PUBLIC_METHODS = Object.freeze({
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'APP_INITIAL_STATE_UNAVAILABLE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['执行授权恢复或保存外部事实'], idempotency: '由现有恢复事务保证。',
     minimalExample: { operation: 'recover', input: { mode: 'restart', sceneRef: 'scene-1', reason: '目标 App 无法继续交互' } },
+    additionalExamples: [
+      { mode: 'prepare', reason: '用例要求空本地状态', targetState: 'APP_LOCAL_STATE_EMPTY' },
+      { mode: 'external', reason: '登记已执行技术恢复', externalAction: { summary: '已重启自动化服务' } },
+    ],
   }),
   finish: method('finish', '从 CHECK ledger 收口并完成用例。', SCHEMAS.finish, {
     mode: 'complete 或 notRun', summary: '最终摘要', uncertainties: '仍需披露的不确定性',
@@ -330,12 +340,36 @@ const PUBLIC_METHODS = Object.freeze({
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',
     minimalExample: { operation: 'finish', input: { mode: 'complete', summary: '验证完成' } },
+    additionalExamples: [{ mode: 'notRun', reason: '用例前置条件不满足', summary: '未运行', evidence: { sceneRefs: ['scene-1'], technicalRefs: [] } }],
   }),
 });
 
 const PUBLIC_CONTRACT = Object.freeze({
   interfaceKind: AGENT_FACING_INTERFACE_KIND,
   protocol: AGENT_FACING_PROTOCOL,
+  statuses: AGENT_FACING_STATUSES,
+  resourceDescriptorSchema: RESOURCE_DESCRIPTOR_SCHEMA,
+  requestSchema: requestEnvelopeSchema(Object.fromEntries(Object.entries(PUBLIC_METHODS).map(([name, definition]) => [name, definition.inputSchema]))),
+  resourceCatalog: Object.freeze({
+    caseBrief: { summary: '冻结的 Case Agent prompt、用例和 execution 启动信息。' },
+    scene: { summary: '一次采集的完整 Scene 与截图、布局、控件资源引用。' },
+    screenshot: { summary: '完整截图文件位置与尺寸；使用宿主图片能力打开。' },
+    layout: { summary: '该 Scene 的完整原始控件树。' },
+    elementSet: { summary: '完整控件集合与确定性动作事实。' },
+    caseFlow: { summary: 'Agent 提交的完整用例流程 revision。' },
+    checkpointLedger: { summary: '检查点登记与处置账本的不可变快照。' },
+    checkpointResult: { summary: '一次检查点结果提交。' },
+    knowledgeQuery: { summary: '知识查询范围、查询事实与候选资源引用。' },
+    candidateSet: { summary: '完整知识候选集合。' },
+    knowledgeDocument: { summary: '完整知识条目正文。' },
+    knowledgeReview: { summary: 'Agent 提交的知识适用性审查。' },
+    actionSpatialEvidence: { summary: '动作落点、轨迹及标注截图资源。' },
+    planResult: { summary: '命令组合的完整结果与步骤证据引用。' },
+    planEvidence: { summary: '组合命令某一步的完整采集或技术检查证据。' },
+    externalActionDeclaration: { summary: 'Agent 登记的框架外动作事实。' },
+    technicalFact: { summary: '持久化的技术事实与诊断。' },
+    caseResult: { summary: '最终用例结果与证据引用。' },
+  }),
   methods: PUBLIC_METHODS,
   errors: PUBLIC_ERRORS,
   transports: TRANSPORTS,
@@ -350,7 +384,7 @@ function documentationRefFor(code) {
 
 function schemaFor(request) {
   const methodDefinition = PUBLIC_METHODS[request?.operation];
-  return object({ operation: { enum: AGENT_FACING_CAPABILITIES }, input: methodDefinition?.requestSchema || { type: 'object' } }, ['operation', 'input']);
+  return methodDefinition?.requestSchema || object({ operation: { enum: AGENT_FACING_CAPABILITIES }, input: { type: 'object' } }, ['operation', 'input']);
 }
 
 function messageFor(issue) {
@@ -362,6 +396,7 @@ function messageFor(issue) {
 function validateAgentFacingRequest(request) {
   const issues = validateAgentJson(request, schemaFor(request)).map((issue) => ({
     field: issue.fieldPath || 'request',
+    expected: issue.expected,
     message: messageFor(issue),
     code: issue.code === 'REQUIRED' ? 'FIELD_REQUIRED' : issue.code,
   }));
@@ -377,6 +412,7 @@ function validateAgentFacingRequest(request) {
     } catch (error) {
       return (error.issues || []).map((item) => ({
         field: `input.${item.fieldPath === 'basedOnSceneId' ? 'sceneRef' : item.fieldPath}`,
+        expected: item.expected,
         message: `计划字段应为 ${item.expected}`,
         code: item.code,
       }));

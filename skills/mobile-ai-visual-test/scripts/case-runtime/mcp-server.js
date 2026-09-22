@@ -14,31 +14,17 @@ function methodNotFound(name) {
   return error;
 }
 
-function withoutBoundCapability(schema) {
-  const value = JSON.parse(JSON.stringify(schema));
-  const visit = (node) => {
-    if (!node || typeof node !== 'object') return;
-    if (node.properties) delete node.properties.capability;
-    if (Array.isArray(node.required)) node.required = node.required.filter((field) => field !== 'capability');
-    for (const child of [...(node.oneOf || []), ...(node.anyOf || []), ...(node.allOf || [])]) visit(child);
-  };
-  visit(value);
-  return value;
-}
-
 function createToolDefinitions() {
   return Object.values(PUBLIC_CONTRACT.methods).map((method) => ({
     name: method.name,
     description: method.summary,
-    inputSchema: withoutBoundCapability(method.requestSchema),
+    inputSchema: method.inputSchema,
   }));
 }
 
 function requestForToolCall(name, args = {}) {
   if (!PUBLIC_CONTRACT.methods[name]) throw methodNotFound(name);
-  const { capability, ...argumentsOnly } = args || {};
-  if (capability !== undefined && capability !== name) throw methodNotFound(capability);
-  return { capability: name, ...argumentsOnly };
+  return { operation: name, input: args };
 }
 
 function validateToolCall(name, args = {}) {
@@ -95,11 +81,11 @@ function handleMessage(context, message) {
   if (message.method === 'notifications/initialized') return null;
   if (message.method === 'tools/list') return response(message.id, { tools: createToolDefinitions() });
   if (message.method === 'tools/call') {
-    const value = invokeTool(context, message.params?.name, message.params?.arguments || {});
+    const value = invokeTool(context, message.params?.name, message.params?.arguments === undefined ? {} : message.params.arguments);
     return response(message.id, {
       content: [{ type: 'text', text: JSON.stringify(value) }],
       structuredContent: value,
-      isError: ['INPUT_INVALID', 'AGENT_INPUT_STALLED', 'TECHNICAL'].includes(value?.status),
+      isError: value?.status !== 'SUCCEEDED',
     });
   }
   throw methodNotFound(message.method);

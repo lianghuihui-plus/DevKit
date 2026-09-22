@@ -4,7 +4,8 @@
 const path = require('path');
 const { parseCliArgs } = require('./lib/cli-args');
 const { prepareAgentHandoff } = require('./batch/agent-handoff');
-const { AGENT_FACING_PROTOCOL, documentationRefFor } = require('./case-runtime/agent-facing-contract');
+const { documentationRefFor } = require('./case-runtime/agent-facing-contract');
+const { successEnvelope, errorEnvelope } = require('./lib/agent-facing-envelope');
 
 function parseArgs(argv) {
   const parsed = parseCliArgs(argv, {
@@ -38,31 +39,34 @@ function loaderErrorResponse(error) {
   if (inputInvalid) code = 'AGENT_INPUT_INVALID';
   else if (String(error?.code || '').startsWith('HANDOFF_')) code = 'BINDING_INVALID';
   else if (error?.code === 'AGENT_PROTOCOL_MISMATCH') code = 'PROTOCOL_MISMATCH';
-  return {
-    protocol: AGENT_FACING_PROTOCOL,
-    status: inputInvalid ? 'REQUEST_INVALID' : 'TECHNICAL',
+  return errorEnvelope({
+    operation: 'bootstrap',
+    status: code === 'CASE_RUNTIME_TECHNICAL' ? 'FAILED' : 'REJECTED',
     code,
-    message: error?.message || String(error),
     retryable: inputInvalid,
     ...(inputInvalid ? {
-      issues: error?.issues?.length ? error.issues : [{ fieldPath: 'loaderCommand', code: 'INVALID_ARGUMENT', expected: 'the original loaderCommand without changes' }],
-    } : {
-      facts: { technical: { code: error?.code || 'CASE_AGENT_BOOTSTRAP_FAILED', stage: 'HANDOFF_LOADER' } },
-    }),
+      issues: (error?.issues?.length ? error.issues : [{ field: 'loaderCommand', code: 'INVALID_ARGUMENT', expected: 'the original loaderCommand without changes' }])
+        .map((issue) => ({ field: issue.field || issue.fieldPath, code: issue.code, expected: issue.expected })),
+    } : {}),
     documentationRef: documentationRefFor(code),
-  };
+  });
 }
 
 function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  const { claim, ...loaded } = prepareAgentHandoff(options);
+  const { claim } = prepareAgentHandoff(options);
   const { listExecutionDirs, readJson } = require('./lib/execution-lifecycle');
   const matches = listExecutionDirs(options.workspaceRoot).filter((execDir) => (
     readJson(path.join(execDir, 'execution.json'), null)?.executionId === options.executionId
   ));
   if (matches.length !== 1) throw Object.assign(new Error('Handoff execution binding is unavailable or ambiguous'), { code: 'HANDOFF_BINDING_INVALID' });
   const resource = require('./case-runtime/agent-resource-store').publishCaseBrief(matches[0], options.handoffPath, options.workspaceRoot);
-  const output = `${JSON.stringify({ ...loaded, caseBriefRef: resource.data.ref })}\n`;
+  const handoff = readJson(options.handoffPath, null);
+  const output = `${JSON.stringify(successEnvelope({ operation: 'bootstrap',
+    result: { outcome: 'CASE_BRIEF_READY', executionId: options.executionId,
+      dispatchMode: handoff.mode, dispatchSequence: handoff.sequence },
+    data: resource.data, resources: resource.resources,
+  }))}\n`;
   claim();
   process.stdout.write(output);
 }

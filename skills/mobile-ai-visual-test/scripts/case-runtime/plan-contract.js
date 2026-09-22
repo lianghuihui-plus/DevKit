@@ -14,14 +14,33 @@ const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const REF_PATTERN = /^\$([A-Za-z][A-Za-z0-9_-]{0,63})\.([A-Za-z][A-Za-z0-9_.-]{0,127})$/;
 const RESERVED_FIELDS = new Set(['schemaVersion', 'eventId', 'executionId', 'sequence', 'time']);
 
-const STEP_FIELDS = Object.freeze({
-  act: new Set(['id', 'type', 'actionRef', 'input']),
-  wait: new Set(['id', 'type', 'ms']),
-  capture: new Set(['id', 'type', 'mode', 'promote']),
-  locate: new Set(['id', 'type', 'sourceRef', 'locator']),
-  check: new Set(['id', 'type', 'sourceRef', 'predicate']),
-  checkpoint: new Set(['id', 'type', 'evidenceRefs']),
-});
+const string = { type: 'string', minLength: 1 };
+const object = (properties, required = Object.keys(properties)) => ({ type: 'object', additionalProperties: false, properties, required });
+const point = { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0, maximum: 1 } };
+const locatorSchema = { oneOf: [
+  object({ kind: { const: 'ELEMENT_REF' }, elementRef: string }),
+  object({ kind: { const: 'POINT' }, point }),
+  object({ kind: { const: 'REGION' }, region: { ...point, minItems: 4, maxItems: 4 } }),
+] };
+const predicateSchema = { oneOf: PLAN_CHECK_KINDS.map((kind) => object({ kind: { const: kind },
+  ...(['ELEMENT_VISIBLE', 'ELEMENT_ENABLED'].includes(kind) ? { elementRef: string } : {}),
+  ...(kind === 'REFERENCE_EXISTS' ? { reference: string } : {}),
+})) };
+const step = (type, properties, required = Object.keys(properties)) => object({
+  id: { ...string, pattern: ID_PATTERN.source }, type: { const: type }, ...properties,
+}, ['id', 'type', ...required]);
+const PLAN_STEP_SCHEMA = Object.freeze({ oneOf: [
+  step('act', { actionRef: string, input: object({ point, pointRef: string, from: point, to: point,
+    text: string, mode: { enum: ['replace', 'append'] }, durationMs: { type: 'integer', minimum: 1 }, ms: { type: 'integer', minimum: 0 },
+  }, []) }, ['actionRef']),
+  step('wait', { ms: { type: 'integer', minimum: 0 } }),
+  step('capture', { mode: { enum: ['SCREENSHOT_ONLY', 'FULL_SCENE'] }, promote: { type: 'boolean' } }, ['mode']),
+  step('locate', { sourceRef: { ...string, pattern: REF_PATTERN.source }, locator: locatorSchema }),
+  step('check', { sourceRef: { ...string, pattern: REF_PATTERN.source }, predicate: predicateSchema }),
+  step('checkpoint', { evidenceRefs: { type: 'array', items: string } }, []),
+] });
+const STEP_FIELDS = Object.freeze(Object.fromEntries(PLAN_STEP_SCHEMA.oneOf.map((schema) =>
+  [schema.properties.type.const, new Set(Object.keys(schema.properties))])));
 
 function issue(fieldPath, expected, code = 'INVALID') {
   return { fieldPath, expected, code };
@@ -195,6 +214,7 @@ module.exports = {
   PLAN_LOCATOR_KINDS,
   PLAN_STATUSES,
   PLAN_STEP_TYPES,
+  PLAN_STEP_SCHEMA,
   normalizePlanRequest,
   validatePlanRequest,
 };

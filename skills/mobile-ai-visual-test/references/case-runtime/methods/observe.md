@@ -2,21 +2,34 @@
 
 采集一个新 Scene，不执行业务动作。
 
+签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
+
 ```typescript
-observe({ capability: "observe", purpose?: string, flowContext?: object })
+observe({ purpose?: string, flowContext?: object })
 ```
 
 ## 参数
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `capability` | 是 | `"observe"` | 固定为 observe |
 | `purpose` | 否/条件 | `string` | 本次观察目的 |
 | `flowContext` | 否/条件 | `object` | 当前 Case Flow 节点和可选分支选择 |
 
+## 结构字段
+
+```typescript
+input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
+```
+
 ## 成功状态
 
-- `SCENE`
+- `SUCCEEDED`
+
+### 成功
+
+- 简单结果：`outcome`、`sceneRef`。
+- 主数据：`scene`。
+- 关联资源：`screenshot`、`layout`、`elementSet`、`actionSpatialEvidence`、`technicalFact`。
 
 ## 副作用
 
@@ -36,6 +49,7 @@ observe({ capability: "observe", purpose?: string, flowContext?: object })
 
 ```json
 {
-  "capability": "observe"
+  "operation": "observe",
+  "input": {}
 }
 ```

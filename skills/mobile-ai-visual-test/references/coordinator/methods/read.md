@@ -1,48 +1,32 @@
-# Coordinator.cancelRun
+# Coordinator.read
 
-按用户要求取消当前 run。
+完整读取当前 run 已发布的不可变资源。
 
 签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
 
 ```typescript
-cancelRun({ reason: string })
+read({ ref: string })
 ```
 
 ## 参数
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `reason` | 是 | `string` | 用户取消本次测试的原因。 |
+| `ref` | 是 | `string` | 原样复制当前绑定 Facade 返回的资源 ref；不能使用领域 ID 或文档路径。 |
 
 ## 成功状态
 
 - `SUCCEEDED`
 
-### 成功 / outcome=WAITING
+### 成功
 
-- 简单结果：`outcome`、`phase`、`command`、`waitFor`、`caseNo`。
-- 主数据：`runProgress`。
-- 关联资源：`coordinatorDiagnostic`。
-
-### 成功 / outcome=COMPLETE
-
-- 简单结果：`outcome`、`phase`、`command`、`reportStatus`。
-- 主数据：`runSummary`。
-- 关联资源：`coordinatorDiagnostic`。
-
-### 成功 / outcome=BLOCKED
-
-- 简单结果：`outcome`、`phase`、`command`、`reportStatus`。
-- 主数据：`runSummary`。
-- 关联资源：`coordinatorDiagnostic`。
-
-## 副作用
-
-- 保存当前 run 的确定性进度
+- 简单结果：`outcome`、`resourceRef`、`resourceType`。
+- 主数据：`$resourceType`。
+- 关联资源：$declaredResources。
 
 ## 幂等性
 
-advanceRun/cancelRun 终态复用原 runSummary；confirmRun 终态拒绝。
+只读，不推进状态。
 
 ## 错误
 
@@ -65,9 +49,9 @@ advanceRun/cancelRun 终态复用原 runSummary；confirmRun 终态拒绝。
 
 ```json
 {
-  "operation": "cancelRun",
+  "operation": "read",
   "input": {
-    "reason": "用户取消测试"
+    "ref": "mavt:0123456789abcdef01234567:runDecision:published-identity"
   }
 }
 ```

@@ -67,35 +67,67 @@ function schemaSignature(methodName, schema) {
 }
 
 function signatures(method) {
-  return (method.requestSchema?.oneOf || [method.requestSchema]).map((schema) => schemaSignature(method.name, schema));
+  return (method.inputSchema.oneOf || [method.inputSchema]).map((schema) => schemaSignature(method.name, schema));
 }
 
 function signature(method) {
   return signatures(method).join(' / ');
 }
 
+function detailedType(schema) {
+  if (schema.oneOf) return schema.oneOf.map(detailedType).join(' | ');
+  if (schema.type === 'array') return `Array<${detailedType(schema.items)}>`;
+  if (schema.properties) return `{ ${Object.entries(schema.properties).map(([name, child]) =>
+    `${name}${(schema.required || []).includes(name) ? '' : '?'}: ${detailedType(child)}`).join('; ')} }`;
+  return typeName(schema);
+}
+
+function nestedInputs(method) {
+  const values = Object.entries(propertySchemas(method.inputSchema)).filter(([, schema]) =>
+    schema.properties || schema.oneOf?.some((branch) => branch.properties) || schema.items?.properties || schema.items?.oneOf);
+  return values.length ? `\n## 结构字段\n\n\`\`\`typescript\n${values.map(([name, schema]) => `input.${name}: ${detailedType(schema)}`).join('\n')}\n\`\`\`\n` : '';
+}
+
 function methodPage(serviceName, method, contract) {
-  const properties = propertySchemas(method.requestSchema);
-  const required = requiredProperties(method.requestSchema);
+  const properties = propertySchemas(method.inputSchema);
+  const required = requiredProperties(method.inputSchema);
   const parameterRows = Object.entries(method.parameterDescriptions).map(([name, description]) => {
-    const schema = properties[name] || {};
-    return `| \`${name}\` | ${required.has(name) ? '是' : '否/条件'} | \`${typeName(schema)}\` | ${description} |`;
+    const schema = name.split('.').reduce((current, part) => propertySchemas(current)[part], method.inputSchema) || {};
+    return `| \`${name}\` | ${required.has(name) ? '是' : '否/条件'} | \`${typeName(schema).replace(/\|/g, '\\|')}\` | ${description} |`;
   }).join('\n');
   const section = (title, values) => values.length
     ? `\n## ${title}\n\n${values.map((value) => `- ${value}`).join('\n')}\n`
     : '';
   const methodSignatures = signatures(method);
   const signatureTitle = methodSignatures.length > 1 ? '## 调用分支\n\n' : '';
-  return `# ${serviceName}.${method.name}\n\n${method.summary}\n\n${signatureTitle}\`\`\`typescript\n${methodSignatures.join('\n')}\n\`\`\`\n\n## 参数\n\n| 参数 | 必填 | 类型 | 含义 |\n|---|---|---|---|\n${parameterRows}\n${section('条件要求', method.conditionalRequirements)}${section('上下文校验', method.contextualValidationRules)}${section('成功状态', method.successStatuses.map((value) => `\`${value}\``))}${section('副作用', method.sideEffects)}\n## 幂等性\n\n${method.idempotency}\n\n## 错误\n\n${method.errorCodes.map((code) => `- [\`${code}\`](../errors/${contract.errors[code].group}.md#error-${kebab(code)})`).join('\n')}\n\n## 最小示例\n\n\`\`\`json\n${JSON.stringify(method.minimalExample, null, 2)}\n\`\`\`\n`;
+  return `# ${serviceName}.${method.name}\n\n${method.summary}\n\n签名参数是规范请求的 \`input\`；外壳固定为 \`{operation,input}\`。\n\n${signatureTitle}\`\`\`typescript\n${methodSignatures.join('\n')}\n\`\`\`\n\n## 参数\n\n| 参数 | 必填 | 类型 | 含义 |\n|---|---|---|---|\n${parameterRows}\n${nestedInputs(method)}${section('条件要求', method.conditionalRequirements)}${section('上下文校验', method.contextualValidationRules)}${section('成功状态', method.successStatuses.map((value) => `\`${value}\``))}${projectionSection(method.responseProjection)}${section('副作用', method.sideEffects)}\n## 幂等性\n\n${method.idempotency}\n\n## 错误\n\n${method.errorCodes.map((code) => `- [\`${code}\`](../errors/${contract.errors[code].group}.md#error-${kebab(code)})`).join('\n')}\n\n## 最小示例\n\n\`\`\`json\n${method.minimalExamples.map((example) => JSON.stringify(example, null, method.minimalExamples.length === 1 ? 2 : 0)).join("\n```\n\n```json\n")}\n\`\`\`\n`;
+}
+
+function projectionSection(projection, condition = '成功') {
+  if (!projection) throw new Error('Every public method must declare responseProjection');
+  for (const key of ['modes', 'outcomes']) {
+    if (projection[key]) return Object.entries(projection[key]).map(([value, branch]) =>
+      projectionSection(branch, `${condition} / ${key === 'modes' ? 'mode' : 'outcome'}=${value}`)).join('');
+  }
+  for (const field of ['resultFields', 'primaryResourceType', 'associatedResourceTypes']) {
+    if (!Object.hasOwn(projection, field)) throw new Error(`responseProjection requires ${field}`);
+  }
+  return `\n### ${condition}\n\n- 简单结果：${projection.resultFields.map((field) => `\`${field}\``).join('、')}。\n- 主数据：${projection.primaryResourceType ? `\`${projection.primaryResourceType}\`` : '无'}。\n- 关联资源：${Array.isArray(projection.associatedResourceTypes) ? projection.associatedResourceTypes.map((type) => `\`${type}\``).join('、') || '无' : projection.associatedResourceTypes}。\n`;
+}
+
+function resourcesPage(title, contract) {
+  const rows = Object.entries(contract.resourceCatalog).map(([type, definition]) => `| \`${type}\` | ${definition.summary} |`).join('\n');
+  return `# ${title} 资源目录\n\n资源引用来自 \`data.ref\`、\`resources[].ref\` 或明确标注的资源字段；原样传给返回该引用的绑定 Facade：\n\n\`\`\`json\n${JSON.stringify(contract.methods.read.minimalExample, null, 2)}\n\`\`\`\n\n读取返回完整主数据 \`data\`，关联复杂数据仍为 \`resources\` 中的类型化引用；不截断、抽样或内联复制关联资源。\`$resourceType\` 表示所读资源类型，\`$declaredResources\` 表示该资源声明的关联资源。引用不可拼接、跨作用域使用或替换为流程节点、边和操作 ID。\n\n| 类型 | 内容 |\n|---|---|\n${rows}\n\n错误中的 \`documentationRef\` 和 \`operationDocumentationRef\` 是静态文档路径，使用宿主文件读取能力打开，不传给 \`read\`。\n`;
 }
 
 function serviceIndex(title, contract, baseDirectory, extraLinks = []) {
   const rows = Object.values(contract.methods).map((method) =>
-    `| [\`${method.name}\`](${baseDirectory}/methods/${kebab(method.name)}.md) | ${method.summary} | \`${signature(method)}\` |`).join('\n');
+    `| [\`${method.name}\`](${baseDirectory}/methods/${kebab(method.name)}.md) | ${method.summary} | \`${signature(method).replace(/\|/g, '\\|')}\` |`).join('\n');
   const referenceSource = title === 'Case Runtime'
     ? '- CHECK 节点和分支引用来自 Case Flow 回执或 continuation brief。'
     : '- 用例、平台和设备选择来自 Coordinator 响应或当前用户输入。';
-  return `# ${title}\n\n协议：\`${contract.protocol}\`。本页是启动短索引；只在紧凑签名不足时读取对应方法页，收到错误时只读取 \`documentationRef\` 指向的章节。\n\n## 方法\n\n| 方法 | 用途 | 紧凑签名 |\n|---|---|---|\n${rows}\n\n## 参数来源\n\n- Scene、控件、键盘和滚动状态来自当前 Runtime 响应。\n- 用户选择和目标绑定来自当前 Coordinator 探测事实。\n${referenceSource}\n\n## 按需文档\n\n${[...extraLinks, `- [错误目录](${baseDirectory}/errors.md)`].join('\n')}\n`;
+  const transport = Object.values(contract.transports).map((item) => `- ${item.summary}${item.input}${item.rule}`).join('\n');
+  return `# ${title}\n\n协议：\`${contract.protocol}\`。启动时读取本索引；字段不足时读取对应方法页。\n\n## 请求与响应\n\n- stdin 一次提交 \`{operation,input}\`；签名内参数属于 \`input\`，空输入使用 \`{}\`。\n- 响应为 \`{protocol,status,operation,result,resources,data?,error?}\`。状态：${contract.statuses.map((status) => `\`${status}\``).join('、')}；业务状态在 \`result.outcome\`。\n- \`result\` 只含简单事实；主复杂结果完整放入 \`data\`，关联复杂数据只在 \`resources\` 发布引用，按需 \`read({ref})\`。\n- ref 原样复制；不能从路径、ID 或文字拼装。输入错误同时读取 \`error.documentationRef\` 与 \`error.operationDocumentationRef\`；其他错误读取前者。\n${transport}\n\n## 方法\n\n| 方法 | 用途 | 紧凑签名 |\n|---|---|---|\n${rows}\n\n## 参数来源\n\n${referenceSource}\n\n## 按需文档\n\n${[...extraLinks, `- [资源目录](${baseDirectory}/resources.md)`, `- [错误目录](${baseDirectory}/errors.md)`].join('\n')}\n`;
 }
 
 function groupedErrors(contract) {
@@ -111,7 +143,7 @@ function groupedErrors(contract) {
 
 function errorsIndex(title, contract) {
   const rows = Object.entries(contract.errors).map(([code, definition]) =>
-    `<a id="error-${kebab(code)}"></a>- [\`${code}\`](errors/${definition.group || 'general'}.md#error-${kebab(code)})：${definition.summary}`).join('\n');
+    `<a id="error-${kebab(code)}"></a>- [\`${code}\`](errors/${definition.group || 'general'}.md#error-${kebab(code)})`).join('\n');
   return `# ${title} 错误路由\n\n只定位当前响应的 \`documentationRef\`；完整原因和恢复动作位于对应分组页。\n\n${rows}\n`;
 }
 
@@ -164,16 +196,19 @@ function transportsPage(caseRuntime, coordinator) {
   return `# 预绑定 Transport\n\nTransport 命令由框架生成并绑定当前状态。Agent 原样执行，只构造文档明确要求的业务输入。\n\n${sections}\n`;
 }
 
-function actionRefsPage() {
-  return `# Case Runtime ActionRef\n\nActionRef 是 Runtime 发布事实的稳定引用，Agent 不解析内部 capabilityId。\n\n## 格式\n\n| 类型 | 格式 | 示例 |\n|---|---|---|\n| 控件动作 | \`<elementRef>:<actionType>\` | \`button-1:tap\` |\n| 全局动作 | \`screen:<actionType>\` | \`screen:swipeUp\` |\n| 视觉动作 | \`visual:<gesture>\` | \`visual:longPress\` |\n\n## 控件映射\n\n- \`clickable\`：\`tap\`、\`doubleTap\`、\`longPress\`。\n- \`checkable\`：\`tap\`、\`toggle\`。\n- \`editable\`：\`tap\`、\`inputText\`。\n- 多个属性同时成立时取并集。\n\n## 动态约束\n\n- 屏幕动作由 \`interactionContext\` 的滚动、焦点和键盘事实约束。\n- 视觉动作必须出现在 \`interactionContext.visualGestures\`，且 Scene 已通过 \`inspect(channel="visual")\` 登记视觉事实。\n- Runtime 在完整当前 Scene 上重建能力；无效引用返回 \`ACTION_NOT_AVAILABLE\`，不会返回整份替代动作目录。\n`;
+function actionRefsPage(contract) {
+  const method = contract.methods.act;
+  const branches = method.inputSchema.properties.action.oneOf;
+  return `# Case Runtime 动作目标\n\n${method.parameterDescriptions.action}。ActionRef 原样取自已发布控件或屏幕事实；Agent 可以自主选择任意归一化坐标。Runtime 不判断视觉目标或业务意图。\n\n## 动作分支\n\n\`\`\`typescript\n${branches.map((schema) => `action: ${detailedType(schema)}`).join('\n')}\n\`\`\`\n\n坐标必须在 0 到 1 范围内；视觉动作先读取截图并通过 \`inspect(mode="visual")\` 登记事实。完整请求及响应见 [act](methods/act.md)。\n\n${[...method.conditionalRequirements, ...method.contextualValidationRules].map((rule) => `- ${rule}`).join('\n')}\n`;
 }
 
 function outputFiles({ root }) {
   const { caseRuntime, coordinator, interfaces, commandErrors } = loadContracts(root);
   const files = new Map();
   files.set('references/case-runtime.md', serviceIndex('Case Runtime', caseRuntime, 'case-runtime', ['- [ActionRef 规则](case-runtime/action-refs.md)']));
-  files.set('references/case-runtime/action-refs.md', actionRefsPage());
+  files.set('references/case-runtime/action-refs.md', actionRefsPage(caseRuntime));
   files.set('references/case-runtime/errors.md', errorsIndex('Case Runtime', caseRuntime));
+  files.set('references/case-runtime/resources.md', resourcesPage('Case Runtime', caseRuntime));
   for (const [group, entries] of groupedErrors(caseRuntime)) {
     files.set(`references/case-runtime/errors/${group}.md`, errorGroupPage(`Case Runtime ${group} 错误`, entries));
   }
@@ -182,6 +217,7 @@ function outputFiles({ root }) {
   }
   files.set('references/coordinator.md', serviceIndex('Coordinator', coordinator, 'coordinator'));
   files.set('references/coordinator/errors.md', errorsIndex('Coordinator', coordinator));
+  files.set('references/coordinator/resources.md', resourcesPage('Coordinator', coordinator));
   for (const [group, entries] of groupedErrors(coordinator)) {
     files.set(`references/coordinator/errors/${group}.md`, errorGroupPage(`Coordinator ${group} 错误`, entries));
   }

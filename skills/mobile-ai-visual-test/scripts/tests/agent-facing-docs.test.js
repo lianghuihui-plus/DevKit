@@ -18,12 +18,34 @@ const {
   coordinatorContractError,
 } = require('../lib/coordinator-interface-contract');
 const { assertLinks, buildDocs, outputFiles } = require('../build-agent-facing-docs');
+const { projectAgentFacingError } = require('../case-runtime/agent-facing-translator');
+const { errorResponse } = require('../coordinator-agent');
+for (const operation of ['recordResult', 'runPlan']) {
+  const value = projectAgentFacingError({ status: 'REQUEST_INVALID', code: 'AGENT_INPUT_INVALID', issues: [] }, { operation, input: {} });
+  assert.strictEqual(value.error.operationDocumentationRef, `references/case-runtime/methods/${operation.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}.md`);
+}
+assert.strictEqual(projectAgentFacingError({ status: 'TECHNICAL', code: 'CASE_RUNTIME_TECHNICAL' }, { operation: 'act', input: {} }).error.operationDocumentationRef, undefined);
+assert.strictEqual(errorResponse({ code: 'COORDINATOR_TECHNICAL' }, 'advanceRun').error.operationDocumentationRef, undefined);
+assert.strictEqual(errorResponse({ code: 'COORDINATOR_INPUT_INVALID' }, 'missing').error.operationDocumentationRef, undefined);
+assert.match(errorResponse({ code: 'COORDINATOR_INPUT_INVALID' }, 'confirmRun').error.operationDocumentationRef, /confirm-run.md$/);
+for (const [contractModule, operation] of [[require('../case-runtime/agent-facing-contract'), 'act'], [require('../coordinator/agent-facing-contract'), 'confirmRun']]) {
+  const validate = contractModule.validateAgentFacingRequest || contractModule.validateCoordinatorRequest;
+  const issues = validate({ operation, input: {} });
+  const error = operation === 'act'
+    ? projectAgentFacingError({ status: 'REJECTED', code: 'AGENT_INPUT_INVALID', issues }, { operation, input: {} }).error
+    : errorResponse({ code: 'COORDINATOR_INPUT_INVALID', issues }, operation).error;
+  assert.ok(error.issues.some((issue) => issue.field && issue.code && issue.expected));
+  assert.ok(error.documentationRef && error.operationDocumentationRef);
+}
 
 const root = path.resolve(__dirname, '../..');
+assert.strictEqual(caseContract.methods.runPlan.inputSchema.properties.steps.items,
+  require('../case-runtime/plan-contract').PLAN_STEP_SCHEMA);
+assert.strictEqual(caseContract.methods.runPlan.inputSchema.properties.steps.items.oneOf.length, 6);
 const requiredMethodFields = [
-  'name', 'summary', 'requestSchema', 'parameterDescriptions',
+  'name', 'summary', 'requestSchema', 'inputSchema', 'responseProjection', 'parameterDescriptions',
   'conditionalRequirements', 'contextualValidationRules', 'successStatuses',
-  'errorCodes', 'sideEffects', 'idempotency', 'minimalExample',
+  'errorCodes', 'sideEffects', 'idempotency', 'minimalExample', 'minimalExamples',
 ].sort();
 
 function assertContract(contract, expectedMethods) {
@@ -32,7 +54,15 @@ function assertContract(contract, expectedMethods) {
   for (const method of Object.values(contract.methods)) {
     assert.deepStrictEqual(Object.keys(method).sort(), requiredMethodFields);
     assert.ok(method.name && method.summary && method.requestSchema);
-    assert.ok(Object.keys(method.parameterDescriptions).length > 0);
+    for (const example of method.minimalExamples) {
+      assert.deepStrictEqual(require('../lib/agent-json-contract').validateAgentJson(example, method.requestSchema), [], `${method.name} invalid generated example`);
+    }
+    const branches = method.inputSchema.oneOf || [method.inputSchema];
+    for (const branch of branches) {
+      const discriminator = branch.properties?.mode ? 'mode' : branch.properties?.decision ? 'decision' : null;
+      if (discriminator) assert.ok(method.minimalExamples.some((example) => example.input[discriminator] === branch.properties[discriminator].const));
+    }
+    assert.ok(Object.keys(method.parameterDescriptions).length > 0 || Object.keys(method.inputSchema.properties || {}).length === 0);
     for (const code of method.errorCodes) assert.ok(contract.errors[code], `${method.name} unknown error ${code}`);
   }
   for (const [code, definition] of Object.entries(contract.errors)) {
@@ -42,14 +72,23 @@ function assertContract(contract, expectedMethods) {
   }
 }
 
-assertContract(caseContract, ['observe', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
-assertContract(coordinatorContract, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun']);
-assert.deepStrictEqual(caseContract.methods.observe.successStatuses, ['SCENE']);
-assert.deepStrictEqual(caseContract.methods.act.successStatuses, ['SCENE']);
-assert.deepStrictEqual(caseContract.methods.recover.successStatuses, ['SCENE', 'EXTERNAL_ACTION_RECORDED']);
+assertContract(caseContract, ['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
+assertContract(coordinatorContract, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun', 'read']);
+for (const contract of [caseContract, coordinatorContract]) {
+  for (const method of Object.values(contract.methods)) assert.deepStrictEqual(method.successStatuses, ['SUCCEEDED']);
+  assert.ok(contract.resourceCatalog);
+}
 buildDocs({ root, check: true });
 
 const files = outputFiles({ root });
+for (const [relative, content] of files) {
+  if (!relative.includes('/methods/')) continue;
+  for (const [, source] of content.matchAll(/```json\n([\s\S]*?)\n```/g)) {
+    const request = JSON.parse(source);
+    const contract = relative.startsWith('references/coordinator/') ? coordinatorContract : caseContract;
+    assert.deepStrictEqual(require('../lib/agent-json-contract').validateAgentJson(request, contract.requestSchema), []);
+  }
+}
 for (const relative of [
   'references/commands.md',
   'references/commands/workspace.md',
@@ -61,10 +100,14 @@ for (const relative of [
   'references/commands/protocol-maintenance.md',
   'references/commands/transports.md',
   'references/case-runtime.md',
+  'references/case-runtime/resources.md',
+  'references/case-runtime/methods/read.md',
   'references/case-runtime/action-refs.md',
   'references/case-runtime/errors.md',
   'references/case-runtime/errors/scene-action.md',
   'references/coordinator.md',
+  'references/coordinator/resources.md',
+  'references/coordinator/methods/read.md',
   'references/coordinator/errors.md',
   'references/coordinator/errors/environment.md',
 ]) assert.ok(files.has(relative), `missing generated output ${relative}`);
@@ -102,6 +145,16 @@ assert.match(confirmRunPage, /decision: "USE_CURRENT"/);
 assert.match(confirmRunPage, /decision: "SELECT_PLATFORM"/);
 assert.match(confirmRunPage, /decision: "CONFIRM_BINDING"/);
 assert.match(confirmRunPage, /## 调用分支/);
+assert.match(confirmRunPage, /userInstruction.*用户/);
+for (const [role, directory] of [['case-executor', 'case-runtime'], ['batch-coordinator', 'coordinator']]) {
+  assert.ok(roleResources(role).includes(`references/${directory}/resources.md`));
+  assert.ok(roleResources(role).includes(`references/${directory}/methods/read.md`));
+  const index = read(`references/${directory}.md`);
+  assert.match(index, /operation.*input/);
+  assert.match(index, /data.*resources/);
+  assert.match(index, /read/);
+  assert.doesNotMatch(index, /requestPath|commands\.confirm/);
+}
 assert.match(read('references/commands/execution.md'), /--targets-json '\[{"caseNo":"004"}\]'/);
 assert.match(read('references/commands/execution.md'), /--workspace '<workspace>'/);
 assert.match(read('references/commands/transports.md'), /原样执行/);
