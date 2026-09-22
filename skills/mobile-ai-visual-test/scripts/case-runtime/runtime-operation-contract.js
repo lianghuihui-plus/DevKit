@@ -329,7 +329,7 @@ const OPERATION_CONTRACT = deepFreeze({
   knowledge: defineOperation({
     agentAccessible: true,
     summary: 'Search the frozen knowledge base for explanations or rules outside the current Scene.',
-    whenToUse: ['The current state is abnormal, unexplained, blocked, or needs external knowledge before a negative conclusion.'],
+    whenToUse: ['The conclusion depends on business rules outside the Scene, or the current anomaly cannot be explained from Scene evidence alone.'],
     requestSchema: operationSchema('knowledge', {
       basedOnSceneId: STRING, query: STRING,
       context: {

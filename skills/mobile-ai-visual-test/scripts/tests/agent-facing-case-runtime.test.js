@@ -109,9 +109,29 @@ const initialState = projectInitialState({
   preparationPolicy: { allowedEffects: ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'] },
 });
 assert.strictEqual(initialState.automaticPreparation, 'NONE');
-assert.strictEqual(initialState.currentAppState, 'UNVERIFIED');
+assert.strictEqual(initialState.preparationFact, null);
+assert.strictEqual(Object.hasOwn(initialState, 'currentAppState'), false);
 assert.ok(initialState.availablePreparation.every((item) => item.authorized));
 assert.deepStrictEqual(initialState.availablePreparation.map((item) => item.targetState), ['APP_LOCAL_STATE_EMPTY', 'FRESH_INSTALL']);
+const preparedInitialState = projectInitialState({
+  platform: 'ios', initialStateRequirement: { targetState: 'KEEP_EXISTING' },
+  preparationPolicy: { allowedEffects: ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'] },
+}, {
+  status: 'SATISFIED', targetState: 'FRESH_INSTALL', sessionId: 'session-2', epoch: 2, generation: 1,
+});
+assert.deepStrictEqual(preparedInitialState.preparationFact, {
+  status: 'SATISFIED', targetState: 'FRESH_INSTALL',
+});
+const failedInitialState = projectInitialState({
+  platform: 'ios', initialStateRequirement: { targetState: 'KEEP_EXISTING' },
+  preparationPolicy: { allowedEffects: ['UNINSTALL_TARGET_APP', 'INSTALL_FROZEN_ARTIFACT'] },
+}, {
+  status: 'FAILED', targetState: null, code: 'APP_INITIAL_STATE_UNAVAILABLE', technicalFactRef: 'technical-fact-0001',
+});
+assert.deepStrictEqual(failedInitialState.preparationFact, {
+  status: 'FAILED', targetState: null,
+});
+assert.strictEqual(JSON.stringify(failedInitialState).includes('technicalFactRef'), false);
 
 assert.ok(validateAgentFacingRequest(request('plan', {}))
   .some((item) => item.field === 'input.caseFlow' && item.code === 'FIELD_REQUIRED'));

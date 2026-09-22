@@ -27,10 +27,6 @@ input.caseFlow: { baseRevision: number | null; summary: string; entryNodeRef: st
 
 ## 上下文校验
 
-- 首次 revision 是只基于原始用例的 Baseline Flow，不写入当前 Scene 的现场适配。
-- 提交首次 Flow 前完整阅读原始用例，结合后置的“若/如果/未出现则”等语句确定条件作用域。
-- 原始用例允许某事实的不同取值分别进入正常路径时，该事实只建 DECISION；分支内验证建 CONDITIONAL CHECK，同一业务事实不得再建导致另一正常分支失败的 REQUIRED CHECK。
-- 提交前逐条检查原始用例允许的正常 END 路径；任何正常 END 都不得天然要求某个 REQUIRED CHECK 为 FAIL 或依赖 WAIVED 才能收口。
 - Baseline 节点和边不可改义；既有 CHECK 不可改义，现场适配或语义修正使用新 ref。
 - 修订可改变 Working Flow 导航，但删除 Baseline CHECK 不会取消其最终处置责任。
 

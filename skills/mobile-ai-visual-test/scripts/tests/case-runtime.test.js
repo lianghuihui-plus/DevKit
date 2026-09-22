@@ -152,7 +152,7 @@ assert.strictEqual(started.brief.runtime.capabilities, undefined);
 assert.strictEqual(started.brief.runtime.requestPath, undefined);
 assert.deepStrictEqual(started.brief.initialState, {
   automaticPreparation: 'NONE',
-  currentAppState: 'UNVERIFIED',
+  preparationFact: null,
   availablePreparation: [
     {
       targetState: 'APP_LOCAL_STATE_EMPTY',

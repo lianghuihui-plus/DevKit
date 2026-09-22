@@ -45,7 +45,7 @@ ActionRef 对当前 Scene 不成立。
 
 **可重试：** 是
 
-**处理：** 读取动作技术证据和当前 Scene；Agent 判断可安全重试时有限重试，不直接据此判定产品 FAIL。
+**处理：** 读取动作技术证据和当前 Scene；Agent 自主选择安全且有信息增益的恢复，不直接据此判定产品 FAIL。
 
 <a id="error-visual-inspection-required"></a>
 ## VISUAL_INSPECTION_REQUIRED

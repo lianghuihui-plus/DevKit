@@ -114,9 +114,9 @@ Agent-facing Scene 提供紧凑摘要；Case Agent 可用 `inspect(channel=eleme
 
 ### 4.3 结果
 
-Case Agent 通过 `recordResult` 增量记录 CHECK 判断。Runtime 维护追加式 ledger，并在对应检查点语义变化时使旧判断失效。PASS/FAIL 必须引用有效 Scene 和已登记的视觉事实；证据不足使用 `INCONCLUSIVE`，未进入的条件分支使用 `NOT_APPLICABLE`，前置条件不满足使用用例级 `NOT_RUN`。
+Case Agent 通过 `recordResult` 增量记录 CHECK status：`PASS / FAIL / INCONCLUSIVE / BLOCKED / NOT_APPLICABLE / WAIVED`。Runtime 维护追加式 ledger，并在检查点语义变化时使旧判断失效；它只校验证据引用、状态适用性和闭环，不代替 Agent 作业务判断。
 
-`finish` 只提交摘要、用例级 outcome 和可选不确定项，Runtime 从 ledger 组装完整 checks 并聚合 verdict。技术异常不得报告为产品 FAIL，结果未知的动作或破坏性准备不得自动重放。
+正常 `finish` 只提交摘要和可选不确定项，Runtime 从 ledger 组装 checks，并按 `FAIL > BLOCKED > INCONCLUSIVE > PASS` 聚合 verdict；`NOT_APPLICABLE` 和 `WAIVED` 不参与降级。用例级 `NOT_RUN` 只通过独立 finish 模式形成且不包含 CHECK，用于必要执行条件无法在当前权限和能力内建立、没有安全继续路径并且尚未进入相应验证的情况。技术异常不得报告为产品 FAIL，结果未知的动作或破坏性准备不得自动重放。
 
 ## 5. 执行隔离与资源所有权
 

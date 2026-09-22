@@ -69,5 +69,5 @@ input.evidence: { sceneRefs: Array<string>; technicalRefs: Array<string> }
 ```
 
 ```json
-{"operation":"finish","input":{"mode":"notRun","reason":"用例前置条件不满足","summary":"未运行","evidence":{"sceneRefs":["scene-1"],"technicalRefs":[]}}}
+{"operation":"finish","input":{"mode":"notRun","reason":"必要执行条件无法在当前 execution 内建立且没有安全继续路径","summary":"未运行","evidence":{"sceneRefs":["scene-1"],"technicalRefs":[]}}}
 ```

@@ -168,13 +168,6 @@ function validateKnowledgeClosure(result, events, execution = null) {
       queryIds: associatedQueries.map((event) => event.queryId),
       reviewedQueryIds: completedReviews.map((event) => event.queryId),
     };
-    if (requiresInvestigation && !completed) {
-      missing.push({
-        field: `checks.${ref}.knowledgeInvestigation`,
-        reason: '负向结论前尚未完成与该验证点关联的知识调查',
-        ...(associatedQueries.length ? { queryIds: associatedQueries.map((event) => event.queryId) } : {}),
-      });
-    }
   }
   if (missing.length) {
     throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult knowledge investigation is incomplete', { missing });

@@ -108,12 +108,9 @@ assert.match(read('prompts/case-agent.md'), /不得直接.*修改.*Execution.*Re
 assert.match(read('prompts/case-agent.md'), /首选能力.*不是排他的工具边界/);
 assert.match(read('prompts/case-agent.md'), /recover.*input\.targetState.*三端.*Runtime/);
 assert.match(read('prompts/case-agent.md'), /不.*提供.*安装包/);
-assert.match(read('prompts/case-agent.md'), /前置状态.*无法建立.*错误原因/);
 assert.match(read('prompts/case-agent.md'), /ACTION_OUTCOME_UNKNOWN.*禁止.*重放/);
-assert.match(read('prompts/case-agent.md'), /结果已知.*安全重放.*有限重试/);
 assert.match(read('prompts/case-agent.md'), /ACTION_EFFECT_MISMATCH.*产品 FAIL/);
 assert.match(read('prompts/case-agent.md'), /verificationAttempts.*核验采样.*动作重放/);
-assert.match(read('references/failure-policy.md'), /结果已知.*安全重放.*有限重试/);
 assert.match(read('prompts/case-agent.md'), /editable.*优先.*inputText/);
 assert.match(read('prompts/case-agent.md'), /不要.*逐个点击软键盘/);
 assert.match(read('SKILL.md'), /目标级.*inputText/);

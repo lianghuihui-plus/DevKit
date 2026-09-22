@@ -84,6 +84,11 @@ assert.ok(COORDINATOR_CAPABILITIES.includes('read'));
 assert.ok(AGENT_FACING_CAPABILITIES.includes('read'));
 
 const casePrompt = read('prompts/case-agent.md');
+const caseExecutionPrinciples = read('references/case-execution-principles.md');
+assert.ok(roleResources('case-executor').includes('references/case-execution-principles.md'));
+assert.match(casePrompt, /references\/case-execution-principles\.md/);
+assert.ok(Buffer.byteLength(casePrompt) + Buffer.byteLength(caseExecutionPrinciples) <= 10373,
+  'Case Agent prompt and execution principles must stay within the reviewed attention budget');
 for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkpointId', 'turnId']) {
   assert.strictEqual(casePrompt.includes(obsolete), false, `Case Prompt must not expose ${obsolete}`);
 }
@@ -102,7 +107,6 @@ assert.match(casePrompt, /权限弹窗/);
 assert.match(casePrompt, /长按过程/);
 assert.match(casePrompt, /inspect\(mode="action"\)/);
 assert.match(casePrompt, /previousAction/);
-assert.match(casePrompt, /有效技术事实.*BLOCKED.*证据不足.*INCONCLUSIVE/);
 assert.match(casePrompt, /首选能力.*不是排他的工具边界/);
 assert.strictEqual(casePrompt.includes('Frozen CaseSpec'), false);
 assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);
@@ -261,12 +265,6 @@ assert.strictEqual(read('SKILL.md').includes('你是本次测试的主 Agent'), 
 assert.strictEqual(read('references/workflow.md').includes('Prompt 和派生 Case Brief 一次性交给'), false);
 assert.strictEqual(read('docs/architecture.md').includes('agentRequired=true + derived Case Brief'), false);
 assert.strictEqual(read('docs/architecture.md').includes('主 Agent 使用该 Brief'), false);
-assert.match(casePrompt, /Handoff Loader/);
-assert.match(casePrompt, /checkNodeRefs.*只关联.*直接检查或调查/);
-assert.match(casePrompt, /finish.*Runtime 从 ledger 组装完整结果/);
-assert.match(casePrompt, /finish.*input\.mode: "complete"/);
-assert.match(casePrompt, /input\.mode: "notRun"/);
-assert.doesNotMatch(casePrompt, /outcome: "NOT_RUN"|finish` 只提交摘要/);
 const implementation = implementationGroups(root, 'harmony');
 assert.strictEqual(implementation.coordinator.includes('scripts/knowledge.js'), false);
 assert.strictEqual(implementation.report.includes('scripts/execution/contracts/case-definition-contract.js'), false);

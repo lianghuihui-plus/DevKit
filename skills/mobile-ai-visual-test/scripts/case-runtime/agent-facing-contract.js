@@ -140,7 +140,7 @@ const PUBLIC_ERRORS = Object.freeze({
   SCENE_CHANGED: { group: 'scene-action', retryable: true, resourceTypes: ['scene', 'screenshot'], summary: '动作所依据的 Scene 已不是当前 Scene。', recovery: '调用 observe 获取新 Scene，重新 inspect 并从新 Scene 选择 ActionRef；不要复用旧动作。' },
   ACTION_NOT_AVAILABLE: { group: 'scene-action', retryable: true, summary: 'ActionRef 对当前 Scene 不成立。', recovery: '读取当前 Scene 的 action 投影；必要时重新 observe，不手工拼接或猜测 ActionRef。' },
   ACTION_INPUT_INVALID: { group: 'scene-action', retryable: true, summary: '动作输入缺失、越界或包含不支持字段。', recovery: '按当前 ActionRef 返回的输入约束修正 input；坐标使用 0 到 1 的归一化值。' },
-  ACTION_EFFECT_MISMATCH: { group: 'scene-action', retryable: true, resourceTypes: ['scene', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作结果已知，但技术核验未满足所请求的输入效果。', recovery: '读取动作技术证据和当前 Scene；Agent 判断可安全重试时有限重试，不直接据此判定产品 FAIL。' },
+  ACTION_EFFECT_MISMATCH: { group: 'scene-action', retryable: true, resourceTypes: ['scene', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作结果已知，但技术核验未满足所请求的输入效果。', recovery: '读取动作技术证据和当前 Scene；Agent 自主选择安全且有信息增益的恢复，不直接据此判定产品 FAIL。' },
   VISUAL_INSPECTION_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前视觉动作或结论要求先登记图片事实。', recovery: '对同一 Scene 调用 inspect(mode="visual") 登记实际看到的事实，再重试视觉动作或结果记录。' },
   CASE_FLOW_REQUIRED: { group: 'flow-result', retryable: true, summary: '当前 execution 尚无 Case Flow。', recovery: '读取原始用例并调用 plan 创建完整 Case Flow，然后从 entryNodeRef 开始执行。' },
   CASE_FLOW_REVISION_CONFLICT: { group: 'flow-result', retryable: true, summary: 'Case Flow baseRevision 不是当前 revision。', recovery: '读取响应中的当前 Case Flow revision，合并仍需要的调整理由后基于该 revision 重新提交。' },
@@ -240,10 +240,6 @@ const PUBLIC_METHODS = Object.freeze({
     responseProjection: projection(['caseFlowRef', 'revision', 'idempotent', 'retiredNodeIds', 'retiredEdgeIds', 'invalidatedResultRefs'], null, ['caseFlow', 'checkpointLedger', 'checkpointResult']),
     conditionalRequirements: ['首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。', 'CHECK 必须声明 REQUIRED 或 CONDITIONAL；CONDITIONAL 必须提供 applicability。'],
     contextualValidationRules: [
-      '首次 revision 是只基于原始用例的 Baseline Flow，不写入当前 Scene 的现场适配。',
-      '提交首次 Flow 前完整阅读原始用例，结合后置的“若/如果/未出现则”等语句确定条件作用域。',
-      '原始用例允许某事实的不同取值分别进入正常路径时，该事实只建 DECISION；分支内验证建 CONDITIONAL CHECK，同一业务事实不得再建导致另一正常分支失败的 REQUIRED CHECK。',
-      '提交前逐条检查原始用例允许的正常 END 路径；任何正常 END 都不得天然要求某个 REQUIRED CHECK 为 FAIL 或依赖 WAIVED 才能收口。',
       'Baseline 节点和边不可改义；既有 CHECK 不可改义，现场适配或语义修正使用新 ref。',
       '修订可改变 Working Flow 导航，但删除 Baseline CHECK 不会取消其最终处置责任。',
     ],
@@ -340,7 +336,7 @@ const PUBLIC_METHODS = Object.freeze({
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',
     minimalExample: { operation: 'finish', input: { mode: 'complete', summary: '验证完成' } },
-    additionalExamples: [{ mode: 'notRun', reason: '用例前置条件不满足', summary: '未运行', evidence: { sceneRefs: ['scene-1'], technicalRefs: [] } }],
+    additionalExamples: [{ mode: 'notRun', reason: '必要执行条件无法在当前 execution 内建立且没有安全继续路径', summary: '未运行', evidence: { sceneRefs: ['scene-1'], technicalRefs: [] } }],
   }),
 });
 
@@ -486,8 +482,12 @@ function projectInitialState(execution, preparation = null) {
   return {
     automaticPreparation: automaticTarget && automaticTarget !== 'KEEP_EXISTING'
       ? automaticTarget : 'NONE',
-    currentAppState: preparation?.status === 'SATISFIED' && preparation.targetState
-      ? preparation.targetState : 'UNVERIFIED',
+    preparationFact: preparation && ['SATISFIED', 'FAILED'].includes(preparation.status)
+      ? {
+        status: preparation.status,
+        targetState: preparation.targetState || null,
+      }
+      : null,
     availablePreparation: PREPARATION_TARGETS.map(({ targetState, meaning }) => {
       const strategy = initialStateStrategy(execution?.platform, targetState);
       return {
