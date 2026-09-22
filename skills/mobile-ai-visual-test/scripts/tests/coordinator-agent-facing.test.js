@@ -844,5 +844,24 @@ for (const forbidden of [workspace, 'loaderCommand', 'command', 'content', 'inpu
 }
 assert.ok(protocolTelemetry.summarizeAgentFacing(protocolEvents).statusCounts.REJECTED > 0, 'CLI rejection is measured after error projection');
 
+// Unrecognized operation names never enter the envelope or method-doc routing.
+for (const operation of ['unknown-operation', '', undefined, 'constructor', 'toString', '__proto__', 'prepareRun']) {
+  const request = { ...(operation === undefined ? {} : { operation }), input: {} };
+  const expectedOperation = operation === 'prepareRun' ? operation : null;
+  const inputError = Object.assign(new Error('invalid request'), { code: 'COORDINATOR_INPUT_INVALID' });
+  const direct = coordinatorAgent.errorResponse(inputError, operation);
+  const facade = coordinatorAgent.main(['--workspace', workspace], { returnOnly: true, request });
+  const cli = require('child_process').spawnSync(process.execPath, [path.resolve(__dirname, '../coordinator-agent.js'), '--workspace', workspace], {
+    input: JSON.stringify(request), encoding: 'utf8',
+  });
+  assert.strictEqual(cli.status, 2, cli.stderr);
+  for (const response of [direct, facade, JSON.parse(cli.stdout)]) {
+    assert.strictEqual(response.status, 'REJECTED');
+    assert.strictEqual(response.operation, expectedOperation);
+    assert.strictEqual(Boolean(response.error.operationDocumentationRef), operation === 'prepareRun');
+    assert.ok(response.error.documentationRef);
+  }
+}
+
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('coordinator Agent-facing facade passed');

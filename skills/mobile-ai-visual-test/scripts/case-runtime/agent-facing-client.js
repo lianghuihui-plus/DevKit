@@ -172,7 +172,17 @@ function run(execDir, request, options = {}) {
     agentFacingMetrics: options.agentFacingMetrics || { ledgerProjectionMs: 0 },
   };
   const startedMs = typeof runOptions.agentFacingClock === 'function' ? runOptions.agentFacingClock() : Date.now();
-  const response = executeRun(execDir, request, runOptions);
+  // Keep finalization and Facade resource publication in one execution critical
+  // section. lockHeld is an internal option, never taken from the public input.
+  let response;
+  try {
+    response = request?.operation === 'finish'
+      ? require('./store').withRuntimeLock(path.resolve(execDir), () =>
+        executeRun(execDir, request, { ...runOptions, lockHeld: true }), runOptions)
+      : executeRun(execDir, request, runOptions);
+  } catch (error) {
+    response = projectAgentFacingError({ status: 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
+  }
   const endedMs = typeof runOptions.agentFacingClock === 'function' ? runOptions.agentFacingClock() : Date.now();
   telemetry.recordAgentFacing(path.resolve(execDir), request, response, Math.max(0, endedMs - startedMs), runOptions);
   return response;

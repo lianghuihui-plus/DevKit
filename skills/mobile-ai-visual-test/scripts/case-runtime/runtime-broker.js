@@ -28,7 +28,7 @@ function executeAgentRequest(execDir, request, options = {}) {
     };
   }
   // Loader validation never reaches this broker; this idempotently marks the first Agent Runtime invocation.
-  require('./lifecycle').recordTimingAnchor({ executionDir: resolved, field: 'handoffConsumedAt', now: options.now });
+  require('./lifecycle').recordTimingAnchor({ executionDir: resolved, field: 'handoffConsumedAt', now: options.now, lockHeld: options.lockHeld });
   return runtimeCore.execute(resolved, request, options);
 }
 
@@ -42,7 +42,7 @@ function executeFacadeRequest(execDir, request, options = {}) {
         message: `${request.operation} is only available through a bound Agent-facing Facade`, scene: null,
       };
     }
-    require('./lifecycle').recordTimingAnchor({ executionDir: resolved, field: 'handoffConsumedAt', now: options.now });
+    require('./lifecycle').recordTimingAnchor({ executionDir: resolved, field: 'handoffConsumedAt', now: options.now, lockHeld: options.lockHeld });
     return runtimeCore.execute(resolved, request, options);
   }
   return executeAgentRequest(execDir, request, options);

@@ -29,17 +29,18 @@ function execute(parsed, request, options = {}) {
     : executeRunRequest(parsed.statePath, request, options);
 }
 function errorResponse(error, operation = null, stalled = false, resources = []) {
+  const recognizedOperation = typeof operation === 'string' && Object.hasOwn(PUBLIC_CONTRACT.methods, operation) ? operation : null;
   const publicCode = stalled ? 'AGENT_INPUT_STALLED' : error.code;
   const code = PUBLIC_CONTRACT.errors[publicCode] ? publicCode : 'COORDINATOR_TECHNICAL';
   const rejected = ['COORDINATOR_INPUT_INVALID', 'AGENT_INPUT_STALLED', 'COORDINATOR_TERMINAL', 'DECISION_NOT_ALLOWED',
     'RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH'].includes(code);
-  return errorEnvelope({ operation: typeof operation === 'string' ? operation : null, status: rejected ? 'REJECTED' : 'FAILED',
+  return errorEnvelope({ operation: recognizedOperation, status: rejected ? 'REJECTED' : 'FAILED',
     code, retryable: PUBLIC_CONTRACT.errors[code].retryable,
     resources: resources.filter((resource) => PUBLIC_CONTRACT.errors[code].resourceTypes.includes(resource.type)),
     ...(error.issues?.length ? { issues: error.issues } : {}),
     documentationRef: documentationRefFor(code),
-    ...(['COORDINATOR_INPUT_INVALID', 'AGENT_INPUT_STALLED'].includes(code) && PUBLIC_CONTRACT.methods[operation]
-      ? { operationDocumentationRef: operationDocumentationRefFor(operation) } : {}) });
+    ...(['COORDINATOR_INPUT_INVALID', 'AGENT_INPUT_STALLED'].includes(code) && recognizedOperation
+      ? { operationDocumentationRef: operationDocumentationRefFor(recognizedOperation) } : {}) });
 }
 function main(argv = process.argv.slice(2), options = {}) {
   const startedMs = Date.now();

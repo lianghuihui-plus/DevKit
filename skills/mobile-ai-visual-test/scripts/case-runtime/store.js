@@ -124,6 +124,15 @@ function technicalResponse(execDir, error, options = {}) {
     scene: readCurrentScene(execDir),
   };
   try {
+    // Only a persisted dispatch fact can establish an unknown device outcome.
+    // Do not promote arbitrary error metadata or replace it with the later
+    // observation failure's technical fact.
+    const unknown = error?.actionOutcome === 'UNKNOWN' && events(execDir).find((event) =>
+      event.type === 'actionOutcomeUnknown' && event.operationId === error.operationId
+      && event.technicalFactRef === error.technicalFactRef);
+    if (unknown) Object.assign(value, {
+      outcomeKnown: false, operationId: unknown.operationId, technicalFactRef: unknown.technicalFactRef,
+    });
     const fact = appendEvent(execDir, 'technicalIssue', {
       code: value.code,
       ...(error?.internalCode ? { internalCode: error.internalCode } : {}),
@@ -135,7 +144,7 @@ function technicalResponse(execDir, error, options = {}) {
       ...options,
       allowFinalized: options.allowFinalized === true && !fs.existsSync(path.join(execDir, 'completion.json')),
     });
-    value.technicalFactRef = fact.technicalFactRef;
+    if (!value.technicalFactRef) value.technicalFactRef = fact.technicalFactRef;
   } catch {
     // Preserve the original runtime failure when the event store is unavailable.
   }

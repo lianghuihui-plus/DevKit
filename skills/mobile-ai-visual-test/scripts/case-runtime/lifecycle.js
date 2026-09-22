@@ -324,12 +324,13 @@ function recordAgentContinuation({ executionDir, reason, now }) {
   return { executionId: execution.executionId, event };
 }
 
-function recordTimingAnchor({ executionDir, field, now }) {
+function recordTimingAnchor({ executionDir, field, now, lockHeld = false }) {
   const allowed = new Set(['handoffReadyAt', 'handoffConsumedAt']);
   if (!allowed.has(field)) throw contractError('EXECUTION_TIMING_INVALID', `unsupported timing anchor: ${field}`);
-  return store.withRuntimeLock(executionDir, () => store.updateExecution(executionDir, (execution) => (
+  const update = () => store.updateExecution(executionDir, (execution) => (
     execution[field] ? execution : { ...execution, [field]: now || new Date().toISOString() }
-  )), { now });
+  ));
+  return lockHeld ? update() : store.withRuntimeLock(executionDir, update, { now });
 }
 
 function readCompletion({ executionDir }) {
@@ -347,6 +348,16 @@ function commitExecution({ executionDir }) {
   const completion = readCompletion({ executionDir });
   if (!completion.ready || !completion.result || !completion.metrics) throw contractError('EXECUTION_NOT_FINALIZED', 'execution is not ready to commit');
   return completion;
+}
+
+function withCompletionPublication({ executionDir, ...options }, publish) {
+  // Batch enters through the lifecycle facade. Recovery of a finalized finish's
+  // catalog is delegated to the Facade resource publisher, never Runtime Core.
+  return store.withRuntimeLock(executionDir, () => {
+    const committed = commitExecution({ executionDir });
+    require('./agent-resource-store').publishFinalResources(executionDir);
+    return publish(committed);
+  }, options);
 }
 
 function cancelExecution({ executionDir, reason, now }) {
@@ -376,4 +387,4 @@ function cancelExecution({ executionDir, reason, now }) {
   }, { now });
 }
 
-module.exports = { EXECUTION_SCHEMA_VERSION, buildContinuationBrief, cancelExecution, commitExecution, createExecution, establishInitialState, readCompletion, reconcileExecution, recordAgentContinuation, recordTimingAnchor, resumeExecution };
+module.exports = { EXECUTION_SCHEMA_VERSION, buildContinuationBrief, cancelExecution, commitExecution, withCompletionPublication, createExecution, establishInitialState, readCompletion, reconcileExecution, recordAgentContinuation, recordTimingAnchor, resumeExecution };

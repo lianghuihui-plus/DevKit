@@ -324,8 +324,20 @@ function publishCaseBrief(execDir, handoffPath, workspaceRoot) {
   return publishResource(execDir, { type: 'caseBrief', id: envelope.handoffId, source, associations: dependencies.associations });
 }
 
+// Facade-owned publication recovery, also called by Batch under the execution
+// lock before sealing. This publishes immutable authorities only; it neither
+// constructs an Agent response nor replays the finish transaction.
+function publishFinalResources(execDir, events = store.events(execDir)) {
+  if (!store.loadExecution(execDir, { allowFinalized: true }).finalized) return [];
+  return [
+    ...(events.some((event) => event.type === 'caseFlowRevised') ? [publishLedger(execDir, events)] : []),
+    publishArtifact(execDir, 'caseResult', 'result.json'),
+  ];
+}
+
 function provideOperationResources(execDir, response, request) {
   const events = store.events(execDir);
+  const finalizedFinish = request.operation === 'finish' && store.loadExecution(execDir, { allowFinalized: true }).finalized;
   const published = [];
   const result = {};
   let primary;
@@ -347,7 +359,7 @@ function provideOperationResources(execDir, response, request) {
     });
   }
   if (['plan', 'recordResult', 'finish'].includes(request.operation)) {
-    if (events.some((event) => event.type === 'caseFlowRevised')) add(publishLedger(execDir, events));
+    if (!finalizedFinish && events.some((event) => event.type === 'caseFlowRevised')) add(publishLedger(execDir, events));
     if (request.operation === 'recordResult') {
       const ids = new Set((request.input.results || []).map((item) => item.checkNodeRef));
       const current = new Map(events.filter((event) => event.type === 'expectationResultUpdated' && ids.has(event.expectationRef))
@@ -398,8 +410,11 @@ function provideOperationResources(execDir, response, request) {
     const event = events.find((item) => item.technicalFactRef === factRef);
     if (event) add(publishEvent(execDir, 'technicalFact', event));
   }
-  if (request.operation === 'finish' && store.loadExecution(execDir, { allowFinalized: true }).finalized) {
-    result.caseResultRef = add(publishArtifact(execDir, 'caseResult', 'result.json')).data.ref;
+  if (finalizedFinish) {
+    for (const publication of publishFinalResources(execDir, events)) {
+      add(publication);
+      if (publication.data.type === 'caseResult') result.caseResultRef = publication.data.ref;
+    }
   }
   const descriptors = new Map();
   for (const item of published) for (const descriptor of [item.descriptor, ...(item.resources || [])]) {
@@ -418,4 +433,4 @@ function resolveRequestReferences(execDir, value, field = '') {
 }
 
 module.exports = { TYPES, publishResource, readPublishedResource, resourceRef, publishEvent, publishScene,
-  publishArtifact, publishCaseBrief, publishLedger, provideOperationResources, resolveRequestReferences, parseResourceRef };
+  publishArtifact, publishCaseBrief, publishLedger, publishFinalResources, provideOperationResources, resolveRequestReferences, parseResourceRef };

@@ -147,7 +147,7 @@ function execute(execDir, request, options = {}) {
     return response;
   }
   try {
-    response = store.withRuntimeLock(execDir, () => {
+    const executeLocked = () => {
       store.loadExecution(execDir, { allowFinalized: true });
       const recoveredTransactions = [
         ...require('./preparation-service').recoverPendingPreparation(execDir, { ...options, allowFinalized: true }),
@@ -268,7 +268,8 @@ function execute(execDir, request, options = {}) {
           warnings: narrative.warnings,
         },
       };
-    }, options);
+    };
+    response = options.lockHeld ? executeLocked() : store.withRuntimeLock(execDir, executeLocked, options);
   } catch (error) {
     const requestInvalid = [
       'CASE_RUNTIME_REQUEST_INVALID', 'CASE_RUNTIME_VISUAL_ACTION_INVALID',

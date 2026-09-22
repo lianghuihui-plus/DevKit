@@ -179,7 +179,7 @@ for (const name of fs.readdirSync(path.join(root, 'scripts/case-runtime')).filte
 
 const lifecycle = require('../case-runtime/lifecycle');
 const batchCore = require('../batch/core');
-assert.deepStrictEqual(Object.keys(lifecycle).sort(), ['EXECUTION_SCHEMA_VERSION', 'buildContinuationBrief', 'cancelExecution', 'commitExecution', 'createExecution', 'establishInitialState', 'readCompletion', 'reconcileExecution', 'recordAgentContinuation', 'recordTimingAnchor', 'resumeExecution']);
+assert.deepStrictEqual(Object.keys(lifecycle).sort(), ['EXECUTION_SCHEMA_VERSION', 'buildContinuationBrief', 'cancelExecution', 'commitExecution', 'createExecution', 'establishInitialState', 'readCompletion', 'reconcileExecution', 'recordAgentContinuation', 'recordTimingAnchor', 'resumeExecution', 'withCompletionPublication']);
 assert.strictEqual(batchCore.BATCH_SCHEMA_VERSION, 8);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(lifecycle, 'act'), false);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(batchCore, 'recoverApp'), false);

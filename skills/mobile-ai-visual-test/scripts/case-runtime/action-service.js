@@ -201,6 +201,7 @@ function act(execDir, request, options = {}) {
         code: observeError.code || 'POST_ACTION_OBSERVE_FAILED',
         actionOutcome: 'UNKNOWN',
         operationId: error.operationId,
+        technicalFactRef: error.technicalFactRef,
       });
     }
   }

@@ -16,7 +16,13 @@ function releaseRuntime(execDir) {
 }
 
 function prepareCurrentCompletion(execDir, options = {}) {
-  const committed = caseRuntimeLifecycle.commitExecution({ executionDir: execDir });
+  // Lock order: Batch (if held by the caller) -> execution. Facade finish only
+  // holds execution, so it can publish before this seal without a lock cycle.
+  return caseRuntimeLifecycle.withCompletionPublication({ executionDir: execDir, now: options.now },
+    (committed) => prepareLockedCompletion(execDir, committed, options));
+}
+
+function prepareLockedCompletion(execDir, committed, options) {
   const { execution, result, metrics } = committed;
   const snapshot = readJson(path.join(execDir, 'case.snapshot.json'));
   if (execution?.schemaVersion !== 14) throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
