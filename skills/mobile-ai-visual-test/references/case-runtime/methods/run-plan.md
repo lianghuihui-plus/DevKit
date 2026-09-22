@@ -5,7 +5,7 @@
 签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
 
 ```typescript
-runPlan({ submissionId: string, sceneRef: string, purpose: string, maxDurationMs: number, onFailure: "STOP" | "CONTINUE", steps: object | object | object | object | object | object[], flowContext?: object })
+runPlan({ submissionId: string, sceneRef: string, purpose: string, maxDurationMs: number, onFailure: "STOP" | "CONTINUE", steps: Array<object | object | object | object | object | object>, flowContext?: object })
 ```
 
 ## 参数
@@ -17,7 +17,7 @@ runPlan({ submissionId: string, sceneRef: string, purpose: string, maxDurationMs
 | `purpose` | 是 | `string` | 计划的业务目的 |
 | `maxDurationMs` | 是 | `number` | 计划总时限，1 到 30000 毫秒 |
 | `onFailure` | 是 | `"STOP" \| "CONTINUE"` | STOP 或受限 CONTINUE |
-| `steps` | 是 | `object \| object \| object \| object \| object \| object[]` | 最多 12 个声明式步骤 |
+| `steps` | 是 | `Array<object \| object \| object \| object \| object \| object>` | 最多 12 个声明式步骤 |
 | `flowContext` | 否/条件 | `object` | 当前 Case Flow 节点和可选分支选择 |
 
 ## 结构字段

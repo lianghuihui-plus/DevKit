@@ -22,11 +22,13 @@ assert.deepStrictEqual(definitions.map((item) => item.name), Object.keys(PUBLIC_
 
 const forbidden = ['executionId', 'dispatchSequence', 'dispatchLease', 'capabilityId', 'operation', 'token', 'requestPath'];
 for (const definition of definitions) {
+  assert.strictEqual(definition.inputSchema.type, 'object', `${definition.name} must be an MCP object input schema`);
   const encoded = JSON.stringify(definition.inputSchema);
   for (const field of forbidden) assert.strictEqual(encoded.includes(field), false, `${definition.name} schema leaks ${field}`);
   assert.strictEqual(encoded.includes('capability'), false, `${definition.name} capability is bound by its MCP tool name`);
   const method = PUBLIC_CONTRACT.methods[definition.name];
   assert.deepStrictEqual(definition.inputSchema, method.inputSchema);
+  assert.strictEqual(definition.inputSchema, method.inputSchema, 'MCP must expose the authoritative schema directly');
   assert.deepStrictEqual(requestForToolCall(definition.name, method.minimalExample.input), method.minimalExample);
   const invalidArguments = { unexpected: true };
   assert.deepStrictEqual(

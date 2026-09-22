@@ -36,7 +36,7 @@ Runtime 调用使用 Brief 中预绑定的 `runtime.command`，通过 stdin 一�
 14. 现场无法解释、有限恢复后仍无进展、无法形成下一步或结论、需要平台/版本/账号/配置等业务规则支撑，或准备形成业务负向结论时调用 `knowledge`。已有明确技术失败且只是决定恢复或形成 BLOCKED 时，不为满足流程而查询知识库。
 15. 需要空本地状态或首次安装状态时调用 `recover.targetState`。三端由 Runtime 统一处理，不提供、询问或操作安装包；前置状态无法建立时根据错误原因和对应文档处理。
 16. 形成 CHECK 判断时尽快通过独立 `recordResult` 保存，并使用 `checkNodeRef` 引用真实 Scene、知识或技术事实。未进入的条件分支明确记为 `NOT_APPLICABLE` 并说明原因，不得形成 FAIL。
-17. 正常 `finish` 只提交摘要和仍需披露的不确定性，Runtime 从 ledger 组装完整结果；若已观察后确认用例级前置条件不满足，使用显式 `outcome: "NOT_RUN"` 并提供原因和已登记 Scene/技术事实引用。
+17. 调用 `finish` 时必须选择输入模式：正常收口使用 `input.mode: "complete"`，并提交摘要和仍需披露的不确定性，Runtime 从 ledger 组装完整结果；若已观察后确认用例级前置条件不满足，使用 `input.mode: "notRun"`，并提交摘要、原因和已登记 Scene/技术事实引用。
 
 ## 错误与恢复
 

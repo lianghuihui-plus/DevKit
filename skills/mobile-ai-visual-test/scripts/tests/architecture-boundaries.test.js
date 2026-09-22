@@ -245,6 +245,9 @@ assert.strictEqual(read('docs/architecture.md').includes('主 Agent 使用该 Br
 assert.match(casePrompt, /Handoff Loader/);
 assert.match(casePrompt, /checkNodeRefs.*只关联.*直接检查或调查/);
 assert.match(casePrompt, /finish.*Runtime 从 ledger 组装完整结果/);
+assert.match(casePrompt, /finish.*input\.mode: "complete"/);
+assert.match(casePrompt, /input\.mode: "notRun"/);
+assert.doesNotMatch(casePrompt, /outcome: "NOT_RUN"|finish` 只提交摘要/);
 const implementation = implementationGroups(root, 'harmony');
 assert.strictEqual(implementation.coordinator.includes('scripts/knowledge.js'), false);
 assert.strictEqual(implementation.report.includes('scripts/execution/contracts/case-definition-contract.js'), false);

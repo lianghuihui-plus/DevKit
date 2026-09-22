@@ -84,7 +84,7 @@ const SCHEMAS = Object.freeze({
     purpose: STRING, flowContext: FLOW_CONTEXT,
   }, []),
   read: object({ ref: STRING }, ['ref']),
-  inspect: { oneOf: ['visual', 'action'].map((mode) => object({
+  inspect: { type: 'object', oneOf: ['visual', 'action'].map((mode) => object({
     mode: { const: mode }, sceneRef: STRING,
     observation: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
   }, ['mode', 'sceneRef', 'observation'])) },
@@ -109,12 +109,12 @@ const SCHEMAS = Object.freeze({
     conclusion: { enum: ['APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT'] },
     assessments: { type: 'array', items: ASSESSMENT }, flowContext: FLOW_CONTEXT,
   }, ['mode', 'sceneRef', 'queryId', 'conclusion', 'assessments']),
-  recover: { oneOf: [
+  recover: { type: 'object', oneOf: [
     object({ mode: { const: 'restart' }, sceneRef: STRING, reason: STRING, flowContext: FLOW_CONTEXT }, ['mode', 'sceneRef', 'reason']),
     object({ mode: { const: 'prepare' }, reason: STRING, targetState: { enum: ['APP_LOCAL_STATE_EMPTY', 'FRESH_INSTALL'] }, flowContext: FLOW_CONTEXT }, ['mode', 'reason', 'targetState']),
     object({ mode: { const: 'external' }, reason: STRING, externalAction: EXTERNAL_ACTION, flowContext: FLOW_CONTEXT }, ['mode', 'reason', 'externalAction']),
   ] },
-  finish: { oneOf: [object({
+  finish: { type: 'object', oneOf: [object({
     mode: { const: 'complete' }, summary: STRING, uncertainties: STRING_ARRAY, flowContext: FLOW_CONTEXT,
   }, ['mode', 'summary']), object({
     mode: { const: 'notRun' }, reason: STRING,
@@ -219,7 +219,7 @@ const PUBLIC_METHODS = Object.freeze({
   }),
   read: method('read', '按原样引用读取一个资源。', SCHEMAS.read, { ref: '当前绑定发布的资源引用' }, {
     responseProjection: projection(['resourceRef', 'resourceType'], '$resourceType', '$declaredResources'),
-    minimalExample: { operation: 'read', input: { ref: 'scene-1' } },
+    minimalExample: { operation: 'read', input: { ref: 'mavt:0123456789abcdef01234567:scene:scene-1' } },
     successStatuses: ['RESOURCE_READ'], errorCodes: ['AGENT_INPUT_INVALID', 'RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH', 'RESOURCE_INTEGRITY_INVALID', 'CASE_RUNTIME_TECHNICAL'],
   }),
   inspect: method('inspect', '登记 Agent 已观察到的视觉或动作事实。', SCHEMAS.inspect, {
@@ -294,7 +294,7 @@ const PUBLIC_METHODS = Object.freeze({
       steps: [{ id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false }] },
     },
   }),
-  knowledge: method('knowledge', '查询知识，或登记指定 query 的候选复核结果。', { oneOf: [SCHEMAS.knowledgeQuery, SCHEMAS.knowledgeReview] }, {
+  knowledge: method('knowledge', '查询知识，或登记指定 query 的候选复核结果。', { type: 'object', oneOf: [SCHEMAS.knowledgeQuery, SCHEMAS.knowledgeReview] }, {
     mode: 'query 或 review', sceneRef: '当前 Scene', query: '待调查问题', queryId: '已有查询引用',
     checkNodeRefs: '相关 CHECK 节点', conclusion: '候选复核结论', assessments: '逐候选适用性判断', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {

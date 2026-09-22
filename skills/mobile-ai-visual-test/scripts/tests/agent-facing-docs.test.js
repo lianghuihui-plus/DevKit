@@ -39,6 +39,7 @@ for (const [contractModule, operation] of [[require('../case-runtime/agent-facin
 }
 
 const root = path.resolve(__dirname, '../..');
+assert.match(caseContract.methods.read.minimalExample.input.ref, /^mavt:[a-f0-9]{24}:scene:.+$/);
 assert.strictEqual(caseContract.methods.runPlan.inputSchema.properties.steps.items,
   require('../case-runtime/plan-contract').PLAN_STEP_SCHEMA);
 assert.strictEqual(caseContract.methods.runPlan.inputSchema.properties.steps.items.oneOf.length, 6);
@@ -130,6 +131,8 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const caseIndex = read('references/case-runtime.md');
 const coordinatorIndex = read('references/coordinator.md');
 const confirmRunPage = read('references/coordinator/methods/confirm-run.md');
+assert.match(read('references/case-runtime/methods/run-plan.md'), /steps: Array<object(?: \| object)+>/);
+assert.doesNotMatch(read('references/case-runtime/methods/run-plan.md'), /steps: object(?: \| object)+\[\]/);
 assert.ok(Buffer.byteLength(caseIndex) <= 6 * 1024);
 assert.ok(caseIndex.split('\n').length <= 160);
 assert.ok(Buffer.byteLength(coordinatorIndex) <= 4 * 1024);

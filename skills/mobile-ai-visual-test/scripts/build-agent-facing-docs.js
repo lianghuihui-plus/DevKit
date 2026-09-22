@@ -29,7 +29,8 @@ function typeName(schema = {}) {
   if (schema.const !== undefined) return JSON.stringify(schema.const);
   if (schema.enum) return schema.enum.map((item) => JSON.stringify(item)).join(' | ');
   if (schema.oneOf) return schema.oneOf.map(typeName).join(' | ');
-  if (schema.type === 'array') return `${typeName(schema.items)}[]`;
+  if (schema.type === 'array') return schema.items?.oneOf || schema.items?.enum
+    ? `Array<${typeName(schema.items)}>` : `${typeName(schema.items)}[]`;
   if (schema.type === 'integer' || schema.type === 'number') return 'number';
   if (schema.type === 'boolean') return 'boolean';
   if (schema.type === 'object' || schema.properties) return 'object';

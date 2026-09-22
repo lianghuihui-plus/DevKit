@@ -6,7 +6,7 @@
 {
   "operation": "read",
   "input": {
-    "ref": "scene-1"
+    "ref": "mavt:0123456789abcdef01234567:scene:scene-1"
   }
 }
 ```
