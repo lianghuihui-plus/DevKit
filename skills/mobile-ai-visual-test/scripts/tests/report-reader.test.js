@@ -72,9 +72,10 @@ for (const [verdict, fixture] of fixtures) {
   const metadata = JSON.parse(fs.readFileSync(path.join(path.dirname(paths.context), 'report-metadata.json'), 'utf8'));
   assert.strictEqual(metadata.artifacts['CONTEXT.md'].sha256, crypto.createHash('sha256').update(markdown).digest('hex'));
   assert.strictEqual(metadata.artifacts['CONTEXT.html'].sha256, crypto.createHash('sha256').update(html).digest('hex'));
-  const mermaidDependency = Object.entries(metadata.dependencies || {}).find(([name]) => /^report-assets\/mermaid-[0-9a-f]{64}\.min\.js$/.test(name));
-  assert.ok(mermaidDependency, 'platform report publishes a content-addressed Mermaid dependency');
-  assert.strictEqual(mermaidDependency[1].bytes > 1000000, true);
+  assert.deepStrictEqual(metadata.dependencies, {}, 'platform report does not publish a local Mermaid dependency');
+  assert.ok(html.includes('https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.min.js'),
+    'platform report loads a pinned Mermaid version from the CDN');
+  assert.strictEqual(html.includes('../../../../report-assets/mermaid-'), false);
   assert.strictEqual(fs.existsSync(path.join(path.dirname(paths.context), 'report-publication.draft.json')), false);
   const publication = JSON.parse(fs.readFileSync(path.join(workspace, 'runs', report.execution.batchId, 'report-publication.json'), 'utf8'));
   const publicationTiming = publication.caseTimings[report.execution.executionId];

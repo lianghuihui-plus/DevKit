@@ -151,8 +151,11 @@ for (const expected of ['结果概览', '原始用例', '用例流程', '执行�
 assert.match(html, /theme:'base',htmlLabels:false,flowchart:\{useMaxWidth:true,htmlLabels:false\}/);
 assert.ok(html.includes('await window.mermaid.render('));
 assert.strictEqual(html.includes('await window.mermaid.run('), false);
+assert.ok(html.includes("document.createElement('script')"), 'Mermaid is loaded without blocking the report document');
+assert.ok(html.includes('await loadMermaid()'), 'Mermaid is loaded only when a flow panel is rendered');
 assert.ok(html.includes('function mermaidSvgUsable(svg)'));
-assert.ok(html.includes('initializeMermaid();\nasync function renderMermaidPanel'));
+assert.strictEqual(html.includes('initializeMermaid();\nasync function renderMermaidPanel'), false,
+  'Mermaid initialization is not attempted before the CDN script is available');
 assert.ok(html.includes("querySelector('[data-mermaid-source]>svg')"));
 for (const expected of [
   'data-mermaid-kind="baseline"',

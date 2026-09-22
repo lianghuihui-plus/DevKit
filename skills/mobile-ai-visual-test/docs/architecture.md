@@ -184,6 +184,8 @@ Execution 收口、平台资源释放、Batch 业务终态和报告发布是独�
 
 Narrative Projector 从当前 execution 事件生成步骤、Case Flow revision、分支与检查结果，Renderer 只消费 ViewModel，不回写 execution。
 
+报告主体是本地静态产物；用例流程图在对应页面首次展示时从固定版本 CDN 按需加载 Mermaid，并校验 Subresource Integrity。网络不可用或加载失败只影响流程图渲染，结构化流程和其他报告内容仍可使用。
+
 ## 8. 版本与兼容边界
 
 当前唯一支持的 Execution schema 为 14。Runtime、Batch、Reader 和 Report 都只处理 schema 14；旧工作空间目录和原始用例仍可创建 schema 14 的新 Run，历史 execution 保持原样并明确显示为不支持、需要重跑。

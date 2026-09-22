@@ -10,7 +10,6 @@ const { buildExecutionNarrative } = require('./execution-narrative');
 const { renderIndexArtifacts } = require('./index-renderer');
 const { reportRendererInfo } = require('./renderer-manifest');
 const { publishReportBundle } = require('./report-publisher');
-const { mermaidAssetInfo } = require('./report-assets');
 const { withWorkspaceReportPublication } = require('./publication-lock');
 const { assertWorkspace } = require('../lib/workspace');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
@@ -404,16 +403,12 @@ function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = 
     schemaVersion: 1, scope: options.platform ? 'platform-case' : 'case', platform: options.platform || null,
     executionId, ...reportRendererInfo(),
   };
-  const publicationOptions = options.platform ? {
-    workspaceRoot: caseRootFromCaseDir(caseDir),
-    dependencies: [mermaidAssetInfo()],
-  } : {};
-  publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata, publicationOptions);
+  publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata);
   if (needsPublicationTiming && recordCaseReportPublicationTiming(caseDir, current, options)) {
     current = readExecutionReport(current.latest);
     contextMarkdown = renderCurrentContextMarkdown(snapshot, current);
     contextHtml = renderCurrentContextHtml(snapshot, current);
-    publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata, publicationOptions);
+    publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata);
   }
   return { context: path.join(runtimeDir, 'CONTEXT.md'), contextHtml: path.join(runtimeDir, 'CONTEXT.html') };
 }
