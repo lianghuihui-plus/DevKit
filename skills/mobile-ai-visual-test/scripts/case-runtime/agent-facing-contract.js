@@ -229,7 +229,7 @@ const PUBLIC_METHODS = Object.freeze({
     responseProjection: projection(['sceneRef', 'inspectionId', 'checkNodeIds'], null, ['scene', 'screenshot', 'actionSpatialEvidence']),
     conditionalRequirements: ['visual/action 必须提供 observation。'],
     contextualValidationRules: ['历史 Scene 可登记事实；读取资源使用 read。'],
-    successStatuses: ['VISUAL_INSPECTED', 'ACTION_SPATIAL_INSPECTED'],
+    successStatuses: ['VISUAL_OBSERVATION_RECORDED', 'ACTION_SPATIAL_OBSERVATION_RECORDED'],
     sideEffects: ['visual/action 追加事实事件'], idempotency: '相同 submission 不重复追加事实。',
     minimalExample: { operation: 'inspect', input: { mode: 'visual', sceneRef: 'scene-1', observation: '目标按钮可见' } },
     additionalExamples: [{ mode: 'action', sceneRef: 'scene-1', observation: '上一动作标注落在目标内' }],
@@ -263,7 +263,7 @@ const PUBLIC_METHODS = Object.freeze({
     sceneRef: '当前 Scene', action: '发布的 ActionRef 或 Agent 自主视觉坐标动作',
     purpose: '可选的业务动作目的', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
-    responseProjection: projection(['operationId', 'deliveryStatus', 'outcomeKnown', 'sceneRef'], 'scene', SCENE_RESOURCES),
+    responseProjection: projection(['operationId', 'deliveryStatus', 'commandDeliveryKnown', 'sceneRef'], 'scene', SCENE_RESOURCES),
     conditionalRequirements: ['action.ref 与 action.type 互斥；ActionRef 所需 action.input 字段必须存在。'],
     contextualValidationRules: ['ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。'],
     successStatuses: ['SCENE'],
@@ -425,8 +425,9 @@ function projectPreviousAction(previousAction) {
   const commandStatus = previousAction.command?.status;
   const deliveryStatus = unknown ? 'UNKNOWN'
     : commandStatus === 'REJECTED' ? 'NOT_SENT'
-      : commandStatus === 'ACCEPTED' ? 'RESULT_RECORDED'
-        : previousAction.deliveryStatus || 'UNKNOWN';
+      : commandStatus === 'ACCEPTED' ? 'COMMAND_RESPONSE_RECORDED'
+        : previousAction.deliveryStatus === 'RESULT_RECORDED' ? 'COMMAND_RESPONSE_RECORDED'
+          : previousAction.deliveryStatus || 'UNKNOWN';
   const annotatedScreenshotPath = previousAction.spatialEvidence?.annotatedScreenshot?.path
     || previousAction.spatialEvidence?.annotatedScreenshotPath;
   const spatial = previousAction.spatialEvidence;
@@ -449,7 +450,7 @@ function projectPreviousAction(previousAction) {
     operationRef: previousAction.operationRef || previousAction.operationId,
     type: previousAction.action?.type || previousAction.type || 'unknown',
     deliveryStatus,
-    outcomeKnown: deliveryStatus !== 'UNKNOWN',
+    commandDeliveryKnown: deliveryStatus !== 'UNKNOWN',
     ...(deviceExecution || Object.keys(technicalDetails).length ? {
       technicalResult: {
         ...(deviceExecution?.status ? { deviceStatus: deviceExecution.status } : {}),

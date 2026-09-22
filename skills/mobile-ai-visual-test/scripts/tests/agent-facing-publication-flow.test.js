@@ -123,7 +123,8 @@ assert.strictEqual(deviceDispatches, 1, 'uncertain dispatch is never replayed');
 assert.strictEqual(followupCaptures, 1);
 const unknownFact = require('../case-runtime/store').events(unknownDir).find((event) => event.type === 'actionOutcomeUnknown');
 assert.strictEqual(unknown.result.operationId, unknownFact.operationId);
-assert.strictEqual(unknown.result.outcomeKnown, false);
+assert.strictEqual(unknown.result.commandDeliveryKnown, false);
+assert.strictEqual(Object.hasOwn(unknown.result, 'outcomeKnown'), false);
 assert.strictEqual(unknown.result.deliveryStatus, 'UNKNOWN');
 const factResource = unknown.resources.find((resource) => resource.type === 'technicalFact');
 assert.ok(factResource);
@@ -144,7 +145,7 @@ assert.strictEqual(run(started.execDir, {
     observation: '首页标题清晰可见',
     checkNodeRefs: ['N2'],
   },
-}, { now: '2026-09-16T01:00:00.300Z' }).result.outcome, 'VISUAL_INSPECTED');
+}, { now: '2026-09-16T01:00:00.300Z' }).result.outcome, 'VISUAL_OBSERVATION_RECORDED');
 assert.strictEqual(run(started.execDir, {
   operation: 'recordResult', input: {
     results: [{

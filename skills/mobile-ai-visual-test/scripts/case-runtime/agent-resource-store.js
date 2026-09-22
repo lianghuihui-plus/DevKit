@@ -123,7 +123,7 @@ function projectSource(type, raw, params, source) {
       actions: buildCapabilities(raw, params.platform).map((action) => ({ ref: actionRefFor(action), label: action.label,
         kind: action.kind, ...(action.kind === 'wait' ? { input: { ms: 'positive-integer' } } : action.input ? { input: action.input } : {}) })),
       ...(previous ? { previousAction: { operationId: previous.operationRef, deliveryStatus: previous.deliveryStatus,
-        outcomeKnown: previous.outcomeKnown, ...(previous.technicalResult ? { technicalResult: previous.technicalResult } : {}),
+        commandDeliveryKnown: previous.commandDeliveryKnown, ...(previous.technicalResult ? { technicalResult: previous.technicalResult } : {}),
         ...(previous.evidence ? { evidence: remapReferences(previous.evidence, params.refMap || {}) } : {}),
         ...(params.refs.actionSpatialEvidenceRef ? { actionSpatialEvidenceRef: params.refs.actionSpatialEvidenceRef } : {}) } } : {}),
     };

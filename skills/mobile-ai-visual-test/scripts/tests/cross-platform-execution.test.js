@@ -158,7 +158,7 @@ if (process.argv[2] === '--worker') {
         observation: `${fixture.platform} 页面结果清晰可见`,
         checkNodeRefs: ['N2'],
       },
-    }, { now: now(300) }).result.outcome, 'VISUAL_INSPECTED');
+    }, { now: now(300) }).result.outcome, 'VISUAL_OBSERVATION_RECORDED');
     assert.strictEqual(run(fixture.execDir, {
       operation: 'recordResult', input: {
         results: [{

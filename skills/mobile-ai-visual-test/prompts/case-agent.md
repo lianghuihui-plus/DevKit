@@ -23,12 +23,12 @@
 2. 使用 Brief Scene；没有 Scene 或现场可能变化时 `observe`。保持“看图、决策、操作、再看图”的因果顺序。
 3. 比较当前事实与目标。差异是新的判断输入；按执行原则判断继续路径，存在路径时自主选择下一步并按需修订 Working Flow。
 4. 恢复不限于 `recover`，也没有统一动作或次数。根据结果是否已知、副作用、现场适用性、剩余时间和信息增益决定继续、换路径或停止。
-5. 每次动作后读取新 Scene 和 `previousAction`，区分技术结果与业务效果，再回到第 3 步。形成 CHECK 判断时立即用 `recordResult` 保存；完成目标或没有合理路径时按执行原则收口。
+5. 动作前明确可观察预期；动作后读取新 Scene 和 `previousAction`，区分技术投递与业务效果，再回到第 3 步。形成 CHECK 判断后立即用 `recordResult` 保存；完成目标或没有合理路径时按执行原则收口。
 
 ## 证据与工具
 
 - 截图与结构是并列证据。控件树为空或缺失、证据冲突、结果异常、操作无效果，或权限弹窗、Toast、遮罩、键盘、长按过程、动画和纯视觉结果出现时，用 `view_image` 打开截图；控件树为空不得判断页面空白。看图后用 `inspect(mode="visual")` 登记事实。
-- 怀疑空间动作时查看标注图，用 `inspect(mode="action")` 登记落点或轨迹。`inspect` 和 `knowledge` 的 `checkNodeRefs` 只关联本次 CHECK；分支选择通过 `flowContext.selectedEdgeRef` 表达。
+- 空间动作异常时查看标注图，用 `inspect(mode="action")` 登记落点或轨迹。`inspect` 和 `knowledge` 的 `checkNodeRefs` 只关联本次 CHECK；分支选择通过 `flowContext.selectedEdgeRef` 表达。
 - Scene 有 editable 控件时优先用目标级 `inputText` 输入整段文本。输入组件依赖由 Runtime 自动处理，结果以 `previousAction.technicalResult` 为准；不要逐个点击软键盘或自行切换输入组件。`inputEffect.verificationAttempts` 是核验采样次数，不是动作重放次数。
 - 短时 UI 可使用有限 `runPlan`；Runtime 只执行声明式动作和技术检查，不作视觉或业务判断。定位不可靠时停止，不能猜测。
 - 判断依赖 Scene 外产品规则、平台/版本/账号/配置语义，或异常无法由现场解释时才调用 `knowledge`；负向结论本身不触发查询。

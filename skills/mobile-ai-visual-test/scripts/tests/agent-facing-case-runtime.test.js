@@ -189,6 +189,12 @@ assert.strictEqual(previous.spatialEvidence.available, true);
 assert.deepStrictEqual(previous.spatialEvidence.requested, { from: { x: 0, y: 0 }, to: { x: 0, y: 0 } });
 assert.deepStrictEqual(previous.spatialEvidence.dispatched, { from: { x: 0, y: 0 }, to: { x: 0, y: 0 } });
 assert.strictEqual(previous.observedEffect, undefined);
+const acceptedAction = projectPreviousAction({
+  operationId: 'action-accepted', action: { type: 'tap' }, command: { status: 'ACCEPTED' },
+});
+assert.strictEqual(acceptedAction.deliveryStatus, 'COMMAND_RESPONSE_RECORDED');
+assert.strictEqual(acceptedAction.commandDeliveryKnown, true);
+assert.strictEqual(Object.hasOwn(acceptedAction, 'outcomeKnown'), false);
 const inputMismatch = projectPreviousAction({
   operationId: 'action-0002', action: { type: 'inputText', text: '[REDACTED]' },
   command: { status: 'ACCEPTED' },
@@ -206,7 +212,7 @@ const inspected = run(execDir, request('inspect', {
   mode: 'action', sceneRef: scene.sceneId, observation: '滑动轨迹位于目标卡片区域上方', checkNodeRefs: ['N2'],
 }), { now: '2026-09-11T00:00:01.700Z' });
 assertEnvelope(inspected);
-assert.strictEqual(inspected.result.outcome, 'ACTION_SPATIAL_INSPECTED');
+assert.strictEqual(inspected.result.outcome, 'ACTION_SPATIAL_OBSERVATION_RECORDED');
 const inspectionEvent = runtimeStore.events(execDir).find((event) => event.type === 'actionSpatialInspected');
 assert.strictEqual(inspectionEvent.operationId, 'action-0001');
 assert.strictEqual(inspectionEvent.caseFlowRevision, 1);
@@ -386,6 +392,16 @@ const provided = projectAgentFacingResponse(execDir, { status: 'SCENE' }, reques
 });
 assert.deepStrictEqual(provided.data, canonicalScene);
 assert.strictEqual(provided.result.unexpected, undefined);
+const acceptedAct = projectAgentFacingResponse(execDir, {
+  status: 'SCENE', sceneId: scene.sceneId,
+  action: { operationId: 'action-accepted', action: { type: 'tap' }, command: { status: 'ACCEPTED' } },
+}, request('act'), {
+  resourceProvider: () => ({ result: { sceneRef: scene.sceneId }, resources: [] }),
+});
+assertEnvelope(acceptedAct);
+assert.strictEqual(acceptedAct.result.deliveryStatus, 'COMMAND_RESPONSE_RECORDED');
+assert.strictEqual(acceptedAct.result.commandDeliveryKnown, true);
+assert.strictEqual(Object.hasOwn(acceptedAct.result, 'outcomeKnown'), false);
 for (const [input, internalStatus, disallowedType] of [
   [request('knowledge', { mode: 'review' }), 'KNOWLEDGE_REVIEWED', 'candidateSet'],
   [request('recover', { mode: 'external' }), 'EXTERNAL_ACTION_RECORDED', 'scene'],

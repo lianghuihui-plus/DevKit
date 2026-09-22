@@ -42,6 +42,17 @@ assert.deepStrictEqual(resources.readPublishedResource(dir, observed.data.conten
 const binary = resources.readPublishedResource(dir, observed.data.content.screenshotRef).data.content;
 assert.strictEqual(binary.sha256, crypto.createHash('sha256').update(png).digest('hex'));
 assert.strictEqual(binary.path, fs.realpathSync(path.join(dir, 'screenshots/scene-0001.png')));
+const previousActionFixture = fixture('execution-previous-action');
+store.writeScene(previousActionFixture.dir, {
+  ...previousActionFixture.scene,
+  previousAction: {
+    operationId: 'action-accepted', action: { type: 'tap' }, command: { status: 'ACCEPTED' },
+  },
+});
+const previousActionScene = resources.publishScene(previousActionFixture.dir, previousActionFixture.scene.sceneId);
+assert.strictEqual(previousActionScene.data.content.previousAction.deliveryStatus, 'COMMAND_RESPONSE_RECORDED');
+assert.strictEqual(previousActionScene.data.content.previousAction.commandDeliveryKnown, true);
+assert.strictEqual(Object.hasOwn(previousActionScene.data.content.previousAction, 'outcomeKnown'), false);
 const other = fixture('execution-b');
 assert.throws(() => resources.readPublishedResource(other.dir, observed.data.ref), { code: 'RESOURCE_SCOPE_MISMATCH' });
 assert.throws(() => resources.readPublishedResource(dir, 'not-published'), { code: 'RESOURCE_UNKNOWN' });

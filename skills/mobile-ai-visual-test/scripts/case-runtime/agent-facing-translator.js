@@ -361,7 +361,10 @@ function projectAgentFacingError(response, request = null, resources = [], provi
 
 function projectResponseResult(response, request, provided = {}) {
   const internalOutcome = response.result?.outcome || response.status;
-  const outcome = request?.operation === 'observe' && internalOutcome === 'SCENE' ? 'SCENE_CAPTURED' : internalOutcome;
+  const outcome = request?.operation === 'observe' && internalOutcome === 'SCENE' ? 'SCENE_CAPTURED'
+    : request?.operation === 'inspect' && internalOutcome === 'VISUAL_INSPECTED' ? 'VISUAL_OBSERVATION_RECORDED'
+      : request?.operation === 'inspect' && internalOutcome === 'ACTION_SPATIAL_INSPECTED' ? 'ACTION_SPATIAL_OBSERVATION_RECORDED'
+        : internalOutcome;
   const projection = responseProjection(request, outcome);
   if (!projection) return { projection: null, result: {} };
   const inspection = response.visualInspection || response.actionInspection || {};
@@ -380,7 +383,7 @@ function projectResponseResult(response, request, provided = {}) {
     operationId: action?.operationRef ?? response.operationId,
     planId: response.planId,
     deliveryStatus: action?.deliveryStatus ?? (response.outcomeKnown === false ? 'UNKNOWN' : undefined),
-    outcomeKnown: action?.outcomeKnown ?? response.outcomeKnown,
+    commandDeliveryKnown: action?.commandDeliveryKnown ?? response.outcomeKnown,
     candidateCount: response.candidateCount ?? response.candidates?.length,
     reviewRequired: response.reviewRequired,
     conclusion: response.conclusion || (response.status === 'KNOWLEDGE_REVIEWED' ? request?.input?.conclusion : undefined),

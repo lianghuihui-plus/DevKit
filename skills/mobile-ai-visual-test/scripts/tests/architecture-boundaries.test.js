@@ -108,6 +108,10 @@ assert.match(casePrompt, /长按过程/);
 assert.match(casePrompt, /inspect\(mode="action"\)/);
 assert.match(casePrompt, /previousAction/);
 assert.match(casePrompt, /首选能力.*不是排他的工具边界/);
+const actionSelfCheckGuidance = `${casePrompt}\n${caseExecutionPrinciples}`;
+assert.match(actionSelfCheckGuidance, /动作前.*可观察.*预期/);
+assert.match(actionSelfCheckGuidance, /技术.*不.*证明.*目标.*业务/);
+assert.match(actionSelfCheckGuidance, /预期不一致.*核对.*目标.*坐标.*落点/);
 assert.strictEqual(casePrompt.includes('Frozen CaseSpec'), false);
 assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);
 for (const internalField of ['basedOnSceneId', 'capabilityId', 'inspectVisual', 'inspectScene', 'knowledgeReview', 'contractDefinitions', 'allowedOperations']) {

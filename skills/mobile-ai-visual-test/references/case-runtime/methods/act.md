@@ -38,7 +38,7 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 
 ### 成功
 
-- 简单结果：`outcome`、`operationId`、`deliveryStatus`、`outcomeKnown`、`sceneRef`。
+- 简单结果：`outcome`、`operationId`、`deliveryStatus`、`commandDeliveryKnown`、`sceneRef`。
 - 主数据：`scene`。
 - 关联资源：`screenshot`、`layout`、`elementSet`、`actionSpatialEvidence`、`technicalFact`。
 
