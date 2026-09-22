@@ -12,6 +12,50 @@ const caseContract = require('../case-runtime/agent-facing-contract');
 const coordinatorContract = require('../coordinator/agent-facing-contract');
 const currentExecution = require('../lib/readers/current-execution');
 const { parseRequest } = require('../case-runtime/agent-facing-client');
+const {
+  AGENT_FACING_PROTOCOL,
+  AGENT_FACING_STATUSES,
+  RESOURCE_DESCRIPTOR_SCHEMA,
+  requestEnvelopeSchema,
+  successEnvelope,
+  errorEnvelope,
+} = require('../lib/agent-facing-envelope');
+
+assert.strictEqual(AGENT_FACING_PROTOCOL, 'agent-facing');
+assert.deepStrictEqual([...AGENT_FACING_STATUSES], ['SUCCEEDED', 'REJECTED', 'FAILED', 'UNKNOWN']);
+assert.ok(Object.isFrozen(AGENT_FACING_STATUSES));
+assert.deepStrictEqual(RESOURCE_DESCRIPTOR_SCHEMA.required, ['ref', 'type', 'role']);
+assert.strictEqual(RESOURCE_DESCRIPTOR_SCHEMA.additionalProperties, false);
+assert.deepStrictEqual(requestEnvelopeSchema({
+  observe: { type: 'object', additionalProperties: false },
+}).required, ['operation', 'input']);
+assert.deepStrictEqual(successEnvelope({ operation: 'observe' }), {
+  protocol: 'agent-facing', status: 'SUCCEEDED', operation: 'observe', result: {}, resources: [],
+});
+assert.deepStrictEqual(successEnvelope({
+  operation: 'observe',
+  result: { outcome: 'SCENE_CAPTURED' },
+  data: { ref: 'scene-1', type: 'scene', content: {} },
+  resources: [
+    { ref: 'screenshot-1', type: 'screenshot', role: 'visual_evidence' },
+    { ref: 'screenshot-1', type: 'screenshot', role: 'visual_evidence' },
+  ],
+}), {
+  protocol: 'agent-facing', status: 'SUCCEEDED', operation: 'observe',
+  result: { outcome: 'SCENE_CAPTURED' }, data: { ref: 'scene-1', type: 'scene', content: {} },
+  resources: [{ ref: 'screenshot-1', type: 'screenshot', role: 'visual_evidence' }],
+});
+assert.deepStrictEqual(errorEnvelope({
+  status: 'REJECTED', operation: 'act', code: 'AGENT_INPUT_INVALID', retryable: true,
+}), {
+  protocol: 'agent-facing', status: 'REJECTED', operation: 'act', result: {}, resources: [],
+  error: { code: 'AGENT_INPUT_INVALID', retryable: true },
+});
+assert.throws(() => errorEnvelope({ status: 'UNKNOWN', operation: 'act', code: 'X', retryable: true }), /UNKNOWN.*retryable/);
+assert.throws(() => errorEnvelope({ status: 'REJECTED', operation: 'act', code: 'not stable', retryable: true }), /stable/i);
+assert.throws(() => errorEnvelope({ status: 'REJECTED', operation: 'act', code: 'X', retryable: 'true' }), /retryable/);
+assert.throws(() => successEnvelope({ operation: 'observe', unexpected: true }), /unsupported/i);
+assert.throws(() => errorEnvelope({ status: 'REJECTED', operation: 'act', code: 'X', retryable: true, data: {} }), /unsupported/i);
 
 assert.strictEqual(caseContract.AGENT_FACING_PROTOCOL, 'agent-facing');
 assert.strictEqual(coordinatorContract.AGENT_FACING_PROTOCOL, 'agent-facing');

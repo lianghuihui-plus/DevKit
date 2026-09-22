@@ -17,6 +17,13 @@ const { OPERATION_CONTRACT } = runtimeOperationContract;
 
 const root = path.resolve(__dirname, '../..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
+const envelopeSource = read('scripts/lib/agent-facing-envelope.js');
+for (const forbiddenDependency of [
+  "require('../case-runtime/", "require('../coordinator/", "require('../report/", "require('../execution/", "require('../batch/",
+]) {
+  assert.strictEqual(envelopeSource.includes(forbiddenDependency), false,
+    `Shared envelope must remain domain-neutral: ${forbiddenDependency}`);
+}
 
 assert.strictEqual(fs.existsSync(path.join(root, 'scripts/lib/readers/current-execution.js')), true);
 
