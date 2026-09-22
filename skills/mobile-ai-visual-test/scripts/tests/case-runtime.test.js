@@ -129,7 +129,7 @@ const started = {
 };
 require('../case-runtime/case-flow-service').revise(started.execDir,
   caseFlowRevision(null, '观察当前页面并等待稳定'), { now: T0 });
-assert.strictEqual(started.execution.schemaVersion, 13);
+assert.strictEqual(started.execution.schemaVersion, 14);
 assert.strictEqual(Object.prototype.hasOwnProperty.call(started.brief, 'schemaVersion'), false);
 const validationProfile = JSON.parse(fs.readFileSync(path.join(started.execDir, 'validation-profile.snapshot.json'), 'utf8'));
 assert.strictEqual(started.execution.validationProfileSha, validationProfile.profileSha);

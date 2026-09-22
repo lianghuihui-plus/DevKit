@@ -45,7 +45,7 @@ const common = {
 const boundExecutionDir = path.join(workspaceRoot, 'cases', 'case-001', 'platforms', 'harmony', 'executions', common.executionId);
 fs.mkdirSync(boundExecutionDir, { recursive: true });
 fs.writeFileSync(path.join(boundExecutionDir, 'execution.json'), JSON.stringify({
-  schemaVersion: 13, runtime: 'case-runtime', executionId: common.executionId, batchId: common.batchId, finalized: false,
+  schemaVersion: 14, runtime: 'case-runtime', executionId: common.executionId, batchId: common.batchId, finalized: false,
 }));
 
 try {
@@ -53,7 +53,7 @@ try {
   const retryExecDir = path.join(workspaceRoot, 'cases', 'case-retry', 'platforms', 'harmony', 'executions', retryExecutionId);
   fs.mkdirSync(retryExecDir, { recursive: true });
   fs.writeFileSync(path.join(retryExecDir, 'execution.json'), JSON.stringify({
-    schemaVersion: 13, runtime: 'case-runtime', executionId: retryExecutionId, batchId: common.batchId, platform: 'harmony', finalized: false,
+    schemaVersion: 14, runtime: 'case-runtime', executionId: retryExecutionId, batchId: common.batchId, platform: 'harmony', finalized: false,
   }));
   const resourceStore = require('../case-runtime/agent-resource-store');
   const retryHandoff = createAgentHandoff({ ...common, executionId: retryExecutionId,

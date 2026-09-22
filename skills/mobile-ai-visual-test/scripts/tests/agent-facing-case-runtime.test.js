@@ -28,7 +28,7 @@ fs.mkdirSync(path.join(execDir, 'transactions'), { recursive: true });
 fs.writeFileSync(path.join(execDir, 'source.snapshot.md'), '长按录音按钮并验证录音状态');
 fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
 writeJsonAtomic(path.join(execDir, 'execution.json'), {
-  schemaVersion: 13,
+  schemaVersion: 14,
   runtime: 'case-runtime',
   executionId: 'execution-agent-facing',
   platform: 'harmony',
@@ -473,7 +473,7 @@ assert.deepStrictEqual(readResult.data, canonicalScene);
 assert.strictEqual(readResult.result.resourceRef, canonicalScene.ref);
 assert.deepStrictEqual(readResult.resources, [{ ref: 'shot-real', type: 'screenshot', role: 'visual' }]);
 assert.strictEqual(brokerCalls, countBeforeRead);
-writeJsonAtomic(executionPath, { ...execution, schemaVersion: 12 });
+writeJsonAtomic(executionPath, { ...execution, schemaVersion: 13 });
 const mismatch = run(execDir, request('observe'), { executeRequest });
 assertEnvelope(mismatch, 'REJECTED');
 assert.strictEqual(mismatch.error.code, 'PROTOCOL_MISMATCH');

@@ -85,7 +85,7 @@ function recordSpan(execDir, name, durationMs, details = {}, options = {}) {
 function recordAgentFacing(execDir, request, response, durationMs, options = {}) {
   try {
     const execution = readJson(path.join(execDir, 'execution.json'), null);
-    if (execution?.schemaVersion !== 13) return;
+    if (execution?.schemaVersion !== 14) return;
     protocolTelemetry.recordAgentFacingEvent(agentFacingFile(execDir), response, durationMs, {
       ...options, contract: require('./agent-facing-contract').PUBLIC_CONTRACT,
     });

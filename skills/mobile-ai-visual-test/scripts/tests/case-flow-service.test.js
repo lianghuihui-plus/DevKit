@@ -16,7 +16,7 @@ const execDir = path.join(temp, 'execution');
 fs.mkdirSync(execDir, { recursive: true });
 fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
 writeJsonAtomic(path.join(execDir, 'execution.json'), {
-  schemaVersion: 13,
+  schemaVersion: 14,
   runtime: 'case-runtime',
   executionId: 'execution-case-flow',
   status: 'RUNNING',
@@ -200,7 +200,7 @@ const collisionDir = path.join(temp, 'collision-execution');
 fs.mkdirSync(collisionDir, { recursive: true });
 fs.writeFileSync(path.join(collisionDir, 'events.jsonl'), '');
 writeJsonAtomic(path.join(collisionDir, 'execution.json'), {
-  schemaVersion: 13,
+  schemaVersion: 14,
   runtime: 'case-runtime',
   executionId: 'execution-case-flow-collision',
   status: 'RUNNING',

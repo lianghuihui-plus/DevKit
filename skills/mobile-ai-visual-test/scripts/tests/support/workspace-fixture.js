@@ -125,7 +125,7 @@ function createCurrentFixture(root, options = {}) {
   const validationProfile = createValidationProfile();
   writeJson(path.join(execDir, 'validation-profile.snapshot.json'), validationProfile);
   const execution = {
-    schemaVersion: 13,
+    schemaVersion: 14,
     runtime: 'case-runtime',
     executionId,
     batchId: `batch-${suffix}`,

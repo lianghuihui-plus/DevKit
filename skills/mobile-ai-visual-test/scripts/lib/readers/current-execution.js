@@ -1,6 +1,6 @@
 'use strict';
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 function supports(execution) {
   return execution?.schemaVersion === SCHEMA_VERSION && execution.runtime === 'case-runtime';

@@ -10,7 +10,7 @@ const { metrics } = require('../case-runtime/result-service');
 const { deriveExecutionTiming } = require('../lib/execution-timing');
 
 const execDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-metrics-'));
-fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 13, finalized: false }));
+fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 14, finalized: false }));
 let nowMs = 1000;
 const clock = () => nowMs;
 const invocation = telemetry.beginInvocation(execDir, 'act', {
@@ -145,7 +145,7 @@ for (const secret of ['secret-control', 'private observation', 'private result',
 // The client measures its completed public response, including reads after finish.
 const facade = require('../case-runtime/agent-facing-client');
 const sharedTelemetry = require('../lib/agent-facing-telemetry');
-fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 13, finalized: true }));
+fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 14, finalized: true }));
 const readResource = () => ({ data: readResponse.data, resources: readResponse.resources });
 const finalRead = facade.run(execDir, { operation: 'read', input: { ref: 'private-ref' } }, { readResource });
 assert.strictEqual(finalRead.status, 'SUCCEEDED');
@@ -159,7 +159,7 @@ telemetry.recordAgentFacing(execDir, { operation: 'finish', input: {} }, {
 assert.strictEqual(sharedTelemetry.readAgentFacingEvents(telemetry.agentFacingFile(execDir)).at(-1).operation, 'finish');
 
 const brokenTelemetryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-broken-metrics-'));
-fs.writeFileSync(path.join(brokenTelemetryDir, 'execution.json'), JSON.stringify({ schemaVersion: 13, finalized: true }));
+fs.writeFileSync(path.join(brokenTelemetryDir, 'execution.json'), JSON.stringify({ schemaVersion: 14, finalized: true }));
 fs.mkdirSync(path.join(brokenTelemetryDir, 'operations'));
 fs.writeFileSync(path.join(brokenTelemetryDir, 'operations', 'telemetry'), 'not a directory');
 const stderrWrite = process.stderr.write;

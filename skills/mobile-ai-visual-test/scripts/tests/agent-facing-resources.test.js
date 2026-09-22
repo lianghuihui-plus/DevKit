@@ -14,7 +14,7 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 function fixture(id) {
   const dir = path.join(temp, id);
   fs.mkdirSync(path.join(dir, 'screenshots'), { recursive: true });
-  writeJsonAtomic(path.join(dir, 'execution.json'), { schemaVersion: 13, runtime: 'case-runtime', executionId: id, platform: 'harmony', finalized: false });
+  writeJsonAtomic(path.join(dir, 'execution.json'), { schemaVersion: 14, runtime: 'case-runtime', executionId: id, platform: 'harmony', finalized: false });
   fs.writeFileSync(path.join(dir, 'events.jsonl'), '');
   fs.writeFileSync(path.join(dir, 'screenshots/scene-0001.png'), png);
   const scene = { sceneId: 'scene-0001', capturedAt: '2026-09-22T00:00:00Z', generation: 1,

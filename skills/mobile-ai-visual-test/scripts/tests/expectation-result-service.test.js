@@ -20,7 +20,7 @@ fs.mkdirSync(path.join(execDir, 'scenes'));
 fs.mkdirSync(path.join(execDir, 'transactions'));
 fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
 writeJsonAtomic(path.join(execDir, 'execution.json'), {
-  schemaVersion: 13, runtime: 'case-runtime', executionId: 'execution-ledger', status: 'RUNNING', finalized: false,
+  schemaVersion: 14, runtime: 'case-runtime', executionId: 'execution-ledger', status: 'RUNNING', finalized: false,
   platform: 'android', startedAt: '2026-09-16T00:00:00.000Z', targetBinding: { appId: 'com.example' },
 });
 const scene = {

@@ -102,7 +102,7 @@ assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeOperationContract
 assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeBroker, 'LEGACY_AGENT_OPERATIONS'), false);
 assert.strictEqual(read('scripts/case-runtime/runtime-operation-contract.js').includes('BROKER_OPERATION_SETS'), false);
 assert.strictEqual(read('scripts/coordinator/agent-facing-service.js').includes('COORDINATOR_SCHEMA_VERSION'), false);
-assert.match(read('scripts/case-runtime/agent-facing-client.js'), /schemaVersion !== 13/);
+assert.match(read('scripts/case-runtime/agent-facing-client.js'), /schemaVersion !== 14/);
 assert.strictEqual(read('scripts/report/execution-trace.js').includes('legacyCoordinateAudit'), false);
 assert.strictEqual(read('scripts/report/execution-trace.js').includes('event.coordinateAudit'), false);
 assert.strictEqual(read('scripts/lib/execution-timing.js').includes('EXECUTION_LEGACY'), false);

@@ -144,7 +144,7 @@ function closeStaleExecutions(workspaceRoot, components, options = {}) {
   const closed = [];
   for (const execDir of executionDirs(workspaceRoot)) {
     const execution = readJson(path.join(execDir, 'execution.json'), null);
-    if (!execution || execution.schemaVersion !== 13 || execution.runtime !== 'case-runtime'
+    if (!execution || execution.schemaVersion !== 14 || execution.runtime !== 'case-runtime'
       || execution.finalized === true
       || (execution.runtimeSha === components.runtimeSha && execution.adapterSha === components.adapterSha)
       || readExecutionClosure(workspaceRoot, execDir, execution)) continue;

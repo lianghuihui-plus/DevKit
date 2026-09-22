@@ -23,7 +23,7 @@ const execDir = path.join(temp, 'execution');
 fs.mkdirSync(path.join(execDir, 'scenes'), { recursive: true });
 fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
 writeJsonAtomic(path.join(execDir, 'execution.json'), {
-  schemaVersion: 13, runtime: 'case-runtime', executionId: 'execution-case-flow-agent',
+  schemaVersion: 14, runtime: 'case-runtime', executionId: 'execution-case-flow-agent',
   platform: 'ios', status: 'RUNNING', finalized: false,
 });
 const scene = {

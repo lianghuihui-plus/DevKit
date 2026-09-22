@@ -81,8 +81,11 @@ assert.throws(() => errorEnvelope({ status: 'REJECTED', operation: 'act', code: 
 
 assert.strictEqual(caseContract.AGENT_FACING_PROTOCOL, 'agent-facing');
 assert.strictEqual(coordinatorContract.AGENT_FACING_PROTOCOL, 'agent-facing');
-assert.strictEqual(currentExecution.SCHEMA_VERSION, 13);
+assert.strictEqual(currentExecution.SCHEMA_VERSION, 14);
 assert.deepStrictEqual(Object.keys(currentExecution).sort(), ['SCHEMA_VERSION', 'assertSchema']);
+assert.strictEqual(currentExecution.assertSchema({ schemaVersion: 14, runtime: 'case-runtime' }).schemaVersion, 14);
+assert.throws(() => currentExecution.assertSchema({ schemaVersion: 13, runtime: 'case-runtime' }),
+  (error) => error.code === 'FORMAT_UNSUPPORTED');
 
 for (const name of ['capabilityCards', 'finishTemplate', 'projectActions']) {
   assert.strictEqual(Object.prototype.hasOwnProperty.call(caseContract, name), false, `${name} must not be public`);
@@ -111,6 +114,9 @@ for (const relative of [
 }
 
 for (const relative of [
+  'scripts/case-runtime/lifecycle.js',
+  'scripts/case-runtime/agent-facing-client.js',
+  'scripts/case-runtime/telemetry.js',
   'scripts/batch/completion.js',
   'scripts/batch/completion-service.js',
   'scripts/batch/dispatch-service.js',
@@ -126,6 +132,10 @@ for (const relative of [
   'scripts/lib/readers/current-execution.js',
 ]) {
   assert.doesNotMatch(read(relative), /\[11,\s*12\]|11,\s*12/, `${relative} must accept only the current execution schema`);
+  assert.doesNotMatch(read(relative), /schemaVersion\s*[!=]={1,2}\s*13\b|(?:EXECUTION_SCHEMA_VERSION|SCHEMA_VERSION)\s*=\s*13\b/,
+    `${relative} must not accept or write execution schema 13`);
+  assert.doesNotMatch(read(relative), /(?:convert|migrate|upgrade)(?:Legacy|Historical|Schema13|Execution)|legacyReader|historicalReader|dualWriter/i,
+    `${relative} must not restore execution compatibility paths`);
 }
 
 console.log('agent-facing single contract passed');

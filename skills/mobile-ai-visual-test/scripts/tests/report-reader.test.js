@@ -376,12 +376,12 @@ const previousSchemaReport = readExecutionReport(previousSchemaDir);
 assert.strictEqual(previousSchemaReport.readability, 'FORMAT_UNSUPPORTED');
 assert.strictEqual(previousSchemaReport.display.summary, '历史结果格式不支持，需要重跑');
 
-const legacySchemaDir = path.join(temp, 'legacy-schema-12-execution');
+const legacySchemaDir = path.join(temp, 'legacy-schema-13-execution');
 fs.cpSync(passFixture.execDir, legacySchemaDir, { recursive: true });
 const legacyExecutionPath = path.join(legacySchemaDir, 'execution.json');
 const legacyExecution = {
   ...JSON.parse(fs.readFileSync(legacyExecutionPath, 'utf8')),
-  schemaVersion: 12,
+  schemaVersion: 13,
 };
 fs.writeFileSync(legacyExecutionPath, `${JSON.stringify(legacyExecution, null, 2)}\n`);
 const legacyReport = readExecutionReport(legacySchemaDir);
@@ -389,6 +389,16 @@ assert.strictEqual(legacyReport.readability, 'FORMAT_UNSUPPORTED');
 assert.strictEqual(legacyReport.display.status, 'NEEDS_RERUN');
 assert.strictEqual(legacyReport.display.verdict, null);
 assert.throws(() => assertCurrentExecution({ ...legacyExecution, schemaVersion: 12 }), (error) => error?.code === 'FORMAT_UNSUPPORTED');
+assert.throws(() => assertCurrentExecution(legacyExecution), (error) => error?.code === 'FORMAT_UNSUPPORTED');
+for (const readUnsupported of [
+  () => require('../case-runtime/store').loadExecution(legacySchemaDir, { allowFinalized: true }),
+  () => require('../lib/execution-artifact-manifest').executionArtifactFiles(legacySchemaDir),
+  () => require('../lib/execution-evidence-graph').validateExecutionEvidenceGraph(legacySchemaDir),
+]) {
+  assert.throws(readUnsupported, (error) => error?.code === 'FORMAT_UNSUPPORTED');
+}
+assert.deepStrictEqual(JSON.parse(fs.readFileSync(legacyExecutionPath, 'utf8')), legacyExecution,
+  'schema-13 rejection must leave the original execution unchanged');
 
 const invalidRuntimeDir = path.join(temp, 'invalid-runtime');
 const invalidExecutionDir = path.join(invalidRuntimeDir, 'executions', 'invalid-execution');

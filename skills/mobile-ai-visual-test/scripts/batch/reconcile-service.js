@@ -137,7 +137,7 @@ function reconcileBatch(options) {
       || entry.execution.batchContractSha !== state.contractSha) {
       throw contractError('BATCH_IMPLEMENTATION_MISMATCH', 'active execution belongs to another batch implementation');
     }
-    if (entry.execution.schemaVersion === 13) {
+    if (entry.execution.schemaVersion === 14) {
       try {
         const reconcileExecution = options.reconcileExecution || caseRuntimeLifecycle.reconcileExecution;
         reconcileExecution({ executionDir: entry.execDir, runtimeOptions: options.runtimeOptions || {} });

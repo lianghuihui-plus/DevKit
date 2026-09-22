@@ -83,11 +83,11 @@ function invalidResponse(execDir, request, issues, code = 'AGENT_INPUT_INVALID')
 function executeRun(execDir, request, options = {}) {
   const resolved = path.resolve(execDir);
   const execution = readJson(path.join(resolved, 'execution.json'), null);
-  if (execution?.schemaVersion !== 13) {
+  if (execution?.schemaVersion !== 14) {
     return projectAgentFacingError({
       status: 'REJECTED',
       code: 'PROTOCOL_MISMATCH',
-      message: `当前执行格式无效：期望 schema 13，实际为 ${execution?.schemaVersion || 'unknown'}`,
+      message: `当前执行格式无效：期望 schema 14，实际为 ${execution?.schemaVersion || 'unknown'}`,
       retryable: false,
     }, request);
   }

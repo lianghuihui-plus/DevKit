@@ -51,7 +51,7 @@ function createValidationProfile() {
 }
 
 function loadValidationProfile(execDir, execution) {
-  if (execution?.schemaVersion !== 13) {
+  if (execution?.schemaVersion !== 14) {
     throw contractError('FORMAT_UNSUPPORTED', `unsupported execution schema: ${execution?.schemaVersion ?? 'missing'}`);
   }
   const file = resolveArtifact(execDir, PROFILE_FILE);

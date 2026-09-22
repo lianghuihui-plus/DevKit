@@ -88,7 +88,7 @@ function executeResult(verdict, options = {}) {
     initialObserve: false,
     now: '2026-09-04T02:00:00.000Z',
   });
-  assert.strictEqual(started.execution.schemaVersion, 13);
+  assert.strictEqual(started.execution.schemaVersion, 14);
   assert.ok(started.execution.validationProfileSha);
   const planned = run(started.execDir, {
     capability: 'plan', caseFlow: simpleCaseFlow(source, '目标页面符合用例预期'),
