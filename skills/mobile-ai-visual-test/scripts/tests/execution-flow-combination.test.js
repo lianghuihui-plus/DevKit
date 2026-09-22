@@ -24,21 +24,19 @@ function run(executable, args, options = {}) {
     cwd: skillRoot,
     encoding: 'utf8',
     env: { ...childEnv, ...(options.env || {}) },
+    input: options.input === undefined ? undefined : JSON.stringify(options.input),
   });
   assert.strictEqual(result.status, 0, result.stderr || result.stdout);
   return options.json === false ? result.stdout.trim() : JSON.parse(result.stdout);
 }
 
-function runCoordinator(args) {
-  return run(process.execPath, ['scripts/coordinator-agent.js', ...args]);
+function runCoordinator(args, request) {
+  return run(process.execPath, ['scripts/coordinator-agent.js', ...args], { input: request });
 }
-
-function submit(response, capability, request) {
-  const channel = response.commands[capability];
-  fs.writeFileSync(channel.requestPath, `${JSON.stringify(request, null, 2)}\n`);
-  return runCoordinator([capability, '--state', response.statePath]);
+function statePath(response) { return response.result.command.match(/ --state '([^']+)'$/)[1]; }
+function submit(response, request) {
+  return run('/bin/zsh', ['-c', response.result.command], { input: request });
 }
-
 function createCase(caseNo) {
   const source = `验证组合流程用例 ${caseNo}`;
   const caseKey = `ck-${crypto.createHash('sha256').update(source).digest('hex').slice(0, 12)}`;
@@ -73,69 +71,64 @@ try {
     now: '2026-09-14T08:01:00.000Z',
   });
 
-  const prepared = runCoordinator(['prepare', '--workspace', workspace, '--case-nos', current.caseNo]);
-  assert.strictEqual(prepared.status, 'NEED_USER_CONFIRMATION');
-  assert.strictEqual(prepared.binding.platform, 'harmony');
-  const selectIos = prepared.choices.find((choice) => choice.id === 'SELECT_IOS');
-  const needIosBinding = submit(prepared, 'confirm', {
-    capability: 'confirmRun', decision: selectIos.decision, platform: selectIos.platform,
-  });
-  assert.strictEqual(needIosBinding.status, 'NEED_USER_CONFIRMATION');
-  assert.strictEqual(needIosBinding.binding.platform, 'ios');
-  const iosConfirmation = {
-    capability: 'confirmRun',
-    decision: 'CONFIRM_BINDING',
+  const prepared = runCoordinator(['--workspace', workspace], { operation: 'prepareRun', input: { caseNos: [current.caseNo] } });
+  assert.strictEqual(prepared.result.outcome, 'NEED_USER_CONFIRMATION');
+  assert.strictEqual(prepared.data.content.binding.platform, 'harmony');
+  const selectIos = prepared.data.content.choices.find((choice) => choice.id === 'SELECT_IOS');
+  const needIosBinding = submit(prepared, { operation: 'confirmRun', input: { decision: selectIos.decision, platform: selectIos.platform,
+   } });
+  assert.strictEqual(needIosBinding.result.outcome, 'NEED_USER_CONFIRMATION');
+  assert.strictEqual(needIosBinding.data.content.binding.platform, 'ios');
+  const iosConfirmation = { operation: 'confirmRun', input: { decision: 'CONFIRM_BINDING',
     userInstruction: '确认切换到 fake iOS 环境执行 014',
     binding: {
-      ...needIosBinding.binding,
+      ...needIosBinding.data.content.binding,
       appId: 'com.example.ios',
       entry: 'com.example.ios.Main',
     },
-  };
-  const switched = submit(needIosBinding, 'confirm', iosConfirmation);
-  assert.strictEqual(switched.status, 'CONFIRMED');
-  const frozenRequest = JSON.parse(fs.readFileSync(path.join(path.dirname(switched.statePath), 'execution-request.json'), 'utf8'));
+   } };
+  const switched = submit(needIosBinding, iosConfirmation);
+  assert.strictEqual(switched.result.outcome, 'CONFIRMED');
+  const frozenRequest = JSON.parse(fs.readFileSync(path.join(path.dirname(statePath(switched)), 'execution-request.json'), 'utf8'));
   assert.strictEqual(frozenRequest.binding.platform, 'ios');
 
-  const interrupted = runCoordinator(['prepare', '--workspace', workspace, '--case-nos', current.caseNo]);
-  assert.throws(() => confirmRun(interrupted.statePath, {
-    capability: 'confirmRun',
-    decision: 'USE_CURRENT',
+  const interrupted = runCoordinator(['--workspace', workspace], { operation: 'prepareRun', input: { caseNos: [current.caseNo] } });
+  assert.throws(() => confirmRun(statePath(interrupted), { operation: 'confirmRun', input: { decision: 'USE_CURRENT',
     userInstruction: '验证初始化中断后由真实 CLI 恢复',
-  }, {
+   } }, {
     interruptAfter: 'environmentFrozen',
     now: '2026-09-14T08:02:00.000Z',
   }), /MAVT_COORDINATOR_INTERRUPTED: environmentFrozen/);
-  const recovered = runCoordinator(['advance', '--state', interrupted.statePath]);
-  assert.strictEqual(recovered.status, 'CONFIRMED');
-  assert.strictEqual(JSON.parse(fs.readFileSync(interrupted.statePath, 'utf8')).phase, 'BATCH_READY');
+  const recovered = submit(interrupted, { operation: 'advanceRun', input: {} });
+  assert.strictEqual(recovered.result.outcome, 'CONFIRMED');
+  assert.strictEqual(JSON.parse(fs.readFileSync(statePath(interrupted), 'utf8')).phase, 'BATCH_READY');
 
-  const delegated = runCoordinator(['advance', '--state', interrupted.statePath]);
-  assert.strictEqual(delegated.status, 'NEED_CASE_AGENT');
-  const delegatedAgain = runCoordinator(['advance', '--state', interrupted.statePath]);
-  assert.strictEqual(delegatedAgain.status, 'NEED_CASE_AGENT');
-  assert.strictEqual(delegatedAgain.loaderCommand, delegated.loaderCommand);
-  const claimed = childProcess.spawnSync('/bin/zsh', ['-lc', delegated.loaderCommand], {
+  const delegated = submit(interrupted, { operation: 'advanceRun', input: {} });
+  assert.strictEqual(delegated.result.outcome, 'NEED_CASE_AGENT');
+  const delegatedAgain = submit(interrupted, { operation: 'advanceRun', input: {} });
+  assert.strictEqual(delegatedAgain.result.outcome, 'NEED_CASE_AGENT');
+  assert.strictEqual(delegatedAgain.data.content.loaderCommand, delegated.data.content.loaderCommand);
+  const claimed = childProcess.spawnSync('/bin/zsh', ['-lc', delegated.data.content.loaderCommand], {
     cwd: skillRoot,
     encoding: 'utf8',
     env: childEnv,
   });
   assert.strictEqual(claimed.status, 0, claimed.stderr || claimed.stdout);
-  const waitingAgain = runCoordinator(['advance', '--state', interrupted.statePath]);
-  assert.strictEqual(waitingAgain.status, 'WAITING');
-  assert.strictEqual(waitingAgain.reason, 'WAIT_EXECUTION_RESULT');
-  assert.strictEqual(waitingAgain.waitFor, 'EXECUTION_RESULT');
+  const waitingAgain = submit(interrupted, { operation: 'advanceRun', input: {} });
+  assert.strictEqual(waitingAgain.result.outcome, 'WAITING');
+  assert.strictEqual(waitingAgain.data.content.reason, 'WAIT_EXECUTION_RESULT');
+  assert.strictEqual(waitingAgain.result.waitFor, 'EXECUTION_RESULT');
 
-  fs.writeFileSync(path.join(path.dirname(interrupted.statePath), 'report-publication.json'), '{ invalid json');
-  const cancelled = submit(waitingAgain, 'cancel', { capability: 'cancelRun', reason: '组合测试取消' });
-  assert.strictEqual(cancelled.status, 'COMPLETE');
-  assert.strictEqual(cancelled.outcome, 'CANCELLED');
-  assert.strictEqual(cancelled.reportStatus, 'DEGRADED');
-  assert.strictEqual(cancelled.reportPath, undefined);
-  const cancelledAgain = runCoordinator(['advance', '--state', interrupted.statePath]);
-  assert.strictEqual(cancelledAgain.status, 'COMPLETE');
-  assert.strictEqual(cancelledAgain.outcome, 'CANCELLED');
-  assert.strictEqual(cancelledAgain.reportStatus, 'DEGRADED');
+  fs.writeFileSync(path.join(path.dirname(statePath(interrupted)), 'report-publication.json'), '{ invalid json');
+  const cancelled = submit(waitingAgain, { operation: 'cancelRun', input: { reason: '组合测试取消'  } });
+  assert.strictEqual(cancelled.result.outcome, 'COMPLETE');
+  assert.strictEqual(cancelled.data.content.runOutcome, 'CANCELLED');
+  assert.strictEqual(cancelled.result.reportStatus, 'DEGRADED');
+  assert.strictEqual(cancelled.data.content.reportPath, undefined);
+  const cancelledAgain = submit(interrupted, { operation: 'advanceRun', input: {} });
+  assert.strictEqual(cancelledAgain.result.outcome, 'COMPLETE');
+  assert.strictEqual(cancelledAgain.data.content.runOutcome, 'CANCELLED');
+  assert.strictEqual(cancelledAgain.result.reportStatus, 'DEGRADED');
 
   const historical = createCase('099');
   const oldExecutionDir = path.join(historical.caseDir, 'platforms', 'harmony', 'executions', 'execution-schema-10');

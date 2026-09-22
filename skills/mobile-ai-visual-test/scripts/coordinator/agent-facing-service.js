@@ -18,9 +18,12 @@ const { readJson, withFileLock, writeJsonAtomic } = require('../lib/execution-li
 const { readPublicationState, statePath: publicationStatePath } = require('../report/publication-state');
 const {
   AGENT_FACING_PROTOCOL,
+  PUBLIC_CONTRACT,
   documentationRefFor,
   validateCoordinatorRequest,
 } = require('./agent-facing-contract');
+const { successEnvelope } = require('../lib/agent-facing-envelope');
+const resources = require('./agent-resource-store');
 
 const SKILL_ROOT = path.resolve(__dirname, '../..');
 const CASE_AGENT_PROMPT = '你是独立 Case Agent。执行给定的 loaderCommand，读取并遵循其返回的 Case Prompt 和 Case Brief；只处理其中绑定的 execution，完成后返回最终摘要。';
@@ -34,16 +37,16 @@ function coordinatorError(message, issues = [], code = 'COORDINATOR_INPUT_INVALI
   return error;
 }
 
-function assertRequest(request, expectedCapability) {
+function assertRequest(request, expectedOperation) {
   const issues = validateCoordinatorRequest(request);
-  if (request?.capability !== expectedCapability && !issues.some((item) => item.field === 'capability')) {
-    issues.unshift({ field: 'capability', message: `必须为 ${expectedCapability}`, code: 'CAPABILITY_MISMATCH' });
+  if (request?.operation !== expectedOperation && !issues.some((item) => item.field === 'operation')) {
+    issues.unshift({ field: 'operation', message: `必须为 ${expectedOperation}`, code: 'OPERATION_MISMATCH' });
   }
   if (issues.length) throw coordinatorError('请求字段不符合当前能力', issues);
 }
 
 function quote(value) {
-  return JSON.stringify(String(value));
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
 function pathsFor(workspace, batchId) {
@@ -52,24 +55,12 @@ function pathsFor(workspace, batchId) {
     batchDir,
     state: path.join(batchDir, 'coordinator-state.json'),
     lock: path.join(batchDir, '.coordinator.lock'),
-    confirmRequest: path.join(batchDir, 'coordinator-confirm-request.json'),
-    cancelRequest: path.join(batchDir, 'coordinator-cancel-request.json'),
   };
 }
 
-function commandsFor(paths) {
+function commandFor(paths) {
   const entry = path.join(SKILL_ROOT, 'scripts/coordinator-agent.js');
-  return {
-    advance: `${quote(process.execPath)} ${quote(entry)} advance --state ${quote(paths.state)}`,
-    confirm: {
-      requestPath: paths.confirmRequest,
-      command: `${quote(process.execPath)} ${quote(entry)} confirm --state ${quote(paths.state)}`,
-    },
-    cancel: {
-      requestPath: paths.cancelRequest,
-      command: `${quote(process.execPath)} ${quote(entry)} cancel --state ${quote(paths.state)}`,
-    },
-  };
+  return `${quote(process.execPath)} ${quote(entry)} --state ${quote(paths.state)}`;
 }
 
 function allocateBatchId(now = null) {
@@ -78,7 +69,7 @@ function allocateBatchId(now = null) {
 }
 
 function stateContent(value) {
-  const { updatedAt, ...content } = value || {};
+  const { updatedAt, revision, ...content } = value || {};
   return content;
 }
 
@@ -86,7 +77,10 @@ function saveCoordinatorState(state, now = null) {
   const previous = readJson(state.statePath, null);
   const changed = !previous
     || JSON.stringify(stateContent(previous)) !== JSON.stringify(stateContent(state));
-  if (changed) state.updatedAt = now || new Date().toISOString();
+  if (changed) {
+    state.updatedAt = now || new Date().toISOString();
+    state.revision = Number(previous?.revision || 0) + 1;
+  }
   else if (previous?.updatedAt) state.updatedAt = previous.updatedAt;
   if (changed) writeJsonAtomic(state.statePath, state);
   return state;
@@ -95,11 +89,12 @@ function saveCoordinatorState(state, now = null) {
 function loadCoordinatorState(statePath) {
   const resolved = path.resolve(statePath);
   const state = readJson(resolved, null);
-  if (!state || state.type !== 'coordinatorRun') {
-    throw coordinatorError('Coordinator 状态不存在或不受支持', [{ field: 'state', message: resolved, code: 'STATE_INVALID' }], 'COORDINATOR_STATE_INVALID');
+  if (!state || state.type !== 'coordinatorRun' || !['workspace', 'batchId', 'statePath', 'command'].every((key) => typeof state[key] === 'string' && state[key])
+    || !Number.isInteger(state.revision) || state.revision < 1) {
+    throw coordinatorError('Coordinator 状态不存在或不受支持', [{ field: 'command', message: '绑定运行状态不可用', code: 'STATE_INVALID' }], 'COORDINATOR_STATE_INVALID');
   }
-  if (path.resolve(state.statePath) !== resolved) {
-    throw coordinatorError('Coordinator 状态路径绑定不一致', [{ field: 'state', message: resolved, code: 'STATE_BINDING_MISMATCH' }], 'COORDINATOR_STATE_INVALID');
+  if (path.resolve(state.statePath) !== resolved || path.resolve(state.workspace, 'runs', state.batchId, 'coordinator-state.json') !== resolved) {
+    throw coordinatorError('Coordinator 状态路径绑定不一致', [{ field: 'command', message: '绑定运行状态不一致', code: 'STATE_BINDING_MISMATCH' }], 'COORDINATOR_STATE_INVALID');
   }
   return state;
 }
@@ -122,7 +117,7 @@ function recordCoordinatorInputFailure(statePath, command, error) {
 }
 
 function publicBase(state) {
-  return { protocol: AGENT_FACING_PROTOCOL, statePath: state.statePath, commands: state.commands };
+  return { protocol: AGENT_FACING_PROTOCOL, statePath: state.statePath };
 }
 
 function technicalFacts(diagnostic) {
@@ -239,18 +234,6 @@ function environmentDecisionResponse(state, options = {}, details = {}) {
   };
 }
 
-function coordinatorInputRecovery(statePath, command) {
-  if (command !== 'confirm') return {};
-  const state = loadCoordinatorState(statePath);
-  if (state.phase === 'NEED_BINDING_CONFIRMATION' && state.bindingConfirmationTemplate) {
-    return { phase: state.phase };
-  }
-  if (state.phase === 'NEED_ENVIRONMENT_DECISION') {
-    return { phase: state.phase };
-  }
-  return {};
-}
-
 function knownBindingFacts(binding) {
   return Object.fromEntries(Object.entries(binding || {}).filter(([, value]) => (
     typeof value !== 'string' || !/^<.*>$/.test(value)
@@ -288,7 +271,7 @@ function assertCoordinatorPhase(state, expected, decision) {
   if (state.phase !== expected) {
     throw coordinatorError(`${decision} 不适用于当前运行阶段 ${state.phase}`, [{
       field: 'decision', message: `当前阶段要求 ${expected}`, code: 'DECISION_NOT_ALLOWED',
-    }]);
+    }], 'DECISION_NOT_ALLOWED');
   }
 }
 
@@ -457,9 +440,8 @@ function resumeInitialization(state, options = {}) {
   return { status: 'CONFIRMED', ...publicBase(state) };
 }
 
-function prepareRun(request, options = {}) {
-  assertRequest(request, 'prepareRun');
-  const workspace = assertWorkspace(request.workspace, { allowTest: true }).root;
+function prepareCore(request, options = {}) {
+  const workspace = assertWorkspace(options.workspace, { allowTest: true }).root;
   const issues = [];
   const seen = new Set();
   const targets = request.caseNos.map((caseNo, index) => {
@@ -490,7 +472,7 @@ function prepareRun(request, options = {}) {
     selectedProbe: null,
     environmentConfirmed: false,
     statePath: paths.state,
-    commands: commandsFor(paths),
+    command: commandFor(paths),
     createdAt: options.now || new Date().toISOString(),
     updatedAt: options.now || new Date().toISOString(),
   };
@@ -521,12 +503,12 @@ function bindingTemplate(platform, device) {
   };
 }
 
-function confirmRun(statePath, request, options = {}) {
-  assertRequest(request, 'confirmRun');
+function confirmCore(statePath, request, options = {}) {
   const initial = loadCoordinatorState(statePath);
   const lockPath = pathsFor(initial.workspace, initial.batchId).lock;
-  return withFileLock(lockPath, () => {
+  return runLocked(lockPath, () => {
     const state = loadCoordinatorState(statePath);
+    if (['COMPLETE', 'BLOCKED'].includes(state.phase)) throw coordinatorError('Coordinator 已终止', [], 'COORDINATOR_TERMINAL');
     state.lastInvalid = null;
     if (request.decision === 'SELECT_PLATFORM') {
       assertCoordinatorPhase(state, 'NEED_ENVIRONMENT_DECISION', request.decision);
@@ -574,7 +556,6 @@ function confirmRun(statePath, request, options = {}) {
         });
       }
       const confirmTemplate = {
-        capability: 'confirmRun',
         decision: 'CONFIRM_BINDING',
         userInstruction: `确认在所选设备和 App 上执行用例 ${state.targets.map((item) => item.caseNo).join(', ')}`,
         binding: bindingTemplate(request.platform, selectedDevice),
@@ -627,7 +608,7 @@ function confirmRun(statePath, request, options = {}) {
       });
     }
     return startInitialization(state, environment, request.userInstruction, options);
-  }, { now: options.now });
+  }, options);
 }
 
 function terminalResponse(state, response, options = {}) {
@@ -705,6 +686,7 @@ function advanceBatch(state, options = {}) {
           caseNo: state.targets.find((item) => item.caseKey === started.caseKey)?.caseNo,
           loaderCommand: started.handoff.loaderCommand,
           delegationPrompt: CASE_AGENT_PROMPT,
+          handoffAuthority: started.handoff,
           ...publicBase(state),
         };
       }
@@ -741,22 +723,23 @@ function advanceUnlocked(state, options = {}) {
   return advanceBatch(state, options);
 }
 
-function advanceRun(statePath, options = {}) {
+function advanceCore(statePath, options = {}) {
   const initial = loadCoordinatorState(statePath);
-  return withFileLock(pathsFor(initial.workspace, initial.batchId).lock, () => {
+  return runLocked(pathsFor(initial.workspace, initial.batchId).lock, () => {
     const state = loadCoordinatorState(statePath);
     state.lastInvalid = null;
     return advanceUnlocked(state, options);
-  }, { now: options.now });
+  }, options);
 }
 
-function cancelRun(statePath, request, options = {}) {
-  assertRequest(request, 'cancelRun');
+function cancelCore(statePath, request, options = {}) {
   const initial = loadCoordinatorState(statePath);
-  return withFileLock(pathsFor(initial.workspace, initial.batchId).lock, () => {
+  return runLocked(pathsFor(initial.workspace, initial.batchId).lock, () => {
     const state = loadCoordinatorState(statePath);
     state.lastInvalid = null;
     if (state.phase === 'COMPLETE') return completedResponse(state, state.outcome);
+    if (state.phase === 'BLOCKED') return blockedResponse(state);
+    state.cancelReason = request.reason;
     if (!['BATCH_READY', 'WAITING_FOR_CASE_AGENT', 'WAITING_FOR_PLATFORM_RUNTIME', 'CANCELLING'].includes(state.phase)) {
       state.phase = 'COMPLETE';
       state.outcome = 'CANCELLED';
@@ -769,15 +752,103 @@ function cancelRun(statePath, request, options = {}) {
     state.phase = 'CANCELLING';
     saveCoordinatorState(state, options.now);
     return advanceBatch(state, options);
+  }, options);
+}
+
+function runLocked(lock, action, options) {
+  return options.lockHeld ? action() : withFileLock(lock, action, { now: options.now });
+}
+
+function pick(value, fields) {
+  return Object.fromEntries(fields.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
+}
+
+function projectResponse(state, operation, response) {
+  const projection = PUBLIC_CONTRACT.methods[operation].responseProjection.outcomes[response.status];
+  if (!projection) throw coordinatorError('Coordinator 返回未声明结果', [], 'COORDINATOR_STATE_INVALID');
+  let resource = projection.primaryResourceType === 'runSummary' ? resources.terminalResource(state) : null;
+  if (!resource) {
+    const associated = [];
+    const diagnostic = response.facts?.technical || (response.diagnostics?.length ? {
+      code: response.code || response.reason,
+      stage: state.selectedProbe ? 'ENVIRONMENT_PROBE' : 'ENVIRONMENT_CONFIRMATION',
+      resourceFacts: { diagnostics: response.diagnostics },
+    } : null);
+    if (diagnostic && projection.associatedResourceTypes.includes('coordinatorDiagnostic')) {
+      associated.push(resources.publishSnapshot(state, 'coordinatorDiagnostic', diagnostic).descriptor);
+    }
+    const diagnosticRefs = associated.map((item) => item.ref);
+    if (projection.primaryResourceType === 'runDecision') {
+      resource = resources.publishSnapshot(state, 'runDecision', {
+        kind: response.reason === 'SELECT_DEVICE' ? 'DEVICE' : state.phase === 'NEED_BINDING_CONFIRMATION' ? 'BINDING' : 'ENVIRONMENT',
+        ...pick(response, ['reason', 'code', 'choices', 'binding', 'devices', 'deviceDetected', 'executionReady', 'requiredBindingFields', 'requiredUserFields']),
+        ...(diagnosticRefs.length ? { diagnosticRefs } : {}),
+      }, associated);
+    } else if (projection.primaryResourceType === 'caseDispatch') {
+      resource = resources.publishDispatch(state, response.handoffAuthority, response.delegationPrompt, response.caseNo);
+    } else if (projection.primaryResourceType === 'runProgress') {
+      resource = resources.publishSnapshot(state, 'runProgress', {
+        phase: state.phase, ...pick(response, ['waitFor', 'reason', 'caseNo', 'caseKey', 'executionId', 'progress']),
+        ...(diagnosticRefs.length ? { diagnosticRefs } : {}),
+      }, associated);
+    } else if (projection.primaryResourceType === 'runSummary') {
+      resource = resources.publishSnapshot(state, 'runSummary', {
+        outcome: response.status, phase: state.phase,
+        ...(response.outcome ? { runOutcome: response.outcome } : {}),
+        ...pick(response, ['code', 'reason', 'reportStatus', 'reportErrorCode', 'reportReason', 'reportPath']),
+        ...(state.cancelReason ? { cancelReason: state.cancelReason } : {}),
+        ...(diagnosticRefs.length ? { diagnosticRefs } : {}),
+      }, associated);
+      resources.bindTerminalResource(state, resource);
+    }
+  }
+  const facts = resource?.data.type === 'runSummary' ? resource.data.content : { ...response, outcome: response.status, phase: state.phase };
+  return successEnvelope({ operation, result: pick({ ...facts, command: state.command }, projection.resultFields),
+    ...(resource ? { data: resource.data, resources: resource.resources } : {}) });
+}
+
+function prepareRun(request, options = {}) {
+  assertRequest(request, 'prepareRun');
+  const response = prepareCore(request.input, options);
+  const state = loadCoordinatorState(response.statePath);
+  return withFileLock(pathsFor(state.workspace, state.batchId).lock, () => projectResponse(state, 'prepareRun', response));
+}
+function executeRunRequest(statePath, request, options = {}) {
+  assertRequest(request, request?.operation);
+  if (request.operation === 'prepareRun') throw coordinatorError('当前 command 已绑定 run，不能创建另一个 run');
+  const initial = loadCoordinatorState(statePath);
+  if (request.operation === 'read') {
+    const resource = resources.readResource(initial, request.input.ref);
+    return successEnvelope({ operation: 'read', result: { outcome: 'READ', resourceRef: resource.data.ref, resourceType: resource.data.type },
+      data: resource.data, resources: resource.resources });
+  }
+  return withFileLock(pathsFor(initial.workspace, initial.batchId).lock, () => {
+    const boundOptions = { ...options, lockHeld: true };
+    const response = request.operation === 'confirmRun' ? confirmCore(statePath, request.input, boundOptions)
+      : request.operation === 'cancelRun' ? cancelCore(statePath, request.input, boundOptions) : advanceCore(statePath, boundOptions);
+    return projectResponse(loadCoordinatorState(statePath), request.operation, response);
   }, { now: options.now });
+}
+function confirmRun(statePath, request, options = {}) { assertRequest(request, 'confirmRun'); return executeRunRequest(statePath, request, options); }
+function cancelRun(statePath, request, options = {}) { assertRequest(request, 'cancelRun'); return executeRunRequest(statePath, request, options); }
+function advanceRun(statePath, options = {}) { return executeRunRequest(statePath, { operation: 'advanceRun', input: {} }, options); }
+
+function failureResources(statePath, error) {
+  if (!error.diagnostic) return [];
+  const initial = loadCoordinatorState(statePath);
+  return withFileLock(pathsFor(initial.workspace, initial.batchId).lock, () => {
+    const state = loadCoordinatorState(statePath);
+    return [resources.publishSnapshot(state, 'coordinatorDiagnostic', technicalFacts(error.diagnostic)).descriptor];
+  });
 }
 
 module.exports = {
   advanceRun,
   cancelRun,
   confirmRun,
-  coordinatorInputRecovery,
   loadCoordinatorState,
   prepareRun,
   recordCoordinatorInputFailure,
+  executeRunRequest,
+  failureResources,
 };
