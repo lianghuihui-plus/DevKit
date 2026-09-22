@@ -42,6 +42,11 @@ const common = {
   brief: { caseKey: 'ck-001', expectations: [{ id: 'E1', text: '目标内容可见' }] },
   now: '2026-09-10T08:00:00.000Z',
 };
+const boundExecutionDir = path.join(workspaceRoot, 'cases', 'case-001', 'platforms', 'harmony', 'executions', common.executionId);
+fs.mkdirSync(boundExecutionDir, { recursive: true });
+fs.writeFileSync(path.join(boundExecutionDir, 'execution.json'), JSON.stringify({
+  schemaVersion: 13, runtime: 'case-runtime', executionId: common.executionId, batchId: common.batchId, finalized: false,
+}));
 
 try {
   const initial = createAgentHandoff(common);
@@ -149,6 +154,8 @@ try {
   ], { encoding: 'utf8' });
   assert.strictEqual(cli.status, 0, cli.stderr);
   assert.strictEqual(JSON.parse(cli.stdout).brief.lastSceneId, 'scene-0004');
+  assert.deepStrictEqual(require('../case-runtime/agent-resource-store').readPublishedResource(boundExecutionDir, JSON.parse(cli.stdout).caseBriefRef).data.content,
+    JSON.parse(cli.stdout).brief);
   assert.strictEqual(fs.readFileSync(initial.path, 'utf8'), persistedBefore, 'bootstrap must be read-only');
   expectCode(() => loadAgentHandoff({
     workspaceRoot,

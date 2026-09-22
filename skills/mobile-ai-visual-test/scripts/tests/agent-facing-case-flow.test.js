@@ -66,38 +66,40 @@ assert.ok(planRules.some((rule) => rule.includes('完整阅读') && rule.include
 assert.ok(planRules.some((rule) => rule.includes('同一业务事实') && rule.includes('DECISION') && rule.includes('CHECK')));
 assert.ok(planRules.some((rule) => rule.includes('正常 END') && rule.includes('REQUIRED CHECK')));
 
-const plan = { capability: 'plan', caseFlow };
+const plan = { operation: 'plan', input: { caseFlow } };
 assert.deepStrictEqual(validateAgentFacingRequest(plan), []);
 assert.deepStrictEqual(translateAgentFacingRequest(execDir, plan), {
   operation: 'recordCaseFlow', caseFlow,
 });
-assert.ok(validateAgentFacingRequest({ capability: 'plan', caseModel: {} })
-  .some((item) => item.field === 'caseFlow' && item.code === 'REQUIRED'));
+assert.ok(validateAgentFacingRequest({ operation: 'plan', input: { caseModel: {} } })
+  .some((item) => item.field === 'input.caseFlow' && item.code === 'FIELD_REQUIRED'));
 
 caseFlowService.revise(execDir, caseFlow);
 assert.deepStrictEqual(translateAgentFacingRequest(execDir, {
-  capability: 'observe', purpose: '确认分支', flowContext: { nodeRef: 'N2', selectedEdgeRef: 'L3' },
+  operation: 'observe', input: { purpose: '确认分支', flowContext: { nodeRef: 'N2', selectedEdgeRef: 'L3' } },
 }), {
   operation: 'observe', flowContext: { nodeRef: 'N2', selectedEdgeRef: 'L3' },
   decision: { purpose: '确认分支', expectationRefs: [] },
 });
 assert.throws(() => translateAgentFacingRequest(execDir, {
-  capability: 'observe', flowContext: { nodeRef: 'N3', selectedEdgeRef: 'L3' },
+  operation: 'observe', input: { flowContext: { nodeRef: 'N3', selectedEdgeRef: 'L3' } },
 }), (error) => error?.code === 'AGENT_INPUT_INVALID'
   && error.issues.some((item) => item.code === 'CASE_FLOW_CONTEXT_INVALID'));
 assert.deepStrictEqual(validateAgentFacingRequest({
-  capability: 'recordResult',
-  results: [{ checkNodeRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未出现系统权限弹窗', evidence: {} }],
+  operation: 'recordResult', input: {
+    results: [{ checkNodeRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未出现系统权限弹窗', evidence: {} }],
+  },
 }), []);
 assert.deepStrictEqual(translateAgentFacingRequest(execDir, {
-  capability: 'recordResult',
-  results: [{ checkNodeRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未出现系统权限弹窗', evidence: {} }],
+  operation: 'recordResult', input: {
+    results: [{ checkNodeRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未出现系统权限弹窗', evidence: {} }],
+  },
 }), {
   operation: 'recordExpectationResults',
   results: [{ expectationRef: 'N3', status: 'NOT_APPLICABLE', actual: '本次未出现系统权限弹窗', evidence: {} }],
 });
 assert.ok(validateAgentFacingRequest({
-  capability: 'recordResult', results: [{ expectationRef: 'N3', status: 'PASS', actual: '可见' }],
+  operation: 'recordResult', input: { results: [{ expectationRef: 'N3', status: 'PASS', actual: '可见' }] },
 }).some((item) => item.field.includes('expectationRef')));
 
 applyExpectationResults(execDir, [
@@ -114,20 +116,20 @@ assert.deepStrictEqual(skippedAuthorization.checks.map((item) => item.status), [
 ]);
 
 assert.deepStrictEqual(validateAgentFacingRequest({
-  capability: 'finish', outcome: 'NOT_RUN', reason: '账号不具备前置条件',
-  evidence: { sceneRefs: ['scene-1'], technicalRefs: [] }, summary: '未进入目标业务验证', uncertainties: [],
+  operation: 'finish', input: { mode: 'notRun', reason: '账号不具备前置条件',
+    evidence: { sceneRefs: ['scene-1'], technicalRefs: [] }, summary: '未进入目标业务验证', uncertainties: [] },
 }), []);
 const notRun = translateAgentFacingRequest(execDir, {
-  capability: 'finish', outcome: 'NOT_RUN', reason: '账号不具备前置条件',
-  evidence: { sceneRefs: ['scene-1'], technicalRefs: [] }, summary: '未进入目标业务验证', uncertainties: [],
+  operation: 'finish', input: { mode: 'notRun', reason: '账号不具备前置条件',
+    evidence: { sceneRefs: ['scene-1'], technicalRefs: [] }, summary: '未进入目标业务验证', uncertainties: [] },
 });
 assert.strictEqual(notRun.result.verdict, 'NOT_RUN');
 assert.deepStrictEqual(notRun.result.checks, []);
 assert.strictEqual(notRun.result.caseFlowRevision, 1);
 assert.deepStrictEqual(notRun.result.notRunEvidence.sceneRefs, ['scene-1']);
 assert.ok(validateAgentFacingRequest({
-  capability: 'finish', outcome: 'NOT_RUN', reason: '前置条件不满足', summary: '未执行', uncertainties: [],
-}).some((item) => item.field === 'evidence' && item.code === 'REQUIRED'));
+  operation: 'finish', input: { mode: 'notRun', reason: '前置条件不满足', summary: '未执行', uncertainties: [] },
+}).some((item) => item.field === 'input.evidence' && item.code === 'FIELD_REQUIRED'));
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('agent-facing case flow passed');

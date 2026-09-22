@@ -20,18 +20,18 @@ fs.writeFileSync(executionPath, `${JSON.stringify({ ...execution, finalized: fal
 store.writeScene(fixture.execDir, JSON.parse(fs.readFileSync(path.join(fixture.execDir, 'scenes', 'scene-0002.json'), 'utf8')));
 
 const publicRequest = {
-  capability: 'runPlan', submissionId: 'run-plan-033-attempt-01', basedOnSceneRef: 'scene-0002',
+  operation: 'runPlan', input: { submissionId: 'run-plan-033-attempt-01', sceneRef: 'scene-0002',
   purpose: '唤起视频控制栏并解除童锁', maxDurationMs: 2500, onFailure: 'STOP',
   steps: [
     { id: 'reveal', type: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] } },
     { id: 'after', type: 'capture', mode: 'SCREENSHOT_ONLY' },
-  ],
+  ] },
 };
 const translated = translateAgentFacingRequest(fixture.execDir, publicRequest);
 assert.deepStrictEqual(translated, {
-  operation: 'runPlan', submissionId: publicRequest.submissionId, basedOnSceneId: 'scene-0002',
-  purpose: publicRequest.purpose, maxDurationMs: 2500, onFailure: 'STOP', steps: publicRequest.steps,
-  decision: { purpose: publicRequest.purpose, expectationRefs: [] },
+  operation: 'runPlan', submissionId: publicRequest.input.submissionId, basedOnSceneId: 'scene-0002',
+  purpose: publicRequest.input.purpose, maxDurationMs: 2500, onFailure: 'STOP', steps: publicRequest.input.steps,
+  decision: { purpose: publicRequest.input.purpose, expectationRefs: [] },
 });
 
 const projected = projectAgentFacingResponse(fixture.execDir, {
@@ -40,8 +40,9 @@ const projected = projectAgentFacingResponse(fixture.execDir, {
   evidence: { sceneRefs: ['scene-0003'], screenshotRefs: ['screenshots/capture-0001.png'], locatorRefs: [], checkRefs: [] },
   technicalFacts: [], remainingMs: 2100,
 }, publicRequest);
-assert.strictEqual(projected.status, 'PLAN_COMPLETED');
-assert.strictEqual(projected.planId, 'plan-0001');
+assert.strictEqual(projected.status, 'SUCCEEDED');
+assert.strictEqual(projected.result.outcome, 'PLAN_COMPLETED');
+assert.strictEqual(projected.result.planId, 'plan-0001');
 assert.strictEqual(projected.verdict, undefined);
 assert.strictEqual(projected.screenComparison, undefined);
 assert.strictEqual(JSON.stringify(projected).includes('observedEffect'), false);

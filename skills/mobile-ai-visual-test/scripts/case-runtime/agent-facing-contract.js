@@ -123,7 +123,9 @@ const SCHEMAS = Object.freeze({
 
 const PUBLIC_ERRORS = Object.freeze({
   CASE_RUNTIME_FINALIZED: { group: 'transport', retryable: false, summary: 'Execution 已完成，只能读取已保存资源。', recovery: '使用 read 读取已有资源。' },
-  RESOURCE_NOT_FOUND: { group: 'transport', retryable: true, summary: '当前绑定中没有该资源。', recovery: '原样复制当前绑定发布的资源 ref。' },
+  RESOURCE_UNKNOWN: { group: 'transport', retryable: true, summary: '资源引用尚未发布。', recovery: '原样复制当前绑定发布的资源 ref。' },
+  RESOURCE_SCOPE_MISMATCH: { group: 'transport', retryable: false, summary: '资源引用属于其他作用域。', recovery: '使用发布该引用的已绑定 command。' },
+  RESOURCE_INTEGRITY_INVALID: { group: 'runtime', retryable: false, summary: '已发布资源缺失或完整性校验失败。', recovery: '保留现场并报告资源完整性故障。' },
   AGENT_INPUT_INVALID: { group: 'transport', retryable: true, summary: '请求结构、类型或条件字段不合法。', recovery: '根据 issues 修正当前方法请求一次；字段只取自当前方法页和 Runtime 响应。' },
   AGENT_INPUT_STALLED: { group: 'transport', retryable: false, summary: '同类输入错误连续发生，停止自动猜测。', recovery: '停止修改参数，读取当前方法页并核对绑定命令；仍不一致时保留请求和响应进行技术排障。' },
   PROTOCOL_MISMATCH: { group: 'transport', retryable: false, summary: 'Prompt、文档、客户端或 execution 协议不一致。', recovery: '停止执行该 execution，保留 Loader 输出和摘要；使用当前 Skill 新建 execution，不修改旧 execution。' },
@@ -134,10 +136,10 @@ const PUBLIC_ERRORS = Object.freeze({
     recovery: '按 technicalFact 资源核对绑定：sequence 不匹配时原样复用当前 Loader/Brief 中的 command；只有 HANDOFF_REPLACED 才表示该 dispatch 已被真实 continuation 取代；HANDOFF_NOT_CLAIMED 表示 Loader 尚未成功 claim。',
   },
   SCENE_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前方法需要 Scene，但 execution 尚无 Scene。', recovery: '先调用 observe 采集当前 Scene，再使用返回的 sceneRef 调用原方法。' },
-  SCENE_CHANGED: { group: 'scene-action', retryable: true, summary: '动作所依据的 Scene 已不是当前 Scene。', recovery: '调用 observe 获取新 Scene，重新 inspect 并从新 Scene 选择 ActionRef；不要复用旧动作。' },
+  SCENE_CHANGED: { group: 'scene-action', retryable: true, resourceTypes: ['scene', 'screenshot'], summary: '动作所依据的 Scene 已不是当前 Scene。', recovery: '调用 observe 获取新 Scene，重新 inspect 并从新 Scene 选择 ActionRef；不要复用旧动作。' },
   ACTION_NOT_AVAILABLE: { group: 'scene-action', retryable: true, summary: 'ActionRef 对当前 Scene 不成立。', recovery: '读取当前 Scene 的 action 投影；必要时重新 observe，不手工拼接或猜测 ActionRef。' },
   ACTION_INPUT_INVALID: { group: 'scene-action', retryable: true, summary: '动作输入缺失、越界或包含不支持字段。', recovery: '按当前 ActionRef 返回的输入约束修正 input；坐标使用 0 到 1 的归一化值。' },
-  ACTION_EFFECT_MISMATCH: { group: 'scene-action', retryable: true, summary: '动作结果已知，但技术核验未满足所请求的输入效果。', recovery: '读取动作技术证据和当前 Scene；Agent 判断可安全重试时有限重试，不直接据此判定产品 FAIL。' },
+  ACTION_EFFECT_MISMATCH: { group: 'scene-action', retryable: true, resourceTypes: ['scene', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作结果已知，但技术核验未满足所请求的输入效果。', recovery: '读取动作技术证据和当前 Scene；Agent 判断可安全重试时有限重试，不直接据此判定产品 FAIL。' },
   VISUAL_INSPECTION_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前视觉动作或结论要求先登记图片事实。', recovery: '对同一 Scene 调用 inspect(mode="visual") 登记实际看到的事实，再重试视觉动作或结果记录。' },
   CASE_FLOW_REQUIRED: { group: 'flow-result', retryable: true, summary: '当前 execution 尚无 Case Flow。', recovery: '读取原始用例并调用 plan 创建完整 Case Flow，然后从 entryNodeRef 开始执行。' },
   CASE_FLOW_REVISION_CONFLICT: { group: 'flow-result', retryable: true, summary: 'Case Flow baseRevision 不是当前 revision。', recovery: '读取响应中的当前 Case Flow revision，合并仍需要的调整理由后基于该 revision 重新提交。' },
@@ -150,7 +152,7 @@ const PUBLIC_ERRORS = Object.freeze({
   KNOWLEDGE_QUERY_UNKNOWN: { group: 'knowledge-recovery', retryable: true, summary: '知识 queryId 不存在或不属于当前 execution。', recovery: '先调用 knowledge(query) 创建查询，并使用该响应返回的 queryId 复核候选。' },
   KNOWLEDGE_REVIEW_INVALID: { group: 'knowledge-recovery', retryable: true, summary: '知识候选复核不满足当前 query 约束。', recovery: '逐条覆盖当前 query 返回的候选并给出适用性原因，再提交同一 queryId。' },
   APP_INITIAL_STATE_UNAVAILABLE: { group: 'knowledge-recovery', retryable: true, summary: '授权的初始状态准备未完成。', recovery: '读取 technical facts 确认制品、设备或平台准备失败原因；完成技术处置后重试同一 recover.targetState。' },
-  ACTION_OUTCOME_UNKNOWN: { group: 'scene-action', retryable: false, summary: '动作可能已经投递，禁止自动重放。', recovery: '禁止重放动作；先 observe 当前现场，并结合 action 落点证据判断下一步。' },
+  ACTION_OUTCOME_UNKNOWN: { group: 'scene-action', retryable: false, resourceTypes: ['scene', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作可能已经投递，禁止自动重放。', recovery: '禁止重放动作；先 observe 当前现场，并结合 action 落点证据判断下一步。' },
   PLAN_INVALID: { group: 'plan', retryable: true, summary: '命令计划不满足步数、时限、引用或定位类型约束。', recovery: '按 issues 修正有限步骤和前向引用；不要添加循环、脚本或未注册定位类型。' },
   PLAN_STEP_FAILED: { group: 'plan', retryable: true, summary: '计划在指定步骤发生确定性技术失败。', recovery: '检查已完成前缀、失败步骤和证据；根据当前 Scene 重新形成新的 submissionId。' },
   PLAN_SUBMISSION_CONFLICT: { group: 'plan', retryable: false, summary: '同一 submissionId 对应了不同的规范化请求。', recovery: '原请求重试必须保持内容不变；业务上确需新计划时使用新的 submissionId。' },
@@ -158,11 +160,11 @@ const PUBLIC_ERRORS = Object.freeze({
   LOCATOR_UNSUPPORTED: { group: 'plan', retryable: true, summary: '当前 Runtime 不支持所声明的定位类型。', recovery: '改用当前 Scene 可验证的 ELEMENT_REF、POINT 或 REGION；不能可靠定位时交回 Agent。' },
   TARGET_NOT_FOUND: { group: 'plan', retryable: true, summary: '声明的 Scene、控件或定位目标不存在。', recovery: '查看计划已采集的 Scene 证据，重新选择可验证引用；不要猜测目标坐标。' },
   PLAN_CHECK_FAILED: { group: 'plan', retryable: true, summary: '技术检查无法执行或谓词不受支持。', recovery: '只使用文档列出的确定性技术谓词；业务判断留给 Agent。' },
-  PLAN_ACTION_OUTCOME_UNKNOWN: { group: 'plan', retryable: false, summary: '计划动作可能已投递，结果未知。', recovery: '禁止重放计划或动作；先检查已有证据并 observe 当前现场。' },
+  PLAN_ACTION_OUTCOME_UNKNOWN: { group: 'plan', retryable: false, resourceTypes: ['planResult', 'scene', 'screenshot', 'actionSpatialEvidence', 'planEvidence', 'technicalFact'], summary: '计划动作可能已投递，结果未知。', recovery: '禁止重放计划或动作；先检查已有证据并 observe 当前现场。' },
   PLAN_TIMEOUT: { group: 'plan', retryable: true, summary: '计划未能在声明的有限时限内完成。', recovery: '检查已完成前缀和各步耗时；缩短计划或在新 Scene 上使用新的 submissionId。' },
   CASE_RESULT_INCOMPLETE: { group: 'flow-result', retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。', recovery: '逐项处置全部 Baseline CHECK 和最终活跃的补充 CHECK；可用 PASS、FAIL、BLOCKED、INCONCLUSIVE、条件检查的 NOT_APPLICABLE，或提供理由的 WAIVED。' },
   TIME_LIMIT: { group: 'flow-result', retryable: false, summary: '已停止新的设备动作。', recovery: '不再执行设备动作；使用已有证据收口可判断项，并披露未完成项和时间限制。' },
-  CASE_RUNTIME_TECHNICAL: { group: 'knowledge-recovery', retryable: false, summary: '未归类的 execution 技术异常。', recovery: '读取 technical.stage、logRefs 和 resourceFacts 排障；恢复后先 observe 核验现场，再回到原业务节点。' },
+  CASE_RUNTIME_TECHNICAL: { group: 'knowledge-recovery', retryable: false, resourceTypes: ['technicalFact'], summary: '未归类的 execution 技术异常。', recovery: '读取 technical.stage、logRefs 和 resourceFacts 排障；恢复后先 observe 核验现场，再回到原业务节点。' },
 });
 
 const TRANSPORTS = Object.freeze({
@@ -215,7 +217,7 @@ const PUBLIC_METHODS = Object.freeze({
   read: method('read', '按原样引用读取一个资源。', SCHEMAS.read, { ref: '当前绑定发布的资源引用' }, {
     responseProjection: projection(['resourceRef', 'resourceType'], '$resourceType', '$declaredResources'),
     minimalExample: { operation: 'read', input: { ref: 'scene-1' } },
-    successStatuses: ['RESOURCE_READ'], errorCodes: ['AGENT_INPUT_INVALID', 'RESOURCE_NOT_FOUND', 'CASE_RUNTIME_TECHNICAL'],
+    successStatuses: ['RESOURCE_READ'], errorCodes: ['AGENT_INPUT_INVALID', 'RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH', 'RESOURCE_INTEGRITY_INVALID', 'CASE_RUNTIME_TECHNICAL'],
   }),
   inspect: method('inspect', '登记 Agent 已观察到的视觉或动作事实。', SCHEMAS.inspect, {
     sceneRef: '被检查的 Scene', mode: 'visual 或 action',

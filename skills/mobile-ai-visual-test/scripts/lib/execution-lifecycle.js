@@ -177,6 +177,7 @@ module.exports = {
   atomicWrite,
   executionIdFromDate,
   findActiveExecutions,
+  listExecutionDirs,
   readJson,
   readJsonl,
   releaseFileLock,

@@ -54,7 +54,15 @@ function loaderErrorResponse(error) {
 }
 
 function main(argv = process.argv.slice(2)) {
-  process.stdout.write(`${JSON.stringify(loadAgentHandoff(parseArgs(argv)), null, 2)}\n`);
+  const options = parseArgs(argv);
+  const loaded = loadAgentHandoff(options);
+  const { listExecutionDirs, readJson } = require('./lib/execution-lifecycle');
+  const matches = listExecutionDirs(options.workspaceRoot).filter((execDir) => (
+    readJson(path.join(execDir, 'execution.json'), null)?.executionId === options.executionId
+  ));
+  if (matches.length !== 1) throw Object.assign(new Error('Handoff execution binding is unavailable or ambiguous'), { code: 'HANDOFF_BINDING_INVALID' });
+  const resource = require('./case-runtime/agent-resource-store').publishCaseBrief(matches[0], options.handoffPath, options.workspaceRoot);
+  process.stdout.write(`${JSON.stringify({ ...loaded, caseBriefRef: resource.data.ref })}\n`);
 }
 
 if (require.main === module) {

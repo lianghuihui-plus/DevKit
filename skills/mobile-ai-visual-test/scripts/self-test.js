@@ -54,6 +54,7 @@ const suites = Object.freeze({
   boundaries: 'tests/architecture-boundaries.test.js',
   agentCapabilityContract: 'tests/agent-capability-contract.test.js',
   agentFacingCaseRuntime: 'tests/agent-facing-case-runtime.test.js',
+  agentFacingResources: 'tests/agent-facing-resources.test.js',
   agentFacingPlan: 'tests/agent-facing-plan.test.js',
   agentFacingCaseFlow: 'tests/agent-facing-case-flow.test.js',
   agentFacingDocs: 'tests/agent-facing-docs.test.js',

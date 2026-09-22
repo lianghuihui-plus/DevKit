@@ -68,7 +68,8 @@ function buildCaseBrief(executionDir, execution, caseJson, sourceText, runtime, 
       documentation: 'references/case-runtime.md',
     },
     caseFlow,
-    scene: agentContract.projectScene(fullScene),
+    ...(caseFlow ? { caseFlowRef: require('./agent-resource-store').publishEvent(executionDir, 'caseFlow', caseFlow).data.ref } : {}),
+    scene: fullScene ? require('./agent-resource-store').publishScene(executionDir, fullScene.sceneId).data.content : null,
   };
 }
 
@@ -279,15 +280,16 @@ function buildContinuationBrief({ executionDir, reason }) {
   const technical = require('../lib/technical-facts');
   const unresolvedTechnicalFacts = technical.technicalFacts(events)
     .filter((event) => technical.technicalFactState(event, events, execution).state === 'VALID')
-    .map((event) => ({ technicalFactRef: event.technicalFactRef, code: event.code, message: event.message, checkNodeRefs: event.expectationRefs || [] }));
+    .map((event) => ({ technicalFactRef: require('./agent-resource-store').publishEvent(executionDir, 'technicalFact', event).data.ref,
+      code: event.code, checkNodeIds: event.expectationRefs || [] }));
   const status = runtimeCore.runtimeStatus(executionDir);
-  const projectedPendingReviews = pendingKnowledgeReviews.map((pending) => ({
-    queryId: pending.queryId,
-    query: pending.query,
-    candidateCount: pending.candidateCount,
-    checkNodeRefs: pending.expectationRefs || [],
-    candidates: pending.candidates || [],
-  }));
+  const projectedPendingReviews = pendingKnowledgeReviews.map((pending) => {
+    const resources = require('./agent-resource-store').provideOperationResources(executionDir,
+      { status: 'KNOWLEDGE', queryId: pending.queryId }, { operation: 'knowledge', input: { mode: 'query' } });
+    return { queryId: pending.queryId, knowledgeQueryRef: resources.result.knowledgeQueryRef,
+      candidateSetRef: resources.result.candidateSetRef, candidateIds: (pending.candidates || []).map((item) => item.entryId),
+      reviewRequired: true };
+  });
   return {
     ...initial,
     mode: 'CONTINUATION',
@@ -295,13 +297,13 @@ function buildContinuationBrief({ executionDir, reason }) {
       reason: String(reason || 'native Agent handle is unavailable'),
       sequence,
     },
-    scene: require('./agent-facing-contract').projectScene(store.readCurrentScene(executionDir)),
+    scene: initial.scene,
     resumeState: {
       executionStatus: execution.status,
       remainingMs: status.remainingMs,
       ...(status.preparation ? { preparation: status.preparation } : {}),
       caseFlow: narrative.caseFlow,
-      lastAction,
+      lastAction: lastAction ? { operationId: lastAction.operationId, type: lastAction.type } : null,
       unresolvedTechnicalFacts,
       pendingKnowledgeReviews: projectedPendingReviews,
     },

@@ -159,6 +159,7 @@ assert.strictEqual(runtimeStore.events(execDir).filter((event) => event.type ===
 
 fs.mkdirSync(path.join(execDir, 'screenshots'), { recursive: true });
 fs.writeFileSync(path.join(execDir, 'screenshots', 'scene-0007.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
+scene.screenshot.sha256 = require('crypto').createHash('sha256').update(fs.readFileSync(path.join(execDir, 'screenshots', 'scene-0007.png'))).digest('hex');
 const spatialRef = createActionSpatialEvidence(execDir, {
   operationId: 'action-0001',
   action: { type: 'swipe', fromX: 0, fromY: 0, toX: 0, toY: 0, coordinateSource: 'visual' },
@@ -262,6 +263,8 @@ for (const action of [
 ]) assert.throws(() => translateAgentFacingRequest(execDir, request('act', { sceneRef: scene.sceneId, action })),
   (error) => error.code === 'AGENT_INPUT_INVALID');
 
+fs.mkdirSync(path.join(execDir, 'knowledge'), { recursive: true });
+fs.writeFileSync(path.join(execDir, 'knowledge/k.md'), '# 语音权限规则\n权限弹窗处理后继续录音。\n');
 runtimeStore.appendEvent(execDir, 'knowledgeQueried', {
   queryId: 'knowledge-0001', query: '权限弹窗出现后语音录入无法继续', candidateCount: 1,
   expectationRefs: ['N2'], sceneId: scene.sceneId,
@@ -444,7 +447,7 @@ assert.deepStrictEqual(rejectedAct.result, { outcome: 'SCENE_CHANGED', sceneRef:
 // read bypasses the effect broker and remains available after finalization.
 const missing = run(execDir, request('read', { ref: 'unknown' }), { executeRequest });
 assertEnvelope(missing, 'REJECTED');
-assert.strictEqual(missing.error.code, 'RESOURCE_NOT_FOUND');
+assert.strictEqual(missing.error.code, 'RESOURCE_UNKNOWN');
 const executionPath = path.join(execDir, 'execution.json');
 const execution = readJson(executionPath);
 writeJsonAtomic(executionPath, { ...execution, finalized: true, lifecycle: 'FINALIZED' });

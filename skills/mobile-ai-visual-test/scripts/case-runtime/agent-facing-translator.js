@@ -192,6 +192,7 @@ function translateAgentFacingRequest(execDir, request) {
   if (structural.length) throw inputError(structural);
   request = { ...request.input, operation: request.operation };
   if (request.operation === 'read') return { operation: 'read', ref: request.ref };
+  request = require('./agent-resource-store').resolveRequestReferences(execDir, request);
   if (request.operation === 'act') {
     const action = request.action;
     if (action.ref?.startsWith('visual:')) {

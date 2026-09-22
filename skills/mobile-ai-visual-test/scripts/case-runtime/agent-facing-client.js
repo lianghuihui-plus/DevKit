@@ -98,15 +98,14 @@ function executeRun(execDir, request, options = {}) {
   }
   if (request.operation === 'read') {
     try {
-      const resource = options.readResource?.(request.input.ref);
-      if (!resource) return projectAgentFacingError({ status: 'REJECTED', code: 'RESOURCE_NOT_FOUND' }, request);
-      clearInvalidState(resolved);
+      const resource = (options.readResource || ((ref) => require('./agent-resource-store').readPublishedResource(resolved, ref)))(request.input.ref);
+      if (!resource) return projectAgentFacingError({ status: 'REJECTED', code: 'RESOURCE_UNKNOWN' }, request);
       return projectAgentFacingResponse(resolved, {
         status: 'RESOURCE_READ', ...resource,
         result: { ...resource.result, resourceRef: resource.data?.ref, resourceType: resource.data?.type },
       }, request, { ...options, resourceProvider: () => resource });
     } catch (error) {
-      return projectAgentFacingError({ status: 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
+      return projectAgentFacingError({ status: ['RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH'].includes(error.code) ? 'REJECTED' : 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
     }
   }
   let internal;
@@ -158,12 +157,14 @@ function executeRun(execDir, request, options = {}) {
   try {
     return projectAgentFacingResponse(resolved, response, request, options);
   } catch (error) {
-    return projectAgentFacingError({ status: 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
+    // Preserve the authoritative delivery outcome if resource publication fails.
+    return projectAgentFacingError({ ...response, status: 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
   }
 }
 
 function run(execDir, request, options = {}) {
   const runOptions = {
+    resourceProvider: require('./agent-resource-store').provideOperationResources,
     ...options,
     agentFacingMetrics: options.agentFacingMetrics || { ledgerProjectionMs: 0 },
   };

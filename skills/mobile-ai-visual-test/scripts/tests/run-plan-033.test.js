@@ -115,6 +115,14 @@ assert.strictEqual(actionCount, 2);
 assert.strictEqual(JSON.stringify(planResult).includes('observedEffect'), false);
 assert.strictEqual(JSON.stringify(planResult).includes('screenComparison'), false);
 assert.strictEqual(fs.existsSync(path.join(planned.execDir, 'result.json')), true, 'runPlan must not replace the existing CaseResult fixture');
+const resourceStore = require('../case-runtime/agent-resource-store');
+const publicPlan = require('../case-runtime/agent-facing-translator').projectAgentFacingResponse(planned.execDir, planResult,
+  { operation: 'runPlan', input: {} }, { resourceProvider: resourceStore.provideOperationResources });
+assert.strictEqual(publicPlan.data.type, 'planResult');
+assert.strictEqual(publicPlan.data.content.steps.length, planRequest.steps.length);
+assert.ok(!publicPlan.resources.some((item) => item.ref === publicPlan.data.ref));
+assert.deepStrictEqual(resourceStore.readPublishedResource(planned.execDir, publicPlan.data.ref).data, publicPlan.data);
+for (const associated of publicPlan.resources) assert.strictEqual(resourceStore.readPublishedResource(planned.execDir, associated.ref).data.type, associated.type);
 
 const retried = runPlan(planned.execDir, planRequest, {
   clock: () => planClock,
