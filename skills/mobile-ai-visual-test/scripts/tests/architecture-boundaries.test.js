@@ -18,6 +18,25 @@ const { OPERATION_CONTRACT } = runtimeOperationContract;
 const root = path.resolve(__dirname, '../..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const envelopeSource = read('scripts/lib/agent-facing-envelope.js');
+// Scope the public syntax scan to formal facades/docs; internal capabilityId remains valid.
+const formalSources = [
+  'scripts/case-runtime/agent-facing-contract.js', 'scripts/case-runtime/agent-facing-client.js',
+  'scripts/case-runtime/agent-facing-translator.js', 'scripts/case-runtime/mcp-server.js',
+  'scripts/coordinator/agent-facing-contract.js', 'scripts/coordinator/agent-facing-service.js',
+  'scripts/coordinator-agent.js', 'scripts/case-agent-bootstrap.js', 'SKILL.md',
+  ...roleResources('case-executor'), ...roleResources('batch-coordinator'),
+];
+for (const relative of new Set(formalSources)) {
+  assert.doesNotMatch(read(relative), /(?:["']?capability["']?\s*:)|\brequestPath\b|\brequiredBeforeNegativeConclusion\b/,
+    `${relative} must use the current formal protocol only`);
+}
+for (const relative of ['scripts/case-runtime/agent-facing-translator.js', 'scripts/coordinator/agent-facing-service.js']) {
+  assert.doesNotMatch(read(relative), /delete\s+(?:response|result|projected|publicResponse)\s*[.[]/,
+    `${relative} must project allowlists rather than spread-copy and delete`);
+}
+assert.strictEqual(Object.hasOwn(require('../case-runtime/agent-facing-contract'), 'projectScene'), false,
+  'the truncated old public Scene projector must be retired');
+assert.doesNotMatch(read('scripts/case-runtime/runtime-core.js'), /requiredBeforeNegativeConclusion/);
 for (const forbiddenDependency of [
   "require('../case-runtime/", "require('../coordinator/", "require('../report/", "require('../execution/", "require('../batch/",
 ]) {

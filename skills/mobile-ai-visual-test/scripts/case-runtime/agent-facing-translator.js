@@ -385,7 +385,8 @@ function projectResponseResult(response, request, provided = {}) {
     reviewRequired: response.reviewRequired,
     conclusion: response.conclusion || (response.status === 'KNOWLEDGE_REVIEWED' ? request?.input?.conclusion : undefined),
     verificationRequired: response.status === 'EXTERNAL_ACTION_RECORDED' ? true : undefined,
-    preparationState: response.preparationState,
+    preparationState: request?.operation === 'recover' && request.input?.mode === 'prepare'
+      ? response.preparation?.status : undefined,
     executionId: response.executionId,
     verdict: response.verdict,
     ...response.result,

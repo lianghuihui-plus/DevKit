@@ -141,35 +141,40 @@ if (process.argv[2] === '--worker') {
       };
     };
     assert.strictEqual(run(fixture.execDir, {
-      capability: 'plan',
-      caseFlow: simpleCaseFlow(`${fixture.platform} 并行执行验证`, `${fixture.platform} 页面结果正常显示`),
-    }, { now: now(100) }).status, 'CASE_FLOW_RECORDED');
+      operation: 'plan', input: {
+        caseFlow: simpleCaseFlow(`${fixture.platform} 并行执行验证`, `${fixture.platform} 页面结果正常显示`),
+      },
+    }, { now: now(100) }).result.outcome, 'CASE_FLOW_RECORDED');
     const observed = run(fixture.execDir, {
-      capability: 'observe',
-      purpose: '采集当前页面现场',
+      operation: 'observe', input: {
+        purpose: '采集当前页面现场',
+      },
     }, { runner, now: now(200) });
-    assert.strictEqual(observed.status, 'SCENE');
+    assert.strictEqual(observed.status, 'SUCCEEDED');
     assert.strictEqual(run(fixture.execDir, {
-      capability: 'inspect',
-      basedOnSceneRef: observed.scene.sceneRef,
-      channel: 'visual',
-      observation: `${fixture.platform} 页面结果清晰可见`,
-      checkNodeRefs: ['N2'],
-    }, { now: now(300) }).status, 'VISUAL_INSPECTED');
+      operation: 'inspect', input: {
+        sceneRef: observed.data.ref,
+        mode: 'visual',
+        observation: `${fixture.platform} 页面结果清晰可见`,
+        checkNodeRefs: ['N2'],
+      },
+    }, { now: now(300) }).result.outcome, 'VISUAL_INSPECTED');
     assert.strictEqual(run(fixture.execDir, {
-      capability: 'recordResult',
-      results: [{
-        checkNodeRef: 'N2',
-        status: 'PASS',
-        actual: `${fixture.platform} 页面结果正常显示`,
-        evidence: { sceneRefs: [observed.scene.sceneRef] },
-      }],
-    }, { now: now(400) }).status, 'RESULTS_RECORDED');
+      operation: 'recordResult', input: {
+        results: [{
+          checkNodeRef: 'N2',
+          status: 'PASS',
+          actual: `${fixture.platform} 页面结果正常显示`,
+          evidence: { sceneRefs: [observed.data.ref] },
+        }],
+      },
+    }, { now: now(400) }).result.outcome, 'RESULTS_RECORDED');
     assert.strictEqual(run(fixture.execDir, {
-      capability: 'finish',
-      summary: `${fixture.platform} 并行验证完成`,
-      uncertainties: [],
-    }, { now: now(500) }).status, 'COMPLETED');
+      operation: 'finish', input: { mode: 'complete',
+        summary: `${fixture.platform} 并行验证完成`,
+        uncertainties: [],
+      },
+    }, { now: now(500) }).result.outcome, 'COMPLETED');
   }
 
   function finalizeBatch(fixture) {

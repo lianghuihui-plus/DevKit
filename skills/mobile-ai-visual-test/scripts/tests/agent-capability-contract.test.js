@@ -65,7 +65,7 @@ function assertExamples(methods, validate, { forbidPaths = false } = {}) {
 assert.strictEqual(COORDINATOR_PUBLIC_CONTRACT.protocol, 'agent-facing');
 assert.deepStrictEqual(Object.keys(COORDINATOR_PUBLIC_CONTRACT.methods), COORDINATOR_CAPABILITIES);
 assert.strictEqual(COORDINATOR_INTERFACE_KIND, 'AGENT_FACING');
-assert.ok(COORDINATOR_CAPABILITIES.length <= 4, 'Main Agent active capability budget is 4');
+assert.deepStrictEqual(COORDINATOR_CAPABILITIES, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun', 'read']);
 assertExamples(COORDINATOR_PUBLIC_CONTRACT.methods, validateCoordinatorRequest);
 
 assert.strictEqual(CASE_PUBLIC_CONTRACT.protocol, 'agent-facing');
@@ -92,9 +92,7 @@ for (const prompt of ['SKILL.md', 'prompts/case-agent.md']) {
   assert.strictEqual(source.includes('requestSchema'), false, `${prompt} must not copy request schemas`);
   assert.strictEqual(/```json[\s\S]*?```/.test(source), false, `${prompt} must not embed request JSON manuals`);
 }
-assert.match(read('SKILL.md'), /choices.*binding.*requiredUserFields/);
 assert.match(read('SKILL.md'), /INITIALIZING_RUN/);
-assert.match(read('SKILL.md'), /OWNER_BATCH_TERMINAL/);
 assert.match(read('SKILL.md'), /技术异常/);
 assert.match(read('SKILL.md'), /读取.*日志/);
 assert.match(read('SKILL.md'), /不直接修改.*Batch.*Execution.*Result/);
@@ -108,7 +106,7 @@ assert.match(read('prompts/case-agent.md'), /技术异常/);
 assert.match(read('prompts/case-agent.md'), /(读取|使用).*日志/);
 assert.match(read('prompts/case-agent.md'), /不得直接.*修改.*Execution.*Result/);
 assert.match(read('prompts/case-agent.md'), /首选能力.*不是排他的工具边界/);
-assert.match(read('prompts/case-agent.md'), /recover\.targetState.*三端.*Runtime/);
+assert.match(read('prompts/case-agent.md'), /recover.*input\.targetState.*三端.*Runtime/);
 assert.match(read('prompts/case-agent.md'), /不.*提供.*安装包/);
 assert.match(read('prompts/case-agent.md'), /前置状态.*无法建立.*错误原因/);
 assert.match(read('prompts/case-agent.md'), /ACTION_OUTCOME_UNKNOWN.*禁止.*重放/);

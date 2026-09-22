@@ -91,63 +91,67 @@ function executeResult(verdict, options = {}) {
   assert.strictEqual(started.execution.schemaVersion, 14);
   assert.ok(started.execution.validationProfileSha);
   const planned = run(started.execDir, {
-    capability: 'plan', caseFlow: simpleCaseFlow(source, '目标页面符合用例预期'),
+    operation: 'plan', input: { caseFlow: simpleCaseFlow(source, '目标页面符合用例预期') },
   }, { now: '2026-09-04T02:00:00.500Z' });
-  assert.strictEqual(planned.status, 'CASE_FLOW_RECORDED');
+  assert.strictEqual(planned.result.outcome, 'CASE_FLOW_RECORDED');
   let technicalFactRef = null;
   const observed = run(started.execDir, {
-    capability: 'observe', purpose: '确认目标页面表现',
+    operation: 'observe', input: { purpose: '确认目标页面表现' },
   }, { runner, now: '2026-09-04T02:00:01.000Z' });
-  assert.strictEqual(observed.status, 'SCENE');
+  assert.strictEqual(observed.status, 'SUCCEEDED');
   const visualInspection = run(started.execDir, {
-    capability: 'inspect', basedOnSceneRef: observed.scene.sceneRef, channel: 'visual', checkNodeRefs: ['N2'],
-    observation: `截图中的目标页面表现可用于 ${verdict} 判断`,
+    operation: 'inspect', input: { sceneRef: observed.data.ref, mode: 'visual', checkNodeRefs: ['N2'],
+      observation: `截图中的目标页面表现可用于 ${verdict} 判断`,
+    },
   }, { now: '2026-09-04T02:00:01.100Z' });
-  assert.strictEqual(visualInspection.status, 'VISUAL_INSPECTED');
+  assert.strictEqual(visualInspection.result.outcome, 'VISUAL_INSPECTED');
   if (options.technical) {
     const technical = run(started.execDir, {
-      capability: 'observe', purpose: '获取可用于最终判断的现场',
+      operation: 'observe', input: { purpose: '获取可用于最终判断的现场' },
     }, {
       now: '2026-09-04T02:00:01.500Z',
       runner: () => { throw Object.assign(new Error('simulated adapter disconnection'), { code: 'ADAPTER_DISCONNECTED' }); },
     });
-    assert.strictEqual(technical.status, 'TECHNICAL');
-    assert.match(technical.technicalFactRef, /^technical-fact-\d{4}$/);
-    technicalFactRef = technical.technicalFactRef;
+    assert.strictEqual(technical.status, 'FAILED');
+    technicalFactRef = technical.resources.find((resource) => resource.type === 'technicalFact').ref;
+    const fact = run(started.execDir, { operation: 'read', input: { ref: technicalFactRef } });
+    assert.strictEqual(fact.status, 'SUCCEEDED');
+    assert.strictEqual(fact.data.type, 'technicalFact');
   }
 
   const check = {
     checkNodeRef: 'N2',
     status: verdict,
     actual: options.technical ? 'Adapter 连接中断，验证点无法继续' : `现场判断为 ${verdict}`,
-    sceneRefs: ['PASS', 'FAIL'].includes(verdict) ? [observed.scene.sceneRef] : [],
+    sceneRefs: ['PASS', 'FAIL'].includes(verdict) ? [observed.data.ref] : [],
     ...(technicalFactRef ? { technicalRefs: [technicalFactRef] } : {}),
   };
   const recorded = run(started.execDir, {
-    capability: 'recordResult', results: [{
+    operation: 'recordResult', input: { results: [{
       checkNodeRef: check.checkNodeRef,
       status: check.status,
       actual: check.actual,
       evidence: {
-        ...(['PASS', 'FAIL'].includes(verdict) ? { sceneRefs: [observed.scene.sceneRef] } : {}),
+        ...(['PASS', 'FAIL'].includes(verdict) ? { sceneRefs: [observed.data.ref] } : {}),
         ...(technicalFactRef ? { technicalRefs: [technicalFactRef] } : {}),
       },
-    }],
+    }] },
   }, { now: '2026-09-04T02:00:01.900Z' });
-  assert.strictEqual(recorded.status, 'RESULTS_RECORDED', JSON.stringify(recorded));
+  assert.strictEqual(recorded.result.outcome, 'RESULTS_RECORDED', JSON.stringify(recorded));
   const finished = run(started.execDir, {
-    capability: 'finish', summary: `${verdict} Runtime 结果`,
-    uncertainties: verdict === 'INCONCLUSIVE' ? ['现场不足以可靠判断'] : [],
+    operation: 'finish', input: { mode: 'complete', summary: `${verdict} Runtime 结果`,
+      uncertainties: verdict === 'INCONCLUSIVE' ? ['现场不足以可靠判断'] : [],
+    },
   }, { now: '2026-09-04T02:00:02.000Z' });
-  assert.strictEqual(finished.status, 'COMPLETED');
+  assert.strictEqual(finished.result.outcome, 'COMPLETED');
   const report = readExecutionReport(started.execDir);
   assert.strictEqual(report.display.verdict, verdict);
   if (technicalFactRef) {
-    const fact = report.events.find((event) => event.technicalFactRef === technicalFactRef);
+    const fact = report.events.find((event) => event.code === 'ADAPTER_DISCONNECTED');
     assert.strictEqual(fact.executionId, started.execution.executionId);
     assert.strictEqual(fact.decisionId !== null, true);
     assert.deepStrictEqual(fact.expectationRefs, ['N2']);
-    assert.strictEqual(fact.sceneId, observed.scene.sceneRef);
+    assert.strictEqual(fact.sceneId, report.events.find((event) => event.type === 'visualInspected').sceneId);
     assert.strictEqual(fact.generation, started.execution.warmSessionGeneration);
   }
   return report;

@@ -96,9 +96,19 @@ assert.ok(caseContract.validateAgentFacingRequest({
 }).length > 0, 'capabilities inspect must not exist');
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-single-contract-'));
-const requestPath = path.join(temp, 'request.json');
-fs.writeFileSync(requestPath, JSON.stringify({ capability: 'observe' }));
 assert.throws(() => parseRequest([], ''), /stdin/i);
+assert.throws(() => parseRequest(['--request', path.join(temp, 'request.json')], ''), /参数/,
+  'a request-file argument must never select a parallel transport');
+const unknownEffect = require('../case-runtime/store').technicalResponse(temp,
+  Object.assign(new Error('delivery unavailable'), { actionOutcomeUnknown: true }), { operation: 'act' });
+assert.deepStrictEqual(unknownEffect.diagnostic.recovery, { kind: 'OBSERVE_FIRST' },
+  'persisted technical diagnostics must not embed obsolete public capability requests');
+for (const field of ['ref', 'type', 'role']) {
+  const descriptor = { ref: 'scene-1', type: 'scene', role: 'related' };
+  delete descriptor[field];
+  assert.throws(() => successEnvelope({ operation: 'read', resources: [descriptor] }),
+    new RegExp(field), `resource descriptors must require ${field}`);
+}
 fs.rmSync(temp, { recursive: true, force: true });
 
 assert.strictEqual(fs.existsSync(path.join(root, 'scripts/case-runtime/runtime-client.js')), false);

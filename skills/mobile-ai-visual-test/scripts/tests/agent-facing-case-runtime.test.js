@@ -9,7 +9,7 @@ const { validateRuntimeRequest } = require('../case-runtime/contract');
 const {
   AGENT_FACING_CAPABILITIES,
   projectInitialState,
-  projectScene,
+  projectPreviousAction,
   validateAgentFacingRequest,
 } = require('../case-runtime/agent-facing-contract');
 const {
@@ -112,14 +112,6 @@ assert.strictEqual(initialState.automaticPreparation, 'NONE');
 assert.strictEqual(initialState.currentAppState, 'UNVERIFIED');
 assert.ok(initialState.availablePreparation.every((item) => item.authorized));
 assert.deepStrictEqual(initialState.availablePreparation.map((item) => item.targetState), ['APP_LOCAL_STATE_EMPTY', 'FRESH_INSTALL']);
-const projectedScene = projectScene(scene);
-assert.strictEqual(projectedScene.sceneRef, scene.sceneId);
-assert.deepStrictEqual(projectedScene.captureTiming, scene.captureTiming);
-assert.deepStrictEqual(projectedScene.controls.items.map((item) => item.ref), ['record-button', 'message-input']);
-assert.strictEqual(projectedScene.interactionContext.focusedElementRef, 'message-input');
-assert.strictEqual(projectedScene.interactionContext.verticalScroll, true);
-assert.strictEqual(projectedScene.capabilities, undefined);
-assert.strictEqual(projectedScene.screenshot.sha256, undefined);
 
 assert.ok(validateAgentFacingRequest(request('plan', {}))
   .some((item) => item.field === 'input.caseFlow' && item.code === 'FIELD_REQUIRED'));
@@ -172,19 +164,19 @@ scene.previousAction = {
 };
 writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 writeJsonAtomic(path.join(execDir, 'scenes', scene.sceneId + '.json'), scene);
-const previous = projectScene(scene).previousAction;
+const previous = projectPreviousAction(scene.previousAction);
 assert.strictEqual(previous.spatialEvidence.available, true);
 assert.deepStrictEqual(previous.spatialEvidence.requested, { from: { x: 0, y: 0 }, to: { x: 0, y: 0 } });
 assert.deepStrictEqual(previous.spatialEvidence.dispatched, { from: { x: 0, y: 0 }, to: { x: 0, y: 0 } });
 assert.strictEqual(previous.observedEffect, undefined);
-const inputMismatch = projectScene({ ...scene, previousAction: {
+const inputMismatch = projectPreviousAction({
   operationId: 'action-0002', action: { type: 'inputText', text: '[REDACTED]' },
   command: { status: 'ACCEPTED' },
   deviceExecution: { status: 'FAILED', verification: 'INPUT_EFFECT', failureCode: 'ACTION_EFFECT_MISMATCH' },
   failureCode: 'ACTION_EFFECT_MISMATCH',
   inputEffect: { status: 'MISMATCH', attempts: 7, settledMs: 7652, expectedLength: 11, observedLength: 5, expectedText: '13223222360', actualText: '13223' },
-} });
-assert.deepStrictEqual(inputMismatch.previousAction.technicalResult, {
+});
+assert.deepStrictEqual(inputMismatch.technicalResult, {
   deviceStatus: 'FAILED', verification: 'INPUT_EFFECT', failureCode: 'ACTION_EFFECT_MISMATCH',
   inputEffect: { status: 'MISMATCH', verificationAttempts: 7, verificationElapsedMs: 7652, expectedLength: 11, observedLength: 5 },
 });

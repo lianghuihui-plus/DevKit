@@ -16,6 +16,9 @@ const { readExecutionReport, selectExecutionDir } = require('../lib/execution-re
 const { refreshCommittedCaseReports } = require('../report/report-service');
 const { createTestWorkspace } = require('./support/workspace-fixture');
 const { simpleCaseFlow } = require('./support/case-flow');
+const { validateResultIntegrity } = require('../case-runtime/result-integrity');
+const { agentFacingFile } = require('../case-runtime/telemetry');
+const { readAgentFacingEvents } = require('../lib/agent-facing-telemetry');
 
 process.env.MAVT_SELF_TEST = '1';
 
@@ -85,34 +88,47 @@ function runner(command, args, options) {
 }
 
 assert.strictEqual(run(started.execDir, {
-  capability: 'plan',
-  caseFlow: simpleCaseFlow(source, '首页标题正常显示'),
-}, { now: '2026-09-16T01:00:00.100Z' }).status, 'CASE_FLOW_RECORDED');
+  operation: 'plan', input: {
+    caseFlow: simpleCaseFlow(source, '首页标题正常显示'),
+  },
+}, { now: '2026-09-16T01:00:00.100Z' }).result.outcome, 'CASE_FLOW_RECORDED');
 
-const observed = run(started.execDir, { capability: 'observe', purpose: '采集首页现场' }, {
+const observed = run(started.execDir, { operation: 'observe', input: { purpose: '采集首页现场' } }, {
   runner,
   now: '2026-09-16T01:00:00.200Z',
 });
-assert.strictEqual(observed.status, 'SCENE');
+assert.strictEqual(observed.status, 'SUCCEEDED');
+assert.strictEqual(observed.data.type, 'scene');
 assert.strictEqual(run(started.execDir, {
-  capability: 'inspect',
-  basedOnSceneRef: observed.scene.sceneRef,
-  channel: 'visual',
-  observation: '首页标题清晰可见',
-  checkNodeRefs: ['N2'],
-}, { now: '2026-09-16T01:00:00.300Z' }).status, 'VISUAL_INSPECTED');
+  operation: 'inspect', input: {
+    sceneRef: observed.data.ref,
+    mode: 'visual',
+    observation: '首页标题清晰可见',
+    checkNodeRefs: ['N2'],
+  },
+}, { now: '2026-09-16T01:00:00.300Z' }).result.outcome, 'VISUAL_INSPECTED');
 assert.strictEqual(run(started.execDir, {
-  capability: 'recordResult',
-  results: [{
-    checkNodeRef: 'N2',
-    status: 'PASS',
-    actual: '首页标题正常显示',
-    evidence: { sceneRefs: [observed.scene.sceneRef] },
-  }],
-}, { now: '2026-09-16T01:00:00.400Z' }).status, 'RESULTS_RECORDED');
-assert.strictEqual(run(started.execDir, {
-  capability: 'finish', summary: '首页标题验证完成', uncertainties: [],
-}, { now: '2026-09-16T01:00:00.500Z' }).status, 'COMPLETED');
+  operation: 'recordResult', input: {
+    results: [{
+      checkNodeRef: 'N2',
+      status: 'PASS',
+      actual: '首页标题正常显示',
+      evidence: { sceneRefs: [observed.data.ref] },
+    }],
+  },
+}, { now: '2026-09-16T01:00:00.400Z' }).result.outcome, 'RESULTS_RECORDED');
+const finished = run(started.execDir, {
+  operation: 'finish', input: { mode: 'complete', summary: '首页标题验证完成', uncertainties: [] },
+}, { now: '2026-09-16T01:00:00.500Z' });
+assert.strictEqual(finished.status, 'SUCCEEDED');
+assert.strictEqual(finished.result.outcome, 'COMPLETED');
+const finishMetrics = readAgentFacingEvents(agentFacingFile(started.execDir)).filter((event) => event.operation === 'finish');
+assert.strictEqual(finishMetrics.length, 1, 'a real facade finish records exactly one telemetry event');
+assert.strictEqual(finishMetrics[0].responseBytes, Buffer.byteLength(JSON.stringify(finished)),
+  'finish telemetry measures the final public response including resource refs');
+assert.doesNotThrow(() => validateResultIntegrity(started.execDir,
+  JSON.parse(fs.readFileSync(path.join(started.execDir, 'result.json'), 'utf8'))),
+  'recording finish telemetry must preserve post-finish result integrity');
 
 const decisionDrafts = fs.readdirSync(path.join(started.execDir, 'transactions'))
   .filter((name) => /^decision-.*\.draft\.json$/.test(name));

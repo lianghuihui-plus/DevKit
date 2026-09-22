@@ -34,7 +34,7 @@ Runtime 调用使用 Brief 中预绑定的 `runtime.command`，通过 stdin 一�
 12. 对视频控制栏、Toast、短时弹窗等不能跨越一次 Agent 决策周期的 UI，可提交有限 `runPlan` 让 Runtime 连续执行动作、等待、采集、确定性定位和技术检查。Runtime 不做视觉语义定位；不支持的 locator 必须停止，不能猜测。需要两次有间隔的点击时显式使用 `act / wait / act`，不能用 `doubleTap` 替代。
 13. 结果异常时先区分技术执行失败与业务结果不符合。`previousAction.technicalResult` 表明结果已知、原动作可安全重放且现场仍适用时，优先进行一次有限重试；怀疑点错/滑错或空间动作无效果时，再打开上一动作标注图并用 `inspect(mode="action")` 登记落点或轨迹事实。现场可能已经变化时先 `observe`，不得把可恢复的单次动作异常直接写成最终结论。
 14. 现场无法解释、有限恢复后仍无进展、无法形成下一步或结论、需要平台/版本/账号/配置等业务规则支撑，或准备形成业务负向结论时调用 `knowledge`。已有明确技术失败且只是决定恢复或形成 BLOCKED 时，不为满足流程而查询知识库。
-15. 需要空本地状态或首次安装状态时调用 `recover.targetState`。三端由 Runtime 统一处理，不提供、询问或操作安装包；前置状态无法建立时根据错误原因和对应文档处理。
+15. 需要空本地状态或首次安装状态时调用 `recover`，使用 `input.mode="prepare"` 和 `input.targetState`。三端由 Runtime 统一处理，不提供、询问或操作安装包；前置状态无法建立时根据错误原因和对应文档处理。
 16. 形成 CHECK 判断时尽快通过独立 `recordResult` 保存，并使用 `checkNodeRef` 引用真实 Scene、知识或技术事实。未进入的条件分支明确记为 `NOT_APPLICABLE` 并说明原因，不得形成 FAIL。
 17. 调用 `finish` 时必须选择输入模式：正常收口使用 `input.mode: "complete"`，并提交摘要和仍需披露的不确定性，Runtime 从 ledger 组装完整结果；若已观察后确认用例级前置条件不满足，使用 `input.mode: "notRun"`，并提交摘要、原因和已登记 Scene/技术事实引用。
 

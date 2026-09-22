@@ -27,7 +27,7 @@
 
 **可重试：** 是
 
-**处理：** 读取 technical facts 确认制品、设备或平台准备失败原因；完成技术处置后重试同一 recover.targetState。
+**处理：** 读取 technicalFact 资源确认制品、设备或平台准备失败原因；完成技术处置后重试同一 recover(mode="prepare") 的 input.targetState。
 
 <a id="error-case-runtime-technical"></a>
 ## CASE_RUNTIME_TECHNICAL

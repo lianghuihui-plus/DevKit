@@ -183,7 +183,6 @@ assert.strictEqual(started.execution.handoffReadyAt, T0);
 assert.strictEqual(started.execution.handoffConsumedAt, undefined, 'loader reads the handoff without consuming it');
 assert.deepStrictEqual(run(started.execDir, { operation: 'status' }).knowledgeInvestigation, {
   available: true,
-  requiredBeforeNegativeConclusion: true,
   pendingReviews: [],
   reviewedExpectationRefs: [],
 });
@@ -266,14 +265,14 @@ assert.strictEqual(continuationBrief.resumeState.caseFlow.revision, 1);
 assert.strictEqual(continuationBrief.resumeState.caseModel, undefined);
 assert.deepStrictEqual(Object.keys(continuationBrief.runtime).sort(), ['command', 'documentation', 'interfaceKind', 'protocol']);
 const replacedWriter = JSON.parse(childProcess.execSync(started.brief.runtime.command, {
-  encoding: 'utf8', input: JSON.stringify({ capability: 'observe' }),
+  encoding: 'utf8', input: JSON.stringify({ operation: 'observe', input: {} }),
 }));
-assert.strictEqual(replacedWriter.status, 'TECHNICAL');
-assert.strictEqual(replacedWriter.code, 'BINDING_INVALID');
-assert.match(replacedWriter.documentationRef, /error-binding-invalid$/);
+assert.strictEqual(replacedWriter.status, 'REJECTED');
+assert.strictEqual(replacedWriter.error.code, 'BINDING_INVALID');
+assert.match(replacedWriter.error.documentationRef, /error-binding-invalid$/);
 assert.strictEqual(JSON.parse(childProcess.execSync(continuationBrief.runtime.command, {
-  encoding: 'utf8', input: JSON.stringify({ capability: 'unknown' }),
-})).status, 'INPUT_INVALID');
+  encoding: 'utf8', input: JSON.stringify({ operation: 'unknown', input: {} }),
+})).status, 'REJECTED');
 const shellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 const continuationWorker = [
   `const { startCurrentCase } = require(${JSON.stringify(path.resolve(__dirname, '../batch/core'))});`,
@@ -303,21 +302,21 @@ const activeBrief = loadAgentHandoff({
   claimToken: handoffClaimToken(activeHandoff),
 }).brief;
 const clientStatus = JSON.parse(childProcess.execSync(activeBrief.runtime.command, {
-  cwd: os.tmpdir(), encoding: 'utf8', input: JSON.stringify({ capability: 'observe', unsupported: true }),
+  cwd: os.tmpdir(), encoding: 'utf8', input: JSON.stringify({ operation: 'observe', input: { unsupported: true } }),
 }));
-assert.strictEqual(clientStatus.status, 'INPUT_INVALID');
+assert.strictEqual(clientStatus.status, 'REJECTED');
 assert.strictEqual(JSON.parse(childProcess.execSync(activeBrief.runtime.command, {
-  encoding: 'utf8', input: JSON.stringify({ capability: 'unknown' }),
-})).status, 'INPUT_INVALID');
+  encoding: 'utf8', input: JSON.stringify({ operation: 'unknown', input: {} }),
+})).status, 'REJECTED');
 const malformedRequest = childProcess.spawnSync(started.runtime.entry, ['--dispatch-sequence', '4'], { encoding: 'utf8', input: '{ malformed json' });
 assert.strictEqual(malformedRequest.status, 0);
-assert.strictEqual(JSON.parse(malformedRequest.stdout).status, 'INPUT_INVALID');
+assert.strictEqual(JSON.parse(malformedRequest.stdout).status, 'REJECTED');
 assert.strictEqual(JSON.parse(childProcess.execSync(activeBrief.runtime.command, {
-  encoding: 'utf8', input: JSON.stringify({ capability: 'recover', reason: '' }),
-})).status, 'INPUT_INVALID');
+  encoding: 'utf8', input: JSON.stringify({ operation: 'recover', input: { mode: 'restart', reason: '' } }),
+})).status, 'REJECTED');
 const invalidClientCall = childProcess.spawnSync(started.runtime.entry, ['--dispatch-sequence', '4', 'act'], { encoding: 'utf8' });
 assert.strictEqual(invalidClientCall.status, 0);
-assert.strictEqual(JSON.parse(invalidClientCall.stdout).status, 'INPUT_INVALID');
+assert.strictEqual(JSON.parse(invalidClientCall.stdout).status, 'REJECTED');
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'WAIT_EXECUTION_RESULT');
 
 let observationCount = 0;
@@ -517,10 +516,15 @@ const pendingReviewBrief = buildContinuationBrief({
   reason: 'verify pending knowledge review contract',
 });
 assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].queryId, knowledge.queryId);
-assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].query, '当前页面显示异常');
-assert.deepStrictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].checkNodeRefs, ['N2']);
+assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].query, undefined);
+assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].checkNodeRefs, undefined);
 assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].expectationRefs, undefined);
-assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].candidates[0].entryId, 'K-runtime-001');
+assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].candidates, undefined);
+const pendingKnowledge = pendingReviewBrief.resumeState.pendingKnowledgeReviews[0];
+const pendingCandidates = require('../case-runtime/agent-facing-client').run(started.execDir,
+  { operation: 'read', input: { ref: pendingKnowledge.candidateSetRef } });
+assert.strictEqual(pendingCandidates.status, 'SUCCEEDED');
+assert.strictEqual(pendingCandidates.data.content.candidates[0].entryId, 'K-runtime-001');
 assert.strictEqual(pendingReviewBrief.resumeState.pendingKnowledgeReviews[0].nextCall, undefined);
 assert.strictEqual(JSON.stringify(pendingReviewBrief).includes('decision.knowledgeReview'), false);
 assert.strictEqual(knowledge.knowledgeInvestigation.pendingReviews[0].queryId, knowledge.queryId);

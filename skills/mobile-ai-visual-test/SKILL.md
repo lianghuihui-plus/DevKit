@@ -63,7 +63,7 @@ MAVT_REQUEST
 
 ## App 初始状态
 
-Case Agent 通过统一的 `recover.targetState` 表达需要空本地状态或首次安装状态，平台差异由 Runtime 处理。Android、HarmonyOS 清除目标 App 数据；iOS 仅在 Case Agent 确实请求该状态时，从工作区 `app-packages/ios` 自动查找与 Bundle ID 和设备类型匹配的 `.app` 或 `.ipa`，校验并冻结后卸载、重装目标 App。
+Case Agent 通过 `recover` 的 `input.mode="prepare"` 和 `input.targetState` 表达需要空本地状态或首次安装状态，平台差异由 Runtime 处理。Android、HarmonyOS 清除目标 App 数据；iOS 仅在 Case Agent 确实请求该状态时，从工作区 `app-packages/ios` 自动查找与 Bundle ID 和设备类型匹配的 `.app` 或 `.ipa`，校验并冻结后卸载、重装目标 App。
 
 iOS 真机用 `devicectl`、模拟器用 `simctl` 核验安装事实，不使用 WDA 运行态代替安装态。初始态准备失败时 Case Agent 根据错误原因和 `documentationRef` 处理；连续失败需先完成技术处置并登记，再重试原目标状态。
 
@@ -76,7 +76,7 @@ Coordinator 响应只提供错误原因、诊断、当前资源事实和 `docume
 当确定性恢复失败、状态长期无进展、Coordinator 无输出、资源锁与批次终态矛盾，或设备发现、Appium、WDA、Xcode 状态与诊断不一致时，可以在当前批次职责和已有授权内读取日志，使用 Shell 或平台原生工具调查并恢复共享设备、进程、端口与自动化服务。
 
 - 只处理当前批次或已确认终态批次拥有的资源，不终止活动批次或归属不明的进程。
-- 技术排障未经用户确认，不执行额外卸载、清数据、改变签名等有业务影响的动作；`recover.targetState` 只使用 execution 已授权的目标 App 状态能力。
+- 技术排障未经用户确认，不执行额外卸载、清数据、改变签名等有业务影响的动作；`recover` 的 `prepare` 模式只使用 execution 已授权的目标 App 状态能力。
 - 不直接修改 Batch、Execution、Result、Scene、事件或报告文件来伪造恢复。
 - 基础设施恢复后，按错误文档选择当前状态允许的方法回到 Facade；可推进状态通过原 command 提交 `advanceRun`，由框架重新探测并落盘。
 - 技术排障不代替 Case Agent 的用例理解、设备操作和业务判断。

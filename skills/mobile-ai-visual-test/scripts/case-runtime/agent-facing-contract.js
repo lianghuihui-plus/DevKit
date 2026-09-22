@@ -152,7 +152,7 @@ const PUBLIC_ERRORS = Object.freeze({
   EVIDENCE_REFERENCE_INVALID: { group: 'flow-result', retryable: true, summary: 'Scene、知识、技术或滚动证据引用无效。', recovery: '只引用当前 execution 已登记并由 Runtime 返回的证据 ref；缺失时先采集或登记事实。' },
   KNOWLEDGE_QUERY_UNKNOWN: { group: 'knowledge-recovery', retryable: true, summary: '知识 queryId 不存在或不属于当前 execution。', recovery: '先调用 knowledge(query) 创建查询，并使用该响应返回的 queryId 复核候选。' },
   KNOWLEDGE_REVIEW_INVALID: { group: 'knowledge-recovery', retryable: true, summary: '知识候选复核不满足当前 query 约束。', recovery: '逐条覆盖当前 query 返回的候选并给出适用性原因，再提交同一 queryId。' },
-  APP_INITIAL_STATE_UNAVAILABLE: { group: 'knowledge-recovery', retryable: true, summary: '授权的初始状态准备未完成。', recovery: '读取 technical facts 确认制品、设备或平台准备失败原因；完成技术处置后重试同一 recover.targetState。' },
+  APP_INITIAL_STATE_UNAVAILABLE: { group: 'knowledge-recovery', retryable: true, resourceTypes: ['technicalFact'], summary: '授权的初始状态准备未完成。', recovery: '读取 technicalFact 资源确认制品、设备或平台准备失败原因；完成技术处置后重试同一 recover(mode="prepare") 的 input.targetState。' },
   ACTION_OUTCOME_UNKNOWN: { group: 'scene-action', retryable: false, resourceTypes: ['scene', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作可能已经投递，禁止自动重放。', recovery: '禁止重放动作；先 observe 当前现场，并结合 action 落点证据判断下一步。' },
   PLAN_INVALID: { group: 'plan', retryable: true, summary: '命令计划不满足步数、时限、引用或定位类型约束。', recovery: '按 issues 修正有限步骤和前向引用；不要添加循环、脚本或未注册定位类型。' },
   PLAN_STEP_FAILED: { group: 'plan', retryable: true, summary: '计划在指定步骤发生确定性技术失败。', recovery: '检查已完成前缀、失败步骤和证据；根据当前 Scene 重新形成新的 submissionId。' },
@@ -502,58 +502,6 @@ function projectInitialState(execution, preparation = null) {
   };
 }
 
-function projectScene(scene) {
-  if (!scene) return null;
-  const interactive = (scene.elements || []).filter((element) => element.visible !== false
-    && element.enabled !== false && Array.isArray(element.bounds)
-    && (element.clickable || element.checkable || element.editable));
-  const controls = interactive.slice(0, 24).map((element) => ({
-    ref: element.id,
-    ...(element.text ? { text: element.text } : {}),
-    ...(element.role ? { role: element.role } : {}),
-    bounds: element.bounds.map(Number),
-    clickable: element.clickable === true,
-    checkable: element.checkable === true,
-    editable: element.editable === true,
-    ...(element.focused === true ? { focused: true } : {}),
-  }));
-  const verticalScroll = (scene.scrollContexts || []).some((item) => item.axis === 'VERTICAL'
-    && item.trackingStatus === 'TRACKING');
-  const horizontalScroll = (scene.scrollContexts || []).some((item) => item.axis === 'HORIZONTAL'
-    && item.trackingStatus === 'TRACKING');
-  const focusedElement = interactive.find((element) => element.focused)
-    || (scene.signals?.focusedElement && interactive.find((element) => element.id === scene.signals.focusedElement));
-  const inForeground = scene.app?.inTargetApp !== false;
-  const signals = scene.signals && Object.keys(scene.signals).length ? scene.signals : null;
-  const conflicts = (scene.conflicts || []).length ? scene.conflicts : null;
-  return {
-    sceneRef: scene.sceneId,
-    capturedAt: scene.capturedAt,
-    ...(scene.captureTiming ? { captureTiming: scene.captureTiming } : {}),
-    screenshot: {
-      ref: scene.screenshot?.ref,
-      path: scene.screenshot?.path,
-      width: scene.screenshot?.width,
-      height: scene.screenshot?.height,
-    },
-    targetApp: {
-      inForeground,
-      ...(!inForeground ? { actualApp: scene.app?.appId || scene.app?.bundleId || scene.app?.packageName } : {}),
-    },
-    controls: { total: interactive.length, truncated: interactive.length > 24, items: controls },
-    interactionContext: {
-      verticalScroll,
-      horizontalScroll,
-      ...(focusedElement ? { focusedElementRef: focusedElement.id } : {}),
-      keyboardShown: scene.signals?.keyboard?.shown === true,
-      visualGestures: [...(scene.visual?.gestures || [])],
-    },
-    ...(signals ? { signals } : {}),
-    ...(conflicts ? { conflicts } : {}),
-    ...(scene.previousAction ? { previousAction: projectPreviousAction(scene.previousAction) } : {}),
-  };
-}
-
 module.exports = {
   AGENT_FACING_INTERFACE_KIND,
   AGENT_FACING_PROTOCOL,
@@ -562,6 +510,5 @@ module.exports = {
   documentationRefFor,
   projectInitialState,
   projectPreviousAction,
-  projectScene,
   validateAgentFacingRequest,
 };

@@ -114,7 +114,7 @@ function technicalResponse(execDir, error, options = {}) {
     ...(options.operation ? { stage: String(options.operation).toUpperCase() } : {}),
     summary: message,
     retryable: error?.retryable === true,
-    ...(error?.actionOutcomeUnknown ? { recovery: { kind: 'OBSERVE_FIRST', nextCall: { capability: 'observe' } } } : {}),
+    ...(error?.actionOutcomeUnknown ? { recovery: { kind: 'OBSERVE_FIRST' } } : {}),
   };
   const value = {
     status: 'TECHNICAL',

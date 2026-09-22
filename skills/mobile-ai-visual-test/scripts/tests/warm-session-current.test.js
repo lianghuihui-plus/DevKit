@@ -67,9 +67,9 @@ function completeCase(started, index) {
   const observed = run(started.execDir, { operation: 'observe' }, { runner, now: at });
   assert.strictEqual(observed.status, 'SCENE');
   const planned = runAgentFacing(started.execDir, {
-    capability: 'plan', caseFlow: simpleCaseFlow(`验证第 ${index} 个暖会话用例`, '目标页面正常显示'),
+    operation: 'plan', input: { caseFlow: simpleCaseFlow(`验证第 ${index} 个暖会话用例`, '目标页面正常显示') },
   }, { now: at });
-  assert.strictEqual(planned.status, 'CASE_FLOW_RECORDED');
+  assert.strictEqual(planned.result.outcome, 'CASE_FLOW_RECORDED');
   const visualInspection = run(started.execDir, {
     operation: 'inspectVisual',
     basedOnSceneId: observed.scene.sceneId,

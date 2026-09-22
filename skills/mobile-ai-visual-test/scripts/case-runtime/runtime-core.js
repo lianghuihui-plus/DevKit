@@ -19,7 +19,6 @@ function knowledgeInvestigationStatus(execDir) {
     .map((event) => [event.queryId, event]));
   return {
     available: runtime?.broker?.allowedOperations?.includes('knowledge') === true,
-    requiredBeforeNegativeConclusion: true,
     pendingReviews: events.filter((event) => event.type === 'knowledgeQueried' && !reviews.has(event.queryId))
       .map((event) => require('./knowledge-review').projectPendingKnowledgeReview(event)),
     reviewedExpectationRefs: [...new Set([...reviews.values()].flatMap((event) => event.expectationRefs || []))].sort(),
