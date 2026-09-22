@@ -7,12 +7,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { formatDuration } = require('../lib/display-format');
-const { collectIndexCases, renderIndexForRoot, writeCaseReports } = require('../report/report-service');
+const { collectIndexCases, renderIndexForRoot, writeCaseReports, projectExecutionMetrics } = require('../report/report-service');
+const { recordAgentFacing } = require('../case-runtime/telemetry');
 const { assertCurrentExecution, currentDisplayModel, readExecutionReport, selectExecutionDir } = require('../lib/execution-reader');
 const { findActiveExecutions } = require('../lib/execution-lifecycle');
 const { createExecutionClosure } = require('../lib/execution-closure');
 const { completionPaths, sha256File } = require('../lib/completion-contract');
-const { buildExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
+const { buildExecutionArtifactManifest, validateExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -36,6 +37,27 @@ for (const verdict of ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']) {
 
 for (const [verdict, fixture] of fixtures) {
   const report = readExecutionReport(fixture.execDir);
+  const authoritativeFiles = ['execution.json', 'metrics.json', 'result.json', 'events.jsonl', 'artifact-manifest.json', 'completion.json'];
+  const beforeProtocolRead = authoritativeFiles.map((name) => fs.readFileSync(path.join(fixture.execDir, name)));
+  recordAgentFacing(fixture.execDir, { operation: 'read', input: { ref: 'private-ref' } }, {
+    protocol: 'agent-facing', status: 'SUCCEEDED', operation: 'read', result: { outcome: 'READ' }, resources: [],
+    data: { ref: 'private-ref', type: 'caseResult', content: { verdict: 'PROTOCOL_VERDICT_MUST_NOT_WIN', command: 'private-command' } },
+  }, 7);
+  assert.strictEqual(projectExecutionMetrics(readExecutionReport(fixture.execDir)).agentFacing.requestCount, 1);
+  assert.deepStrictEqual(projectExecutionMetrics(readExecutionReport(fixture.execDir)).agentFacing.readTargetTypeCounts, { caseResult: 1 });
+  assert.strictEqual(readExecutionReport(fixture.execDir).display.verdict, verdict);
+  assert.deepStrictEqual(authoritativeFiles.map((name) => fs.readFileSync(path.join(fixture.execDir, name))), beforeProtocolRead,
+    'post-finalization protocol telemetry must not rewrite sealed business artifacts');
+  if (verdict === 'PASS') {
+    const neighbor = path.join(fixture.execDir, 'operations', 'unexpected-business-artifact.json');
+    fs.writeFileSync(neighbor, '{}');
+    assert.throws(() => validateExecutionArtifactManifest(fixture.execDir), { code: 'EXECUTION_ARTIFACT_SET_CHANGED' },
+      'excluding operations/telemetry must not exclude neighboring operation artifacts');
+    fs.unlinkSync(neighbor);
+    const malformedTelemetry = path.join(fixture.execDir, 'operations', 'telemetry', 'partial.draft.json');
+    fs.writeFileSync(malformedTelemetry, 'incomplete non-business diagnostic');
+    assert.doesNotThrow(() => validateExecutionArtifactManifest(fixture.execDir), 'protocol sidecar is not a closure dependency');
+  }
   assert.strictEqual(report.display.verdict, verdict);
   assert.strictEqual(report.display.executionStatus, fixture.metrics.executionStatus);
   assert.strictEqual(report.display.summary, fixture.result.summary);

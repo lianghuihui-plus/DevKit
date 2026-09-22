@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { appendJsonl, readJson, readJsonl } = require('../lib/execution-lifecycle');
+const protocolTelemetry = require('../lib/agent-facing-telemetry');
 
 function telemetryDir(execDir) {
   return path.join(execDir, 'telemetry');
@@ -17,7 +18,7 @@ function spanFile(execDir) {
 }
 
 function agentFacingFile(execDir) {
-  return path.join(telemetryDir(execDir), 'agent-facing.jsonl');
+  return path.join(execDir, protocolTelemetry.CASE_PROTOCOL_FILE);
 }
 
 function clock(options = {}) {
@@ -82,33 +83,13 @@ function recordSpan(execDir, name, durationMs, details = {}, options = {}) {
 }
 
 function recordAgentFacing(execDir, request, response, durationMs, options = {}) {
-  const execution = readJson(path.join(execDir, 'execution.json'), null);
-  if (execution?.schemaVersion !== 13 || execution.finalized === true) return;
-  fs.mkdirSync(telemetryDir(execDir), { recursive: true });
-  appendJsonl(agentFacingFile(execDir), {
-    schemaVersion: 1,
-    at: options.now || new Date().toISOString(),
-    capability: request?.capability || 'unknown',
-    status: response?.status || 'TECHNICAL',
-    ...(response?.code ? { code: response.code } : {}),
-    recordsResult: request?.capability === 'recordResult',
-    unresolvedFinish: request?.capability === 'finish' && response?.code === 'CASE_RESULT_INCOMPLETE',
-    requestBytes: Buffer.byteLength(JSON.stringify(request || {})),
-    responseBytes: Buffer.byteLength(JSON.stringify(response || {})),
-    sceneProjectionBytes: response?.scene ? Buffer.byteLength(JSON.stringify(response.scene)) : 0,
-    ledgerProjectionMs: Math.max(0, Number(options.agentFacingMetrics?.ledgerProjectionMs) || 0),
-    documentationRefCount: countDocumentationRefs(response),
-    ...(['stdin', 'mcp'].includes(options.hostTransport) ? { hostTransport: options.hostTransport } : {}),
-    durationMs: Math.max(0, Number(durationMs) || 0),
-  });
-}
-
-function countDocumentationRefs(value) {
-  if (!value || typeof value !== 'object') return 0;
-  if (Array.isArray(value)) return value.reduce((sum, item) => sum + countDocumentationRefs(item), 0);
-  return Object.entries(value).reduce((sum, [key, child]) => (
-    sum + (key === 'documentationRef' && typeof child === 'string' ? 1 : countDocumentationRefs(child))
-  ), 0);
+  try {
+    const execution = readJson(path.join(execDir, 'execution.json'), null);
+    if (execution?.schemaVersion !== 13) return;
+    protocolTelemetry.recordAgentFacingEvent(agentFacingFile(execDir), response, durationMs, {
+      ...options, contract: require('./agent-facing-contract').PUBLIC_CONTRACT,
+    });
+  } catch { protocolTelemetry.diagnostic(); }
 }
 
 function summarize(execDir, totalElapsedMs, openInvocation = null, options = {}) {
@@ -119,7 +100,7 @@ function summarize(execDir, totalElapsedMs, openInvocation = null, options = {})
   if (openInvocation) runtimeActiveMs += Math.max(0, clock(options) - openInvocation.startedMs);
   runtimeActiveMs = Math.min(totalElapsedMs, runtimeActiveMs);
   const spans = readJsonl(spanFile(execDir), { repairIncompleteTail: true });
-  const agentFacingEntries = readJsonl(agentFacingFile(execDir), { repairIncompleteTail: true });
+  const agentFacingEntries = protocolTelemetry.readAgentFacingEvents(agentFacingFile(execDir));
   const operationMs = (operation) => ends.filter((entry) => entry.operation === operation)
     .reduce((total, entry) => total + (Number(entry.durationMs) || 0), 0);
   const raw = {
@@ -201,23 +182,7 @@ function summarize(execDir, totalElapsedMs, openInvocation = null, options = {})
     agentTiming,
     invocationCount: starts.length,
     invocationErrorCount: ends.filter((entry) => entry.error === true).length,
-    agentFacing: {
-      requestCount: agentFacingEntries.length,
-      recordResultCount: agentFacingEntries.filter((entry) => entry.recordsResult).length,
-      unresolvedFinishAttemptCount: agentFacingEntries.filter((entry) => entry.unresolvedFinish).length,
-      requestBytes: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.requestBytes) || 0), 0),
-      responseBytes: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.responseBytes) || 0), 0),
-      sceneProjectionBytes: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.sceneProjectionBytes) || 0), 0),
-      ledgerProjectionMs: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.ledgerProjectionMs) || 0), 0),
-      documentationRefCount: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.documentationRefCount) || 0), 0),
-      hostTransportCounts: agentFacingEntries.reduce((counts, entry) => {
-        if (['stdin', 'mcp'].includes(entry.hostTransport)) {
-          counts[entry.hostTransport] = (counts[entry.hostTransport] || 0) + 1;
-        }
-        return counts;
-      }, {}),
-      durationMs: agentFacingEntries.reduce((sum, entry) => sum + (Number(entry.durationMs) || 0), 0),
-    },
+    agentFacing: protocolTelemetry.summarizeAgentFacing(agentFacingEntries),
   };
 }
 
@@ -231,4 +196,5 @@ module.exports = {
   redactRequest,
   spanFile,
   summarize,
+  summarizeAgentFacing: protocolTelemetry.summarizeAgentFacing,
 };

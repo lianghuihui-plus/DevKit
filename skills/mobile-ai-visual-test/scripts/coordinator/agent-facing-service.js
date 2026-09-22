@@ -24,6 +24,7 @@ const {
 } = require('./agent-facing-contract');
 const { successEnvelope } = require('../lib/agent-facing-envelope');
 const resources = require('./agent-resource-store');
+const protocolTelemetry = require('../lib/agent-facing-telemetry');
 
 const SKILL_ROOT = path.resolve(__dirname, '../..');
 const CASE_AGENT_PROMPT = '你是独立 Case Agent。原样执行给定的 loaderCommand，读取响应 data.content 中的 caseBrief 并遵循其中 casePrompt；只处理 Brief 绑定的 execution，完成后返回最终摘要。';
@@ -808,26 +809,57 @@ function projectResponse(state, operation, response) {
 }
 
 function prepareRun(request, options = {}) {
+  const startedMs = Date.now();
   assertRequest(request, 'prepareRun');
   const response = prepareCore(request.input, options);
   const state = loadCoordinatorState(response.statePath);
-  return withFileLock(pathsFor(state.workspace, state.batchId).lock, () => projectResponse(state, 'prepareRun', response));
+  let projectionMs = 0;
+  const projected = withFileLock(pathsFor(state.workspace, state.batchId).lock, () => {
+    const projectionStartedMs = Date.now();
+    const value = projectResponse(state, 'prepareRun', response);
+    projectionMs = Math.max(0, Date.now() - projectionStartedMs);
+    return value;
+  });
+  recordProtocolResponse(state.statePath, projected, Date.now() - startedMs, {
+    ...options, agentFacingMetrics: { projectionMs },
+  });
+  return projected;
 }
-function executeRunRequest(statePath, request, options = {}) {
+function executeRunRequestCore(statePath, request, options = {}) {
   assertRequest(request, request?.operation);
   if (request.operation === 'prepareRun') throw coordinatorError('当前 command 已绑定 run，不能创建另一个 run');
   const initial = loadCoordinatorState(statePath);
   if (request.operation === 'read') {
     const resource = resources.readResource(initial, request.input.ref);
-    return successEnvelope({ operation: 'read', result: { outcome: 'READ', resourceRef: resource.data.ref, resourceType: resource.data.type },
+    const projectionStartedMs = Date.now();
+    const response = successEnvelope({ operation: 'read', result: { outcome: 'READ', resourceRef: resource.data.ref, resourceType: resource.data.type },
       data: resource.data, resources: resource.resources });
+    options.agentFacingMetrics.projectionMs += Math.max(0, Date.now() - projectionStartedMs);
+    return response;
   }
   return withFileLock(pathsFor(initial.workspace, initial.batchId).lock, () => {
     const boundOptions = { ...options, lockHeld: true };
     const response = request.operation === 'confirmRun' ? confirmCore(statePath, request.input, boundOptions)
       : request.operation === 'cancelRun' ? cancelCore(statePath, request.input, boundOptions) : advanceCore(statePath, boundOptions);
-    return projectResponse(loadCoordinatorState(statePath), request.operation, response);
+    const projectionStartedMs = Date.now();
+    const projected = projectResponse(loadCoordinatorState(statePath), request.operation, response);
+    options.agentFacingMetrics.projectionMs += Math.max(0, Date.now() - projectionStartedMs);
+    return projected;
   }, { now: options.now });
+}
+function recordProtocolResponse(statePath, response, durationMs, options = {}) {
+  try {
+    const state = loadCoordinatorState(statePath);
+    protocolTelemetry.recordAgentFacingEvent(path.join(path.dirname(state.statePath), 'telemetry', 'agent-facing.jsonl'),
+      response, durationMs, { ...options, contract: PUBLIC_CONTRACT });
+  } catch { protocolTelemetry.diagnostic(); }
+}
+function executeRunRequest(statePath, request, options = {}) {
+  const startedMs = Date.now();
+  const runOptions = { ...options, agentFacingMetrics: { projectionMs: 0 } };
+  const response = executeRunRequestCore(statePath, request, runOptions);
+  recordProtocolResponse(statePath, response, Date.now() - startedMs, runOptions);
+  return response;
 }
 function confirmRun(statePath, request, options = {}) { assertRequest(request, 'confirmRun'); return executeRunRequest(statePath, request, options); }
 function cancelRun(statePath, request, options = {}) { assertRequest(request, 'cancelRun'); return executeRunRequest(statePath, request, options); }
@@ -851,4 +883,5 @@ module.exports = {
   recordCoordinatorInputFailure,
   executeRunRequest,
   failureResources,
+  recordProtocolResponse,
 };

@@ -26,7 +26,7 @@ function measureMetric(options, field, operation) {
     return operation();
   } finally {
     const endedMs = metricClock(options);
-    options.agentFacingMetrics[field] += Math.max(0, endedMs - startedMs);
+    options.agentFacingMetrics[field] = (options.agentFacingMetrics[field] || 0) + Math.max(0, endedMs - startedMs);
   }
 }
 
@@ -100,10 +100,10 @@ function executeRun(execDir, request, options = {}) {
     try {
       const resource = (options.readResource || ((ref) => require('./agent-resource-store').readPublishedResource(resolved, ref)))(request.input.ref);
       if (!resource) return projectAgentFacingError({ status: 'REJECTED', code: 'RESOURCE_UNKNOWN' }, request);
-      return projectAgentFacingResponse(resolved, {
+      return measureMetric(options, 'projectionMs', () => projectAgentFacingResponse(resolved, {
         status: 'RESOURCE_READ', ...resource,
         result: { ...resource.result, resourceRef: resource.data?.ref, resourceType: resource.data?.type },
-      }, request, { ...options, resourceProvider: () => resource });
+      }, request, { ...options, resourceProvider: () => resource }));
     } catch (error) {
       return projectAgentFacingError({ status: ['RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH'].includes(error.code) ? 'REJECTED' : 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
     }
@@ -158,7 +158,7 @@ function executeRun(execDir, request, options = {}) {
     }, request);
   }
   try {
-    return projectAgentFacingResponse(resolved, response, request, options);
+    return measureMetric(options, 'projectionMs', () => projectAgentFacingResponse(resolved, response, request, options));
   } catch (error) {
     // Preserve the authoritative delivery outcome if resource publication fails.
     return projectAgentFacingError({ ...response, status: 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
@@ -179,9 +179,11 @@ function run(execDir, request, options = {}) {
 }
 
 function main(argv = process.argv.slice(2), options = {}) {
+  const startedMs = Date.now();
   const boundExecDir = options.execDir || process.env.MAVT_EXECUTION_DIR;
   let response;
   let request;
+  let measured = false;
   try {
     if (!boundExecDir) throw Object.assign(new Error('execution binding is missing'), { code: 'CASE_RUNTIME_BINDING_MISSING' });
     const requestArgs = [...argv];
@@ -211,7 +213,10 @@ function main(argv = process.argv.slice(2), options = {}) {
         code: error.name === 'SyntaxError' ? 'JSON_INVALID' : 'TRANSPORT_INVALID',
       }]);
     }
-    if (!response) response = run(execDir, request, { ...options, hostTransport: 'stdin' });
+    if (!response) {
+      response = run(execDir, request, { ...options, hostTransport: 'stdin' });
+      measured = true;
+    }
   } catch (error) {
     const inputInvalid = ['AGENT_INPUT_INVALID', 'SyntaxError'].includes(error.code || error.name);
     const bindingInvalid = !inputInvalid && /(?:HANDOFF|BINDING)/.test(error.code || '');
@@ -225,6 +230,8 @@ function main(argv = process.argv.slice(2), options = {}) {
       issues: inputInvalid ? [{ field: error.name === 'SyntaxError' ? 'request' : 'transport', message: error.message, code: error.name === 'SyntaxError' ? 'JSON_INVALID' : 'TRANSPORT_INVALID' }] : undefined,
     }, request);
   }
+  if (!measured && boundExecDir) telemetry.recordAgentFacing(path.resolve(boundExecDir), request, response,
+    Date.now() - startedMs, { ...options, hostTransport: 'stdin' });
   if (options.returnOnly) return response;
   process.stdout.write(`${JSON.stringify(response)}\n`);
   return response;

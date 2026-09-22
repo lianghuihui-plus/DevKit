@@ -18,6 +18,7 @@ const { deriveExecutionTiming } = require('../lib/execution-timing');
 const { recoverRetryRequiredPublications } = require('./publication-state');
 const { projectCaseStatus } = require('../lib/case-status-projection');
 const { projectCaseFlowViews } = require('./case-flow-projection');
+const { CASE_PROTOCOL_FILE, readAgentFacingEvents, summarizeAgentFacing } = require('../lib/agent-facing-telemetry');
 
 const PLATFORM_ORDER = ['android', 'ios', 'harmony'];
 
@@ -144,7 +145,7 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
     phaseDurations: display.phaseDurations || null,
     reason: sourceCurrent ? display.summary || '' : '用例原文已更新，已有执行结果不再代表当前用例',
     failureCode: sourceCurrent ? display.failureCode || '' : 'CASE_SOURCE_CHANGED',
-    currentMetrics: sourceCurrent ? report.metrics || null : null,
+    currentMetrics: sourceCurrent ? projectExecutionMetrics(report) : null,
     coverage: sourceCurrent ? `${flowViews.coverage.covered}/${flowViews.coverage.total}` : '-',
     checkpointMetrics: sourceCurrent ? flowViews.coverage : null,
     recordingStatus: sourceCurrent ? narrative.recordingStatus : 'UNAVAILABLE',
@@ -152,6 +153,14 @@ function runtimeSummary(caseDir, platform, report = null, currentCase = null) {
     readability: report.readability,
     contextPath: path.join(caseRuntimeDir(caseDir, platform), 'CONTEXT.html'),
   };
+}
+
+function projectExecutionMetrics(report) {
+  if (!report?.metrics) return null;
+  // This sidecar only measures protocol usage. Verdicts, traces, and checkpoint coverage
+  // remain projections of the sealed execution artifacts, even if telemetry is missing.
+  const entries = report.latest ? readAgentFacingEvents(path.join(report.latest, CASE_PROTOCOL_FILE)) : [];
+  return { ...report.metrics, agentFacing: summarizeAgentFacing(entries) };
 }
 
 function buildCaseReportProjection(caseDir, suppliedCaseJson = null) {
@@ -579,6 +588,7 @@ module.exports = {
   buildCaseReportProjection,
   collectIndexCases,
   normalizePlatform,
+  projectExecutionMetrics,
   readLatestExecutionReport,
   rebuildCaseDerivedArtifacts,
   refreshCommittedCaseReports,

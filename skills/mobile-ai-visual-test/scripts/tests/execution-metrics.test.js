@@ -62,18 +62,7 @@ assert.deepStrictEqual(summary, {
   },
   invocationCount: 2,
   invocationErrorCount: 1,
-  agentFacing: {
-    requestCount: 0,
-    recordResultCount: 0,
-    unresolvedFinishAttemptCount: 0,
-    requestBytes: 0,
-    responseBytes: 0,
-    sceneProjectionBytes: 0,
-    ledgerProjectionMs: 0,
-    documentationRefCount: 0,
-    hostTransportCounts: {},
-    durationMs: 0,
-  },
+  agentFacing: telemetry.summarizeAgentFacing([]),
 });
 assert.strictEqual(summary.agentAndSchedulingGapMs,
   summary.agentTiming.firstPreparationMs + summary.agentTiming.stepDecisionMs
@@ -92,47 +81,100 @@ assert.deepStrictEqual(invalidEnd.fieldPaths, ['input.text', 'decision']);
 assert.strictEqual(invocationText.includes('received'), false);
 
 const rejectedResponse = {
-  status: 'INPUT_INVALID', code: 'ACTION_NOT_AVAILABLE',
-  documentationRef: 'references/case-runtime/errors/scene-action.md#error-action-not-available',
-  scene: { sceneRef: 'scene-0001', screenshot: { ref: 'screenshots/scene-0001.png' } },
+  protocol: 'agent-facing', operation: 'act', status: 'REJECTED', result: {},
+  error: { code: 'ACTION_NOT_AVAILABLE', retryable: true,
+    documentationRef: 'references/case-runtime/errors/scene-action.md#error-action-not-available' },
+  resources: [{ ref: 'private-resource-ref', type: 'scene', role: 'currentScene' }],
 };
 telemetry.recordAgentFacing(execDir, {
-  capability: 'act', actionRef: 'secret-control:tap',
+  operation: 'act', input: { action: { ref: 'secret-control:tap' } },
 }, rejectedResponse, 25, {
   now: '2026-08-20T10:00:00.950Z', hostTransport: 'stdin',
   agentFacingMetrics: { ledgerProjectionMs: 0 },
 });
 const finishRequest = {
-  capability: 'finish', summary: 'private summary',
+  operation: 'finish', input: { summary: 'private summary' },
 };
 const finishResponse = {
-  status: 'RESULT_INCOMPLETE', code: 'CASE_RESULT_INCOMPLETE',
-  documentationRef: 'references/case-runtime/errors/flow-result.md#error-case-result-incomplete',
-  readiness: { unresolved: [{ expectationRef: 'E2', reasons: ['RESULT_MISSING'] }] },
+  protocol: 'agent-facing', operation: 'finish', status: 'REJECTED', result: {}, resources: [],
+  error: { code: 'CASE_RESULT_INCOMPLETE', retryable: true,
+    documentationRef: 'references/case-runtime/errors/flow-result.md#error-case-result-incomplete',
+    operationDocumentationRef: 'references/case-runtime/methods/finish.md' },
 };
 telemetry.recordAgentFacing(execDir, finishRequest, finishResponse, 15, {
   now: '2026-08-20T10:00:00.975Z', hostTransport: 'mcp',
   agentFacingMetrics: { ledgerProjectionMs: 9 },
 });
+const readResponse = {
+  protocol: 'agent-facing', operation: 'read', status: 'SUCCEEDED',
+  result: { outcome: 'READ', resourceType: 'caseBrief' },
+  data: { ref: 'private-resource-ref', type: 'caseBrief', content: {
+    casePrompt: 'private prompt 中文', command: 'node /private/path/runtime.js', verdict: 'FAIL',
+  } },
+  resources: [{ ref: 'private-scene-ref', type: 'scene', role: 'currentScene' },
+    { ref: 'private-shot-ref', type: 'screenshot', role: 'evidence' }],
+};
+telemetry.recordAgentFacing(execDir, { operation: 'read', input: { ref: 'private-resource-ref' } }, readResponse, 10);
 const protocolSummary = telemetry.summarize(execDir, 1000).agentFacing;
-assert.deepStrictEqual(protocolSummary, {
-  requestCount: 2,
-  recordResultCount: 0,
-  unresolvedFinishAttemptCount: 1,
-  requestBytes: Buffer.byteLength(JSON.stringify({
-    capability: 'act', actionRef: 'secret-control:tap',
-  })) + Buffer.byteLength(JSON.stringify(finishRequest)),
-  responseBytes: Buffer.byteLength(JSON.stringify(rejectedResponse)) + Buffer.byteLength(JSON.stringify(finishResponse)),
-  sceneProjectionBytes: Buffer.byteLength(JSON.stringify(rejectedResponse.scene)),
-  ledgerProjectionMs: 9,
-  documentationRefCount: 2,
-  hostTransportCounts: { stdin: 1, mcp: 1 },
-  durationMs: 40,
-});
+const bytes = (value) => value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value));
+assert.strictEqual(protocolSummary.requestCount, 3);
+assert.strictEqual(protocolSummary.unresolvedFinishAttemptCount, 1);
+assert.strictEqual(protocolSummary.responseBytes, [rejectedResponse, finishResponse, readResponse].reduce((sum, response) => sum + bytes(response), 0));
+assert.strictEqual(protocolSummary.resultBytes, 4 + bytes(readResponse.result));
+assert.strictEqual(protocolSummary.dataBytes, bytes(readResponse.data));
+assert.strictEqual(protocolSummary.resourceDescriptorBytes, [rejectedResponse, finishResponse, readResponse].reduce((sum, response) => sum + bytes(response.resources), 0));
+assert.strictEqual(protocolSummary.resourceDescriptorCount, 3);
+assert.deepStrictEqual(protocolSummary.resourceTypeCounts, { scene: 2, caseBrief: 1, screenshot: 1 });
+assert.deepStrictEqual(protocolSummary.readTargetTypeCounts, { caseBrief: 1 });
+assert.deepStrictEqual(protocolSummary.operationCounts, { act: 1, finish: 1, read: 1 });
+assert.deepStrictEqual(protocolSummary.statusCounts, { REJECTED: 2, SUCCEEDED: 1 });
+assert.strictEqual(protocolSummary.byOperation.read.dataBytes, bytes(readResponse.data));
+assert.strictEqual(protocolSummary.ledgerProjectionMs, 9);
+assert.strictEqual(protocolSummary.documentationRefCount, 3);
+assert.deepStrictEqual(protocolSummary.hostTransportCounts, { stdin: 1, mcp: 1 });
+assert.strictEqual(protocolSummary.durationMs, 50);
 const agentFacingText = fs.readFileSync(telemetry.agentFacingFile(execDir), 'utf8');
-for (const secret of ['secret-control', 'private observation', 'private result', 'private summary']) {
+const agentFacingEntries = agentFacingText.trim().split(/\r?\n/).map(JSON.parse);
+assert.strictEqual(Object.hasOwn(agentFacingEntries[0], 'readTargetType'), false);
+assert.strictEqual(agentFacingEntries[2].readTargetType, 'caseBrief');
+assert.strictEqual(agentFacingEntries[2].dataType, 'caseBrief');
+for (const secret of ['secret-control', 'private observation', 'private result', 'private summary', 'private-resource-ref', 'private prompt', '/private/path', 'casePrompt', 'command', 'input', 'content']) {
   assert.strictEqual(agentFacingText.includes(secret), false);
 }
+
+// The client measures its completed public response, including reads after finish.
+const facade = require('../case-runtime/agent-facing-client');
+const sharedTelemetry = require('../lib/agent-facing-telemetry');
+fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 13, finalized: true }));
+const readResource = () => ({ data: readResponse.data, resources: readResponse.resources });
+const finalRead = facade.run(execDir, { operation: 'read', input: { ref: 'private-ref' } }, { readResource });
+assert.strictEqual(finalRead.status, 'SUCCEEDED');
+const recordedFinalRead = sharedTelemetry.readAgentFacingEvents(telemetry.agentFacingFile(execDir)).at(-1);
+assert.strictEqual(recordedFinalRead.responseBytes, bytes(finalRead));
+assert.strictEqual(recordedFinalRead.dataBytes, bytes(finalRead.data));
+assert.strictEqual(recordedFinalRead.readTargetType, 'caseBrief');
+telemetry.recordAgentFacing(execDir, { operation: 'finish', input: {} }, {
+  protocol: 'agent-facing', operation: 'finish', status: 'SUCCEEDED', result: { outcome: 'COMPLETED' }, resources: [],
+}, 2);
+assert.strictEqual(sharedTelemetry.readAgentFacingEvents(telemetry.agentFacingFile(execDir)).at(-1).operation, 'finish');
+
+const brokenTelemetryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-broken-metrics-'));
+fs.writeFileSync(path.join(brokenTelemetryDir, 'execution.json'), JSON.stringify({ schemaVersion: 13, finalized: true }));
+fs.mkdirSync(path.join(brokenTelemetryDir, 'operations'));
+fs.writeFileSync(path.join(brokenTelemetryDir, 'operations', 'telemetry'), 'not a directory');
+const stderrWrite = process.stderr.write;
+let diagnostic = '';
+try {
+  process.stderr.write = (value) => { diagnostic += value; return true; };
+  const stillReadable = facade.run(brokenTelemetryDir, { operation: 'read', input: { ref: 'private-ref' } }, { readResource });
+  assert.deepStrictEqual(stillReadable, finalRead, 'telemetry I/O failure cannot alter the business response');
+} finally { process.stderr.write = stderrWrite; }
+assert.ok(diagnostic.includes('AGENT_PROTOCOL_TELEMETRY_UNAVAILABLE'));
+assert.strictEqual(diagnostic.includes(brokenTelemetryDir), false);
+assert.strictEqual(sharedTelemetry.validateAgentFacingEvent({ ...recordedFinalRead, content: 'private' }), false);
+fs.appendFileSync(telemetry.agentFacingFile(execDir), '\n{"content":"private"}\n{"incomplete":');
+assert.strictEqual(sharedTelemetry.readAgentFacingEvents(telemetry.agentFacingFile(execDir)).length, 5);
+fs.rmSync(brokenTelemetryDir, { recursive: true, force: true });
 
 const resultMetrics = metrics({
   executionId: 'execution-investigation-metrics',

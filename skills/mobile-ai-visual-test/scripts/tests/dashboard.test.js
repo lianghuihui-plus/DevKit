@@ -128,6 +128,11 @@ const fixtures = [
   createCurrentFixture(root, { verdict: 'INCONCLUSIVE', suffix: 'inconclusive-dashboard' }),
 ];
 const targets = fixtures.map((fixture) => ({ caseKey: fixture.caseJson.identity.caseKey, caseDir: fixture.caseDir }));
+const protocolTelemetry = require('../case-runtime/telemetry');
+protocolTelemetry.recordAgentFacing(fixtures[0].execDir, { operation: 'read', input: { ref: 'private-ref' } }, {
+  protocol: 'agent-facing', status: 'SUCCEEDED', operation: 'read', result: { outcome: 'READ' }, resources: [],
+  data: { ref: 'private-ref', type: 'caseResult', content: { verdict: 'FAIL', command: 'private-command' } },
+}, 4);
 const binding = { platform: 'harmony', deviceId: 'dashboard-device', appId: 'com.example.dashboard', entry: 'EntryAbility' };
 const executionRequest = createTestExecutionRequest(root, 'batch-dashboard', binding, targets, {
   mode: 'BATCH',
@@ -153,6 +158,11 @@ const caseContractsBeforeRender = new Map(fixtures.map((fixture) => [
 
 const indexPath = renderIndexForRoot(root);
 const indexCases = require('../report/report-service').collectIndexCases(root);
+const protocolCase = indexCases.find((item) => item.caseDir === fixtures[0].caseDir);
+assert.strictEqual(protocolCase.platforms[0].currentMetrics.agentFacing.requestCount, 1);
+assert.strictEqual(protocolCase.platforms[0].verdict, 'PASS', 'protocol content cannot override business verdict');
+assert.strictEqual(fs.readFileSync(indexPath, 'utf8').includes('private-command'), false);
+assert.strictEqual(fs.readFileSync(indexPath, 'utf8').includes('readTargetTypeCounts'), false, 'protocol summary is data-only in the first dashboard revision');
 for (const fixture of fixtures) {
   assert.deepStrictEqual(fs.readFileSync(path.join(fixture.caseDir, 'case.json')), caseContractsBeforeRender.get(fixture.caseDir));
   assert.strictEqual(fs.existsSync(path.join(fixture.runtimeDir, 'CONTEXT.html')), true);

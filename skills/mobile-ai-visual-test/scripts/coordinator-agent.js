@@ -6,7 +6,7 @@ const path = require('path');
 const { parseCliArgs } = require('./lib/cli-args');
 const { errorEnvelope } = require('./lib/agent-facing-envelope');
 const { PUBLIC_CONTRACT, documentationRefFor, operationDocumentationRefFor } = require('./coordinator/agent-facing-contract');
-const { executeRunRequest, prepareRun, recordCoordinatorInputFailure, failureResources } = require('./coordinator/agent-facing-service');
+const { executeRunRequest, prepareRun, recordCoordinatorInputFailure, failureResources, recordProtocolResponse } = require('./coordinator/agent-facing-service');
 
 function inputError(message) {
   return Object.assign(new Error(message), { code: 'COORDINATOR_INPUT_INVALID', exitCode: 2,
@@ -42,13 +42,14 @@ function errorResponse(error, operation = null, stalled = false, resources = [])
       ? { operationDocumentationRef: operationDocumentationRefFor(operation) } : {}) });
 }
 function main(argv = process.argv.slice(2), options = {}) {
+  const startedMs = Date.now();
   let parsed;
   let request;
   let response;
   try {
     parsed = parseArgs(argv);
     request = options.request === undefined ? parseRequest(options.stdin === undefined ? fs.readFileSync(0, 'utf8') : options.stdin) : options.request;
-    response = execute(parsed, request, options);
+    response = execute(parsed, request, { ...options, hostTransport: 'stdin' });
   } catch (error) {
     let stalled = false;
     // Reads never change Coordinator business state, including invalid-input counters.
@@ -60,6 +61,7 @@ function main(argv = process.argv.slice(2), options = {}) {
       try { resources = failureResources(parsed.statePath, error); } catch { /* Preserve the original operation failure. */ }
     }
     response = errorResponse(error, request?.operation, stalled, resources);
+    if (parsed?.statePath) recordProtocolResponse(parsed.statePath, response, Date.now() - startedMs, { ...options, hostTransport: 'stdin' });
   }
   if (options.returnOnly) return response;
   process.stdout.write(`${JSON.stringify(response)}\n`);

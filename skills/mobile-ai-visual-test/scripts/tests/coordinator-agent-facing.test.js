@@ -826,5 +826,23 @@ assert.strictEqual(coordinatorAgent.main(['--workspace', workspace], {
   returnOnly: true, request: { operation: 'prepareRun', input: { caseNos: ['014'], workspace: unusualWorkspace } },
 }).status, 'REJECTED');
 
+const protocolTelemetry = require('../lib/agent-facing-telemetry');
+const protocolFile = path.join(path.dirname(statePath(blocked)), 'telemetry', 'agent-facing.jsonl');
+const protocolBefore = protocolTelemetry.readAgentFacingEvents(protocolFile).length;
+const terminalResponse = advanceRun(statePath(blocked));
+const terminalRead = executeRunRequest(statePath(blocked), { operation: 'read', input: { ref: blocked.data.ref } });
+const protocolEvents = protocolTelemetry.readAgentFacingEvents(protocolFile);
+assert.strictEqual(protocolEvents.length, protocolBefore + 2);
+assert.ok(protocolEvents.every(protocolTelemetry.validateAgentFacingEvent));
+assert.strictEqual(protocolEvents.at(-2).responseBytes, Buffer.byteLength(JSON.stringify(terminalResponse)));
+assert.strictEqual(protocolEvents.at(-1).dataBytes, Buffer.byteLength(JSON.stringify(terminalRead.data)));
+assert.strictEqual(protocolEvents.at(-1).readTargetType, 'runSummary');
+assert.strictEqual(fs.readFileSync(statePath(blocked), 'utf8'), terminalBefore);
+const protocolText = fs.readFileSync(protocolFile, 'utf8');
+for (const forbidden of [workspace, 'loaderCommand', 'command', 'content', 'input', blocked.data.ref]) {
+  assert.strictEqual(protocolText.includes(forbidden), false, forbidden);
+}
+assert.ok(protocolTelemetry.summarizeAgentFacing(protocolEvents).statusCounts.REJECTED > 0, 'CLI rejection is measured after error projection');
+
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('coordinator Agent-facing facade passed');

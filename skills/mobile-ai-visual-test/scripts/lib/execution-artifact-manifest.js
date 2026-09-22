@@ -6,6 +6,7 @@ const { canonicalJson, contractError, sha256 } = require('./contract-utils');
 const { readJson, writeJsonAtomic } = require('./execution-lifecycle');
 const { resolveArtifact, sha256File } = require('./execution-evidence');
 const { validateExecutionEvidenceGraph } = require('./execution-evidence-graph');
+const { CASE_PROTOCOL_FILE } = require('./agent-facing-telemetry');
 
 const MANIFEST_FILE = 'artifact-manifest.json';
 const CURRENT_ROOT_FILES = new Set([
@@ -25,6 +26,8 @@ function manifestPath(execDir) {
 }
 
 function walkFiles(root, relative = '') {
+  // This operational sidecar must not become a closure dependency, even when corrupt.
+  if (relative.replace(/\\/g, '/') === path.posix.dirname(CASE_PROTOCOL_FILE)) return [];
   const absolute = relative ? resolveArtifact(root, relative) : path.resolve(root);
   if (!fs.existsSync(absolute)) return [];
   const stat = fs.lstatSync(absolute);
