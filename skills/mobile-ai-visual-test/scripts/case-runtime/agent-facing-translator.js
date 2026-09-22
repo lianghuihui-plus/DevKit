@@ -3,13 +3,13 @@
 const { validateRuntimeRequest } = require('./contract');
 const store = require('./store');
 const {
-  AGENT_FACING_PROTOCOL,
+  PUBLIC_CONTRACT,
   projectPreviousAction,
-  projectScene,
   validateAgentFacingRequest,
   documentationRefFor,
 } = require('./agent-facing-contract');
 const { resolveActionRef } = require('./capability-catalog');
+const { successEnvelope, errorEnvelope } = require('../lib/agent-facing-envelope');
 
 function inputError(issues) {
   const error = new Error('Agent-facing request is invalid');
@@ -20,15 +20,6 @@ function inputError(issues) {
 
 function issue(field, message, code = 'INVALID') {
   return { field, message, code };
-}
-
-function projectCheckTerminology(value) {
-  if (Array.isArray(value)) return value.map(projectCheckTerminology);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-    key === 'expectationRef' ? 'checkNodeRef' : key === 'expectationRefs' ? 'checkNodeRefs' : key,
-    projectCheckTerminology(child),
-  ]));
 }
 
 function caseFlow(execDir) {
@@ -68,14 +59,14 @@ function currentPlan(execDir) {
 
 function contextualIssues(execDir, request, scene) {
   const issues = [];
-  if ((['inspect', 'act', 'knowledge'].includes(request.capability)
-    || (request.capability === 'recover' && !request.targetState && !request.externalAction)) && !scene) {
-    issues.push(issue('capability', '当前没有 Scene，请先使用 observe', 'SCENE_REQUIRED'));
+  if ((['inspect', 'act', 'knowledge'].includes(request.operation)
+    || (request.operation === 'recover' && request.mode === 'restart')) && !scene) {
+    issues.push(issue('operation', '当前没有 Scene，请先使用 observe', 'SCENE_REQUIRED'));
   }
-  if (request.capability === 'finish' && !currentPlan(execDir)) {
-    issues.push(issue('capability', '结束前必须先使用 plan 形成 Case Flow', 'CASE_FLOW_REQUIRED'));
+  if (request.operation === 'finish' && !currentPlan(execDir)) {
+    issues.push(issue('operation', '结束前必须先使用 plan 形成 Case Flow', 'CASE_FLOW_REQUIRED'));
   }
-  if (request.capability === 'plan' && currentPlan(execDir) && !request.reason) {
+  if (request.operation === 'plan' && currentPlan(execDir) && !request.reason) {
     const reason = request.caseFlow?.reason || request.reason;
     const replay = request.caseFlow
       ? require('./case-flow-service').matchingRevision(execDir, request.caseFlow)
@@ -90,7 +81,7 @@ function contextualIssues(execDir, request, scene) {
       issues.push(issue('flowContext', error.message, error.code || 'CASE_FLOW_CONTEXT_INVALID'));
     }
   }
-  if (request.capability === 'recordResult') {
+  if (request.operation === 'recordResult') {
     for (const [index, result] of (request.results || []).entries()) {
       issues.push(...validateExpectationRefs(execDir, [result.checkNodeRef], `results[${index}].checkNodeRef`));
     }
@@ -105,27 +96,17 @@ function contextualIssues(execDir, request, scene) {
       }
     }
   }
-  if (request.capability === 'inspect') {
-    if (['visual', 'action'].includes(request.channel) && !request.observation) {
-      issues.push(issue('observation', `${request.channel === 'visual' ? '视觉' : '动作落点'}登记必须描述实际看到的图片事实`, 'REQUIRED'));
-    }
-    if (!['visual', 'action'].includes(request.channel) && request.observation !== undefined) {
-      issues.push(issue('observation', '只有 visual 或 action 检查可以提交 observation', 'FIELD_UNSUPPORTED'));
-    }
-    if (request.channel === 'action' && !scene?.previousAction?.spatialEvidence) {
-      issues.push(issue('channel', '当前 Scene 没有可检查的上一动作落点标注图', 'ACTION_SPATIAL_EVIDENCE_REQUIRED'));
-    }
-    const allowedFilters = request.channel === 'elements' ? ['interactiveOnly', 'textContains', 'role'] : [];
-    for (const field of Object.keys(request.filter || {})) {
-      if (!allowedFilters.includes(field)) issues.push(issue(`filter.${field}`, `${request.channel} 检查不支持该过滤字段`, 'FIELD_UNSUPPORTED'));
+  if (request.operation === 'inspect') {
+    if (request.mode === 'action' && !scene?.previousAction?.spatialEvidence) {
+      issues.push(issue('mode', '当前 Scene 没有可检查的上一动作落点标注图', 'ACTION_SPATIAL_EVIDENCE_REQUIRED'));
     }
   }
-  if (request.capability === 'runPlan' && scene && request.basedOnSceneRef !== scene.sceneId) {
-    issues.push(issue('basedOnSceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
+  if (request.operation === 'runPlan' && scene && request.sceneRef !== scene.sceneId) {
+    issues.push(issue('sceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
   }
-  if (request.capability === 'act' && scene) {
-    if (request.basedOnSceneRef && request.basedOnSceneRef !== scene.sceneId) {
-      issues.push(issue('basedOnSceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
+  if (request.operation === 'act' && scene) {
+    if (request.sceneRef && request.sceneRef !== scene.sceneId) {
+      issues.push(issue('sceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
       return issues;
     }
     let internalCapability = null;
@@ -152,30 +133,22 @@ function contextualIssues(execDir, request, scene) {
     }
     const allowedInput = request.actionRef === 'visual:swipe' ? ['from', 'to']
       : ['visual:tap', 'visual:doubleTap'].includes(request.actionRef) ? ['point']
-      : request.actionRef === 'visual:longPress' ? ['point', 'durationMs', 'duringActionAtMs']
-      : request.actionRef?.endsWith(':longPress') ? ['durationMs', 'duringActionAtMs']
+      : request.actionRef === 'visual:longPress' ? ['point', 'durationMs']
+      : request.actionRef?.endsWith(':longPress') ? ['durationMs']
       : request.actionRef?.endsWith(':inputText') ? ['text', 'mode']
       : request.actionRef?.endsWith(':wait') ? ['ms'] : [];
     for (const field of Object.keys(request.input || {})) {
       if (!allowedInput.includes(field)) issues.push(issue(`input.${field}`, `动作 ${request.actionRef} 不支持该输入字段`, 'ACTION_INPUT_INVALID'));
     }
-    if (request.actionRef === 'visual:longPress' && request.input?.duringActionAtMs !== undefined
-      && request.input.duringActionAtMs >= request.input.durationMs) {
-      issues.push(issue('input.duringActionAtMs', '必须小于长按 durationMs', 'ACTION_INPUT_INVALID'));
+    if (request.action?.ref && !allowedInput.length && request.input !== undefined) {
+      issues.push(issue('action.input', '该 ActionRef 不接受动态 input', 'ACTION_INPUT_INVALID'));
     }
-    if (request.basedOnSceneRef && request.actionRef?.startsWith('visual:')) {
+    if (request.sceneRef && request.actionRef?.startsWith('visual:')) {
       const inspected = store.events(execDir).some((event) => event.type === 'visualInspected' && event.sceneId === scene.sceneId);
       if (!inspected) issues.push(issue('actionRef', '视觉动作要求先登记该 Scene 的视觉事实', 'VISUAL_INSPECTION_REQUIRED'));
     }
   }
-  if (request.capability === 'recover' && request.targetState && request.externalAction) {
-    issues.push(issue('externalAction', 'targetState 与 externalAction 不能在同一次恢复请求中同时使用', 'MUTUALLY_EXCLUSIVE'));
-  }
-  if (request.capability === 'recover' && !request.targetState && !request.externalAction
-    && currentScene(execDir) && !request.basedOnSceneRef) {
-    issues.push(issue('basedOnSceneRef', 'App 重启恢复必须绑定当前 Scene', 'SCENE_REQUIRED'));
-  }
-  if (request.capability === 'knowledge' && request.queryId) {
+  if (request.operation === 'knowledge' && request.mode === 'review') {
     const query = store.events(execDir).find((event) => event.type === 'knowledgeQueried' && event.queryId === request.queryId);
     if (!query) issues.push(issue('queryId', '该知识查询不存在或不属于当前 execution', 'QUERY_UNKNOWN'));
     else {
@@ -193,7 +166,7 @@ function contextualIssues(execDir, request, scene) {
       }
     }
   }
-  if (request.capability === 'finish' && request.outcome === 'NOT_RUN') {
+  if (request.operation === 'finish' && request.mode === 'notRun') {
     const sceneRefs = request.evidence?.sceneRefs || [];
     const technicalRefs = request.evidence?.technicalRefs || [];
     if (!sceneRefs.length && !technicalRefs.length) {
@@ -217,41 +190,57 @@ function visualRequest(actionRef, input) {
 function translateAgentFacingRequest(execDir, request) {
   const structural = validateAgentFacingRequest(request);
   if (structural.length) throw inputError(structural);
+  request = { ...request.input, operation: request.operation };
+  if (request.operation === 'read') return { operation: 'read', ref: request.ref };
+  if (request.operation === 'act') {
+    const action = request.action;
+    if (action.ref?.startsWith('visual:')) {
+      throw inputError([issue('input.action.ref', '自主视觉动作使用 action.type 和 action.target', 'ACTION_NOT_AVAILABLE')]);
+    }
+    request = {
+      ...request,
+      actionRef: action.ref || `visual:${action.type}`,
+      input: action.ref ? action.input : { ...action.target, ...(action.durationMs ? { durationMs: action.durationMs } : {}) },
+      purpose: request.purpose || '执行 Agent 选择的动作',
+    };
+  }
   const current = currentScene(execDir);
-  const scene = request.capability === 'inspect' ? sceneByRef(execDir, request.basedOnSceneRef) : current;
+  const scene = request.operation === 'inspect' ? sceneByRef(execDir, request.sceneRef) : current;
   const contextual = contextualIssues(execDir, request, scene);
-  if (contextual.length) throw inputError(contextual);
+  if (contextual.length) throw inputError(contextual.map((item) => ({
+    ...item,
+    field: item.field === 'operation' ? 'operation'
+      : `input.${item.field.replace(/^actionRef/, 'action.ref').replace(/^input\./, 'action.input.')}`,
+  })));
   const expectationRefs = request.checkNodeRefs || [];
   const flowContext = request.flowContext ? { flowContext: request.flowContext } : {};
   let translated;
-  if (request.capability === 'observe') translated = {
+  if (request.operation === 'observe') translated = {
     operation: 'observe',
     ...flowContext,
     ...(request.purpose ? { decision: { purpose: request.purpose, expectationRefs: [] } } : {}),
   };
-  else if (request.capability === 'inspect' && request.channel === 'visual') translated = {
+  else if (request.operation === 'inspect' && request.mode === 'visual') translated = {
     operation: 'inspectVisual', basedOnSceneId: scene.sceneId,
     ...flowContext,
     decision: { purpose: '记录当前截图的视觉事实', expectationRefs, observation: request.observation },
   };
-  else if (request.capability === 'inspect') translated = {
+  else if (request.operation === 'inspect') translated = {
     operation: 'inspectScene', basedOnSceneId: scene.sceneId,
     ...flowContext,
-    view: { action: 'ACTION', elements: 'ELEMENTS', layout: 'LAYOUT' }[request.channel],
-    ...(request.channel === 'action' ? { observation: request.observation, expectationRefs } : {}),
-    ...(request.filter ? { filter: request.filter } : {}),
+    view: 'ACTION', observation: request.observation, expectationRefs,
   };
-  else if (request.capability === 'plan') {
+  else if (request.operation === 'plan') {
     translated = {
       operation: 'recordCaseFlow',
       caseFlow: request.caseFlow,
     };
-  } else if (request.capability === 'recordResult') {
+  } else if (request.operation === 'recordResult') {
     translated = {
       operation: 'recordExpectationResults',
       results: request.results.map(({ checkNodeRef, ...item }) => ({ ...item, expectationRef: checkNodeRef })),
     };
-  } else if (request.capability === 'act') {
+  } else if (request.operation === 'act') {
     const internalCapability = request.actionRef.startsWith('visual:')
       ? null : resolveActionRef(scene, request.actionRef, executionPlatform(execDir));
     translated = {
@@ -261,17 +250,15 @@ function translateAgentFacingRequest(execDir, request) {
         ? { visual: visualRequest(request.actionRef, request.input || {}) }
         : {
           capabilityId: internalCapability.id,
-          ...(request.input ? { input: Object.fromEntries(Object.entries(request.input).filter(([field]) => field !== 'duringActionAtMs')) } : {}),
+          ...(request.input ? { input: request.input } : {}),
         }),
-      ...(request.actionRef.endsWith(':longPress') && request.input?.duringActionAtMs !== undefined
-        ? { observationPolicy: { duringActionAtMs: request.input.duringActionAtMs } } : {}),
       decision: { purpose: request.purpose, expectationRefs: [] },
     };
-  } else if (request.capability === 'runPlan') {
+  } else if (request.operation === 'runPlan') {
     translated = {
       operation: 'runPlan',
       submissionId: request.submissionId,
-      basedOnSceneId: request.basedOnSceneRef,
+      basedOnSceneId: request.sceneRef,
       purpose: request.purpose,
       maxDurationMs: request.maxDurationMs,
       onFailure: request.onFailure,
@@ -279,7 +266,7 @@ function translateAgentFacingRequest(execDir, request) {
       ...flowContext,
       decision: { purpose: request.purpose, expectationRefs: [] },
     };
-  } else if (request.capability === 'knowledge' && request.queryId) {
+  } else if (request.operation === 'knowledge' && request.mode === 'review') {
     const query = store.events(execDir).find((event) => event.type === 'knowledgeQueried' && event.queryId === request.queryId);
     translated = {
       operation: 'reviewKnowledge', basedOnSceneId: scene.sceneId,
@@ -289,22 +276,22 @@ function translateAgentFacingRequest(execDir, request) {
         knowledgeReview: { queryId: request.queryId, conclusion: request.conclusion, assessments: request.assessments },
       },
     };
-  } else if (request.capability === 'knowledge') translated = {
+  } else if (request.operation === 'knowledge') translated = {
     operation: 'knowledge', basedOnSceneId: scene.sceneId, query: request.query,
     ...flowContext,
     decision: { purpose: '调查当前异常的已知解释和处理规则', expectationRefs },
   };
-  else if (request.capability === 'recover') translated = {
-    operation: request.targetState ? 'prepare' : 'recover',
+  else if (request.operation === 'recover') translated = {
+    operation: request.mode === 'prepare' ? 'prepare' : 'recover',
     ...flowContext,
-    ...(request.targetState
+    ...(request.mode === 'prepare'
       ? { preparation: { targetState: request.targetState } }
       : { ...(scene ? { basedOnSceneId: scene.sceneId } : {}), reason: request.reason }),
-    ...(request.externalAction ? { externalAction: request.externalAction } : {}),
+    ...(request.mode === 'external' ? { externalAction: request.externalAction } : {}),
   };
-  else if (request.capability === 'finish') {
+  else if (request.operation === 'finish') {
     const flow = caseFlow(execDir);
-    const result = request.outcome === 'NOT_RUN' ? {
+    const result = request.mode === 'notRun' ? {
       verdict: 'NOT_RUN', summary: request.summary, checks: [], uncertainties: request.uncertainties || [],
       caseFlowRevision: flow.revision, notRunReason: request.reason, notRunEvidence: request.evidence,
     } : require('./expectation-result-service').buildCaseResultFromLedger(execDir, request);
@@ -326,90 +313,101 @@ function translateAgentFacingRequest(execDir, request) {
   return translated;
 }
 
-function projectAgentFacingResponse(execDir, response, request = null) {
-  if (response.status === 'COMPLETED') {
-    return {
-      protocol: AGENT_FACING_PROTOCOL,
-      status: 'COMPLETED',
-      executionRef: response.executionId,
-      verdict: response.verdict,
-      resultRef: 'result.json',
-      ...(response.idempotent === true ? { idempotent: true } : {}),
-    };
-  }
-  const projected = { ...response };
-  delete projected.allowedOperations;
-  delete projected.capabilities;
-  delete projected.narrative;
-  delete projected.requiredReview;
-  delete projected.nextCall;
-  delete projected.retryWith;
-  delete projected.technicalContext;
-  if (projected.diagnostic && typeof projected.diagnostic === 'object') {
-    const technical = {
-      ...(projected.diagnostic.code ? { code: projected.diagnostic.code } : {}),
-      ...(projected.diagnostic.stage ? { stage: projected.diagnostic.stage } : {}),
-      ...(projected.diagnostic.logRefs ? { logRefs: projected.diagnostic.logRefs } : {}),
-      ...(projected.diagnostic.resourceFacts ? { resourceFacts: projected.diagnostic.resourceFacts } : {}),
-    };
-    if (Object.keys(technical).length) projected.facts = { ...(projected.facts || {}), technical };
-  }
-  delete projected.diagnostic;
-  delete projected.result;
-  delete projected.evidenceDiagnostics;
-  delete projected.knowledgeUsage;
-  if (projected.caseFlow && typeof projected.caseFlow === 'object') {
-    projected.caseFlow = { ...projected.caseFlow };
-    delete projected.caseFlow.requestSha256;
-    delete projected.caseFlow.requestNormalized;
-    delete projected.caseFlow.submissionId;
-  }
-  const scene = currentScene(execDir);
-  if (request?.capability === 'inspect') delete projected.scene;
-  else projected.scene = projectScene(scene);
-  if (response.status === 'SCENE_INSPECTION') {
-    delete projected.evidence;
-    if (response.view === 'ELEMENTS') {
-      projected.items = (response.items || []).map((element) => ({
-        ref: element.id,
-        ...(element.text ? { text: element.text } : {}),
-        ...(element.role ? { role: element.role } : {}),
-        bounds: element.bounds,
-        clickable: element.clickable === true,
-        checkable: element.checkable === true,
-        editable: element.editable === true,
-        enabled: element.enabled !== false,
-        visible: element.visible !== false,
-        ...(element.focused === true ? { focused: true } : {}),
-      }));
-    }
-  }
-  if (projected.action) projected.action = projectPreviousAction(projected.action);
-  if (projected.knowledgeInvestigation) {
-    projected.knowledgeInvestigation = {
-      ...projected.knowledgeInvestigation,
-      pendingReviews: (projected.knowledgeInvestigation.pendingReviews || []).map((pending) => ({
-        queryId: pending.queryId,
-        query: pending.query,
-        candidateCount: pending.candidateCount,
-        checkNodeRefs: pending.expectationRefs || [],
-        candidates: pending.candidates || [],
-      })),
-    };
-  }
-  projected.protocol = AGENT_FACING_PROTOCOL;
-  const state = require('./expectation-result-service').caseStateSummary(execDir);
-  if (state.caseFlowRevision !== null) projected.caseState = state;
-  if (response.caseFlowChange) projected.caseFlowChange = response.caseFlowChange;
-  if (projected.code) {
-    projected.retryable = projected.retryable !== undefined ? projected.retryable
-      : !['ACTION_OUTCOME_UNKNOWN', 'TIME_LIMIT'].includes(projected.code);
-    projected.documentationRef = documentationRefFor(projected.code);
-  }
-  return projectCheckTerminology(projected);
+function responseProjection(request, outcome) {
+  let selected = PUBLIC_CONTRACT.methods[request?.operation]?.responseProjection;
+  if (selected?.modes) selected = selected.modes[request.input?.mode];
+  if (selected?.outcomes) selected = selected.outcomes[outcome];
+  return selected;
+}
+
+function publicErrorStatus(response) {
+  if (response.status === 'UNKNOWN' || response.outcomeKnown === false
+    || ['ACTION_OUTCOME_UNKNOWN', 'PLAN_ACTION_OUTCOME_UNKNOWN'].includes(response.code)
+    || response.action?.outcomeKnown === false || response.action?.deliveryStatus === 'UNKNOWN'
+    || response.action?.status === 'UNKNOWN' || response.action?.command?.status === 'UNKNOWN') return 'UNKNOWN';
+  if (['REJECTED', 'REQUEST_INVALID', 'INPUT_INVALID', 'SCENE_CHANGED', 'RESULT_INCOMPLETE'].includes(response.status)) return 'REJECTED';
+  if (['FAILED', 'TECHNICAL', 'TIME_LIMIT', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'].includes(response.status)
+    || response.action?.command?.status === 'REJECTED' || response.action?.deviceExecution?.status === 'FAILED') return 'FAILED';
+  return null;
+}
+
+function projectAgentFacingError(response, request = null, resources = []) {
+  const status = publicErrorStatus(response) || 'FAILED';
+  const operation = Object.hasOwn(PUBLIC_CONTRACT.methods, request?.operation) ? request.operation : null;
+  const failureCode = response.code || response.action?.failureCode || response.action?.deviceExecution?.failureCode;
+  const code = status === 'UNKNOWN' ? (operation === 'runPlan' ? 'PLAN_ACTION_OUTCOME_UNKNOWN' : 'ACTION_OUTCOME_UNKNOWN')
+    : response.status === 'SCENE_CHANGED' ? 'SCENE_CHANGED'
+      : PUBLIC_CONTRACT.errors[failureCode] ? failureCode : 'CASE_RUNTIME_TECHNICAL';
+  const definition = PUBLIC_CONTRACT.errors[code];
+  return errorEnvelope({
+    operation, status, code,
+    retryable: status === 'UNKNOWN' ? false : (response.retryable ?? definition.retryable),
+    ...(response.issues ? { issues: response.issues.map((item) => ({
+      field: item.field || item.fieldPath || 'request',
+      code: item.code || 'INVALID',
+      ...(item.message ? { message: item.message } : {}),
+    })) } : {}),
+    resources: resources.filter((resource) => (definition.resourceTypes || []).includes(resource.type)),
+    documentationRef: documentationRefFor(code),
+    ...(operation ? { operationDocumentationRef: `references/case-runtime/methods/${operation}.md` } : {}),
+  });
+}
+
+function projectAgentFacingResponse(execDir, response, request = null, options = {}) {
+  const provided = options.resourceProvider?.(execDir, response, request) || {};
+  const failure = publicErrorStatus(response);
+  if (failure) return projectAgentFacingError(response, request, provided.resources || response.resources || []);
+  const outcome = response.result?.outcome || response.status;
+  const projection = responseProjection(request, outcome);
+  if (!projection) return projectAgentFacingError({ status: 'FAILED', code: 'CASE_RUNTIME_TECHNICAL' }, request);
+  // The resource provider owns persistence and canonical content. No current Scene/global
+  // state is appended here, and no reference is synthesized by the wire projector.
+  const inspection = response.visualInspection || response.actionInspection || {};
+  const action = response.action ? projectPreviousAction(response.action) : null;
+  const values = {
+    outcome,
+    sceneRef: response.sceneRef || response.sceneId || inspection.sceneId || response.scene?.sceneId,
+    inspectionId: inspection.inspectionId || response.inspectionId,
+    checkNodeIds: inspection.expectationRefs,
+    revision: response.caseFlow?.revision,
+    idempotent: response.idempotent,
+    retiredNodeIds: response.caseFlowChange?.retiredNodeRefs,
+    retiredEdgeIds: response.caseFlowChange?.retiredEdgeRefs,
+    invalidatedResultRefs: response.caseFlowChange?.invalidatedResultRefs,
+    idempotentCheckNodeIds: response.unchanged,
+    operationId: action?.operationRef,
+    planId: response.planId,
+    deliveryStatus: action?.deliveryStatus,
+    outcomeKnown: action?.outcomeKnown,
+    candidateCount: response.candidateCount ?? response.candidates?.length,
+    reviewRequired: response.reviewRequired,
+    conclusion: response.conclusion || request?.input?.conclusion,
+    verificationRequired: request?.operation === 'recover' && request.input?.mode === 'external' ? true : undefined,
+    preparationState: response.preparationState,
+    executionId: response.executionId,
+    verdict: response.verdict,
+    ...response.result,
+    ...provided.result,
+  };
+  const scalar = (value) => value === null || ['string', 'number', 'boolean'].includes(typeof value);
+  const result = Object.fromEntries(projection.resultFields
+    .filter((field) => scalar(values[field]) || (Array.isArray(values[field]) && values[field].every(scalar)))
+    .map((field) => [field, values[field]]));
+  const candidateData = provided.data || response.data;
+  const primaryType = projection.primaryResourceType === '$resourceType'
+    ? result.resourceType : projection.primaryResourceType;
+  const data = candidateData?.ref && candidateData.content !== undefined && candidateData.type === primaryType
+    ? candidateData : undefined;
+  const allowedResources = projection.associatedResourceTypes;
+  const resources = (provided.resources || response.resources || []).filter((resource) =>
+    Array.isArray(allowedResources) ? allowedResources.includes(resource.type)
+      : allowedResources === '$declaredResources' && (provided.declaredResources || []).some((declared) =>
+        declared.ref === resource.ref && declared.type === resource.type));
+  return successEnvelope({ operation: request.operation, result, ...(data ? { data } : {}), resources });
 }
 
 module.exports = {
   projectAgentFacingResponse,
+  projectAgentFacingError,
   translateAgentFacingRequest,
 };

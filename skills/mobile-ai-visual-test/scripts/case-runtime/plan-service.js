@@ -53,9 +53,16 @@ function assertPlanIntegrity(record) {
   }
 }
 
-function responseFromRecord(record, idempotent = false) {
+function responseFromRecord(execDir, record, idempotent = false) {
+  const events = store.events(execDir);
+  const planActions = new Set(events.filter((event) =>
+    event.type === 'actionRequested' && event.planId === record.planId).map((event) => event.operationId));
+  const outcomeKnown = !events.some((event) => event.type === 'actionOutcomeUnknown'
+    && (event.planId === record.planId || planActions.has(event.operationId)));
   return {
     status: record.status,
+    outcomeKnown,
+    ...(record.failure?.code ? { code: record.failure.code } : {}),
     planId: record.planId,
     planRecordRef: record.planRecordRef,
     ...(idempotent ? { idempotent: true } : {}),
@@ -209,7 +216,7 @@ function executePlan(execDir, request, options = {}) {
     if (!['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'].includes(existing.status)) {
       throw contractError('PLAN_RECORD_INCOMPLETE', 'existing plan has no terminal result');
     }
-    return responseFromRecord(existing, true);
+    return responseFromRecord(execDir, existing, true);
   }
   const current = store.readCurrentScene(execDir);
   if (!current || current.sceneId !== normalized.basedOnSceneId) {
@@ -377,7 +384,7 @@ function executePlan(execDir, request, options = {}) {
     planId, status: terminal, planRecordRef: recordRef, recordSha256: record.integrity.recordSha256,
     elapsedMs: record.elapsedMs, remainingMs: record.remainingMs, failure: record.failure,
   }, options);
-  return responseFromRecord(record);
+  return responseFromRecord(execDir, record);
 }
 
 function recoverInterruptedPlans(execDir, options = {}) {

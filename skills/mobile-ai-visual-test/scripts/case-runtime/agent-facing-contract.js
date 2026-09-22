@@ -6,7 +6,7 @@ const { safeActionTechnicalDetails } = require('../lib/action-result');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
 const AGENT_FACING_PROTOCOL = 'agent-facing';
-const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
+const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
 const STRING = { type: 'string', minLength: 1 };
 const STRING_ARRAY = { type: 'array', items: STRING };
 const POINT = { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0, maximum: 1 } };
@@ -20,11 +20,13 @@ const INPUT = object({
   text: STRING,
   mode: { enum: ['replace', 'append'] },
   ms: { type: 'integer', minimum: 0 },
-  point: POINT,
-  from: POINT,
-  to: POINT,
-  duringActionAtMs: { type: 'integer', minimum: 20 },
 }, []);
+const ACTION = { oneOf: [
+  object({ ref: STRING, input: INPUT }, ['ref']),
+  object({ type: { enum: ['tap', 'doubleTap'] }, target: object({ point: POINT }, ['point']) }, ['type', 'target']),
+  object({ type: { const: 'longPress' }, target: object({ point: POINT }, ['point']), durationMs: { type: 'integer', minimum: 1 } }, ['type', 'target', 'durationMs']),
+  object({ type: { const: 'swipe' }, target: object({ from: POINT, to: POINT }, ['from', 'to']) }, ['type', 'target']),
+] };
 
 const ASSESSMENT = object({
   entryId: STRING,
@@ -78,51 +80,50 @@ const FLOW_CONTEXT = object({ nodeRef: STRING, selectedEdgeRef: STRING }, ['node
 
 const SCHEMAS = Object.freeze({
   observe: object({
-    capability: { const: 'observe' }, purpose: STRING, flowContext: FLOW_CONTEXT,
-  }, ['capability']),
-  inspect: object({
-    capability: { const: 'inspect' }, basedOnSceneRef: STRING,
-    channel: { enum: ['visual', 'action', 'elements', 'layout'] },
+    purpose: STRING, flowContext: FLOW_CONTEXT,
+  }, []),
+  read: object({ ref: STRING }, ['ref']),
+  inspect: { oneOf: ['visual', 'action'].map((mode) => object({
+    mode: { const: mode }, sceneRef: STRING,
     observation: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
-    filter: object({ interactiveOnly: { type: 'boolean' }, textContains: STRING, role: STRING }, []),
-  }, ['capability', 'basedOnSceneRef', 'channel']),
-  plan: object({ capability: { const: 'plan' }, caseFlow: CASE_FLOW_UPDATE }, ['capability', 'caseFlow']),
+  }, ['mode', 'sceneRef', 'observation'])) },
+  plan: object({ caseFlow: CASE_FLOW_UPDATE }, ['caseFlow']),
   recordResult: object({
-    capability: { const: 'recordResult' },
     results: { type: 'array', minItems: 1, items: RESULT_REQUEST },
-  }, ['capability', 'results']),
+  }, ['results']),
   act: object({
-    capability: { const: 'act' }, basedOnSceneRef: STRING, actionRef: STRING,
-    input: INPUT, purpose: STRING, flowContext: FLOW_CONTEXT,
-  }, ['capability', 'basedOnSceneRef', 'actionRef', 'purpose']),
+    sceneRef: STRING, action: ACTION, purpose: STRING, flowContext: FLOW_CONTEXT,
+  }, ['sceneRef', 'action']),
   runPlan: object({
-    capability: { const: 'runPlan' }, submissionId: STRING, basedOnSceneRef: STRING,
+    submissionId: STRING, sceneRef: STRING,
     purpose: STRING, maxDurationMs: { type: 'integer', minimum: 1 }, onFailure: { enum: ['STOP', 'CONTINUE'] },
     steps: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object' } },
     flowContext: FLOW_CONTEXT,
-  }, ['capability', 'submissionId', 'basedOnSceneRef', 'purpose', 'maxDurationMs', 'onFailure', 'steps']),
+  }, ['submissionId', 'sceneRef', 'purpose', 'maxDurationMs', 'onFailure', 'steps']),
   knowledgeQuery: object({
-    capability: { const: 'knowledge' }, basedOnSceneRef: STRING, query: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
-  }, ['capability', 'basedOnSceneRef', 'query']),
+    mode: { const: 'query' }, sceneRef: STRING, query: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
+  }, ['mode', 'sceneRef', 'query']),
   knowledgeReview: object({
-    capability: { const: 'knowledge' }, basedOnSceneRef: STRING, queryId: STRING,
+    mode: { const: 'review' }, sceneRef: STRING, queryId: STRING,
     conclusion: { enum: ['APPLICABLE_FOUND', 'NO_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT'] },
     assessments: { type: 'array', items: ASSESSMENT }, flowContext: FLOW_CONTEXT,
-  }, ['capability', 'basedOnSceneRef', 'queryId', 'conclusion', 'assessments']),
-  recover: object({
-    capability: { const: 'recover' }, basedOnSceneRef: STRING, reason: STRING,
-    targetState: { enum: ['APP_LOCAL_STATE_EMPTY', 'FRESH_INSTALL'] },
-    externalAction: EXTERNAL_ACTION, flowContext: FLOW_CONTEXT,
-  }, ['capability', 'reason']),
+  }, ['mode', 'sceneRef', 'queryId', 'conclusion', 'assessments']),
+  recover: { oneOf: [
+    object({ mode: { const: 'restart' }, sceneRef: STRING, reason: STRING, flowContext: FLOW_CONTEXT }, ['mode', 'sceneRef', 'reason']),
+    object({ mode: { const: 'prepare' }, reason: STRING, targetState: { enum: ['APP_LOCAL_STATE_EMPTY', 'FRESH_INSTALL'] }, flowContext: FLOW_CONTEXT }, ['mode', 'reason', 'targetState']),
+    object({ mode: { const: 'external' }, reason: STRING, externalAction: EXTERNAL_ACTION, flowContext: FLOW_CONTEXT }, ['mode', 'reason', 'externalAction']),
+  ] },
   finish: { oneOf: [object({
-    capability: { const: 'finish' }, summary: STRING, uncertainties: STRING_ARRAY, flowContext: FLOW_CONTEXT,
-  }, ['capability', 'summary']), object({
-    capability: { const: 'finish' }, outcome: { const: 'NOT_RUN' }, reason: STRING,
+    mode: { const: 'complete' }, summary: STRING, uncertainties: STRING_ARRAY, flowContext: FLOW_CONTEXT,
+  }, ['mode', 'summary']), object({
+    mode: { const: 'notRun' }, reason: STRING,
     evidence: NOT_RUN_EVIDENCE, summary: STRING, uncertainties: STRING_ARRAY, flowContext: FLOW_CONTEXT,
-  }, ['capability', 'outcome', 'reason', 'evidence', 'summary'])] },
+  }, ['mode', 'reason', 'evidence', 'summary'])] },
 });
 
 const PUBLIC_ERRORS = Object.freeze({
+  CASE_RUNTIME_FINALIZED: { group: 'transport', retryable: false, summary: 'Execution 已完成，只能读取已保存资源。', recovery: '使用 read 读取已有资源。' },
+  RESOURCE_NOT_FOUND: { group: 'transport', retryable: true, summary: '当前绑定中没有该资源。', recovery: '原样复制当前绑定发布的资源 ref。' },
   AGENT_INPUT_INVALID: { group: 'transport', retryable: true, summary: '请求结构、类型或条件字段不合法。', recovery: '根据 issues 修正当前方法请求一次；字段只取自当前方法页和 Runtime 响应。' },
   AGENT_INPUT_STALLED: { group: 'transport', retryable: false, summary: '同类输入错误连续发生，停止自动猜测。', recovery: '停止修改参数，读取当前方法页并核对绑定命令；仍不一致时保留请求和响应进行技术排障。' },
   PROTOCOL_MISMATCH: { group: 'transport', retryable: false, summary: 'Prompt、文档、客户端或 execution 协议不一致。', recovery: '停止执行该 execution，保留 Loader 输出和摘要；使用当前 Skill 新建 execution，不修改旧 execution。' },
@@ -130,13 +131,14 @@ const PUBLIC_ERRORS = Object.freeze({
     group: 'transport',
     retryable: false,
     summary: 'Execution 或 dispatch 绑定无效。',
-    recovery: '读取 facts.technical.code：sequence 不匹配时原样复用当前 Loader/Brief 中的 command；只有 HANDOFF_REPLACED 才表示该 dispatch 已被真实 continuation 取代；HANDOFF_NOT_CLAIMED 表示 Loader 尚未成功 claim。',
+    recovery: '按 technicalFact 资源核对绑定：sequence 不匹配时原样复用当前 Loader/Brief 中的 command；只有 HANDOFF_REPLACED 才表示该 dispatch 已被真实 continuation 取代；HANDOFF_NOT_CLAIMED 表示 Loader 尚未成功 claim。',
   },
   SCENE_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前方法需要 Scene，但 execution 尚无 Scene。', recovery: '先调用 observe 采集当前 Scene，再使用返回的 sceneRef 调用原方法。' },
   SCENE_CHANGED: { group: 'scene-action', retryable: true, summary: '动作所依据的 Scene 已不是当前 Scene。', recovery: '调用 observe 获取新 Scene，重新 inspect 并从新 Scene 选择 ActionRef；不要复用旧动作。' },
   ACTION_NOT_AVAILABLE: { group: 'scene-action', retryable: true, summary: 'ActionRef 对当前 Scene 不成立。', recovery: '读取当前 Scene 的 action 投影；必要时重新 observe，不手工拼接或猜测 ActionRef。' },
   ACTION_INPUT_INVALID: { group: 'scene-action', retryable: true, summary: '动作输入缺失、越界或包含不支持字段。', recovery: '按当前 ActionRef 返回的输入约束修正 input；坐标使用 0 到 1 的归一化值。' },
-  VISUAL_INSPECTION_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前视觉动作或结论要求先登记图片事实。', recovery: '对同一 Scene 调用 inspect(channel="visual") 登记实际看到的事实，再重试视觉动作或结果记录。' },
+  ACTION_EFFECT_MISMATCH: { group: 'scene-action', retryable: true, summary: '动作结果已知，但技术核验未满足所请求的输入效果。', recovery: '读取动作技术证据和当前 Scene；Agent 判断可安全重试时有限重试，不直接据此判定产品 FAIL。' },
+  VISUAL_INSPECTION_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前视觉动作或结论要求先登记图片事实。', recovery: '对同一 Scene 调用 inspect(mode="visual") 登记实际看到的事实，再重试视觉动作或结果记录。' },
   CASE_FLOW_REQUIRED: { group: 'flow-result', retryable: true, summary: '当前 execution 尚无 Case Flow。', recovery: '读取原始用例并调用 plan 创建完整 Case Flow，然后从 entryNodeRef 开始执行。' },
   CASE_FLOW_REVISION_CONFLICT: { group: 'flow-result', retryable: true, summary: 'Case Flow baseRevision 不是当前 revision。', recovery: '读取响应中的当前 Case Flow revision，合并仍需要的调整理由后基于该 revision 重新提交。' },
   CASE_FLOW_CONTEXT_INVALID: { group: 'flow-result', retryable: true, summary: 'flowContext 的节点或分支不属于当前 Case Flow revision。', recovery: '使用当前 Case Flow 返回的 nodeRef 和 edgeRef；不要复用已 retired 的引用。' },
@@ -173,7 +175,7 @@ const TRANSPORTS = Object.freeze({
   },
   runtimeClient: {
     summary: '当前 execution 的预绑定 Case Runtime Client。',
-    input: '每轮按 Brief 指示通过 requestPath 或 stdin 提交一个方法请求。',
+    input: '每轮通过 stdin 提交 {operation,input} 请求。',
     rule: '必须原样使用命令绑定；业务字段只按当前方法页构造。',
     success: '返回一个 Agent-facing Runtime 状态。',
     errors: ['AGENT_INPUT_INVALID', 'AGENT_INPUT_STALLED', 'BINDING_INVALID', 'CASE_RUNTIME_TECHNICAL'],
@@ -193,29 +195,43 @@ function method(name, summary, requestSchema, parameterDescriptions, options = {
     sideEffects: options.sideEffects || [],
     idempotency: options.idempotency || 'Read-only.',
     minimalExample: options.minimalExample,
+    responseProjection: options.responseProjection,
   });
 }
 
+function projection(resultFields, primaryResourceType, associatedResourceTypes) {
+  return Object.freeze({ resultFields: ['outcome', ...resultFields], primaryResourceType, associatedResourceTypes });
+}
+const SCENE_RESOURCES = ['screenshot', 'layout', 'elementSet', 'actionSpatialEvidence', 'technicalFact'];
+
 const PUBLIC_METHODS = Object.freeze({
   observe: method('observe', '采集一个新 Scene，不执行业务动作。', SCHEMAS.observe, {
-    capability: '固定为 observe', purpose: '本次观察目的', flowContext: '当前 Case Flow 节点和可选分支选择',
+    purpose: '本次观察目的', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
+    responseProjection: projection(['sceneRef'], 'scene', SCENE_RESOURCES),
     successStatuses: ['SCENE'], sideEffects: ['采集一个新 Scene'],
-    idempotency: '设备采集不重放未知 effect；重复 observe 生成新的现场事实。', minimalExample: { capability: 'observe' },
+    idempotency: '设备采集不重放未知 effect；重复 observe 生成新的现场事实。', minimalExample: { operation: 'observe', input: {} },
   }),
-  inspect: method('inspect', '登记视觉事实，或按需读取 elements 或 layout。', SCHEMAS.inspect, {
-    capability: '固定为 inspect', basedOnSceneRef: '被检查的 Scene', channel: '检查通道',
-    observation: 'visual/action 通道看到的事实', checkNodeRefs: '相关 CHECK 节点', filter: 'elements 过滤器', flowContext: '当前 Case Flow 节点和可选分支选择',
+  read: method('read', '按原样引用读取一个资源。', SCHEMAS.read, { ref: '当前绑定发布的资源引用' }, {
+    responseProjection: projection(['resourceRef', 'resourceType'], '$resourceType', '$declaredResources'),
+    minimalExample: { operation: 'read', input: { ref: 'scene-1' } },
+    successStatuses: ['RESOURCE_READ'], errorCodes: ['AGENT_INPUT_INVALID', 'RESOURCE_NOT_FOUND', 'CASE_RUNTIME_TECHNICAL'],
+  }),
+  inspect: method('inspect', '登记 Agent 已观察到的视觉或动作事实。', SCHEMAS.inspect, {
+    sceneRef: '被检查的 Scene', mode: 'visual 或 action',
+    observation: '实际看到的事实', checkNodeRefs: '相关 CHECK 节点', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
+    responseProjection: projection(['sceneRef', 'inspectionId', 'checkNodeIds'], null, ['scene', 'screenshot', 'actionSpatialEvidence']),
     conditionalRequirements: ['visual/action 必须提供 observation。'],
-    contextualValidationRules: ['历史 Scene 可登记事实；读取通道只返回所请求投影。'],
-    successStatuses: ['VISUAL_INSPECTED', 'ACTION_SPATIAL_INSPECTED', 'SCENE_INSPECTION'],
+    contextualValidationRules: ['历史 Scene 可登记事实；读取资源使用 read。'],
+    successStatuses: ['VISUAL_INSPECTED', 'ACTION_SPATIAL_INSPECTED'],
     sideEffects: ['visual/action 追加事实事件'], idempotency: '相同 submission 不重复追加事实。',
-    minimalExample: { capability: 'inspect', basedOnSceneRef: 'scene-1', channel: 'elements' },
+    minimalExample: { operation: 'inspect', input: { mode: 'visual', sceneRef: 'scene-1', observation: '目标按钮可见' } },
   }),
   plan: method('plan', '创建或修订完整 Case Flow。', SCHEMAS.plan, {
-    capability: '固定为 plan', caseFlow: '完整 Case Flow 快照',
+    caseFlow: '完整 Case Flow 快照',
   }, {
+    responseProjection: projection(['caseFlowRef', 'revision', 'idempotent', 'retiredNodeIds', 'retiredEdgeIds', 'invalidatedResultRefs'], null, ['caseFlow', 'checkpointLedger', 'checkpointResult']),
     conditionalRequirements: ['首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。', 'CHECK 必须声明 REQUIRED 或 CONDITIONAL；CONDITIONAL 必须提供 applicability。'],
     contextualValidationRules: [
       '首次 revision 是只基于原始用例的 Baseline Flow，不写入当前 Scene 的现场适配。',
@@ -228,77 +244,90 @@ const PUBLIC_METHODS = Object.freeze({
     successStatuses: ['CASE_FLOW_RECORDED'], sideEffects: ['追加 Case Flow revision'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REVISION_CONFLICT', 'CASE_FLOW_NODE_IDENTITY_CHANGED', 'CASE_FLOW_EDGE_IDENTITY_CHANGED', 'CASE_RUNTIME_TECHNICAL'],
     idempotency: '规范化后语义等价的 Case Flow 请求只写一次 revision，幂等键由框架内部派生。',
-    minimalExample: { capability: 'plan', caseFlow: { baseRevision: null, summary: '验证目标', entryNodeRef: 'N1', nodes: [{ ref: 'N1', type: 'CHECK', text: '结果可见', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' }, { ref: 'N2', type: 'END', text: '完成' }], edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [] } },
+    minimalExample: { operation: 'plan', input: { caseFlow: { baseRevision: null, summary: '验证目标', entryNodeRef: 'N1', nodes: [{ ref: 'N1', type: 'CHECK', text: '结果可见', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' }, { ref: 'N2', type: 'END', text: '完成' }], edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [] } } },
   }),
   recordResult: method('recordResult', '独立记录验证点结果，不采集 Scene、不执行动作。', SCHEMAS.recordResult, {
-    capability: '固定为 recordResult', results: '已形成判断的验证结果和证据引用',
+    results: '已形成判断的验证结果和证据引用',
   }, {
+    responseProjection: projection(['recordedResultRefs', 'idempotentCheckNodeIds'], null, ['checkpointResult', 'checkpointLedger']),
     conditionalRequirements: ['WAIVED 必须提供独立非空 reason；其他状态不得提供 reason。', 'NOT_APPLICABLE 只允许用于 CONDITIONAL 检查点。'],
     contextualValidationRules: ['所有结果先完整校验；任一结果无效时整批不写入。', 'Baseline CHECK 始终可处置；补充 CHECK 仅在最终 Working Flow 中活跃时进入结束闭环。', '知识、Scene 和技术事实可支撑豁免，但 Runtime 不要求知识命中，也不判断豁免理由是否充分。'],
     successStatuses: ['RESULTS_RECORDED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID', 'RECORD_RESULT_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['追加 expectation result 事件'], idempotency: '相同结果重复提交不追加重复事件。',
-    minimalExample: { capability: 'recordResult', results: [{ checkNodeRef: 'N1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: ['scene-1'] } }] },
+    minimalExample: { operation: 'recordResult', input: { results: [{ checkNodeRef: 'N1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: ['scene-1'] } }] } },
   }),
   act: method('act', '基于当前 Scene 执行一个 ActionRef，并采集新 Scene。', SCHEMAS.act, {
-    capability: '固定为 act', basedOnSceneRef: '当前 Scene', actionRef: '控件、屏幕或视觉动作引用',
-    purpose: '业务动作目的', input: '动作类型对应输入', flowContext: '当前 Case Flow 节点和可选分支选择',
+    sceneRef: '当前 Scene', action: '发布的 ActionRef 或 Agent 自主视觉坐标动作',
+    purpose: '可选的业务动作目的', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
-    conditionalRequirements: ['actionRef 对应动作所需 input 字段必须存在。'],
+    responseProjection: projection(['operationId', 'deliveryStatus', 'outcomeKnown', 'sceneRef'], 'scene', SCENE_RESOURCES),
+    conditionalRequirements: ['action.ref 与 action.type 互斥；ActionRef 所需 action.input 字段必须存在。'],
     contextualValidationRules: ['ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。'],
     successStatuses: ['SCENE'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'ACTION_NOT_AVAILABLE', 'ACTION_INPUT_INVALID', 'VISUAL_INSPECTION_REQUIRED', 'ACTION_OUTCOME_UNKNOWN', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['最多投递一个设备动作', '采集新 Scene'],
     idempotency: '已投递且结果未知的动作永不重放。',
-    minimalExample: { capability: 'act', basedOnSceneRef: 'scene-1', actionRef: 'button-1:tap', purpose: '继续' },
+    minimalExample: { operation: 'act', input: { sceneRef: 'scene-1', action: { ref: 'button-1:tap' } } },
   }),
   runPlan: method('runPlan', '连续执行受约束的短时动作、等待、采集、定位和技术检查计划。', SCHEMAS.runPlan, {
-    capability: '固定为 runPlan', submissionId: '本次计划提交的幂等键', basedOnSceneRef: '当前 Scene',
+    submissionId: '本次计划提交的幂等键', sceneRef: '当前 Scene',
     purpose: '计划的业务目的', maxDurationMs: '计划总时限', onFailure: 'STOP 或受限 CONTINUE',
     steps: '最多 12 个声明式步骤', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
+    responseProjection: projection(['planResultRef', 'planId', 'idempotent'], 'planResult', ['scene', 'screenshot', 'actionSpatialEvidence', 'planEvidence', 'technicalFact']),
     contextualValidationRules: ['Runtime 只执行确定性命令并返回证据；视觉变化和业务结论由 Agent 判断。'],
     successStatuses: ['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'PLAN_INVALID', 'PLAN_STEP_FAILED', 'PLAN_SUBMISSION_CONFLICT', 'PLAN_RECORD_INCOMPLETE', 'LOCATOR_UNSUPPORTED', 'TARGET_NOT_FOUND', 'PLAN_CHECK_FAILED', 'PLAN_ACTION_OUTCOME_UNKNOWN', 'PLAN_TIMEOUT', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['按顺序投递计划中的设备动作', '保存步骤事件和 Scene 证据'],
     idempotency: '相同 submissionId 和请求摘要返回原计划；未知动作结果永不重放。',
     minimalExample: {
-      capability: 'runPlan', submissionId: 'run-plan-1', basedOnSceneRef: 'scene-1', purpose: '完成短时交互',
+      operation: 'runPlan', input: { submissionId: 'run-plan-1', sceneRef: 'scene-1', purpose: '完成短时交互',
       maxDurationMs: 2500, onFailure: 'STOP',
-      steps: [{ id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false }],
+      steps: [{ id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false }] },
     },
   }),
   knowledge: method('knowledge', '查询知识，或登记指定 query 的候选复核结果。', { oneOf: [SCHEMAS.knowledgeQuery, SCHEMAS.knowledgeReview] }, {
-    capability: '固定为 knowledge', basedOnSceneRef: '当前 Scene', query: '待调查问题', queryId: '已有查询引用',
+    mode: 'query 或 review', sceneRef: '当前 Scene', query: '待调查问题', queryId: '已有查询引用',
     checkNodeRefs: '相关 CHECK 节点', conclusion: '候选复核结论', assessments: '逐候选适用性判断', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
-    conditionalRequirements: ['query 与 queryId 两种模式互斥。'],
+    responseProjection: { modes: {
+      query: projection(['knowledgeQueryRef', 'candidateSetRef', 'candidateCount', 'reviewRequired'], 'candidateSet', ['knowledgeQuery', 'knowledgeDocument']),
+      review: projection(['knowledgeQueryRef', 'knowledgeReviewRef', 'conclusion', 'idempotent'], null, ['knowledgeQuery', 'candidateSet', 'knowledgeReview']),
+    } },
+    conditionalRequirements: ['mode=query 和 mode=review 的字段不能混用。'],
     contextualValidationRules: ['复核必须覆盖当前 query 候选约束。'],
     successStatuses: ['KNOWLEDGE', 'KNOWLEDGE_REVIEWED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_REQUIRED', 'KNOWLEDGE_QUERY_UNKNOWN', 'KNOWLEDGE_REVIEW_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['保存查询或复核事件'], idempotency: '重复 queryId 复核按内部事件规则处理。',
-    minimalExample: { capability: 'knowledge', basedOnSceneRef: 'scene-1', query: '解释当前异常' },
+    minimalExample: { operation: 'knowledge', input: { mode: 'query', sceneRef: 'scene-1', query: '解释当前异常' } },
   }),
   recover: method('recover', '建立授权的 App 初始状态、重启恢复或登记框架外事实。', SCHEMAS.recover, {
-    capability: '固定为 recover', basedOnSceneRef: '重启恢复所依据的 Scene', reason: '恢复原因',
+    mode: 'restart、prepare 或 external', sceneRef: '重启恢复所依据的 Scene', reason: '恢复原因',
     targetState: '授权的目标 App 状态', externalAction: '已实际完成的框架外事实', flowContext: '异常发生时正在处理的 Case Flow 节点',
   }, {
+    responseProjection: { modes: {
+      restart: projection(['sceneRef', 'preparationState'], 'scene', ['screenshot', 'layout', 'elementSet', 'technicalFact']),
+      prepare: projection(['sceneRef', 'preparationState'], 'scene', ['screenshot', 'layout', 'elementSet', 'technicalFact']),
+      external: projection(['externalActionDeclarationRef', 'verificationRequired'], null, ['externalActionDeclaration', 'technicalFact']),
+    } },
     conditionalRequirements: ['targetState 与 externalAction 互斥。'],
     contextualValidationRules: ['有当前 Scene 的重启恢复必须绑定当前 Scene。'],
     successStatuses: ['SCENE', 'EXTERNAL_ACTION_RECORDED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'APP_INITIAL_STATE_UNAVAILABLE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['执行授权恢复或保存外部事实'], idempotency: '由现有恢复事务保证。',
-    minimalExample: { capability: 'recover', reason: '目标 App 无法继续交互' },
+    minimalExample: { operation: 'recover', input: { mode: 'restart', sceneRef: 'scene-1', reason: '目标 App 无法继续交互' } },
   }),
   finish: method('finish', '从 CHECK ledger 收口并完成用例。', SCHEMAS.finish, {
-    capability: '固定为 finish', summary: '最终摘要', uncertainties: '仍需披露的不确定性', outcome: '仅前置条件不满足时使用 NOT_RUN',
+    mode: 'complete 或 notRun', summary: '最终摘要', uncertainties: '仍需披露的不确定性',
     reason: 'NOT_RUN 的业务原因', evidence: 'NOT_RUN 引用的已登记 Scene 或技术事实', flowContext: '实际到达的 END 节点',
   }, {
+    responseProjection: projection(['executionId', 'verdict', 'caseResultRef', 'idempotent'], null, ['caseResult', 'checkpointLedger', 'technicalFact']),
     contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', 'FAIL、INCONCLUSIVE、BLOCKED 和 WAIVED 不强制知识调查；已提交的证据引用仍必须有效。', 'NOT_RUN 必须提供原因和已登记证据。'],
     successStatuses: ['COMPLETED', 'RESULT_INCOMPLETE'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',
-    minimalExample: { capability: 'finish', summary: '验证完成' },
+    minimalExample: { operation: 'finish', input: { mode: 'complete', summary: '验证完成' } },
   }),
 });
 
@@ -318,10 +347,8 @@ function documentationRefFor(code) {
 }
 
 function schemaFor(request) {
-  if (request?.capability === 'knowledge') return request.queryId !== undefined ? SCHEMAS.knowledgeReview : SCHEMAS.knowledgeQuery;
-  if (request?.capability === 'recover') return SCHEMAS.recover;
-  return SCHEMAS[request?.capability]
-    || object({ capability: { enum: AGENT_FACING_CAPABILITIES } }, ['capability']);
+  const methodDefinition = PUBLIC_METHODS[request?.operation];
+  return object({ operation: { enum: AGENT_FACING_CAPABILITIES }, input: methodDefinition?.requestSchema || { type: 'object' } }, ['operation', 'input']);
 }
 
 function messageFor(issue) {
@@ -334,19 +361,20 @@ function validateAgentFacingRequest(request) {
   const issues = validateAgentJson(request, schemaFor(request)).map((issue) => ({
     field: issue.fieldPath || 'request',
     message: messageFor(issue),
-    code: issue.code,
+    code: issue.code === 'REQUIRED' ? 'FIELD_REQUIRED' : issue.code,
   }));
-  if (!issues.length && request?.capability === 'runPlan') {
+  if (!issues.length && request?.operation === 'runPlan') {
+    const input = request.input;
     try {
       require('./plan-contract').validatePlanRequest({
-        operation: 'runPlan', submissionId: request.submissionId, basedOnSceneId: request.basedOnSceneRef,
-        purpose: request.purpose, maxDurationMs: request.maxDurationMs, onFailure: request.onFailure,
-        steps: request.steps, ...(request.flowContext ? { flowContext: request.flowContext } : {}),
-        decision: { purpose: request.purpose, expectationRefs: [] },
+        operation: 'runPlan', submissionId: input.submissionId, basedOnSceneId: input.sceneRef,
+        purpose: input.purpose, maxDurationMs: input.maxDurationMs, onFailure: input.onFailure,
+        steps: input.steps, ...(input.flowContext ? { flowContext: input.flowContext } : {}),
+        decision: { purpose: input.purpose, expectationRefs: [] },
       });
     } catch (error) {
       return (error.issues || []).map((item) => ({
-        field: item.fieldPath === 'basedOnSceneId' ? 'basedOnSceneRef' : item.fieldPath,
+        field: `input.${item.fieldPath === 'basedOnSceneId' ? 'sceneRef' : item.fieldPath}`,
         message: `计划字段应为 ${item.expected}`,
         code: item.code,
       }));

@@ -76,6 +76,8 @@ const options = {
 
 const result = runPlan(fixture.execDir, request, options);
 assert.strictEqual(result.status, 'PLAN_COMPLETED');
+assert.strictEqual(result.outcomeKnown, true);
+assert.strictEqual(result.code, undefined);
 assert.strictEqual(result.steps.length, 7);
 assert.strictEqual(result.steps.every((step) => step.status === 'COMPLETED'), true);
 assert.deepStrictEqual(result.steps.find((step) => step.stepId === 'lock').inputRefs, ['$controls.sceneRef']);
@@ -122,6 +124,8 @@ const continueResult = runPlan(fixture.execDir, {
   ],
 }, options);
 assert.strictEqual(continueResult.status, 'PLAN_PARTIAL');
+assert.strictEqual(continueResult.outcomeKnown, true);
+assert.strictEqual(continueResult.code, 'TARGET_NOT_FOUND');
 assert.deepStrictEqual(continueResult.steps.map((step) => step.status), ['COMPLETED', 'FAILED', 'COMPLETED']);
 
 const failedCheck = runPlan(fixture.execDir, {
@@ -183,16 +187,45 @@ const unknownResult = runPlan(fixture.execDir, {
   },
 });
 assert.strictEqual(unknownResult.status, 'PLAN_INTERRUPTED');
+assert.strictEqual(unknownResult.outcomeKnown, false);
+assert.strictEqual(unknownResult.code, 'DEVICE_ADAPTER_FAILED');
+assert.strictEqual(require('../case-runtime/agent-facing-translator').projectAgentFacingResponse(
+  fixture.execDir, unknownResult, { operation: 'runPlan', input: {} },
+).status, 'UNKNOWN');
 assert.strictEqual(unknownActionCalls, 1);
-assert.strictEqual(runPlan(fixture.execDir, {
+const unknownReplay = runPlan(fixture.execDir, {
   operation: 'runPlan', submissionId: 'unknown-action-plan', basedOnSceneId: 'scene-0002',
   purpose: '动作结果未知时停止', maxDurationMs: 2500, onFailure: 'STOP',
   steps: [
     { id: 'before', type: 'wait', ms: 1 },
     { id: 'unknown', type: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] } },
   ],
-}, options).idempotent, true);
+}, options);
+assert.strictEqual(unknownReplay.idempotent, true);
+assert.strictEqual(unknownReplay.outcomeKnown, false);
+assert.strictEqual(unknownReplay.code, 'DEVICE_ADAPTER_FAILED');
 assert.strictEqual(unknownActionCalls, 1);
+
+// Recovery events emitted after a process interruption may identify only operationId.
+// The plan still owns that action through its already-recorded actionRequested event.
+const eventsPath = path.join(fixture.execDir, 'events.jsonl');
+const originalEvents = fs.readFileSync(eventsPath, 'utf8');
+const recoveryShapedEvents = originalEvents.trim().split('\n').map((line) => {
+  const event = JSON.parse(line);
+  if (event.type === 'actionOutcomeUnknown') delete event.planId;
+  return JSON.stringify(event);
+}).join('\n') + '\n';
+fs.writeFileSync(eventsPath, recoveryShapedEvents);
+const recoveryReplay = runPlan(fixture.execDir, {
+  operation: 'runPlan', submissionId: 'unknown-action-plan', basedOnSceneId: 'scene-0002',
+  purpose: '动作结果未知时停止', maxDurationMs: 2500, onFailure: 'STOP',
+  steps: [
+    { id: 'before', type: 'wait', ms: 1 },
+    { id: 'unknown', type: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] } },
+  ],
+}, options);
+assert.strictEqual(recoveryReplay.outcomeKnown, false);
+fs.writeFileSync(eventsPath, originalEvents);
 
 assert.throws(() => store.appendEvent(fixture.execDir, 'invalidEvent', { sequence: 999, type: 'override' }),
   (error) => error.code === 'CASE_RUNTIME_EVENT_INVALID');
