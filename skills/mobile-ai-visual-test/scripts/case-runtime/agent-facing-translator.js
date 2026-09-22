@@ -325,7 +325,8 @@ function publicErrorStatus(response) {
   if (response.status === 'UNKNOWN' || response.outcomeKnown === false
     || ['ACTION_OUTCOME_UNKNOWN', 'PLAN_ACTION_OUTCOME_UNKNOWN'].includes(response.code)
     || response.action?.outcomeKnown === false || response.action?.deliveryStatus === 'UNKNOWN'
-    || response.action?.status === 'UNKNOWN' || response.action?.command?.status === 'UNKNOWN') return 'UNKNOWN';
+    || response.action?.status === 'UNKNOWN' || response.action?.command?.status === 'UNKNOWN'
+    || response.recovery?.status === 'UNKNOWN') return 'UNKNOWN';
   if (['REJECTED', 'REQUEST_INVALID', 'INPUT_INVALID', 'SCENE_CHANGED', 'RESULT_INCOMPLETE'].includes(response.status)) return 'REJECTED';
   if (['FAILED', 'TECHNICAL', 'TIME_LIMIT'].includes(response.status)
     || response.action?.command?.status === 'REJECTED' || response.action?.deviceExecution?.status === 'FAILED') return 'FAILED';

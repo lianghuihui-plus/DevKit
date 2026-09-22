@@ -49,6 +49,27 @@ fs.writeFileSync(path.join(boundExecutionDir, 'execution.json'), JSON.stringify(
 }));
 
 try {
+  const retryExecutionId = 'exec-preparation-retry';
+  const retryExecDir = path.join(workspaceRoot, 'cases', 'case-retry', 'platforms', 'harmony', 'executions', retryExecutionId);
+  fs.mkdirSync(retryExecDir, { recursive: true });
+  fs.writeFileSync(path.join(retryExecDir, 'execution.json'), JSON.stringify({
+    schemaVersion: 13, runtime: 'case-runtime', executionId: retryExecutionId, batchId: common.batchId, platform: 'harmony', finalized: false,
+  }));
+  const resourceStore = require('../case-runtime/agent-resource-store');
+  const retryHandoff = createAgentHandoff({ ...common, executionId: retryExecutionId,
+    brief: { sceneRef: resourceStore.resourceRef(retryExecDir, 'scene', 'scene-retry') } });
+  const failedPreparation = spawnSync('/bin/sh', ['-c', retryHandoff.loaderCommand], { encoding: 'utf8' });
+  assert.notStrictEqual(failedPreparation.status, 0);
+  const retryStatePath = path.join(path.dirname(retryHandoff.path), 'dispatch-state.json');
+  assert.strictEqual(JSON.parse(fs.readFileSync(retryStatePath, 'utf8')).dispatches[retryHandoff.handoffId].status, 'PREPARED',
+    'a Brief preparation failure must not consume the dispatch');
+  require('../case-runtime/store').writeScene(retryExecDir, { sceneId: 'scene-retry', elements: [], capturedAt: common.now, generation: 1 });
+  resourceStore.publishScene(retryExecDir, 'scene-retry');
+  const successfulRetry = spawnSync('/bin/sh', ['-c', retryHandoff.loaderCommand], { encoding: 'utf8' });
+  assert.strictEqual(successfulRetry.status, 0, successfulRetry.stderr);
+  assert.strictEqual(JSON.parse(fs.readFileSync(retryStatePath, 'utf8')).dispatches[retryHandoff.handoffId].status, 'CONSUMED');
+  assert.strictEqual(resourceStore.readPublishedResource(retryExecDir, JSON.parse(successfulRetry.stdout).caseBriefRef).data.type, 'caseBrief');
+
   const initial = createAgentHandoff(common);
   assert.deepStrictEqual(Object.keys(initial).sort(), ['handoffId', 'loaderCommand', 'path', 'schemaVersion', 'sha256']);
   assert.strictEqual(initial.schemaVersion, 1);

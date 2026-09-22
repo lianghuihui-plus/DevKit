@@ -3,7 +3,7 @@
 
 const path = require('path');
 const { parseCliArgs } = require('./lib/cli-args');
-const { loadAgentHandoff } = require('./batch/agent-handoff');
+const { prepareAgentHandoff } = require('./batch/agent-handoff');
 const { AGENT_FACING_PROTOCOL, documentationRefFor } = require('./case-runtime/agent-facing-contract');
 
 function parseArgs(argv) {
@@ -55,14 +55,16 @@ function loaderErrorResponse(error) {
 
 function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  const loaded = loadAgentHandoff(options);
+  const { claim, ...loaded } = prepareAgentHandoff(options);
   const { listExecutionDirs, readJson } = require('./lib/execution-lifecycle');
   const matches = listExecutionDirs(options.workspaceRoot).filter((execDir) => (
     readJson(path.join(execDir, 'execution.json'), null)?.executionId === options.executionId
   ));
   if (matches.length !== 1) throw Object.assign(new Error('Handoff execution binding is unavailable or ambiguous'), { code: 'HANDOFF_BINDING_INVALID' });
   const resource = require('./case-runtime/agent-resource-store').publishCaseBrief(matches[0], options.handoffPath, options.workspaceRoot);
-  process.stdout.write(`${JSON.stringify({ ...loaded, caseBriefRef: resource.data.ref })}\n`);
+  const output = `${JSON.stringify({ ...loaded, caseBriefRef: resource.data.ref })}\n`;
+  claim();
+  process.stdout.write(output);
 }
 
 if (require.main === module) {

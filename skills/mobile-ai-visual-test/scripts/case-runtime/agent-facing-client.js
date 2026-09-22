@@ -114,6 +114,9 @@ function executeRun(execDir, request, options = {}) {
       ? measureMetric(options, 'ledgerProjectionMs', () => translateAgentFacingRequest(resolved, request))
       : translateAgentFacingRequest(resolved, request);
   } catch (error) {
+    if (['RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH', 'RESOURCE_INTEGRITY_INVALID'].includes(error.code)) {
+      return projectAgentFacingError({ status: error.code === 'RESOURCE_INTEGRITY_INVALID' ? 'FAILED' : 'REJECTED', code: error.code }, request);
+    }
     if (error.code === 'AGENT_INPUT_INVALID' || error.code === 'CASE_RESULT_INCOMPLETE') {
       const issues = error.issues || error.readiness?.unresolved || [{ field: 'effect', code: error.code, message: error.message }];
       const firstCode = error.code === 'CASE_RESULT_INCOMPLETE' ? 'CASE_RESULT_INCOMPLETE'

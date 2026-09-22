@@ -248,7 +248,7 @@ function loadPreparedAgentHandoff(options) {
   return publicReference(envelope, realHandoffPath, dispatch.handoffSha);
 }
 
-function loadAgentHandoff(options) {
+function prepareAgentHandoff(options) {
   const requestedRoot = path.resolve(ensureString(options.workspaceRoot, 'workspaceRoot', 'HANDOFF_PATH_INVALID'));
   if (!fs.existsSync(requestedRoot)) throw contractError('HANDOFF_PATH_INVALID', 'workspace root does not exist');
   const workspaceRoot = fs.realpathSync(requestedRoot);
@@ -266,12 +266,30 @@ function loadAgentHandoff(options) {
   if (path.basename(realHandoffPath) !== `${envelope.sequence}-${options.sha256}.json`) {
     throw contractError('HANDOFF_INTEGRITY_INVALID', 'handoff filename does not match its sequence and digest');
   }
-  require('../lib/dispatch-lease').claimDispatch(path.dirname(realHandoffPath), envelope, {
-    handoffSha: options.sha256,
-    claimToken: options.claimToken,
-    now: options.now,
-  });
-  return { casePrompt: envelope.casePrompt, brief: envelope.brief };
+  const loaded = { casePrompt: envelope.casePrompt, brief: envelope.brief };
+  let claimed = false;
+  return {
+    ...loaded,
+    claim() {
+      if (claimed) throw contractError('HANDOFF_CLAIM_REJECTED', 'prepared handoff has already been claimed');
+      // Revalidate the immutable authority immediately before the existing
+      // atomic lease operation; preparation never consumes the dispatch.
+      const currentEnvelope = validateEnvelope(readEnvelope(realHandoffPath), options.sha256, {
+        executionId: options.executionId, caseProtocolSha: options.caseProtocolSha,
+      });
+      require('../lib/dispatch-lease').claimDispatch(path.dirname(realHandoffPath), currentEnvelope, {
+        handoffSha: options.sha256,
+        claimToken: options.claimToken,
+        now: options.now,
+      });
+      claimed = true;
+      return loaded;
+    },
+  };
+}
+
+function loadAgentHandoff(options) {
+  return prepareAgentHandoff(options).claim();
 }
 
 module.exports = {
@@ -279,4 +297,5 @@ module.exports = {
   createAgentHandoff,
   loadAgentHandoff,
   loadPreparedAgentHandoff,
+  prepareAgentHandoff,
 };

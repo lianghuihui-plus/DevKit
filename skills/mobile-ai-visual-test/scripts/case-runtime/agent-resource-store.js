@@ -260,6 +260,12 @@ function artifactAssociations(execDir, content, selfRef, selfId) {
 }
 
 function publishScene(execDir, sceneId) {
+  const ref = resourceRef(execDir, 'scene', sceneId);
+  if (fs.existsSync(path.join(execDir, registryPath(ref)))) {
+    // An existing Scene has a frozen dependency set. Verify its exact binding
+    // and source once; do not rebuild the action history behind that binding.
+    return readPublishedResource(execDir, ref);
+  }
   const source = { kind: 'json', path: `scenes/${sceneId}.json` };
   const scene = sourceValue(execDir, source).value;
   const screenshot = scene.screenshot?.ref || scene.screenshot?.path ? publishScreenshot(execDir, scene.screenshot) : null;
@@ -390,8 +396,9 @@ function provideOperationResources(execDir, response, request) {
     const event = events.filter((item) => item.type === 'externalActionDeclared').at(-1);
     if (event) result.externalActionDeclarationRef = add(publishEvent(execDir, 'externalActionDeclaration', event)).data.ref;
   }
-  if (response.technicalFactRef) {
-    const event = events.find((item) => item.technicalFactRef === response.technicalFactRef);
+  for (const factRef of new Set([response.technicalFactRef, response.action?.technicalFactRef,
+    response.recovery?.technicalFactRef].filter(Boolean))) {
+    const event = events.find((item) => item.technicalFactRef === factRef);
     if (event) add(publishEvent(execDir, 'technicalFact', event));
   }
   if (request.operation === 'finish' && store.loadExecution(execDir, { allowFinalized: true }).finalized) {

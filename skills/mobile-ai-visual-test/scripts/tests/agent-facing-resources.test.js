@@ -56,6 +56,69 @@ const unknownWithBrokenArtifact = run(dir, { operation: 'act', input: { sceneRef
 assert.strictEqual(unknownWithBrokenArtifact.status, 'UNKNOWN', 'publication failure must not erase uncertain device delivery');
 assert.strictEqual(unknownWithBrokenArtifact.error.retryable, false);
 
+// Public resource classifications survive non-read request translation.
+const corruptFixture = fixture('execution-corrupted-ref');
+const corruptScene = resources.publishScene(corruptFixture.dir, corruptFixture.scene.sceneId);
+writeJsonAtomic(path.join(corruptFixture.dir, 'scenes', `${corruptFixture.scene.sceneId}.json`), { ...corruptFixture.scene, generation: 2 });
+for (const operation of ['act', 'inspect']) {
+  for (const [targetDir, ref, status, code, retryable] of [
+    [dir, resources.resourceRef(dir, 'scene', 'unpublished'), 'REJECTED', 'RESOURCE_UNKNOWN', true],
+    [other.dir, observed.data.ref, 'REJECTED', 'RESOURCE_SCOPE_MISMATCH', false],
+    [corruptFixture.dir, corruptScene.data.ref, 'FAILED', 'RESOURCE_INTEGRITY_INVALID', false],
+  ]) {
+    const input = operation === 'act' ? { sceneRef: ref, action: { ref: 'e0:tap' } }
+      : { mode: 'visual', sceneRef: ref, observation: 'visible' };
+    const rejected = run(targetDir, { operation, input }, { executeRequest: () => { throw new Error('must not reach broker'); } });
+    assert.strictEqual(rejected.status, status);
+    assert.strictEqual(rejected.error.code, code);
+    assert.strictEqual(rejected.error.retryable, retryable);
+  }
+}
+
+// Technical facts live in distinct immutable locations for action and recovery.
+for (const [operation, location, eventType, input] of [
+  ['act', 'action', 'actionOutcomeUnknown', { sceneRef: observed.data.ref, action: { ref: 'e0:tap' } }],
+  ['recover', 'recovery', 'recoveryOutcomeUnknown', { mode: 'restart', sceneRef: observed.data.ref, reason: 'connection lost' }],
+]) {
+  const fact = store.appendEvent(dir, eventType, { operationId: `unknown-${operation}` });
+  const uncertain = run(dir, { operation, input }, { executeRequest: () => ({ status: 'SCENE',
+    scene: { sceneId: scene.sceneId },
+    [location]: { status: 'UNKNOWN', technicalFactRef: fact.technicalFactRef } }) });
+  assert.strictEqual(uncertain.status, 'UNKNOWN');
+  const descriptor = uncertain.resources.find((item) => item.type === 'technicalFact');
+  assert.ok(descriptor, `${location} technical fact must be available`);
+  assert.strictEqual(resources.readPublishedResource(dir, descriptor.ref).data.content.eventId, fact.eventId);
+}
+
+// Publishing one more Scene must not reconstruct the complete action history.
+const chain = fixture('execution-chain');
+resources.publishScene(chain.dir, chain.scene.sceneId);
+for (let index = 2; index <= 30; index += 1) {
+  const sceneId = `scene-${String(index).padStart(4, '0')}`;
+  const previousId = `scene-${String(index - 1).padStart(4, '0')}`;
+  store.writeScene(chain.dir, { ...chain.scene, sceneId, previousAction: { operationId: `action-${index}`,
+    command: { status: 'ACCEPTED' }, evidence: { sceneRefs: { before: previousId, after: sceneId } } } });
+  let sceneReads = 0;
+  const originalReadFileSync = fs.readFileSync;
+  fs.readFileSync = function trackedRead(file, ...args) {
+    if (String(file).includes('/scenes/')) sceneReads += 1;
+    return originalReadFileSync.call(this, file, ...args);
+  };
+  try {
+    const published = resources.publishScene(chain.dir, sceneId);
+    resources.readPublishedResource(chain.dir, published.data.ref);
+    assert.ok(sceneReads <= 6, `Scene publication/read must be bounded, read ${sceneReads} sources at depth ${index}`);
+  } finally { fs.readFileSync = originalReadFileSync; }
+}
+const chainCurrent = store.readCurrentScene(chain.dir);
+writeJsonAtomic(path.join(chain.dir, 'scenes', `${chainCurrent.sceneId}.json`), { ...chainCurrent, generation: 99 });
+assert.throws(() => resources.publishScene(chain.dir, chainCurrent.sceneId), { code: 'RESOURCE_INTEGRITY_INVALID' },
+  'reuse still verifies the directly requested source');
+store.writeScene(chain.dir, { ...chain.scene, sceneId: 'scene-0031', previousAction: { operationId: 'action-31',
+  evidence: { sceneRefs: { before: chainCurrent.sceneId, after: 'scene-0031' } } } });
+assert.throws(() => resources.publishScene(chain.dir, 'scene-0031'), { code: 'RESOURCE_INTEGRITY_INVALID' },
+  'reuse must verify the exact direct association binding');
+
 // Events bind the exact revision rather than a mutable current projection.
 const flow = require('../case-runtime/case-flow-service');
 const flowInput = { baseRevision: null, summary: 'check', entryNodeRef: 'N1', nodes: [
