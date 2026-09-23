@@ -11,7 +11,7 @@ console.log((value / 1000).toFixed(3));
 mavt_action_request_json() {
   node -e '
 const values = process.argv.slice(1);
-const [type, target, x, y, text, fromX, fromY, toX, toY, durationMs, ms, reason, velocity, coordinateSource, targetBounds, coordinateEvidence, mode] = values;
+const [type, target, x, y, text, fromX, fromY, toX, toY, durationMs, ms, reason, velocity, coordinateSource, targetBounds, coordinateEvidence, mode, intervalMs] = values;
 const request = { type };
 function addString(key, value) { if (value !== "") request[key] = value; }
 function addNumber(key, value) {
@@ -32,6 +32,7 @@ addNumber("durationMs", durationMs);
 addNumber("ms", ms);
 addString("reason", reason);
 addNumber("velocity", velocity);
+addNumber("intervalMs", intervalMs);
 addString("coordinateSource", coordinateSource);
 if (targetBounds) {
   const bounds = targetBounds.split(",").map((item) => Number(item.trim()));

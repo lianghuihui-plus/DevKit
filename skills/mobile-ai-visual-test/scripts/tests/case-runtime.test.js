@@ -679,6 +679,68 @@ const partialNarrative = run(started.execDir, {
 assert.strictEqual(partialNarrative.status, 'SCENE');
 assert.strictEqual(actionInvocationCount, actionInvocationsBeforePartialNarrative + 1);
 assert.strictEqual(partialNarrative.narrative.warnings.length, 0);
+
+const unknownActionExecDir = path.join(path.dirname(started.execDir), 'execution-unknown-action-fixture');
+fs.rmSync(unknownActionExecDir, { recursive: true, force: true });
+fs.cpSync(started.execDir, unknownActionExecDir, { recursive: true });
+const unknownActionScene = require('../case-runtime/store').readCurrentScene(unknownActionExecDir);
+const unknownActionCapability = unknownActionScene.capabilities.find((capability) => capability.kind === 'wait');
+const unknownActionRequest = {
+  operation: 'act',
+  basedOnSceneId: unknownActionScene.sceneId,
+  capabilityId: unknownActionCapability.id,
+  decision: {
+    observation: '当前页面可以用短暂等待验证未知动作恢复',
+    conclusion: '执行一次等待并要求未知结果不得重放',
+    purpose: '验证未知动作禁止重放',
+    expectedOutcome: '下一次请求先采集新现场',
+    expectationRefs: [],
+  },
+};
+let unknownActionCalls = 0;
+let unknownActionObservations = 0;
+const unknownAction = run(unknownActionExecDir, unknownActionRequest, {
+  now: '2026-09-03T10:00:01.075Z',
+  invokeDeviceOperation: (execDir, validated, kind) => {
+    if (kind === 'ACTION') {
+      unknownActionCalls += 1;
+      throw Object.assign(new Error('Android Helper action outcome is unknown'), {
+        code: 'ACTION_OUTCOME_UNKNOWN',
+        actionOutcomeUnknown: true,
+        adapterResult: {
+          command: { status: 'UNKNOWN', transport: 'ANDROID_HELPER_HTTP' },
+          deviceExecution: { status: 'UNVERIFIED', verification: 'NONE' },
+          failureCode: 'ANDROID_HELPER_ACTION_OUTCOME_UNKNOWN',
+        },
+      });
+    }
+    assert.strictEqual(kind, 'OBSERVE');
+    unknownActionObservations += 1;
+    const ref = `screenshots/${validated.operationId}.png`;
+    fs.mkdirSync(path.join(execDir, 'screenshots'), { recursive: true });
+    fs.writeFileSync(path.join(execDir, ref), PNG);
+    return {
+      binding,
+      adapterResult: {
+        schemaVersion: 1, type: 'observation', platform: binding.platform, time: T0,
+        device: { id: binding.deviceId }, app: { appId: binding.appId, inTargetApp: true },
+        artifacts: { screenshot: ref, layout: null, logs: [] },
+      },
+      evidence: {
+        ref, sha256: crypto.createHash('sha256').update(PNG).digest('hex'),
+        width: 1, height: 1, usable: true,
+      },
+    };
+  },
+});
+assert.strictEqual(unknownAction.status, 'SCENE');
+assert.strictEqual(unknownAction.action.status, 'UNKNOWN');
+assert.strictEqual(unknownActionCalls, 1);
+assert.strictEqual(unknownActionObservations, 1);
+assert.strictEqual(require('../case-runtime/store').events(unknownActionExecDir)
+  .filter((event) => event.type === 'actionOutcomeUnknown').length, 1);
+fs.rmSync(unknownActionExecDir, { recursive: true, force: true });
+
 const historicalInspection = run(started.execDir, {
   operation: 'inspectVisual',
   basedOnSceneId: first.scene.sceneId,

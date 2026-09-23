@@ -156,6 +156,21 @@ function assertResultBinding(result, binding, kind) {
   return result;
 }
 
+function assertKnownActionOutcome(adapterResult) {
+  if (adapterResult?.command?.status === 'UNKNOWN') {
+    throw contractError('ACTION_OUTCOME_UNKNOWN', failureText(adapterResult) || 'device action outcome is unknown', {
+      actionOutcomeUnknown: true,
+      adapterResult,
+    });
+  }
+  return adapterResult;
+}
+
+function duringActionCaptureRequired(adapterResult, request) {
+  return request?.observationPolicy?.duringActionAtMs !== undefined
+    && adapterResult?.command?.status !== 'REJECTED';
+}
+
 function invokeScreenshotCapture(execDir, validated, options = {}) {
   const { execution } = validated.context;
   const frozenBinding = resolveTargetBinding(execDir, execution);
@@ -262,6 +277,7 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
     if (kind === 'ACTION' && adapterResult.action !== validated.action.type) {
       throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'action adapter result does not match the requested action');
     }
+    if (kind === 'ACTION') assertKnownActionOutcome(adapterResult);
     if (kind === 'ACTION' && binding.platform === 'ios' && isIosSessionOrTransportFailure(adapterResult)) {
       throw contractError('IOS_ACTION_OUTCOME_UNKNOWN', failureText(adapterResult) || 'iOS action transport outcome is unknown', {
         actionOutcomeUnknown: true,
@@ -269,7 +285,7 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
       });
     }
     let duringActionEvidence = null;
-    if (kind === 'ACTION' && validated.request?.observationPolicy?.duringActionAtMs !== undefined) {
+    if (kind === 'ACTION' && duringActionCaptureRequired(adapterResult, validated.request)) {
       const capture = adapterResult.duringActionCapture;
       if (!capture?.artifacts?.screenshot) {
         throw contractError('DURING_ACTION_OBSERVATION_MISSING', 'adapter did not return the requested during-action screenshot');
@@ -321,6 +337,7 @@ function invokeAppRestart(rawBinding, options = {}) {
     }), 'ACTION');
     assertResultBinding(adapterResult, activeBinding, 'ACTION');
     if (adapterResult.action !== 'restartApp') throw contractError('DEVICE_ADAPTER_OUTPUT_INVALID', 'restart adapter result does not match restartApp');
+    assertKnownActionOutcome(adapterResult);
     if (activeBinding.platform === 'ios' && isIosSessionOrTransportFailure(adapterResult)) {
       throw contractError('IOS_ACTION_OUTCOME_UNKNOWN', failureText(adapterResult) || 'iOS restart outcome is unknown', {
         actionOutcomeUnknown: true,
@@ -387,6 +404,8 @@ function invokeAppPreparation(execDir, validated, options = {}) {
 }
 
 module.exports = {
+  assertKnownActionOutcome,
+  duringActionCaptureRequired,
   invokeAppPreparation,
   actionAdapterArgs,
   assertResultBinding,

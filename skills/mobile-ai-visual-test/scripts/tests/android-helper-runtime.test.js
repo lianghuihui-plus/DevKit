@@ -9,11 +9,13 @@ const path = require('path');
 const {
   acquireAndroidHelper,
   ensureAndroidHelperSession,
+  reauthenticateAndroidHelperSession,
   releaseAndroidHelper,
   sessionStatePath,
 } = require('../platform/adapters/android/lib/android-helper-session');
 const {
   claimAndroidHelperDevice,
+  claimPath,
   writeJsonAtomic,
 } = require('../platform/adapters/android/lib/android-helper-ownership');
 const { createDeviceSessionAdapter } = require('../batch/device-session');
@@ -173,6 +175,24 @@ function options(device, overrides = {}) {
     runAdb: device.runAdb, requestPing: device.requestPing,
   });
   assert.strictEqual(activeSession.token, 'a'.repeat(64));
+  device.state.token = '';
+  const reauthenticated = await reauthenticateAndroidHelperSession({
+    sessionStatePath: sessionPath, claimRoot,
+    runAdb: device.runAdb, requestPing: device.requestPing,
+  });
+  assert.strictEqual(reauthenticated.token, 'a'.repeat(64));
+  assert.strictEqual(device.state.token, 'a'.repeat(64));
+  const ownedClaimPath = claimPath('android-device', { claimRoot });
+  const ownedClaim = JSON.parse(fs.readFileSync(ownedClaimPath, 'utf8'));
+  writeJsonAtomic(ownedClaimPath, { ...ownedClaim, ownerKey: 'different-owner' });
+  device.state.token = '';
+  await assert.rejects(() => reauthenticateAndroidHelperSession({
+    sessionStatePath: sessionPath, claimRoot,
+    runAdb: device.runAdb, requestPing: device.requestPing,
+  }), (error) => error.code === 'ANDROID_HELPER_OWNERSHIP_LOST');
+  assert.strictEqual(device.state.token, '');
+  writeJsonAtomic(ownedClaimPath, ownedClaim);
+  device.state.token = 'a'.repeat(64);
   const forwardCount = device.state.calls.filter((call) => call.args.join(' ') === 'forward tcp:0 tcp:18888').length;
   const resumed = await acquireAndroidHelper(options(device));
   assert.strictEqual(resumed.status, 'ACTIVE');

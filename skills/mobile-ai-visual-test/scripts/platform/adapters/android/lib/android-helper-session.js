@@ -433,6 +433,25 @@ async function repairAndroidHelperSession(options) {
   return ensureAndroidHelperSession({ ...options, deviceId: journal.deviceId });
 }
 
+async function reauthenticateAndroidHelperSession(options) {
+  const journal = readSecureJson(options.sessionStatePath);
+  if (!journal || journal.phase !== 'ACTIVE') {
+    throw new SessionError('ANDROID_HELPER_SESSION_INVALID', 'Android Helper session is not active');
+  }
+  const claim = readAndroidHelperClaim(journal.deviceId, options);
+  if (!claim || claim.ownerKey !== journal.ownerKey || claim.sessionStatePath !== options.sessionStatePath) {
+    throw new SessionError('ANDROID_HELPER_OWNERSHIP_LOST', 'Android Helper claim changed before reauthentication');
+  }
+  const runOptions = { ...options, deviceId: journal.deviceId };
+  if (adb(runOptions, ['shell', 'am', 'get-current-user']) !== journal.androidUserId
+    || readTransportId(runOptions) !== journal.transportId
+    || !forwardEntries(runOptions).some((entry) => entry.local === `tcp:${journal.localPort}` && entry.remote === HELPER_REMOTE)) {
+    throw new SessionError('ANDROID_HELPER_SESSION_STALE', 'Android Helper session changed before reauthentication');
+  }
+  pushToken(runOptions, journal.androidUserId, journal.token);
+  return ensureAndroidHelperSession({ ...options, deviceId: journal.deviceId });
+}
+
 async function acquireAndroidHelper(options) {
   const policy = String(options.androidUiBackend || 'auto');
   if (policy === 'uiautomator') {
@@ -675,6 +694,7 @@ module.exports = {
   main,
   parseRuntimeArgs,
   readSecureJson,
+  reauthenticateAndroidHelperSession,
   repairAndroidHelperSession,
   releaseAndroidHelper,
   rollbackJournal,
