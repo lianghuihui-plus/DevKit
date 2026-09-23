@@ -341,7 +341,7 @@ const PUBLIC_METHODS = Object.freeze({
     reason: 'NOT_RUN 的业务原因', evidence: 'NOT_RUN 引用的已登记 Scene 或技术事实', flowContext: '实际到达的 END 节点',
   }, {
     responseProjection: projection(['executionId', 'verdict', 'caseResultRef', 'idempotent'], null, ['caseResult', 'checkpointLedger', 'technicalFact']),
-    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', 'FAIL、INCONCLUSIVE、BLOCKED 和 WAIVED 不强制知识调查；已提交的证据引用仍必须有效。', 'NOT_RUN 必须提供原因和已登记证据。'],
+    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', '现场事实不能单独证明业务定性；平台、版本、账号、配置或其他外部规则可能改变检查点定性时，Agent 必须先完成知识调查；查询无候选或候选不适用后仍可按现场证据处置。', 'NOT_RUN 必须提供原因和已登记证据。'],
     successStatuses: ['COMPLETED', 'RESULT_INCOMPLETE'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',

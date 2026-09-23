@@ -132,7 +132,10 @@ for (const [verdict, fixture] of fixtures) {
     assert.ok(html.includes('[已脱敏]'));
     assert.strictEqual(html.includes('不应出现在报告中的输入'), false);
     assert.ok(html.includes('本次执行未触发知识库查询'));
-    assert.ok(html.includes('知识调查 · 无需调查'));
+    assert.ok(html.includes('没有查询记录不代表无需知识支撑'));
+    assert.strictEqual(html.includes('现场直接证据足以形成结论，无需外部业务规则'), false);
+    assert.ok(html.includes('知识调查 · 未触发调查'));
+    assert.strictEqual(html.includes('知识调查 · 无需调查'), false);
   } else {
     assert.ok(html.includes('class="knowledge-process-status"'));
     assert.ok(html.includes('知识调查'));

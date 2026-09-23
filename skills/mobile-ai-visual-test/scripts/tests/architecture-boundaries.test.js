@@ -85,6 +85,7 @@ assert.ok(AGENT_FACING_CAPABILITIES.includes('read'));
 
 const casePrompt = read('prompts/case-agent.md');
 const caseExecutionPrinciples = read('references/case-execution-principles.md');
+const knowledgeRules = read('references/knowledge.md');
 assert.ok(roleResources('case-executor').includes('references/case-execution-principles.md'));
 assert.match(casePrompt, /references\/case-execution-principles\.md/);
 assert.ok(Buffer.byteLength(casePrompt) + Buffer.byteLength(caseExecutionPrinciples) <= 10373,
@@ -112,6 +113,25 @@ const actionSelfCheckGuidance = `${casePrompt}\n${caseExecutionPrinciples}`;
 assert.match(actionSelfCheckGuidance, /动作前.*可观察.*预期/);
 assert.match(actionSelfCheckGuidance, /技术.*不.*证明.*目标.*业务/);
 assert.match(actionSelfCheckGuidance, /预期不一致.*核对.*目标.*坐标.*落点/);
+for (const [name, guidance] of [
+  ['Case Prompt', casePrompt],
+  ['execution principles', caseExecutionPrinciples],
+  ['knowledge rules', knowledgeRules],
+]) {
+  assert.match(guidance, /现场事实.*不.*证明.*业务定性/,
+    `${name} must distinguish observable facts from business classification`);
+  assert.match(guidance, /平台.*版本.*账号.*配置.*可能.*改变.*定性.*必须.*knowledge/,
+    `${name} must require knowledge when external rules can change the classification`);
+  assert.match(guidance, /无候选.*不适用.*现场证据/,
+    `${name} must preserve scene-based judgment after an unhelpful query`);
+}
+for (const obsoleteKnowledgeRule of [
+  '异常无法由现场解释时才调用 `knowledge`',
+  '现场证据充分时直接形成结论',
+]) {
+  assert.strictEqual(`${casePrompt}\n${caseExecutionPrinciples}\n${knowledgeRules}`.includes(obsoleteKnowledgeRule), false,
+    `Agent guidance must not retain ambiguous knowledge rule: ${obsoleteKnowledgeRule}`);
+}
 assert.strictEqual(casePrompt.includes('Frozen CaseSpec'), false);
 assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);
 for (const internalField of ['basedOnSceneId', 'capabilityId', 'inspectVisual', 'inspectScene', 'knowledgeReview', 'contractDefinitions', 'allowedOperations']) {

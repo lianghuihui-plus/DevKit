@@ -26,7 +26,7 @@ const KNOWLEDGE_FIELD_LABELS = Object.freeze({
   operation: '操作',
 });
 const KNOWLEDGE_INVESTIGATION_LABELS = Object.freeze({
-  NOT_REQUIRED: '无需调查',
+  NOT_REQUIRED: '未触发调查',
   NO_MATCH: '无匹配候选',
   NO_APPLICABLE: '无适用知识',
   INSUFFICIENT: '知识依据不足',

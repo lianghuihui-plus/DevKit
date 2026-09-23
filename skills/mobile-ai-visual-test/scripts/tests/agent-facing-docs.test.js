@@ -75,11 +75,16 @@ function assertContract(contract, expectedMethods) {
 
 assertContract(caseContract, ['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
 assertContract(coordinatorContract, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun', 'read']);
+assert.ok(caseContract.methods.finish.contextualValidationRules.some((rule) =>
+  /外部规则.*改变.*定性.*知识调查/.test(rule)),
+'finish guidance must preserve the Agent-side knowledge investigation trigger');
 for (const contract of [caseContract, coordinatorContract]) {
   for (const method of Object.values(contract.methods)) assert.deepStrictEqual(method.successStatuses, ['SUCCEEDED']);
   assert.ok(contract.resourceCatalog);
 }
 buildDocs({ root, check: true });
+assert.match(fs.readFileSync(path.join(root, 'references/case-runtime/methods/finish.md'), 'utf8'),
+  /外部规则.*改变.*定性.*知识调查/);
 
 const files = outputFiles({ root });
 for (const [relative, content] of files) {
