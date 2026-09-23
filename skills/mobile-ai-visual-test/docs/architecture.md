@@ -97,7 +97,7 @@ sequenceDiagram
 
 Coordinator 与 Case Runtime 对 Agent 使用同一请求外壳 `{operation,input}` 和同一响应外壳 `{protocol,status,operation,result,resources,data?,error?}`。`result` 只放业务状态、标识和计数等简单事实；当前操作的主复杂结果完整放入 `data`；其他复杂数据只发布带类型、作用域和完整性信息的资源描述，由 Agent 将原样 `ref` 交回同一绑定 Facade 的 `read(ref)` 读取。
 
-资源正文不因体积被截断或抽样，同一响应也不重复内联主资源和关联资源。资源引用是不透明且不可变的能力凭据，不能从文件路径、领域 ID 或文字拼接，也不能跨 Coordinator 与 Case Runtime 作用域使用。`read` 只读取已发布资源，不改变业务状态；execution 完成后仍可读取已发布资源。
+资源正文不因体积被截断或抽样，同一响应也不重复内联主资源和关联资源。资源引用是不透明且不可变的能力凭据，不能从文件路径、领域 ID 或文字拼接，也不能跨 Coordinator 与 Case Runtime 作用域使用。资源语义类型与内容格式分离；例如三端统一发布 `layout`，但通过 `mediaType` 区分 JSON 与 XML，Agent 仍只调用 `read(ref)`。`read` 只读取已发布资源，不改变业务状态；execution 完成后仍可读取已发布资源。
 
 公开请求、响应投影、资源目录和错误码由各 Facade 的 Agent-facing contract 定义，`references/coordinator.md`、`references/case-runtime.md` 及其子页由契约生成，是 Agent 调用签名和恢复方式的事实来源。Facade 负责把公开操作翻译为内部命令并投影响应；Runtime Core 不根据 Agent 可能需要什么来裁剪数据，也不推测下一步操作。
 

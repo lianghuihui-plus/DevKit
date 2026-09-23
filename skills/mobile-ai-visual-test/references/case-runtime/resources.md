@@ -11,7 +11,7 @@
 }
 ```
 
-读取返回完整主数据 `data`，关联复杂数据仍为 `resources` 中的类型化引用；不截断、抽样或内联复制关联资源。`$resourceType` 表示所读资源类型，`$declaredResources` 表示该资源声明的关联资源。引用不可拼接、跨作用域使用或替换为流程节点、边和操作 ID。
+读取返回完整主数据 `data`，关联复杂数据仍为 `resources` 中的类型化引用；不截断、抽样或内联复制关联资源。资源描述符存在 `mediaType` 时，`read` 返回的 `data.mediaType` 与其一致；Agent 不传格式参数。`$resourceType` 表示所读资源类型，`$declaredResources` 表示该资源声明的关联资源。引用不可拼接、跨作用域使用或替换为流程节点、边和操作 ID。
 
 证据字段同样只接受已发布引用：`sceneRef` / `sceneRefs` 使用 `scene` ref，`knowledgeRefs` 使用适用候选的 `knowledgeDocumentRef`，`technicalRefs` 使用 `technicalFact` ref。`ActionRef`、`checkNodeRef`、`queryId` 和 `scrollContextRef` 是响应内容中的领域标识，不传给 `read`。
 
@@ -20,7 +20,7 @@
 | `caseBrief` | 冻结的 Case Agent prompt、用例和 execution 启动信息。 |
 | `scene` | 一次采集的完整 Scene 与截图、布局、控件资源引用。 |
 | `screenshot` | 完整截图文件位置与尺寸；使用宿主图片能力打开。 |
-| `layout` | 该 Scene 的完整原始控件树。 |
+| `layout` | 该 Scene 的完整原始控件树；按 mediaType 返回 JSON 对象或 XML 文本。 |
 | `elementSet` | 完整控件集合与确定性动作事实。 |
 | `caseFlow` | Agent 提交的完整用例流程 revision。 |
 | `checkpointLedger` | 检查点登记与处置账本的不可变快照。 |

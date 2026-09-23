@@ -6,6 +6,7 @@
 <a id="error-resource-unknown"></a>- [`RESOURCE_UNKNOWN`](errors/transport.md#error-resource-unknown)
 <a id="error-resource-scope-mismatch"></a>- [`RESOURCE_SCOPE_MISMATCH`](errors/transport.md#error-resource-scope-mismatch)
 <a id="error-resource-integrity-invalid"></a>- [`RESOURCE_INTEGRITY_INVALID`](errors/runtime.md#error-resource-integrity-invalid)
+<a id="error-resource-format-unsupported"></a>- [`RESOURCE_FORMAT_UNSUPPORTED`](errors/runtime.md#error-resource-format-unsupported)
 <a id="error-agent-input-invalid"></a>- [`AGENT_INPUT_INVALID`](errors/transport.md#error-agent-input-invalid)
 <a id="error-agent-input-stalled"></a>- [`AGENT_INPUT_STALLED`](errors/transport.md#error-agent-input-stalled)
 <a id="error-protocol-mismatch"></a>- [`PROTOCOL_MISMATCH`](errors/transport.md#error-protocol-mismatch)

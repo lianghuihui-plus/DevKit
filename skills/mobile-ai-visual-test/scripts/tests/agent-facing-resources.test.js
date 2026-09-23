@@ -11,10 +11,10 @@ const { run } = require('../case-runtime/agent-facing-client');
 const store = require('../case-runtime/store');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-resources-'));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
-function fixture(id) {
+function fixture(id, platform = 'harmony') {
   const dir = path.join(temp, id);
   fs.mkdirSync(path.join(dir, 'screenshots'), { recursive: true });
-  writeJsonAtomic(path.join(dir, 'execution.json'), { schemaVersion: 14, runtime: 'case-runtime', executionId: id, platform: 'harmony', finalized: false });
+  writeJsonAtomic(path.join(dir, 'execution.json'), { schemaVersion: 14, runtime: 'case-runtime', executionId: id, platform, finalized: false });
   fs.writeFileSync(path.join(dir, 'events.jsonl'), '');
   fs.writeFileSync(path.join(dir, 'screenshots/scene-0001.png'), png);
   const scene = { sceneId: 'scene-0001', capturedAt: '2026-09-22T00:00:00Z', generation: 1,
@@ -39,10 +39,87 @@ assert.deepStrictEqual(reread.data, observed.data);
 assert.ok(!reread.resources.some((item) => item.ref === reread.data.ref));
 const elements = resources.readPublishedResource(dir, observed.data.content.elementSetRef);
 assert.strictEqual(elements.data.content.length, 70);
-assert.deepStrictEqual(resources.readPublishedResource(dir, observed.data.content.layoutRef).data.content, scene.layout);
+const jsonLayout = resources.readPublishedResource(dir, observed.data.content.layoutRef);
+assert.strictEqual(jsonLayout.data.mediaType, 'application/json');
+assert.strictEqual(jsonLayout.descriptor.mediaType, 'application/json');
+assert.deepStrictEqual(jsonLayout.data.content, scene.layout);
 const binary = resources.readPublishedResource(dir, observed.data.content.screenshotRef).data.content;
 assert.strictEqual(binary.sha256, crypto.createHash('sha256').update(png).digest('hex'));
 assert.strictEqual(binary.path, fs.realpathSync(path.join(dir, 'screenshots/scene-0001.png')));
+assert.strictEqual(observed.resources.find((item) => item.type === 'screenshot').mediaType, 'image/png');
+
+// Android and iOS publish their raw layout as XML without changing the Agent read protocol.
+for (const platform of ['android', 'ios']) {
+  const xmlFixture = fixture(`execution-${platform}-xml`, platform);
+  const xml = `<?xml version="1.0"?><hierarchy platform="${platform}"><node text="允许"/></hierarchy>\n`;
+  fs.mkdirSync(path.join(xmlFixture.dir, 'layouts'));
+  fs.writeFileSync(path.join(xmlFixture.dir, 'layouts/scene-0001.xml'), xml);
+  store.writeScene(xmlFixture.dir, {
+    ...xmlFixture.scene,
+    layoutRef: 'layouts/scene-0001.xml',
+    layout: { usable: true, format: 'xml', diagnostics: [] },
+  });
+  const xmlScene = resources.publishScene(xmlFixture.dir, xmlFixture.scene.sceneId);
+  const xmlDescriptor = xmlScene.resources.find((item) => item.type === 'layout');
+  assert.ok(xmlDescriptor, `${platform} Scene must publish its XML layout`);
+  assert.strictEqual(xmlDescriptor.mediaType, 'application/xml');
+  const xmlLayout = resources.readPublishedResource(xmlFixture.dir, xmlScene.data.content.layoutRef);
+  assert.strictEqual(xmlLayout.data.mediaType, 'application/xml');
+  assert.strictEqual(xmlLayout.data.content, xml);
+  const catalogDir = path.join(xmlFixture.dir, 'operations/resources/catalog');
+  const layoutCatalogPath = fs.readdirSync(catalogDir).map((name) => path.join(catalogDir, name)).find((file) => {
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return record.descriptor.ref === xmlScene.data.content.layoutRef;
+  });
+  const layoutCatalog = JSON.parse(fs.readFileSync(layoutCatalogPath, 'utf8'));
+  writeJsonAtomic(layoutCatalogPath, { ...layoutCatalog,
+    descriptor: { ...layoutCatalog.descriptor, mediaType: 'application/json' } });
+  assert.throws(() => resources.readPublishedResource(xmlFixture.dir, xmlScene.data.content.layoutRef), {
+    code: 'RESOURCE_INTEGRITY_INVALID',
+  });
+  writeJsonAtomic(layoutCatalogPath, layoutCatalog);
+  fs.appendFileSync(path.join(xmlFixture.dir, 'layouts/scene-0001.xml'), '<!-- changed -->\n');
+  assert.throws(() => resources.readPublishedResource(xmlFixture.dir, xmlScene.data.content.layoutRef), {
+    code: 'RESOURCE_INTEGRITY_INVALID',
+  });
+}
+
+for (const [id, relative, declaredFormat, expectedDiagnostic] of [
+  ['execution-unknown-layout', 'layouts/scene-0001.yaml', 'yaml', {
+    resourceType: 'layout', code: 'RESOURCE_FORMAT_UNSUPPORTED', format: 'yaml',
+  }],
+  ['execution-mismatched-layout', 'layouts/scene-0001.json', 'xml', {
+    resourceType: 'layout', code: 'RESOURCE_FORMAT_UNSUPPORTED', format: 'xml',
+    reason: 'FORMAT_DECLARATION_MISMATCH', pathFormat: 'json',
+  }],
+]) {
+  const unsupported = fixture(id, 'android');
+  fs.mkdirSync(path.join(unsupported.dir, 'layouts'));
+  fs.writeFileSync(path.join(unsupported.dir, relative), declaredFormat === 'xml' ? '<hierarchy/>\n' : 'root: unsupported\n');
+  const unsupportedScene = {
+    ...unsupported.scene,
+    layoutRef: relative,
+    layout: { usable: true, format: declaredFormat, diagnostics: [] },
+  };
+  store.writeScene(unsupported.dir, unsupportedScene);
+  const degraded = run(unsupported.dir, { operation: 'observe', input: {} }, {
+    executeRequest: () => ({ status: 'SCENE', scene: unsupportedScene }),
+  });
+  assert.strictEqual(degraded.status, 'SUCCEEDED');
+  assert.strictEqual(degraded.data.type, 'scene');
+  assert.strictEqual(degraded.data.content.layoutRef, undefined);
+  assert.deepStrictEqual(degraded.data.content.resourceDiagnostics, [expectedDiagnostic]);
+  assert.ok(!degraded.resources.some((item) => item.type === 'layout'));
+}
+const missingLayout = fixture('execution-missing-layout', 'ios');
+const missingLayoutScene = { ...missingLayout.scene, layoutRef: 'layouts/missing.yaml',
+  layout: { usable: true, format: 'yaml', diagnostics: [] } };
+store.writeScene(missingLayout.dir, missingLayoutScene);
+const missingLayoutResponse = run(missingLayout.dir, { operation: 'observe', input: {} }, {
+  executeRequest: () => ({ status: 'SCENE', scene: missingLayoutScene }),
+});
+assert.strictEqual(missingLayoutResponse.status, 'FAILED');
+assert.strictEqual(missingLayoutResponse.error.code, 'RESOURCE_INTEGRITY_INVALID');
 const previousActionFixture = fixture('execution-previous-action');
 store.writeScene(previousActionFixture.dir, {
   ...previousActionFixture.scene,

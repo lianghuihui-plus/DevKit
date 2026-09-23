@@ -12,6 +12,14 @@ const TYPES = new Set(Object.keys(require('./agent-facing-contract').PUBLIC_CONT
 const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const jsonHash = (value) => hash(canonicalJson(value));
 const fail = (message) => contractError('RESOURCE_INTEGRITY_INVALID', message);
+const formatFail = (message, details = {}) => contractError('RESOURCE_FORMAT_UNSUPPORTED', message, details);
+
+function mediaKind(mediaType) {
+  if (mediaType === 'application/json') return 'json';
+  if (mediaType === 'application/xml' || mediaType.startsWith('text/')) return 'text';
+  if (mediaType.startsWith('image/')) return 'binary';
+  throw formatFail(`unsupported media type: ${mediaType}`, { mediaType });
+}
 
 function scope(execDir) {
   const execution = store.loadExecution(execDir, { allowFinalized: true });
@@ -93,6 +101,9 @@ function sourceValue(execDir, source) {
     if (matches[0].executionId !== store.loadExecution(execDir, { allowFinalized: true }).executionId) throw fail('event scope mismatch');
     return { value: matches[0], sha256: jsonHash(matches[0]) };
   }
+  if (source.mediaType && mediaKind(source.mediaType) !== source.kind) {
+    throw formatFail(`source kind does not match media type: ${source.mediaType}`, { mediaType: source.mediaType });
+  }
   const bytes = fs.readFileSync(file);
   const value = source.kind === 'binary' ? null : source.kind === 'text' ? bytes.toString('utf8') : JSON.parse(bytes.toString('utf8'));
   if (source.kind === 'handoff') {
@@ -119,6 +130,7 @@ function projectSource(type, raw, params, source) {
     return {
       sceneRef: params.sceneRef, capturedAt: raw.capturedAt, generation: raw.generation,
       ...params.refs, targetApp: raw.app || {}, signals: raw.signals || {}, conflicts: raw.conflicts || [],
+      ...(params.resourceDiagnostics?.length ? { resourceDiagnostics: params.resourceDiagnostics } : {}),
       interactionContext: { scrollContexts: raw.scrollContexts || [], keyboard: raw.signals?.keyboard || {}, visual: raw.visual || {} },
       actions: buildCapabilities(raw, params.platform).map((action) => ({ ref: actionRefFor(action), label: action.label,
         kind: action.kind, ...(action.kind === 'wait' ? { input: { ms: 'positive-integer' } } : action.input ? { input: action.input } : {}) })),
@@ -157,7 +169,7 @@ function publishResource(execDir, descriptor, content) {
       if (!['checkpointLedger', 'layout'].includes(type)) throw fail(`${type} requires its immutable authority`);
       const relative = `operations/resources/snapshots/${type}-${jsonHash(content)}.json`;
       immutableJson(execDir, relative, content);
-      source = { kind: 'json', path: relative };
+      source = { kind: 'json', path: relative, mediaType: 'application/json' };
     }
     const loaded = sourceValue(execDir, source);
     if (type === 'planResult') {
@@ -168,14 +180,16 @@ function publishResource(execDir, descriptor, content) {
     if (type === 'caseResult' && !store.loadExecution(execDir, { allowFinalized: true }).finalized) throw fail('case result is not committed');
     const canonical = projectSource(type, loaded.value, params, { ...source, ...loaded });
     const integrity = jsonHash(canonical);
-    const publicDescriptor = { ref, type, role: type, ...(revision !== undefined ? { revision } : {}), integrity };
+    const mediaType = descriptor.mediaType || source.mediaType;
+    const publicDescriptor = { ref, type, role: type, ...(mediaType ? { mediaType } : {}),
+      ...(revision !== undefined ? { revision } : {}), integrity };
     const record = { descriptor: publicDescriptor, id, source: { ...source, sha256: loaded.sha256 }, params,
       associations: associations.filter((item) => item.ref !== ref) };
     immutableJson(execDir, registryPath(ref), record);
-    return { data: { ref, type, content: canonical }, descriptor: publicDescriptor,
+    return { data: { ref, type, ...(mediaType ? { mediaType } : {}), content: canonical }, descriptor: publicDescriptor,
       resources: record.associations, declaredResources: record.associations };
   } catch (error) {
-    if (error.code === 'RESOURCE_INTEGRITY_INVALID') throw error;
+    if (['RESOURCE_INTEGRITY_INVALID', 'RESOURCE_FORMAT_UNSUPPORTED'].includes(error.code)) throw error;
     throw fail(`resource publication failed: ${error.message}`);
   }
 }
@@ -187,14 +201,16 @@ function readPublishedResource(execDir, ref) {
   try {
     const record = JSON.parse(fs.readFileSync(regularFile(execDir, registryPath(ref)), 'utf8'));
     if (record.descriptor.ref !== ref || resourceRef(execDir, record.descriptor.type, record.id) !== ref) throw fail('catalog binding mismatch');
+    if ((record.descriptor.mediaType || null) !== (record.source.mediaType || null)) throw fail('catalog media type mismatch');
     const loaded = sourceValue(execDir, record.source);
     if (loaded.sha256 !== record.source.sha256) throw fail('resource authority digest mismatch');
     const content = projectSource(record.descriptor.type, loaded.value, record.params, { ...record.source, ...loaded });
     if (jsonHash(content) !== record.descriptor.integrity) throw fail('resource content digest mismatch');
-    return { data: { ref, type: record.descriptor.type, content }, resources: record.associations,
+    return { data: { ref, type: record.descriptor.type,
+      ...(record.descriptor.mediaType ? { mediaType: record.descriptor.mediaType } : {}), content }, resources: record.associations,
       declaredResources: record.associations, descriptor: record.descriptor, id: record.id };
   } catch (error) {
-    if (error.code === 'RESOURCE_INTEGRITY_INVALID') throw error;
+    if (['RESOURCE_INTEGRITY_INVALID', 'RESOURCE_FORMAT_UNSUPPORTED'].includes(error.code)) throw error;
     throw fail(`published resource is unreadable: ${error.message}`);
   }
 }
@@ -217,17 +233,50 @@ function publishScreenshot(execDir, screenshot) {
   const image = relative.endsWith('.png') ? require('../lib/image-evidence').inspectPng(file) : null;
   if (image && !image.width) throw fail('screenshot dimensions are unavailable');
   const dimensions = image || { width: screenshot.width, height: screenshot.height };
-  return publishResource(execDir, { type: 'screenshot', id: relative, source: { kind: 'binary', path: relative },
-    params: { width: dimensions.width, height: dimensions.height, mediaType: screenshot.mediaType || (relative.endsWith('.svg') ? 'image/svg+xml' : 'image/png') } });
+  const mediaType = screenshot.mediaType || (relative.endsWith('.svg') ? 'image/svg+xml' : 'image/png');
+  return publishResource(execDir, { type: 'screenshot', id: relative,
+    source: { kind: 'binary', path: relative, mediaType, encoding: 'binary' },
+    params: { width: dimensions.width, height: dimensions.height, mediaType } });
 }
 
 function publishArtifact(execDir, type, relative, associations = [], params = {}) {
-  const source = { kind: type === 'knowledgeDocument' ? 'text' : 'json', path: relative };
+  const text = type === 'knowledgeDocument';
+  const source = { kind: text ? 'text' : 'json', path: relative,
+    mediaType: text ? 'text/markdown' : 'application/json', encoding: 'utf-8' };
   const dependencies = ['planEvidence', 'planResult', 'caseResult'].includes(type)
     ? artifactAssociations(execDir, sourceValue(execDir, source).value, resourceRef(execDir, type, relative), relative)
     : { refMap: {}, associations: [] };
   return publishResource(execDir, { type, id: relative, source,
     params: { ...params, refMap: { ...dependencies.refMap, ...params.refMap } }, associations: [...associations, ...dependencies.associations] });
+}
+
+function publishLayout(execDir, scene) {
+  if (!scene.layoutRef) {
+    if (scene.layout === undefined || scene.layout === null) return null;
+    return publishResource(execDir, { type: 'layout', id: scene.sceneId, mediaType: 'application/json' }, scene.layout);
+  }
+  const verifyAuthorityBeforeDegrading = () => {
+    try { regularFile(execDir, scene.layoutRef); } catch (error) {
+      if (error.code === 'RESOURCE_INTEGRITY_INVALID') throw error;
+      throw fail(`layout authority unavailable: ${error.message}`);
+    }
+  };
+  const declared = scene.layout?.format;
+  const extension = path.extname(scene.layoutRef).slice(1).toLowerCase();
+  const format = declared || extension;
+  if (declared && ['json', 'xml'].includes(extension) && declared !== extension) {
+    verifyAuthorityBeforeDegrading();
+    throw formatFail(`layout format ${declared} does not match .${extension}`, {
+      resourceType: 'layout', format: declared, reason: 'FORMAT_DECLARATION_MISMATCH', pathFormat: extension,
+    });
+  }
+  if (format === 'xml') {
+    return publishResource(execDir, { type: 'layout', id: scene.layoutRef,
+      source: { kind: 'text', path: scene.layoutRef, mediaType: 'application/xml', encoding: 'utf-8' } });
+  }
+  if (format === 'json') return publishArtifact(execDir, 'layout', scene.layoutRef);
+  verifyAuthorityBeforeDegrading();
+  throw formatFail(`unsupported layout format: ${format || 'unknown'}`, { resourceType: 'layout', format: format || 'unknown' });
 }
 
 function artifactAssociations(execDir, content, selfRef, selfId) {
@@ -268,8 +317,12 @@ function publishScene(execDir, sceneId) {
   const screenshot = scene.screenshot?.ref || scene.screenshot?.path ? publishScreenshot(execDir, scene.screenshot) : null;
   const elements = publishResource(execDir, { type: 'elementSet', id: sceneId, source });
   let layout = null;
-  if (scene.layoutRef) layout = publishArtifact(execDir, 'layout', scene.layoutRef);
-  else if (scene.layout !== undefined && scene.layout !== null) layout = publishResource(execDir, { type: 'layout', id: sceneId }, scene.layout);
+  const resourceDiagnostics = [];
+  try { layout = publishLayout(execDir, scene); } catch (error) {
+    if (error.code !== 'RESOURCE_FORMAT_UNSUPPORTED') throw error;
+    resourceDiagnostics.push({ resourceType: 'layout', code: error.code, format: error.format,
+      ...(error.reason ? { reason: error.reason } : {}), ...(error.pathFormat ? { pathFormat: error.pathFormat } : {}) });
+  }
   const spatialRef = scene.previousAction?.spatialEvidence?.ref || scene.previousAction?.spatialEvidenceRef;
   const spatial = spatialRef ? publishSpatial(execDir, spatialRef) : null;
   const dependencies = artifactAssociations(execDir, scene.previousAction?.evidence, resourceRef(execDir, 'scene', sceneId), sceneId);
@@ -277,7 +330,7 @@ function publishScene(execDir, sceneId) {
   return publishResource(execDir, { type: 'scene', id: sceneId, source, associations: associated,
     params: { sceneRef: resourceRef(execDir, 'scene', sceneId), refMap: dependencies.refMap, platform: store.loadExecution(execDir, { allowFinalized: true }).platform,
       refs: { ...(screenshot ? { screenshotRef: screenshot.data.ref } : {}), ...(layout ? { layoutRef: layout.data.ref } : {}),
-        elementSetRef: elements.data.ref, ...(spatial ? { actionSpatialEvidenceRef: spatial.data.ref } : {}) } } });
+        elementSetRef: elements.data.ref, ...(spatial ? { actionSpatialEvidenceRef: spatial.data.ref } : {}) }, resourceDiagnostics } });
 }
 
 function publishSpatial(execDir, relative) {

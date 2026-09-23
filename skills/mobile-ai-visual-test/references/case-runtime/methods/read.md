@@ -34,6 +34,7 @@ Read-only.
 - [`RESOURCE_UNKNOWN`](../errors/transport.md#error-resource-unknown)
 - [`RESOURCE_SCOPE_MISMATCH`](../errors/transport.md#error-resource-scope-mismatch)
 - [`RESOURCE_INTEGRITY_INVALID`](../errors/runtime.md#error-resource-integrity-invalid)
+- [`RESOURCE_FORMAT_UNSUPPORTED`](../errors/runtime.md#error-resource-format-unsupported)
 - [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 
 ## 最小示例

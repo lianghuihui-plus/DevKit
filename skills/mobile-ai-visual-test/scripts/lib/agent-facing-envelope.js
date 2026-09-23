@@ -12,6 +12,7 @@ const RESOURCE_DESCRIPTOR_SCHEMA = Object.freeze({
     ref: { type: 'string', minLength: 1 },
     type: { type: 'string', minLength: 1 },
     role: { type: 'string', minLength: 1 },
+    mediaType: { type: 'string', minLength: 1 },
     revision: { type: 'integer', minimum: 0 },
     integrity: { type: 'string', minLength: 1 },
   },
@@ -60,6 +61,9 @@ function resourceDescriptor(resource, index) {
   if (descriptor.integrity !== undefined && (typeof descriptor.integrity !== 'string' || !descriptor.integrity.trim())) {
     throw new TypeError(`resources[${index}].integrity must be a non-empty string`);
   }
+  if (descriptor.mediaType !== undefined && (typeof descriptor.mediaType !== 'string' || !descriptor.mediaType.trim())) {
+    throw new TypeError(`resources[${index}].mediaType must be a non-empty string`);
+  }
   return Object.freeze({ ...descriptor });
 }
 
@@ -80,6 +84,9 @@ function resourceData(data) {
   }
   if (typeof value.ref !== 'string' || !value.ref.trim() || typeof value.type !== 'string' || !value.type.trim()) {
     throw new TypeError('data.ref and data.type must be non-empty strings');
+  }
+  if (value.mediaType !== undefined && (typeof value.mediaType !== 'string' || !value.mediaType.trim())) {
+    throw new TypeError('data.mediaType must be a non-empty string');
   }
   return value;
 }

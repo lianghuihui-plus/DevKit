@@ -136,6 +136,7 @@ const PUBLIC_ERRORS = Object.freeze({
   RESOURCE_UNKNOWN: { group: 'transport', retryable: true, summary: '资源引用尚未发布。', recovery: '原样复制当前绑定发布的资源 ref。' },
   RESOURCE_SCOPE_MISMATCH: { group: 'transport', retryable: false, summary: '资源引用属于其他作用域。', recovery: '使用发布该引用的已绑定 command。' },
   RESOURCE_INTEGRITY_INVALID: { group: 'runtime', retryable: false, summary: '已发布资源缺失或完整性校验失败。', recovery: '保留现场并报告资源完整性故障。' },
+  RESOURCE_FORMAT_UNSUPPORTED: { group: 'runtime', retryable: false, summary: '资源声明的内容格式不受支持或与文件格式冲突。', recovery: '保留 Scene 中其余可用资源，并根据 resourceDiagnostics 排查采集格式。' },
   AGENT_INPUT_INVALID: { group: 'transport', retryable: true, summary: '请求结构、类型或条件字段不合法。', recovery: '根据 issues 修正当前方法请求一次；字段只取自当前方法页和 Runtime 响应。' },
   AGENT_INPUT_STALLED: { group: 'transport', retryable: false, summary: '同类输入错误连续发生，停止自动猜测。', recovery: '停止修改参数，读取当前方法页并核对绑定命令；仍不一致时保留请求和响应进行技术排障。' },
   PROTOCOL_MISMATCH: { group: 'transport', retryable: false, summary: 'Prompt、文档、客户端或 execution 协议不一致。', recovery: '停止执行该 execution，保留 Loader 输出和摘要；使用当前 Skill 新建 execution，不修改旧 execution。' },
@@ -229,7 +230,7 @@ const PUBLIC_METHODS = Object.freeze({
   read: method('read', '按原样引用读取一个资源。', SCHEMAS.read, { ref: '当前绑定发布的资源引用' }, {
     responseProjection: projection(['resourceRef', 'resourceType'], '$resourceType', '$declaredResources'),
     minimalExample: { operation: 'read', input: { ref: 'mavt:0123456789abcdef01234567:scene:scene-1' } },
-    successStatuses: ['RESOURCE_READ'], errorCodes: ['AGENT_INPUT_INVALID', 'RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH', 'RESOURCE_INTEGRITY_INVALID', 'CASE_RUNTIME_TECHNICAL'],
+    successStatuses: ['RESOURCE_READ'], errorCodes: ['AGENT_INPUT_INVALID', 'RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH', 'RESOURCE_INTEGRITY_INVALID', 'RESOURCE_FORMAT_UNSUPPORTED', 'CASE_RUNTIME_TECHNICAL'],
   }),
   inspect: method('inspect', '登记 Agent 已观察到的视觉或动作事实。', SCHEMAS.inspect, {
     sceneRef: '被检查的 Scene', mode: 'visual 或 action',
@@ -359,7 +360,7 @@ const PUBLIC_CONTRACT = Object.freeze({
     caseBrief: { summary: '冻结的 Case Agent prompt、用例和 execution 启动信息。' },
     scene: { summary: '一次采集的完整 Scene 与截图、布局、控件资源引用。' },
     screenshot: { summary: '完整截图文件位置与尺寸；使用宿主图片能力打开。' },
-    layout: { summary: '该 Scene 的完整原始控件树。' },
+    layout: { summary: '该 Scene 的完整原始控件树；按 mediaType 返回 JSON 对象或 XML 文本。' },
     elementSet: { summary: '完整控件集合与确定性动作事实。' },
     caseFlow: { summary: 'Agent 提交的完整用例流程 revision。' },
     checkpointLedger: { summary: '检查点登记与处置账本的不可变快照。' },

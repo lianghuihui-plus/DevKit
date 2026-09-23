@@ -78,6 +78,12 @@ assert.throws(() => errorEnvelope({ status: 'REJECTED', operation: 'act', code: 
 assert.throws(() => errorEnvelope({ status: 'REJECTED', operation: 'act', code: 'X', retryable: 'true' }), /retryable/);
 assert.throws(() => successEnvelope({ operation: 'observe', unexpected: true }), /unsupported/i);
 assert.throws(() => errorEnvelope({ status: 'REJECTED', operation: 'act', code: 'X', retryable: true, data: {} }), /unsupported/i);
+assert.throws(() => successEnvelope({
+  operation: 'read', resources: [{ ref: 'layout-1', type: 'layout', role: 'layout', mediaType: '' }],
+}), /mediaType/);
+assert.throws(() => successEnvelope({
+  operation: 'read', data: { ref: 'layout-1', type: 'layout', mediaType: 1, content: '<hierarchy/>' },
+}), /mediaType/);
 
 assert.strictEqual(caseContract.AGENT_FACING_PROTOCOL, 'agent-facing');
 assert.strictEqual(coordinatorContract.AGENT_FACING_PROTOCOL, 'agent-facing');
