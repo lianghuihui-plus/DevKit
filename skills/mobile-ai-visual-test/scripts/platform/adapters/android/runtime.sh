@@ -2,13 +2,19 @@
 set -euo pipefail
 
 operation=""
+android_ui_backend="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --operation) operation="${2:-}"; shift 2 ;;
+    --android-ui-backend) android_ui_backend="${2:-}"; shift 2 ;;
     --owner-key|--runtime-json|--device|--app|--entry) shift 2 ;;
     *) echo "Android runtime 未知参数: $1" >&2; exit 2 ;;
   esac
 done
+case "$android_ui_backend" in
+  auto|helper|uiautomator) ;;
+  *) echo "Android runtime 无效 --android-ui-backend: $android_ui_backend" >&2; exit 2 ;;
+esac
 
 if [[ "$operation" != "acquire" && "$operation" != "release" ]]; then
   echo "Android runtime 不支持的 operation: ${operation:-missing}" >&2

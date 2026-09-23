@@ -5,15 +5,21 @@ device=""
 app=""
 strategy=""
 artifact=""
+android_ui_backend="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device) device="${2:-}"; shift 2 ;;
     --app) app="${2:-}"; shift 2 ;;
     --strategy) strategy="${2:-}"; shift 2 ;;
     --artifact) artifact="${2:-}"; shift 2 ;;
+    --android-ui-backend) android_ui_backend="${2:-}"; shift 2 ;;
     *) echo "Android App 准备未知参数: $1" >&2; exit 2 ;;
   esac
 done
+case "$android_ui_backend" in
+  auto|helper|uiautomator) ;;
+  *) echo "Android App 准备无效 --android-ui-backend: $android_ui_backend" >&2; exit 2 ;;
+esac
 
 adb_bin="$(command -v adb || true)"
 ok=false

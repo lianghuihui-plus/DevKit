@@ -10,6 +10,7 @@ const RESOURCE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:[^:]+:.+$' }
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', additionalProperties: false, properties, required });
 const BINDING = object({
   platform: { enum: ['harmony', 'android', 'ios'] }, deviceId: STRING, appId: STRING, entry: STRING,
+  androidUiBackend: { enum: ['auto', 'helper', 'uiautomator'] },
   deviceType: { enum: ['simulator', 'realDevice'] }, deviceFormFactor: STRING,
   xcodeOrgId: STRING, xcodeSigningId: STRING, updatedWDABundleId: STRING,
 }, ['platform', 'deviceId', 'appId']);
@@ -77,7 +78,9 @@ const parameterDescriptions = {
     platform: '用户选择的平台。', deviceId: '当前探测事实中的设备标识；多设备时必须明确选择。',
     binding: '用户确认的目标设备与应用绑定。', 'binding.platform': '已选择的平台。',
     'binding.deviceId': '已确认的设备标识。', 'binding.appId': '已确认的目标应用标识。',
-    'binding.entry': 'HarmonyOS 应用入口。', 'binding.deviceType': 'iOS 模拟器或真机。',
+    'binding.entry': 'HarmonyOS 或 Android 应用入口。',
+    'binding.androidUiBackend': 'Android UI 后端策略：auto、helper 或 uiautomator。',
+    'binding.deviceType': 'iOS 模拟器或真机。',
     'binding.deviceFormFactor': '设备形态。', 'binding.xcodeOrgId': '用户确认的 iOS 签名团队。',
     'binding.xcodeSigningId': 'iOS 签名身份。', 'binding.updatedWDABundleId': 'WDA 签名 Bundle ID。' },
   advanceRun: {}, cancelRun: { reason: '用户取消本次测试的原因。' },

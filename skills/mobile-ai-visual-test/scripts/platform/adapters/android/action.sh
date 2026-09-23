@@ -25,6 +25,7 @@ interval_ms=""
 capture_out=""
 capture_label=""
 capture_at_ms=""
+android_ui_backend="auto"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -49,9 +50,14 @@ while [[ $# -gt 0 ]]; do
     --capture-out) capture_out="${2:-}"; shift 2 ;;
     --capture-label) capture_label="${2:-}"; shift 2 ;;
     --capture-at-ms) capture_at_ms="${2:-}"; shift 2 ;;
+    --android-ui-backend) android_ui_backend="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
+case "$android_ui_backend" in
+  auto|helper|uiautomator) ;;
+  *) echo "无效 --android-ui-backend: $android_ui_backend" >&2; exit 2 ;;
+esac
 
 if [[ -z "$bundle" && -n "$app" ]]; then
   bundle="$app"

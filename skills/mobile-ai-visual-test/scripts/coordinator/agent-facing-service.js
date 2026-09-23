@@ -15,6 +15,7 @@ const {
   validateEnvironmentConfirmation,
 } = require('../lib/run-control');
 const { readJson, withFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { environmentPrepareArgs } = require('../lib/execution-environment');
 const { readPublicationState, statePath: publicationStatePath } = require('../report/publication-state');
 const {
   AGENT_FACING_PROTOCOL,
@@ -300,7 +301,7 @@ function defaultPrepareEnvironment(input) {
   if (binding.platform !== 'android') {
     return { schemaVersion: 1, type: 'environmentPrepare', platform: binding.platform, ok: true, dependencies: [] };
   }
-  const args = ['--platform', binding.platform, '--device', binding.deviceId];
+  const args = environmentPrepareArgs(binding);
   try {
     const output = childProcess.execFileSync(path.join(SKILL_ROOT, 'scripts/prepare-env.sh'), args, {
       cwd: SKILL_ROOT,
@@ -499,6 +500,7 @@ function bindingTemplate(platform, device) {
     deviceId: deviceId(device) || '<device-id>',
     appId: '<target-app-id>',
     entry: '<entry-ability>',
+    ...(platform === 'android' ? { androidUiBackend: 'auto' } : {}),
     ...(device?.deviceType ? { deviceType: device.deviceType } : {}),
     ...(device?.deviceFormFactor ? { deviceFormFactor: device.deviceFormFactor } : {}),
   };

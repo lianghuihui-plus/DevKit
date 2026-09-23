@@ -9,6 +9,7 @@ bundle=""
 app=""
 out=""
 label="observe"
+android_ui_backend="auto"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -17,9 +18,14 @@ while [[ $# -gt 0 ]]; do
     --bundle) bundle="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     --label) label="${2:-}"; shift 2 ;;
+    --android-ui-backend) android_ui_backend="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
+case "$android_ui_backend" in
+  auto|helper|uiautomator) ;;
+  *) echo "无效 --android-ui-backend: $android_ui_backend" >&2; exit 2 ;;
+esac
 
 if [[ -z "$bundle" && -n "$app" ]]; then
   bundle="$app"

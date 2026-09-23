@@ -21,6 +21,7 @@ const {
 } = require('../coordinator/agent-facing-service');
 const coordinatorAgent = require('../coordinator-agent');
 const { createCaseContract } = require('../execution/contracts/case-contract');
+const { environmentPrepareArgs } = require('../lib/execution-environment');
 const { confirmEnvironment } = require('../lib/run-control');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { createTestWorkspace } = require('./support/workspace-fixture');
@@ -77,6 +78,31 @@ const case015 = createCase('015');
 
 assert.deepStrictEqual(validateCoordinatorRequest({ operation: 'prepareRun', input: { caseNos: ['014'] } }), []);
 assert.ok(validateCoordinatorRequest({ operation: 'prepareRun', input: { caseNos: ['014'], workspace } }).length);
+assert.deepStrictEqual(validateCoordinatorRequest({
+  operation: 'confirmRun',
+  input: {
+    decision: 'CONFIRM_BINDING',
+    userInstruction: '确认使用 Helper 后端',
+    binding: {
+      platform: 'android', deviceId: 'android-device', appId: 'com.example.android',
+      entry: '.MainActivity', androidUiBackend: 'helper',
+    },
+  },
+}), []);
+assert.ok(validateCoordinatorRequest({
+  operation: 'confirmRun',
+  input: {
+    decision: 'CONFIRM_BINDING',
+    userInstruction: '拒绝非法后端',
+    binding: {
+      platform: 'android', deviceId: 'android-device', appId: 'com.example.android',
+      entry: '.MainActivity', androidUiBackend: 'invalid',
+    },
+  },
+}).some((issue) => issue.field.includes('androidUiBackend')));
+assert.deepStrictEqual(environmentPrepareArgs({
+  platform: 'android', deviceId: 'android-device', androidUiBackend: 'helper',
+}).slice(-2), ['--android-ui-backend', 'helper']);
 
 assert.deepStrictEqual(COORDINATOR_CAPABILITIES, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun', 'read']);
 for (const [name, method] of Object.entries(PUBLIC_CONTRACT.methods)) {
@@ -183,8 +209,10 @@ const androidProbe = {
 const androidPreparedRun = prepareRun({ operation: 'prepareRun', input: { caseNos: ['014']  } }, {
   batchId: 'batch-android-input-prepared',
 });
-confirmRun(statePath(androidPreparedRun), { operation: 'confirmRun', input: { decision: 'SELECT_PLATFORM', platform: 'android',
- } }, { probeEnvironment: () => androidProbe });
+const androidBindingOffer = confirmRun(statePath(androidPreparedRun), {
+  operation: 'confirmRun', input: { decision: 'SELECT_PLATFORM', platform: 'android' },
+}, { probeEnvironment: () => androidProbe });
+assert.strictEqual(content(androidBindingOffer).binding.androidUiBackend, 'auto');
 const preparationCalls = [];
 const androidPrepared = confirmRun(statePath(androidPreparedRun), { operation: 'confirmRun', input: { decision: 'CONFIRM_BINDING',
   userInstruction: '确认 Android 输入能力由框架自动准备',
@@ -202,6 +230,7 @@ assert.strictEqual(androidPrepared.result.outcome, 'CONFIRMED');
 assert.deepStrictEqual(preparationCalls, [{
   binding: {
     platform: 'android', deviceId: 'android-device', appId: 'com.example.android', entry: '.MainActivity',
+    androidUiBackend: 'auto',
   },
 }]);
 assert.deepStrictEqual(loadCoordinatorState(statePath(androidPreparedRun)).initialization.environmentPrepared, {

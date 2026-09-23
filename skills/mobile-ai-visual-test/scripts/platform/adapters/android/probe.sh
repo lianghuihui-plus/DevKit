@@ -2,12 +2,18 @@
 set -euo pipefail
 
 device=""
+android_ui_backend="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device) device="${2:-}"; shift 2 ;;
+    --android-ui-backend) android_ui_backend="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
+case "$android_ui_backend" in
+  auto|helper|uiautomator) ;;
+  *) echo "无效 --android-ui-backend: $android_ui_backend" >&2; exit 2 ;;
+esac
 
 adb_path="$(command -v adb || true)"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -79,6 +85,7 @@ const foregroundApp = process.argv[6] === "true";
 const logs = process.argv[7] === "true";
 const screen = process.argv[8] || null;
 const dependencies = JSON.parse(process.argv[9] || "[]");
+const androidUiBackend = process.argv[10];
 const hasTarget = adb && !!device;
 const actions = [];
 if (hasTarget) actions.push("launchApp", "restartApp", "tap", "doubleTap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait");
@@ -127,7 +134,8 @@ console.log(JSON.stringify({
     dumpLayout: layout,
     screen,
     dependencies,
+    androidUiBackend: { requested: androidUiBackend },
     implemented: true
   }
 }, null, 2));
-' "$adb_path" "$device" "$targets" "$screenshot" "$layout" "$foreground_app" "$logs" "$screen" "$dependencies_json"
+' "$adb_path" "$device" "$targets" "$screenshot" "$layout" "$foreground_app" "$logs" "$screen" "$dependencies_json" "$android_ui_backend"

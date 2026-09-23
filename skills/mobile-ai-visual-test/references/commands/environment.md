@@ -19,6 +19,7 @@ Probe a platform
 |---|---|---|
 | `--platform` | 是 | Platform to probe；可选：`harmony`、`android`、`ios` |
 | `--device` | 否 | Explicit device serial or UDID |
+| `--android-ui-backend` | 否 | Android UI backend policy；可选：`auto`、`helper`、`uiautomator` |
 | `--device-form-factor` | 否 | HarmonyOS static device form factor override；可选：`phone`、`tablet`、`foldable`、`widefold`、`triplefold`、`2in1`、`2in1 foldable`、`wearable`、`tv` |
 | `--device-type` | 否 | iOS device kind；可选：`simulator`、`realDevice` |
 | `--appium-server` | 否 | Existing Appium server URL |
@@ -61,6 +62,7 @@ Prepare a platform
 |---|---|---|
 | `--platform` | 是 | Platform to prepare；可选：`harmony`、`android`、`ios` |
 | `--device` | 否 | Explicit device serial or UDID |
+| `--android-ui-backend` | 否 | Android UI backend policy；可选：`auto`、`helper`、`uiautomator` |
 | `--device-type` | 否 | iOS device kind；可选：`simulator`、`realDevice` |
 | `--appium-server` | 否 | Existing Appium server URL |
 | `--wda-local-port` | 否 | Local WebDriverAgent port |

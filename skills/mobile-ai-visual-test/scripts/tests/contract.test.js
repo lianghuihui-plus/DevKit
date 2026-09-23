@@ -4,6 +4,12 @@
 const assert = require('assert');
 const { createCaseContract, sourceSha, validateCaseContract, validateSourceText } = require('../execution/contracts/case-contract');
 const { validateCaseResult, validateRuntimeRequest } = require('../case-runtime/contract');
+const {
+  environmentAdapterArgs,
+  normalizeEnvironmentBinding,
+  safeEnvironmentSummary,
+} = require('../lib/execution-environment');
+const { bindingSha, validateBinding } = require('../lib/batch-contract');
 
 function expectCode(fn, code) {
   assert.throws(fn, (error) => error?.code === code, `expected ${code}`);
@@ -99,5 +105,39 @@ assert.throws(() => validateRuntimeRequest({
   ]);
   return true;
 });
+
+const autoAndroid = normalizeEnvironmentBinding({
+  platform: 'android', deviceId: 'android-1', appId: 'com.example', entry: '.MainActivity',
+}, 'android');
+assert.strictEqual(autoAndroid.androidUiBackend, 'auto');
+assert.strictEqual(normalizeEnvironmentBinding({
+  ...autoAndroid, androidUiBackend: 'helper',
+}, 'android').androidUiBackend, 'helper');
+assert.strictEqual(normalizeEnvironmentBinding({
+  ...autoAndroid, androidUiBackend: 'uiautomator',
+}, 'android').androidUiBackend, 'uiautomator');
+assert.throws(() => normalizeEnvironmentBinding({
+  ...autoAndroid, androidUiBackend: 'invalid',
+}, 'android'), /androidUiBackend/);
+assert.throws(() => normalizeEnvironmentBinding({
+  platform: 'ios', deviceId: 'ios-1', appId: 'com.example', androidUiBackend: 'helper',
+}, 'ios'), /only belong to android/);
+assert.deepStrictEqual(
+  environmentAdapterArgs({ ...autoAndroid, androidUiBackend: 'helper' }, 'observe').slice(-2),
+  ['--android-ui-backend', 'helper'],
+);
+assert.deepStrictEqual(
+  environmentAdapterArgs({
+    platform: 'android', deviceId: 'legacy', appId: 'com.example', entry: '.Main',
+  }, 'runtime').slice(-2),
+  ['--android-ui-backend', 'auto'],
+);
+assert.strictEqual(safeEnvironmentSummary({ binding: autoAndroid }).androidUiBackend, 'auto');
+
+const legacyBinding = {
+  platform: 'android', deviceId: 'legacy', appId: 'com.example', entry: '.Main',
+};
+assert.deepStrictEqual(validateBinding(legacyBinding), legacyBinding);
+assert.strictEqual(bindingSha(validateBinding(legacyBinding)), bindingSha(legacyBinding));
 
 console.log('contract tests passed');

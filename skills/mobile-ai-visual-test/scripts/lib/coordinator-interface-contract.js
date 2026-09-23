@@ -31,6 +31,7 @@ const BINDING_SCHEMA = {
     deviceId: STRING,
     appId: STRING,
     entry: STRING,
+    androidUiBackend: { type: 'string', enum: ['auto', 'helper', 'uiautomator'] },
     deviceType: { type: 'string', enum: ['simulator', 'realDevice'] },
     deviceFormFactor: { type: 'string', enum: ['phone', 'tablet', 'foldable', 'widefold', 'triplefold', '2in1', '2in1 foldable', 'wearable', 'tv'] },
     startupDisplayPolicy: {
@@ -58,6 +59,7 @@ const BINDING_SCHEMA = {
   refinements: [
     { fieldPath: 'entry', expected: 'required when platform is harmony or android' },
     { fieldPath: 'deviceFormFactor', expected: 'HarmonyOS only' },
+    { fieldPath: 'androidUiBackend', expected: 'Android only; auto, helper, or uiautomator' },
     { fieldPath: 'iOS options', expected: 'deviceType and Appium/WDA/signing fields belong to ios only' },
   ],
 };
@@ -199,6 +201,7 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
     commands: [command(null, 'Probe a platform', 'scripts/probe-env.sh --platform <harmony|android|ios> [platform options]', {
       platform: flag(true, 'Platform to probe', { value: '<platform>', enum: ['harmony', 'android', 'ios'] }),
       device: flag(false, 'Explicit device serial or UDID', { value: '<device-id>' }),
+      androidUiBackend: flag(false, 'Android UI backend policy', { value: '<auto|helper|uiautomator>', enum: ['auto', 'helper', 'uiautomator'] }),
       deviceFormFactor: flag(false, 'HarmonyOS static device form factor override', { value: '<form-factor>', enum: ['phone', 'tablet', 'foldable', 'widefold', 'triplefold', '2in1', '2in1 foldable', 'wearable', 'tv'] }),
       ...iosEnvironmentFlags,
     }, ['scripts/probe-env.sh', '--platform', 'harmony', '--device', '<device-id>'], ['environmentProbe matching probeJson schema'])],
@@ -207,6 +210,8 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
     summary: 'Prepare platform tooling dependencies before environment confirmation',
     commands: [command(null, 'Prepare a platform', 'scripts/prepare-env.sh --platform <harmony|android|ios> [platform options]', {
       platform: flag(true, 'Platform to prepare', { value: '<platform>', enum: ['harmony', 'android', 'ios'] }),
+      device: flag(false, 'Explicit device serial or UDID', { value: '<device-id>' }),
+      androidUiBackend: flag(false, 'Android UI backend policy', { value: '<auto|helper|uiautomator>', enum: ['auto', 'helper', 'uiautomator'] }),
       ...iosEnvironmentFlags,
     }, ['scripts/prepare-env.sh', '--platform', 'android', '--device', '<device-id>'], ['environmentPrepare result'])],
   },

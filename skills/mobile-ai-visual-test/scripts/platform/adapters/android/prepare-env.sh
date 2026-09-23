@@ -5,13 +5,19 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 atoms_dir="$script_dir/atoms"
 
 device=""
+android_ui_backend="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device) device="${2:-}"; shift 2 ;;
+    --android-ui-backend) android_ui_backend="${2:-}"; shift 2 ;;
     --app|--bundle|--entry|--ability) shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
+case "$android_ui_backend" in
+  auto|helper|uiautomator) ;;
+  *) echo "无效 --android-ui-backend: $android_ui_backend" >&2; exit 2 ;;
+esac
 
 device_args=()
 if [[ -n "$device" ]]; then

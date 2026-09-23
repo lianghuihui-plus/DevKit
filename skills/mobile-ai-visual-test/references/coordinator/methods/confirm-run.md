@@ -24,7 +24,8 @@ confirmRun({ decision: "CONFIRM_BINDING", userInstruction: string, binding: obje
 | `binding.platform` | 否/条件 | `"harmony" \| "android" \| "ios"` | 已选择的平台。 |
 | `binding.deviceId` | 否/条件 | `string` | 已确认的设备标识。 |
 | `binding.appId` | 否/条件 | `string` | 已确认的目标应用标识。 |
-| `binding.entry` | 否/条件 | `string` | HarmonyOS 应用入口。 |
+| `binding.entry` | 否/条件 | `string` | HarmonyOS 或 Android 应用入口。 |
+| `binding.androidUiBackend` | 否/条件 | `"auto" \| "helper" \| "uiautomator"` | Android UI 后端策略：auto、helper 或 uiautomator。 |
 | `binding.deviceType` | 否/条件 | `"simulator" \| "realDevice"` | iOS 模拟器或真机。 |
 | `binding.deviceFormFactor` | 否/条件 | `string` | 设备形态。 |
 | `binding.xcodeOrgId` | 否/条件 | `string` | 用户确认的 iOS 签名团队。 |
@@ -34,7 +35,7 @@ confirmRun({ decision: "CONFIRM_BINDING", userInstruction: string, binding: obje
 ## 结构字段
 
 ```typescript
-input.binding: { platform: "harmony" | "android" | "ios"; deviceId: string; appId: string; entry?: string; deviceType?: "simulator" | "realDevice"; deviceFormFactor?: string; xcodeOrgId?: string; xcodeSigningId?: string; updatedWDABundleId?: string }
+input.binding: { platform: "harmony" | "android" | "ios"; deviceId: string; appId: string; entry?: string; androidUiBackend?: "auto" | "helper" | "uiautomator"; deviceType?: "simulator" | "realDevice"; deviceFormFactor?: string; xcodeOrgId?: string; xcodeSigningId?: string; updatedWDABundleId?: string }
 ```
 
 ## 条件要求

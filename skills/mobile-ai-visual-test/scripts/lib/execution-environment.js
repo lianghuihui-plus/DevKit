@@ -3,7 +3,7 @@
 
 const crypto = require('crypto');
 const { normalizeStartupDisplayPolicy, normalizeDeviceFormFactor } = require('./startup-display');
-const { normalizeDeviceBinding } = require('./target-binding');
+const { normalizeAndroidUiBackend, normalizeDeviceBinding } = require('./target-binding');
 
 const IOS_ONLY_FIELDS = new Set([
   'deviceType',
@@ -67,6 +67,7 @@ function normalizeEnvironmentBinding(value, platform) {
     if (!normalized) throw new Error(`ENVIRONMENT_BINDING_MISMATCH: invalid deviceFormFactor ${binding.deviceFormFactor}`);
     binding.deviceFormFactor = normalized;
   }
+  if (platform === 'android') binding.androidUiBackend = normalizeAndroidUiBackend(binding.androidUiBackend || 'auto');
   binding.startupDisplayPolicy = normalizeStartupDisplayPolicy(binding.startupDisplayPolicy, { platform });
   return binding;
 }
@@ -110,6 +111,7 @@ function safeEnvironmentSummary(snapshot) {
     deviceFormFactor: binding.deviceFormFactor || null,
     deviceFormFactorSource: binding.deviceFormFactorSource || null,
     startupDisplayPolicy: binding.startupDisplayPolicy || null,
+    androidUiBackend: binding.platform === 'android' ? binding.androidUiBackend || 'auto' : null,
     probeSha1: snapshot?.probe?.sha1 || null,
     dependenciesPrepared: Object.values(snapshot?.dependencies || {}).every((item) => item?.ok !== false),
   };
@@ -149,13 +151,19 @@ function environmentAdapterArgs(binding, purpose = 'observe') {
     add('--wda-launch-timeout', binding.wdaLaunchTimeout);
     add('--derived-data-path', binding.derivedDataPath);
   }
+  if (binding.platform === 'android') add('--android-ui-backend', binding.androidUiBackend || 'auto');
   return args;
+}
+
+function environmentPrepareArgs(binding) {
+  return environmentAdapterArgs(binding, 'probe');
 }
 
 module.exports = {
   buildExecutionEnvironment,
   canonicalJson,
   environmentAdapterArgs,
+  environmentPrepareArgs,
   executionEnvironmentSha,
   normalizeEnvironmentBinding,
   requiredEnvironmentFields,

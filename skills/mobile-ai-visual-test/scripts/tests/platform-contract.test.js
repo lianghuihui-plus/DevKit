@@ -104,6 +104,18 @@ for (const platform of platforms) {
   }
 }
 
+for (const script of ['probe', 'prepare-env', 'runtime', 'observe', 'capture', 'action', 'prepare-app']) {
+  const invalidBackend = runAllowFailure(`./scripts/platform/adapters/android/${script}.sh`, [
+    '--android-ui-backend', 'invalid',
+  ]);
+  assert.strictEqual(invalidBackend.status, 2, `${script}: rejects invalid Android UI backend`);
+  assert.match(invalidBackend.stderr, /android-ui-backend/, `${script}: explains invalid Android UI backend`);
+}
+const helperProbe = JSON.parse(run('./scripts/platform/adapters/android/probe.sh', [
+  '--android-ui-backend', 'helper',
+], { env: { ...process.env, PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin` } }));
+assert.deepStrictEqual(helperProbe.capabilities.androidUiBackend, { requested: 'helper' });
+
 const fakeHdcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-harmony-long-press-'));
 const fakeHdcLog = path.join(fakeHdcDir, 'hdc-args.txt');
 const fakeHdc = path.join(fakeHdcDir, 'hdc');
@@ -355,7 +367,9 @@ const originalSpawnSync = childProcess.spawnSync;
 try {
   childProcess.spawnSync = (command, args) => {
     assert.ok(command.endsWith('/scripts/platform/probe-env.sh'));
-    assert.deepStrictEqual(args, ['--platform', 'android', '--device', 'android-device']);
+    assert.deepStrictEqual(args, [
+      '--platform', 'android', '--device', 'android-device', '--android-ui-backend', 'auto',
+    ]);
     return {
       status: 0,
       stderr: '',

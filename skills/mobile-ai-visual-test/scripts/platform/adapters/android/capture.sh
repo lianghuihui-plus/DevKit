@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-device="" app="" out="" label="capture"
+device="" app="" out="" label="capture" android_ui_backend="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device) device="${2:-}"; shift 2 ;;
     --app) app="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     --label) label="${2:-}"; shift 2 ;;
+    --android-ui-backend) android_ui_backend="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
+case "$android_ui_backend" in
+  auto|helper|uiautomator) ;;
+  *) echo "无效 --android-ui-backend: $android_ui_backend" >&2; exit 2 ;;
+esac
 [[ -n "$out" && -n "$app" ]] || { echo "capture 需要 --out 和 --app" >&2; exit 2; }
 label="$(node -e 'const s=String(process.argv[1]||"capture").replace(/[^A-Za-z0-9._-]+/g,"_").slice(0,80);process.stdout.write(s||"capture")' "$label")"
 mkdir -p "$out/screenshots"
