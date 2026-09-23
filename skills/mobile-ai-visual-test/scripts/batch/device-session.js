@@ -189,15 +189,14 @@ function runPlatformRuntime(operation, request) {
     ...environmentAdapterArgs(binding, 'runtime'),
     '--operation', operation,
   ];
-  if (operation === 'acquire') args.push('--owner-key', request.ownerKey);
+  args.push('--owner-key', request.ownerKey);
   if (operation === 'release') args.push('--runtime-json', JSON.stringify(request.runtime));
-  const runtimeEnv = operation === 'acquire'
-    ? {
-      ...process.env,
-      MAVT_IOS_RUNTIME_WORKSPACE_ROOT: request.workspaceRoot || '',
-      MAVT_IOS_RUNTIME_BATCH_ID: request.batchId || '',
-    }
-    : process.env;
+  const runtimeEnv = {
+    ...process.env,
+    MAVT_IOS_RUNTIME_WORKSPACE_ROOT: operation === 'acquire' ? request.workspaceRoot || '' : '',
+    MAVT_IOS_RUNTIME_BATCH_ID: operation === 'acquire' ? request.batchId || '' : '',
+    MAVT_ANDROID_HELPER_WORKSPACE_ROOT: request.workspaceRoot || '',
+  };
   const result = run(
     path.join(SKILL_ROOT, 'scripts/platform/runtime.sh'),
     args,

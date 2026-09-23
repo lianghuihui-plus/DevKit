@@ -19,6 +19,7 @@ const suites = Object.freeze({
   androidLayout: 'tests/android-layout-capture.test.js',
   androidHelperBundle: 'tests/android-helper-bundle.test.js',
   androidHelperClient: 'tests/android-helper-client.test.js',
+  androidHelperRuntime: 'tests/android-helper-runtime.test.js',
   harmonyLayout: 'tests/harmony-layout-capture.test.js',
   platformCapture: 'tests/platform-capture.test.js',
   spatialEvidence: 'tests/action-spatial-evidence.test.js',

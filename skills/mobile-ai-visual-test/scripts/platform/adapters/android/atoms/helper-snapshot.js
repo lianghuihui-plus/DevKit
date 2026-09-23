@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const { snapshotToFiles } = require('../lib/android-helper-client');
+const { ensureAndroidHelperSession, repairAndroidHelperSession } = require('../lib/android-helper-session');
 
 function parseArgs(argv) {
   const values = {};
@@ -37,10 +38,20 @@ function readSecureSession(file) {
   return value;
 }
 
-async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2), dependencies = {}) {
   const options = parseArgs(argv);
-  const session = readSecureSession(options.sessionStatePath);
-  const metadata = await snapshotToFiles(session, options);
+  readSecureSession(options.sessionStatePath);
+  const ensureSession = dependencies.ensureSession || ensureAndroidHelperSession;
+  const repairSession = dependencies.repairSession || repairAndroidHelperSession;
+  const capture = dependencies.snapshotToFiles || snapshotToFiles;
+  let session = await ensureSession({ sessionStatePath: options.sessionStatePath, kind: 'READ_ONLY' });
+  let metadata;
+  try {
+    metadata = await capture(session, options);
+  } catch (error) {
+    session = await repairSession({ sessionStatePath: options.sessionStatePath, kind: 'READ_ONLY', cause: error.code });
+    metadata = await capture(session, options);
+  }
   process.stdout.write(`${JSON.stringify(metadata)}\n`);
 }
 

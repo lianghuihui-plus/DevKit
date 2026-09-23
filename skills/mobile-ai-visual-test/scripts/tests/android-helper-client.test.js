@@ -14,6 +14,10 @@ const {
   ping,
   snapshotToFiles,
 } = require('../platform/adapters/android/lib/android-helper-client');
+const {
+  main: helperSnapshotMain,
+  readSecureSession,
+} = require('../platform/adapters/android/atoms/helper-snapshot');
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 const XML = '<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0"><node text="Settings" /></hierarchy>';
@@ -52,19 +56,6 @@ function listen() {
 
 function close() {
   return new Promise((resolve) => server.close(resolve));
-}
-
-function runCli(command, args) {
-  return new Promise((resolve) => {
-    const child = childProcess.spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('close', (status) => resolve({ status, stdout, stderr }));
-  });
 }
 
 function goodSnapshot(overrides = {}) {
@@ -196,15 +187,50 @@ function goodSnapshot(overrides = {}) {
   const sessionPath = path.join(root, 'session.json');
   fs.writeFileSync(sessionPath, JSON.stringify(session), { mode: 0o600 });
   const cli = path.resolve(__dirname, '../platform/adapters/android/atoms/helper-snapshot.js');
+  assert.strictEqual(readSecureSession(sessionPath).token, 'secret-token');
   behavior = async (_request, response) => json(response, 200, goodSnapshot());
-  const cliResult = await runCli(process.execPath, [
-    cli, '--session-state', sessionPath, '--screenshot-out', screenshotPath,
-    '--layout-out', layoutPath, '--timeout-ms', '1000',
-  ]);
-  assert.strictEqual(cliResult.status, 0, cliResult.stderr);
-  const cliMetadata = JSON.parse(cliResult.stdout);
-  assert.strictEqual(cliMetadata.backend, 'helper');
-  assert.strictEqual(cliResult.stdout.includes('secret-token'), false);
+  let cliStdout = '';
+  let ensureCalls = 0;
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => { cliStdout += chunk; return true; };
+  try {
+    await helperSnapshotMain([
+      '--session-state', sessionPath, '--screenshot-out', screenshotPath,
+      '--layout-out', layoutPath, '--timeout-ms', '1000',
+    ], {
+      ensureSession: async () => { ensureCalls += 1; return session; },
+      repairSession: async () => { throw new Error('healthy snapshot must not repair the session'); },
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.strictEqual(ensureCalls, 1);
+  assert.strictEqual(JSON.parse(cliStdout).backend, 'helper');
+  assert.strictEqual(cliStdout.includes('secret-token'), false);
+
+  let snapshotRequests = 0;
+  let repairCalls = 0;
+  behavior = async (_request, response) => {
+    snapshotRequests += 1;
+    if (snapshotRequests === 1) json(response, 401, { success: false, error: 'unauthorized' });
+    else json(response, 200, goodSnapshot());
+  };
+  cliStdout = '';
+  process.stdout.write = (chunk) => { cliStdout += chunk; return true; };
+  try {
+    await helperSnapshotMain([
+      '--session-state', sessionPath, '--screenshot-out', screenshotPath,
+      '--layout-out', layoutPath, '--timeout-ms', '1000',
+    ], {
+      ensureSession: async () => session,
+      repairSession: async () => { repairCalls += 1; return session; },
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.strictEqual(snapshotRequests, 2);
+  assert.strictEqual(repairCalls, 1);
+  assert.strictEqual(JSON.parse(cliStdout).backend, 'helper');
 
   fs.chmodSync(sessionPath, 0o644);
   const permissive = childProcess.spawnSync(process.execPath, [
