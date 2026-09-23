@@ -17,6 +17,7 @@ const suites = Object.freeze({
   iosInput: 'tests/ios-input.test.js',
   layout: 'tests/layout-observation.test.js',
   androidLayout: 'tests/android-layout-capture.test.js',
+  androidHelperBundle: 'tests/android-helper-bundle.test.js',
   harmonyLayout: 'tests/harmony-layout-capture.test.js',
   platformCapture: 'tests/platform-capture.test.js',
   spatialEvidence: 'tests/action-spatial-evidence.test.js',
