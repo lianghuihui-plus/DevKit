@@ -12,6 +12,7 @@ const { createActionSpatialEvidence } = require('../lib/action-spatial-evidence'
 const { validateAdapterActionResult } = require('../lib/action-result');
 const { startupDisplayVerified } = require('../lib/startup-display');
 const { normalizeDeviceBinding } = require('../lib/target-binding');
+const { androidHelperAdapterEnvironment } = require('../session/android-helper-session-service');
 const {
   failureText,
   isIosSessionOrTransportFailure,
@@ -86,6 +87,7 @@ function defaultRunner(command, args, options = {}) {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
     timeout: Math.max(1, options.timeoutMs - preAdapterDelayMs),
+    env: options.env || process.env,
   });
   return {
     status: result.status,
@@ -165,7 +167,10 @@ function invokeScreenshotCapture(execDir, validated, options = {}) {
       operationTimeoutMs(execution, options.now),
       Number.isInteger(options.timeoutMs) ? options.timeoutMs : Number.MAX_SAFE_INTEGER,
     ));
-    const raw = runner(command, args, { timeoutMs, kind: 'CAPTURE', binding, preAdapterDelayMs: 0 });
+    const env = binding.platform === 'android'
+      ? androidHelperAdapterEnvironment(execDir, binding, { baseEnv: options.env || process.env })
+      : options.env || process.env;
+    const raw = runner(command, args, { timeoutMs, kind: 'CAPTURE', binding, preAdapterDelayMs: 0, env });
     const adapterResult = parseAdapterOutput(raw, 'CAPTURE');
     assertResultBinding(adapterResult, binding, 'CAPTURE');
     return { binding, adapterResult, evidence: validateObservationArtifacts(execDir, adapterResult) };
@@ -226,6 +231,9 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
     const runner = options.runner || defaultRunner;
     const preAdapterDelayMs = kind === 'OBSERVE' && validated.request?.purpose === 'POST_ACTION'
       ? Math.max(0, Number(options.preAdapterDelayMs) || 0) : 0;
+    const env = binding.platform === 'android'
+      ? androidHelperAdapterEnvironment(execDir, binding, { baseEnv: options.env || process.env })
+      : options.env || process.env;
     const adapterStartedAt = Date.now();
     let rawResult;
     try {
@@ -234,6 +242,7 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
         kind,
         binding,
         preAdapterDelayMs,
+        env,
       });
     } finally {
       if (typeof options.onAdapterSpan === 'function') {

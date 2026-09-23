@@ -43,6 +43,22 @@ function fixture(platform) {
       resource: { session: { sessionId: 'ios-session', generation: 1, capabilities: { platformName: 'iOS' } } },
     });
     writeJsonAtomic(path.join(execDir, 'runtime.json'), { schemaVersion: 1, sessionRef });
+  } else if (platform === 'android') {
+    const batchDir = path.join(root, 'android-workspace', 'runs', 'batch-android-capture');
+    fs.mkdirSync(batchDir, { recursive: true });
+    const sessionRef = {
+      schemaVersion: 2, batchId: 'batch-android-capture',
+      statePath: path.join(batchDir, 'batch.json'), lockPath: path.join(batchDir, 'batch.lock'),
+      eventsPath: path.join(batchDir, 'events.jsonl'), platformRuntimePath: path.join(batchDir, 'platform-runtime.json'),
+    };
+    const ownerKey = 'batch-owner-android-capture';
+    writeJsonAtomic(sessionRef.statePath, { batchId: sessionRef.batchId, ownerKey });
+    writeJsonAtomic(sessionRef.platformRuntimePath, {
+      schemaVersion: 1, type: 'batchPlatformRuntime', batchId: sessionRef.batchId, platform: 'android',
+      bindingSha: bindingSha(binding), ownerKey, status: 'NOT_REQUIRED', ownership: 'NONE',
+      resource: { androidHelper: { backend: 'uiautomator' } },
+    });
+    writeJsonAtomic(path.join(execDir, 'runtime.json'), { schemaVersion: 1, sessionRef });
   }
   return { execDir, execution, binding };
 }
@@ -55,12 +71,16 @@ for (const platform of ['android', 'harmony', 'ios']) {
   }, {
     now: '2026-09-20T00:00:01.000Z',
     timeoutMs: 900,
+    env: { ...process.env, MAVT_ANDROID_HELPER_SESSION_STATE: '/stale/session.json' },
     runner(command, args, options) {
       assert.ok(command.endsWith('/scripts/platform/capture.sh'));
       assert.ok(!args.includes('observe'));
       assert.ok(args.includes('--out'));
       assert.ok(args.includes('--label'));
       timeoutMs = options.timeoutMs;
+      if (platform === 'android') {
+        assert.strictEqual(Object.hasOwn(options.env, 'MAVT_ANDROID_HELPER_SESSION_STATE'), false);
+      }
       const out = args[args.indexOf('--out') + 1];
       const label = args[args.indexOf('--label') + 1];
       const ref = `screenshots/${label}.png`;
