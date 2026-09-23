@@ -66,6 +66,56 @@ function processState({ operation, action, knowledge, recovery, visualInspection
   return 'UNKNOWN';
 }
 
+function planStepKey(planId, stepId) {
+  return planId && stepId ? `${planId}:${stepId}` : null;
+}
+
+function planStepState(planStep, action, scene) {
+  if (planStep?.type === 'planStepFailed' || planStep?.status === 'FAILED') return 'ISSUE';
+  if (planStep?.stepType === 'act') {
+    if (!action) return planStep?.type === 'planStepCompleted' ? 'EXECUTED' : 'UNKNOWN';
+    if (action.status === 'FAILED') return 'ISSUE';
+    if (['UNKNOWN', 'PENDING'].includes(action.status)) return 'UNKNOWN';
+    return 'EXECUTED';
+  }
+  if (planStep?.stepType === 'capture' && scene) return 'OBSERVED';
+  return planStep?.type === 'planStepCompleted' ? 'EXECUTED' : 'UNKNOWN';
+}
+
+function actionView(report, events, action, resultByOperation) {
+  if (!action) return null;
+  const result = resultByOperation.get(action.operationId) || null;
+  const spatialInspection = latest(events.filter((candidate) => candidate.type === 'actionSpatialInspected'
+    && candidate.operationId === action.operationId));
+  return {
+    operationId: action.operationId,
+    value: action.action || null,
+    status: result?.type === 'actionOutcomeUnknown'
+      ? 'UNKNOWN'
+      : result?.command?.status === 'REJECTED' || result?.deviceExecution?.status === 'FAILED'
+        ? 'FAILED' : result ? 'OBSERVED' : 'PENDING',
+    result: result ? {
+      lifecycle: result.lifecycle || null,
+      command: result.command || null,
+      deviceExecution: result.deviceExecution || null,
+      evidence: result.evidence || null,
+      duringActionObservation: result.duringActionObservation || null,
+    } : null,
+    spatialEvidence: result?.spatialEvidenceRef
+      ? projectActionSpatialEvidence(report.latest, result.spatialEvidenceRef, {
+        operationId: result.operationId,
+        actionType: result.action?.type || action.action?.type,
+      })
+      : result?.coordinateAudit || null,
+    spatialInspection: spatialInspection ? {
+      observation: spatialInspection.observation,
+      time: spatialInspection.time,
+      caseFlowRevision: spatialInspection.caseFlowRevision || null,
+      expectationRefs: spatialInspection.expectationRefs || [],
+    } : null,
+  };
+}
+
 function investigationStatus(expectationRef, report, events, reviews) {
   const frozen = report.metrics?.knowledgeInvestigation?.byExpectation?.[expectationRef];
   if (frozen?.status) return frozen;
@@ -93,6 +143,7 @@ function projectCurrentNarrative(report) {
   const requestedActions = events.filter((event) => event.type === 'actionRequested');
   const actionResults = events.filter((event) => ['actionCompleted', 'actionOutcomeUnknown'].includes(event.type));
   const actionByDecision = new Map(requestedActions.filter((event) => event.decisionId).map((event) => [event.decisionId, event]));
+  const actionByPlanStep = new Map(requestedActions.map((event) => [planStepKey(event.planId, event.stepId), event]).filter(([key]) => key));
   const resultByOperation = new Map(actionResults.map((event) => [event.operationId, event]));
   const postSceneByOperation = new Map(events.filter((event) => event.type === 'sceneObserved' && event.relatedOperationId)
     .map((event) => [event.relatedOperationId, event]));
@@ -106,6 +157,15 @@ function projectCurrentNarrative(report) {
     .map((event) => [event.decisionId, event]));
   const flowContextByDecision = new Map(events.filter((event) => event.type === 'flowContextRecorded' && event.decisionId)
     .map((event) => [event.decisionId, event]));
+  const planByDecision = new Map(events.filter((event) => event.type === 'planRequested' && event.decisionId)
+    .map((event) => [event.decisionId, event.planId]));
+  const planStepsByPlan = new Map();
+  for (const event of events.filter((candidate) => ['planStepCompleted', 'planStepFailed'].includes(candidate.type))) {
+    if (!planStepsByPlan.has(event.planId)) planStepsByPlan.set(event.planId, []);
+    planStepsByPlan.get(event.planId).push(event);
+  }
+  const sceneByPlanStep = new Map(events.filter((event) => event.type === 'sceneObserved')
+    .map((event) => [planStepKey(event.planId, event.stepId), event]).filter(([key]) => key));
 
   const planHistory = flowEvents.map((event) => ({
     version: event.revision, time: event.time, reason: event.reason,
@@ -133,16 +193,13 @@ function projectCurrentNarrative(report) {
       };
     }),
   }));
-  const steps = executionDecisions.map((event, index) => {
+  const decisionSteps = executionDecisions.flatMap((event) => {
     const decision = event.decision || {};
     const stepModel = modelForEvent(flowEvents, event);
     const stepExpectations = new Map(((stepModel?.nodes || []).filter((item) => item.type === 'CHECK')
       .concat(stepModel?.verificationPoints || context?.expectations || [])).map((item) => [item.ref || item.id, item]));
     const stepFlowContext = flowContextByDecision.get(event.decisionId) || null;
     const action = actionByDecision.get(event.decisionId) || null;
-    const actionResult = action ? resultByOperation.get(action.operationId) || null : null;
-    const spatialInspection = action ? latest(events.filter((candidate) => candidate.type === 'actionSpatialInspected'
-      && candidate.operationId === action.operationId)) : null;
     const knowledge = knowledgeByDecision.get(event.decisionId) || null;
     const recovery = recoveryByDecision.get(event.decisionId) || null;
     const visualInspection = events.find((candidate) => candidate.type === 'visualInspected' && candidate.decisionId === event.decisionId) || null;
@@ -155,36 +212,10 @@ function projectCurrentNarrative(report) {
     const decisionIndex = decisions.indexOf(event);
     const following = decisions.slice(decisionIndex + 1).find((candidate) => candidate.requestedOperation !== 'finish'
       && (!afterScene || candidate.sceneId === afterScene.sceneId)) || null;
-    const actionView = action ? {
-      operationId: action.operationId,
-      value: action.action || null,
-      status: actionResult?.type === 'actionOutcomeUnknown'
-        ? 'UNKNOWN'
-        : actionResult?.command?.status === 'REJECTED' || actionResult?.deviceExecution?.status === 'FAILED'
-          ? 'FAILED' : actionResult ? 'OBSERVED' : 'PENDING',
-      result: actionResult ? {
-        lifecycle: actionResult.lifecycle || null,
-        command: actionResult.command || null,
-        deviceExecution: actionResult.deviceExecution || null,
-        evidence: actionResult.evidence || null,
-        duringActionObservation: actionResult.duringActionObservation || null,
-      } : null,
-      spatialEvidence: actionResult?.spatialEvidenceRef
-        ? projectActionSpatialEvidence(report.latest, actionResult.spatialEvidenceRef, {
-          operationId: actionResult.operationId,
-          actionType: actionResult.action?.type || action.action?.type,
-        })
-        : actionResult?.coordinateAudit || null,
-      spatialInspection: spatialInspection ? {
-        observation: spatialInspection.observation,
-        time: spatialInspection.time,
-        caseFlowRevision: spatialInspection.caseFlowRevision || null,
-        expectationRefs: spatialInspection.expectationRefs || [],
-      } : null,
-    } : null;
+    const projectedAction = actionView(report, events, action, resultByOperation);
     const recoveryView = recovery ? { operationId: recovery.operationId, status: recovery.type === 'appRecovered' ? 'SUCCEEDED' : recovery.type === 'recoveryFailed' ? 'FAILED' : 'UNKNOWN', reason: recovery.reason || recovery.message || '' } : null;
-    return {
-      number: index + 1,
+    const baseStep = {
+      number: 0,
       decisionId: event.decisionId,
       time: event.time,
       operation: event.requestedOperation,
@@ -204,7 +235,7 @@ function projectCurrentNarrative(report) {
         nodeRef: stepFlowContext.nodeRef,
         selectedEdgeRef: stepFlowContext.selectedEdgeRef || null,
       } : null,
-      action: actionView,
+      action: projectedAction,
       knowledge: knowledge ? {
         queryId: knowledge.queryId,
         query: knowledge.query,
@@ -228,7 +259,7 @@ function projectCurrentNarrative(report) {
       } : null,
       processState: processState({
         operation: event.requestedOperation,
-        action: actionView,
+        action: projectedAction,
         knowledge,
         recovery: recoveryView,
         visualInspection,
@@ -237,7 +268,38 @@ function projectCurrentNarrative(report) {
         technicalIssue,
       }),
     };
+    if (event.requestedOperation !== 'runPlan') return [baseStep];
+
+    const planId = planByDecision.get(event.decisionId);
+    const planSteps = planStepsByPlan.get(planId) || [];
+    if (!planId || !planSteps.length) return [baseStep];
+    return planSteps.map((planStep, planStepIndex) => {
+      const key = planStepKey(planId, planStep.stepId);
+      const stepAction = actionByPlanStep.get(key) || null;
+      const stepActionView = actionView(report, events, stepAction, resultByOperation);
+      const stepScene = sceneByPlanStep.get(key) || null;
+      return {
+        ...baseStep,
+        time: planStep.time || baseStep.time,
+        operation: planStep.stepType || 'unknown',
+        planId,
+        planStepId: planStep.stepId,
+        planStep: {
+          status: planStep.status || (planStep.type === 'planStepFailed' ? 'FAILED' : 'COMPLETED'),
+          durationMs: planStep.durationMs ?? null,
+          error: planStep.error || null,
+          inputRefs: planStep.inputRefs || [],
+          outputRefs: planStep.outputRefs || [],
+        },
+        action: stepActionView,
+        sceneId: stepScene?.sceneId || baseStep.sceneId,
+        afterScene: sceneSummary(stepScene),
+        postAssessment: planStepIndex === planSteps.length - 1 ? baseStep.postAssessment : null,
+        processState: planStepState(planStep, stepActionView, stepScene),
+      };
+    });
   });
+  const steps = decisionSteps.map((step, index) => ({ ...step, number: index + 1 }));
 
   for (const check of checks) {
     check.relatedSteps = steps.filter((step) => step.expectationRefs.includes(check.expectationRef))

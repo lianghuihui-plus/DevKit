@@ -31,7 +31,7 @@
 - 空间动作异常时查看标注图，用 `inspect(mode="action")` 登记落点或轨迹。`inspect` 和 `knowledge` 的 `checkNodeRefs` 只关联本次 CHECK；分支选择通过 `flowContext.selectedEdgeRef` 表达。
 - Scene 有 editable 控件时优先用目标级 `inputText` 输入整段文本。输入组件依赖由 Runtime 自动处理，结果以 `previousAction.technicalResult` 为准；不要逐个点击软键盘或自行切换输入组件。`inputEffect.verificationAttempts` 是核验采样次数，不是动作重放次数。
 - `act` 返回单动作后的完整新 Scene；`runPlan` 执行无需中间 Agent 判断的有限步骤。视觉理解、业务判断或重新规划前结束 `runPlan`；Runtime 不替 Agent 判断。
-- 现场事实不证明业务定性。预期不符，且平台、版本、账号、配置等外部规则可能改变定性时，必须在 `recordResult` 前调用 `knowledge`；无候选或候选不适用时按现场证据判断。
+- 现场事实不证明业务定性。预期不符、操作无效果或异常反复涉及平台、版本、账号、配置、条件适用性、同类异常或原文歧义时，尽早调用 `knowledge`，不要等到 `recordResult` 或 `finish` 收口。无此外部依赖时不机械查询；无适用候选时按现场证据判断。
 - 查找目标应覆盖可能范围并确认边界；覆盖不足不得断言目标不存在。
 
 ## 安全与收口

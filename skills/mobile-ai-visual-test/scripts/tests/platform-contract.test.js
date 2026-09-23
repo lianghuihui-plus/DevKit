@@ -450,7 +450,10 @@ assert.deepStrictEqual(pngSize(pngHeader), { width: 2388, height: 1668 });
 assert.deepStrictEqual(scaleVisualPoint({ x: 1194, y: 834 }, { width: 2388, height: 1668 }, { width: 1194, height: 834 }), {
   x: 597, y: 417, screenshot: { width: 2388, height: 1668 }, viewport: { width: 1194, height: 834 },
 });
-assert.strictEqual(sessionCapabilities({ appId: 'com.example.ios' }, { autoLaunch: false })['appium:autoLaunch'], false);
+const iosSessionCapabilities = sessionCapabilities({ appId: 'com.example.ios' }, { autoLaunch: false });
+assert.strictEqual(iosSessionCapabilities['appium:autoLaunch'], false);
+assert.strictEqual(iosSessionCapabilities['appium:newCommandTimeout'], 0,
+  'framework-managed iOS sessions must not expire while the Agent is deciding');
 const iosProbeArgs = environmentAdapterArgs({
   platform: 'ios', deviceId: 'ios-device', appId: 'com.example.ios', deviceType: 'realDevice',
   xcodeOrgId: 'TEAM', xcodeSigningId: 'Apple Development', updatedWDABundleId: 'com.example.wda',

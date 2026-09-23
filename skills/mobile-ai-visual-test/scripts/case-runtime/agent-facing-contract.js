@@ -309,7 +309,7 @@ const PUBLIC_METHODS = Object.freeze({
       review: projection(['knowledgeQueryRef', 'knowledgeReviewRef', 'conclusion', 'idempotent'], null, ['knowledgeQuery', 'candidateSet', 'knowledgeReview']),
     } },
     conditionalRequirements: ['mode=query 和 mode=review 的字段不能混用。'],
-    contextualValidationRules: ['复核必须覆盖当前 query 候选约束。'],
+    contextualValidationRules: ['复核必须覆盖当前 query 候选约束。', '出现预期不符、操作无效果或异常反复，且平台、版本、账号、配置、条件适用性、同类异常处理方式或原文歧义可能影响下一步时，尽早使用 knowledge，不要等到结果收口。不存在这些外部依赖时不机械查询。'],
     successStatuses: ['KNOWLEDGE', 'KNOWLEDGE_REVIEWED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_REQUIRED', 'KNOWLEDGE_QUERY_UNKNOWN', 'KNOWLEDGE_REVIEW_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['保存查询或复核事件'], idempotency: '重复 queryId 复核按内部事件规则处理。',
@@ -341,7 +341,7 @@ const PUBLIC_METHODS = Object.freeze({
     reason: 'NOT_RUN 的业务原因', evidence: 'NOT_RUN 引用的已登记 Scene 或技术事实', flowContext: '实际到达的 END 节点',
   }, {
     responseProjection: projection(['executionId', 'verdict', 'caseResultRef', 'idempotent'], null, ['caseResult', 'checkpointLedger', 'technicalFact']),
-    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', '现场事实不能单独证明业务定性；平台、版本、账号、配置或其他外部规则可能改变检查点定性时，Agent 必须先完成知识调查；查询无候选或候选不适用后仍可按现场证据处置。', 'NOT_RUN 必须提供原因和已登记证据。'],
+    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', '现场事实不能单独证明业务定性；预期不符、操作无效果或异常反复涉及外部规则时，应在收口前尽早完成知识调查。无此外部依赖时不机械查询；无适用候选时仍按现场证据处置。', 'NOT_RUN 必须提供原因和已登记证据。'],
     successStatuses: ['COMPLETED', 'RESULT_INCOMPLETE'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',
