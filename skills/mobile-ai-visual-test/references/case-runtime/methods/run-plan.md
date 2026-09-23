@@ -1,6 +1,6 @@
 # CaseRuntime.runPlan
 
-连续执行受约束的短时动作、等待、采集、定位和技术检查计划。
+不需要中间 Agent 判断时，连续执行已确定的有限步骤。
 
 签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
 
@@ -34,6 +34,8 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 
 ## 上下文校验
 
+- 步骤间插入 Agent 决策会增加延迟或降低成功率，且当前事实已足以确定全部步骤时使用 runPlan。
+- 视觉理解、业务判断或重新规划由 Agent 完成；计划必须在此类边界前结束。
 - Runtime 只执行确定性命令并返回证据；视觉变化和业务结论由 Agent 判断。
 
 ## 成功状态

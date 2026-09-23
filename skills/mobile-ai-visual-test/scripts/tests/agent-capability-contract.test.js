@@ -120,6 +120,25 @@ assert.match(read('prompts/case-agent.md'), /输入组件依赖.*Runtime.*自动
 assert.match(read('SKILL.md'), /输入组件依赖.*Runtime.*自动/);
 assert.doesNotMatch(read('prompts/case-agent.md'), /MAVT Input IME|mavtInputIme|androidImeNotReady/);
 assert.doesNotMatch(read('SKILL.md'), /MAVT Input IME|mavtInputIme|androidImeNotReady/);
+
+const executionGranularityGuidance = [
+  read('prompts/case-agent.md'),
+  read('references/case-execution-principles.md'),
+].join('\n');
+assert.match(executionGranularityGuidance, /步骤间.*新的 Agent 判断/,
+  'execution guidance must make inter-step Agent judgment the act/runPlan decision boundary');
+assert.match(executionGranularityGuidance, /需要.*新的 Agent 判断.*`act`/,
+  'act must be selected when the next step depends on a new Agent judgment');
+assert.match(executionGranularityGuidance, /不需要.*新的 Agent 判断.*`runPlan`/,
+  'runPlan must be selected when the finite steps are already decidable');
+assert.match(executionGranularityGuidance, /Agent 决策.*延迟.*成功率/,
+  'runPlan guidance must account for the cost of an unnecessary Agent decision boundary');
+assert.match(executionGranularityGuidance, /视觉理解.*业务判断.*重新规划.*结束.*`runPlan`/,
+  'runPlan must stop before work that requires Agent intelligence');
+assert.doesNotMatch(executionGranularityGuidance, /必须(?:调用|使用).*`runPlan`/,
+  'runPlan selection guidance must not become a mandatory execution gate');
+assert.match(CASE_PUBLIC_CONTRACT.methods.act.summary, /一个动作.*新 Scene.*重新判断/);
+assert.match(CASE_PUBLIC_CONTRACT.methods.runPlan.summary, /不需要中间 Agent 判断.*有限步骤/);
 assert.match(read('references/failure-policy.md'), /APP_INITIAL_STATE_UNAVAILABLE.*原生.*安装态/);
 assert.strictEqual(read('SKILL.md').includes('不能自己调用 Appium、WDA、xcodebuild 或读取内部日志'), false);
 

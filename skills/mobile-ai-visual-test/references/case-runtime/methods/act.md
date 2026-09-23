@@ -1,6 +1,6 @@
 # CaseRuntime.act
 
-基于当前 Scene 执行一个 ActionRef，并采集新 Scene。
+执行一个动作并返回完整新 Scene，供 Agent 重新判断。
 
 签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
 
@@ -30,6 +30,7 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 
 ## 上下文校验
 
+- 下一步需要根据新 Scene 作视觉理解、业务判断或重新规划时使用 act。
 - ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。
 
 ## 成功状态

@@ -269,27 +269,27 @@ const PUBLIC_METHODS = Object.freeze({
     sideEffects: ['追加 expectation result 事件'], idempotency: '相同结果重复提交不追加重复事件。',
     minimalExample: { operation: 'recordResult', input: { results: [{ checkNodeRef: 'N1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: [EXAMPLE_SCENE_REF] } }] } },
   }),
-  act: method('act', '基于当前 Scene 执行一个 ActionRef，并采集新 Scene。', SCHEMAS.act, {
+  act: method('act', '执行一个动作并返回完整新 Scene，供 Agent 重新判断。', SCHEMAS.act, {
     sceneRef: '当前 Scene', action: '发布的 ActionRef 或 Agent 自主视觉坐标动作',
     purpose: '可选的业务动作目的', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
     responseProjection: projection(['operationId', 'deliveryStatus', 'commandDeliveryKnown', 'sceneRef'], 'scene', SCENE_RESOURCES),
     conditionalRequirements: ['action.ref 与 action.type 互斥；ActionRef 所需 action.input 字段必须存在。'],
-    contextualValidationRules: ['ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。'],
+    contextualValidationRules: ['下一步需要根据新 Scene 作视觉理解、业务判断或重新规划时使用 act。', 'ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。'],
     successStatuses: ['SCENE'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'ACTION_NOT_AVAILABLE', 'ACTION_INPUT_INVALID', 'VISUAL_INSPECTION_REQUIRED', 'ACTION_OUTCOME_UNKNOWN', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['最多投递一个设备动作', '采集新 Scene'],
     idempotency: '已投递且结果未知的动作永不重放。',
     minimalExample: { operation: 'act', input: { sceneRef: EXAMPLE_SCENE_REF, action: { ref: 'button-1:tap' } } },
   }),
-  runPlan: method('runPlan', '连续执行受约束的短时动作、等待、采集、定位和技术检查计划。', SCHEMAS.runPlan, {
+  runPlan: method('runPlan', '不需要中间 Agent 判断时，连续执行已确定的有限步骤。', SCHEMAS.runPlan, {
     submissionId: '本次计划提交的幂等键', sceneRef: '当前 Scene',
     purpose: '计划的业务目的', maxDurationMs: `计划总时限，1 到 ${MAX_PLAN_DURATION_MS} 毫秒`, onFailure: 'STOP 或受限 CONTINUE',
     steps: '最多 12 个声明式步骤', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
     responseProjection: projection(['planResultRef', 'planId', 'idempotent'], 'planResult', ['scene', 'screenshot', 'actionSpatialEvidence', 'planEvidence', 'technicalFact']),
     conditionalRequirements: ['步骤 id 唯一；$<stepId>.<field> 只能引用已完成的先前步骤。capture 输出 sceneRef，locate 输出 point，可用于 act.input.pointRef。', '包含 act 时 onFailure 必须为 STOP。需要间隔点击时使用 act/wait/act。'],
-    contextualValidationRules: ['Runtime 只执行确定性命令并返回证据；视觉变化和业务结论由 Agent 判断。'],
+    contextualValidationRules: ['步骤间插入 Agent 决策会增加延迟或降低成功率，且当前事实已足以确定全部步骤时使用 runPlan。', '视觉理解、业务判断或重新规划由 Agent 完成；计划必须在此类边界前结束。', 'Runtime 只执行确定性命令并返回证据；视觉变化和业务结论由 Agent 判断。'],
     successStatuses: ['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'PLAN_INVALID', 'PLAN_STEP_FAILED', 'PLAN_SUBMISSION_CONFLICT', 'PLAN_RECORD_INCOMPLETE', 'LOCATOR_UNSUPPORTED', 'TARGET_NOT_FOUND', 'PLAN_CHECK_FAILED', 'PLAN_ACTION_OUTCOME_UNKNOWN', 'PLAN_TIMEOUT', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['按顺序投递计划中的设备动作', '保存步骤事件和 Scene 证据'],
