@@ -15,6 +15,7 @@ const {
   recordFinalizationStep,
   startCurrentCase,
 } = require('../batch/core');
+const { acquireBatchPlatformRuntime } = require('../batch/platform-runtime');
 const { commitWithDashboard } = require('../batch');
 const { run } = require('../case-runtime/agent-facing-client');
 const { createCaseContract } = require('../execution/contracts/case-contract');
@@ -32,8 +33,17 @@ const PNG = Buffer.from(
 
 function adapterFor(binding) {
   return {
+    acquirePlatformRuntime: () => ({
+      ok: true,
+      status: 'NOT_REQUIRED',
+      ownership: 'NONE',
+      ...(binding.platform === 'android'
+        ? { resource: { androidHelper: { backend: 'uiautomator' } } }
+        : {}),
+    }),
     restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }),
     probeSession: () => ({ ok: true, binding }),
+    releasePlatformRuntime: () => ({ ok: true, status: 'NOT_REQUIRED', ownership: 'NONE' }),
   };
 }
 
@@ -75,7 +85,8 @@ if (process.argv[2] === '--worker') {
     createTestExecutionRequest(root, batchId, binding, [{ caseKey, caseDir }]);
     initializeBatch({ workspaceRoot: root, batchId });
     const adapter = adapterFor(binding);
-    bootstrapBatch({ workspaceRoot: root, batchId, adapter });
+    const platformRuntime = acquireBatchPlatformRuntime({ workspaceRoot: root, batchId, adapter });
+    bootstrapBatch({ workspaceRoot: root, batchId, adapter, platformRuntime });
     const started = startCurrentCase({ workspaceRoot: root, batchId });
     assert.strictEqual(started.action, 'DELEGATE_CASE_AGENT');
     return {

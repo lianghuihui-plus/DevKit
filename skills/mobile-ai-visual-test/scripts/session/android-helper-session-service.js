@@ -85,6 +85,8 @@ function androidHelperAdapterEnvironment(execDir, binding, options = {}) {
   if (binding.platform !== 'android') return env;
   const runtime = readJson(path.join(path.resolve(execDir), 'runtime.json'), null);
   if (!runtime?.sessionRef?.platformRuntimePath) invalid('execution runtime does not contain platformRuntimePath');
+  if (!fs.existsSync(runtime.sessionRef.platformRuntimePath)
+    && !Object.hasOwn(binding, 'androidUiBackend')) return env;
   const platformRuntime = readJson(runtime.sessionRef.platformRuntimePath, null);
   const helper = platformRuntime?.resource?.androidHelper;
   const selection = validateAndroidRuntimeReference(

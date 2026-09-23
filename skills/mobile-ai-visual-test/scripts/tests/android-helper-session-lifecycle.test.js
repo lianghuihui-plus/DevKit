@@ -87,6 +87,15 @@ const legacyEnv = androidHelperAdapterEnvironment(execDir, legacyBinding, {
   baseEnv: { MAVT_ANDROID_HELPER_SESSION_STATE: '/stale/session.json' },
 });
 assert.strictEqual(Object.hasOwn(legacyEnv, 'MAVT_ANDROID_HELPER_SESSION_STATE'), false);
+fs.unlinkSync(sessionRef.platformRuntimePath);
+const historicalBinding = {
+  platform: 'android', deviceId: 'android-device', appId: 'com.example.android', entry: '.MainActivity',
+};
+const historicalEnv = androidHelperAdapterEnvironment(execDir, historicalBinding, {
+  baseEnv: { MAVT_ANDROID_HELPER_SESSION_STATE: '/stale/session.json' },
+});
+assert.strictEqual(Object.hasOwn(historicalEnv, 'MAVT_ANDROID_HELPER_SESSION_STATE'), false);
+assert.throws(() => androidHelperAdapterEnvironment(execDir, autoBinding), /platform runtime type is invalid/);
 writeRuntime({
   status: 'NOT_REQUIRED', ownership: 'NONE',
   resource: { androidHelper: { backend: 'uiautomator' } },
