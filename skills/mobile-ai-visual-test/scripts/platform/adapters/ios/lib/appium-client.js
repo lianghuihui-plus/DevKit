@@ -67,7 +67,8 @@ function sessionCapabilities(target, options = {}) {
     platformName: 'iOS',
     'appium:automationName': 'XCUITest',
     'appium:noReset': true,
-    'appium:newCommandTimeout': Number(options.newCommandTimeout || 120),
+    // Appium defaults to 60 seconds when omitted; zero keeps the framework-owned session alive.
+    'appium:newCommandTimeout': 0,
   };
   if (options.autoLaunch !== undefined) alwaysMatch['appium:autoLaunch'] = options.autoLaunch === true;
   if (target.device) alwaysMatch['appium:udid'] = target.device;

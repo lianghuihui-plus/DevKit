@@ -139,6 +139,20 @@ assert.doesNotMatch(executionGranularityGuidance, /必须(?:调用|使用).*`run
   'runPlan selection guidance must not become a mandatory execution gate');
 assert.match(CASE_PUBLIC_CONTRACT.methods.act.summary, /一个动作.*新 Scene.*重新判断/);
 assert.match(CASE_PUBLIC_CONTRACT.methods.runPlan.summary, /不需要中间 Agent 判断.*有限步骤/);
+const knowledgeGuidance = [
+  read('prompts/case-agent.md'),
+  read('references/case-execution-principles.md'),
+  ...CASE_PUBLIC_CONTRACT.methods.knowledge.contextualValidationRules,
+  ...CASE_PUBLIC_CONTRACT.methods.finish.contextualValidationRules,
+].join('\n');
+assert.match(knowledgeGuidance, /预期不符.*操作无效果.*异常反复/,
+  'knowledge guidance must cover the recurring execution symptoms that benefit from prior knowledge');
+assert.match(knowledgeGuidance, /尽早.*`?knowledge`?.*不要等到.*收口/,
+  'knowledge investigation must happen while it can still improve the next decision');
+assert.match(knowledgeGuidance, /平台.*版本.*账号.*配置.*条件适用性.*同类异常/,
+  'knowledge guidance must enumerate the external facts that Scene evidence cannot establish');
+assert.doesNotMatch(knowledgeGuidance, /每条用例.*必须.*`?knowledge`?/,
+  'stronger guidance must not become an unconditional query gate');
 assert.match(read('references/failure-policy.md'), /APP_INITIAL_STATE_UNAVAILABLE.*原生.*安装态/);
 assert.strictEqual(read('SKILL.md').includes('不能自己调用 Appium、WDA、xcodebuild 或读取内部日志'), false);
 

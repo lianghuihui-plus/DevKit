@@ -38,6 +38,7 @@ input.assessments: Array<{ entryId: string; status: "APPLICABLE" | "NOT_APPLICAB
 ## 上下文校验
 
 - 复核必须覆盖当前 query 候选约束。
+- 出现预期不符、操作无效果或异常反复，且平台、版本、账号、配置、条件适用性、同类异常处理方式或原文歧义可能影响下一步时，尽早使用 knowledge，不要等到结果收口。不存在这些外部依赖时不机械查询。
 
 ## 成功状态
 

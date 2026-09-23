@@ -120,9 +120,13 @@ for (const [name, guidance] of [
 ]) {
   assert.match(guidance, /现场事实.*不.*证明.*业务定性/,
     `${name} must distinguish observable facts from business classification`);
-  assert.match(guidance, /平台.*版本.*账号.*配置.*可能.*改变.*定性.*必须.*knowledge/,
-    `${name} must require knowledge when external rules can change the classification`);
-  assert.match(guidance, /无候选.*不适用.*现场证据/,
+  assert.match(guidance, /预期不符.*操作无效果.*异常反复/,
+    `${name} must identify the high-information knowledge triggers`);
+  assert.match(guidance, /尽早.*knowledge.*收口/,
+    `${name} must direct knowledge lookup before result finalization`);
+  assert.match(guidance, /外部依赖.*不机械查询/,
+    `${name} must avoid mechanical knowledge queries without external dependencies`);
+  assert.match(guidance, /无适用候选.*现场证据|无候选.*不适用.*现场证据/,
     `${name} must preserve scene-based judgment after an unhelpful query`);
 }
 for (const obsoleteKnowledgeRule of [

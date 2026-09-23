@@ -85,12 +85,14 @@ fs.writeFileSync(path.join(root, 'scenes', 'scene-0002.json'), `${JSON.stringify
 }, null, 2)}\n`);
 
 const events = [
-  { sequence: 1, time: '2026-09-20T01:00:00.000Z', type: 'planRequested', planId: 'plan-0001', planRecordRef: completed.planRecordRef },
+  { sequence: 0, time: '2026-09-20T00:59:59.999Z', type: 'agentDecisionRecorded', decisionId: 'decision-plan-0001', requestedOperation: 'runPlan', sceneId: 'scene-0001', decision: { purpose: '在瞬时窗口内完成操作', expectedOutcome: '取得瞬时状态证据', expectationRefs: ['N1'] } },
+  { sequence: 1, time: '2026-09-20T01:00:00.000Z', type: 'planRequested', decisionId: 'decision-plan-0001', planId: 'plan-0001', planRecordRef: completed.planRecordRef },
   { sequence: 2, time: '2026-09-20T01:00:00.100Z', type: 'sceneObserved', sceneId: 'scene-0002', screenshotRef: 'screenshots/scene-0002.png', screenshotSha256: 'shot-2', captureMode: 'SCREENSHOT_ONLY', promoted: false, planId: 'plan-0001', stepId: 'capture' },
   { sequence: 3, time: '2026-09-20T01:00:00.100Z', type: 'planStepCompleted', planId: 'plan-0001', stepId: 'capture', stepType: 'capture', durationMs: 100, status: 'COMPLETED' },
   { sequence: 4, time: '2026-09-20T01:00:00.105Z', type: 'planStepCompleted', planId: 'plan-0001', stepId: 'check', stepType: 'check', durationMs: 5, status: 'COMPLETED' },
   { sequence: 5, time: '2026-09-20T01:00:00.420Z', type: 'planCompleted', planId: 'plan-0001', status: 'PLAN_COMPLETED', planRecordRef: completed.planRecordRef, elapsedMs: 420 },
-  { sequence: 6, time: '2026-09-20T01:00:01.000Z', type: 'planRequested', planId: 'plan-0002', planRecordRef: partial.planRecordRef },
+  { sequence: 5.5, time: '2026-09-20T01:00:00.999Z', type: 'agentDecisionRecorded', decisionId: 'decision-plan-0002', requestedOperation: 'runPlan', sceneId: 'scene-0002', decision: { purpose: '定位短暂显示的控件', expectedOutcome: '找到控件位置', expectationRefs: ['N1'] } },
+  { sequence: 6, time: '2026-09-20T01:00:01.000Z', type: 'planRequested', decisionId: 'decision-plan-0002', planId: 'plan-0002', planRecordRef: partial.planRecordRef },
   { sequence: 7, time: '2026-09-20T01:00:01.100Z', type: 'planStepCompleted', planId: 'plan-0002', stepId: 'capture', stepType: 'capture', durationMs: 100, status: 'COMPLETED' },
   { sequence: 8, time: '2026-09-20T01:00:01.180Z', type: 'planStepFailed', planId: 'plan-0002', stepId: 'locate', stepType: 'locate', durationMs: 80, status: 'FAILED', error: partial.failure },
   { sequence: 9, time: '2026-09-20T01:00:01.180Z', type: 'planInterrupted', planId: 'plan-0002', status: 'PLAN_PARTIAL', planRecordRef: partial.planRecordRef, elapsedMs: 180, failure: partial.failure },
@@ -111,6 +113,17 @@ assert.strictEqual(trace.plans[0].steps[1].technicalFact.result.status, 'UNAVAIL
 assert.strictEqual(trace.plans[1].status, 'PLAN_PARTIAL');
 assert.strictEqual(trace.plans[1].steps[1].error.code, 'TARGET_NOT_FOUND');
 assert.strictEqual(trace.entries.filter((entry) => entry.category === 'PLAN').length, 8);
+assert.deepStrictEqual(trace.narrative.steps.map((step) => ({
+  operation: step.operation,
+  planId: step.planId,
+  stepId: step.planStepId,
+  state: step.processState,
+})), [
+  { operation: 'capture', planId: 'plan-0001', stepId: 'capture', state: 'OBSERVED' },
+  { operation: 'check', planId: 'plan-0001', stepId: 'check', state: 'EXECUTED' },
+  { operation: 'capture', planId: 'plan-0002', stepId: 'capture', state: 'EXECUTED' },
+  { operation: 'locate', planId: 'plan-0002', stepId: 'locate', state: 'ISSUE' },
+]);
 const transientScene = trace.entries.find((entry) => entry.sceneId === 'scene-0002');
 assert.strictEqual(transientScene.captureMode, 'SCREENSHOT_ONLY');
 assert.strictEqual(transientScene.promoted, false);
@@ -159,12 +172,20 @@ assert.deepStrictEqual(projectedMetrics.planMetrics, {
 assert.strictEqual(projectedMetrics.verdict, 'PASS');
 
 const html = renderCurrentContextHtml({ identity: { title: '计划报告用例' } }, { ...report, metrics: projectedMetrics });
-for (const text of ['Runtime 命令计划', 'PLAN_COMPLETED', 'PLAN_PARTIAL', 'SCREENSHOT_ONLY', 'UNAVAILABLE', 'TARGET_NOT_FOUND']) {
+assert.ok(html.includes('<small>Agent 决策</small><b>2</b>'),
+  'expanded plan steps must not inflate the agent decision metric');
+for (const text of ['PLAN_COMPLETED', 'PLAN_PARTIAL', 'SCREENSHOT_ONLY', 'UNAVAILABLE', 'TARGET_NOT_FOUND']) {
   assert.ok(html.includes(text), text);
 }
+assert.strictEqual(html.includes('data-report-tab="runtime-plans"'), false);
+assert.strictEqual(html.includes('data-panel-view="runtime-plans"'), false);
+assert.strictEqual((html.match(/data-plan-step=/g) || []).length, 4,
+  'each runtime plan step must appear exactly once in the execution trace');
+assert.ok(html.includes('plan-0001 · capture'));
+assert.ok(html.includes('plan-0002 · locate'));
 assert.strictEqual(html.includes('DIFFERENT'), false);
 assert.strictEqual(html.includes('IDENTICAL'), false);
-assert.ok(html.includes('.runtime-plan>dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(12ch,1fr))'));
+assert.strictEqual(html.includes('.runtime-plan>dl{'), false);
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log('plan-report passed');
