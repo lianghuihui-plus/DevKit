@@ -40,14 +40,20 @@ perl -v
 
 ```bash
 adb devices
-scripts/probe-env.sh --platform android
+scripts/probe-env.sh --platform android --device '<serial>' --android-ui-backend auto
+scripts/prepare-env.sh --platform android --device '<serial>' --android-ui-backend auto
 ```
 
 说明：
 
+- Android UI 后端策略为 `auto`（默认）、`helper` 或 `uiautomator`。`auto` 优先使用内置 ARTEMIS Accessibility Helper，Helper 不可用时只对观察和投递前动作降级；`helper` 要求 Helper 可用；`uiautomator` 固定使用现有 ADB/UIAutomator 路径。
+- Helper 是 Android Adapter 的内部依赖，不向主 Agent 或 Case Agent 暴露。Helper 原子采集 PNG 和 XML，并提供 tap、doubleTap、toggle、longPress、inputText、swipe、back、home 动作。
+- Helper 需要 Android 11（API 30）或更高版本。`prepare-env` 可以安装或升级内置 APK，但验证结束后不会保留临时 accessibility service、adb forward 或认证 token；APK 会保留以缩短后续批次启动时间。
+- batch acquire 只撤销本批次创建的 forward 和 service 变更，release 会清除本批次 token，并恢复进入批次前的 accessibility services，不覆盖设备上原有的其他辅助功能服务。
 - Android 中文输入的具体后端属于 Runtime/Adapter 内部实现，不向主 Agent 或 Case Agent 暴露，也不要求 Agent 安装、启用或切换输入组件。
-- Coordinator 在创建 ExecutionRequest 前自动准备并校验输入能力；准备失败时流程停在环境阶段，不能进入用例执行。
-- `scripts/prepare-env.sh --platform android [--device <serial>]` 只供人工安装和环境诊断使用；如果构建失败，检查 SDK Platform、Build Tools、JDK 或 `ANDROID_HOME`。
+- `auto` 会同时准备 Helper 和 MAVT Input IME，确保 Helper 只读失败后仍可完整降级；`uiautomator` 只准备 IME；严格 `helper` 不要求 IME。
+- Coordinator 在创建 ExecutionRequest 前自动准备并校验所选策略的依赖；必要依赖准备失败时流程停在环境阶段，不能进入用例执行。
+- `scripts/prepare-env.sh --platform android [--device <serial>] [--android-ui-backend <policy>]` 只供人工安装和环境诊断使用；如果构建失败，检查 SDK Platform、Build Tools、JDK 或 `ANDROID_HOME`。
 
 ## HarmonyOS
 

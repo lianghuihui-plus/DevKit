@@ -223,6 +223,86 @@ const recoveringEnv = {
   MAVT_FAKE_IME_STATE: recoveringAdbState,
   MAVT_ANDROID_IME_BUILD_DIR: recoveringImeCache,
 };
+const helperCliBin = path.join(recoveringAdbDir, 'helper-cli-bin');
+const helperCliCalls = path.join(recoveringAdbDir, 'helper-cli-calls.log');
+fs.mkdirSync(helperCliBin);
+const helperCliNode = path.join(helperCliBin, 'node');
+fs.writeFileSync(helperCliNode, `#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  *helper-status.js)
+    printf '%s\n' "$MAVT_HELPER_STATUS_JSON"
+    exit 0
+    ;;
+  *helper-provision.js)
+    printf 'helper-provision\n' >> "$MAVT_HELPER_CLI_CALLS"
+    printf '%s\n' "$MAVT_HELPER_PROVISION_JSON"
+    exit 0
+    ;;
+esac
+exec "$MAVT_REAL_NODE" "$@"
+`);
+fs.chmodSync(helperCliNode, 0o755);
+const helperCliEnv = {
+  ...recoveringEnv,
+  PATH: `${helperCliBin}:${recoveringAdbDir}:${process.env.PATH}`,
+  MAVT_REAL_NODE: process.execPath,
+  MAVT_HELPER_CLI_CALLS: helperCliCalls,
+  MAVT_HELPER_STATUS_JSON: JSON.stringify({
+    requested: 'helper', installed: true, enabled: true,
+    compatible: true, versionCode: 7, protocolVersion: 2,
+  }),
+  MAVT_HELPER_PROVISION_JSON: JSON.stringify({
+    id: 'androidAccessibilityHelper', ok: true, required: true,
+    stage: 'verified', versionCode: 7, protocolVersion: 2,
+  }),
+};
+const helperStatusProbe = JSON.parse(run('./scripts/platform/probe-env.sh', [
+  '--platform', 'android', '--device', 'android-device', '--android-ui-backend', 'helper',
+], { env: helperCliEnv }));
+assert.deepStrictEqual(helperStatusProbe.capabilities.androidHelper, {
+  requested: 'helper', installed: true, enabled: true,
+  compatible: true, versionCode: 7, protocolVersion: 2,
+});
+
+fs.writeFileSync(helperCliCalls, '');
+const autoPrepare = JSON.parse(run('./scripts/prepare-env.sh', [
+  '--platform', 'android', '--device', 'android-device', '--android-ui-backend', 'auto',
+], { env: {
+  ...helperCliEnv,
+  MAVT_HELPER_PROVISION_JSON: JSON.stringify({
+    id: 'androidAccessibilityHelper', ok: false, required: false,
+    stage: 'failed', failureCode: 'ANDROID_HELPER_INSTALL_FAILED',
+  }),
+} }));
+assert.strictEqual(autoPrepare.ok, true);
+assert.strictEqual(autoPrepare.dependencies.find((item) => item.id === 'mavtInputIme').ok, true);
+assert.deepStrictEqual(autoPrepare.dependencies.find((item) => item.id === 'androidAccessibilityHelper'), {
+  id: 'androidAccessibilityHelper', ok: false, required: false,
+  stage: 'failed', failureCode: 'ANDROID_HELPER_INSTALL_FAILED',
+});
+assert.strictEqual(fs.readFileSync(helperCliCalls, 'utf8').trim(), 'helper-provision');
+
+fs.writeFileSync(helperCliCalls, '');
+fs.writeFileSync(recoveringAdbLog, '');
+const strictHelperPrepare = JSON.parse(run('./scripts/prepare-env.sh', [
+  '--platform', 'android', '--device', 'android-device', '--android-ui-backend', 'helper',
+], { env: helperCliEnv }));
+assert.strictEqual(strictHelperPrepare.ok, true);
+assert.strictEqual(strictHelperPrepare.dependencies.find((item) => item.id === 'androidAccessibilityHelper').required, true);
+assert.strictEqual(strictHelperPrepare.dependencies.find((item) => item.id === 'mavtInputIme').stage, 'disabled');
+assert.strictEqual(fs.readFileSync(recoveringAdbLog, 'utf8').includes('mavt.android.ime'), false);
+
+fs.writeFileSync(helperCliCalls, '');
+const legacyPrepare = JSON.parse(run('./scripts/prepare-env.sh', [
+  '--platform', 'android', '--device', 'android-device', '--android-ui-backend', 'uiautomator',
+], { env: helperCliEnv }));
+assert.strictEqual(legacyPrepare.ok, true);
+assert.strictEqual(legacyPrepare.dependencies.find((item) => item.id === 'androidAccessibilityHelper').stage, 'disabled');
+assert.strictEqual(fs.readFileSync(helperCliCalls, 'utf8'), '');
+
+fs.rmSync(`${recoveringAdbState}.installed`, { force: true });
+fs.rmSync(`${recoveringAdbState}.enabled`, { force: true });
 const unpreparedAndroidProbe = JSON.parse(run('./scripts/platform/probe-env.sh', [
   '--platform', 'android', '--device', 'android-device',
 ], { env: recoveringEnv }));

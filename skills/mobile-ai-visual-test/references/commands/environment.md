@@ -35,12 +35,12 @@ Probe a platform
 | `--wda-launch-timeout` | 否 | WDA launch timeout in milliseconds |
 | `--derived-data-path` | 否 | Xcode DerivedData path |
 
-**成功：** `environmentProbe matching probeJson schema`
+**成功：** `environmentProbe matching probeJson schema; Android includes read-only androidHelper status`
 
 **最小示例：**
 
 ```bash
-'<skill-root>/scripts/probe-env.sh' --platform harmony --device '<device-id>'
+'<skill-root>/scripts/probe-env.sh' --platform android --device '<device-id>' --android-ui-backend auto
 ```
 
 错误只按响应中的 [文档引用](errors/environment.md) 处理。
@@ -77,12 +77,12 @@ Prepare a platform
 | `--wda-launch-timeout` | 否 | WDA launch timeout in milliseconds |
 | `--derived-data-path` | 否 | Xcode DerivedData path |
 
-**成功：** `environmentPrepare result`
+**成功：** `environmentPrepare result with Android Helper/IME dependencies selected by backend policy`
 
 **最小示例：**
 
 ```bash
-'<skill-root>/scripts/prepare-env.sh' --platform android --device '<device-id>'
+'<skill-root>/scripts/prepare-env.sh' --platform android --device '<device-id>' --android-ui-backend auto
 ```
 
 错误只按响应中的 [文档引用](errors/environment.md) 处理。

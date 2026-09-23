@@ -24,10 +24,28 @@ if [[ -n "$device" ]]; then
   device_args=(--device "$device")
 fi
 
-ime_result="$("$atoms_dir/mavt-ime.sh" "${device_args[@]}" --prepare)"
+if [[ "$android_ui_backend" == "helper" ]]; then
+  ime_dependency='{"id":"mavtInputIme","name":"MAVT Input IME","platform":"android","required":false,"ok":true,"stage":"disabled"}'
+else
+  ime_dependency="$("$atoms_dir/mavt-ime.sh" "${device_args[@]}" --prepare | node -e '
+let input="";process.stdin.setEncoding("utf8");process.stdin.on("data",chunk=>{input+=chunk});
+process.stdin.on("end",()=>{const value=JSON.parse(input);process.stdout.write(JSON.stringify(value.dependency));});
+')"
+fi
+
+if [[ "$android_ui_backend" == "uiautomator" ]]; then
+  helper_dependency='{"id":"androidAccessibilityHelper","ok":true,"required":false,"stage":"disabled"}'
+elif [[ -z "$device" ]]; then
+  helper_dependency="$(node -e '
+console.log(JSON.stringify({id:"androidAccessibilityHelper",ok:false,required:process.argv[1]==="helper",stage:"failed",failureCode:"ANDROID_DEVICE_REQUIRED"}));
+' "$android_ui_backend")"
+else
+  helper_dependency="$(node "$atoms_dir/helper-provision.js" --device "$device" --android-ui-backend "$android_ui_backend")"
+fi
 
 node -e '
-const imeResult = JSON.parse(process.argv[1]);
+const imeDependency = JSON.parse(process.argv[1]);
+const helperDependency = JSON.parse(process.argv[2]);
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();
   const sign = offset >= 0 ? "+" : "-";
@@ -35,13 +53,13 @@ function localIso(date = new Date()) {
   const pad = (value, size = 2) => String(value).padStart(size, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
-const dependencies = [imeResult.dependency];
+const dependencies = [imeDependency, helperDependency];
 console.log(JSON.stringify({
   schemaVersion: 1,
   type: "environmentPrepare",
   platform: "android",
   time: localIso(),
-  ok: dependencies.every((item) => item && item.ok),
+  ok: dependencies.every((item) => item && (item.ok || item.required === false)),
   dependencies
 }, null, 2));
-' "$ime_result"
+' "$ime_dependency" "$helper_dependency"

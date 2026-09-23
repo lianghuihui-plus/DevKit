@@ -12,6 +12,7 @@ const {
   ping,
 } = require('./android-helper-client');
 const {
+  canonicalClaimRoot,
   claimAndroidHelperDevice,
   hash,
   readAndroidHelperClaim,
@@ -218,6 +219,164 @@ function installedVersionCode(options) {
   if (result.status !== 0) return 0;
   const match = String(result.stdout || '').match(/versionCode=(\d+)/);
   return match ? Number(match[1]) : 0;
+}
+
+async function inspectAndroidHelper(options) {
+  const requested = String(options.androidUiBackend || 'auto');
+  let sdk = 0;
+  let versionCode = 0;
+  let enabled = false;
+  let protocolVersion = null;
+  let cleanupError = null;
+  try {
+    sdk = Number(adb(options, ['shell', 'getprop', 'ro.build.version.sdk']));
+    versionCode = installedVersionCode(options);
+    const androidUserId = adb(options, ['shell', 'am', 'get-current-user']);
+    const accessibility = readAccessibilityState(options, androidUserId);
+    enabled = accessibility.enabled !== '0' && accessibility.services.includes(HELPER_SERVICE);
+    if (sdk >= 30 && versionCode > 0 && enabled) {
+      let port = null;
+      try {
+        port = adb(options, ['forward', 'tcp:0', HELPER_REMOTE], { failureCode: 'ANDROID_HELPER_FORWARD_FAILED' });
+        const response = await requestPing(options, { localPort: Number(port), token: '' }, 1000);
+        const protocol = Number(response?.protocol_version);
+        protocolVersion = Number.isInteger(protocol) && protocol > 0 ? protocol : null;
+      } catch {
+        protocolVersion = null;
+      } finally {
+        if (port) {
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              removeForward(options, port);
+              cleanupError = null;
+              break;
+            } catch (error) {
+              cleanupError = new SessionError(
+                'ANDROID_HELPER_FORWARD_CLEANUP_FAILED',
+                'Android Helper probe could not remove its temporary adb forward',
+                { cause: error },
+              );
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // The surrounding environment probe reports connector/device failures.
+  }
+  if (cleanupError) throw cleanupError;
+  return {
+    requested,
+    installed: versionCode > 0,
+    enabled,
+    compatible: sdk >= 30,
+    versionCode,
+    protocolVersion,
+  };
+}
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+function provisioningLockPath(options) {
+  return path.join(canonicalClaimRoot(options), `${hash(options.deviceId)}.prepare.lock`);
+}
+
+async function withProvisioningLock(options, operation) {
+  const file = provisioningLockPath(options);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.chmodSync(path.dirname(file), 0o700);
+  if (fs.lstatSync(path.dirname(file)).isSymbolicLink()) {
+    throw new SessionError('ANDROID_HELPER_OWNERSHIP_UNKNOWN', 'Android Helper prepare lock directory is a symbolic link');
+  }
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const take = () => {
+    const fd = fs.openSync(file, 'wx', 0o600);
+    fs.writeFileSync(fd, `${JSON.stringify({ pid: process.pid, nonce, createdAt: new Date().toISOString() })}\n`);
+    fs.closeSync(fd);
+  };
+  try {
+    take();
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const lockStat = fs.lstatSync(file);
+    if (lockStat.isSymbolicLink() || !lockStat.isFile() || (lockStat.mode & 0o077) !== 0) {
+      throw new SessionError('ANDROID_HELPER_OWNERSHIP_UNKNOWN', 'Android Helper prepare lock is not a private regular file');
+    }
+    let lock = null;
+    try { lock = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* handled below */ }
+    const ageMs = (() => {
+      try { return Date.now() - fs.statSync(file).mtimeMs; } catch { return 0; }
+    })();
+    if (lock && processAlive(Number(lock.pid))) {
+      throw new SessionError('ANDROID_HELPER_IN_USE', 'Android Helper provisioning is already running', { retryable: true });
+    }
+    if (!lock && ageMs <= 30000) {
+      throw new SessionError('ANDROID_HELPER_OWNERSHIP_UNKNOWN', 'Android Helper prepare lock is unreadable', { retryable: true });
+    }
+    fs.unlinkSync(file);
+    take();
+  }
+  try {
+    return await operation();
+  } finally {
+    try {
+      const current = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (current.nonce === nonce) fs.unlinkSync(file);
+    } catch { /* A replaced lock belongs to another recovery attempt. */ }
+  }
+}
+
+async function verifyAndroidHelperProvisioning(options) {
+  const policy = String(options.androidUiBackend || 'auto');
+  if (policy === 'uiautomator') {
+    return { id: 'androidAccessibilityHelper', ok: true, required: false, stage: 'disabled' };
+  }
+  const required = policy === 'helper';
+  try {
+    return await withProvisioningLock(options, async () => {
+      const prepareOptions = {
+        ...options,
+        ownerKey: `prepare-${hash(options.deviceId)}`,
+        kind: 'PREPARE',
+        androidUiBackend: 'helper',
+      };
+      const acquired = await acquireAndroidHelper(prepareOptions);
+      if (acquired.status !== 'ACTIVE') {
+        return {
+          id: 'androidAccessibilityHelper', ok: false, required, stage: 'failed',
+          failureCode: acquired.failureCode || 'ANDROID_HELPER_PREPARE_FAILED',
+          retryable: Boolean(acquired.retryable),
+        };
+      }
+      const released = await releaseAndroidHelper({ ...prepareOptions, runtime: acquired });
+      if (!released.ok) {
+        return {
+          id: 'androidAccessibilityHelper', ok: false, required: true, stage: 'cleanup_failed',
+          failureCode: released.failureCode || 'ANDROID_HELPER_RELEASE_FAILED',
+          retryable: false,
+        };
+      }
+      return {
+        id: 'androidAccessibilityHelper', ok: true, required, stage: 'verified',
+        versionCode: Number(acquired.resource?.androidHelper?.versionCode || MIN_VERSION_CODE),
+        protocolVersion: Number(acquired.resource?.androidHelper?.protocolVersion || MIN_PROTOCOL),
+      };
+    });
+  } catch (error) {
+    return {
+      id: 'androidAccessibilityHelper', ok: false, required, stage: 'failed',
+      failureCode: error.code || 'ANDROID_HELPER_PREPARE_FAILED',
+      retryable: Boolean(error.retryable),
+    };
+  }
 }
 
 function pushToken(options, androidUserId, token) {
@@ -690,13 +849,16 @@ module.exports = {
   defaultRunAdb,
   ensureAndroidHelperSession,
   helperStateRoot,
+  inspectAndroidHelper,
   localIso,
   main,
   parseRuntimeArgs,
+  provisioningLockPath,
   readSecureJson,
   reauthenticateAndroidHelperSession,
   repairAndroidHelperSession,
   releaseAndroidHelper,
   rollbackJournal,
   sessionStatePath,
+  verifyAndroidHelperProvisioning,
 };

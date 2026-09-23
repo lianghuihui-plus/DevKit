@@ -9,9 +9,12 @@ const path = require('path');
 const {
   acquireAndroidHelper,
   ensureAndroidHelperSession,
+  inspectAndroidHelper,
+  provisioningLockPath,
   reauthenticateAndroidHelperSession,
   releaseAndroidHelper,
   sessionStatePath,
+  verifyAndroidHelperProvisioning,
 } = require('../platform/adapters/android/lib/android-helper-session');
 const {
   claimAndroidHelperDevice,
@@ -135,6 +138,173 @@ function options(device, overrides = {}) {
 }
 
 (async () => {
+  const inspectApi29Device = fakeDevice({ sdk: 29 });
+  const inspectApi29 = await inspectAndroidHelper(options(inspectApi29Device, { androidUiBackend: 'auto' }));
+  assert.deepStrictEqual(inspectApi29, {
+    requested: 'auto', installed: false, enabled: false,
+    compatible: false, versionCode: 0, protocolVersion: null,
+  });
+  assert.strictEqual(inspectApi29Device.state.calls.some((call) => call.args[0] === 'install'), false);
+
+  const inspectMissingDevice = fakeDevice({ sdk: 30 });
+  assert.deepStrictEqual(await inspectAndroidHelper(options(inspectMissingDevice, { androidUiBackend: 'auto' })), {
+    requested: 'auto', installed: false, enabled: false,
+    compatible: true, versionCode: 0, protocolVersion: null,
+  });
+
+  const inspectDisabledDevice = fakeDevice({ sdk: 30, installedVersion: 7 });
+  assert.deepStrictEqual(await inspectAndroidHelper(options(inspectDisabledDevice, { androidUiBackend: 'helper' })), {
+    requested: 'helper', installed: true, enabled: false,
+    compatible: true, versionCode: 7, protocolVersion: null,
+  });
+  assert.strictEqual(inspectDisabledDevice.state.calls.some((call) => call.args.join(' ') === 'forward tcp:0 tcp:18888'), false);
+
+  const inspectEnabledDevice = fakeDevice({
+    installedVersion: 7,
+    accessibilityEnabled: '1',
+    services: ['existing.reader/.Service', 'com.artemis.helper/.ArtemisAccessibilityService'],
+  });
+  const inspectEnabled = await inspectAndroidHelper(options(inspectEnabledDevice, {
+    androidUiBackend: 'helper',
+    requestPing: async () => ({ protocol_version: 2, version_code: 7, token_set: false }),
+  }));
+  assert.deepStrictEqual(inspectEnabled, {
+    requested: 'helper', installed: true, enabled: true,
+    compatible: true, versionCode: 7, protocolVersion: 2,
+  });
+  assert.strictEqual(inspectEnabledDevice.state.forwards.size, 0);
+
+  const inspectCleanupRetryDevice = fakeDevice({
+    installedVersion: 7,
+    accessibilityEnabled: '1',
+    services: ['com.artemis.helper/.ArtemisAccessibilityService'],
+    failures: new Map([['forward --remove tcp:41000', 1]]),
+  });
+  const inspectCleanupRetry = await inspectAndroidHelper(options(inspectCleanupRetryDevice, {
+    requestPing: async () => ({ protocol_version: 2, version_code: 7, token_set: false }),
+  }));
+  assert.strictEqual(inspectCleanupRetry.protocolVersion, 2);
+  assert.strictEqual(inspectCleanupRetryDevice.state.forwards.size, 0);
+  assert.strictEqual(inspectCleanupRetryDevice.state.calls.filter(
+    (call) => call.args.join(' ') === 'forward --remove tcp:41000',
+  ).length, 2);
+
+  const inspectCleanupFailureDevice = fakeDevice({
+    installedVersion: 7,
+    accessibilityEnabled: '1',
+    services: ['com.artemis.helper/.ArtemisAccessibilityService'],
+    failures: new Map([['forward --remove tcp:41000', 2]]),
+  });
+  await assert.rejects(() => inspectAndroidHelper(options(inspectCleanupFailureDevice, {
+    requestPing: async () => ({ protocol_version: 2, version_code: 7, token_set: false }),
+  })), (error) => error.code === 'ANDROID_HELPER_FORWARD_CLEANUP_FAILED');
+
+  const disabledProvision = fakeDevice();
+  const disabledDependency = await verifyAndroidHelperProvisioning(options(disabledProvision, {
+    androidUiBackend: 'uiautomator',
+  }));
+  assert.deepStrictEqual(disabledDependency, {
+    id: 'androidAccessibilityHelper', ok: true, required: false, stage: 'disabled',
+  });
+  assert.strictEqual(disabledProvision.state.calls.length, 0);
+
+  const preparedDevice = fakeDevice();
+  const preparedDependency = await verifyAndroidHelperProvisioning(options(preparedDevice, {
+    androidUiBackend: 'helper', ownerKey: undefined,
+  }));
+  assert.strictEqual(preparedDependency.id, 'androidAccessibilityHelper');
+  assert.strictEqual(preparedDependency.ok, true);
+  assert.strictEqual(preparedDependency.required, true);
+  assert.strictEqual(preparedDependency.stage, 'verified');
+  assert.strictEqual(preparedDevice.state.installedVersion, 7);
+  assert.strictEqual(preparedDevice.state.token, '');
+  assert.strictEqual(preparedDevice.state.forwards.size, 0);
+  assert.deepStrictEqual(preparedDevice.state.services, ['existing.reader/.Service']);
+  assert.strictEqual(preparedDevice.state.accessibilityEnabled, '0');
+
+  const optionalFailureDevice = fakeDevice({ installFailure: 'INSTALL_FAILED_UPDATE_INCOMPATIBLE' });
+  const optionalFailure = await verifyAndroidHelperProvisioning(options(optionalFailureDevice, {
+    androidUiBackend: 'auto', ownerKey: undefined,
+  }));
+  assert.strictEqual(optionalFailure.ok, false);
+  assert.strictEqual(optionalFailure.required, false);
+  assert.strictEqual(optionalFailure.failureCode, 'ANDROID_HELPER_INSTALL_FAILED');
+  assert.strictEqual(optionalFailureDevice.state.token, '');
+  assert.strictEqual(optionalFailureDevice.state.forwards.size, 0);
+  assert.deepStrictEqual(optionalFailureDevice.state.services, ['existing.reader/.Service']);
+
+  const requiredFailureDevice = fakeDevice({ installFailure: 'INSTALL_FAILED_UPDATE_INCOMPATIBLE' });
+  const requiredFailure = await verifyAndroidHelperProvisioning(options(requiredFailureDevice, {
+    androidUiBackend: 'helper', ownerKey: undefined,
+  }));
+  assert.strictEqual(requiredFailure.ok, false);
+  assert.strictEqual(requiredFailure.required, true);
+
+  const concurrentDevice = fakeDevice();
+  let allowAuthenticatedPing;
+  let reachedAuthenticatedPing;
+  const authenticatedPingReached = new Promise((resolve) => { reachedAuthenticatedPing = resolve; });
+  const authenticatedPingGate = new Promise((resolve) => { allowAuthenticatedPing = resolve; });
+  const concurrentOptions = options(concurrentDevice, {
+    androidUiBackend: 'helper', ownerKey: undefined,
+    requestPing: async (session) => {
+      if (!session.token) throw new Error('service is not enabled yet');
+      reachedAuthenticatedPing();
+      await authenticatedPingGate;
+      return {
+        success: true, authenticated: true, token_set: true,
+        protocol_version: 2, version_code: 7, version_name: '1.2.1',
+      };
+    },
+  });
+  const firstPrepare = verifyAndroidHelperProvisioning(concurrentOptions);
+  await authenticatedPingReached;
+  const blockedPrepare = await verifyAndroidHelperProvisioning(concurrentOptions);
+  assert.strictEqual(blockedPrepare.ok, false);
+  assert.strictEqual(blockedPrepare.failureCode, 'ANDROID_HELPER_IN_USE');
+  assert.strictEqual(blockedPrepare.retryable, true);
+  allowAuthenticatedPing();
+  assert.strictEqual((await firstPrepare).ok, true);
+
+  const staleLockDevice = fakeDevice();
+  const staleLockOptions = options(staleLockDevice, { androidUiBackend: 'helper', ownerKey: undefined });
+  const staleLock = provisioningLockPath(staleLockOptions);
+  fs.mkdirSync(path.dirname(staleLock), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(staleLock, JSON.stringify({ pid: 99999999, nonce: 'stale' }), { mode: 0o600 });
+  assert.strictEqual((await verifyAndroidHelperProvisioning(staleLockOptions)).ok, true);
+  assert.strictEqual(fs.existsSync(staleLock), false);
+
+  const symlinkLockDevice = fakeDevice();
+  const symlinkLockOptions = options(symlinkLockDevice, {
+    androidUiBackend: 'helper', ownerKey: undefined,
+    claimRoot: path.join(root, 'symlink-lock-claims'),
+  });
+  const symlinkLock = provisioningLockPath(symlinkLockOptions);
+  const symlinkTarget = path.join(root, 'prepare-lock-target.json');
+  fs.mkdirSync(path.dirname(symlinkLock), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(symlinkTarget, JSON.stringify({ pid: 99999999, nonce: 'external' }), { mode: 0o600 });
+  fs.symlinkSync(symlinkTarget, symlinkLock);
+  const symlinkFailure = await verifyAndroidHelperProvisioning(symlinkLockOptions);
+  assert.strictEqual(symlinkFailure.ok, false);
+  assert.strictEqual(symlinkFailure.failureCode, 'ANDROID_HELPER_OWNERSHIP_UNKNOWN');
+  assert.strictEqual(fs.existsSync(symlinkTarget), true);
+
+  const claimedDevice = fakeDevice();
+  const foreignSession = path.join(root, 'foreign-active-session.json');
+  assert.strictEqual(claimAndroidHelperDevice({
+    deviceId: 'android-device', ownerKey: 'foreign-active-owner', sessionStatePath: foreignSession,
+    workspaceRoot, claimRoot,
+  }).ok, true);
+  const claimedDependency = await verifyAndroidHelperProvisioning(options(claimedDevice, {
+    androidUiBackend: 'auto', ownerKey: undefined,
+    resolveOwnerStatus: () => ({ status: 'ACTIVE', batchId: 'foreign-active-owner' }),
+  }));
+  assert.strictEqual(claimedDependency.ok, false);
+  assert.strictEqual(claimedDependency.required, false);
+  assert.strictEqual(claimedDependency.failureCode, 'ANDROID_HELPER_IN_USE');
+  assert.strictEqual(claimedDevice.state.calls.some((call) => call.args[0] === 'install'), false);
+  fs.unlinkSync(claimPath('android-device', { claimRoot }));
+
   const disabled = fakeDevice();
   const notRequired = await acquireAndroidHelper(options(disabled, { androidUiBackend: 'uiautomator' }));
   assert.strictEqual(notRequired.status, 'NOT_REQUIRED');

@@ -204,7 +204,7 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
       androidUiBackend: flag(false, 'Android UI backend policy', { value: '<auto|helper|uiautomator>', enum: ['auto', 'helper', 'uiautomator'] }),
       deviceFormFactor: flag(false, 'HarmonyOS static device form factor override', { value: '<form-factor>', enum: ['phone', 'tablet', 'foldable', 'widefold', 'triplefold', '2in1', '2in1 foldable', 'wearable', 'tv'] }),
       ...iosEnvironmentFlags,
-    }, ['scripts/probe-env.sh', '--platform', 'harmony', '--device', '<device-id>'], ['environmentProbe matching probeJson schema'])],
+    }, ['scripts/probe-env.sh', '--platform', 'android', '--device', '<device-id>', '--android-ui-backend', 'auto'], ['environmentProbe matching probeJson schema; Android includes read-only androidHelper status'])],
   },
   'scripts/prepare-env.sh': {
     summary: 'Prepare platform tooling dependencies before environment confirmation',
@@ -213,7 +213,7 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
       device: flag(false, 'Explicit device serial or UDID', { value: '<device-id>' }),
       androidUiBackend: flag(false, 'Android UI backend policy', { value: '<auto|helper|uiautomator>', enum: ['auto', 'helper', 'uiautomator'] }),
       ...iosEnvironmentFlags,
-    }, ['scripts/prepare-env.sh', '--platform', 'android', '--device', '<device-id>'], ['environmentPrepare result'])],
+    }, ['scripts/prepare-env.sh', '--platform', 'android', '--device', '<device-id>', '--android-ui-backend', 'auto'], ['environmentPrepare result with Android Helper/IME dependencies selected by backend policy'])],
   },
   'scripts/environment.js': {
     summary: 'Persist or read the user-confirmed target environment',

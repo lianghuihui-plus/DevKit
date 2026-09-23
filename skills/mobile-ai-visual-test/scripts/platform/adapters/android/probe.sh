@@ -51,6 +51,7 @@ foreground_app="false"
 logs="false"
 screen=""
 dependencies_json="[]"
+helper_status_json="$(node -e 'console.log(JSON.stringify({requested:process.argv[1],installed:false,enabled:false,compatible:false,versionCode:0,protocolVersion:null}))' "$android_ui_backend")"
 
 if [[ -n "$adb_path" && -n "$device" ]]; then
   run_probe_optional 8 "$atoms_dir/screenshot.sh" --device "$device" --out "$tmp_dir/probe.png" && screenshot="true" || true
@@ -73,6 +74,7 @@ process.stdin.on("end", () => {
   }
 });
 ' || printf '[]')"
+  helper_status_json="$(node "$atoms_dir/helper-status.js" --device "$device" --android-ui-backend "$android_ui_backend" 2>/dev/null || printf '%s' "$helper_status_json")"
 fi
 
 node -e '
@@ -86,6 +88,7 @@ const logs = process.argv[7] === "true";
 const screen = process.argv[8] || null;
 const dependencies = JSON.parse(process.argv[9] || "[]");
 const androidUiBackend = process.argv[10];
+const androidHelper = JSON.parse(process.argv[11]);
 const hasTarget = adb && !!device;
 const actions = [];
 if (hasTarget) actions.push("launchApp", "restartApp", "tap", "doubleTap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait");
@@ -109,6 +112,9 @@ if (hasTarget && !foregroundApp) {
 }
 if (hasTarget && !logs) {
   diag("androidLogsUnavailable", "WARN", "Android 日志能力不可用", "确认 adb logcat 可执行；日志缺失不阻塞核心视觉测试", "adb logcat -d");
+}
+if (hasTarget && androidUiBackend === "helper" && !androidHelper.compatible) {
+  diag("androidHelperIncompatible", "ERROR", "Android Accessibility Helper 需要 Android 11 或更高版本", "改用 Android 11+ 设备，或将 androidUiBackend 设为 uiautomator", "adb shell getprop ro.build.version.sdk");
 }
 console.log(JSON.stringify({
   schemaVersion: 1,
@@ -135,7 +141,8 @@ console.log(JSON.stringify({
     screen,
     dependencies,
     androidUiBackend: { requested: androidUiBackend },
+    androidHelper,
     implemented: true
   }
 }, null, 2));
-' "$adb_path" "$device" "$targets" "$screenshot" "$layout" "$foreground_app" "$logs" "$screen" "$dependencies_json" "$android_ui_backend"
+' "$adb_path" "$device" "$targets" "$screenshot" "$layout" "$foreground_app" "$logs" "$screen" "$dependencies_json" "$android_ui_backend" "$helper_status_json"

@@ -16,6 +16,8 @@ scripts/probe-env.sh --platform <platform>
 
 在 batch bootstrap 前运行 `scripts/prepare-env.sh` 完成平台必要依赖。默认 `bootstrapPolicy=KEEP_EXISTING`，安装包存在也不会在批次启动时安装；`recover.targetState` 是用例内唯一的按需准备入口。Runtime 在准备事务开始时冻结 iOS 包内容和身份，在卸载前完成全部静态检查；真机用 Xcode `devicectl`、模拟器用 `simctl` 确认 `INSTALLED / NOT_INSTALLED / UNKNOWN`，Appium/WDA `app_state` 只表示运行态，不作为安装事实。安装后必须读取并匹配 `installedIdentity`，旧真机环境可回退 `tidevice` 读取身份。结果未知、身份不符或安装失败时不重放并按技术问题收口。无人值守执行开始后不下载制品、不安装依赖、不修改 adapter、不切换设备。
 
+Android 环境确认会冻结 `androidUiBackend`：`auto` 优先使用 ARTEMIS Accessibility Helper 并保留 UIAutomator/ADB 降级，`helper` 要求 Android 11+ 且 Helper provisioning 成功，`uiautomator` 禁用 Helper。Helper 属于 Adapter 内部依赖；probe 只读状态，prepare 可以保留内置 APK，但临时启用的 accessibility service、adb forward、token 与 device claim 必须在返回前恢复。批次运行时同样由平台 runtime acquire/release 管理这些状态，不能覆盖设备原有的其他 accessibility services。动作一旦开始 Helper POST 就禁止降级或重放，结果不确定时必须先重新 observe。
+
 iOS `prepare-env` 会复用可连接的外部 Appium，或启动并登记框架托管的本地 Appium。WDA 验证使用临时所有权记录；验证结束即释放本次准备阶段启动的 WDA，既有外部 WDA 保留。登记只用于后续批次认领和安全关闭，不构成执行授权；未进入批次时可再次运行环境准备复核。框架不得关闭无精确所有权记录的外部 Appium 或 WDA。
 
 bootstrap/recovery 的冷启动验证分为独立事实：Adapter 必须明确返回 `command.status=ACCEPTED` 和 `coldStartVerified=true`；启动显示再由公共层按策略单独验证。Android、iOS 当前默认策略为 `preserve + none`，因此 `startupDisplay` 是可选审计事实，Adapter 可显式返回 `startupDisplay.status=SKIPPED`。HarmonyOS 每次重启在杀 App 前读取有效显示宽高，按长短边比例分类为 `PHONE_LIKE` 或 `TABLET_LIKE`：前者执行竖屏归一化并要求 `startupDisplay.status=VERIFIED`，后者保持当前方向；无法分类时在杀 App 前失败。静态 `deviceFormFactor` 只保留为诊断信息。
