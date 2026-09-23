@@ -145,6 +145,7 @@ assert.ok(failedCheck.steps[1].technicalFactRef);
 const interruptedPath = path.join(fixture.execDir, 'operations', 'plans', 'plan-9999.json');
 const interruptedRecord = {
   schemaVersion: 1, planId: 'plan-9999', executionId: execution.executionId,
+  decisionId: 'decision-interrupted-9999',
   submissionId: 'interrupted-by-restart', requestSha256: 'frozen-request',
   basedOnSceneRef: 'scene-0002', flowContext: null, purpose: '模拟进程中断',
   maxDurationMs: 2500, onFailure: 'STOP', planRecordRef: 'operations/plans/plan-9999.json',
@@ -169,7 +170,11 @@ assert.deepStrictEqual(recoveredPlans.map((item) => item.planId), ['plan-9999'])
 const recoveredRecord = JSON.parse(fs.readFileSync(interruptedPath, 'utf8'));
 assert.strictEqual(recoveredRecord.status, 'PLAN_INTERRUPTED');
 assert.strictEqual(recoveredRecord.failure.code, 'PLAN_INTERRUPTED_AFTER_PROCESS_RESTART');
-assert.strictEqual(store.events(fixture.execDir).filter((event) => event.type === 'planInterrupted' && event.planId === 'plan-9999').length, 1);
+const recoveredEvents = store.events(fixture.execDir)
+  .filter((event) => event.type === 'planInterrupted' && event.planId === 'plan-9999');
+assert.strictEqual(recoveredEvents.length, 1);
+assert.strictEqual(recoveredEvents[0].decisionId, interruptedRecord.decisionId,
+  'restart recovery must preserve the plan originating decision');
 
 let unknownActionCalls = 0;
 const unknownResult = runPlan(fixture.execDir, {

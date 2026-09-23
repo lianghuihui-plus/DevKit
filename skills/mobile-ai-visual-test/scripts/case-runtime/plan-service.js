@@ -193,7 +193,7 @@ function finishPlanAction(execDir, dispatched, planId, stepId, options) {
     ...safeActionTechnicalDetails(action),
     evidence: action.evidence,
     spatialEvidenceRef: transaction.spatialEvidenceRef || null,
-    decisionId: null,
+    decisionId: options.decisionId || null,
     planId,
     stepId,
   }, options);
@@ -229,6 +229,7 @@ function executePlan(execDir, request, options = {}) {
   const recordRef = path.relative(path.resolve(execDir), planPath(execDir, planId));
   let record = writePlan(execDir, {
     schemaVersion: 1, planId, executionId: execution.executionId,
+    decisionId: options.decisionId || null,
     submissionId: normalized.submissionId, requestSha256,
     basedOnSceneRef: normalized.basedOnSceneId, flowContext: normalized.flowContext || null,
     purpose: normalized.purpose, maxDurationMs: normalized.maxDurationMs, onFailure: normalized.onFailure,
@@ -240,6 +241,7 @@ function executePlan(execDir, request, options = {}) {
   store.appendEvent(execDir, 'planRequested', {
     planId, submissionId: normalized.submissionId, requestSha256,
     maxDurationMs: normalized.maxDurationMs, planRecordRef: recordRef,
+    decisionId: options.decisionId || null,
   }, options);
   const outputs = new Map();
   let currentSceneRef = normalized.basedOnSceneId;
@@ -252,7 +254,10 @@ function executePlan(execDir, request, options = {}) {
       failure = contractError('PLAN_TIMEOUT', `plan deadline reached before step ${step.id}`);
       break;
     }
-    store.appendEvent(execDir, 'planStepStarted', { planId, stepId: step.id, stepIndex, stepType: step.type, startedAt }, options);
+    store.appendEvent(execDir, 'planStepStarted', {
+      planId, stepId: step.id, stepIndex, stepType: step.type, startedAt,
+      decisionId: options.decisionId || null,
+    }, options);
     const stepRecord = {
       stepId: step.id, stepIndex, type: step.type, status: 'RUNNING', startedAt, endedAt: null,
       durationMs: 0, basisSceneRef: currentSceneRef, inputRefs: [...new Set(inputReferences(step))], outputRefs: [], error: null, technicalFactRef: null,
@@ -273,7 +278,7 @@ function executePlan(execDir, request, options = {}) {
         store.writeScene(execDir, scene, { promote: step.promote });
         store.appendEvent(execDir, 'sceneObserved', {
           sceneId: scene.sceneId, generation: scene.generation, operationId, purpose: 'PLAN_CAPTURE',
-          relatedOperationId: null, decisionId: null, screenshotRef: scene.screenshot.ref,
+          relatedOperationId: null, decisionId: options.decisionId || null, screenshotRef: scene.screenshot.ref,
           screenshotSha256: scene.screenshot.sha256, layoutRef: null, app: scene.app,
           captureMode: scene.captureMode, promoted: step.promote, planId, stepId: step.id,
         }, options);
@@ -314,7 +319,10 @@ function executePlan(execDir, request, options = {}) {
         const translated = actionRequest(execDir, step, input, currentSceneRef, outputs);
         const dispatched = dispatchAction(execDir, {
           basedOnSceneId: currentSceneRef, ...translated,
-          decision: { purpose: normalized.purpose, expectationRefs: [] }, planId, stepId: step.id,
+          decision: { purpose: normalized.purpose, expectationRefs: [] },
+          decisionId: options.decisionId || null,
+          planId,
+          stepId: step.id,
         }, options);
         if (dispatched.status !== 'ACTION_DISPATCHED') throw contractError('PLAN_STEP_FAILED', `action step could not be dispatched: ${step.id}`);
         const action = finishPlanAction(execDir, dispatched, planId, step.id, options);
@@ -341,13 +349,15 @@ function executePlan(execDir, request, options = {}) {
         planId, stepId: step.id, stepIndex, stepType: step.type, startedAt,
         endedAt: stepRecord.endedAt, durationMs, inputRefs: stepRecord.inputRefs,
         outputRefs: stepRecord.outputRefs, status: stepRecord.status,
+        decisionId: options.decisionId || null,
       }, options);
     } catch (error) {
       if (!failure) failure = error;
       const durationMs = Math.max(0, clock() - stepStartedMs);
       const technicalFactRef = error.technicalFactRef || store.appendEvent(execDir, 'technicalIssue', {
         code: error.code || 'PLAN_STEP_FAILED', message: error.message || String(error),
-        operation: 'runPlan', planId, stepId: step.id, expectationRefs: [], decisionId: null,
+        operation: 'runPlan', planId, stepId: step.id, expectationRefs: [],
+        decisionId: options.decisionId || null,
       }, options).technicalFactRef;
       Object.assign(stepRecord, {
         status: 'FAILED', endedAt: stepTime(options), durationMs,
@@ -367,6 +377,7 @@ function executePlan(execDir, request, options = {}) {
         planId, stepId: step.id, stepIndex, stepType: step.type, startedAt,
         endedAt: stepRecord.endedAt, durationMs, inputRefs: stepRecord.inputRefs, outputRefs: stepRecord.outputRefs,
         status: stepRecord.status, error: stepRecord.error, technicalFactRef: stepRecord.technicalFactRef,
+        decisionId: options.decisionId || null,
       }, options);
       if (normalized.onFailure === 'CONTINUE' && error.actionOutcome !== 'UNKNOWN' && error.code !== 'PLAN_TIMEOUT') continue;
       break;
@@ -383,6 +394,7 @@ function executePlan(execDir, request, options = {}) {
   store.appendEvent(execDir, terminal === 'PLAN_COMPLETED' ? 'planCompleted' : 'planInterrupted', {
     planId, status: terminal, planRecordRef: recordRef, recordSha256: record.integrity.recordSha256,
     elapsedMs: record.elapsedMs, remainingMs: record.remainingMs, failure: record.failure,
+    decisionId: options.decisionId || null,
   }, options);
   return responseFromRecord(execDir, record);
 }
@@ -418,6 +430,7 @@ function recoverInterruptedPlans(execDir, options = {}) {
         elapsedMs: interrupted.elapsedMs,
         remainingMs: interrupted.remainingMs,
         failure,
+        decisionId: record.decisionId || null,
       }, options);
     }
     recovered.push({ kind: 'plan', operationId: record.planId, planId: record.planId, status: 'PLAN_INTERRUPTED' });

@@ -246,8 +246,11 @@ function execute(execDir, request, options = {}) {
       else if (request.operation === 'prepare') response = require('./preparation-service').prepare(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
       else if (request.operation === 'act') response = actionService.act(execDir, enrichedRequest, runtimeOptions);
-      else if (request.operation === 'runPlan') response = require('./plan-service').runPlan(execDir, enrichedRequest, {
-        ...runtimeOptions, remainingMs: budget.remainingMs, lockHeld: true,
+      else if (request.operation === 'runPlan') response = require('./plan-service').runPlan(execDir, request, {
+        ...runtimeOptions,
+        decisionId: narrative.decisionEvent?.decisionId || null,
+        remainingMs: budget.remainingMs,
+        lockHeld: true,
       });
       else if (request.operation === 'inspectVisual') response = require('./visual-inspection-service').inspectVisual(execDir, enrichedRequest, options);
       else if (request.operation === 'inspectScene') response = require('./scene-inspection-service').inspectScene(execDir, enrichedRequest, options);
