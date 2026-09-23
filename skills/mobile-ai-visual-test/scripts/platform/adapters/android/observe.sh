@@ -57,30 +57,76 @@ local_logcat="$out/logs/${label}-logcat.txt"
 local_errors="$out/logs/${label}-errors.txt"
 local_dump_tree_json="$out/logs/${label}-dump-tree.json"
 local_dump_layout="$out/logs/${label}-dump-layout.txt"
+local_helper_meta="$out/logs/${label}-helper-snapshot.json"
+local_helper_error="$out/logs/${label}-helper-snapshot.txt"
 
 : >"$local_errors"
 
 capture_started_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+selected_backend="uiautomator"
+fallback_code=""
+helper_status=20
 
 log_args=(--out-dir "$out/logs" --label "$label")
 if [[ -n "$bundle" ]]; then
   log_args+=(--app "$bundle")
 fi
-"$atoms_dir/logs.sh" "${device_args[@]}" "${log_args[@]}" >"$out/logs/${label}-logs.json" 2>>"$local_errors" || true
-"$atoms_dir/foreground.sh" "${device_args[@]}" --out "$local_window_dump" >"$out/logs/${label}-foreground.json" 2>>"$local_errors" || true
+"$atoms_dir/logs.sh" "${device_args[@]}" "${log_args[@]}" >"$out/logs/${label}-logs.json" 2>>"$local_errors" &
+logs_pid=$!
+"$atoms_dir/foreground.sh" "${device_args[@]}" --out "$local_window_dump" >"$out/logs/${label}-foreground.json" 2>>"$local_errors" &
+foreground_pid=$!
 
-if ! "$atoms_dir/dump-tree.sh" "${device_args[@]}" --out "$local_xml" --remote "/sdcard/mavt-${label}.xml" >"$local_dump_tree_json" 2>"$local_dump_layout"; then
-  layout_error="$(head -n 1 "$local_dump_layout" | tr -d '\r' || true)"
-  printf '[layout] %s. See logs/%s-dump-layout.txt\n' "${layout_error:-uiautomator dump failed}" "$label" >>"$local_errors"
-  rm -f "$local_xml"
+helper_pid=""
+if [[ "$android_ui_backend" != "uiautomator" && -n "${MAVT_ANDROID_HELPER_SESSION_STATE:-}" ]]; then
+  node "$atoms_dir/helper-snapshot.js" \
+    --session-state "$MAVT_ANDROID_HELPER_SESSION_STATE" \
+    --screenshot-out "$local_png" --layout-out "$local_xml" --timeout-ms 15000 \
+    >"$local_helper_meta" 2>"$local_helper_error" &
+  helper_pid=$!
+elif [[ "$android_ui_backend" == "helper" ]]; then
+  wait "$logs_pid" || true
+  wait "$foreground_pid" || true
+  rm -f "$local_png" "$local_xml"
+  echo "ANDROID_HELPER_SESSION_MISSING: strict Helper session is unavailable" >&2
+  exit 1
 fi
-layout_completed_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
 
-if ! "$atoms_dir/screenshot.sh" "${device_args[@]}" --out "$local_png" >"$out/logs/${label}-screenshot.json" 2>"$out/logs/${label}-screencap.txt"; then
-  printf '[screenshot] screencap failed. See logs/%s-screencap.txt\n' "$label" >>"$local_errors"
-  rm -f "$local_png"
+if [[ -n "$helper_pid" ]]; then
+  set +e
+  wait "$helper_pid"
+  helper_status=$?
+  set -e
 fi
-screenshot_completed_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+wait "$logs_pid" || true
+wait "$foreground_pid" || true
+
+if [[ "$helper_status" -eq 0 ]]; then
+  selected_backend="helper"
+  layout_completed_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+  screenshot_completed_at="$layout_completed_at"
+elif [[ "$android_ui_backend" == "helper" ]]; then
+  rm -f "$local_png" "$local_xml"
+  cat "$local_helper_error" >&2 || true
+  echo "ANDROID_HELPER_SNAPSHOT_FAILED: strict Helper snapshot failed" >&2
+  exit 1
+else
+  if [[ -n "$helper_pid" ]]; then
+    fallback_code="ANDROID_HELPER_SNAPSHOT_FAILED"
+    cat "$local_helper_error" >>"$local_errors" 2>/dev/null || true
+  fi
+  if ! "$atoms_dir/dump-tree.sh" "${device_args[@]}" --out "$local_xml" --remote "/sdcard/mavt-${label}.xml" >"$local_dump_tree_json" 2>"$local_dump_layout"; then
+    layout_error="$(head -n 1 "$local_dump_layout" | tr -d '\r' || true)"
+    printf '[layout] %s. See logs/%s-dump-layout.txt\n' "${layout_error:-uiautomator dump failed}" "$label" >>"$local_errors"
+    rm -f "$local_xml"
+  fi
+  layout_completed_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+
+  if ! "$atoms_dir/screenshot.sh" "${device_args[@]}" --out "$local_png" >"$out/logs/${label}-screenshot.json" 2>"$out/logs/${label}-screencap.txt"; then
+    printf '[screenshot] screencap failed. See logs/%s-screencap.txt\n' "$label" >>"$local_errors"
+    rm -f "$local_png"
+  fi
+  screenshot_completed_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+fi
 
 node -e '
 const path = require("path");
@@ -88,6 +134,7 @@ const fs = require("fs");
 const out = process.argv[1], label = process.argv[2], png = process.argv[3], xml = process.argv[4], device = process.argv[5], app = process.argv[6];
 const windowDump = process.argv[7], activityDump = process.argv[8], pidofFile = process.argv[9], logcat = process.argv[10], errorsFile = process.argv[11], foregroundJson = process.argv[12], dumpTreeJson = process.argv[13];
 const captureStartedAt = process.argv[14], layoutCompletedAt = process.argv[15], screenshotCompletedAt = process.argv[16];
+const requestedBackend = process.argv[17], selectedBackend = process.argv[18], fallbackCode = process.argv[19] || null, helperMetaFile = process.argv[20];
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();
   const sign = offset >= 0 ? "+" : "-";
@@ -137,7 +184,10 @@ const screenshotRel = rel(png);
 const layoutRel = rel(xml);
 const errors = read(errorsFile).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 const dumpTree = readJson(dumpTreeJson);
-const layoutCapture = dumpTree?.capture || (layoutRel ? {
+const helperMeta = readJson(helperMetaFile);
+const layoutCapture = selectedBackend === "helper" ? {
+  status: "AVAILABLE", code: null, message: "控件树采集成功", durationMs: helperMeta?.atomicElapsedMs ?? null, fallback: null,
+} : dumpTree?.capture || (layoutRel ? {
   status: "AVAILABLE", code: null, message: "控件树采集成功", durationMs: null, fallback: null,
 } : {
   status: "UNAVAILABLE", code: "ANDROID_LAYOUT_CAPTURE_FAILED", message: "本次观察没有生成控件树", durationMs: null, fallback: "SCREENSHOT",
@@ -171,9 +221,18 @@ console.log(JSON.stringify({
     logs: logs.length > 0
   },
   technicalSignals: {
+    androidUiBackend: {
+      requested: requestedBackend,
+      selected: selectedBackend,
+      fallback: fallbackCode,
+      helperVersion: helperMeta?.helperVersion || null,
+      protocolVersion: helperMeta?.protocolVersion || null,
+      atomicElapsedMs: helperMeta?.atomicElapsedMs ?? null,
+      requestElapsedMs: helperMeta?.requestElapsedMs ?? null
+    },
     layoutCapture,
     captureTiming: {
-      order: ["layout", "screenshot"],
+      order: selectedBackend === "helper" ? ["helperSnapshot"] : ["layout", "screenshot"],
       captureStartedAt,
       layoutCompletedAt,
       screenshotCompletedAt,
@@ -189,4 +248,4 @@ console.log(JSON.stringify({
   screenshot: screenshotRel,
   layout: layoutRel
 }, null, 2));
-' "$out" "$label" "$local_png" "$local_xml" "$device" "$bundle" "$local_window_dump" "$local_activity_dump" "$local_pidof" "$local_logcat" "$local_errors" "$out/logs/${label}-foreground.json" "$local_dump_tree_json" "$capture_started_at" "$layout_completed_at" "$screenshot_completed_at"
+' "$out" "$label" "$local_png" "$local_xml" "$device" "$bundle" "$local_window_dump" "$local_activity_dump" "$local_pidof" "$local_logcat" "$local_errors" "$out/logs/${label}-foreground.json" "$local_dump_tree_json" "$capture_started_at" "$layout_completed_at" "$screenshot_completed_at" "$android_ui_backend" "$selected_backend" "$fallback_code" "$local_helper_meta"
