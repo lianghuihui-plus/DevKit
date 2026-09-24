@@ -104,7 +104,8 @@ function operationTimeoutMs(execution, now = new Date()) {
 }
 
 function boundedOperationTimeoutMs(execution, options = {}) {
-  const executionMs = operationTimeoutMs(execution, options.now);
+  const deadline = Date.parse(execution.startedAt) + (30 * 60 * 1000);
+  const executionMs = Math.max(0, deadline - new Date(options.now || new Date()).getTime());
   return Number.isInteger(options.timeoutMs) ? Math.min(executionMs, options.timeoutMs) : executionMs;
 }
 

@@ -115,4 +115,33 @@ assert.throws(() => invokeDeviceOperation(noBudget.execDir, {
   && error.timeoutMs === 0 && error.callerTimeoutMs === 0);
 assert.strictEqual(runnerInvoked, false);
 
+const expiredExecution = fixture('expired-execution');
+let expiredRunnerCalls = 0;
+const expiredOptions = {
+  now: '2026-09-24T10:30:00.000Z',
+  timeoutMs: 1200,
+  runner() { expiredRunnerCalls += 1; },
+};
+for (const invoke of [
+  () => invokeDeviceOperation(expiredExecution.execDir, {
+    context: { execution: expiredExecution.execution },
+    operationId: 'action-expired-execution',
+    action: { type: 'wait', ms: 1 },
+    request: {},
+  }, 'ACTION', expiredOptions),
+  () => invokeScreenshotCapture(expiredExecution.execDir, {
+    context: { execution: expiredExecution.execution },
+    operationId: 'capture-expired-execution',
+  }, expiredOptions),
+  () => invokeDeviceOperation(expiredExecution.execDir, {
+    context: { execution: expiredExecution.execution },
+    operationId: 'observation-expired-execution',
+    request: { purpose: 'CURRENT_SCENE' },
+  }, 'OBSERVE', expiredOptions),
+]) {
+  assert.throws(invoke, (error) => error.code === 'DEVICE_OPERATION_TIMEOUT'
+    && error.timeoutMs === 0 && error.callerTimeoutMs === 1200);
+}
+assert.strictEqual(expiredRunnerCalls, 0);
+
 console.log('device operation timeout passed');

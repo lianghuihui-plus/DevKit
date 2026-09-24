@@ -87,6 +87,13 @@ assert.throws(() => sceneService.observe(fixture.execDir, {
   invokeDeviceOperation: fakeObservation,
 }), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID');
 
+assert.throws(() => sceneService.observe(fixture.execDir, {
+  purpose: 'SEQUENCE_FINAL',
+  captureOrigins: ['AGENT_REQUESTED'],
+  relatedOperationId: 'action-0001',
+  invokeDeviceOperation: fakeObservation,
+}), (error) => error.code === 'CASE_RUNTIME_REQUEST_INVALID');
+
 const recovery = sceneService.observe(fixture.execDir, {
   purpose: 'AFTER_UNKNOWN_ACTION',
   relatedOperationId: 'action-recovery-0001',

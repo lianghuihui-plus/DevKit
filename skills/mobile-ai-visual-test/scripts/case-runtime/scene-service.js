@@ -15,7 +15,7 @@ function normalizedCaptureMetadata(options = {}) {
     throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'captureOrigins must contain only known Sequence capture origins');
   }
   const normalizedOrigins = SEQUENCE_CAPTURE_ORIGINS.filter((origin) => captureOrigins.includes(origin));
-  if (options.sequenceId && options.relatedOperationId && !normalizedOrigins.includes('ACTION_POST')) {
+  if (normalizedOrigins.length && options.relatedOperationId && !normalizedOrigins.includes('ACTION_POST')) {
     throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'a Sequence relatedOperationId requires ACTION_POST capture origin');
   }
   return {
