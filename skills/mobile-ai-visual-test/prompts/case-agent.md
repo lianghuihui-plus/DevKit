@@ -11,13 +11,15 @@
 
 ## Runtime 文档
 
-启动时完整读取 `references/case-execution-principles.md`，再读 `references/case-runtime.md`。签名不足时读取方法页；不熟悉动作目标时按需读 `references/case-runtime/action-refs.md`；错误时读取 `error.documentationRef`，输入错误同时读取 `error.operationDocumentationRef`。
+启动时完整读取 `references/case-execution-principles.md`，再读 `references/case-runtime.md`；签名、动作或错误信息不足时按响应引用的文档定向读取。
 
 业务能力是 `observe`、`inspect`、`plan`、`recordResult`、`act`、`runPlan`、`knowledge`、`recover`、`finish`；统一 `read` 按 ref 读取资源。动态值只取自当前 Brief、Scene 或响应事实。
 
-使用 Brief 预绑定的 `runtime.command`，通过 stdin 一次提交 `{operation,input}`。主数据在 `data`，关联资源引用原样传给 `read`；不得拼装引用。
+使用 Brief 的 `runtime.command`，stdin 一次提交 `{operation,input}`；主数据在 `data`，资源引用原样交给 `read`，不得拼装。
 
 ## 自主执行循环
+
+原始用例是本次执行唯一的业务目标，Case Flow 只是执行辅助，不能替代或缩小原始用例。CHECK 不是独立业务任务，只是证据登记点；不能仅因当前 CHECK 已 PASS 就提前结束。每次操作、记录结果或收口前都要核对完整原始语义；冲突时保留原始语义并修订 Working Flow。
 
 1. 通读 `case.source`，用 `plan` 建 Baseline：节点 N1/N2…，禁 A1/C1/E1；边 L1/L2…，禁 E1。冻结原始语义，不冻结导航路线。
 2. 使用 Brief Scene；没有或可能变化时 `observe`。比较事实与目标，选定路径并按需修订 Working Flow。
@@ -31,8 +33,7 @@
 - 空间动作异常时查看标注图，用 `inspect(mode="action")` 登记落点或轨迹。`inspect` 和 `knowledge` 的 `checkNodeRefs` 只关联本次 CHECK；分支选择通过 `flowContext.selectedEdgeRef` 表达。
 - Scene 有 editable 控件时优先用目标级 `inputText` 输入整段文本。输入组件依赖由 Runtime 自动处理，结果以 `previousAction.technicalResult` 为准；不要逐个点击软键盘或自行切换输入组件。`inputEffect.verificationAttempts` 是核验采样次数，不是动作重放次数。
 - `act` 返回单动作后的完整新 Scene；`runPlan` 执行无需中间 Agent 判断的有限步骤。视觉理解、业务判断或重新规划前结束 `runPlan`；Runtime 不替 Agent 判断。
-- 现场事实不证明业务定性。预期不符、操作无效果或异常反复涉及平台、版本、账号、配置、条件适用性、同类异常或原文歧义时，尽早调用 `knowledge`，不要等到 `recordResult` 或 `finish` 收口。无此外部依赖时不机械查询；无适用候选时按现场证据判断。
-- 查找目标应覆盖可能范围并确认边界；覆盖不足不得断言目标不存在。
+- 现场事实不证明业务定性；预期不符、操作无效果或异常反复时尽早 knowledge，不要等收口；无外部依赖不机械查询，无适用候选仍按现场证据判断。
 
 ## 安全与收口
 
