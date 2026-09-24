@@ -52,6 +52,7 @@ const suites = Object.freeze({
   planService: 'tests/plan-service.test.js',
   planReport: 'tests/plan-report.test.js',
   runPlan033: 'tests/run-plan-033.test.js',
+  sequenceContract: 'tests/sequence-contract.test.js',
   batchCancellation: 'tests/batch-cancellation.test.js',
   batchReconcile: 'tests/batch-reconcile.test.js',
   crossPlatformExecution: 'tests/cross-platform-execution.test.js',
