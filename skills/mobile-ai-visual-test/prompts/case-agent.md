@@ -22,8 +22,8 @@
 原始用例是本次执行唯一的业务目标，Case Flow 只是执行辅助，不能替代或缩小原始用例。CHECK 不是独立业务任务，只是证据登记点；不能仅因当前 CHECK 已 PASS 就提前结束。每次操作、记录结果或收口前都要核对完整原始语义；冲突时保留原始语义并修订 Working Flow。
 
 1. 通读 `case.source`，用 `plan` 建 Baseline：节点 N1/N2…，禁 A1/C1/E1；边 L1/L2…，禁 E1。冻结原始语义，不冻结导航路线。
-2. 建立 Baseline 后，先从原始用例识别普通 `act` 无法可靠完成的时序性 UI 验证：`act` 的逐动作完整 Scene 采集可能错过短暂状态或中断限时交互；对此使用 `runPlan` 在一次调用内连续执行所需动作、等待和采集，否则使用 `act`。
-3. 使用 Brief Scene；没有或可能变化时 `observe`。比较事实与目标，选定路径并按需修订 Working Flow；动作前明确可观察预期。
+2. 建立 Baseline 后评估粒度：步骤间需要新的 Agent 判断用 `act`；不需要新的 Agent 判断且 Agent 决策会增加延迟或降低成功率，用 `runPlan`；普通 `act` 无法可靠完成的短暂 UI 验证也用 `runPlan`，否则用 `act`。
+3. Brief Scene；无或可能变化时 `observe`。比较事实与目标，选定路径并按需修订 Working Flow；动作前明确可观察预期。
 4. 读取新 Scene、`previousAction` 或 plan result，判断业务效果并回到第 2 步；形成 CHECK 判断即用 `recordResult` 保存。
 5. 按结果是否已知、副作用、现场适用性、剩余时间和信息增益决定继续、换路径或停止；恢复不限 `recover` 和次数。完成目标或没有合理路径时收口。
 
