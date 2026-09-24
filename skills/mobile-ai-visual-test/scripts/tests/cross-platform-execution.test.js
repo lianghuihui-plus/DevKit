@@ -169,12 +169,15 @@ if (process.argv[2] === '--worker') {
         }],
       },
     }, { now: now(400) }).result.outcome, 'RESULTS_RECORDED');
-    assert.strictEqual(run(fixture.execDir, {
+    const finishInput = {
       operation: 'finish', input: { mode: 'complete',
         summary: `${fixture.platform} 并行验证完成`,
         uncertainties: [],
       },
-    }, { now: now(500) }).result.outcome, 'COMPLETED');
+    };
+    const review = run(fixture.execDir, finishInput, { now: now(500) });
+    assert.strictEqual(review.error.code, 'CASE_FINAL_REVIEW_REQUIRED');
+    assert.strictEqual(run(fixture.execDir, finishInput, { now: now(600) }).result.outcome, 'COMPLETED');
   }
 
   function finalizeBatch(fixture) {

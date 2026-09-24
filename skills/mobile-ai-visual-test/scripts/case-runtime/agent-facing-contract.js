@@ -205,6 +205,7 @@ const PUBLIC_ERRORS = Object.freeze({
   PLAN_ACTION_OUTCOME_UNKNOWN: { group: 'plan', retryable: false, resourceTypes: ['planResult', 'scene', 'screenshot', 'actionSpatialEvidence', 'planEvidence', 'technicalFact'], summary: '计划动作可能已投递，结果未知。', recovery: '禁止重放计划或动作；先检查已有证据并 observe 当前现场。' },
   PLAN_TIMEOUT: { group: 'plan', retryable: true, summary: '计划未能在声明的有限时限内完成。', recovery: '检查已完成前缀和各步耗时；缩短计划或在新 Scene 上使用新的 submissionId。' },
   CASE_RESULT_INCOMPLETE: { group: 'flow-result', retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。', recovery: '逐项处置全部 Baseline CHECK 和最终活跃的补充 CHECK；可用 PASS、FAIL、BLOCKED、INCONCLUSIVE、条件检查的 NOT_APPLICABLE，或提供理由的 WAIVED。' },
+  CASE_FINAL_REVIEW_REQUIRED: { group: 'flow-result', retryable: true, summary: '最终收口前必须重新核对完整原始用例。', recovery: '阅读响应中的 originalCase 和 finalReviewInstruction，确认完整业务目标、条件分支和最终结果后重新提交同一 finish 请求。' },
   TIME_LIMIT: { group: 'flow-result', retryable: false, summary: '已停止新的设备动作。', recovery: '不再执行设备动作；使用已有证据收口可判断项，并披露未完成项和时间限制。' },
   CASE_RUNTIME_TECHNICAL: { group: 'knowledge-recovery', retryable: false, resourceTypes: ['technicalFact'], summary: '未归类的 execution 技术异常。', recovery: '读取 technical.stage、logRefs 和 resourceFacts 排障；恢复后先 observe 核验现场，再回到原业务节点。' },
 });
@@ -377,10 +378,10 @@ const PUBLIC_METHODS = Object.freeze({
     mode: 'complete 或 notRun', summary: '最终摘要', uncertainties: '仍需披露的不确定性',
     reason: 'NOT_RUN 的业务原因', evidence: 'NOT_RUN 引用的已登记 Scene 或技术事实', flowContext: '实际到达的 END 节点',
   }, {
-    responseProjection: projection(['executionId', 'verdict', 'caseResultRef', 'idempotent'], null, ['caseResult', 'checkpointLedger', 'technicalFact']),
-    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', '现场事实不能单独证明业务定性；预期不符、操作无效果或异常反复涉及外部规则时，应在收口前尽早完成知识调查。无此外部依赖时不机械查询；无适用候选时仍按现场证据处置。', 'NOT_RUN 必须提供原因和已登记证据。'],
+    responseProjection: projection(['executionId', 'verdict', 'caseResultRef', 'idempotent', 'finalReviewRequired', 'finalReviewInstruction', 'originalCase'], null, ['caseResult', 'checkpointLedger', 'technicalFact']),
+    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', '首次满足收口条件的 finish 会先要求一次原始用例复核，复核要求只触发一次；收到复核提示后重新提交 finish。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', '现场事实不能单独证明业务定性；预期不符、操作无效果或异常反复涉及外部规则时，应在收口前尽早完成知识调查。无此外部依赖时不机械查询；无适用候选时仍按现场证据处置。', 'NOT_RUN 必须提供原因和已登记证据。'],
     successStatuses: ['COMPLETED', 'RESULT_INCOMPLETE'],
-    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_RUNTIME_TECHNICAL'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_FINAL_REVIEW_REQUIRED', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',
     minimalExample: { operation: 'finish', input: { mode: 'complete', summary: '验证完成' } },
     additionalExamples: [{ mode: 'notRun', reason: '必要执行条件无法在当前 execution 内建立且没有安全继续路径', summary: '未运行', evidence: { sceneRefs: [EXAMPLE_SCENE_REF], technicalRefs: [] } }],

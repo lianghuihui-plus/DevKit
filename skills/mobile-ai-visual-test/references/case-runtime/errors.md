@@ -39,5 +39,6 @@
 <a id="error-plan-action-outcome-unknown"></a>- [`PLAN_ACTION_OUTCOME_UNKNOWN`](errors/plan.md#error-plan-action-outcome-unknown)
 <a id="error-plan-timeout"></a>- [`PLAN_TIMEOUT`](errors/plan.md#error-plan-timeout)
 <a id="error-case-result-incomplete"></a>- [`CASE_RESULT_INCOMPLETE`](errors/flow-result.md#error-case-result-incomplete)
+<a id="error-case-final-review-required"></a>- [`CASE_FINAL_REVIEW_REQUIRED`](errors/flow-result.md#error-case-final-review-required)
 <a id="error-time-limit"></a>- [`TIME_LIMIT`](errors/flow-result.md#error-time-limit)
 <a id="error-case-runtime-technical"></a>- [`CASE_RUNTIME_TECHNICAL`](errors/knowledge-recovery.md#error-case-runtime-technical)

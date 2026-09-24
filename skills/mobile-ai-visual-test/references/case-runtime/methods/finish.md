@@ -32,6 +32,7 @@ input.evidence: { sceneRefs: Array<string>; technicalRefs: Array<string> }
 ## 上下文校验
 
 - 正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。
+- 首次满足收口条件的 finish 会先要求一次原始用例复核，复核要求只触发一次；收到复核提示后重新提交 finish。
 - WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。
 - 现场事实不能单独证明业务定性；预期不符、操作无效果或异常反复涉及外部规则时，应在收口前尽早完成知识调查。无此外部依赖时不机械查询；无适用候选时仍按现场证据处置。
 - NOT_RUN 必须提供原因和已登记证据。
@@ -42,7 +43,7 @@ input.evidence: { sceneRefs: Array<string>; technicalRefs: Array<string> }
 
 ### 成功
 
-- 简单结果：`outcome`、`executionId`、`verdict`、`caseResultRef`、`idempotent`。
+- 简单结果：`outcome`、`executionId`、`verdict`、`caseResultRef`、`idempotent`、`finalReviewRequired`、`finalReviewInstruction`、`originalCase`。
 - 主数据：无。
 - 关联资源：`caseResult`、`checkpointLedger`、`technicalFact`。
 
@@ -60,6 +61,7 @@ input.evidence: { sceneRefs: Array<string>; technicalRefs: Array<string> }
 - [`BINDING_INVALID`](../errors/transport.md#error-binding-invalid)
 - [`CASE_FLOW_REQUIRED`](../errors/flow-result.md#error-case-flow-required)
 - [`CASE_RESULT_INCOMPLETE`](../errors/flow-result.md#error-case-result-incomplete)
+- [`CASE_FINAL_REVIEW_REQUIRED`](../errors/flow-result.md#error-case-final-review-required)
 - [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 
 ## 最小示例
