@@ -4,7 +4,8 @@ const { validateAgentJson } = require('../lib/agent-json-contract');
 const { initialStateStrategy } = require('../lib/app-provisioning');
 const { safeActionTechnicalDetails } = require('../lib/action-result');
 const { AGENT_FACING_PROTOCOL, AGENT_FACING_STATUSES, RESOURCE_DESCRIPTOR_SCHEMA, requestEnvelopeSchema } = require('../lib/agent-facing-envelope');
-const { PLAN_STEP_SCHEMA, MAX_PLAN_STEPS, MAX_PLAN_DURATION_MS } = require('./plan-contract');
+const { PLAN_STEP_SCHEMA: INTERNAL_PLAN_STEP_SCHEMA, MAX_PLAN_STEPS, MAX_PLAN_DURATION_MS } = require('./plan-contract');
+const { GRID_MAX, normalizePlanSteps } = require('../lib/visual-coordinate-grid');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
 const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
@@ -21,7 +22,7 @@ const TECHNICAL_REF_ARRAY = { type: 'array', items: TECHNICAL_REF };
 const CASE_FLOW_NODE_REF = { type: 'string', pattern: '^N[1-9]\\d*$' };
 const CASE_FLOW_EDGE_REF = { type: 'string', pattern: '^L[1-9]\\d*$' };
 const EXAMPLE_SCENE_REF = 'mavt:0123456789abcdef01234567:scene:scene-1';
-const POINT = { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0, maximum: 1 } };
+const POINT = { type: 'array', minItems: 2, maxItems: 2, items: { type: 'integer', minimum: 0, maximum: GRID_MAX } };
 
 function object(properties, required) {
   return { type: 'object', additionalProperties: false, properties, required };
@@ -39,6 +40,34 @@ const ACTION = { oneOf: [
   object({ type: { const: 'longPress' }, target: object({ point: POINT }, ['point']), durationMs: { type: 'integer', minimum: 1 } }, ['type', 'target', 'durationMs']),
   object({ type: { const: 'swipe' }, target: object({ from: POINT, to: POINT }, ['from', 'to']) }, ['type', 'target']),
 ] };
+
+function planStepSchemaWithGridCoordinates(schema) {
+  return Object.freeze({ oneOf: schema.oneOf.map((branch) => {
+    const type = branch.properties.type.const;
+    if (type === 'act') {
+      const input = branch.properties.input;
+      return { ...branch, properties: { ...branch.properties, input: { ...input, properties: {
+        ...input.properties, point: POINT, from: POINT, to: POINT,
+      } } } };
+    }
+    if (type === 'locate') {
+      const locator = branch.properties.locator;
+      return { ...branch, properties: { ...branch.properties, locator: { ...locator,
+        oneOf: locator.oneOf.map((candidate) => {
+          const kind = candidate.properties.kind.const;
+          if (kind === 'POINT') return { ...candidate, properties: { ...candidate.properties, point: POINT } };
+          if (kind === 'REGION') return { ...candidate, properties: {
+            ...candidate.properties, region: { ...POINT, minItems: 4, maxItems: 4 },
+          } };
+          return candidate;
+        }),
+      } } };
+    }
+    return branch;
+  }) });
+}
+
+const PLAN_STEP_SCHEMA = planStepSchemaWithGridCoordinates(INTERNAL_PLAN_STEP_SCHEMA);
 
 const ASSESSMENT = object({
   entryId: STRING,
@@ -151,7 +180,7 @@ const PUBLIC_ERRORS = Object.freeze({
   SCENE_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前方法需要 Scene，但 execution 尚无 Scene。', recovery: '先调用 observe 采集当前 Scene，再使用返回的 sceneRef 调用原方法。' },
   SCENE_CHANGED: { group: 'scene-action', retryable: true, resourceTypes: ['scene', 'screenshot'], summary: '动作所依据的 Scene 已不是当前 Scene。', recovery: '调用 observe 获取新 Scene，重新 inspect 并从新 Scene 选择 ActionRef；不要复用旧动作。' },
   ACTION_NOT_AVAILABLE: { group: 'scene-action', retryable: true, summary: 'ActionRef 对当前 Scene 不成立。', recovery: '读取当前 Scene 的 action 投影；必要时重新 observe，不手工拼接或猜测 ActionRef。' },
-  ACTION_INPUT_INVALID: { group: 'scene-action', retryable: true, summary: '动作输入缺失、越界或包含不支持字段。', recovery: '按当前 ActionRef 返回的输入约束修正 input；坐标使用 0 到 1 的归一化值。' },
+  ACTION_INPUT_INVALID: { group: 'scene-action', retryable: true, summary: '动作输入缺失、越界或包含不支持字段。', recovery: `按当前 ActionRef 返回的输入约束修正 input；视觉坐标使用 0 到 ${GRID_MAX} 的整数标尺值。` },
   ACTION_EFFECT_MISMATCH: { group: 'scene-action', retryable: true, resourceTypes: ['scene', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作结果已知，但技术核验未满足所请求的输入效果。', recovery: '读取动作技术证据和当前 Scene；Agent 自主选择安全且有信息增益的恢复，不直接据此判定产品 FAIL。' },
   VISUAL_INSPECTION_REQUIRED: { group: 'scene-action', retryable: true, summary: '当前视觉动作或结论要求先登记图片事实。', recovery: '对同一 Scene 调用 inspect(mode="visual") 登记实际看到的事实，再重试视觉动作或结果记录。' },
   CASE_FLOW_REQUIRED: { group: 'flow-result', retryable: true, summary: '当前 execution 尚无 Case Flow。', recovery: '读取原始用例并调用 plan 创建完整 Case Flow，然后从 entryNodeRef 开始执行。' },
@@ -281,13 +310,14 @@ const PUBLIC_METHODS = Object.freeze({
     purpose: '可选的业务动作目的', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
     responseProjection: projection(['operationId', 'deliveryStatus', 'commandDeliveryKnown', 'sceneRef'], 'scene', SCENE_RESOURCES),
-    conditionalRequirements: ['action.ref 与 action.type 互斥；ActionRef 所需 action.input 字段必须存在。'],
+    conditionalRequirements: ['action.ref 与 action.type 互斥；ActionRef 所需 action.input 字段必须存在。', '视觉坐标按 Scene 截图四边标尺填写 0 到 10000 的整数；原点在左上，X 向右，Y 向下。'],
     contextualValidationRules: ['下一步需要根据新 Scene 作视觉理解、业务判断或重新规划时使用 act。', 'ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。'],
     successStatuses: ['SCENE'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'ACTION_NOT_AVAILABLE', 'ACTION_INPUT_INVALID', 'VISUAL_INSPECTION_REQUIRED', 'ACTION_OUTCOME_UNKNOWN', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['最多投递一个设备动作', '采集新 Scene'],
     idempotency: '已投递且结果未知的动作永不重放。',
     minimalExample: { operation: 'act', input: { sceneRef: EXAMPLE_SCENE_REF, action: { ref: 'button-1:tap' } } },
+    additionalExamples: [{ sceneRef: EXAMPLE_SCENE_REF, action: { type: 'tap', target: { point: [8400, 2810] } } }],
   }),
   runPlan: method('runPlan', '不需要中间 Agent 判断时，连续执行已确定的有限步骤。', SCHEMAS.runPlan, {
     submissionId: '本次计划提交的幂等键', sceneRef: '当前 Scene',
@@ -295,7 +325,7 @@ const PUBLIC_METHODS = Object.freeze({
     steps: '最多 12 个声明式步骤', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
     responseProjection: projection(['planResultRef', 'planId', 'idempotent'], 'planResult', ['scene', 'screenshot', 'actionSpatialEvidence', 'planEvidence', 'technicalFact']),
-    conditionalRequirements: ['步骤 id 唯一；$<stepId>.<field> 只能引用已完成的先前步骤。capture 输出 sceneRef，locate 输出 point，可用于 act.input.pointRef。', '包含 act 时 onFailure 必须为 STOP。需要间隔点击时使用 act/wait/act。'],
+    conditionalRequirements: ['步骤 id 唯一；$<stepId>.<field> 只能引用已完成的先前步骤。capture 输出 sceneRef，locate 输出 point，可用于 act.input.pointRef。', '视觉 act 和 POINT/REGION locator 坐标按 Scene 截图四边标尺填写 0 到 10000 的整数。', '包含 act 时 onFailure 必须为 STOP。需要间隔点击时使用 act/wait/act。'],
     contextualValidationRules: ['步骤间插入 Agent 决策会增加延迟或降低成功率，且当前事实已足以确定全部步骤时使用 runPlan。', '视觉理解、业务判断或重新规划由 Agent 完成；计划必须在此类边界前结束。', 'Runtime 只执行确定性命令并返回证据；视觉变化和业务结论由 Agent 判断。'],
     successStatuses: ['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'PLAN_INVALID', 'PLAN_STEP_FAILED', 'PLAN_SUBMISSION_CONFLICT', 'PLAN_RECORD_INCOMPLETE', 'LOCATOR_UNSUPPORTED', 'TARGET_NOT_FOUND', 'PLAN_CHECK_FAILED', 'PLAN_ACTION_OUTCOME_UNKNOWN', 'PLAN_TIMEOUT', 'CASE_RUNTIME_TECHNICAL'],
@@ -366,7 +396,7 @@ const PUBLIC_CONTRACT = Object.freeze({
   resourceCatalog: Object.freeze({
     caseBrief: { summary: '冻结的 Case Agent prompt、用例和 execution 启动信息。' },
     scene: { summary: '一次采集的完整 Scene 与截图、布局、控件资源引用。' },
-    screenshot: { summary: '完整截图文件位置与尺寸；使用宿主图片能力打开。' },
+    screenshot: { summary: '唯一的 Agent 视觉截图；App 内容外自带四边 0–10000 坐标标尺和内容区域元数据。' },
     layout: { summary: '该 Scene 的完整原始控件树；按 mediaType 返回 JSON 对象或 XML 文本。' },
     elementSet: { summary: '完整控件集合与确定性动作事实。' },
     caseFlow: { summary: 'Agent 提交的完整用例流程 revision。' },
@@ -425,7 +455,7 @@ function validateAgentFacingRequest(request) {
       require('./plan-contract').validatePlanRequest({
         operation: 'runPlan', submissionId: input.submissionId, basedOnSceneId: input.sceneRef,
         purpose: input.purpose, maxDurationMs: input.maxDurationMs, onFailure: input.onFailure,
-        steps: input.steps, ...(input.flowContext ? { flowContext: input.flowContext } : {}),
+        steps: normalizePlanSteps(input.steps), ...(input.flowContext ? { flowContext: input.flowContext } : {}),
         decision: { purpose: input.purpose, expectationRefs: [] },
       });
     } catch (error) {

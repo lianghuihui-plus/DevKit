@@ -35,14 +35,17 @@ const publicRequest = {
   operation: 'runPlan', input: { submissionId: 'run-plan-033-attempt-01', sceneRef,
   purpose: '唤起视频控制栏并解除童锁', maxDurationMs: 2500, onFailure: 'STOP',
   steps: [
-    { id: 'reveal', type: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] } },
+    { id: 'reveal', type: 'act', actionRef: 'visual:tap', input: { point: [5000, 5000] } },
     { id: 'after', type: 'capture', mode: 'SCREENSHOT_ONLY' },
   ] },
 };
 const translated = translateAgentFacingRequest(fixture.execDir, publicRequest);
 assert.deepStrictEqual(translated, {
   operation: 'runPlan', submissionId: publicRequest.input.submissionId, basedOnSceneId: 'scene-0002',
-  purpose: publicRequest.input.purpose, maxDurationMs: 2500, onFailure: 'STOP', steps: publicRequest.input.steps,
+  purpose: publicRequest.input.purpose, maxDurationMs: 2500, onFailure: 'STOP', steps: [
+    { id: 'reveal', type: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] } },
+    { id: 'after', type: 'capture', mode: 'SCREENSHOT_ONLY' },
+  ],
   decision: { purpose: publicRequest.input.purpose, expectationRefs: [] },
 });
 

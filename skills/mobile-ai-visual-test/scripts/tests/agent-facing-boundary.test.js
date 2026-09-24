@@ -38,16 +38,17 @@ assertInvalid({ operation: 'observe' }, 'input');
 assertInvalid({ operation: 'observe', input: {}, capability: 'observe' }, 'capability');
 for (const action of [
   { ref: 'button:tap' }, { ref: 'field:inputText', input: { text: 'hello', mode: 'replace' } },
-  { type: 'tap', target: { point: [0.2, 0.4] } },
-  { type: 'doubleTap', target: { point: [0, 1] } },
-  { type: 'longPress', target: { point: [0.2, 0.4] }, durationMs: 1200 },
-  { type: 'swipe', target: { from: [0, 0], to: [1, 1] } },
+  { type: 'tap', target: { point: [2000, 4000] } },
+  { type: 'doubleTap', target: { point: [0, 10000] } },
+  { type: 'longPress', target: { point: [2000, 4000] }, durationMs: 1200 },
+  { type: 'swipe', target: { from: [0, 0], to: [10000, 10000] } },
 ]) assertValid({ operation: 'act', input: { sceneRef: SCENE_REF, action } });
 for (const action of [
-  { ref: 'button:tap', type: 'tap', target: { point: [0, 1] } },
-  { type: 'tap', target: { point: [1.1, 0] } },
-  { type: 'longPress', target: { point: [0, 1] } },
-  { type: 'swipe', target: { point: [0, 1] } },
+  { ref: 'button:tap', type: 'tap', target: { point: [0, 10000] } },
+  { type: 'tap', target: { point: [10001, 0] } },
+  { type: 'tap', target: { point: [0.5, 5000] } },
+  { type: 'longPress', target: { point: [0, 10000] } },
+  { type: 'swipe', target: { point: [0, 10000] } },
 ]) assert.ok(validateAgentFacingRequest({ operation: 'act', input: { sceneRef: SCENE_REF, action } }).length);
 assertInvalid({ operation: 'act', input: { sceneRef: 'scene-1', action: { ref: 'button:tap' } } }, 'input.sceneRef');
 for (const [operation, input] of [
@@ -79,7 +80,7 @@ assertValid({ operation: 'runPlan', input: {
   maxDurationMs: 2500,
   onFailure: 'STOP',
   steps: [
-    { id: 'tap', type: 'act', actionRef: 'visual:tap', input: { point: [0.5, 0.5] } },
+    { id: 'tap', type: 'act', actionRef: 'visual:tap', input: { point: [5000, 5000] } },
     { id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false },
   ],
 } });

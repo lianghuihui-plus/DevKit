@@ -312,7 +312,7 @@ assert.strictEqual(runtimeStore.events(execDir).find((event) => event.type === '
 
 // Coordinates remain autonomous Agent choices, guarded only by existing visual inspection.
 assert.throws(() => translateAgentFacingRequest(execDir, request('act', {
-  sceneRef, action: { type: 'tap', target: { point: [0.2, 0.4] } },
+  sceneRef, action: { type: 'tap', target: { point: [2000, 4000] } },
 })), (error) => error.issues.some((item) => item.code === 'VISUAL_INSPECTION_REQUIRED'));
 runtimeStore.appendEvent(execDir, 'visualInspected', {
   inspectionId: 'inspection-translation-fixture', sceneId: scene.sceneId,
@@ -334,11 +334,11 @@ const translations = [
     operation: 'act', basedOnSceneId: scene.sceneId, capabilityId: 'scene-0007:inputText:message-input', input: { text: '测试', mode: 'replace' },
     decision: { purpose: '输入消息', expectationRefs: [] },
   }],
-  [request('act', { sceneRef, action: { type: 'tap', target: { point: [0.5, 0.4] } }, purpose: '点击截图中的按钮' }), {
+  [request('act', { sceneRef, action: { type: 'tap', target: { point: [5000, 4000] } }, purpose: '点击截图中的按钮' }), {
     operation: 'act', basedOnSceneId: scene.sceneId, visual: { gesture: 'tap', point: [0.5, 0.4] },
     decision: { purpose: '点击截图中的按钮', expectationRefs: [] },
   }],
-  [request('act', { sceneRef, action: { type: 'swipe', target: { from: [0.5, 0.8], to: [0.5, 0.2] } }, purpose: '向上滚动' }), {
+  [request('act', { sceneRef, action: { type: 'swipe', target: { from: [5000, 8000], to: [5000, 2000] } }, purpose: '向上滚动' }), {
     operation: 'act', basedOnSceneId: scene.sceneId, visual: { gesture: 'swipe', from: [0.5, 0.8], to: [0.5, 0.2] },
     decision: { purpose: '向上滚动', expectationRefs: [] },
   }],
@@ -360,7 +360,7 @@ for (const [input, expected] of translations) {
 }
 for (const action of [
   { ref: 'record-button:tap', input: {} },
-  { ref: 'visual:tap', input: { point: [0.5, 0.5] } },
+  { ref: 'visual:tap', input: { point: [5000, 5000] } },
   { ref: 'record-button:longPress' },
 ]) assert.throws(() => translateAgentFacingRequest(execDir, request('act', { sceneRef, action })),
   (error) => error.code === 'AGENT_INPUT_INVALID');
