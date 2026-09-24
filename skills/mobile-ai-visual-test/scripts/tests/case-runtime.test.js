@@ -655,6 +655,8 @@ assert.deepStrictEqual(second.action.evidence.screenshotRefs, [
   'screenshots/observation-0002.png',
 ]);
 assert.strictEqual(second.scene.sceneId, 'scene-0002');
+assert.strictEqual(require('../case-runtime/store').readCurrentScene(started.execDir).sceneId, second.scene.sceneId,
+  'standalone act promotes its post-action Scene');
 assert.strictEqual(observationCount, 2);
 const narrativeStatus = run(started.execDir, { operation: 'status' });
 assert.strictEqual(narrativeStatus.narrative.contextVersion, 2);

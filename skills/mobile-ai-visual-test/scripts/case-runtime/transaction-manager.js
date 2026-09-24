@@ -46,6 +46,10 @@ function readAction(execDir, operationId) {
   return draft ? validateActionDraft(draft) : null;
 }
 
+function isSequenceOwned(draft) {
+  return typeof draft?.sequenceId === 'string' && draft.sequenceId.trim().length > 0;
+}
+
 function transitionAction(execDir, draft, expected, status, update = {}) {
   validateActionDraft(draft);
   if (draft.status !== expected) {
@@ -73,6 +77,7 @@ module.exports = {
   actionDraftPath,
   actionOperationPath,
   completeAction,
+  isSequenceOwned,
   prepareAction,
   readAction,
   sanitizeTransactionValue,

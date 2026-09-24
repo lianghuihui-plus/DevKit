@@ -52,6 +52,7 @@ function recoverPendingTransactions(execDir, options = {}) {
       continue;
     }
     if (!draft || draft.operationId?.startsWith('action-') !== true) continue;
+    if (actionTransactions.isSequenceOwned(draft)) continue;
     if (draft.status === 'PREPARED') {
       fs.unlinkSync(file);
       recovered.push({ kind: 'action', operationId: draft.operationId, status: 'NOT_SENT' });
