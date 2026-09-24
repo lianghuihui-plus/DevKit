@@ -23,6 +23,8 @@ input.caseFlow: { baseRevision: number | null; summary: string; entryNodeRef: st
 ## 条件要求
 
 - 首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。
+- 所有节点 ref、entryNodeRef 以及边的 from/to 统一按流程顺序使用 N1、N2…（^N[1-9]\d*$）；不要按节点类型使用 A1、C1、E1 等前缀。
+- 所有边 ref 统一按顺序使用 L1、L2…（^L[1-9]\d*$）；不要使用 E1 等其他前缀。
 - CHECK 必须声明 REQUIRED 或 CONDITIONAL；CONDITIONAL 必须提供 applicability。
 
 ## 上下文校验

@@ -164,6 +164,83 @@ const initialPlanRequest = request('plan', { caseFlow: {
   edges: [{ ref: 'L1', from: 'N1', to: 'N2' }, { ref: 'L2', from: 'N2', to: 'N3' }, { ref: 'L3', from: 'N3', to: 'N4' }],
   uncertainties: [],
 } });
+let invalidPlanBrokerCalls = 0;
+const rejectUnexpectedInvalidPlan = () => {
+  invalidPlanBrokerCalls += 1;
+  return { status: 'REQUEST_INVALID', code: 'CASE_FLOW_NODE_REF_INVALID', message: 'nodes[0].ref has invalid format' };
+};
+const invalidNodePlan = run(execDir, request('plan', { caseFlow: {
+  ...initialPlanRequest.input.caseFlow,
+  entryNodeRef: 'A1',
+  nodes: [
+    { ...initialPlanRequest.input.caseFlow.nodes[0], ref: 'A1' },
+    ...initialPlanRequest.input.caseFlow.nodes.slice(1),
+  ],
+  edges: [
+    { ...initialPlanRequest.input.caseFlow.edges[0], from: 'A1' },
+    ...initialPlanRequest.input.caseFlow.edges.slice(1),
+  ],
+} }), { executeRequest: rejectUnexpectedInvalidPlan });
+assertEnvelope(invalidNodePlan, 'REJECTED');
+assert.strictEqual(invalidNodePlan.error.code, 'AGENT_INPUT_INVALID');
+const invalidNodeRefIssue = invalidNodePlan.error.issues.find((item) => item.field === 'input.caseFlow.nodes[0].ref');
+assert.strictEqual(invalidNodeRefIssue.expected, 'string matching ^N[1-9]\\d*$');
+assert.match(invalidNodeRefIssue.message, /N1.*A1/);
+
+const invalidEdgePlan = run(execDir, request('plan', { caseFlow: {
+  ...initialPlanRequest.input.caseFlow,
+  edges: [
+    { ...initialPlanRequest.input.caseFlow.edges[0], ref: 'E1' },
+    ...initialPlanRequest.input.caseFlow.edges.slice(1),
+  ],
+} }), { executeRequest: rejectUnexpectedInvalidPlan });
+assertEnvelope(invalidEdgePlan, 'REJECTED');
+assert.strictEqual(invalidEdgePlan.error.code, 'AGENT_INPUT_INVALID');
+const invalidEdgeRefIssue = invalidEdgePlan.error.issues.find((item) => item.field === 'input.caseFlow.edges[0].ref');
+assert.strictEqual(invalidEdgeRefIssue.expected, 'string matching ^L[1-9]\\d*$');
+assert.match(invalidEdgeRefIssue.message, /L1.*E1/);
+assert.strictEqual(invalidPlanBrokerCalls, 0, 'invalid Case Flow refs must be rejected before Runtime execution');
+
+const fallbackNodeRefError = run(execDir, initialPlanRequest, { executeRequest: () => ({
+  status: 'REQUEST_INVALID',
+  code: 'CASE_FLOW_NODE_REF_INVALID',
+  message: 'nodes[0].ref has invalid format',
+  issues: [{
+    fieldPath: 'request',
+    expected: 'a valid recordCaseFlow request',
+    code: 'CASE_FLOW_NODE_REF_INVALID',
+  }],
+}) });
+assertEnvelope(fallbackNodeRefError, 'REJECTED');
+assert.strictEqual(fallbackNodeRefError.error.code, 'AGENT_INPUT_INVALID');
+assert.strictEqual(fallbackNodeRefError.error.retryable, true);
+const fallbackNodeRefIssue = fallbackNodeRefError.error.issues.find((item) => item.field === 'input.caseFlow.nodes[0].ref');
+assert.strictEqual(fallbackNodeRefIssue.expected, 'string matching ^N[1-9]\\d*$');
+assert.match(fallbackNodeRefIssue.message, /N1.*A1/);
+
+const fallbackEdgeRefError = run(execDir, initialPlanRequest, { executeRequest: () => ({
+  status: 'REQUEST_INVALID',
+  code: 'CASE_FLOW_EDGE_REF_INVALID',
+  message: 'edges[0].ref has invalid format',
+}) });
+assertEnvelope(fallbackEdgeRefError, 'REJECTED');
+assert.strictEqual(fallbackEdgeRefError.error.code, 'AGENT_INPUT_INVALID');
+const fallbackEdgeRefIssue = fallbackEdgeRefError.error.issues.find((item) => item.field === 'input.caseFlow.edges[0].ref');
+assert.strictEqual(fallbackEdgeRefIssue.expected, 'string matching ^L[1-9]\\d*$');
+assert.match(fallbackEdgeRefIssue.message, /L1.*E1/);
+
+const fallbackGraphError = run(execDir, initialPlanRequest, { executeRequest: () => ({
+  status: 'REQUEST_INVALID',
+  code: 'CASE_FLOW_UNREACHABLE_NODE',
+  message: 'nodes are unreachable from entry: N4',
+}) });
+assertEnvelope(fallbackGraphError, 'REJECTED');
+assert.strictEqual(fallbackGraphError.error.code, 'AGENT_INPUT_INVALID');
+assert.strictEqual(fallbackGraphError.error.retryable, true);
+assert.ok(fallbackGraphError.error.issues.some((item) => item.field === 'input.caseFlow'
+  && item.code === 'CASE_FLOW_UNREACHABLE_NODE'
+  && item.message === 'nodes are unreachable from entry: N4'));
+
 assert.deepStrictEqual(translateAgentFacingRequest(execDir, initialPlanRequest), {
   operation: 'recordCaseFlow', caseFlow: initialPlanRequest.input.caseFlow,
 });

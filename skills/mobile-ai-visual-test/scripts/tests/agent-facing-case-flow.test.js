@@ -68,9 +68,16 @@ const caseFlow = {
 const planRules = PUBLIC_CONTRACT.methods.plan.contextualValidationRules;
 assert.ok(planRules.some((rule) => rule.includes('Baseline') && rule.includes('不可改义')));
 assert.ok(planRules.some((rule) => rule.includes('Working Flow') && rule.includes('Baseline CHECK')));
+const planRequirements = PUBLIC_CONTRACT.methods.plan.conditionalRequirements;
+assert.ok(planRequirements.some((rule) => /N1.*N2.*A1.*C1.*E1/.test(rule)),
+  'plan contract must explain the node ref format and rejected type prefixes');
+assert.ok(planRequirements.some((rule) => /L1.*L2.*E1/.test(rule)),
+  'plan contract must explain the edge ref format and rejected prefixes');
 const caseAgentPrompt = fs.readFileSync(path.join(__dirname, '../../prompts/case-agent.md'), 'utf8');
 const executionPrinciples = fs.readFileSync(path.join(__dirname, '../../references/case-execution-principles.md'), 'utf8');
 assert.match(caseAgentPrompt, /启动时完整读取 `references\/case-execution-principles\.md`/);
+assert.match(caseAgentPrompt, /节点.*N1.*N2.*A1.*C1.*E1/);
+assert.match(caseAgentPrompt, /边.*L1.*L2.*E1/);
 assert.match(executionPrinciples, /完整阅读原始用例后再划分条件作用域/);
 assert.match(executionPrinciples, /建为 DECISION，分支内验证建为 CONDITIONAL CHECK/);
 assert.match(executionPrinciples, /每条正常 END 路径必须能处置 REQUIRED CHECK/);
