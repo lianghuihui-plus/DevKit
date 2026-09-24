@@ -30,6 +30,7 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 ## 条件要求
 
 - 步骤 id 唯一；$<stepId>.<field> 只能引用已完成的先前步骤。capture 输出 sceneRef，locate 输出 point，可用于 act.input.pointRef。
+- 视觉 act 和 POINT/REGION locator 坐标按 Scene 截图四边标尺填写 0 到 10000 的整数。
 - 包含 act 时 onFailure 必须为 STOP。需要间隔点击时使用 act/wait/act。
 
 ## 上下文校验

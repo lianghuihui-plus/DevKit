@@ -42,7 +42,7 @@ cancelRun({ reason: string })
 
 ## 幂等性
 
-advanceRun/cancelRun 终态复用原 runSummary；confirmRun 终态拒绝。
+advanceRun/cancelRun 在终态且报告发布状态不变时复用当前 runSummary；发布状态变化时生成新快照并保留旧引用；confirmRun 终态拒绝。
 
 ## 错误
 

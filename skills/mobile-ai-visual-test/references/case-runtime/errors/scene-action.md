@@ -36,7 +36,7 @@ ActionRef 对当前 Scene 不成立。
 
 **可重试：** 是
 
-**处理：** 按当前 ActionRef 返回的输入约束修正 input；坐标使用 0 到 1 的归一化值。
+**处理：** 按当前 ActionRef 返回的输入约束修正 input；视觉坐标使用 0 到 10000 的整数标尺值。
 
 <a id="error-action-effect-mismatch"></a>
 ## ACTION_EFFECT_MISMATCH

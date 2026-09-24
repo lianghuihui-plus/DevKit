@@ -203,7 +203,7 @@ function transportsPage(caseRuntime, coordinator) {
 function actionRefsPage(contract) {
   const method = contract.methods.act;
   const branches = method.inputSchema.properties.action.oneOf;
-  return `# Case Runtime 动作目标\n\n${method.parameterDescriptions.action}。ActionRef 原样取自已发布控件或屏幕事实；Agent 可以自主选择任意归一化坐标。Runtime 不判断视觉目标或业务意图。\n\n## 动作分支\n\n\`\`\`typescript\n${branches.map((schema) => `action: ${detailedType(schema)}`).join('\n')}\n\`\`\`\n\n坐标必须在 0 到 1 范围内；视觉动作先读取截图并通过 \`inspect(mode="visual")\` 登记事实。完整请求及响应见 [act](methods/act.md)。\n\n${[...method.conditionalRequirements, ...method.contextualValidationRules].map((rule) => `- ${rule}`).join('\n')}\n`;
+  return `# Case Runtime 动作目标\n\n${method.parameterDescriptions.action}。ActionRef 原样取自已发布控件或屏幕事实；Agent 可以按截图四边标尺自主选择视觉坐标。Runtime 不判断视觉目标或业务意图。\n\n## 动作分支\n\n\`\`\`typescript\n${branches.map((schema) => `action: ${detailedType(schema)}`).join('\n')}\n\`\`\`\n\nScene 只发布一张 Agent 视觉截图，四边标尺位于 App 内容外。坐标必须是 0 到 10000 的整数，原点在左上，X 向右，Y 向下；直接读取标尺值，不按图片像素或原始截图尺寸换算。视觉动作先通过 \`inspect(mode="visual")\` 登记事实。完整请求及响应见 [act](methods/act.md)。\n\n${[...method.conditionalRequirements, ...method.contextualValidationRules].map((rule) => `- ${rule}`).join('\n')}\n`;
 }
 
 function outputFiles({ root }) {

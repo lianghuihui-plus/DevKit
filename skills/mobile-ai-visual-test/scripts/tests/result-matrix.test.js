@@ -138,11 +138,14 @@ function executeResult(verdict, options = {}) {
     }] },
   }, { now: '2026-09-04T02:00:01.900Z' });
   assert.strictEqual(recorded.result.outcome, 'RESULTS_RECORDED', JSON.stringify(recorded));
-  const finished = run(started.execDir, {
+  const finishInput = {
     operation: 'finish', input: { mode: 'complete', summary: `${verdict} Runtime 结果`,
       uncertainties: verdict === 'INCONCLUSIVE' ? ['现场不足以可靠判断'] : [],
     },
-  }, { now: '2026-09-04T02:00:02.000Z' });
+  };
+  const review = run(started.execDir, finishInput, { now: '2026-09-04T02:00:02.000Z' });
+  assert.strictEqual(review.error.code, 'CASE_FINAL_REVIEW_REQUIRED');
+  const finished = run(started.execDir, finishInput, { now: '2026-09-04T02:00:03.000Z' });
   assert.strictEqual(finished.result.outcome, 'COMPLETED');
   const report = readExecutionReport(started.execDir);
   assert.strictEqual(report.display.verdict, verdict);

@@ -9,6 +9,7 @@ const {
   documentationRefFor,
 } = require('./agent-facing-contract');
 const { resolveActionRef } = require('./capability-catalog');
+const { normalizePlanSteps, normalizedPoint } = require('../lib/visual-coordinate-grid');
 const { successEnvelope, errorEnvelope } = require('../lib/agent-facing-envelope');
 
 function inputError(issues) {
@@ -183,8 +184,8 @@ function contextualIssues(execDir, request, scene) {
 
 function visualRequest(actionRef, input) {
   const gesture = actionRef.slice('visual:'.length);
-  if (gesture === 'swipe') return { gesture, from: input.from, to: input.to };
-  return { gesture, point: input.point, ...(gesture === 'longPress' ? { durationMs: input.durationMs } : {}) };
+  if (gesture === 'swipe') return { gesture, from: normalizedPoint(input.from), to: normalizedPoint(input.to) };
+  return { gesture, point: normalizedPoint(input.point), ...(gesture === 'longPress' ? { durationMs: input.durationMs } : {}) };
 }
 
 function translateAgentFacingRequest(execDir, request) {
@@ -263,7 +264,7 @@ function translateAgentFacingRequest(execDir, request) {
       purpose: request.purpose,
       maxDurationMs: request.maxDurationMs,
       onFailure: request.onFailure,
-      steps: request.steps,
+      steps: normalizePlanSteps(request.steps),
       ...flowContext,
       decision: { purpose: request.purpose, expectationRefs: [] },
     };

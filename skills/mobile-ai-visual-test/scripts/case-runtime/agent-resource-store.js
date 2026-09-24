@@ -9,6 +9,7 @@ const { canonicalJson, contractError } = require('../lib/contract-utils');
 const store = require('./store');
 
 const TYPES = new Set(Object.keys(require('./agent-facing-contract').PUBLIC_CONTRACT.resourceCatalog));
+const finalReview = require('./final-review');
 const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const jsonHash = (value) => hash(canonicalJson(value));
 const fail = (message) => contractError('RESOURCE_INTEGRITY_INVALID', message);
@@ -122,7 +123,8 @@ function projectSource(type, raw, params, source) {
   if (type === 'elementSet') return raw.elements || [];
   if (type === 'layout') return source.field ? raw[source.field] : raw;
   if (type === 'screenshot') return { path: source.file, width: params.width, height: params.height,
-    sha256: source.sha256, mediaType: params.mediaType || 'image/png' };
+    sha256: source.sha256, mediaType: params.mediaType || 'image/png',
+    ...(params.coordinateSpace ? { coordinateSpace: params.coordinateSpace } : {}) };
   if (type === 'scene') {
     const { buildCapabilities, actionRefFor } = require('./capability-catalog');
     const { projectPreviousAction } = require('./agent-facing-contract');
@@ -131,7 +133,8 @@ function projectSource(type, raw, params, source) {
       sceneRef: params.sceneRef, capturedAt: raw.capturedAt, generation: raw.generation,
       ...params.refs, targetApp: raw.app || {}, signals: raw.signals || {}, conflicts: raw.conflicts || [],
       ...(params.resourceDiagnostics?.length ? { resourceDiagnostics: params.resourceDiagnostics } : {}),
-      interactionContext: { scrollContexts: raw.scrollContexts || [], keyboard: raw.signals?.keyboard || {}, visual: raw.visual || {} },
+      interactionContext: { scrollContexts: raw.scrollContexts || [], keyboard: raw.signals?.keyboard || {},
+        visual: { ...(raw.visual || {}), ...(params.visualCoordinateSpace || {}) } },
       actions: buildCapabilities(raw, params.platform).map((action) => ({ ref: actionRefFor(action), label: action.label,
         kind: action.kind, ...(action.kind === 'wait' ? { input: { ms: 'positive-integer' } } : action.input ? { input: action.input } : {}) })),
       ...(previous ? { previousAction: { operationId: previous.operationRef, deliveryStatus: previous.deliveryStatus,
@@ -236,7 +239,8 @@ function publishScreenshot(execDir, screenshot) {
   const mediaType = screenshot.mediaType || (relative.endsWith('.svg') ? 'image/svg+xml' : 'image/png');
   return publishResource(execDir, { type: 'screenshot', id: relative,
     source: { kind: 'binary', path: relative, mediaType, encoding: 'binary' },
-    params: { width: dimensions.width, height: dimensions.height, mediaType } });
+    params: { width: dimensions.width, height: dimensions.height, mediaType,
+      ...(screenshot.coordinateSpace ? { coordinateSpace: screenshot.coordinateSpace } : {}) } });
 }
 
 function publishArtifact(execDir, type, relative, associations = [], params = {}) {
@@ -314,7 +318,8 @@ function publishScene(execDir, sceneId) {
   }
   const source = { kind: 'json', path: `scenes/${sceneId}.json` };
   const scene = sourceValue(execDir, source).value;
-  const screenshot = scene.screenshot?.ref || scene.screenshot?.path ? publishScreenshot(execDir, scene.screenshot) : null;
+  const screenshot = scene.screenshot?.ref || scene.screenshot?.path
+    ? publishScreenshot(execDir, require('../lib/coordinate-ruler').ensureCoordinateRuler(execDir, scene.screenshot)) : null;
   const elements = publishResource(execDir, { type: 'elementSet', id: sceneId, source });
   let layout = null;
   const resourceDiagnostics = [];
@@ -329,6 +334,7 @@ function publishScene(execDir, sceneId) {
   const associated = [...[screenshot, layout, elements, spatial].filter(Boolean).map((item) => item.descriptor), ...dependencies.associations];
   return publishResource(execDir, { type: 'scene', id: sceneId, source, associations: associated,
     params: { sceneRef: resourceRef(execDir, 'scene', sceneId), refMap: dependencies.refMap, platform: store.loadExecution(execDir, { allowFinalized: true }).platform,
+      visualCoordinateSpace: { coordinates: 'grid-0-to-10000', minimum: 0, maximum: 10000, origin: 'TOP_LEFT' },
       refs: { ...(screenshot ? { screenshotRef: screenshot.data.ref } : {}), ...(layout ? { layoutRef: layout.data.ref } : {}),
         elementSetRef: elements.data.ref, ...(spatial ? { actionSpatialEvidenceRef: spatial.data.ref } : {}) }, resourceDiagnostics } });
 }
@@ -395,6 +401,11 @@ function provideOperationResources(execDir, response, request) {
   const result = {};
   let primary;
   const add = (value) => { if (value) published.push(value); return value; };
+  if (request.operation === 'finish' && response.code === 'CASE_FINAL_REVIEW_REQUIRED') {
+    result.finalReviewRequired = true;
+    result.finalReviewInstruction = '请重新阅读下面的完整原始用例，确认最终结果覆盖其完整业务目标、条件分支和最终结果；不要只根据 CHECK ledger 是否完整来结束用例。核对后重新提交 finish，无需回复确认。';
+    result.originalCase = finalReview.sourceText(execDir);
+  }
   const sceneId = response.scene?.sceneId || response.sceneId || response.visualInspection?.sceneId || response.actionInspection?.sceneId;
   if (sceneId && ['observe', 'act', 'inspect', 'recover'].includes(request.operation)) {
     const value = add(publishScene(execDir, sceneId));

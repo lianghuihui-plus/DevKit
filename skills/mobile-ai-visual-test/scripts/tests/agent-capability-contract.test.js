@@ -100,7 +100,7 @@ assert.match(read('SKILL.md'), /读取.*日志/);
 assert.match(read('SKILL.md'), /不直接修改.*Batch.*Execution.*Result/);
 assert.match(read('SKILL.md'), /documentationRef/);
 assert.match(read('SKILL.md'), /普通执行.*不读取.*commands/);
-assert.match(read('references/interfaces.md'), /按需/);
+assert.match(read('SKILL.md'), /按需/);
 assert.doesNotMatch(read('SKILL.md'), /confirmChoices|confirmTemplate|retryWith|technicalContext\.resume/);
 assert.match(read('SKILL.md'), /app-packages\/ios/);
 assert.match(read('SKILL.md'), /执行协调 Agent.*不.*询问.*安装包/);
@@ -153,7 +153,7 @@ assert.match(knowledgeGuidance, /平台.*版本.*账号.*配置.*条件适用性
   'knowledge guidance must enumerate the external facts that Scene evidence cannot establish');
 assert.doesNotMatch(knowledgeGuidance, /每条用例.*必须.*`?knowledge`?/,
   'stronger guidance must not become an unconditional query gate');
-assert.match(read('references/failure-policy.md'), /APP_INITIAL_STATE_UNAVAILABLE.*原生.*安装态/);
+assert.match(read('references/case-runtime/errors/knowledge-recovery.md'), /APP_INITIAL_STATE_UNAVAILABLE[\s\S]*recover/);
 assert.strictEqual(read('SKILL.md').includes('不能自己调用 Appium、WDA、xcodebuild 或读取内部日志'), false);
 
 console.log('agent capability contract tests passed');

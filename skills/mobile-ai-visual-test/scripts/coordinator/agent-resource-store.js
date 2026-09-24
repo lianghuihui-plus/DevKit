@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { canonicalJson, contractError } = require('../lib/contract-utils');
+const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const RESOURCE_CATALOG = require('./agent-facing-contract').PUBLIC_CONTRACT.resourceCatalog;
 const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const digest = (value) => hash(canonicalJson(value));
@@ -119,6 +120,9 @@ function terminalResource(state) {
   } catch (error) { throw error.code === 'RESOURCE_INTEGRITY_INVALID' ? error : fail('terminal resource unavailable'); }
 }
 function bindTerminalResource(state, resource) {
-  immutableJson(state, path.join('coordinator-resources', 'terminal.json'), { ref: resource.data.ref });
+  if (resource?.data?.type !== 'runSummary') throw fail('terminal resource type mismatch');
+  const current = terminalResource(state);
+  if (current?.data.ref === resource.data.ref) return;
+  writeJsonAtomic(path.join(rootFor(state), 'coordinator-resources', 'terminal.json'), { ref: resource.data.ref });
 }
 module.exports = { publishSnapshot, publishDispatch, readResource, terminalResource, bindTerminalResource };

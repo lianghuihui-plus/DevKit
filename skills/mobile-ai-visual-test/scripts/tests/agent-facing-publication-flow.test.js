@@ -164,10 +164,21 @@ interruptedScene.screenshot.path = path.join(interruptedDir, interruptedScene.sc
 require('../case-runtime/store').writeScene(interruptedDir, interruptedScene);
 let publicationBoundaryReached = false;
 const resourceStore = require('../case-runtime/agent-resource-store');
-const finished = run(started.execDir, {
+const finishInput = {
   operation: 'finish', input: { mode: 'complete', summary: '首页标题验证完成', uncertainties: [] },
-}, {
+};
+const review = run(started.execDir, finishInput, {
   now: '2026-09-16T01:00:00.500Z',
+});
+assert.strictEqual(review.status, 'REJECTED', JSON.stringify(review));
+assert.strictEqual(review.error.code, 'CASE_FINAL_REVIEW_REQUIRED');
+assert.strictEqual(review.result.finalReviewRequired, true);
+assert.match(review.result.finalReviewInstruction, /重新阅读/);
+assert.strictEqual(review.result.originalCase, source);
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'execution.json'))).finalized, false);
+
+const finished = run(started.execDir, finishInput, {
+  now: '2026-09-16T01:00:00.600Z',
   resourceProvider(execDir, response, request) {
     publicationBoundaryReached = true;
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(execDir, 'execution.json'))).finalized, true);
@@ -182,8 +193,8 @@ assert.strictEqual(publicationBoundaryReached, true);
 assert.strictEqual(finished.status, 'SUCCEEDED');
 assert.strictEqual(finished.result.outcome, 'COMPLETED');
 const finishMetrics = readAgentFacingEvents(agentFacingFile(started.execDir)).filter((event) => event.operation === 'finish');
-assert.strictEqual(finishMetrics.length, 1, 'a real facade finish records exactly one telemetry event');
-assert.strictEqual(finishMetrics[0].responseBytes, Buffer.byteLength(JSON.stringify(finished)),
+assert.strictEqual(finishMetrics.length, 2, 'the review and final finish each record one telemetry event');
+assert.strictEqual(finishMetrics.at(-1).responseBytes, Buffer.byteLength(JSON.stringify(finished)),
   'finish telemetry measures the final public response including resource refs');
 assert.doesNotThrow(() => validateResultIntegrity(started.execDir,
   JSON.parse(fs.readFileSync(path.join(started.execDir, 'result.json'), 'utf8'))),
@@ -208,9 +219,9 @@ assert.doesNotThrow(() => validateExecutionArtifactManifest(started.execDir));
 
 // Crash after finalization but before any final resource publication is recovered
 // by completion, without re-running finish or constructing an Agent response.
-const interrupted = run(interruptedDir, {
-  operation: 'finish', input: { mode: 'complete', summary: '首页标题验证完成', uncertainties: [] },
-}, { now: '2026-09-16T01:00:00.500Z', resourceProvider() { throw new Error('publication interrupted'); } });
+const interruptedReview = run(interruptedDir, finishInput, { now: '2026-09-16T01:00:00.500Z' });
+assert.strictEqual(interruptedReview.error.code, 'CASE_FINAL_REVIEW_REQUIRED');
+const interrupted = run(interruptedDir, finishInput, { now: '2026-09-16T01:00:00.600Z', resourceProvider() { throw new Error('publication interrupted'); } });
 assert.strictEqual(interrupted.status, 'FAILED');
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(interruptedDir, 'execution.json'))).finalized, true, JSON.stringify(interrupted));
 const finalResultRef = resourceStore.resourceRef(interruptedDir, 'caseResult', 'result.json');

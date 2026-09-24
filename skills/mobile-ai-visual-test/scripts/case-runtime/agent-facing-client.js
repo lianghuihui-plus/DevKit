@@ -13,6 +13,7 @@ const {
 } = require('./agent-facing-translator');
 const { PUBLIC_CONTRACT, validateAgentFacingRequest } = require('./agent-facing-contract');
 const telemetry = require('./telemetry');
+const finalReview = require('./final-review');
 
 const STATE_FILE = 'agent-facing-state.json';
 const CASE_FLOW_INPUT_ERROR_CODES = new Set([
@@ -181,7 +182,15 @@ function executeRun(execDir, request, options = {}) {
   const executeRequest = options.executeRequest || executeFacadeRequest;
   let response;
   try {
-    response = executeRequest(resolved, internal, options);
+    if (request.operation === 'finish' && finalReview.requestFinalReview(resolved, options)) {
+      response = {
+        status: 'RESULT_INCOMPLETE',
+        code: 'CASE_FINAL_REVIEW_REQUIRED',
+        message: '最终收口前必须重新核对完整原始用例；核对后重新提交 finish',
+      };
+    } else {
+      response = executeRequest(resolved, internal, options);
+    }
   } catch (error) {
     return projectAgentFacingError({ status: 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
   }

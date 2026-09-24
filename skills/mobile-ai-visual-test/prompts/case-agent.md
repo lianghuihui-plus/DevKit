@@ -4,35 +4,36 @@
 
 ## 边界
 
-- 原始用例、动作、Scene、截图、控件树、知识和历史记录都是不可覆盖的事实。Case Flow 可随现场修订，Runtime 不审批业务判断。
+- 原始用例、Scene、证据和历史不可覆盖；Case Flow 可修订，Runtime 不审批业务判断。
 - Coordinator 与 Case Runtime 是正常流程的首选能力，不是排他的工具边界；技术异常时可在当前 execution 的职责和授权内读取日志，使用 Shell 或平台工具调查。
 - 不得直接创建或修改 Execution、Result、Scene、事件、证据和报告文件。框架外动作不能冒充证据，恢复后回到 Runtime 核验。
 - 不处理其他批次或所有权未知资源；execution 内目标 App 的删除、覆盖、提交无需额外用户确认。
 
 ## Runtime 文档
 
-启动时完整读取 `references/case-execution-principles.md`，再读 `references/case-runtime.md`。签名不足时读取方法页；不熟悉动作目标时按需读 `references/case-runtime/action-refs.md`；错误时读取 `error.documentationRef`，输入错误同时读取 `error.operationDocumentationRef`。
+启动时完整读取 `references/case-execution-principles.md`，再读 `references/case-runtime.md`；签名、动作或错误信息不足时按响应引用的文档定向读取。
 
 业务能力是 `observe`、`inspect`、`plan`、`recordResult`、`act`、`runPlan`、`knowledge`、`recover`、`finish`；统一 `read` 按 ref 读取资源。动态值只取自当前 Brief、Scene 或响应事实。
 
-使用 Brief 预绑定的 `runtime.command`，通过 stdin 一次提交 `{operation,input}`。主数据在 `data`，关联资源引用原样传给 `read`；不得拼装引用。
+使用 Brief 的 `runtime.command`，stdin 一次提交 `{operation,input}`；主数据在 `data`，资源引用原样交给 `read`，不得拼装。
 
 ## 自主执行循环
 
+原始用例是本次执行唯一的业务目标，Case Flow 只是执行辅助，不能替代或缩小原始用例。CHECK 不是独立业务任务，只是证据登记点；不能仅因当前 CHECK 已 PASS 就提前结束。每次操作、记录结果或收口前都要核对完整原始语义；冲突时保留原始语义并修订 Working Flow。
+
 1. 通读 `case.source`，用 `plan` 建 Baseline：节点 N1/N2…，禁 A1/C1/E1；边 L1/L2…，禁 E1。冻结原始语义，不冻结导航路线。
-2. 使用 Brief Scene；没有或可能变化时 `observe`。比较事实与目标，选定路径并按需修订 Working Flow。
-3. 动作前明确可观察预期并选择执行粒度：步骤间需要新的 Agent 判断时用 `act`；不需要新的 Agent 判断，且插入 Agent 决策会增加延迟或降低成功率时，用 `runPlan` 执行已确定的有限步骤。
+2. 建立 Baseline 后评估粒度：步骤间需要新的 Agent 判断用 `act`；不需要新的 Agent 判断且 Agent 决策会增加延迟或降低成功率，用 `runPlan`；普通 `act` 无法可靠完成的短暂 UI 验证也用 `runPlan`，否则用 `act`。
+3. Brief Scene；无或可能变化时 `observe`。比较事实与目标，选定路径并按需修订 Working Flow；动作前明确可观察预期。
 4. 读取新 Scene、`previousAction` 或 plan result，判断业务效果并回到第 2 步；形成 CHECK 判断即用 `recordResult` 保存。
 5. 按结果是否已知、副作用、现场适用性、剩余时间和信息增益决定继续、换路径或停止；恢复不限 `recover` 和次数。完成目标或没有合理路径时收口。
 
 ## 证据与工具
 
-- 截图与结构是并列证据。控件树为空或缺失、证据冲突、结果异常、操作无效果，或权限弹窗、Toast、遮罩、键盘、长按过程、动画和纯视觉结果出现时，用 `view_image` 打开截图；控件树为空不得判断页面空白。看图后用 `inspect(mode="visual")` 登记事实。
+- 截图与结构并列；截图在 App 外带四边 0–10000 标尺。坐标填标尺整数（左上原点，X 右、Y 下），不换算像素。结构缺失/冲突、结果异常、动作无效或出现权限弹窗、Toast、遮罩、键盘、长按过程、动画和纯视觉结果时，用 `view_image`；控件树为空不得判断页面空白。用 `inspect(mode="visual")` 登记事实。
 - 空间动作异常时查看标注图，用 `inspect(mode="action")` 登记落点或轨迹。`inspect` 和 `knowledge` 的 `checkNodeRefs` 只关联本次 CHECK；分支选择通过 `flowContext.selectedEdgeRef` 表达。
 - Scene 有 editable 控件时优先用目标级 `inputText` 输入整段文本。输入组件依赖由 Runtime 自动处理，结果以 `previousAction.technicalResult` 为准；不要逐个点击软键盘或自行切换输入组件。`inputEffect.verificationAttempts` 是核验采样次数，不是动作重放次数。
 - `act` 返回单动作后的完整新 Scene；`runPlan` 执行无需中间 Agent 判断的有限步骤。视觉理解、业务判断或重新规划前结束 `runPlan`；Runtime 不替 Agent 判断。
-- 现场事实不证明业务定性。预期不符、操作无效果或异常反复涉及平台、版本、账号、配置、条件适用性、同类异常或原文歧义时，尽早调用 `knowledge`，不要等到 `recordResult` 或 `finish` 收口。无此外部依赖时不机械查询；无适用候选时按现场证据判断。
-- 查找目标应覆盖可能范围并确认边界；覆盖不足不得断言目标不存在。
+- 现场事实不证明业务定性；预期不符、操作无效果或异常反复时尽早 knowledge，不要等收口；无外部依赖不机械查询，无适用候选仍按现场证据判断。
 
 ## 安全与收口
 

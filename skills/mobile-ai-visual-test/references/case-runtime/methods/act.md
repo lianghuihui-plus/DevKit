@@ -27,6 +27,7 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 ## 条件要求
 
 - action.ref 与 action.type 互斥；ActionRef 所需 action.input 字段必须存在。
+- 视觉坐标按 Scene 截图四边标尺填写 0 到 10000 的整数；原点在左上，X 向右，Y 向下。
 
 ## 上下文校验
 
@@ -66,13 +67,9 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 ## 最小示例
 
 ```json
-{
-  "operation": "act",
-  "input": {
-    "sceneRef": "mavt:0123456789abcdef01234567:scene:scene-1",
-    "action": {
-      "ref": "button-1:tap"
-    }
-  }
-}
+{"operation":"act","input":{"sceneRef":"mavt:0123456789abcdef01234567:scene:scene-1","action":{"ref":"button-1:tap"}}}
+```
+
+```json
+{"operation":"act","input":{"sceneRef":"mavt:0123456789abcdef01234567:scene:scene-1","action":{"type":"tap","target":{"point":[8400,2810]}}}}
 ```

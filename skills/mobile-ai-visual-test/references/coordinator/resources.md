@@ -18,7 +18,7 @@
 | `runDecision` | 当前环境、设备或绑定决策的不可变完整投影。 |
 | `caseDispatch` | 不可变 Handoff 绑定的独立 Case Agent 启动信息。 |
 | `runProgress` | 当前等待对象与已持久化进度事实的不可变快照。 |
-| `runSummary` | 首次终态与报告发布结果的不可变快照。 |
+| `runSummary` | 某一报告发布状态下的不可变终态快照；发布状态变化时生成新快照，旧引用继续有效。 |
 | `coordinatorDiagnostic` | 当前运行已持久化诊断事实。 |
 
 错误中的 `documentationRef` 和 `operationDocumentationRef` 是静态文档路径，使用宿主文件读取能力打开，不传给 `read`。

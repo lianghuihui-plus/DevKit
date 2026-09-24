@@ -83,6 +83,15 @@ Ledger 仍有 unresolved 或 conflicts。
 
 **处理：** 逐项处置全部 Baseline CHECK 和最终活跃的补充 CHECK；可用 PASS、FAIL、BLOCKED、INCONCLUSIVE、条件检查的 NOT_APPLICABLE，或提供理由的 WAIVED。
 
+<a id="error-case-final-review-required"></a>
+## CASE_FINAL_REVIEW_REQUIRED
+
+最终收口前必须重新核对完整原始用例。
+
+**可重试：** 是
+
+**处理：** 阅读响应中的 originalCase 和 finalReviewInstruction，确认完整业务目标、条件分支和最终结果后重新提交同一 finish 请求。
+
 <a id="error-time-limit"></a>
 ## TIME_LIMIT
 

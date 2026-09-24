@@ -44,9 +44,30 @@ assert.strictEqual(jsonLayout.data.mediaType, 'application/json');
 assert.strictEqual(jsonLayout.descriptor.mediaType, 'application/json');
 assert.deepStrictEqual(jsonLayout.data.content, scene.layout);
 const binary = resources.readPublishedResource(dir, observed.data.content.screenshotRef).data.content;
-assert.strictEqual(binary.sha256, crypto.createHash('sha256').update(png).digest('hex'));
-assert.strictEqual(binary.path, fs.realpathSync(path.join(dir, 'screenshots/scene-0001.png')));
+assert.notStrictEqual(binary.sha256, crypto.createHash('sha256').update(png).digest('hex'));
+assert.notStrictEqual(binary.path, fs.realpathSync(path.join(dir, 'screenshots/scene-0001.png')));
+assert.match(binary.path, /screenshots\/coordinate-grid\/scene-0001\.png$/);
+assert.deepStrictEqual(binary.coordinateSpace, {
+  kind: 'SCREENSHOT_GRID', minimum: 0, maximum: 10000,
+  origin: 'TOP_LEFT', xDirection: 'RIGHT', yDirection: 'DOWN',
+  contentRect: { x: 82, y: 54, width: 1, height: 1 },
+  sourceScreenshot: { ref: 'screenshots/scene-0001.png', width: 1, height: 1,
+    sha256: crypto.createHash('sha256').update(png).digest('hex') },
+});
+assert.strictEqual(observed.data.content.interactionContext.visual.coordinates, 'grid-0-to-10000');
 assert.strictEqual(observed.resources.find((item) => item.type === 'screenshot').mediaType, 'image/png');
+
+const mismatchedScreenshot = fixture('execution-mismatched-screenshot');
+const mismatchedScreenshotScene = {
+  ...mismatchedScreenshot.scene,
+  screenshot: { ...mismatchedScreenshot.scene.screenshot, sha256: '0'.repeat(64) },
+};
+store.writeScene(mismatchedScreenshot.dir, mismatchedScreenshotScene);
+const rejectedScreenshot = run(mismatchedScreenshot.dir, { operation: 'observe', input: {} }, {
+  executeRequest: () => ({ status: 'SCENE', scene: mismatchedScreenshotScene }),
+});
+assert.strictEqual(rejectedScreenshot.status, 'FAILED');
+assert.strictEqual(rejectedScreenshot.error.code, 'RESOURCE_INTEGRITY_INVALID');
 
 // Android and iOS publish their raw layout as XML without changing the Agent read protocol.
 for (const platform of ['android', 'ios']) {

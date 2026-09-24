@@ -40,9 +40,16 @@ for (const [contractModule, operation] of [[require('../case-runtime/agent-facin
 
 const root = path.resolve(__dirname, '../..');
 assert.match(caseContract.methods.read.minimalExample.input.ref, /^mavt:[a-f0-9]{24}:scene:.+$/);
-assert.strictEqual(caseContract.methods.runPlan.inputSchema.properties.steps.items,
-  require('../case-runtime/plan-contract').PLAN_STEP_SCHEMA);
-assert.strictEqual(caseContract.methods.runPlan.inputSchema.properties.steps.items.oneOf.length, 6);
+const publicPlanSteps = caseContract.methods.runPlan.inputSchema.properties.steps.items;
+const internalPlanSteps = require('../case-runtime/plan-contract').PLAN_STEP_SCHEMA;
+assert.notStrictEqual(publicPlanSteps, internalPlanSteps);
+assert.strictEqual(publicPlanSteps.oneOf.length, 6);
+assert.strictEqual(publicPlanSteps.oneOf[0].properties.id.pattern, internalPlanSteps.oneOf[0].properties.id.pattern);
+assert.strictEqual(publicPlanSteps.oneOf[3].properties.sourceRef.pattern, internalPlanSteps.oneOf[3].properties.sourceRef.pattern);
+assert.deepStrictEqual(publicPlanSteps.oneOf[0].properties.input.properties.point.items,
+  { type: 'integer', minimum: 0, maximum: 10000 });
+assert.deepStrictEqual(internalPlanSteps.oneOf[0].properties.input.properties.point.items,
+  { type: 'number', minimum: 0, maximum: 1 });
 const requiredMethodFields = [
   'name', 'summary', 'requestSchema', 'inputSchema', 'responseProjection', 'parameterDescriptions',
   'conditionalRequirements', 'contextualValidationRules', 'successStatuses',
