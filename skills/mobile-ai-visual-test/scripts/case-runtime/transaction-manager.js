@@ -46,6 +46,11 @@ function readAction(execDir, operationId) {
   return draft ? validateActionDraft(draft) : null;
 }
 
+function readCompletedAction(execDir, operationId) {
+  const completed = readJson(actionOperationPath(execDir, operationId), null);
+  return completed ? validateActionDraft(completed) : null;
+}
+
 function isSequenceOwned(draft) {
   return typeof draft?.sequenceId === 'string' && draft.sequenceId.trim().length > 0;
 }
@@ -80,6 +85,7 @@ module.exports = {
   isSequenceOwned,
   prepareAction,
   readAction,
+  readCompletedAction,
   sanitizeTransactionValue,
   transitionAction,
   validateActionDraft,

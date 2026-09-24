@@ -13,6 +13,18 @@ function redactedAction(action) {
   return action?.type === 'inputText' ? { ...action, text: '[REDACTED]' } : action;
 }
 
+function actionErrorMessage(error, action) {
+  if (action?.type === 'inputText') return 'inputText action failed; sensitive input redacted';
+  return error?.message || String(error);
+}
+
+function redactedActionError(error, action) {
+  if (action?.type !== 'inputText') return error;
+  const sanitized = new Error(actionErrorMessage(error, action));
+  if (error?.code) sanitized.code = error.code;
+  return sanitized;
+}
+
 function duringActionObservation(request, deviceResult) {
   if (!deviceResult?.duringActionEvidence) return null;
   return {
@@ -76,15 +88,20 @@ function completionMetadata(dispatched, transaction, metadata = {}) {
 
 function completionTransaction(execDir, dispatched) {
   const operationId = dispatched.operationId || dispatched.transaction?.operationId;
-  const transaction = dispatched.transaction || transactions.readAction(execDir, operationId);
+  const transaction = transactions.readAction(execDir, operationId)
+    || transactions.readCompletedAction(execDir, operationId);
   if (!transaction) throw new Error(`action transaction ${operationId} is missing`);
   return transaction;
 }
 
-function captureFailureTechnicalFact(execDir, options = {}) {
+function captureFailureTechnicalFact(execDir, operationId, options = {}) {
   const ref = options.captureFailureTechnicalFactRef || options.captureFailureTechnicalFact?.technicalFactRef;
-  if (!ref || !store.events(execDir).some((event) => event.technicalFactRef === ref)) {
-    throw new Error('afterScene may be null only with a persisted capture-failure technical fact');
+  const fact = ref ? store.events(execDir).find((event) => event.technicalFactRef === ref) : null;
+  if (fact?.type !== 'technicalIssue'
+    || fact.operation !== 'act'
+    || fact.operationId !== operationId
+    || !['POST_ACTION_CAPTURE_FAILED', 'POST_ACTION_OBSERVE_FAILED'].includes(fact.code)) {
+    throw new Error('afterScene may be null only with a persisted capture-failure technical fact for this action');
   }
   return ref;
 }
@@ -100,6 +117,7 @@ function dispatchedActionPayload(dispatched, transaction) {
 function completeDispatchedAction(execDir, dispatched, afterScene, metadata = {}, options = {}) {
   ensurePromotionOption(options);
   let transaction = completionTransaction(execDir, dispatched);
+  if (transaction.status === 'COMPLETED') return transaction.actionResult;
   const details = completionMetadata(dispatched, transaction, metadata);
   const action = dispatchedActionPayload(dispatched, transaction);
   const adapterResult = sanitizeAdapterActionResult(dispatched.adapterResult || transaction.deviceResult || {});
@@ -113,7 +131,7 @@ function completeDispatchedAction(execDir, dispatched, afterScene, metadata = {}
     dispatched.action?.duringActionObservation || transaction.duringActionObservation || null,
   );
   if (!afterScene) {
-    const captureFailureTechnicalFactRef = captureFailureTechnicalFact(execDir, options);
+    const captureFailureTechnicalFactRef = captureFailureTechnicalFact(execDir, transaction.operationId, options);
     actionResult.observationStatus = 'FAILED';
     actionResult.captureFailureTechnicalFactRef = captureFailureTechnicalFactRef;
     transaction = transactions.transitionAction(execDir, transaction, 'RESULT_RECORDED', 'OBSERVED', {
@@ -127,23 +145,26 @@ function completeDispatchedAction(execDir, dispatched, afterScene, metadata = {}
   }
   afterScene.previousAction = actionResult;
   store.writeScene(execDir, afterScene, { promote: options.promoteScene });
-  store.appendEvent(execDir, 'actionCompleted', {
-    operationId: transaction.operationId,
-    sceneId: details.preSceneRef,
-    sceneIdAfter: afterScene.sceneId,
-    action,
-    lifecycle: actionResult.lifecycle,
-    command: actionResult.command,
-    deviceExecution: actionResult.deviceExecution,
-    ...safeActionTechnicalDetails(actionResult),
-    evidence: actionResult.evidence,
-    duringActionObservation: actionResult.duringActionObservation || null,
-    spatialEvidenceRef: transaction.spatialEvidenceRef || null,
-    decisionId: details.decisionId,
-    planId: details.planId,
-    sequenceId: details.sequenceId,
-    stepId: details.stepId,
-  }, options);
+  if (!store.events(execDir).some((event) => event.type === 'actionCompleted' && event.operationId === transaction.operationId)) {
+    store.appendEvent(execDir, 'actionCompleted', {
+      operationId: transaction.operationId,
+      sceneId: details.preSceneRef,
+      sceneIdAfter: afterScene.sceneId,
+      action,
+      lifecycle: actionResult.lifecycle,
+      command: actionResult.command,
+      deviceExecution: actionResult.deviceExecution,
+      ...safeActionTechnicalDetails(actionResult),
+      evidence: actionResult.evidence,
+      duringActionObservation: actionResult.duringActionObservation || null,
+      spatialEvidenceRef: transaction.spatialEvidenceRef || null,
+      decisionId: details.decisionId,
+      planId: details.planId,
+      sequenceId: details.sequenceId,
+      stepId: details.stepId,
+    }, options);
+  }
+  if (options.interruptAfter === 'action-completed') throw new Error('MAVT_CASE_ACTION_INTERRUPTED: action-completed');
   transaction = transactions.transitionAction(execDir, transaction, 'RESULT_RECORDED', 'OBSERVED', {
     outcome: classifyActionOutcome(adapterResult),
     observationStatus: 'CAPTURED',
@@ -185,7 +206,7 @@ function completeUnknownDispatchedAction(execDir, unknown, afterScene, metadata 
     evidence: actionEvidence(unknown.beforeScene || store.readCurrentScene(execDir)),
   };
   if (!afterScene) {
-    const captureFailureTechnicalFactRef = captureFailureTechnicalFact(execDir, options);
+    const captureFailureTechnicalFactRef = captureFailureTechnicalFact(execDir, transaction.operationId, options);
     actionResult.observationStatus = 'FAILED';
     actionResult.captureFailureTechnicalFactRef = captureFailureTechnicalFactRef;
     transaction = transactions.transitionAction(execDir, transaction, 'DISPATCHED', 'OBSERVED', {
@@ -203,15 +224,16 @@ function completeUnknownDispatchedAction(execDir, unknown, afterScene, metadata 
   return actionResult;
 }
 
-function recordCaptureFailureTechnicalFact(execDir, operationId, metadata, error, options) {
-  const code = error.code || 'POST_ACTION_OBSERVE_FAILED';
+function recordCaptureFailureTechnicalFact(execDir, operationId, metadata, action, error, options) {
+  const code = 'POST_ACTION_CAPTURE_FAILED';
   const existing = store.events(execDir).find((event) => event.type === 'technicalIssue'
     && event.operationId === operationId && event.code === code);
   if (existing) return existing;
   return store.appendEvent(execDir, 'technicalIssue', {
     operationId,
     code,
-    message: error.message || String(error),
+    ...(error.code ? { internalCode: error.code } : {}),
+    message: actionErrorMessage(error, action),
     operation: 'act',
     decisionId: metadata.decisionId || null,
   }, options);
@@ -276,18 +298,19 @@ function dispatchAction(execDir, request, options = {}) {
     if (options.interruptAfter === 'device-result') throw new Error('MAVT_CASE_ACTION_INTERRUPTED: device-result');
   } catch (error) {
     if (transaction.status !== 'DISPATCHED') throw error;
+    const sanitizedError = redactedActionError(error, resolved.action);
     const technicalFact = store.appendEvent(execDir, 'actionOutcomeUnknown', {
       operationId,
       sceneId: scene.sceneId,
       action: redactedAction(resolved.action),
       code: error.code || 'DEVICE_ACTION_FAILED',
-      message: error.message || String(error),
+      message: actionErrorMessage(error, resolved.action),
       decisionId: request.decisionId || null,
       planId: request.planId || null,
       sequenceId: request.sequenceId || null,
       stepId: request.stepId || null,
     }, options);
-    throw Object.assign(error, {
+    throw Object.assign(sanitizedError, {
       actionOutcome: 'UNKNOWN',
       operationId,
       technicalFactRef: technicalFact.technicalFactRef,
@@ -344,6 +367,14 @@ function act(execDir, request, options = {}) {
         ...options,
         purpose: 'AFTER_UNKNOWN_ACTION',
         relatedOperationId: error.operationId,
+        previousAction: {
+          operationId: error.operationId,
+          lifecycle: { status: 'UNKNOWN' },
+          action: dispatch.action,
+          command: { status: 'UNKNOWN' },
+          deviceExecution: { status: 'UNVERIFIED' },
+          evidence: actionEvidence(dispatch.beforeScene),
+        },
         decisionId: dispatch.decisionId,
       });
       const action = completeUnknownDispatchedAction(execDir, {
@@ -360,7 +391,7 @@ function act(execDir, request, options = {}) {
       observed.scene = sceneService.projectSceneSummary(store.readCurrentScene(execDir));
       return { ...observed, action };
     } catch (observeError) {
-      const fact = recordCaptureFailureTechnicalFact(execDir, error.operationId, dispatch, observeError, options);
+      const fact = recordCaptureFailureTechnicalFact(execDir, error.operationId, dispatch, dispatch.action, observeError, options);
       completeUnknownDispatchedAction(execDir, {
         ...dispatch,
         operationId: error.operationId,
@@ -372,7 +403,7 @@ function act(execDir, request, options = {}) {
         stepId: dispatch.stepId,
         preSceneRef: dispatch.beforeScene.sceneId,
       }, { ...options, promoteScene: true, captureFailureTechnicalFactRef: fact.technicalFactRef });
-      throw Object.assign(observeError, {
+      throw Object.assign(redactedActionError(observeError, dispatch.action), {
         code: observeError.code || 'POST_ACTION_OBSERVE_FAILED',
         actionOutcome: 'UNKNOWN',
         operationId: error.operationId,
@@ -390,6 +421,15 @@ function act(execDir, request, options = {}) {
       purpose: 'POST_ACTION',
       relatedOperationId: operationId,
       preAdapterDelayMs: dispatchedAction.action.type === 'wait' ? 0 : 500,
+      previousAction: {
+        operationId,
+        lifecycle: { status: classifyActionOutcome(dispatched.adapterResult) },
+        action: dispatchedAction.action,
+        command: dispatchedAction.command,
+        deviceExecution: dispatchedAction.deviceExecution,
+        evidence: dispatchedAction.evidence,
+        ...(dispatchedAction.spatialEvidence ? { spatialEvidence: dispatchedAction.spatialEvidence } : {}),
+      },
       decisionId: request.decisionId || null,
     });
     const action = completeDispatchedAction(execDir, dispatched, store.readCurrentScene(execDir), {
@@ -405,14 +445,14 @@ function act(execDir, request, options = {}) {
     if (transaction?.status !== 'RESULT_RECORDED') throw error;
     const fact = recordCaptureFailureTechnicalFact(execDir, operationId, {
       decisionId: request.decisionId || null,
-    }, error, options);
+    }, dispatchedAction.action, error, options);
     completeDispatchedAction(execDir, dispatched, null, {
       decisionId: request.decisionId || null,
       sequenceId: request.sequenceId || null,
       stepId: request.stepId || null,
       preSceneRef: scene.sceneId,
     }, { ...options, promoteScene: true, captureFailureTechnicalFactRef: fact.technicalFactRef });
-    throw error;
+    throw redactedActionError(error, dispatchedAction.action);
   }
 }
 
