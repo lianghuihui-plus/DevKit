@@ -23,6 +23,7 @@ const suites = Object.freeze({
   androidHelperSessionLifecycle: 'tests/android-helper-session-lifecycle.test.js',
   androidHelperObservation: 'tests/android-helper-observation.test.js',
   androidHelperAction: 'tests/android-helper-action.test.js',
+  androidHelperDeviceSmoke: 'tests/android-helper-device-smoke.test.js',
   harmonyLayout: 'tests/harmony-layout-capture.test.js',
   platformCapture: 'tests/platform-capture.test.js',
   spatialEvidence: 'tests/action-spatial-evidence.test.js',

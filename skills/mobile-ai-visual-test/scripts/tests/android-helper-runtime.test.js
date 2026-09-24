@@ -392,6 +392,9 @@ function options(device, overrides = {}) {
   assert.deepStrictEqual(device.state.services, ['existing.reader/.Service']);
   assert.strictEqual(device.state.accessibilityEnabled, '0');
   assert.strictEqual(fs.existsSync(sessionPath), false);
+  const clearTokenCall = device.state.calls.filter((call) => call.args.join(' ') === 'shell').at(-1);
+  assert.ok(clearTokenCall.stdin.includes('com.artemis.helper.SET_TOKEN'));
+  assert.strictEqual(clearTokenCall.stdin.includes('--es token'), false);
   assert.strictEqual((await releaseAndroidHelper({ ...options(device), runtime: acquired })).status, 'RELEASED');
 
   const interruptedDevice = fakeDevice({ installedVersion: 7 });

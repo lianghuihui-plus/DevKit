@@ -380,7 +380,8 @@ async function verifyAndroidHelperProvisioning(options) {
 }
 
 function pushToken(options, androidUserId, token) {
-  const command = `am broadcast --user ${androidUserId} -n ${HELPER_PACKAGE}/.TokenReceiver -a ${HELPER_PACKAGE}.SET_TOKEN --es token ${token}\n`;
+  const tokenExtra = token ? ` --es token ${token}` : '';
+  const command = `am broadcast --user ${androidUserId} -n ${HELPER_PACKAGE}/.TokenReceiver -a ${HELPER_PACKAGE}.SET_TOKEN${tokenExtra}\n`;
   adb(options, ['shell'], { stdin: command, failureCode: 'ANDROID_HELPER_TOKEN_PUSH_FAILED' });
 }
 
