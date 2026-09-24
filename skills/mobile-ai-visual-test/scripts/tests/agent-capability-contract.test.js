@@ -100,7 +100,7 @@ assert.match(read('SKILL.md'), /读取.*日志/);
 assert.match(read('SKILL.md'), /不直接修改.*Batch.*Execution.*Result/);
 assert.match(read('SKILL.md'), /documentationRef/);
 assert.match(read('SKILL.md'), /普通执行.*不读取.*commands/);
-assert.match(read('references/interfaces.md'), /按需/);
+assert.match(read('SKILL.md'), /按需/);
 assert.doesNotMatch(read('SKILL.md'), /confirmChoices|confirmTemplate|retryWith|technicalContext\.resume/);
 assert.match(read('SKILL.md'), /app-packages\/ios/);
 assert.match(read('SKILL.md'), /执行协调 Agent.*不.*询问.*安装包/);
@@ -125,14 +125,12 @@ const executionGranularityGuidance = [
   read('prompts/case-agent.md'),
   read('references/case-execution-principles.md'),
 ].join('\n');
-assert.match(executionGranularityGuidance, /步骤间.*新的 Agent 判断/,
-  'execution guidance must make inter-step Agent judgment the act/runPlan decision boundary');
-assert.match(executionGranularityGuidance, /需要.*新的 Agent 判断.*`act`/,
-  'act must be selected when the next step depends on a new Agent judgment');
-assert.match(executionGranularityGuidance, /不需要.*新的 Agent 判断.*`runPlan`/,
-  'runPlan must be selected when the finite steps are already decidable');
-assert.match(executionGranularityGuidance, /Agent 决策.*延迟.*成功率/,
-  'runPlan guidance must account for the cost of an unnecessary Agent decision boundary');
+assert.match(executionGranularityGuidance, /建立 Baseline 后.*原始用例.*普通 `act` 无法可靠完成.*时序性 UI 验证/,
+  'execution guidance must require an explicit assessment of transient UI timing needs');
+assert.match(executionGranularityGuidance, /`act`.*逐动作完整 Scene 采集.*错过短暂状态.*中断限时交互/,
+  'act limitations must explain why transient UI can require runPlan');
+assert.match(executionGranularityGuidance, /`runPlan`.*一次调用内连续执行.*动作.*等待.*采集/,
+  'runPlan guidance must state the timing capability that addresses transient UI');
 assert.match(executionGranularityGuidance, /视觉理解.*业务判断.*重新规划.*结束.*`runPlan`/,
   'runPlan must stop before work that requires Agent intelligence');
 assert.doesNotMatch(executionGranularityGuidance, /必须(?:调用|使用).*`runPlan`/,
@@ -153,7 +151,7 @@ assert.match(knowledgeGuidance, /平台.*版本.*账号.*配置.*条件适用性
   'knowledge guidance must enumerate the external facts that Scene evidence cannot establish');
 assert.doesNotMatch(knowledgeGuidance, /每条用例.*必须.*`?knowledge`?/,
   'stronger guidance must not become an unconditional query gate');
-assert.match(read('references/failure-policy.md'), /APP_INITIAL_STATE_UNAVAILABLE.*原生.*安装态/);
+assert.match(read('references/case-runtime/errors/knowledge-recovery.md'), /APP_INITIAL_STATE_UNAVAILABLE[\s\S]*recover/);
 assert.strictEqual(read('SKILL.md').includes('不能自己调用 Appium、WDA、xcodebuild 或读取内部日志'), false);
 
 console.log('agent capability contract tests passed');
