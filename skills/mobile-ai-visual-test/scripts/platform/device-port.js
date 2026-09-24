@@ -103,6 +103,19 @@ function operationTimeoutMs(execution, now = new Date()) {
   return Math.max(1, deadline - new Date(now).getTime());
 }
 
+function boundedOperationTimeoutMs(execution, options = {}) {
+  const executionMs = operationTimeoutMs(execution, options.now);
+  return Number.isInteger(options.timeoutMs) ? Math.min(executionMs, options.timeoutMs) : executionMs;
+}
+
+function requirePositiveOperationTimeout(timeoutMs, options = {}) {
+  if (timeoutMs > 0) return timeoutMs;
+  throw contractError('DEVICE_OPERATION_TIMEOUT', 'device operation has no remaining timeout budget', {
+    timeoutMs,
+    ...(Number.isInteger(options.timeoutMs) ? { callerTimeoutMs: options.timeoutMs } : {}),
+  });
+}
+
 function parseAdapterOutput(result, kind) {
   if (result?.error) {
     const outcomeUnknown = kind === 'PREPARATION'
@@ -178,10 +191,7 @@ function invokeScreenshotCapture(execDir, validated, options = {}) {
     const command = path.join(path.resolve(__dirname, '../..'), 'scripts', 'platform', 'capture.sh');
     const args = captureAdapterArgs(binding, execDir, validated.operationId);
     const runner = options.runner || defaultRunner;
-    const timeoutMs = Math.max(1, Math.min(
-      operationTimeoutMs(execution, options.now),
-      Number.isInteger(options.timeoutMs) ? options.timeoutMs : Number.MAX_SAFE_INTEGER,
-    ));
+    const timeoutMs = requirePositiveOperationTimeout(boundedOperationTimeoutMs(execution, options), options);
     const env = binding.platform === 'android'
       ? androidHelperAdapterEnvironment(execDir, binding, { baseEnv: options.env || process.env })
       : options.env || process.env;
@@ -199,7 +209,7 @@ function invokeScreenshotCapture(execDir, validated, options = {}) {
   }), {
     binding: frozenBinding,
     runner: options.runner || defaultRunner,
-    timeoutMs: Number.isInteger(options.timeoutMs) ? options.timeoutMs : operationTimeoutMs(execution, options.now),
+    timeoutMs: requirePositiveOperationTimeout(boundedOperationTimeoutMs(execution, options), options),
     now: options.now,
     operationId: validated.operationId,
   });
@@ -246,6 +256,7 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
     const runner = options.runner || defaultRunner;
     const preAdapterDelayMs = kind === 'OBSERVE' && validated.request?.purpose === 'POST_ACTION'
       ? Math.max(0, Number(options.preAdapterDelayMs) || 0) : 0;
+    const timeoutMs = requirePositiveOperationTimeout(boundedOperationTimeoutMs(execution, options), options);
     const env = binding.platform === 'android'
       ? androidHelperAdapterEnvironment(execDir, binding, { baseEnv: options.env || process.env })
       : options.env || process.env;
@@ -253,7 +264,7 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
     let rawResult;
     try {
       rawResult = runner(command, args, {
-        timeoutMs: operationTimeoutMs(execution, options.now),
+        timeoutMs,
         kind,
         binding,
         preAdapterDelayMs,
@@ -316,7 +327,7 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
   }), {
     binding: frozenBinding,
     runner: options.runner || defaultRunner,
-    timeoutMs: operationTimeoutMs(execution, options.now),
+    timeoutMs: requirePositiveOperationTimeout(boundedOperationTimeoutMs(execution, options), options),
     now: options.now,
     operationId: validated.operationId,
   });
@@ -410,6 +421,7 @@ module.exports = {
   actionAdapterArgs,
   assertResultBinding,
   captureAdapterArgs,
+  boundedOperationTimeoutMs,
   defaultRunner,
   invokeDeviceOperation,
   invokeScreenshotCapture,

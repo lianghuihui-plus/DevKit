@@ -1,10 +1,30 @@
 'use strict';
 
 const { buildObservationView } = require('../lib/observation-model');
+const { contractError } = require('../lib/contract-utils');
 const { updateScrollContexts } = require('../lib/scroll-context');
 const { invokeDeviceOperation } = require('../platform/device-port');
 const { buildCapabilities } = require('./capability-catalog');
 const store = require('./store');
+
+const SEQUENCE_CAPTURE_ORIGINS = Object.freeze(['AGENT_REQUESTED', 'ACTION_POST', 'SEQUENCE_FINAL']);
+
+function normalizedCaptureMetadata(options = {}) {
+  const captureOrigins = options.captureOrigins === undefined ? [] : options.captureOrigins;
+  if (!Array.isArray(captureOrigins) || captureOrigins.some((origin) => !SEQUENCE_CAPTURE_ORIGINS.includes(origin))) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'captureOrigins must contain only known Sequence capture origins');
+  }
+  const normalizedOrigins = SEQUENCE_CAPTURE_ORIGINS.filter((origin) => captureOrigins.includes(origin));
+  if (options.sequenceId && options.relatedOperationId && !normalizedOrigins.includes('ACTION_POST')) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'a Sequence relatedOperationId requires ACTION_POST capture origin');
+  }
+  return {
+    captureOrigins: normalizedOrigins,
+    relatedOperationId: options.relatedOperationId || null,
+    sequenceId: options.sequenceId || null,
+    stepId: options.stepId || null,
+  };
+}
 
 function sceneFromObservation(execDir, observation, execution, previousAction = null, previousScene = null) {
   const view = buildObservationView(execDir, observation);
@@ -74,6 +94,10 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
     scrollContexts: [],
     visual: { gestures: ['tap', 'doubleTap', 'longPress', 'swipe'], coordinates: 'normalized-0-to-1' },
     previousAction: normalizedPreviousAction,
+    captureOrigins: observation.captureOrigins || [],
+    relatedOperationId: observation.relatedOperationId || null,
+    sequenceId: observation.sequenceId || null,
+    stepId: observation.stepId || null,
     source: {
       operation: optionsSource(previousAction, observation),
       planId: observation.planId || null,
@@ -131,11 +155,17 @@ function projectSceneSummary(scene) {
     },
     visual: scene.visual,
     previousAction: scene.previousAction,
+    captureOrigins: scene.captureOrigins || [],
+    relatedOperationId: scene.relatedOperationId || null,
+    sequenceId: scene.sequenceId || null,
+    stepId: scene.stepId || null,
     inspectScene: { operation: 'inspectScene' },
   };
 }
 
 function observe(execDir, options = {}) {
+  const metadata = normalizedCaptureMetadata(options);
+  const promote = options.promote !== false;
   const execution = store.loadExecution(execDir, { allowFinalized: options.allowFinalized === true });
   const previousScene = store.readCurrentScene(execDir);
   const operationId = store.nextId(execDir, 'observation');
@@ -148,6 +178,7 @@ function observe(execDir, options = {}) {
     runner: options.runner,
     preAdapterDelayMs: options.preAdapterDelayMs || 0,
     onAdapterSpan: options.onAdapterSpan,
+    timeoutMs: options.timeoutMs,
   });
   const result = invoked.adapterResult;
   const observation = {
@@ -162,18 +193,22 @@ function observe(execDir, options = {}) {
     app: result.app || null,
     technicalSignals: result.technicalSignals || null,
     time: options.now || result.time || new Date().toISOString(),
-    ...(options.relatedOperationId ? { relatedOperationId: options.relatedOperationId } : {}),
+    captureOrigins: metadata.captureOrigins,
+    relatedOperationId: metadata.relatedOperationId,
+    sequenceId: metadata.sequenceId,
+    stepId: metadata.stepId,
     ...(options.planId ? { planId: options.planId, stepId: options.stepId || null } : {}),
   };
   const scene = sceneFromObservation(execDir, observation, execution, options.previousAction || null, previousScene);
-  store.writeScene(execDir, scene, { promote: options.promote !== false });
+  store.writeScene(execDir, scene, { promote });
   store.appendEvent(execDir, 'sceneObserved', {
     sceneId: scene.sceneId,
     generation: scene.generation,
     warmSessionRef: scene.warmSessionRef,
     operationId,
     purpose: observation.observationPurpose,
-    relatedOperationId: options.relatedOperationId || null,
+    captureOrigins: metadata.captureOrigins,
+    relatedOperationId: metadata.relatedOperationId,
     decisionId: options.decisionId || null,
     screenshotRef: scene.screenshot.ref,
     screenshotSha256: scene.screenshot.sha256,
@@ -181,9 +216,10 @@ function observe(execDir, options = {}) {
     app: scene.app,
     technicalSignals: observation.technicalSignals,
     captureMode: scene.captureMode,
-    promoted: options.promote !== false,
+    promoted: promote,
     planId: options.planId || null,
-    stepId: options.stepId || null,
+    sequenceId: metadata.sequenceId,
+    stepId: metadata.stepId,
   }, { now: observation.time, allowFinalized: options.allowFinalized === true });
   return { status: 'SCENE', scene: projectSceneSummary(scene) };
 }

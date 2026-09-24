@@ -9,6 +9,7 @@ const path = require('path');
 const suites = Object.freeze({
   contract: 'tests/contract.test.js',
   platform: 'tests/platform-contract.test.js',
+  deviceOperationTimeout: 'tests/device-operation-timeout.test.js',
   platformRuntime: 'tests/platform-runtime.test.js',
   iosProbe: 'tests/ios-probe.test.js',
   iosAppPreparation: 'tests/ios-app-preparation.test.js',
@@ -55,6 +56,7 @@ const suites = Object.freeze({
   planReport: 'tests/plan-report.test.js',
   runPlan033: 'tests/run-plan-033.test.js',
   sequenceContract: 'tests/sequence-contract.test.js',
+  sceneCaptureOrigin: 'tests/scene-capture-origin.test.js',
   batchCancellation: 'tests/batch-cancellation.test.js',
   batchReconcile: 'tests/batch-reconcile.test.js',
   crossPlatformExecution: 'tests/cross-platform-execution.test.js',
