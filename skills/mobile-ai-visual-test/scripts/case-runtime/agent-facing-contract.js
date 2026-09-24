@@ -18,6 +18,8 @@ const KNOWLEDGE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:knowledgeDo
 const KNOWLEDGE_REF_ARRAY = { type: 'array', items: KNOWLEDGE_REF };
 const TECHNICAL_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:technicalFact:.+$' };
 const TECHNICAL_REF_ARRAY = { type: 'array', items: TECHNICAL_REF };
+const CASE_FLOW_NODE_REF = { type: 'string', pattern: '^N[1-9]\\d*$' };
+const CASE_FLOW_EDGE_REF = { type: 'string', pattern: '^L[1-9]\\d*$' };
 const EXAMPLE_SCENE_REF = 'mavt:0123456789abcdef01234567:scene:scene-1';
 const POINT = { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0, maximum: 1 } };
 
@@ -48,25 +50,25 @@ const EXTERNAL_ACTION = object({ summary: STRING, tool: STRING }, ['summary']);
 
 const CASE_FLOW_NODE = {
   oneOf: [
-    object({ ref: STRING, type: { const: 'ACTION' }, text: STRING }, ['ref', 'type', 'text']),
-    object({ ref: STRING, type: { const: 'DECISION' }, text: STRING, sourceBasis: STRING }, ['ref', 'type', 'text', 'sourceBasis']),
+    object({ ref: CASE_FLOW_NODE_REF, type: { const: 'ACTION' }, text: STRING }, ['ref', 'type', 'text']),
+    object({ ref: CASE_FLOW_NODE_REF, type: { const: 'DECISION' }, text: STRING, sourceBasis: STRING }, ['ref', 'type', 'text', 'sourceBasis']),
     object({
-      ref: STRING, type: { const: 'CHECK' }, text: STRING, sourceBasis: STRING,
+      ref: CASE_FLOW_NODE_REF, type: { const: 'CHECK' }, text: STRING, sourceBasis: STRING,
       verificationKind: { enum: ['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE'] }, requirement: { const: 'REQUIRED' },
     }, ['ref', 'type', 'text', 'sourceBasis', 'verificationKind', 'requirement']),
     object({
-      ref: STRING, type: { const: 'CHECK' }, text: STRING, sourceBasis: STRING,
+      ref: CASE_FLOW_NODE_REF, type: { const: 'CHECK' }, text: STRING, sourceBasis: STRING,
       verificationKind: { enum: ['DIRECT_OBSERVATION', 'SEARCH_EXISTENCE'] },
       requirement: { const: 'CONDITIONAL' }, applicability: STRING,
     }, ['ref', 'type', 'text', 'sourceBasis', 'verificationKind', 'requirement', 'applicability']),
-    object({ ref: STRING, type: { const: 'END' }, text: STRING }, ['ref', 'type', 'text']),
+    object({ ref: CASE_FLOW_NODE_REF, type: { const: 'END' }, text: STRING }, ['ref', 'type', 'text']),
   ],
 };
-const CASE_FLOW_EDGE = object({ ref: STRING, from: STRING, to: STRING, condition: STRING }, ['ref', 'from', 'to']);
+const CASE_FLOW_EDGE = object({ ref: CASE_FLOW_EDGE_REF, from: CASE_FLOW_NODE_REF, to: CASE_FLOW_NODE_REF, condition: STRING }, ['ref', 'from', 'to']);
 const CASE_FLOW_UPDATE = object({
   baseRevision: { oneOf: [{ type: 'integer', minimum: 1 }, { const: null }] },
   summary: STRING,
-  entryNodeRef: STRING,
+  entryNodeRef: CASE_FLOW_NODE_REF,
   nodes: { type: 'array', minItems: 1, items: CASE_FLOW_NODE },
   edges: { type: 'array', minItems: 1, items: CASE_FLOW_EDGE },
   uncertainties: STRING_ARRAY,
@@ -248,7 +250,12 @@ const PUBLIC_METHODS = Object.freeze({
     caseFlow: '完整 Case Flow 快照',
   }, {
     responseProjection: projection(['caseFlowRef', 'revision', 'idempotent', 'retiredNodeIds', 'retiredEdgeIds', 'invalidatedResultRefs'], null, ['caseFlow', 'checkpointLedger', 'checkpointResult']),
-    conditionalRequirements: ['首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。', 'CHECK 必须声明 REQUIRED 或 CONDITIONAL；CONDITIONAL 必须提供 applicability。'],
+    conditionalRequirements: [
+      '首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。',
+      '所有节点 ref、entryNodeRef 以及边的 from/to 统一按流程顺序使用 N1、N2…（^N[1-9]\\d*$）；不要按节点类型使用 A1、C1、E1 等前缀。',
+      '所有边 ref 统一按顺序使用 L1、L2…（^L[1-9]\\d*$）；不要使用 E1 等其他前缀。',
+      'CHECK 必须声明 REQUIRED 或 CONDITIONAL；CONDITIONAL 必须提供 applicability。',
+    ],
     contextualValidationRules: [
       'Baseline 节点和边不可改义；既有 CHECK 不可改义，现场适配或语义修正使用新 ref。',
       '修订可改变 Working Flow 导航，但删除 Baseline CHECK 不会取消其最终处置责任。',
@@ -396,6 +403,12 @@ function schemaFor(request) {
 function messageFor(issue) {
   if (issue.code === 'REQUIRED') return `必须提供 ${issue.fieldPath}`;
   if (issue.code === 'FIELD_UNSUPPORTED') return `${issue.fieldPath} 不是该能力支持的字段`;
+  if (issue.code === 'PATTERN_MISMATCH' && issue.expected === 'string matching ^N[1-9]\\d*$') {
+    return `${issue.fieldPath} 必须使用节点引用 N1、N2…；不要按节点类型使用 A1、C1、E1 等前缀`;
+  }
+  if (issue.code === 'PATTERN_MISMATCH' && issue.expected === 'string matching ^L[1-9]\\d*$') {
+    return `${issue.fieldPath} 必须使用边引用 L1、L2…；不要使用 E1 等其他前缀`;
+  }
   return `${issue.fieldPath || 'request'} 应为 ${issue.expected}`;
 }
 

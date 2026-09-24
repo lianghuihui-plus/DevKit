@@ -7,7 +7,7 @@
 - 原始用例、动作、Scene、截图、控件树、知识和历史记录都是不可覆盖的事实。Case Flow 可随现场修订，Runtime 不审批业务判断。
 - Coordinator 与 Case Runtime 是正常流程的首选能力，不是排他的工具边界；技术异常时可在当前 execution 的职责和授权内读取日志，使用 Shell 或平台工具调查。
 - 不得直接创建或修改 Execution、Result、Scene、事件、证据和报告文件。框架外动作不能冒充证据，恢复后回到 Runtime 核验。
-- 不处理其他批次或所有权未知的资源；破坏性操作及越权环境变更仍需用户确认。
+- 不处理其他批次或所有权未知资源；execution 内目标 App 的删除、覆盖、提交无需额外用户确认。
 
 ## Runtime 文档
 
@@ -19,7 +19,7 @@
 
 ## 自主执行循环
 
-1. 完整阅读 `case.source`，按执行原则划分条件，用 `plan` 建立 Baseline Case Flow。它冻结原始语义，不冻结现场导航路线。
+1. 通读 `case.source`，按原则用 `plan` 建 Baseline：节点 `N1`/`N2`…，禁 `A1`/`C1`/`E1`；边 `L1`/`L2`…，禁 `E1`。冻结原始语义，不冻结导航路线。
 2. 使用 Brief Scene；没有或可能变化时 `observe`。比较事实与目标，选定路径并按需修订 Working Flow。
 3. 动作前明确可观察预期并选择执行粒度：步骤间需要新的 Agent 判断时用 `act`；不需要新的 Agent 判断，且插入 Agent 决策会增加延迟或降低成功率时，用 `runPlan` 执行已确定的有限步骤。
 4. 读取新 Scene、`previousAction` 或 plan result，判断业务效果并回到第 2 步；形成 CHECK 判断即用 `recordResult` 保存。
