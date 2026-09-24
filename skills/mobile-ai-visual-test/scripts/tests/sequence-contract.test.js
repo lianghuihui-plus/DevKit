@@ -49,16 +49,6 @@ assert.strictEqual(
   sequenceRequestKey(flowContextRequest),
   sequenceRequestKey({ ...base, flowContext: { nodeRef: 'N1', selectedEdgeRef: 'L1' } }),
 );
-const stableKeysAcrossRuntimeContext = [
-  { remainingMs: 30000, deadline: 30000 },
-  { remainingMs: 12000, deadline: 12000 },
-  { remainingMs: 500, deadline: 500 },
-].map(({ remainingMs, deadline }) => sequenceRequestKey({
-  ...base,
-  decision: { purpose: `runtime context ${remainingMs}/${deadline}`, expectationRefs: [] },
-}));
-assert.deepStrictEqual(new Set(stableKeysAcrossRuntimeContext).size, 1);
-
 function invalid(request) {
   assert.throws(() => validateSequenceRequest(request), (error) => error.code === 'SEQUENCE_INVALID');
 }
@@ -81,6 +71,7 @@ invalid({ ...base, steps: [{ id: 'bad', type: 'capture', mode: 'FULL_SCENE', pur
 invalid({ ...base, flowContext: { nodeRef: 'N1', unsupported: true } });
 invalid({ ...base, flowContext: { nodeRef: '   ' } });
 invalid({ ...base, flowContext: { nodeRef: 'N1', selectedEdgeRef: '   ' } });
+for (const field of ['maxDurationMs', 'deadline', 'remainingMs', 'decisionId']) invalid({ ...base, [field]: 1 });
 
 assert.strictEqual(validateSequenceRequest({
   ...base,
