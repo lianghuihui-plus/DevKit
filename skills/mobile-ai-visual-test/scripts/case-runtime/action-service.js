@@ -164,7 +164,12 @@ function completeDispatchedAction(execDir, dispatched, afterScene, metadata = {}
       stepId: details.stepId,
     }, options);
   }
-  if (options.interruptAfter === 'action-completed') throw new Error('MAVT_CASE_ACTION_INTERRUPTED: action-completed');
+  if (options.interruptAfter === 'action-completed') {
+    const error = new Error('MAVT_CASE_ACTION_INTERRUPTED: action-completed');
+    error.code = 'MAVT_CASE_ACTION_INTERRUPTED';
+    error.interruptAfter = 'action-completed';
+    throw error;
+  }
   transaction = transactions.transitionAction(execDir, transaction, 'RESULT_RECORDED', 'OBSERVED', {
     outcome: classifyActionOutcome(adapterResult),
     observationStatus: 'CAPTURED',
@@ -441,6 +446,7 @@ function act(execDir, request, options = {}) {
     observed.scene = sceneService.projectSceneSummary(store.readCurrentScene(execDir));
     return { ...observed, action };
   } catch (error) {
+    if (error.code === 'MAVT_CASE_ACTION_INTERRUPTED' && error.interruptAfter === 'action-completed') throw error;
     const transaction = transactions.readAction(execDir, operationId);
     if (transaction?.status !== 'RESULT_RECORDED') throw error;
     const fact = recordCaptureFailureTechnicalFact(execDir, operationId, {

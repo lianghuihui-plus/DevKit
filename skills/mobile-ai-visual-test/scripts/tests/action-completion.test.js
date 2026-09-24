@@ -176,6 +176,56 @@ assert.strictEqual(store.events(fixture.execDir)
   .filter((event) => event.type === 'actionCompleted' && event.operationId === dispatched.operationId).length, 1);
 assert.strictEqual(knownActionDispatches, 2);
 
+const publicInterruptFixture = makeFixture('public-action-completion-interrupt');
+const publicInterruptBefore = store.readCurrentScene(publicInterruptFixture.execDir);
+let publicInterruptActionCalls = 0;
+assert.throws(() => act(publicInterruptFixture.execDir, {
+  basedOnSceneId: publicInterruptBefore.sceneId,
+  visual: { gesture: 'tap', point: [0.5, 0.5] },
+  decision: { purpose: '验证动作完成事件后的中断恢复' },
+}, {
+  now: '2026-09-24T10:00:00.300Z',
+  interruptAfter: 'action-completed',
+  invokeDeviceOperation: (_execDir, _payload, kind) => {
+    if (kind === 'ACTION') {
+      publicInterruptActionCalls += 1;
+      return acceptedResult('tap');
+    }
+    return observationResult(publicInterruptBefore, null);
+  },
+}), /MAVT_CASE_ACTION_INTERRUPTED: action-completed/);
+const publicInterruptOperationId = store.events(publicInterruptFixture.execDir)
+  .filter((event) => event.type === 'actionRequested').at(-1).operationId;
+const publicInterruptDraft = transactions.readAction(publicInterruptFixture.execDir, publicInterruptOperationId);
+const publicInterruptPostScene = store.readCurrentScene(publicInterruptFixture.execDir);
+assert.strictEqual(publicInterruptDraft.status, 'RESULT_RECORDED');
+assert.strictEqual(store.events(publicInterruptFixture.execDir)
+  .filter((event) => event.type === 'technicalIssue' && event.operationId === publicInterruptOperationId).length, 0);
+assert.strictEqual(store.events(publicInterruptFixture.execDir)
+  .filter((event) => event.type === 'actionCompleted' && event.operationId === publicInterruptOperationId).length, 1);
+assert.strictEqual(store.events(publicInterruptFixture.execDir)
+  .find((event) => event.type === 'actionCompleted' && event.operationId === publicInterruptOperationId).sceneIdAfter,
+publicInterruptPostScene.sceneId);
+completeDispatchedAction(publicInterruptFixture.execDir, {
+  operationId: publicInterruptOperationId,
+  beforeScene: publicInterruptBefore,
+  action: {
+    action: publicInterruptDraft.action,
+    command: publicInterruptDraft.deviceResult.command,
+    deviceExecution: publicInterruptDraft.deviceResult.deviceExecution,
+  },
+  adapterResult: publicInterruptDraft.deviceResult,
+}, publicInterruptPostScene, {
+  preSceneRef: publicInterruptBefore.sceneId,
+}, { promoteScene: true, now: '2026-09-24T10:00:00.310Z' });
+assert.strictEqual(transactions.readAction(publicInterruptFixture.execDir, publicInterruptOperationId), null);
+assert.strictEqual(store.events(publicInterruptFixture.execDir)
+  .filter((event) => event.type === 'actionCompleted' && event.operationId === publicInterruptOperationId).length, 1);
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(
+  publicInterruptFixture.execDir, 'operations', `${publicInterruptOperationId}.json`), 'utf8')).sceneIdAfter,
+publicInterruptPostScene.sceneId);
+assert.strictEqual(publicInterruptActionCalls, 1);
+
 const inputScene = store.readCurrentScene(fixture.execDir);
 inputScene.elements = [{
   id: 'account-field', text: '账号', role: 'TextField', bounds: [80, 210, 360, 270],
