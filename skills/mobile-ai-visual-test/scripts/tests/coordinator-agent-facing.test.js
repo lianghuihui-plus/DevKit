@@ -16,6 +16,7 @@ const {
   advanceRun,
   cancelRun,
   confirmRun,
+  executeRunRequest,
   loadCoordinatorState,
   prepareRun: prepareBoundRun,
 } = require('../coordinator/agent-facing-service');
@@ -519,6 +520,7 @@ assert.strictEqual(completeWithReportRetry.result.outcome, 'COMPLETE');
 assert.strictEqual(completeWithReportRetry.data.content.runOutcome, 'COMPLETED');
 assert.strictEqual(content(completeWithReportRetry).reportStatus, 'RETRY_REQUIRED');
 assert.strictEqual(content(completeWithReportRetry).reportPath, undefined);
+const initialSummaryRef = completeWithReportRetry.data.ref;
 writeJsonAtomic(path.join(workspace, 'runs', 'batch-report-retry-terminal', 'report-publication.json'), {
   schemaVersion: 1,
   batchId: 'batch-report-retry-terminal',
@@ -528,9 +530,15 @@ writeJsonAtomic(path.join(workspace, 'runs', 'batch-report-retry-terminal', 'rep
 const completeAfterReportRecovery = advanceRun(statePath(retryPublicationRun));
 assert.strictEqual(completeAfterReportRecovery.result.outcome, 'COMPLETE');
 assert.strictEqual(completeAfterReportRecovery.data.content.runOutcome, 'COMPLETED');
-assert.strictEqual(content(completeAfterReportRecovery).reportStatus, 'RETRY_REQUIRED');
-assert.strictEqual(content(completeAfterReportRecovery).reportPath, undefined);
-assert.deepStrictEqual(completeAfterReportRecovery.data, completeWithReportRetry.data);
+assert.strictEqual(content(completeAfterReportRecovery).reportStatus, 'PUBLISHED');
+assert.strictEqual(content(completeAfterReportRecovery).reportPath, path.join(workspace, 'index.html'));
+assert.notStrictEqual(completeAfterReportRecovery.data.ref, initialSummaryRef);
+const oldSummary = executeRunRequest(statePath(retryPublicationRun), {
+  operation: 'read', input: { ref: initialSummaryRef },
+});
+assert.strictEqual(content(oldSummary).reportStatus, 'RETRY_REQUIRED');
+assert.strictEqual(content(oldSummary).reportPath, undefined);
+assert.deepStrictEqual(advanceRun(statePath(retryPublicationRun)).data, completeAfterReportRecovery.data);
 
 function prepareConfirmedRun(batchId) {
   const start = prepareRun({ operation: 'prepareRun', input: { caseNos: ['014']  } }, { batchId });
@@ -748,7 +756,6 @@ for (const response of [prepared, unavailable, needBinding, confirmed, multiIosS
 }
 
 // Historical resources remain immutable and readable after the run terminates.
-const { executeRunRequest } = require('../coordinator/agent-facing-service');
 for (const response of [prepared, needBinding, needsCaseAgent, waiting, complete, unavailable, blocked, waitingRuntime]) {
   const file = statePath(response);
   const before = fs.readFileSync(file, 'utf8');

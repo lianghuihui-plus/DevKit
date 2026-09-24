@@ -27,7 +27,7 @@ const RESOURCE_CATALOG = Object.freeze({
   runDecision: { summary: '当前环境、设备或绑定决策的不可变完整投影。' },
   caseDispatch: { summary: '不可变 Handoff 绑定的独立 Case Agent 启动信息。' },
   runProgress: { summary: '当前等待对象与已持久化进度事实的不可变快照。' },
-  runSummary: { summary: '首次终态与报告发布结果的不可变快照。' },
+  runSummary: { summary: '某一报告发布状态下的不可变终态快照；发布状态变化时生成新快照，旧引用继续有效。' },
   coordinatorDiagnostic: { summary: '当前运行已持久化诊断事实。' },
 });
 function error(group, retryable, summary, recovery) {
@@ -90,7 +90,7 @@ const PUBLIC_METHODS = Object.freeze(Object.fromEntries(COORDINATOR_CAPABILITIES
   conditionalRequirements: name === 'confirmRun' ? ['三个 decision 分支不得混用字段。'] : [],
   contextualValidationRules: [], successStatuses: ['SUCCEEDED'], errorCodes: Object.keys(PUBLIC_ERRORS),
   sideEffects: name === 'read' ? [] : ['保存当前 run 的确定性进度'],
-  idempotency: name === 'prepareRun' ? '创建新 run。' : name === 'read' ? '只读，不推进状态。' : 'advanceRun/cancelRun 终态复用原 runSummary；confirmRun 终态拒绝。',
+  idempotency: name === 'prepareRun' ? '创建新 run。' : name === 'read' ? '只读，不推进状态。' : 'advanceRun/cancelRun 在终态且报告发布状态不变时复用当前 runSummary；发布状态变化时生成新快照并保留旧引用；confirmRun 终态拒绝。',
   minimalExample: { operation: name, input: examples[name] }, responseProjection: name === 'read' ? PROJECTIONS[name] : { outcomes: PROJECTIONS[name] },
   minimalExamples: [examples[name], ...(name === 'confirmRun' ? [
     { decision: 'USE_CURRENT', userInstruction: '确认使用当前环境' },

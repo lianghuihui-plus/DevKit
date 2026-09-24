@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { execute: executeBatch } = require('../batch');
+const { canonicalJson } = require('../lib/contract-utils');
 const { assertWorkspace } = require('../lib/workspace');
 const { resolveCaseNo } = require('../lib/case-numbering');
 const {
@@ -764,10 +765,27 @@ function pick(value, fields) {
   return Object.fromEntries(fields.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
 }
 
+function runSummaryContent(state, response, diagnosticRefs = []) {
+  return {
+    outcome: response.status, phase: state.phase,
+    ...(response.outcome ? { runOutcome: response.outcome } : {}),
+    ...pick(response, ['code', 'reason', 'reportStatus', 'reportErrorCode', 'reportReason', 'reportPath']),
+    ...(state.cancelReason ? { cancelReason: state.cancelReason } : {}),
+    ...(diagnosticRefs.length ? { diagnosticRefs } : {}),
+  };
+}
+
 function projectResponse(state, operation, response) {
   const projection = PUBLIC_CONTRACT.methods[operation].responseProjection.outcomes[response.status];
   if (!projection) throw coordinatorError('Coordinator 返回未声明结果', [], 'COORDINATOR_STATE_INVALID');
   let resource = projection.primaryResourceType === 'runSummary' ? resources.terminalResource(state) : null;
+  if (resource) {
+    const nextContent = runSummaryContent(state, response, resource.data.content.diagnosticRefs || []);
+    if (canonicalJson(resource.data.content) !== canonicalJson(nextContent)) {
+      resource = resources.publishSnapshot(state, 'runSummary', nextContent, resource.resources);
+      resources.bindTerminalResource(state, resource);
+    }
+  }
   if (!resource) {
     const associated = [];
     const diagnostic = response.facts?.technical || (response.diagnostics?.length ? {
@@ -793,13 +811,7 @@ function projectResponse(state, operation, response) {
         ...(diagnosticRefs.length ? { diagnosticRefs } : {}),
       }, associated);
     } else if (projection.primaryResourceType === 'runSummary') {
-      resource = resources.publishSnapshot(state, 'runSummary', {
-        outcome: response.status, phase: state.phase,
-        ...(response.outcome ? { runOutcome: response.outcome } : {}),
-        ...pick(response, ['code', 'reason', 'reportStatus', 'reportErrorCode', 'reportReason', 'reportPath']),
-        ...(state.cancelReason ? { cancelReason: state.cancelReason } : {}),
-        ...(diagnosticRefs.length ? { diagnosticRefs } : {}),
-      }, associated);
+      resource = resources.publishSnapshot(state, 'runSummary', runSummaryContent(state, response, diagnosticRefs), associated);
       resources.bindTerminalResource(state, resource);
     }
   }
