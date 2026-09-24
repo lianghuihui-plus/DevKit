@@ -19,7 +19,7 @@
 
 ## 自主执行循环
 
-1. 通读 `case.source`，按原则用 `plan` 建 Baseline：节点 `N1`/`N2`…，禁 `A1`/`C1`/`E1`；边 `L1`/`L2`…，禁 `E1`。冻结原始语义，不冻结导航路线。
+1. 通读 `case.source`，用 `plan` 建 Baseline：节点 N1/N2…，禁 A1/C1/E1；边 L1/L2…，禁 E1。冻结原始语义，不冻结导航路线。
 2. 使用 Brief Scene；没有或可能变化时 `observe`。比较事实与目标，选定路径并按需修订 Working Flow。
 3. 动作前明确可观察预期并选择执行粒度：步骤间需要新的 Agent 判断时用 `act`；不需要新的 Agent 判断，且插入 Agent 决策会增加延迟或降低成功率时，用 `runPlan` 执行已确定的有限步骤。
 4. 读取新 Scene、`previousAction` 或 plan result，判断业务效果并回到第 2 步；形成 CHECK 判断即用 `recordResult` 保存。
