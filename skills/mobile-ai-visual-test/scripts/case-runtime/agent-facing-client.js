@@ -15,6 +15,15 @@ const { PUBLIC_CONTRACT, validateAgentFacingRequest } = require('./agent-facing-
 const telemetry = require('./telemetry');
 
 const STATE_FILE = 'agent-facing-state.json';
+const CASE_FLOW_INPUT_ERROR_CODES = new Set([
+  'CASE_FLOW_INVALID',
+  'CASE_FLOW_NODE_REF_INVALID',
+  'CASE_FLOW_EDGE_REF_INVALID',
+  'CASE_FLOW_EDGE_INVALID',
+  'CASE_FLOW_UNREACHABLE_NODE',
+  'CASE_FLOW_END_UNREACHABLE',
+  'CASE_FLOW_REASON_REQUIRED',
+]);
 
 function metricClock(options) {
   return typeof options.agentFacingMetricClock === 'function' ? options.agentFacingMetricClock() : Date.now();
@@ -80,6 +89,40 @@ function invalidResponse(execDir, request, issues, code = 'AGENT_INPUT_INVALID')
   }, request);
 }
 
+function caseFlowInputIssues(response) {
+  const nodeField = response.message?.match(/(nodes\[\d+\]\.ref)/)?.[1];
+  if (response.code === 'CASE_FLOW_NODE_REF_INVALID' && nodeField && /invalid format/.test(response.message)) {
+    return [{
+      field: `input.caseFlow.${nodeField}`,
+      code: response.code,
+      expected: 'string matching ^N[1-9]\\d*$',
+      message: `${nodeField} 必须使用节点引用 N1、N2…；不要按节点类型使用 A1、C1、E1 等前缀`,
+    }];
+  }
+  const edgeField = response.message?.match(/(edges\[\d+\]\.ref)/)?.[1];
+  if (response.code === 'CASE_FLOW_EDGE_REF_INVALID' && edgeField && /invalid format/.test(response.message)) {
+    return [{
+      field: `input.caseFlow.${edgeField}`,
+      code: response.code,
+      expected: 'string matching ^L[1-9]\\d*$',
+      message: `${edgeField} 必须使用边引用 L1、L2…；不要使用 E1 等其他前缀`,
+    }];
+  }
+  return (response.issues || [{}]).map((item) => {
+    const internalField = item.field || item.fieldPath;
+    const field = !internalField || internalField === 'request'
+      ? 'input.caseFlow'
+      : internalField.startsWith('input.') ? internalField
+        : `input.caseFlow.${internalField.replace(/^caseFlow\.?/, '')}`;
+    return {
+      field,
+      code: item.code || response.code,
+      expected: item.expected || '符合 plan Schema 与图结构约束的完整 Case Flow',
+      message: response.message || item.message || `${field} 不符合 Case Flow 约束`,
+    };
+  });
+}
+
 function executeRun(execDir, request, options = {}) {
   const resolved = path.resolve(execDir);
   const execution = readJson(path.join(resolved, 'execution.json'), null);
@@ -143,6 +186,9 @@ function executeRun(execDir, request, options = {}) {
     return projectAgentFacingError({ status: 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
   }
   if (response?.status === 'REQUEST_INVALID') {
+    if (request.operation === 'plan' && CASE_FLOW_INPUT_ERROR_CODES.has(response.code)) {
+      return invalidResponse(resolved, request, caseFlowInputIssues(response));
+    }
     if (PUBLIC_CONTRACT.errors[response.code]) {
       return invalidResponse(resolved, request, response.issues || [{
         field: request.operation === 'plan' ? 'input.caseFlow' : 'request',
