@@ -1,6 +1,6 @@
 'use strict';
 
-const { canonicalJson, contractError, ensureString, sha256 } = require('../lib/contract-utils');
+const { canonicalJson, contractError, sha256 } = require('../lib/contract-utils');
 const { validateAgentJson } = require('../lib/agent-json-contract');
 const { AGENT_CONTRACT_DEFINITIONS } = require('./runtime-operation-contract');
 const { validateDecision } = require('./contract');
@@ -30,6 +30,10 @@ function validateFlowContext(value) {
   if (!object(value)) invalid('flowContext must be an object');
   const issues = validateAgentJson(value, { $ref: 'flowContext' }, AGENT_CONTRACT_DEFINITIONS, 'flowContext');
   if (issues.length) invalid(`flowContext has ${issues.length} contract issue${issues.length === 1 ? '' : 's'}`, { issues });
+  if (!value.nodeRef.trim()) invalid('flowContext.nodeRef must be a non-empty string');
+  if (value.selectedEdgeRef !== undefined && !value.selectedEdgeRef.trim()) {
+    invalid('flowContext.selectedEdgeRef must be a non-empty string');
+  }
   return value;
 }
 
@@ -50,6 +54,7 @@ function validateActionStep(step, index) {
     }
   }
   if (hasVisual) {
+    if (step.input !== undefined) invalid(`${prefix}.input is only valid with capabilityId`);
     const issues = validateAgentJson(step.visual, { $ref: 'visualAction' }, AGENT_CONTRACT_DEFINITIONS, `${prefix}.visual`);
     if (issues.length) invalid(`${prefix}.visual has ${issues.length} contract issue${issues.length === 1 ? '' : 's'}`, { issues });
   }

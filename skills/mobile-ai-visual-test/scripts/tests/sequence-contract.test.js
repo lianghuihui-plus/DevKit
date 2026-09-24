@@ -49,6 +49,15 @@ assert.strictEqual(
   sequenceRequestKey(flowContextRequest),
   sequenceRequestKey({ ...base, flowContext: { nodeRef: 'N1', selectedEdgeRef: 'L1' } }),
 );
+const stableKeysAcrossRuntimeContext = [
+  { remainingMs: 30000, deadline: 30000 },
+  { remainingMs: 12000, deadline: 12000 },
+  { remainingMs: 500, deadline: 500 },
+].map(({ remainingMs, deadline }) => sequenceRequestKey({
+  ...base,
+  decision: { purpose: `runtime context ${remainingMs}/${deadline}`, expectationRefs: [] },
+}));
+assert.deepStrictEqual(new Set(stableKeysAcrossRuntimeContext).size, 1);
 
 function invalid(request) {
   assert.throws(() => validateSequenceRequest(request), (error) => error.code === 'SEQUENCE_INVALID');
@@ -65,10 +74,13 @@ invalid({ ...base, steps: Array.from({ length: 13 }, (_, index) => ({ id: `s${in
 invalid({ ...base, steps: [{ id: 'bad', type: 'wait', ms: MAX_SEQUENCE_DURATION_MS + 1 }] });
 invalid({ ...base, steps: [{ id: 'bad', type: 'act', capabilityId: 'tap', input: { unsupported: true } }] });
 invalid({ ...base, steps: [{ id: 'bad', type: 'act', capabilityId: 'tap', visual: { gesture: 'tap', point: [0.5, 0.5] } }] });
+invalid({ ...base, steps: [{ id: 'bad', type: 'act', visual: { gesture: 'tap', point: [0.5, 0.5] }, input: { text: 'unexpected' } }] });
 invalid({ ...base, steps: [{ id: 'bad', type: 'act', input: { text: 'x' } }] });
 invalid({ ...base, steps: [{ id: 'bad', type: 'capture', mode: 'NOPE', purpose: 'x' }] });
 invalid({ ...base, steps: [{ id: 'bad', type: 'capture', mode: 'FULL_SCENE', purpose: '   ' }] });
 invalid({ ...base, flowContext: { nodeRef: 'N1', unsupported: true } });
+invalid({ ...base, flowContext: { nodeRef: '   ' } });
+invalid({ ...base, flowContext: { nodeRef: 'N1', selectedEdgeRef: '   ' } });
 
 assert.strictEqual(validateSequenceRequest({
   ...base,
