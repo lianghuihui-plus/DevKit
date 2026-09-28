@@ -50,3 +50,25 @@
 
 - The extraction delegates action-shape and platform validation to the existing capability/action contracts instead of duplicating them.
 - Sequence-only dispatch controls remain outside this commit for Task 4A2.
+
+## Task 4A2c - Sequence action lifecycle hooks
+
+### Files
+
+- Updated `scripts/case-runtime/action-service.js` with injected prevalidated action context, bounded ACTION timeout forwarding, tagged persistent-boundary interrupts, and complete unknown-result post evidence.
+- Added and registered `scripts/tests/action-sequence-hooks.test.js`.
+
+### RED / GREEN
+
+- The hook implementation was inherited as uncommitted work; the new focused characterization passed on its first run, so no additional production fix was required.
+
+### Evidence
+
+- Injected `beforeScene`, `resolvedAction`, and `operationId` are used without changing `current-scene.json`, and `timeoutMs` reaches the ACTION adapter call.
+- PREPARED, DISPATCHED, and RESULT_RECORDED interrupts leave their exact draft state, never record `actionOutcomeUnknown`, and invoke the adapter zero, zero, and one time respectively.
+- Unknown completion with a captured after Scene persists both before and after Scene/screenshot evidence and closes the draft without promotion.
+
+### Self-review
+
+- Tagged interruption hooks only expose durable boundaries; they do not implement recovery or redispatch.
+- Sequence execution and recovery remain outside this commit.

@@ -47,6 +47,7 @@ const suites = Object.freeze({
   caseStatusProjection: 'tests/case-status-projection.test.js',
   caseRuntime: 'tests/case-runtime.test.js',
   actionRequest: 'tests/action-request.test.js',
+  actionSequenceHooks: 'tests/action-sequence-hooks.test.js',
   actionCompletion: 'tests/action-completion.test.js',
   actionPlanDispatch: 'tests/action-plan-dispatch.test.js',
   actionRecoveryOwnership: 'tests/action-recovery-ownership.test.js',

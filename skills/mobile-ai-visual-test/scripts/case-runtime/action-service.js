@@ -207,7 +207,7 @@ function completeUnknownDispatchedAction(execDir, unknown, afterScene, metadata 
     action: transaction.action,
     command: { status: 'UNKNOWN' },
     deviceExecution: { status: 'UNVERIFIED' },
-    evidence: actionEvidence(unknown.beforeScene || store.readCurrentScene(execDir)),
+    evidence: actionEvidence(unknown.beforeScene || store.readCurrentScene(execDir), afterScene),
   };
   if (!afterScene) {
     const captureFailureTechnicalFactRef = captureFailureTechnicalFact(execDir, transaction.operationId, options);
@@ -245,11 +245,11 @@ function recordCaptureFailureTechnicalFact(execDir, operationId, metadata, actio
 
 function dispatchAction(execDir, request, options = {}) {
   const execution = store.loadExecution(execDir);
-  const scene = store.readCurrentScene(execDir);
+  const scene = options.beforeScene || store.readCurrentScene(execDir);
   if (!scene) return sceneService.observe(execDir, options);
-  const resolved = resolveActionRequest(scene, request, execution.platform);
+  const resolved = options.resolvedAction || resolveActionRequest(scene, request, execution.platform);
   if (resolved.stale) return { status: 'SCENE_CHANGED', scene: sceneService.projectSceneSummary(scene) };
-  const operationId = store.nextId(execDir, 'action');
+  const operationId = options.operationId || store.nextId(execDir, 'action');
   let transaction = transactions.prepareAction(execDir, {
     operationId,
     sceneId: scene.sceneId,
@@ -272,11 +272,13 @@ function dispatchAction(execDir, request, options = {}) {
     sequenceId: request.sequenceId || null,
     stepId: request.stepId || null,
   }, options);
+  if (options.interruptAfter === 'action-prepared') throw Object.assign(new Error('action-prepared'), { code: 'MAVT_SEQUENCE_INTERRUPTED' });
   let deviceResult;
   try {
     transaction = transactions.transitionAction(execDir, transaction, 'PREPARED', 'DISPATCHED', {
       dispatchedAt: options.now || new Date().toISOString(),
     });
+    if (options.interruptAfter === 'action-dispatched') throw Object.assign(new Error('action-dispatched'), { code: 'MAVT_SEQUENCE_INTERRUPTED' });
     if (options.interruptAfter === 'dispatch') throw new Error('MAVT_CASE_ACTION_INTERRUPTED: dispatch');
     deviceResult = (options.invokeDeviceOperation || invokeDeviceOperation)(execDir, {
       context: { execution },
@@ -286,15 +288,17 @@ function dispatchAction(execDir, request, options = {}) {
         basisObservationRef: scene.screenshot.ref,
         ...(request.observationPolicy ? { observationPolicy: request.observationPolicy } : {}),
       },
-    }, 'ACTION', { now: options.now, runner: options.runner, onAdapterSpan: options.onAdapterSpan });
+    }, 'ACTION', { now: options.now, runner: options.runner, onAdapterSpan: options.onAdapterSpan, timeoutMs: options.timeoutMs });
     transaction = transactions.transitionAction(execDir, transaction, 'DISPATCHED', 'RESULT_RECORDED', {
       deviceResult: sanitizeAdapterActionResult(deviceResult.adapterResult),
       spatialEvidenceRef: deviceResult.spatialEvidenceRef || null,
       duringActionObservation: duringActionObservation(request, deviceResult),
       recordedAt: options.now || new Date().toISOString(),
     });
+    if (options.interruptAfter === 'action-result-recorded') throw Object.assign(new Error('action-result-recorded'), { code: 'MAVT_SEQUENCE_INTERRUPTED' });
     if (options.interruptAfter === 'device-result') throw new Error('MAVT_CASE_ACTION_INTERRUPTED: device-result');
   } catch (error) {
+    if (error.code === 'MAVT_SEQUENCE_INTERRUPTED') throw error;
     if (transaction.status !== 'DISPATCHED') throw error;
     const sanitizedError = redactedActionError(error, resolved.action);
     const technicalFact = store.appendEvent(execDir, 'actionOutcomeUnknown', {
