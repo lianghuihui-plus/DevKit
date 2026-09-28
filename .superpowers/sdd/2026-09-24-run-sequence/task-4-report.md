@@ -72,3 +72,29 @@
 
 - Tagged interruption hooks only expose durable boundaries; they do not implement recovery or redispatch.
 - Sequence execution and recovery remain outside this commit.
+
+## Task 4A2d - Terminal single-action Sequence
+
+### Files
+
+- Extended `scripts/case-runtime/sequence-service.js` with the bounded one-action `runSequence` happy path.
+- Added and registered `scripts/tests/sequence-single-action.test.js`.
+
+### RED
+
+- `node scripts/tests/sequence-single-action.test.js` failed because `runSequence` was not exported.
+
+### GREEN
+
+- The focused suite passed after implementing replay-first lookup, prevalidation, signed running/terminal records, bounded dispatch, final Scene promotion, and shared action completion.
+
+### Evidence
+
+- The signed nonterminal record exists before ACTION dispatch; ACTION receives 26000 ms from a clamped 30000 ms Sequence and the final FULL_SCENE receives the full remaining 30000 ms.
+- The final Scene carries `ACTION_POST` and `SEQUENCE_FINAL`, exact operation/Sequence/step identity, and before/after action evidence; the action draft is closed with one completion event.
+- Exact retry after final promotion ignores changed Runtime metadata and performs no adapter call; changed stable input on the old Scene returns `SCENE_CHANGED` without dispatch.
+
+### Self-review
+
+- Every shape other than exactly one `act` fails with `SEQUENCE_NOT_IMPLEMENTED`; this commit does not fabricate unsupported completion.
+- Multi-action, wait, explicit capture, failure closure, budget exhaustion, and recovery remain later phases.
