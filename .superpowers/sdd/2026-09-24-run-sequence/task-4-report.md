@@ -24,3 +24,29 @@
 
 - Integrity checks in 4A1 intentionally cover only record schema, execution binding, reference, request-key shape, and signature.
 - Action/event/Scene graph integrity, execution, capture planning, budgets, and crash recovery remain Task 4A/4B work.
+
+## Task 4A2a - Shared action validation
+
+### Files
+
+- Added `scripts/case-runtime/action-request.js` to share action resolution, required-input and visual validation, observation-policy checks, and long-press timing validation.
+- Updated `scripts/case-runtime/action-service.js` to use the shared resolver without changing standalone `act` behavior.
+- Added and registered `scripts/tests/action-request.test.js`.
+
+### RED
+
+- `node scripts/tests/action-request.test.js` failed because the extracted observation-policy branch prefixed the established standalone error message.
+
+### GREEN
+
+- The focused test passed after restoring the original `Error` message and code shape inside the shared helper.
+
+### Evidence
+
+- Valid visual, input-text, and timed long-press actions resolve through the shared path.
+- Unavailable capabilities return the existing stale result; missing input, invalid visual coordinates, invalid observation policy, and invalid long-press timing are rejected.
+
+### Self-review
+
+- The extraction delegates action-shape and platform validation to the existing capability/action contracts instead of duplicating them.
+- Sequence-only dispatch controls remain outside this commit for Task 4A2.

@@ -3,8 +3,7 @@
 const { invokeDeviceOperation } = require('../platform/device-port');
 const { safeActionTechnicalDetails, sanitizeAdapterActionResult } = require('../lib/action-result');
 const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
-const { resolveAction } = require('./capability-catalog');
-const { validateLongPressTiming } = require('./contract');
+const { resolveActionRequest } = require('./action-request');
 const sceneService = require('./scene-service');
 const store = require('./store');
 const transactions = require('./transaction-manager');
@@ -248,14 +247,8 @@ function dispatchAction(execDir, request, options = {}) {
   const execution = store.loadExecution(execDir);
   const scene = store.readCurrentScene(execDir);
   if (!scene) return sceneService.observe(execDir, options);
-  const resolved = resolveAction(scene, request, execution.platform);
+  const resolved = resolveActionRequest(scene, request, execution.platform);
   if (resolved.stale) return { status: 'SCENE_CHANGED', scene: sceneService.projectSceneSummary(scene) };
-  if (request.observationPolicy && resolved.action.type !== 'longPress') {
-    const error = new Error('observationPolicy.duringActionAtMs is only supported for longPress');
-    error.code = 'CASE_RUNTIME_REQUEST_INVALID';
-    throw error;
-  }
-  if (resolved.action.type === 'longPress') validateLongPressTiming(resolved.action.durationMs, request.observationPolicy);
   const operationId = store.nextId(execDir, 'action');
   let transaction = transactions.prepareAction(execDir, {
     operationId,
