@@ -98,3 +98,30 @@
 
 - Every shape other than exactly one `act` fails with `SEQUENCE_NOT_IMPLEMENTED`; this commit does not fabricate unsupported completion.
 - Multi-action, wait, explicit capture, failure closure, budget exhaustion, and recovery remain later phases.
+
+## Task 4A2e1 - Sequence screenshot-only Scene helper
+
+### Files
+
+- Added exported `persistSequenceScreenshotScene` in `scripts/case-runtime/sequence-service.js`.
+- Exposed the existing capture metadata normalizer from `scripts/case-runtime/scene-service.js` so full and screenshot-only Scene paths share origin rules.
+- Added and registered `scripts/tests/sequence-screenshot-scene.test.js`.
+
+### RED
+
+- `node scripts/tests/sequence-screenshot-scene.test.js` failed because `persistSequenceScreenshotScene` was not exported.
+
+### GREEN
+
+- The focused suite passed after implementing Sequence-only screenshot Scene construction, persistence, promotion control, and event recording.
+
+### Evidence
+
+- Origins are deduplicated and ordered, action association requires `ACTION_POST`, and previous-action evidence gains exact before/after Scene and screenshot refs.
+- `promote:false` persists the Scene and event without changing `current-scene.json`; `promote:true` explicitly updates it.
+- Persisted Scene/event metadata carries operation, Sequence, and step identity with source operation `runSequence` and no Plan fields.
+
+### Self-review
+
+- The helper only consumes an already-completed screenshot adapter result; device invocation and deadline policy remain the caller's responsibility.
+- Two-action orchestration and explicit capture execution remain later phases.

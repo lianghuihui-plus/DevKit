@@ -224,4 +224,9 @@ function observe(execDir, options = {}) {
   return { status: 'SCENE', scene: projectSceneSummary(scene) };
 }
 
-module.exports = { observe, projectSceneSummary, sceneFromObservation };
+module.exports = {
+  normalizeCaptureMetadata: normalizedCaptureMetadata,
+  observe,
+  projectSceneSummary,
+  sceneFromObservation,
+};

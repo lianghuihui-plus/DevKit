@@ -115,6 +115,139 @@ function responseFromSequenceRecord(record, options = {}) {
   };
 }
 
+function nextSceneId(execDir) {
+  const count = store.events(execDir).filter((event) => event.type === 'sceneObserved').length;
+  return `scene-${String(count + 1).padStart(4, '0')}`;
+}
+
+function sequenceScreenshotPreviousAction(previousAction, beforeScene, sceneId, screenshotRef) {
+  if (!previousAction) return null;
+  const beforeSceneRef = previousAction.evidence?.sceneRefs?.before || beforeScene?.sceneId;
+  const beforeScreenshotRefs = previousAction.evidence?.screenshotRefs
+    || (beforeScene?.screenshot?.ref ? [beforeScene.screenshot.ref] : []);
+  return {
+    ...previousAction,
+    evidence: {
+      sceneRefs: {
+        ...(beforeSceneRef ? { before: beforeSceneRef } : {}),
+        after: sceneId,
+      },
+      screenshotRefs: [...new Set([...beforeScreenshotRefs, screenshotRef])],
+    },
+  };
+}
+
+function persistSequenceScreenshotScene(execDir, invoked, execution, metadata = {}, options = {}) {
+  if (typeof options.promote !== 'boolean') {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'Sequence screenshot promotion must be explicit');
+  }
+  if (typeof metadata.operationId !== 'string' || !metadata.operationId.trim()) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'Sequence screenshot operationId is required');
+  }
+  const capture = sceneService.normalizeCaptureMetadata(metadata);
+  if (!capture.sequenceId) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'Sequence screenshot sequenceId is required');
+  }
+  if (capture.relatedOperationId && !capture.captureOrigins.includes('ACTION_POST')) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'a Sequence relatedOperationId requires ACTION_POST capture origin');
+  }
+  const screenshot = invoked?.evidence;
+  if (!screenshot?.ref || !screenshot.sha256) {
+    throw contractError('CASE_RUNTIME_REQUEST_INVALID', 'Sequence screenshot evidence is invalid');
+  }
+  const sceneId = nextSceneId(execDir);
+  const previousAction = sequenceScreenshotPreviousAction(
+    metadata.previousAction || null,
+    metadata.beforeScene || null,
+    sceneId,
+    screenshot.ref,
+  );
+  const capturedAt = options.now || invoked.adapterResult?.time || new Date().toISOString();
+  const scene = {
+    schemaVersion: 2,
+    sceneId,
+    captureMode: 'SCREENSHOT_ONLY',
+    generation: execution.warmSessionGeneration,
+    warmSessionRef: {
+      sessionId: execution.warmSessionId,
+      epoch: execution.warmSessionEpoch,
+      generation: execution.warmSessionGeneration,
+    },
+    capturedAt,
+    screenshot: {
+      ref: screenshot.ref,
+      path: path.join(path.resolve(execDir), screenshot.ref),
+      sha256: screenshot.sha256,
+      width: screenshot.width,
+      height: screenshot.height,
+    },
+    evidenceChannels: {
+      visual: {
+        available: true,
+        ref: screenshot.ref,
+        attachment: {
+          type: 'image',
+          mediaType: 'image/png',
+          path: path.join(path.resolve(execDir), screenshot.ref),
+          sha256: screenshot.sha256,
+        },
+        inspection: { tool: 'view_image', recordOperation: 'inspectVisual', order: 'VIEW_THEN_RECORD' },
+      },
+      layout: {
+        available: false,
+        ref: null,
+        diagnostics: [{ code: 'SCREENSHOT_ONLY', severity: 'INFO', message: 'Sequence step captured visual evidence only' }],
+        inline: false,
+        inspectOperation: 'inspectScene',
+      },
+      policy: 'VISUAL_ONLY',
+      conflictRule: 'AGENT_INTERPRETS_VISUAL_EVIDENCE',
+    },
+    layoutRef: null,
+    layout: { usable: false, format: 'none', diagnostics: [] },
+    captureTiming: invoked.adapterResult?.captureTiming || null,
+    app: invoked.adapterResult?.app || null,
+    signals: {},
+    conflicts: [],
+    elements: [],
+    capabilities: [],
+    scrollContainers: [],
+    scrollContexts: [],
+    visual: { gestures: ['tap', 'doubleTap', 'longPress', 'swipe'], coordinates: 'normalized-0-to-1' },
+    previousAction,
+    captureOrigins: capture.captureOrigins,
+    relatedOperationId: capture.relatedOperationId,
+    sequenceId: capture.sequenceId,
+    stepId: capture.stepId,
+    source: {
+      operation: 'runSequence',
+      stepId: capture.stepId,
+      operationId: metadata.operationId,
+    },
+  };
+  store.writeScene(execDir, scene, { promote: options.promote });
+  store.appendEvent(execDir, 'sceneObserved', {
+    sceneId: scene.sceneId,
+    generation: scene.generation,
+    warmSessionRef: scene.warmSessionRef,
+    operationId: metadata.operationId,
+    purpose: metadata.purpose || 'SEQUENCE_CAPTURE',
+    captureOrigins: scene.captureOrigins,
+    relatedOperationId: scene.relatedOperationId,
+    decisionId: metadata.decisionId || null,
+    screenshotRef: scene.screenshot.ref,
+    screenshotSha256: scene.screenshot.sha256,
+    layoutRef: null,
+    app: scene.app,
+    technicalSignals: null,
+    captureMode: scene.captureMode,
+    promoted: options.promote,
+    sequenceId: scene.sequenceId,
+    stepId: scene.stepId,
+  }, { now: capturedAt });
+  return scene;
+}
+
 function sceneChanged(scene) {
   return {
     status: 'SCENE_CHANGED',
@@ -272,6 +405,7 @@ function runSequence(execDir, request, options = {}) {
 module.exports = {
   assertSequenceIntegrity,
   findTerminalSequence,
+  persistSequenceScreenshotScene,
   readSequences,
   responseFromSequenceRecord,
   runSequence,
