@@ -303,6 +303,7 @@ function translateAgentFacingRequest(execDir, request) {
     };
   } else if (request.operation === 'knowledge') translated = {
     operation: 'knowledge', basedOnSceneId: scene.sceneId, query: request.query,
+    ...(request.context ? { context: request.context } : {}),
     ...flowContext,
     decision: { purpose: '调查当前异常的已知解释和处理规则', expectationRefs },
   };

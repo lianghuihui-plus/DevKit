@@ -46,6 +46,11 @@ assert.deepStrictEqual(publicSequenceSteps.oneOf[0].properties.action.oneOf[1].p
   { type: 'integer', minimum: 0, maximum: 10000 });
 assert.deepStrictEqual(Object.keys(caseContract.methods.runSequence.inputSchema.properties).sort(),
   ['flowContext', 'purpose', 'sceneRef', 'steps']);
+const publicKnowledgeQuery = caseContract.methods.knowledge.inputSchema.oneOf
+  .find((branch) => branch.properties.mode.const === 'query');
+assert.ok(publicKnowledgeQuery.properties.context, 'knowledge query must expose optional retrieval context');
+assert.deepStrictEqual(Object.keys(publicKnowledgeQuery.properties.context.properties).sort(), ['operation', 'page']);
+assert.deepStrictEqual(publicKnowledgeQuery.properties.context.required, []);
 assert.ok(caseContract.methods.runSequence.minimalExample.input.steps
   .filter((step) => step.type === 'act').length >= 2,
   'runSequence minimal example must demonstrate a deterministic multi-action sequence');
@@ -88,7 +93,7 @@ function assertContract(contract, expectedMethods) {
 assertContract(caseContract, ['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
 assertContract(coordinatorContract, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun', 'read']);
 assert.ok(caseContract.methods.finish.contextualValidationRules.some((rule) =>
-  /预期不符.*操作无效果.*异常反复.*收口前.*知识调查.*外部依赖.*不机械查询/.test(rule)),
+  /预期不符.*操作无效果.*异常反复.*无法形成可靠判断.*优先.*知识调查.*现场证据.*技术事实.*才不查询/.test(rule)),
 'finish guidance must preserve the Agent-side knowledge investigation trigger');
 for (const contract of [caseContract, coordinatorContract]) {
   for (const method of Object.values(contract.methods)) assert.deepStrictEqual(method.successStatuses, ['SUCCEEDED']);
@@ -96,7 +101,7 @@ for (const contract of [caseContract, coordinatorContract]) {
 }
 buildDocs({ root, check: true });
 assert.match(fs.readFileSync(path.join(root, 'references/case-runtime/methods/finish.md'), 'utf8'),
-  /预期不符.*操作无效果.*异常反复.*收口前.*知识调查.*外部依赖.*不机械查询/);
+  /预期不符.*操作无效果.*异常反复.*无法形成可靠判断.*优先.*知识调查.*现场证据.*技术事实.*才不查询/);
 
 const files = outputFiles({ root });
 for (const [relative, content] of files) {

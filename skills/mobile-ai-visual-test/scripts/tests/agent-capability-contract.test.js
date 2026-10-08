@@ -125,12 +125,13 @@ const executionGranularityGuidance = [
   read('prompts/case-agent.md'),
   read('references/case-execution-principles.md'),
 ].join('\n');
-assert.match(executionGranularityGuidance, /两个及以上动作.*当前证据完整确定.*步骤间不需要视觉理解、业务判断或重新规划.*`runSequence`/);
-assert.match(executionGranularityGuidance, /动作后需要立即判断.*`act`/);
-assert.match(executionGranularityGuidance, /单动作后仍需.*wait 或 capture.*`runSequence`/);
+assert.match(executionGranularityGuidance, /`act`.*一个动作.*完整新 Scene.*控制权.*Agent/);
+assert.match(executionGranularityGuidance, /`runSequence`.*连续执行.*步骤间不交还控制权.*最终.*Scene/);
+assert.match(executionGranularityGuidance, /同一执行意图.*两者.*优先.*`runSequence`/);
+assert.doesNotMatch(executionGranularityGuidance, /动作后需要立即判断|两个及以上动作已由当前证据完整确定/);
 assert.match(executionGranularityGuidance, /自动保存动作后截图.*最终完整 Scene.*不要机械添加 capture/);
-assert.match(CASE_PUBLIC_CONTRACT.methods.act.summary, /一个动作.*新 Scene.*重新判断/);
-assert.match(CASE_PUBLIC_CONTRACT.methods.runSequence.summary, /连续执行已确定的动作/);
+assert.match(CASE_PUBLIC_CONTRACT.methods.act.summary, /一个动作.*新 Scene.*控制权.*Agent/);
+assert.match(CASE_PUBLIC_CONTRACT.methods.runSequence.summary, /连续执行预先给定的动作.*步骤间不交还控制权.*最终 Scene/);
 const knowledgeGuidance = [
   read('prompts/case-agent.md'),
   read('references/case-execution-principles.md'),
@@ -139,10 +140,12 @@ const knowledgeGuidance = [
 ].join('\n');
 assert.match(knowledgeGuidance, /预期不符.*操作无效果.*异常反复/,
   'knowledge guidance must cover the recurring execution symptoms that benefit from prior knowledge');
-assert.match(knowledgeGuidance, /尽早.*`?knowledge`?.*不要等到.*收口/,
+assert.match(knowledgeGuidance, /原因不明.*无法形成可靠判断/,
+  'knowledge guidance must cover unexplained and uncertain outcomes');
+assert.match(knowledgeGuidance, /优先.*尽早.*`?knowledge`?.*不要等到.*收口/,
   'knowledge investigation must happen while it can still improve the next decision');
-assert.match(knowledgeGuidance, /平台.*版本.*账号.*配置.*条件适用性.*同类异常/,
-  'knowledge guidance must enumerate the external facts that Scene evidence cannot establish');
+assert.match(knowledgeGuidance, /现场证据.*明确技术事实.*完整解释.*才不查询/,
+  'skipping knowledge must be the explicit exception for fully explained issues');
 assert.doesNotMatch(knowledgeGuidance, /每条用例.*必须.*`?knowledge`?/,
   'stronger guidance must not become an unconditional query gate');
 assert.match(read('references/case-runtime/errors/knowledge-recovery.md'), /APP_INITIAL_STATE_UNAVAILABLE[\s\S]*recover/);

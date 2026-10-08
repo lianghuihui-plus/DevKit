@@ -1,6 +1,6 @@
 # CaseRuntime.runSequence
 
-连续执行已确定的动作、等待与采集。
+连续执行预先给定的动作、等待与采集；步骤间不交还控制权，结束后返回最终 Scene 和步骤证据。
 
 签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
 
@@ -30,8 +30,7 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 
 ## 上下文校验
 
-- 两个及以上动作已由当前证据完整确定、步骤间不需要视觉理解、业务判断或重新规划时，优先使用 runSequence。
-- 动作后需要立即判断时使用 act；单动作后仍需按指定时机 wait 或 capture 时可以使用 runSequence。
+- 同一执行意图同时可由 act 和 runSequence 完成时，优先使用 runSequence。
 
 ## 成功状态
 

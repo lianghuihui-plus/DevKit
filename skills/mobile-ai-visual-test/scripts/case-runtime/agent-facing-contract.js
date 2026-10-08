@@ -52,6 +52,10 @@ const ASSESSMENT = object({
   status: { enum: ['APPLICABLE', 'NOT_APPLICABLE', 'CONFLICTING', 'INSUFFICIENT'] },
   reason: STRING,
 }, ['entryId', 'status', 'reason']);
+const KNOWLEDGE_CONTEXT = object({
+  page: STRING,
+  operation: STRING,
+}, []);
 
 const EXTERNAL_ACTION = object({ summary: STRING, tool: STRING }, ['summary']);
 
@@ -119,7 +123,8 @@ const SCHEMAS = Object.freeze({
     flowContext: FLOW_CONTEXT,
   }, ['sceneRef', 'purpose', 'steps']),
   knowledgeQuery: object({
-    mode: { const: 'query' }, sceneRef: SCENE_REF, query: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
+    mode: { const: 'query' }, sceneRef: SCENE_REF, query: STRING, context: KNOWLEDGE_CONTEXT,
+    checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
   }, ['mode', 'sceneRef', 'query']),
   knowledgeReview: object({
     mode: { const: 'review' }, sceneRef: SCENE_REF, queryId: STRING,
@@ -283,13 +288,13 @@ const PUBLIC_METHODS = Object.freeze({
     sideEffects: ['追加 expectation result 事件'], idempotency: '相同结果重复提交不追加重复事件。',
     minimalExample: { operation: 'recordResult', input: { results: [{ checkNodeRef: 'N1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: [EXAMPLE_SCENE_REF] } }] } },
   }),
-  act: method('act', '执行一个动作并返回完整新 Scene，供 Agent 重新判断。', SCHEMAS.act, {
+  act: method('act', '执行一个动作并返回完整新 Scene，控制权立即交还 Agent。', SCHEMAS.act, {
     sceneRef: '当前 Scene', action: '发布的 ActionRef 或 Agent 自主视觉坐标动作',
     purpose: '可选的业务动作目的', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
     responseProjection: projection(['operationId', 'deliveryStatus', 'commandDeliveryKnown', 'sceneRef'], 'scene', SCENE_RESOURCES),
     conditionalRequirements: ['action.ref 与 action.type 互斥；ActionRef 所需 action.input 字段必须存在。', '视觉坐标按 Scene 截图四边标尺填写 0 到 10000 的整数；原点在左上，X 向右，Y 向下。'],
-    contextualValidationRules: ['下一步需要根据新 Scene 作视觉理解、业务判断或重新规划时使用 act。', 'ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。'],
+    contextualValidationRules: ['ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。'],
     successStatuses: ['SCENE'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'ACTION_NOT_AVAILABLE', 'ACTION_INPUT_INVALID', 'VISUAL_INSPECTION_REQUIRED', 'ACTION_OUTCOME_UNKNOWN', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['最多投递一个设备动作', '采集新 Scene'],
@@ -297,13 +302,13 @@ const PUBLIC_METHODS = Object.freeze({
     minimalExample: { operation: 'act', input: { sceneRef: EXAMPLE_SCENE_REF, action: { ref: 'button-1:tap' } } },
     additionalExamples: [{ sceneRef: EXAMPLE_SCENE_REF, action: { type: 'tap', target: { point: [8400, 2810] } } }],
   }),
-  runSequence: method('runSequence', '连续执行已确定的动作、等待与采集。', SCHEMAS.runSequence, {
+  runSequence: method('runSequence', '连续执行预先给定的动作、等待与采集；步骤间不交还控制权，结束后返回最终 Scene 和步骤证据。', SCHEMAS.runSequence, {
     sceneRef: '当前 Scene', purpose: '动作序列的业务目的',
     steps: '最多 12 个动作、等待或采集步骤', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
     responseProjection: projection(['sequenceResultRef', 'sequenceId', 'sceneRef', 'idempotent', 'deliveryStatus', 'commandDeliveryKnown'], 'scene', ['sequenceResult', 'scene', 'screenshot', 'actionSpatialEvidence', 'technicalFact']),
     conditionalRequirements: ['步骤 id 唯一；视觉动作坐标按 Scene 截图四边标尺填写 0 到 10000 的整数。'],
-    contextualValidationRules: ['两个及以上动作已由当前证据完整确定、步骤间不需要视觉理解、业务判断或重新规划时，优先使用 runSequence。', '动作后需要立即判断时使用 act；单动作后仍需按指定时机 wait 或 capture 时可以使用 runSequence。'],
+    contextualValidationRules: ['同一执行意图同时可由 act 和 runSequence 完成时，优先使用 runSequence。'],
     successStatuses: ['SEQUENCE_COMPLETED'],
     errorCodes: [
       'AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'SEQUENCE_INVALID',
@@ -317,14 +322,15 @@ const PUBLIC_METHODS = Object.freeze({
   }),
   knowledge: method('knowledge', '查询知识，或登记指定 query 的候选复核结果。', { type: 'object', oneOf: [SCHEMAS.knowledgeQuery, SCHEMAS.knowledgeReview] }, {
     mode: 'query 或 review', sceneRef: '当前 Scene', query: '待调查问题', queryId: '已有查询引用',
-    checkNodeRefs: '相关 CHECK 节点', conclusion: '候选复核结论', assessments: '逐候选适用性判断', flowContext: '当前 Case Flow 节点和可选分支选择',
+    context: '可选的已确认页面和业务操作提示；不要猜测', checkNodeRefs: '相关 CHECK 节点', conclusion: '候选复核结论',
+    assessments: '逐候选适用性判断', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
     responseProjection: { modes: {
       query: projection(['knowledgeQueryRef', 'candidateSetRef', 'candidateCount', 'reviewRequired'], 'candidateSet', ['knowledgeQuery', 'knowledgeDocument']),
       review: projection(['knowledgeQueryRef', 'knowledgeReviewRef', 'conclusion', 'idempotent'], null, ['knowledgeQuery', 'candidateSet', 'knowledgeReview']),
     } },
     conditionalRequirements: ['mode=query 和 mode=review 的字段不能混用。'],
-    contextualValidationRules: ['复核必须覆盖当前 query 候选约束。', '出现预期不符、操作无效果或异常反复，且平台、版本、账号、配置、条件适用性、同类异常处理方式或原文歧义可能影响下一步时，尽早使用 knowledge，不要等到结果收口。不存在这些外部依赖时不机械查询。'],
+    contextualValidationRules: ['复核必须覆盖当前 query 候选约束。', '出现预期不符、操作无效果、异常反复、原因不明或无法形成可靠判断时，优先并尽早使用 knowledge，不要等到收口。只有问题已由现场证据或明确技术事实完整解释，且知识不会影响下一步或结论时才不查询；无适用候选仍按现场证据判断。'],
     successStatuses: ['KNOWLEDGE', 'KNOWLEDGE_REVIEWED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_REQUIRED', 'KNOWLEDGE_QUERY_UNKNOWN', 'KNOWLEDGE_REVIEW_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['保存查询或复核事件'], idempotency: '重复 queryId 复核按内部事件规则处理。',
@@ -356,7 +362,7 @@ const PUBLIC_METHODS = Object.freeze({
     reason: 'NOT_RUN 的业务原因', evidence: 'NOT_RUN 引用的已登记 Scene 或技术事实', flowContext: '实际到达的 END 节点',
   }, {
     responseProjection: projection(['executionId', 'verdict', 'caseResultRef', 'idempotent', 'finalReviewRequired', 'finalReviewInstruction', 'originalCase'], null, ['caseResult', 'checkpointLedger', 'technicalFact']),
-    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', '首次满足收口条件的 finish 会先要求一次原始用例复核，复核要求只触发一次；收到复核提示后重新提交 finish。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', '现场事实不能单独证明业务定性；预期不符、操作无效果或异常反复涉及外部规则时，应在收口前尽早完成知识调查。无此外部依赖时不机械查询；无适用候选时仍按现场证据处置。', 'NOT_RUN 必须提供原因和已登记证据。'],
+    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', '首次满足收口条件的 finish 会先要求一次原始用例复核，复核要求只触发一次；收到复核提示后重新提交 finish。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', '出现预期不符、操作无效果、异常反复、原因不明或无法形成可靠判断时，优先并尽早完成知识调查。只有问题已由现场证据或明确技术事实完整解释，且知识不会影响下一步或结论时才不查询；无适用候选仍按现场证据处置。', 'NOT_RUN 必须提供原因和已登记证据。'],
     successStatuses: ['COMPLETED', 'RESULT_INCOMPLETE'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_FINAL_REVIEW_REQUIRED', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',
