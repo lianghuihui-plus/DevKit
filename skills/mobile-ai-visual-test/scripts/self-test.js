@@ -59,6 +59,7 @@ const suites = Object.freeze({
   runPlan033: 'tests/run-plan-033.test.js',
   sequenceContract: 'tests/sequence-contract.test.js',
   sequenceRecord: 'tests/sequence-record.test.js',
+  sequenceService: 'tests/sequence-service.test.js',
   sequenceScreenshotScene: 'tests/sequence-screenshot-scene.test.js',
   sequenceSingleAction: 'tests/sequence-single-action.test.js',
   sequenceTwoActions: 'tests/sequence-two-actions.test.js',

@@ -184,13 +184,15 @@ function harness(execDir) {
 }
 
 {
-  const execDir = fixture('unsupported');
+  const execDir = fixture('wait-only');
   const h = harness(execDir);
-  assert.throws(() => runSequence(execDir, request(execDir, {
+  const result = runSequence(execDir, request(execDir, {
     id: 'wait', type: 'wait', ms: 0,
-  }), h.options), (error) => error.code === 'SEQUENCE_NOT_IMPLEMENTED');
-  assert.strictEqual(h.calls.length, 0);
-  assert.strictEqual(readSequences(execDir).length, 0);
+  }), h.options);
+  assert.strictEqual(result.status, 'SEQUENCE_COMPLETED');
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'ACTION').length, 0);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'OBSERVE').length, 1);
+  assert.strictEqual(readSequences(execDir).length, 1);
 }
 
 console.log('single terminal sequence action passed');

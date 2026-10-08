@@ -465,5 +465,6 @@ module.exports = {
   completeDispatchedAction,
   completeUnknownDispatchedAction,
   dispatchAction,
+  recordCaptureFailureTechnicalFact,
   redactedAction,
 };

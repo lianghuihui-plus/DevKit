@@ -17,10 +17,13 @@ const { resolveActionRequest } = require('./action-request');
 const {
   classifyActionOutcome,
   completeDispatchedAction,
+  completeUnknownDispatchedAction,
   dispatchAction,
+  recordCaptureFailureTechnicalFact,
 } = require('./action-service');
 const sceneService = require('./scene-service');
 const store = require('./store');
+const transactions = require('./transaction-manager');
 
 const SEQUENCE_ID_PATTERN = /^sequence-[0-9]+$/;
 
@@ -85,6 +88,71 @@ function assertSequenceIntegrity(execDir, record) {
   }
   if (!record.integrity?.recordSha256 || record.integrity.recordSha256 !== recordDigest(record)) {
     throw incomplete(`sequence record integrity is invalid: ${record.sequenceId}`);
+  }
+  if (record.request) {
+    const expectedKey = sequenceRequestKey({ operation: 'runSequence', ...record.request });
+    if (record.requestKey !== expectedKey) throw incomplete('sequence record request key does not match its stable request');
+  }
+  if (record.terminal === true && (record.steps || []).length) {
+    const events = store.events(execDir);
+    let expectedSceneRef = record.basedOnSceneRef;
+    let previousStep = null;
+    for (const step of record.steps) {
+      const coalescedCaptureScene = step.type === 'capture' && previousStep?.type === 'act'
+        && step.preSceneRef === previousStep.preSceneRef
+        && step.postSceneRef === previousStep.postSceneRef
+        ? readScene(execDir, step.postSceneRef)
+        : null;
+      const isValidCoalescedCapture = coalescedCaptureScene
+        && coalescedCaptureScene.relatedOperationId === previousStep.operationId
+        && (coalescedCaptureScene.captureOrigins || []).includes('AGENT_REQUESTED')
+        && (coalescedCaptureScene.captureOrigins || []).includes('ACTION_POST');
+      if (step.preSceneRef !== expectedSceneRef && !isValidCoalescedCapture) {
+        throw incomplete(`sequence step chain is invalid: ${step.stepId}`);
+      }
+      if (step.type === 'act') {
+        const requested = events.filter((event) => event.type === 'actionRequested'
+          && event.operationId === step.operationId && event.sequenceId === record.sequenceId
+          && event.stepId === step.stepId);
+        if (requested.length !== 1) throw incomplete(`sequence action request is not unique: ${step.stepId}`);
+        const completed = transactions.readCompletedAction(execDir, step.operationId);
+        if (!completed || completed.sequenceId !== record.sequenceId || completed.stepId !== step.stepId) {
+          throw incomplete(`sequence action operation is invalid: ${step.stepId}`);
+        }
+        if (step.status === 'UNKNOWN') {
+          const unknown = events.filter((event) => event.type === 'actionOutcomeUnknown'
+            && event.operationId === step.operationId);
+          if (unknown.length !== 1) throw incomplete(`sequence unknown action fact is not unique: ${step.stepId}`);
+        } else {
+          const actionCompleted = events.filter((event) => event.type === 'actionCompleted'
+            && event.operationId === step.operationId && event.sequenceId === record.sequenceId
+            && event.stepId === step.stepId);
+          if (actionCompleted.length !== 1) throw incomplete(`sequence action completion is not unique: ${step.stepId}`);
+        }
+        if (step.action?.type === 'inputText' && step.action.text !== '[REDACTED]') {
+          throw incomplete(`sequence action contains raw input text: ${step.stepId}`);
+        }
+        if (step.postSceneRef) {
+          const postScene = readScene(execDir, step.postSceneRef);
+          if (!postScene || postScene.relatedOperationId !== step.operationId
+            || completed.sceneIdAfter !== step.postSceneRef) {
+            throw incomplete(`sequence post Scene is invalid: ${step.stepId}`);
+          }
+        } else if (completed.sceneIdAfter !== null || !completed.captureFailureTechnicalFactRef) {
+          throw incomplete(`sequence action without post Scene lacks capture-failure closure: ${step.stepId}`);
+        }
+      }
+      if (step.postSceneRef) expectedSceneRef = step.postSceneRef;
+      previousStep = step;
+    }
+    if (record.finalSceneRef) {
+      const finalScene = readScene(execDir, record.finalSceneRef);
+      const currentScene = store.readCurrentScene(execDir);
+      if (!finalScene || currentScene?.sceneId !== finalScene.sceneId
+        || !(finalScene.captureOrigins || []).includes('SEQUENCE_FINAL')) {
+        throw incomplete('sequence final Scene is not the promoted SEQUENCE_FINAL Scene');
+      }
+    }
   }
   return record;
 }
@@ -279,27 +347,118 @@ function dispatchedPreviousAction(dispatched) {
   };
 }
 
+function readScene(execDir, sceneId) {
+  return readJson(path.join(store.paths(execDir).scenes, `${sceneId}.json`), null);
+}
+
+function uniquePush(values, ...items) {
+  for (const item of items.filter(Boolean)) if (!values.includes(item)) values.push(item);
+}
+
+function usableMs(deadline, clock) {
+  return deadline - clock() - FINAL_SCENE_RESERVE_MS;
+}
+
+function fullScene(execDir, options, metadata) {
+  sceneService.observe(execDir, {
+    ...options,
+    purpose: metadata.purpose,
+    captureOrigins: metadata.captureOrigins,
+    relatedOperationId: metadata.relatedOperationId || null,
+    sequenceId: metadata.sequenceId,
+    stepId: metadata.stepId || null,
+    previousAction: metadata.previousAction || null,
+    previousScene: metadata.previousScene || null,
+    promote: metadata.promote,
+    preAdapterDelayMs: metadata.preAdapterDelayMs || 0,
+    timeoutMs: metadata.timeoutMs,
+  });
+  const event = store.events(execDir).filter((item) => item.type === 'sceneObserved'
+    && item.sequenceId === metadata.sequenceId).at(-1);
+  return event ? readScene(execDir, event.sceneId) : null;
+}
+
+function screenshotScene(execDir, execution, options, metadata) {
+  const capture = options.invokeScreenshotCapture
+    || (options.invokeDeviceOperation
+      ? (dir, payload, captureOptions) => options.invokeDeviceOperation(dir, payload, 'CAPTURE', captureOptions)
+      : invokeScreenshotCapture);
+  const operationId = store.nextId(execDir, 'capture');
+  const invoked = capture(execDir, { context: { execution }, operationId }, {
+    ...options, timeoutMs: metadata.timeoutMs,
+  });
+  return persistSequenceScreenshotScene(execDir, invoked, execution, {
+    operationId,
+    purpose: metadata.purpose,
+    captureOrigins: metadata.captureOrigins,
+    relatedOperationId: metadata.relatedOperationId || null,
+    sequenceId: metadata.sequenceId,
+    stepId: metadata.stepId || null,
+    previousAction: metadata.previousAction || null,
+    beforeScene: metadata.previousScene || null,
+    decisionId: options.decisionId || null,
+  }, { promote: metadata.promote, now: now(options) });
+}
+
+function actionStepRecord(step, stepIndex, operationId, beforeScene, afterScene, action, status = 'COMPLETED', error = null) {
+  return {
+    stepId: step.id,
+    stepIndex,
+    type: 'act',
+    status,
+    operationId,
+    preSceneRef: beforeScene.sceneId,
+    postSceneRef: afterScene?.sceneId || null,
+    action: action?.action || action || null,
+    ...(error ? { error } : {}),
+  };
+}
+
+function captureStepRecord(step, stepIndex, beforeScene, afterScene) {
+  return {
+    stepId: step.id,
+    stepIndex,
+    type: 'capture',
+    status: 'COMPLETED',
+    mode: step.mode,
+    purpose: step.purpose,
+    preSceneRef: beforeScene.sceneId,
+    postSceneRef: afterScene.sceneId,
+  };
+}
+
+function waitStepRecord(step, stepIndex, scene, status = 'COMPLETED', error = null) {
+  return {
+    stepId: step.id,
+    stepIndex,
+    type: 'wait',
+    status,
+    ms: step.ms,
+    preSceneRef: scene.sceneId,
+    postSceneRef: scene.sceneId,
+    ...(error ? { error } : {}),
+  };
+}
+
 function runSequence(execDir, request, options = {}) {
   const existing = findTerminalSequence(execDir, request);
   if (existing) return responseFromSequenceRecord(existing, { idempotent: true });
 
   const normalized = normalizeSequenceRequest(request);
-  if (!normalized.steps.every((step) => step.type === 'act')) {
-    throw contractError('SEQUENCE_NOT_IMPLEMENTED', 'this runtime revision supports act-only sequences');
-  }
-
   const execution = store.loadExecution(execDir);
   const beforeScene = store.readCurrentScene(execDir);
   if (!beforeScene || beforeScene.sceneId !== normalized.basedOnSceneId) return sceneChanged(beforeScene);
 
-  const preparedActions = normalized.steps.map((step) => {
+  const preparedActions = new Map();
+  normalized.steps.forEach((step, stepIndex) => {
+    if (step.type !== 'act') return;
     const actionRequest = actionRequestFor(
       step, beforeScene.sceneId, normalized.purpose, options.decisionId,
     );
     const resolvedAction = resolveActionRequest(beforeScene, actionRequest, execution.platform);
-    return { step, actionRequest, resolvedAction };
+    preparedActions.set(stepIndex, { actionRequest, resolvedAction });
   });
-  if (preparedActions.some(({ resolvedAction }) => resolvedAction.stale)) return sceneChanged(beforeScene);
+  if ([...preparedActions.values()].some(({ resolvedAction }) => resolvedAction.stale)) return sceneChanged(beforeScene);
 
   const clock = options.clock || Date.now;
   const startedMs = clock();
@@ -312,6 +471,7 @@ function runSequence(execDir, request, options = {}) {
     sequenceId,
     executionId: execution.executionId,
     requestKey: sequenceRequestKey(request),
+    request: normalized,
     basedOnSceneRef: beforeScene.sceneId,
     purpose: normalized.purpose,
     flowContext: normalized.flowContext || null,
@@ -343,77 +503,272 @@ function runSequence(execDir, request, options = {}) {
   const stepRecords = [];
   const sceneRefs = [beforeScene.sceneId];
   const screenshotRefs = [beforeScene.screenshot.ref];
+  let failure = null;
+  let finalCaptureAttempted = false;
 
-  for (const [stepIndex, prepared] of preparedActions.entries()) {
-    const { step, actionRequest, resolvedAction } = prepared;
-    const actionTimeoutMs = deadline - clock() - FINAL_SCENE_RESERVE_MS;
+  function persistProgress() {
+    record = writeSequenceRecord(execDir, {
+      ...record,
+      steps: stepRecords,
+      evidence: { sceneRefs: [...sceneRefs], screenshotRefs: [...screenshotRefs] },
+      remainingMs: Math.max(0, deadline - clock()),
+      failure,
+    });
+  }
+
+  for (let stepIndex = 0; stepIndex < normalized.steps.length; stepIndex += 1) {
+    const step = normalized.steps[stepIndex];
+    store.appendEvent(execDir, 'sequenceStepStarted', {
+      sequenceId, stepId: step.id, stepIndex, stepType: step.type,
+      decisionId: options.decisionId || null,
+    }, options);
+
+    if (step.type === 'wait') {
+      if (step.ms > usableMs(deadline, clock)) {
+        failure = { code: 'SEQUENCE_TIMEOUT', message: `wait step exceeds usable Sequence budget: ${step.id}` };
+        stepRecords.push(waitStepRecord(step, stepIndex, workingScene, 'NOT_RUN', failure));
+        persistProgress();
+        break;
+      }
+      (options.sleep || ((ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)))(step.ms);
+      stepRecords.push(waitStepRecord(step, stepIndex, workingScene));
+      persistProgress();
+      continue;
+    }
+
+    if (step.type === 'capture') {
+      const terminalCapture = stepIndex === normalized.steps.length - 1;
+      const timeoutMs = terminalCapture && step.mode === 'FULL_SCENE'
+        ? deadline - clock() : usableMs(deadline, clock);
+      if (timeoutMs <= 0) {
+        failure = { code: 'SEQUENCE_TIMEOUT', message: `capture step exceeds usable Sequence budget: ${step.id}` };
+        break;
+      }
+      const origins = ['AGENT_REQUESTED', ...(terminalCapture && step.mode === 'FULL_SCENE' ? ['SEQUENCE_FINAL'] : [])];
+      const postScene = step.mode === 'FULL_SCENE'
+        ? (() => {
+          if (terminalCapture) finalCaptureAttempted = true;
+          return fullScene(execDir, options, {
+          purpose: step.purpose,
+          captureOrigins: origins,
+          sequenceId,
+          stepId: step.id,
+          previousScene: workingScene,
+          promote: terminalCapture,
+          timeoutMs,
+          });
+        })()
+        : screenshotScene(execDir, execution, options, {
+          purpose: step.purpose,
+          captureOrigins: origins,
+          sequenceId,
+          stepId: step.id,
+          previousScene: workingScene,
+          promote: false,
+          timeoutMs,
+        });
+      stepRecords.push(captureStepRecord(step, stepIndex, workingScene, postScene));
+      uniquePush(sceneRefs, postScene.sceneId);
+      uniquePush(screenshotRefs, postScene.screenshot.ref);
+      workingScene = postScene;
+      if (terminalCapture && step.mode === 'FULL_SCENE') finalScene = postScene;
+      persistProgress();
+      continue;
+    }
+
+    const prepared = preparedActions.get(stepIndex);
+    const actionTimeoutMs = usableMs(deadline, clock);
     if (actionTimeoutMs <= 0) {
-      throw contractError('SEQUENCE_TIMEOUT', `sequence has no usable action budget before step ${step.id}`);
+      failure = { code: 'SEQUENCE_TIMEOUT', message: `sequence has no usable action budget before step ${step.id}` };
+      break;
     }
     const operationId = store.nextId(execDir, 'action');
-    const dispatched = dispatchAction(execDir, {
-      ...actionRequest,
-      basedOnSceneId: workingScene.sceneId,
-      sequenceId,
-      stepId: step.id,
-    }, {
-      ...options,
-      beforeScene: workingScene,
-      resolvedAction,
-      operationId,
-      timeoutMs: actionTimeoutMs,
-    });
-    if (dispatched.status !== 'ACTION_DISPATCHED') {
-      throw contractError('SEQUENCE_NOT_IMPLEMENTED', `prevalidated action did not dispatch: ${step.id}`);
-    }
-    if (classifyActionOutcome(dispatched.adapterResult) !== 'COMPLETED') {
-      throw contractError('SEQUENCE_NOT_IMPLEMENTED', 'action failure completion is not implemented in this runtime revision');
+    let dispatched;
+    try {
+      dispatched = dispatchAction(execDir, {
+        ...prepared.actionRequest,
+        basedOnSceneId: workingScene.sceneId,
+        sequenceId,
+        stepId: step.id,
+      }, {
+        ...options,
+        beforeScene: workingScene,
+        resolvedAction: prepared.resolvedAction,
+        operationId,
+        timeoutMs: actionTimeoutMs,
+      });
+    } catch (error) {
+      if (error.actionOutcome !== 'UNKNOWN' || !error.actionDispatch) throw error;
+      const finalTimeoutMs = deadline - clock();
+      let postScene = null;
+      try {
+        if (finalTimeoutMs > 0) {
+          finalCaptureAttempted = true;
+          postScene = fullScene(execDir, options, {
+            purpose: 'SEQUENCE_FINAL',
+            captureOrigins: ['ACTION_POST', 'SEQUENCE_FINAL'],
+            relatedOperationId: operationId,
+            sequenceId,
+            stepId: step.id,
+            previousAction: {
+              operationId,
+              lifecycle: { status: 'UNKNOWN' },
+              action: error.actionDispatch.action,
+              command: { status: 'UNKNOWN' },
+              deviceExecution: { status: 'UNVERIFIED' },
+            },
+            previousScene: workingScene,
+            promote: true,
+            timeoutMs: finalTimeoutMs,
+          });
+        }
+      } catch (captureError) {
+        const fact = recordCaptureFailureTechnicalFact(
+          execDir, operationId, error.actionDispatch, error.actionDispatch.action, captureError, options,
+        );
+        completeUnknownDispatchedAction(execDir, {
+          ...error.actionDispatch, operationId, code: error.code, message: error.message,
+        }, null, {
+          decisionId: options.decisionId || null, sequenceId, stepId: step.id, preSceneRef: workingScene.sceneId,
+        }, { ...options, promoteScene: true, captureFailureTechnicalFactRef: fact.technicalFactRef });
+        failure = { code: 'SEQUENCE_ACTION_OUTCOME_UNKNOWN', message: 'action outcome and final Scene are unknown' };
+        stepRecords.push(actionStepRecord(step, stepIndex, operationId, workingScene, null,
+          error.actionDispatch.action, 'UNKNOWN', failure));
+        persistProgress();
+        break;
+      }
+      const action = completeUnknownDispatchedAction(execDir, {
+        ...error.actionDispatch, operationId, code: error.code, message: error.message,
+      }, postScene, {
+        decisionId: options.decisionId || null, sequenceId, stepId: step.id, preSceneRef: workingScene.sceneId,
+      }, { ...options, promoteScene: true });
+      finalScene = postScene;
+      uniquePush(sceneRefs, postScene?.sceneId);
+      uniquePush(screenshotRefs, postScene?.screenshot?.ref);
+      failure = { code: 'SEQUENCE_ACTION_OUTCOME_UNKNOWN', message: 'action outcome is unknown' };
+      stepRecords.push(actionStepRecord(step, stepIndex, operationId, workingScene, postScene, action, 'UNKNOWN', failure));
+      persistProgress();
+      break;
     }
 
-    const terminalAction = stepIndex === preparedActions.length - 1;
+    if (dispatched.status !== 'ACTION_DISPATCHED') throw incomplete(`prevalidated action did not dispatch: ${step.id}`);
+    const outcome = classifyActionOutcome(dispatched.adapterResult);
+    const adjacentCapture = normalized.steps[stepIndex + 1]?.type === 'capture'
+      ? normalized.steps[stepIndex + 1] : null;
+    const actionMustTerminate = outcome !== 'COMPLETED';
+    const captureStepIndex = adjacentCapture ? stepIndex + 1 : null;
+    const captureIsTerminal = captureStepIndex === normalized.steps.length - 1;
     let postScene;
-    if (terminalAction) {
-      const finalTimeoutMs = deadline - clock();
-      if (finalTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', 'sequence deadline reached before final Scene capture');
-      sceneService.observe(execDir, {
-        ...options,
-        purpose: 'SEQUENCE_FINAL',
-        captureOrigins: ['ACTION_POST', 'SEQUENCE_FINAL'],
-        relatedOperationId: operationId,
-        sequenceId,
-        stepId: step.id,
-        previousAction: dispatchedPreviousAction(dispatched),
-        previousScene: workingScene,
-        promote: true,
-        preAdapterDelayMs: dispatched.action.action.type === 'wait' ? 0 : 500,
-        timeoutMs: finalTimeoutMs,
-      });
-      postScene = store.readCurrentScene(execDir);
-      finalScene = postScene;
-    } else {
-      const captureTimeoutMs = deadline - clock() - FINAL_SCENE_RESERVE_MS;
-      if (captureTimeoutMs <= 0) {
-        throw contractError('SEQUENCE_TIMEOUT', `sequence has no capture budget after step ${step.id}`);
+    let automaticCaptureFailed = false;
+
+    try {
+      if (adjacentCapture) {
+        const captureTimeoutMs = captureIsTerminal && adjacentCapture.mode === 'FULL_SCENE'
+          ? deadline - clock() : usableMs(deadline, clock);
+        if (captureTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', `capture step exceeds Sequence budget: ${adjacentCapture.id}`);
+        const origins = ['AGENT_REQUESTED', 'ACTION_POST',
+          ...(captureIsTerminal && adjacentCapture.mode === 'FULL_SCENE' ? ['SEQUENCE_FINAL'] : [])];
+        postScene = adjacentCapture.mode === 'FULL_SCENE'
+          ? (() => {
+            if (captureIsTerminal) finalCaptureAttempted = true;
+            return fullScene(execDir, options, {
+            purpose: adjacentCapture.purpose,
+            captureOrigins: origins,
+            relatedOperationId: operationId,
+            sequenceId,
+            stepId: adjacentCapture.id,
+            previousAction: dispatchedPreviousAction(dispatched),
+            previousScene: workingScene,
+            promote: captureIsTerminal,
+            timeoutMs: captureTimeoutMs,
+            });
+          })()
+          : screenshotScene(execDir, execution, options, {
+            purpose: adjacentCapture.purpose,
+            captureOrigins: origins,
+            relatedOperationId: operationId,
+            sequenceId,
+            stepId: adjacentCapture.id,
+            previousAction: dispatchedPreviousAction(dispatched),
+            previousScene: workingScene,
+            promote: false,
+            timeoutMs: captureTimeoutMs,
+          });
+        if (captureIsTerminal && adjacentCapture.mode === 'FULL_SCENE') finalScene = postScene;
+      } else if (actionMustTerminate || stepIndex === normalized.steps.length - 1) {
+        const finalTimeoutMs = deadline - clock();
+        if (finalTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', 'sequence deadline reached before final Scene capture');
+        finalCaptureAttempted = true;
+        postScene = fullScene(execDir, options, {
+          purpose: 'SEQUENCE_FINAL',
+          captureOrigins: ['ACTION_POST', 'SEQUENCE_FINAL'],
+          relatedOperationId: operationId,
+          sequenceId,
+          stepId: step.id,
+          previousAction: dispatchedPreviousAction(dispatched),
+          previousScene: workingScene,
+          promote: true,
+          preAdapterDelayMs: dispatched.action.action.type === 'wait' ? 0 : 500,
+          timeoutMs: finalTimeoutMs,
+        });
+        finalScene = postScene;
+      } else {
+        const captureTimeoutMs = usableMs(deadline, clock);
+        if (captureTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', `sequence has no capture budget after step ${step.id}`);
+        postScene = screenshotScene(execDir, execution, options, {
+          purpose: 'ACTION_POST',
+          captureOrigins: ['ACTION_POST'],
+          relatedOperationId: operationId,
+          sequenceId,
+          stepId: step.id,
+          previousAction: dispatchedPreviousAction(dispatched),
+          previousScene: workingScene,
+          promote: false,
+          timeoutMs: captureTimeoutMs,
+        });
       }
-      const captureOperationId = store.nextId(execDir, 'capture');
-      const capture = options.invokeScreenshotCapture
-        || (options.invokeDeviceOperation
-          ? (dir, payload, captureOptions) => options.invokeDeviceOperation(dir, payload, 'CAPTURE', captureOptions)
-          : invokeScreenshotCapture);
-      const invoked = capture(execDir, {
-        context: { execution }, operationId: captureOperationId,
-      }, { ...options, timeoutMs: captureTimeoutMs });
-      postScene = persistSequenceScreenshotScene(execDir, invoked, execution, {
-        operationId: captureOperationId,
-        purpose: 'ACTION_POST',
-        captureOrigins: ['ACTION_POST'],
-        relatedOperationId: operationId,
-        sequenceId,
-        stepId: step.id,
-        previousAction: dispatchedPreviousAction(dispatched),
-        beforeScene: workingScene,
-        decisionId: options.decisionId || null,
-      }, { promote: false, now: now(options) });
+    } catch (captureError) {
+      const wasIntermediateAutomaticCapture = !actionMustTerminate
+        && !adjacentCapture && stepIndex !== normalized.steps.length - 1;
+      if (wasIntermediateAutomaticCapture) {
+        automaticCaptureFailed = true;
+        try {
+          const finalTimeoutMs = deadline - clock();
+          if (finalTimeoutMs > 0) {
+            finalCaptureAttempted = true;
+            postScene = fullScene(execDir, options, {
+              purpose: 'SEQUENCE_FINAL',
+              captureOrigins: ['ACTION_POST', 'SEQUENCE_FINAL'],
+              relatedOperationId: operationId,
+              sequenceId,
+              stepId: step.id,
+              previousAction: dispatchedPreviousAction(dispatched),
+              previousScene: workingScene,
+              promote: true,
+              timeoutMs: finalTimeoutMs,
+            });
+            finalScene = postScene;
+            failure = {
+              code: captureError.code || 'POST_ACTION_CAPTURE_FAILED',
+              message: 'automatic post-action capture failed; Sequence stopped after final handoff',
+            };
+          }
+        } catch (_finalError) {
+          postScene = null;
+        }
+      }
+      if (!postScene) {
+        const fact = recordCaptureFailureTechnicalFact(
+          execDir, operationId, { decisionId: options.decisionId || null }, dispatched.action.action, captureError, options,
+        );
+        const action = completeDispatchedAction(execDir, dispatched, null, {
+          decisionId: options.decisionId || null, sequenceId, stepId: step.id, preSceneRef: workingScene.sceneId,
+        }, { ...options, promoteScene: false, captureFailureTechnicalFactRef: fact.technicalFactRef });
+        failure = { code: captureError.code || 'POST_ACTION_CAPTURE_FAILED', message: 'post-action capture failed' };
+        stepRecords.push(actionStepRecord(step, stepIndex, operationId, workingScene, null, action, 'FAILED', failure));
+        persistProgress();
+        break;
+      }
     }
 
     const action = completeDispatchedAction(execDir, dispatched, postScene, {
@@ -421,48 +776,72 @@ function runSequence(execDir, request, options = {}) {
       sequenceId,
       stepId: step.id,
       preSceneRef: workingScene.sceneId,
-    }, { ...options, promoteScene: terminalAction });
-    stepRecords.push({
-      stepId: step.id,
-      stepIndex,
-      type: 'act',
-      status: 'COMPLETED',
-      operationId,
-      preSceneRef: workingScene.sceneId,
-      postSceneRef: postScene.sceneId,
-      action: action.action,
-    });
-    sceneRefs.push(postScene.sceneId);
-    screenshotRefs.push(postScene.screenshot.ref);
+    }, { ...options, promoteScene: finalScene?.sceneId === postScene.sceneId });
+    stepRecords.push(actionStepRecord(
+      step, stepIndex, operationId, workingScene, postScene, action,
+      outcome === 'COMPLETED' ? 'COMPLETED' : 'FAILED',
+      outcome === 'COMPLETED' ? null : { code: 'SEQUENCE_ACTION_FAILED', message: 'device reported a known action failure' },
+    ));
+    uniquePush(sceneRefs, postScene.sceneId);
+    uniquePush(screenshotRefs, postScene.screenshot.ref);
+    const actionBeforeScene = workingScene;
     workingScene = postScene;
-    record = writeSequenceRecord(execDir, {
-      ...record,
-      steps: stepRecords,
-      evidence: {
-        sceneRefs: [...new Set(sceneRefs)],
-        screenshotRefs: [...new Set(screenshotRefs)],
-      },
-      remainingMs: Math.max(0, deadline - clock()),
-    });
+
+    if (adjacentCapture) {
+      stepRecords.push(captureStepRecord(adjacentCapture, captureStepIndex, actionBeforeScene, postScene));
+      stepIndex += 1;
+    }
+    if (outcome !== 'COMPLETED') {
+      failure = { code: 'SEQUENCE_ACTION_FAILED', message: 'device reported a known action failure' };
+      persistProgress();
+      break;
+    }
+    if (automaticCaptureFailed) {
+      persistProgress();
+      break;
+    }
+    persistProgress();
+  }
+
+  if (!finalScene && !finalCaptureAttempted) {
+    try {
+      const finalTimeoutMs = deadline - clock();
+      if (finalTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', 'sequence deadline reached before final Scene capture');
+      finalCaptureAttempted = true;
+      finalScene = fullScene(execDir, options, {
+        purpose: 'SEQUENCE_FINAL',
+        captureOrigins: ['SEQUENCE_FINAL'],
+        sequenceId,
+        previousScene: workingScene,
+        promote: true,
+        timeoutMs: finalTimeoutMs,
+      });
+      uniquePush(sceneRefs, finalScene.sceneId);
+      uniquePush(screenshotRefs, finalScene.screenshot.ref);
+    } catch (error) {
+      failure ||= { code: error.code || 'SEQUENCE_FINAL_CAPTURE_FAILED', message: 'final Scene capture failed' };
+    }
   }
 
   record = writeSequenceRecord(execDir, {
     ...record,
     terminal: true,
-    status: 'SEQUENCE_COMPLETED',
+    status: failure ? 'SEQUENCE_PARTIAL' : 'SEQUENCE_COMPLETED',
+    outcomeKnown: failure?.code !== 'SEQUENCE_ACTION_OUTCOME_UNKNOWN',
     endedAt: now(options),
     steps: stepRecords,
     evidence: {
       sceneRefs: [...new Set(sceneRefs)],
       screenshotRefs: [...new Set(screenshotRefs)],
     },
-    finalSceneRef: finalScene.sceneId,
+    finalSceneRef: finalScene?.sceneId || null,
     remainingMs: Math.max(0, deadline - clock()),
+    failure,
   });
   store.appendEvent(execDir, 'sequenceCompleted', {
     sequenceId,
     status: record.status,
-    finalSceneRef: finalScene.sceneId,
+    finalSceneRef: finalScene?.sceneId || null,
     sequenceRecordRef: recordRef,
     decisionId: options.decisionId || null,
   }, options);
