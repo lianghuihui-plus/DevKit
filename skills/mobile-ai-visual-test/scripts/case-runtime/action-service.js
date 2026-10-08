@@ -78,7 +78,6 @@ function persistedActionResult(actionResult) {
 function completionMetadata(dispatched, transaction, metadata = {}) {
   return {
     decisionId: metadata.decisionId ?? dispatched.decisionId ?? transaction.decisionId ?? null,
-    planId: dispatched.planId ?? transaction.planId ?? null,
     sequenceId: metadata.sequenceId ?? dispatched.sequenceId ?? transaction.sequenceId ?? null,
     stepId: metadata.stepId ?? dispatched.stepId ?? transaction.stepId ?? null,
     preSceneRef: metadata.preSceneRef ?? dispatched.beforeScene?.sceneId ?? transaction.sceneId ?? null,
@@ -158,7 +157,6 @@ function completeDispatchedAction(execDir, dispatched, afterScene, metadata = {}
       duringActionObservation: actionResult.duringActionObservation || null,
       spatialEvidenceRef: transaction.spatialEvidenceRef || null,
       decisionId: details.decisionId,
-      planId: details.planId,
       sequenceId: details.sequenceId,
       stepId: details.stepId,
     }, options);
@@ -193,7 +191,6 @@ function completeUnknownDispatchedAction(execDir, unknown, afterScene, metadata 
       code: unknown.code || 'ACTION_OUTCOME_UNKNOWN_AFTER_INTERRUPTION',
       message: unknown.message || 'action dispatch completed without a recorded device result',
       decisionId: details.decisionId,
-      planId: details.planId,
       sequenceId: details.sequenceId,
       stepId: details.stepId,
     }, options);
@@ -260,7 +257,6 @@ function dispatchAction(execDir, request, options = {}) {
     action: redactedAction(resolved.action),
     intent: request.decision?.purpose || null,
     decisionId: request.decisionId || null,
-    planId: request.planId || null,
     sequenceId: request.sequenceId || null,
     stepId: request.stepId || null,
     createdAt: options.now || new Date().toISOString(),
@@ -272,7 +268,6 @@ function dispatchAction(execDir, request, options = {}) {
     intent: request.decision?.purpose || null,
     expectedOutcome: request.decision?.expectedOutcome || null,
     decisionId: request.decisionId || null,
-    planId: request.planId || null,
     sequenceId: request.sequenceId || null,
     stepId: request.stepId || null,
   }, options);
@@ -312,7 +307,6 @@ function dispatchAction(execDir, request, options = {}) {
       code: error.code || 'DEVICE_ACTION_FAILED',
       message: actionErrorMessage(error, resolved.action),
       decisionId: request.decisionId || null,
-      planId: request.planId || null,
       sequenceId: request.sequenceId || null,
       stepId: request.stepId || null,
     }, options);
@@ -324,7 +318,6 @@ function dispatchAction(execDir, request, options = {}) {
         beforeScene: scene,
         action: redactedAction(resolved.action),
         decisionId: request.decisionId || null,
-        planId: request.planId || null,
         sequenceId: request.sequenceId || null,
         stepId: request.stepId || null,
       },
@@ -355,7 +348,6 @@ function dispatchAction(execDir, request, options = {}) {
     action,
     adapterResult,
     transaction,
-    ...(request.planId ? { planId: request.planId } : {}),
     ...(request.sequenceId ? { sequenceId: request.sequenceId } : {}),
     ...(request.stepId ? { stepId: request.stepId } : {}),
   };

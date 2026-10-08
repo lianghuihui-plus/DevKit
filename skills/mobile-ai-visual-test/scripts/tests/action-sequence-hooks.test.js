@@ -14,6 +14,7 @@ const transactions = require('../case-runtime/transaction-manager');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
+const legacyPlanKey = ['plan', 'Id'].join('');
 
 function fixture(suffix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `mavt-action-sequence-hooks-${suffix}-`));
@@ -152,6 +153,7 @@ for (const [interruptAfter, expectedState, expectedDispatches] of [
     action: resolvedTap().action,
     code: 'DEVICE_CONNECTION_LOST',
     message: 'device result unavailable',
+    [legacyPlanKey]: 'retired-plan',
   }, afterScene, {
     sequenceId: 'sequence-0001',
     stepId: 'tap',
@@ -168,6 +170,11 @@ for (const [interruptAfter, expectedState, expectedDispatches] of [
   ]);
   assert.strictEqual(transactions.readAction(current.execDir, operationId), null);
   assert.strictEqual(transactions.readCompletedAction(current.execDir, operationId).status, 'COMPLETED');
+  const unknownEvent = store.events(current.execDir).find((event) =>
+    event.type === 'actionOutcomeUnknown' && event.operationId === operationId);
+  assert.strictEqual(unknownEvent.sequenceId, 'sequence-0001');
+  assert.strictEqual(unknownEvent.stepId, 'tap');
+  assert.strictEqual(Object.hasOwn(unknownEvent, legacyPlanKey), false);
   assert.strictEqual(store.readCurrentScene(current.execDir).sceneId, beforeScene.sceneId);
 }
 

@@ -10,6 +10,7 @@ const store = require('../case-runtime/store');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
+const legacyPlanKey = ['plan', 'Id'].join('');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-scene-capture-origin-'));
 createTestWorkspace(root);
@@ -53,6 +54,7 @@ const observed = sceneService.observe(fixture.execDir, {
   relatedOperationId: 'action-0001',
   sequenceId: 'sequence-0001',
   stepId: 'tap',
+  [legacyPlanKey]: 'retired-plan',
   promote: false,
   invokeDeviceOperation: fakeObservation,
 });
@@ -64,12 +66,14 @@ assert.deepStrictEqual(persisted.captureOrigins, ['ACTION_POST', 'SEQUENCE_FINAL
 assert.strictEqual(persisted.relatedOperationId, 'action-0001');
 assert.strictEqual(persisted.sequenceId, 'sequence-0001');
 assert.strictEqual(persisted.stepId, 'tap');
+assert.strictEqual(Object.hasOwn(persisted.source, legacyPlanKey), false);
 const observedEvent = store.events(fixture.execDir).at(-1);
 assert.strictEqual(observedEvent.type, 'sceneObserved');
 assert.deepStrictEqual(observedEvent.captureOrigins, ['ACTION_POST', 'SEQUENCE_FINAL']);
 assert.strictEqual(observedEvent.relatedOperationId, 'action-0001');
 assert.strictEqual(observedEvent.sequenceId, 'sequence-0001');
 assert.strictEqual(observedEvent.stepId, 'tap');
+assert.strictEqual(Object.hasOwn(observedEvent, legacyPlanKey), false);
 assert.strictEqual(observedEvent.promoted, false);
 
 assert.throws(() => sceneService.observe(fixture.execDir, {

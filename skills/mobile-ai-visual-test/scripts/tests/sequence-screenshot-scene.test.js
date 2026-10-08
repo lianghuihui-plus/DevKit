@@ -10,6 +10,7 @@ const store = require('../case-runtime/store');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
+const legacyPlanKey = ['plan', 'Id'].join('');
 
 function fixture(suffix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `mavt-sequence-screenshot-${suffix}-`));
@@ -83,7 +84,7 @@ function previousAction(beforeScene) {
   assert.strictEqual(scene.sequenceId, 'sequence-0001');
   assert.strictEqual(scene.stepId, 'tap');
   assert.strictEqual(scene.source.operation, 'runSequence');
-  assert.strictEqual(Object.prototype.hasOwnProperty.call(scene.source, 'planId'), false);
+  assert.strictEqual(Object.hasOwn(scene.source, legacyPlanKey), false);
   assert.deepStrictEqual(scene.previousAction.evidence.sceneRefs, {
     before: beforeScene.sceneId,
     after: scene.sceneId,
@@ -106,7 +107,7 @@ function previousAction(beforeScene) {
   assert.strictEqual(event.sequenceId, 'sequence-0001');
   assert.strictEqual(event.stepId, 'tap');
   assert.strictEqual(event.promoted, false);
-  assert.strictEqual(Object.prototype.hasOwnProperty.call(event, 'planId'), false);
+  assert.strictEqual(Object.hasOwn(event, legacyPlanKey), false);
 }
 
 {

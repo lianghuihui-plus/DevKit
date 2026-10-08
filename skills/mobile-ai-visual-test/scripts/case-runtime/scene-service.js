@@ -100,7 +100,6 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
     stepId: observation.stepId || null,
     source: {
       operation: optionsSource(previousAction, observation),
-      planId: observation.planId || null,
       stepId: observation.stepId || null,
       operationId: observation.operationId,
     },
@@ -197,7 +196,6 @@ function observe(execDir, options = {}) {
     relatedOperationId: metadata.relatedOperationId,
     sequenceId: metadata.sequenceId,
     stepId: metadata.stepId,
-    ...(options.planId ? { planId: options.planId, stepId: options.stepId || null } : {}),
   };
   const scene = sceneFromObservation(execDir, observation, execution, options.previousAction || null, previousScene);
   store.writeScene(execDir, scene, { promote });
@@ -217,7 +215,6 @@ function observe(execDir, options = {}) {
     technicalSignals: observation.technicalSignals,
     captureMode: scene.captureMode,
     promoted: promote,
-    planId: options.planId || null,
     sequenceId: metadata.sequenceId,
     stepId: metadata.stepId,
   }, { now: observation.time, allowFinalized: options.allowFinalized === true });

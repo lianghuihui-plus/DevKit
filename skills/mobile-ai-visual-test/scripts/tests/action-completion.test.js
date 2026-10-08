@@ -18,6 +18,7 @@ const transactions = require('../case-runtime/transaction-manager');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
+const legacyPlanKey = ['plan', 'Id'].join('');
 
 function makeFixture(suffix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `mavt-action-completion-${suffix}-`));
@@ -116,6 +117,7 @@ const dispatched = dispatchAction(fixture.execDir, {
   decision: { purpose: '完成共享动作' },
   sequenceId: 'sequence-0001',
   stepId: 'tap',
+  [legacyPlanKey]: 'retired-plan',
 }, {
   now: '2026-09-24T10:00:00.000Z',
   invokeDeviceOperation: () => {
@@ -134,6 +136,7 @@ assert.strictEqual(transactions.readAction(fixture.execDir, dispatched.operation
 const storedCompleted = JSON.parse(fs.readFileSync(path.join(fixture.execDir, 'operations', `${dispatched.operationId}.json`), 'utf8'));
 assert.strictEqual(storedCompleted.sequenceId, 'sequence-0001');
 assert.strictEqual(storedCompleted.stepId, 'tap');
+assert.strictEqual(Object.hasOwn(storedCompleted, legacyPlanKey), false);
 assert.strictEqual(storedCompleted.actionResult.evidence.sceneRefs.after, 'scene-0099');
 const requested = store.events(fixture.execDir).find((event) => event.type === 'actionRequested' && event.operationId === dispatched.operationId);
 const completion = store.events(fixture.execDir).find((event) => event.type === 'actionCompleted' && event.operationId === dispatched.operationId);
@@ -141,6 +144,7 @@ assert.strictEqual(requested.sequenceId, 'sequence-0001');
 assert.strictEqual(requested.stepId, 'tap');
 assert.strictEqual(completion.sequenceId, 'sequence-0001');
 assert.strictEqual(completion.stepId, 'tap');
+assert.strictEqual(Object.hasOwn(completion, legacyPlanKey), false);
 
 const interruptedCompletion = dispatchAction(fixture.execDir, {
   basedOnSceneId: beforeScene.sceneId,

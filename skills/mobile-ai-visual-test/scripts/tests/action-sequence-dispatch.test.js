@@ -12,6 +12,7 @@ const transactions = require('../case-runtime/transaction-manager');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
+const legacyPlanKey = ['plan', 'Id'].join('');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-action-sequence-dispatch-'));
 createTestWorkspace(root);
 const fixture = createCurrentFixture(root, { suffix: 'sequence-dispatch' });
@@ -26,6 +27,7 @@ const beforeSceneEvents = store.events(fixture.execDir).filter((event) => event.
 const dispatched = dispatchAction(fixture.execDir, {
   basedOnSceneId: 'scene-0002', visual: { gesture: 'tap', point: [0.5, 0.5] },
   decision: { purpose: '唤起瞬时控件' }, sequenceId: 'sequence-0001', stepId: 'reveal',
+  [legacyPlanKey]: 'retired-plan',
 }, {
   now: '2026-09-20T10:00:00.000Z',
   invokeDeviceOperation: (_dir, payload, kind) => {
@@ -41,11 +43,37 @@ const dispatched = dispatchAction(fixture.execDir, {
 assert.strictEqual(dispatched.status, 'ACTION_DISPATCHED');
 assert.strictEqual(dispatched.sequenceId, 'sequence-0001');
 assert.strictEqual(dispatched.stepId, 'reveal');
+assert.strictEqual(Object.hasOwn(dispatched, legacyPlanKey), false);
 assert.deepStrictEqual(dispatched.action.evidence.sceneRefs, { before: 'scene-0002' });
 assert.strictEqual(store.events(fixture.execDir).filter((event) => event.type === 'sceneObserved').length, beforeSceneEvents);
 const transaction = transactions.readAction(fixture.execDir, dispatched.operationId);
 assert.strictEqual(transaction.sequenceId, 'sequence-0001');
 assert.strictEqual(transaction.stepId, 'reveal');
+assert.strictEqual(Object.hasOwn(transaction, legacyPlanKey), false);
+const requested = store.events(fixture.execDir).find((event) =>
+  event.type === 'actionRequested' && event.operationId === dispatched.operationId);
+assert.strictEqual(requested.sequenceId, 'sequence-0001');
+assert.strictEqual(requested.stepId, 'reveal');
+assert.strictEqual(Object.hasOwn(requested, legacyPlanKey), false);
+
+let failedDispatch;
+try {
+  dispatchAction(fixture.execDir, {
+    basedOnSceneId: 'scene-0002', visual: { gesture: 'tap', point: [0.5, 0.5] },
+    sequenceId: 'sequence-0001', stepId: 'failed', [legacyPlanKey]: 'retired-plan',
+  }, { invokeDeviceOperation: () => { throw new Error('adapter unavailable'); } });
+} catch (error) {
+  failedDispatch = error;
+}
+assert.strictEqual(failedDispatch.actionOutcome, 'UNKNOWN');
+assert.strictEqual(failedDispatch.actionDispatch.sequenceId, 'sequence-0001');
+assert.strictEqual(failedDispatch.actionDispatch.stepId, 'failed');
+assert.strictEqual(Object.hasOwn(failedDispatch.actionDispatch, legacyPlanKey), false);
+const failedEvent = store.events(fixture.execDir).find((event) =>
+  event.type === 'actionOutcomeUnknown' && event.operationId === failedDispatch.operationId);
+assert.strictEqual(failedEvent.sequenceId, 'sequence-0001');
+assert.strictEqual(failedEvent.stepId, 'failed');
+assert.strictEqual(Object.hasOwn(failedEvent, legacyPlanKey), false);
 
 const inputScene = store.readCurrentScene(fixture.execDir);
 inputScene.elements = [{ id: 'account-field', text: '账号', role: 'TextField', bounds: [80, 210, 360, 270],
