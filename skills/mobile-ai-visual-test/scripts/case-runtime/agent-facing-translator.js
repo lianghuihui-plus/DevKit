@@ -218,6 +218,7 @@ function translateAgentFacingRequest(execDir, request) {
   const scene = request.operation === 'inspect' ? sceneByRef(execDir, request.sceneRef) : current;
   let translatedSequence = null;
   let replay = false;
+  let recovery = false;
   if (request.operation === 'runSequence') {
     const basis = sceneByRef(execDir, request.sceneRef);
     if (!basis) throw inputError([issue('input.sceneRef', 'Scene 不存在', 'SCENE_CHANGED')]);
@@ -229,16 +230,17 @@ function translateAgentFacingRequest(execDir, request) {
       ...(request.flowContext ? { flowContext: request.flowContext } : {}),
       decision: { purpose: request.purpose, expectationRefs: [] },
     };
-    try { replay = !!require('./sequence-service').findTerminalSequence(execDir, translatedSequence); }
-    catch (error) { if (error.code !== 'SEQUENCE_INVALID') throw error; }
+    const existing = require('./sequence-service').findSequence(execDir, translatedSequence);
+    replay = existing?.terminal === true;
+    recovery = Boolean(existing && !replay);
   }
   const contextual = request.operation === 'runSequence'
     ? contextualIssues(execDir, { operation: 'observe', flowContext: request.flowContext }, scene)
     : contextualIssues(execDir, request, scene);
-  if (request.operation === 'runSequence' && !replay && scene && request.sceneRef !== scene.sceneId) {
+  if (request.operation === 'runSequence' && !replay && !recovery && scene && request.sceneRef !== scene.sceneId) {
     contextual.push(issue('sceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
   }
-  if (request.operation === 'runSequence' && !replay) {
+  if (request.operation === 'runSequence' && !replay && !recovery) {
     request.steps.forEach((step, index) => {
       if (step.type !== 'act') return;
       const actionRequest = { operation: 'act', sceneRef: request.sceneRef, ...facadeAction(step.action) };

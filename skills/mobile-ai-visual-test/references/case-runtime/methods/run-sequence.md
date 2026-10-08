@@ -5,7 +5,7 @@
 签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
 
 ```typescript
-runSequence({ sceneRef: string, purpose: string, steps: Array<object | object | object>, flowContext?: object })
+runSequence({ sceneRef: string, purpose: string, steps: Array<{ type: "act"; ... } | { type: "wait"; ... } | { type: "capture"; ... }>, flowContext?: object })
 ```
 
 ## 参数
@@ -14,7 +14,7 @@ runSequence({ sceneRef: string, purpose: string, steps: Array<object | object | 
 |---|---|---|---|
 | `sceneRef` | 是 | `string` | 当前 Scene |
 | `purpose` | 是 | `string` | 动作序列的业务目的 |
-| `steps` | 是 | `Array<object \| object \| object>` | 最多 12 个动作、等待或采集步骤 |
+| `steps` | 是 | `Array<{ type: "act"; ... } \| { type: "wait"; ... } \| { type: "capture"; ... }>` | 最多 12 个动作、等待或采集步骤 |
 | `flowContext` | 否/条件 | `object` | 当前 Case Flow 节点和可选分支选择 |
 
 ## 结构字段
@@ -61,6 +61,10 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 - [`SEQUENCE_STEP_FAILED`](../errors/sequence.md#error-sequence-step-failed)
 - [`SEQUENCE_RECORD_INCOMPLETE`](../errors/sequence.md#error-sequence-record-incomplete)
 - [`SEQUENCE_ACTION_OUTCOME_UNKNOWN`](../errors/sequence.md#error-sequence-action-outcome-unknown)
+- [`SEQUENCE_ACTION_FAILED`](../errors/sequence.md#error-sequence-action-failed)
+- [`SEQUENCE_CAPTURE_FAILED`](../errors/sequence.md#error-sequence-capture-failed)
+- [`SEQUENCE_FINAL_CAPTURE_FAILED`](../errors/sequence.md#error-sequence-final-capture-failed)
+- [`SEQUENCE_INTERRUPTED`](../errors/sequence.md#error-sequence-interrupted)
 - [`SEQUENCE_TIMEOUT`](../errors/sequence.md#error-sequence-timeout)
 - [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 
@@ -74,10 +78,17 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
     "purpose": "完成短时交互",
     "steps": [
       {
-        "id": "tap",
+        "id": "open",
         "type": "act",
         "action": {
           "ref": "button-1:tap"
+        }
+      },
+      {
+        "id": "confirm",
+        "type": "act",
+        "action": {
+          "ref": "confirm-1:tap"
         }
       }
     ]

@@ -277,7 +277,10 @@ const OPERATION_CONTRACT = deepFreeze({
     examples: [example('deterministic-actions', {
       operation: 'runSequence', basedOnSceneId: 'scene-0012',
       purpose: '连续执行已确定的动作',
-      steps: [{ id: 'tap', type: 'act', visual: { gesture: 'tap', point: [0.5, 0.5] } }],
+      steps: [
+        { id: 'open', type: 'act', visual: { gesture: 'tap', point: [0.5, 0.5] } },
+        { id: 'confirm', type: 'act', visual: { gesture: 'tap', point: [0.8, 0.8] } },
+      ],
     })],
     responses: ['SEQUENCE_COMPLETED', 'SEQUENCE_PARTIAL', 'SEQUENCE_INTERRUPTED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),

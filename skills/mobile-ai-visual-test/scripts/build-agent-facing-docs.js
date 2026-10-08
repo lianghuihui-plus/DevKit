@@ -25,12 +25,20 @@ function kebab(value) {
   return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
 }
 
+function compactUnionBranch(schema = {}) {
+  const discriminator = Object.entries(schema.properties || {})
+    .find(([, property]) => property.const !== undefined);
+  return discriminator ? `{ ${discriminator[0]}: ${typeName(discriminator[1])}; ... }` : typeName(schema);
+}
+
 function typeName(schema = {}) {
   if (schema.const !== undefined) return JSON.stringify(schema.const);
   if (schema.enum) return schema.enum.map((item) => JSON.stringify(item)).join(' | ');
   if (schema.oneOf) return schema.oneOf.map(typeName).join(' | ');
   if (schema.type === 'array') return schema.items?.oneOf || schema.items?.enum
-    ? `Array<${typeName(schema.items)}>` : `${typeName(schema.items)}[]`;
+    ? `Array<${schema.items.oneOf
+      ? schema.items.oneOf.map(compactUnionBranch).join(' | ')
+      : typeName(schema.items)}>` : `${typeName(schema.items)}[]`;
   if (schema.type === 'integer' || schema.type === 'number') return 'number';
   if (schema.type === 'boolean') return 'boolean';
   if (schema.type === 'object' || schema.properties) return 'object';

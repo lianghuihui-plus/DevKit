@@ -9,6 +9,7 @@ const {
   readSequences,
   recoverInterruptedSequences,
   runSequence,
+  writeSequenceRecord,
 } = require('../case-runtime/sequence-service');
 const { validateSequenceEvidenceGraph } = require('../case-runtime/result-integrity');
 const store = require('../case-runtime/store');
@@ -64,6 +65,11 @@ function harness(execDir, interruptAfter, behavior = {}) {
             deviceExecution: { status: 'UNVERIFIED' },
           },
         };
+        if (kind === 'CAPTURE' && behavior.failCapture) {
+          const error = new Error('explicit screenshot failed');
+          error.code = 'OBSERVATION_SCREENSHOT_FAILED';
+          throw error;
+        }
         if (behavior.failRecoveryCapture) {
           const error = new Error('recovery observation failed');
           error.code = 'OBSERVATION_SCREENSHOT_FAILED';
@@ -173,6 +179,99 @@ for (const scenario of [
   assert.deepStrictEqual(recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined }), []);
   assert.strictEqual(store.events(execDir).filter((event) => event.sequenceId === original.sequenceId
     && ['sequenceCompleted', 'sequenceInterrupted'].includes(event.type)).length, 1);
+}
+
+{
+  const execDir = fixture('completed-action-before-step-record');
+  const h = harness(execDir, 'action-transaction-completed');
+  assert.throws(() => runSequence(execDir, sequenceRequest(execDir), h.options));
+  assert.strictEqual(sequenceDrafts(execDir).length, 0);
+  const dispatchesBeforeRecovery = h.calls.filter((call) => call.kind === 'ACTION').length;
+
+  const recovered = recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined });
+  assert.strictEqual(recovered.length, 1);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'ACTION').length, dispatchesBeforeRecovery);
+  const record = readSequences(execDir)[0];
+  assert.deepStrictEqual(record.steps.map((step) => step.stepId), ['tap']);
+  assert.strictEqual(record.steps[0].status, 'COMPLETED');
+  assert.ok(record.steps[0].operationId);
+  assert.ok(record.steps[0].postSceneRef);
+  assertSequenceIntegrity(execDir, record);
+  const missingAction = writeSequenceRecord(execDir, { ...record, steps: [] });
+  assert.throws(() => assertSequenceIntegrity(execDir, missingAction), (error) => (
+    error.code === 'SEQUENCE_RECORD_INCOMPLETE'
+      && /action is missing from the step record/.test(error.message)
+  ));
+}
+
+for (const mode of ['FULL_SCENE', 'SCREENSHOT_ONLY']) {
+  const execDir = fixture(`completed-action-with-${mode.toLowerCase()}`);
+  const h = harness(execDir, 'action-transaction-completed');
+  const request = sequenceRequest(execDir);
+  request.steps.push({ id: 'evidence', type: 'capture', mode, purpose: 'retain business evidence' });
+  assert.throws(() => runSequence(execDir, request, h.options));
+  const actionDispatches = h.calls.filter((call) => call.kind === 'ACTION').length;
+
+  const recovered = recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined });
+  assert.strictEqual(recovered.length, 1, mode);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'ACTION').length, actionDispatches, mode);
+  const record = readSequences(execDir)[0];
+  assert.deepStrictEqual(record.steps.map((step) => step.stepId), ['tap', 'evidence'], mode);
+  assert.strictEqual(record.steps[1].status, 'COMPLETED', mode);
+  assert.strictEqual(record.steps[1].mode, mode, mode);
+  assert.strictEqual(record.steps[1].postSceneRef, record.steps[0].postSceneRef, mode);
+  assertSequenceIntegrity(execDir, record);
+  if (mode === 'FULL_SCENE') {
+    const missingCapture = writeSequenceRecord(execDir, { ...record, steps: record.steps.slice(0, 1) });
+    assert.throws(() => assertSequenceIntegrity(execDir, missingCapture), (error) => (
+      error.code === 'SEQUENCE_RECORD_INCOMPLETE'
+        && /capture is missing from the step record/.test(error.message)
+    ));
+  }
+}
+
+{
+  const execDir = fixture('ambiguous-failed-adjacent-capture');
+  const h = harness(execDir, 'action-transaction-completed', { failCapture: true });
+  const request = sequenceRequest(execDir);
+  request.steps.push({
+    id: 'evidence', type: 'capture', mode: 'SCREENSHOT_ONLY', purpose: 'retain business evidence',
+  });
+  assert.throws(() => runSequence(execDir, request, h.options));
+  const actionDispatches = h.calls.filter((call) => call.kind === 'ACTION').length;
+  const recovered = recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined });
+  assert.strictEqual(recovered.length, 1);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'ACTION').length, actionDispatches);
+  const record = readSequences(execDir)[0];
+  assert.strictEqual(record.status, 'SEQUENCE_INTERRUPTED');
+  assert.strictEqual(record.failure.code, 'SEQUENCE_CAPTURE_FAILED');
+  assert.deepStrictEqual(record.steps.map((step) => [step.stepId, step.status]), [
+    ['tap', 'COMPLETED'],
+    ['evidence', 'FAILED'],
+  ]);
+  assert.strictEqual(record.steps[1].postSceneRef, null);
+  assert.strictEqual(record.finalSceneRef, record.steps[0].postSceneRef);
+  assertSequenceIntegrity(execDir, record);
+}
+
+{
+  const execDir = fixture('expired-deadline');
+  let currentTime = 1000;
+  const h = harness(execDir, 'sequence-created');
+  h.options.clock = () => currentTime;
+  assert.throws(() => runSequence(execDir, sequenceRequest(execDir), h.options));
+  assert.strictEqual(readSequences(execDir)[0].deadlineMs, 31000);
+
+  currentTime = 31001;
+  const callsBeforeRecovery = h.calls.length;
+  const recovered = recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined });
+  assert.strictEqual(recovered.length, 1);
+  assert.strictEqual(h.calls.length, callsBeforeRecovery);
+  const record = readSequences(execDir)[0];
+  assert.strictEqual(record.finalSceneRef, null);
+  assert.strictEqual(record.remainingMs, 0);
+  assert.ok(store.events(execDir).some((event) => event.sequenceId === record.sequenceId
+    && event.code === 'SEQUENCE_FINAL_CAPTURE_FAILED'));
 }
 
 {

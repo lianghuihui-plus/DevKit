@@ -74,7 +74,9 @@ function terminalRecord(execDir, value) {
     steps: value.steps || [],
     evidence: value.evidence || { sceneRefs: ['scene-0003'], screenshotRefs: [] },
     finalSceneRef: value.finalSceneRef === undefined ? 'scene-0003' : value.finalSceneRef,
+    deadlineMs: value.deadlineMs ?? 30000,
     remainingMs: value.remainingMs ?? 4321,
+    elapsedMs: value.elapsedMs ?? 0,
     technicalFacts: value.technicalFacts || [],
     failure: value.failure || null,
   };
@@ -116,9 +118,25 @@ function terminalRecord(execDir, value) {
     evidence: { sceneRefs: ['scene-0003'], screenshotRefs: [] },
     finalSceneRef: 'scene-0003',
     remainingMs: 4321,
+    elapsedMs: 0,
     idempotent: true,
   });
   assert.strictEqual(findTerminalSequence(current.execDir, request(original.basedOnSceneId, 'changed')), null);
+}
+
+{
+  const current = fixture('missing-elapsed');
+  const original = request(store.readCurrentScene(current.execDir).sceneId);
+  promoteFinalScene(current.execDir);
+  const { elapsedMs, ...missingElapsed } = terminalRecord(current.execDir, {
+    requestKey: sequenceRequestKey(original),
+    basedOnSceneRef: original.basedOnSceneId,
+  });
+  const saved = writeSequenceRecord(current.execDir, missingElapsed);
+  assert.throws(
+    () => assertSequenceIntegrity(current.execDir, saved),
+    (error) => error.code === 'SEQUENCE_RECORD_INCOMPLETE' && /elapsed/.test(error.message),
+  );
 }
 
 {

@@ -158,6 +158,11 @@ function execute(execDir, request, options = {}) {
       if (request.operation === 'status') {
         return runtimeStatus(execDir);
       }
+      if (request.operation === 'runSequence') {
+        const sequence = require('./sequence-service');
+        const terminal = sequence.findTerminalSequence(execDir, request);
+        if (terminal) return sequence.responseFromSequenceRecord(terminal, { idempotent: true });
+      }
       const barrier = recoveryBarrier(execDir, recoveredTransactions, pendingFinish);
       if (barrier) return barrier;
       const latestExecution = store.loadExecution(execDir, { allowFinalized: true });
@@ -189,11 +194,6 @@ function execute(execDir, request, options = {}) {
           technicalFactRef: preparation?.technicalFactRef || null,
           scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
         };
-      }
-      if (request.operation === 'runSequence') {
-        const sequence = require('./sequence-service');
-        const terminal = sequence.findTerminalSequence(execDir, request);
-        if (terminal) return sequence.responseFromSequenceRecord(terminal, { idempotent: true });
       }
       assertSceneBasis(execDir, request);
       const flowContext = require('./case-flow-service').validateFlowContext(execDir, request.flowContext);

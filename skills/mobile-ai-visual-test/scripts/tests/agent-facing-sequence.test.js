@@ -95,6 +95,17 @@ assert.strictEqual(result.result.outcome, 'SEQUENCE_COMPLETED');
 assert.strictEqual(result.data.type, 'scene');
 assert.strictEqual(result.data.ref, result.result.sceneRef);
 assert.ok(result.resources.some((item) => item.type === 'sequenceResult' && item.ref === result.result.sequenceResultRef));
+const publicSequence = resources.readPublishedResource(fixture.execDir, result.result.sequenceResultRef);
+assert.deepStrictEqual(publicSequence.data.content.request.steps[0].visual.point, [5000, 5000]);
+assert.ok(publicSequence.data.content.evidence.screenshotRefs.every((ref) => ref.includes(':screenshot:')),
+  JSON.stringify(publicSequence.data.content.evidence.screenshotRefs));
+const sequenceScreenshots = publicSequence.resources.filter((item) => item.type === 'screenshot');
+assert.ok(sequenceScreenshots.length >= 1);
+for (const descriptor of sequenceScreenshots) {
+  const screenshot = resources.readPublishedResource(fixture.execDir, descriptor.ref);
+  assert.match(screenshot.data.content.path, /screenshots\/coordinate-grid\//);
+  assert.strictEqual(screenshot.data.content.coordinateSpace.maximum, 10000);
+}
 const decisionsBeforeReplay = store.events(fixture.execDir).filter((event) => event.type === 'agentDecisionRecorded').length;
 const replay = run(fixture.execDir, oneAction, options);
 assert.strictEqual(replay.status, 'SUCCEEDED', JSON.stringify(replay));
@@ -143,6 +154,13 @@ assert.ok(captureFailed.resources.some((item) => item.type === 'sequenceResult')
   fs.writeFileSync(incompleteExecutionPath, `${JSON.stringify({
     ...incompleteExecution, endedAt: null, status: 'RUNNING', lifecycle: 'RUNNING', finalized: false,
   }, null, 2)}\n`);
+  fs.writeFileSync(path.join(incompleteFixture.execDir, 'runtime.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    executionId: incompleteExecution.executionId,
+    status: 'READY',
+    entry: path.join(incompleteFixture.execDir, 'agent-facing-client.js'),
+    broker: { allowedOperations: AGENT_OPERATIONS },
+  }, null, 2)}\n`);
   store.writeScene(incompleteFixture.execDir, JSON.parse(fs.readFileSync(
     path.join(incompleteFixture.execDir, 'scenes', 'scene-0002.json'), 'utf8')));
   const incompleteSceneRef = resources.publishScene(incompleteFixture.execDir, 'scene-0002').data.ref;
@@ -154,8 +172,14 @@ assert.ok(captureFailed.resources.some((item) => item.type === 'sequenceResult')
   assert.throws(() => runSequence(incompleteFixture.execDir, internal, {
     remainingMs: 30000, clock: () => 0, interruptAfter: 'sequence-created',
   }));
-  const retry = run(incompleteFixture.execDir, incompleteRequest, options);
-  assert.strictEqual(retry.error.code, 'SEQUENCE_RECORD_INCOMPLETE', JSON.stringify(retry));
+  const retry = run(incompleteFixture.execDir, incompleteRequest, { ...options, clock: () => 0 });
+  assert.strictEqual(retry.status, 'FAILED', JSON.stringify(retry));
+  assert.strictEqual(retry.error.code, 'SEQUENCE_INTERRUPTED', JSON.stringify(retry));
+  assert.strictEqual(retry.result.sequenceId, 'sequence-0001');
+  assert.ok(retry.result.sequenceResultRef);
+  assert.ok(retry.result.sceneRef);
+  assert.ok(retry.resources.some((item) => item.ref === retry.result.sequenceResultRef));
+  assert.ok(retry.resources.some((item) => item.ref === retry.result.sceneRef));
 }
 
 {

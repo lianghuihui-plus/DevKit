@@ -17,6 +17,10 @@ const invocation = telemetry.beginInvocation(execDir, 'act', {
   operation: 'act', input: { text: 'secret' }, result: { verdict: 'PASS', summary: 'private' },
 }, { now: '2026-08-20T10:00:00.000Z', telemetryClock: clock });
 telemetry.recordSpan(execDir, 'adapter', 400, { kind: 'ACTION', runtimeOperation: 'act', postActionSettleMs: 100 }, { now: '2026-08-20T10:00:00.100Z' });
+telemetry.recordSpan(execDir, 'adapter', 50, { kind: 'CAPTURE', runtimeOperation: 'runSequence' }, { now: '2026-08-20T10:00:00.200Z' });
+telemetry.recordSpan(execDir, 'sequenceWait', 200, {
+  kind: 'WAIT', runtimeOperation: 'runSequence', explicitWaitMs: 200,
+}, { now: '2026-08-20T10:00:00.300Z' });
 nowMs = 1700;
 telemetry.endInvocation(execDir, invocation, { status: 'SCENE' }, { now: '2026-08-20T10:00:00.700Z', telemetryClock: clock });
 const invalid = telemetry.beginInvocation(execDir, 'act', {
@@ -39,14 +43,14 @@ const summary = telemetry.summarize(execDir, 1000);
 assert.deepStrictEqual(summary, {
   totalElapsedMs: 1000,
   runtimeActiveMs: 800,
-  adapterActiveMs: 400,
+  adapterActiveMs: 650,
   actionDeviceMs: 300,
-  observationCaptureMs: 0,
+  observationCaptureMs: 50,
   postActionSettleMs: 100,
-  explicitWaitMs: 0,
+  explicitWaitMs: 200,
   knowledgeQueryMs: 0,
   recoveryControlMs: 0,
-  runtimeOverheadMs: 400,
+  runtimeOverheadMs: 150,
   recoveryMs: 0,
   agentAndSchedulingGapMs: 200,
   agentTiming: {

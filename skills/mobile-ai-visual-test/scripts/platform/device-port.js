@@ -196,7 +196,19 @@ function invokeScreenshotCapture(execDir, validated, options = {}) {
     const env = binding.platform === 'android'
       ? androidHelperAdapterEnvironment(execDir, binding, { baseEnv: options.env || process.env })
       : options.env || process.env;
-    const raw = runner(command, args, { timeoutMs, kind: 'CAPTURE', binding, preAdapterDelayMs: 0, env });
+    const adapterStartedAt = Date.now();
+    let raw;
+    try {
+      raw = runner(command, args, { timeoutMs, kind: 'CAPTURE', binding, preAdapterDelayMs: 0, env });
+    } finally {
+      if (typeof options.onAdapterSpan === 'function') {
+        options.onAdapterSpan({
+          name: 'adapter', kind: 'CAPTURE', purpose: validated.request?.purpose || null,
+          action: null, durationMs: Date.now() - adapterStartedAt,
+          postActionSettleMs: 0, explicitWaitMs: 0,
+        });
+      }
+    }
     const adapterResult = parseAdapterOutput(raw, 'CAPTURE');
     assertResultBinding(adapterResult, binding, 'CAPTURE');
     return { binding, adapterResult, evidence: validateObservationArtifacts(execDir, adapterResult) };

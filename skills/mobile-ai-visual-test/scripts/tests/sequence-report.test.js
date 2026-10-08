@@ -113,6 +113,11 @@ assert.deepStrictEqual(assertSequenceIntegrity(fixture.execDir, unknownRecord), 
 const unknownStep = unknownRecord.steps[0];
 assert.ok(unknownStep.postSceneRef);
 const unknownTrace = buildExecutionTrace(readExecutionReport(fixture.execDir));
+const unknownSequenceEntry = unknownTrace.entries.find((entry) => entry.category === 'SEQUENCE'
+  && entry.sequenceId === unknownSequence.sequenceId
+  && entry.outcome.status === 'FAILED');
+assert.strictEqual(unknownSequenceEntry.outcome.code, 'SEQUENCE_ACTION_OUTCOME_UNKNOWN');
+assert.strictEqual(unknownSequenceEntry.outcome.summary, 'action outcome is unknown');
 const unknownAction = unknownTrace.entries.find((entry) => entry.category === 'ACTION'
   && entry.operationId === unknownStep.operationId);
 assert.strictEqual(unknownAction.beforeObservationEntry?.sceneId, unknownStep.preSceneRef);

@@ -150,7 +150,31 @@ function projectSource(type, raw, params, source) {
   if (type === 'knowledgeQuery') return { queryId: raw.queryId, query: raw.query, context: raw.context,
     sceneId: raw.sceneId, checkNodeIds: raw.expectationRefs || [], candidateSetRef: params.candidateSetRef,
     knowledgeReviewRefs: params.knowledgeReviewRefs || [] };
+  if (type === 'sequenceResult') return projectSequenceResult(raw, params.refMap || {});
   return remapReferences(raw, params.refMap || {});
+}
+
+function gridPoint(point) {
+  return Array.isArray(point) ? point.map((value) => Math.round(Number(value) * 10000)) : point;
+}
+
+function projectSequenceResult(raw, refMap) {
+  const value = remapReferences(raw, refMap);
+  if (!value.request?.steps) return value;
+  return {
+    ...value,
+    request: {
+      ...value.request,
+      steps: value.request.steps.map((step) => {
+        if (step.type !== 'act' || !step.visual) return step;
+        const visual = { ...step.visual };
+        for (const field of ['point', 'from', 'to']) {
+          if (visual[field]) visual[field] = gridPoint(visual[field]);
+        }
+        return { ...step, visual };
+      }),
+    },
+  };
 }
 
 function remapReferences(value, refMap) {
@@ -247,7 +271,8 @@ function publishArtifact(execDir, type, relative, associations = [], params = {}
   const source = { kind: text ? 'text' : 'json', path: relative,
     mediaType: text ? 'text/markdown' : 'application/json', encoding: 'utf-8' };
   const dependencies = ['sequenceResult', 'caseResult'].includes(type)
-    ? artifactAssociations(execDir, sourceValue(execDir, source).value, resourceRef(execDir, type, relative), relative)
+    ? artifactAssociations(execDir, sourceValue(execDir, source).value,
+      resourceRef(execDir, type, relative), relative, { coordinateRuler: type === 'sequenceResult' })
     : { refMap: {}, associations: [] };
   return publishResource(execDir, { type, id: relative, source,
     params: { ...params, refMap: { ...dependencies.refMap, ...params.refMap } }, associations: [...associations, ...dependencies.associations] });
@@ -282,7 +307,7 @@ function publishLayout(execDir, scene) {
   throw formatFail(`unsupported layout format: ${format || 'unknown'}`, { resourceType: 'layout', format: format || 'unknown' });
 }
 
-function artifactAssociations(execDir, content, selfRef, selfId) {
+function artifactAssociations(execDir, content, selfRef, selfId, options = {}) {
   const refMap = selfId ? { [selfId]: selfRef } : {};
   const associations = new Map();
   const visit = (value, field = '') => {
@@ -294,7 +319,12 @@ function artifactAssociations(execDir, content, selfRef, selfId) {
     let resource;
     if (value.startsWith('mavt:')) resource = readPublishedResource(execDir, value);
     else if (/^scene-[\w-]+$/.test(value)) resource = publishScene(execDir, value);
-    else if (/^screenshots\/[^/]+\.(png|jpg|svg)$/.test(value)) resource = publishScreenshot(execDir, { ref: value });
+    else if (/^screenshots\/[^/]+\.(png|jpg|svg)$/.test(value)) {
+      const screenshot = options.coordinateRuler && value.endsWith('.png')
+        ? require('../lib/coordinate-ruler').ensureCoordinateRuler(execDir, { ref: value })
+        : { ref: value };
+      resource = publishScreenshot(execDir, screenshot);
+    }
     else if (/^layouts\/[^/]+\.json$/.test(value)) resource = publishArtifact(execDir, 'layout', value);
     else if (/^knowledge\/[^/]+\.md$/.test(value)) resource = publishArtifact(execDir, 'knowledgeDocument', value);
     else if (/^action-spatial-evidence\/[^/]+\.json$/.test(value)) resource = publishSpatial(execDir, value);

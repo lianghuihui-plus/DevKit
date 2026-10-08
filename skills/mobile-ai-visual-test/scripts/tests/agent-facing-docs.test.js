@@ -46,6 +46,15 @@ assert.deepStrictEqual(publicSequenceSteps.oneOf[0].properties.action.oneOf[1].p
   { type: 'integer', minimum: 0, maximum: 10000 });
 assert.deepStrictEqual(Object.keys(caseContract.methods.runSequence.inputSchema.properties).sort(),
   ['flowContext', 'purpose', 'sceneRef', 'steps']);
+assert.ok(caseContract.methods.runSequence.minimalExample.input.steps
+  .filter((step) => step.type === 'act').length >= 2,
+  'runSequence minimal example must demonstrate a deterministic multi-action sequence');
+for (const code of [
+  'SEQUENCE_ACTION_FAILED',
+  'SEQUENCE_CAPTURE_FAILED',
+  'SEQUENCE_FINAL_CAPTURE_FAILED',
+  'SEQUENCE_INTERRUPTED',
+]) assert.ok(caseContract.methods.runSequence.errorCodes.includes(code), `runSequence must document ${code}`);
 const requiredMethodFields = [
   'name', 'summary', 'requestSchema', 'inputSchema', 'responseProjection', 'parameterDescriptions',
   'conditionalRequirements', 'contextualValidationRules', 'successStatuses',
@@ -139,8 +148,9 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const caseIndex = read('references/case-runtime.md');
 const coordinatorIndex = read('references/coordinator.md');
 const confirmRunPage = read('references/coordinator/methods/confirm-run.md');
-assert.match(read('references/case-runtime/methods/run-sequence.md'), /steps: Array<object(?: \| object)+>/);
-assert.doesNotMatch(read('references/case-runtime/methods/run-sequence.md'), /steps: object(?: \| object)+\[\]/);
+const runSequencePage = read('references/case-runtime/methods/run-sequence.md');
+assert.doesNotMatch(runSequencePage, /Array<object \| object \| object>/);
+assert.match(runSequencePage, /Array<\{ type: "act"; \.\.\. \} \| \{ type: "wait"; \.\.\. \} \| \{ type: "capture"; \.\.\. \}>/);
 assert.ok(Buffer.byteLength(caseIndex) <= 6 * 1024);
 assert.ok(caseIndex.split('\n').length <= 160);
 assert.ok(Buffer.byteLength(coordinatorIndex) <= 4 * 1024);

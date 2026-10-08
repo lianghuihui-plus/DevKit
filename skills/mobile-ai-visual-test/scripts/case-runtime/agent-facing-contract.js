@@ -305,10 +305,15 @@ const PUBLIC_METHODS = Object.freeze({
     conditionalRequirements: ['步骤 id 唯一；视觉动作坐标按 Scene 截图四边标尺填写 0 到 10000 的整数。'],
     contextualValidationRules: ['两个及以上动作已由当前证据完整确定、步骤间不需要视觉理解、业务判断或重新规划时，优先使用 runSequence。', '动作后需要立即判断时使用 act；单动作后仍需按指定时机 wait 或 capture 时可以使用 runSequence。'],
     successStatuses: ['SEQUENCE_COMPLETED'],
-    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'SEQUENCE_INVALID', 'SEQUENCE_STEP_FAILED', 'SEQUENCE_RECORD_INCOMPLETE', 'SEQUENCE_ACTION_OUTCOME_UNKNOWN', 'SEQUENCE_TIMEOUT', 'CASE_RUNTIME_TECHNICAL'],
+    errorCodes: [
+      'AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'SEQUENCE_INVALID',
+      'SEQUENCE_STEP_FAILED', 'SEQUENCE_RECORD_INCOMPLETE', 'SEQUENCE_ACTION_OUTCOME_UNKNOWN',
+      'SEQUENCE_ACTION_FAILED', 'SEQUENCE_CAPTURE_FAILED', 'SEQUENCE_FINAL_CAPTURE_FAILED',
+      'SEQUENCE_INTERRUPTED', 'SEQUENCE_TIMEOUT', 'CASE_RUNTIME_TECHNICAL',
+    ],
     sideEffects: ['按顺序投递动作', '保存动作后截图并采集最终完整 Scene'],
     idempotency: '相同规范化请求返回已签名终态；未知动作结果永不重放。',
-    minimalExample: { operation: 'runSequence', input: { sceneRef: EXAMPLE_SCENE_REF, purpose: '完成短时交互', steps: [{ id: 'tap', type: 'act', action: { ref: 'button-1:tap' } }] } },
+    minimalExample: { operation: 'runSequence', input: { sceneRef: EXAMPLE_SCENE_REF, purpose: '完成短时交互', steps: [{ id: 'open', type: 'act', action: { ref: 'button-1:tap' } }, { id: 'confirm', type: 'act', action: { ref: 'confirm-1:tap' } }] } },
   }),
   knowledge: method('knowledge', '查询知识，或登记指定 query 的候选复核结果。', { type: 'object', oneOf: [SCHEMAS.knowledgeQuery, SCHEMAS.knowledgeReview] }, {
     mode: 'query 或 review', sceneRef: '当前 Scene', query: '待调查问题', queryId: '已有查询引用',

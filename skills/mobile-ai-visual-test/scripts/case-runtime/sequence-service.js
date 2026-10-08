@@ -90,6 +90,12 @@ function redactedSequenceRequest(request) {
 function assertSequenceIntegrity(execDir, record) {
   if (!record || record.schemaVersion !== 1) throw incomplete('sequence record schema is invalid');
   validSequenceId(record.sequenceId);
+  if (!Number.isFinite(record.deadlineMs) || record.deadlineMs < 0) {
+    throw incomplete('sequence record deadline is invalid');
+  }
+  if (!Number.isFinite(record.elapsedMs) || record.elapsedMs < 0) {
+    throw incomplete('sequence record elapsed time is invalid');
+  }
   const execution = store.loadExecution(execDir, { allowFinalized: true });
   if (record.executionId !== execution.executionId) throw incomplete('sequence record execution binding is invalid');
   const expectedRef = path.relative(path.resolve(execDir), sequencePath(execDir, record.sequenceId));
@@ -132,6 +138,13 @@ function assertSequenceIntegrity(execDir, record) {
         throw incomplete(`sequence step chain is invalid: ${step.stepId}`);
       }
       if (step.type === 'act') {
+        if (step.status === 'NOT_RUN') {
+          if (step.operationId || step.postSceneRef) {
+            throw incomplete(`sequence unstarted action has execution evidence: ${step.stepId}`);
+          }
+          previousStep = step;
+          continue;
+        }
         const requested = events.filter((event) => event.type === 'actionRequested'
           && event.operationId === step.operationId && event.sequenceId === record.sequenceId
           && event.stepId === step.stepId);
@@ -188,6 +201,24 @@ function assertSequenceIntegrity(execDir, record) {
       previousStep = step;
     }
   }
+  if (record.terminal === true) {
+    const recordedOperations = new Set((record.steps || [])
+      .filter((step) => step.type === 'act').map((step) => step.operationId));
+    const orphanedAction = events.find((event) => event.type === 'actionRequested'
+      && event.sequenceId === record.sequenceId && !recordedOperations.has(event.operationId));
+    if (orphanedAction) {
+      throw incomplete(`sequence action is missing from the step record: ${orphanedAction.stepId}`);
+    }
+    const recordedCaptures = new Set((record.steps || [])
+      .filter((step) => step.type === 'capture').map((step) => step.stepId));
+    const orphanedCapture = events.find((event) => event.type === 'sceneObserved'
+      && event.sequenceId === record.sequenceId && event.stepId
+      && (event.captureOrigins || []).includes('AGENT_REQUESTED')
+      && !recordedCaptures.has(event.stepId));
+    if (orphanedCapture) {
+      throw incomplete(`sequence capture is missing from the step record: ${orphanedCapture.stepId}`);
+    }
+  }
   if (record.terminal === true && record.finalSceneRef) {
     const finalScene = readScene(execDir, record.finalSceneRef);
     const finalSceneEvents = events.filter((event) => event.type === 'sceneObserved'
@@ -208,12 +239,17 @@ function assertSequenceIntegrity(execDir, record) {
   return record;
 }
 
-function findTerminalSequence(execDir, request) {
+function findSequence(execDir, request) {
   const requestKey = sequenceRequestKey(request);
   const matches = readSequences(execDir).filter((record) => record.requestKey === requestKey);
   if (!matches.length) return null;
   if (matches.length !== 1) throw incomplete('multiple sequence records share the same request key');
-  const record = assertSequenceIntegrity(execDir, matches[0]);
+  return assertSequenceIntegrity(execDir, matches[0]);
+}
+
+function findTerminalSequence(execDir, request) {
+  const record = findSequence(execDir, request);
+  if (!record) return null;
   if (record.terminal !== true || !SEQUENCE_STATUSES.includes(record.status)) {
     throw incomplete(`sequence record has no terminal result: ${record.sequenceId}`);
   }
@@ -231,6 +267,7 @@ function responseFromSequenceRecord(record, options = {}) {
     evidence: record.evidence || { sceneRefs: [], screenshotRefs: [] },
     finalSceneRef: record.finalSceneRef || null,
     remainingMs: Number(record.remainingMs) || 0,
+    elapsedMs: record.elapsedMs,
     idempotent: options.idempotent === true,
   };
 }
@@ -480,7 +517,8 @@ function screenshotScene(execDir, execution, options, metadata) {
   }, { promote: metadata.promote, now: now(options) });
 }
 
-function actionStepRecord(step, stepIndex, operationId, beforeScene, afterScene, action, status = 'COMPLETED', error = null) {
+function actionStepRecord(step, stepIndex, operationId, beforeScene, afterScene, action,
+  status = 'COMPLETED', error = null, durationMs = null) {
   return {
     stepId: step.id,
     stepIndex,
@@ -490,11 +528,13 @@ function actionStepRecord(step, stepIndex, operationId, beforeScene, afterScene,
     preSceneRef: beforeScene.sceneId,
     postSceneRef: afterScene?.sceneId || null,
     action: action?.action || action || null,
+    ...(Number.isFinite(durationMs) ? { durationMs } : {}),
     ...(error ? { error } : {}),
   };
 }
 
-function captureStepRecord(step, stepIndex, beforeScene, afterScene, status = 'COMPLETED', error = null) {
+function captureStepRecord(step, stepIndex, beforeScene, afterScene,
+  status = 'COMPLETED', error = null, durationMs = null) {
   return {
     stepId: step.id,
     stepIndex,
@@ -504,11 +544,12 @@ function captureStepRecord(step, stepIndex, beforeScene, afterScene, status = 'C
     purpose: step.purpose,
     preSceneRef: beforeScene.sceneId,
     postSceneRef: afterScene?.sceneId || null,
+    ...(Number.isFinite(durationMs) ? { durationMs } : {}),
     ...(error ? { error } : {}),
   };
 }
 
-function waitStepRecord(step, stepIndex, scene, status = 'COMPLETED', error = null) {
+function waitStepRecord(step, stepIndex, scene, status = 'COMPLETED', error = null, durationMs = null) {
   return {
     stepId: step.id,
     stepIndex,
@@ -517,6 +558,7 @@ function waitStepRecord(step, stepIndex, scene, status = 'COMPLETED', error = nu
     ms: step.ms,
     preSceneRef: scene.sceneId,
     postSceneRef: scene.sceneId,
+    ...(Number.isFinite(durationMs) ? { durationMs } : {}),
     ...(error ? { error } : {}),
   };
 }
@@ -567,7 +609,9 @@ function runSequence(execDir, request, options = {}) {
     steps: [],
     evidence: { sceneRefs: [], screenshotRefs: [] },
     finalSceneRef: null,
+    deadlineMs: deadline,
     remainingMs: durationMs,
+    elapsedMs: 0,
     technicalFacts: [],
     failure: null,
   });
@@ -595,12 +639,15 @@ function runSequence(execDir, request, options = {}) {
       steps: stepRecords,
       evidence: { sceneRefs: [...sceneRefs], screenshotRefs: [...screenshotRefs] },
       remainingMs: Math.max(0, deadline - clock()),
+      elapsedMs: Math.max(0, clock() - startedMs),
       failure,
     });
   }
 
   for (let stepIndex = 0; stepIndex < normalized.steps.length; stepIndex += 1) {
     const step = normalized.steps[stepIndex];
+    const stepStartedMs = clock();
+    const stepDurationMs = () => Math.max(0, clock() - stepStartedMs);
     store.appendEvent(execDir, 'sequenceStepStarted', {
       sequenceId, stepId: step.id, stepIndex, stepType: step.type,
       decisionId: options.decisionId || null,
@@ -609,12 +656,18 @@ function runSequence(execDir, request, options = {}) {
     if (step.type === 'wait') {
       if (step.ms > usableMs(deadline, clock)) {
         failure = { code: 'SEQUENCE_TIMEOUT', message: `wait step exceeds usable Sequence budget: ${step.id}` };
-        stepRecords.push(waitStepRecord(step, stepIndex, workingScene, 'NOT_RUN', failure));
+        stepRecords.push(waitStepRecord(step, stepIndex, workingScene, 'NOT_RUN', failure, stepDurationMs()));
         persistProgress();
         break;
       }
       (options.sleep || ((ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)))(step.ms);
-      stepRecords.push(waitStepRecord(step, stepIndex, workingScene));
+      const waitDurationMs = stepDurationMs();
+      if (typeof options.onAdapterSpan === 'function') {
+        options.onAdapterSpan({
+          name: 'sequenceWait', kind: 'WAIT', durationMs: waitDurationMs, explicitWaitMs: step.ms,
+        });
+      }
+      stepRecords.push(waitStepRecord(step, stepIndex, workingScene, 'COMPLETED', null, waitDurationMs));
       persistProgress();
       continue;
     }
@@ -625,6 +678,10 @@ function runSequence(execDir, request, options = {}) {
         ? deadline - clock() : usableMs(deadline, clock);
       if (timeoutMs <= 0) {
         failure = { code: 'SEQUENCE_TIMEOUT', message: `capture step exceeds usable Sequence budget: ${step.id}` };
+        stepRecords.push(captureStepRecord(
+          step, stepIndex, workingScene, null, 'NOT_RUN', failure, stepDurationMs(),
+        ));
+        persistProgress();
         break;
       }
       const origins = ['AGENT_REQUESTED', ...(terminalCapture && step.mode === 'FULL_SCENE' ? ['SEQUENCE_FINAL'] : [])];
@@ -654,14 +711,18 @@ function runSequence(execDir, request, options = {}) {
           });
       } catch (error) {
         failure = { code: error.code || 'SEQUENCE_CAPTURE_FAILED', message: 'Sequence capture step failed' };
-        stepRecords.push(captureStepRecord(step, stepIndex, workingScene, null, 'FAILED', failure));
+        stepRecords.push(captureStepRecord(
+          step, stepIndex, workingScene, null, 'FAILED', failure, stepDurationMs(),
+        ));
         if (terminalCapture && step.mode === 'FULL_SCENE') {
           recordSequenceFinalCaptureFailure(execDir, record, error, options);
         }
         persistProgress();
         break;
       }
-      stepRecords.push(captureStepRecord(step, stepIndex, workingScene, postScene));
+      stepRecords.push(captureStepRecord(
+        step, stepIndex, workingScene, postScene, 'COMPLETED', null, stepDurationMs(),
+      ));
       uniquePush(sceneRefs, postScene.sceneId);
       uniquePush(screenshotRefs, postScene.screenshot.ref);
       workingScene = postScene;
@@ -674,6 +735,11 @@ function runSequence(execDir, request, options = {}) {
     const actionTimeoutMs = usableMs(deadline, clock);
     if (actionTimeoutMs <= 0) {
       failure = { code: 'SEQUENCE_TIMEOUT', message: `sequence has no usable action budget before step ${step.id}` };
+      stepRecords.push(actionStepRecord(
+        step, stepIndex, null, workingScene, null, prepared.resolvedAction.action,
+        'NOT_RUN', failure, stepDurationMs(),
+      ));
+      persistProgress();
       break;
     }
     const operationId = store.nextId(execDir, 'action');
@@ -728,7 +794,7 @@ function runSequence(execDir, request, options = {}) {
         }, { ...options, promoteScene: true, captureFailureTechnicalFactRef: fact.technicalFactRef });
         failure = { code: 'SEQUENCE_ACTION_OUTCOME_UNKNOWN', message: 'action outcome and final Scene are unknown' };
         stepRecords.push(actionStepRecord(step, stepIndex, operationId, workingScene, null,
-          error.actionDispatch.action, 'UNKNOWN', failure));
+          error.actionDispatch.action, 'UNKNOWN', failure, stepDurationMs()));
         persistProgress();
         break;
       }
@@ -741,7 +807,9 @@ function runSequence(execDir, request, options = {}) {
       uniquePush(sceneRefs, postScene?.sceneId);
       uniquePush(screenshotRefs, postScene?.screenshot?.ref);
       failure = { code: 'SEQUENCE_ACTION_OUTCOME_UNKNOWN', message: 'action outcome is unknown' };
-      stepRecords.push(actionStepRecord(step, stepIndex, operationId, workingScene, postScene, action, 'UNKNOWN', failure));
+      stepRecords.push(actionStepRecord(
+        step, stepIndex, operationId, workingScene, postScene, action, 'UNKNOWN', failure, stepDurationMs(),
+      ));
       persistProgress();
       break;
     }
@@ -756,6 +824,8 @@ function runSequence(execDir, request, options = {}) {
     let postScene;
     let automaticCaptureFailed = false;
     let explicitCaptureFailed = false;
+    const adjacentCaptureStartedMs = adjacentCapture ? clock() : null;
+    let adjacentCaptureDurationMs = null;
 
     try {
       if (adjacentCapture) {
@@ -790,6 +860,7 @@ function runSequence(execDir, request, options = {}) {
             promote: false,
             timeoutMs: captureTimeoutMs,
           });
+        adjacentCaptureDurationMs = Math.max(0, clock() - adjacentCaptureStartedMs);
         if (captureIsTerminal && adjacentCapture.mode === 'FULL_SCENE') finalScene = postScene;
       } else if (actionMustTerminate || stepIndex === normalized.steps.length - 1) {
         const finalTimeoutMs = deadline - clock();
@@ -824,6 +895,9 @@ function runSequence(execDir, request, options = {}) {
         });
       }
     } catch (captureError) {
+      if (adjacentCapture) {
+        adjacentCaptureDurationMs = Math.max(0, clock() - adjacentCaptureStartedMs);
+      }
       if (adjacentCapture && !finalCaptureAttempted) {
         explicitCaptureFailed = true;
         try {
@@ -872,7 +946,8 @@ function runSequence(execDir, request, options = {}) {
               message: 'automatic post-action capture failed; Sequence stopped after final handoff',
             };
           }
-        } catch (_finalError) {
+        } catch (finalError) {
+          recordSequenceFinalCaptureFailure(execDir, record, finalError, options);
           postScene = null;
         }
       }
@@ -886,9 +961,14 @@ function runSequence(execDir, request, options = {}) {
           decisionId: options.decisionId || null, sequenceId, stepId: step.id, preSceneRef: workingScene.sceneId,
         }, { ...options, promoteScene: false, captureFailureTechnicalFactRef: fact.technicalFactRef });
         failure = { code: captureError.code || 'POST_ACTION_CAPTURE_FAILED', message: 'post-action capture failed' };
-        stepRecords.push(actionStepRecord(step, stepIndex, operationId, workingScene, null, action, 'FAILED', failure));
+        stepRecords.push(actionStepRecord(
+          step, stepIndex, operationId, workingScene, null, action, 'FAILED', failure, stepDurationMs(),
+        ));
         if (adjacentCapture) {
-          stepRecords.push(captureStepRecord(adjacentCapture, captureStepIndex, workingScene, null, 'FAILED', failure));
+          stepRecords.push(captureStepRecord(
+            adjacentCapture, captureStepIndex, workingScene, null, 'FAILED', failure,
+            adjacentCaptureDurationMs,
+          ));
         }
         persistProgress();
         break;
@@ -902,10 +982,12 @@ function runSequence(execDir, request, options = {}) {
       stepId: step.id,
       preSceneRef: workingScene.sceneId,
     }, { ...options, promoteScene: finalScene?.sceneId === postScene.sceneId });
+    interruptAt(options, 'action-transaction-completed');
     stepRecords.push(actionStepRecord(
       step, stepIndex, operationId, workingScene, postScene, action,
       outcome === 'COMPLETED' ? 'COMPLETED' : 'FAILED',
       outcome === 'COMPLETED' ? null : { code: 'SEQUENCE_ACTION_FAILED', message: 'device reported a known action failure' },
+      stepDurationMs(),
     ));
     uniquePush(sceneRefs, postScene.sceneId);
     uniquePush(screenshotRefs, postScene.screenshot.ref);
@@ -915,7 +997,7 @@ function runSequence(execDir, request, options = {}) {
     if (adjacentCapture) {
       stepRecords.push(captureStepRecord(adjacentCapture, captureStepIndex, actionBeforeScene,
         explicitCaptureFailed ? null : postScene, explicitCaptureFailed ? 'FAILED' : 'COMPLETED',
-        explicitCaptureFailed ? failure : null));
+        explicitCaptureFailed ? failure : null, adjacentCaptureDurationMs));
       stepIndex += 1;
     }
     if (outcome !== 'COMPLETED') {
@@ -959,6 +1041,7 @@ function runSequence(execDir, request, options = {}) {
     status: failure ? 'SEQUENCE_PARTIAL' : 'SEQUENCE_COMPLETED',
     outcomeKnown: failure?.code !== 'SEQUENCE_ACTION_OUTCOME_UNKNOWN',
     endedAt: now(options),
+    elapsedMs: Math.max(0, clock() - startedMs),
     steps: stepRecords,
     evidence: {
       sceneRefs: [...new Set(sceneRefs)],
@@ -977,6 +1060,8 @@ function runSequence(execDir, request, options = {}) {
     finalSceneRef: finalScene?.sceneId || null,
     sequenceRecordRef: recordRef,
     recordSha256: record.integrity.recordSha256,
+    elapsedMs: record.elapsedMs,
+    failure: record.failure,
     decisionId: options.decisionId || null,
   }, options);
   return responseFromSequenceRecord(record);
@@ -989,6 +1074,15 @@ function sequenceDrafts(execDir, sequenceId) {
     .filter((name) => name.startsWith('action-') && name.endsWith('.draft.json'))
     .map((name) => readJson(path.join(directory, name), null))
     .filter((draft) => draft?.sequenceId === sequenceId);
+}
+
+function completedSequenceActions(execDir, sequenceId) {
+  const directory = store.paths(execDir).operations;
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory)
+    .filter((name) => /^action-[0-9]+\.json$/.test(name))
+    .map((name) => transactions.readCompletedAction(execDir, path.basename(name, '.json')))
+    .filter((action) => action?.sequenceId === sequenceId);
 }
 
 function sequenceScenes(execDir, sequenceId) {
@@ -1008,7 +1102,16 @@ function recoveryPreviousAction(draft, unknown) {
   };
 }
 
+function recoveryRemainingMs(record, options = {}) {
+  const clock = options.clock || Date.now;
+  return Math.max(0, record.deadlineMs - clock());
+}
+
 function recoveryFinalScene(execDir, record, previousScene, draft, unknown, options) {
+  const timeoutMs = recoveryRemainingMs(record, options);
+  if (timeoutMs <= 0) {
+    throw contractError('SEQUENCE_TIMEOUT', 'sequence deadline reached before recovery Scene capture');
+  }
   const metadata = {
     purpose: 'SEQUENCE_FINAL_RECOVERY',
     captureOrigins: draft ? ['ACTION_POST', 'SEQUENCE_FINAL'] : ['SEQUENCE_FINAL'],
@@ -1016,7 +1119,7 @@ function recoveryFinalScene(execDir, record, previousScene, draft, unknown, opti
     stepId: draft?.stepId || null,
     previousScene,
     promote: true,
-    timeoutMs: sequenceDurationMs(options.remainingMs ?? record.remainingMs),
+    timeoutMs,
   };
   if (draft) {
     metadata.relatedOperationId = draft.operationId;
@@ -1032,13 +1135,77 @@ function recoveredActionStep(record, draft, beforeScene, afterScene, action, sta
   return actionStepRecord(step, stepIndex, draft.operationId, beforeScene, afterScene, action, status, error);
 }
 
+function recoverClosedActionStep(execDir, record, stepRecords) {
+  const recordedOperations = new Set(stepRecords.map((step) => step.operationId).filter(Boolean));
+  const orphaned = completedSequenceActions(execDir, record.sequenceId)
+    .filter((action) => !recordedOperations.has(action.operationId));
+  if (!orphaned.length) return null;
+  if (orphaned.length !== 1) {
+    throw incomplete(`sequence has multiple completed actions without step records: ${record.sequenceId}`);
+  }
+  const completed = orphaned[0];
+  const stepIndex = record.request.steps.findIndex((step) => step.id === completed.stepId);
+  const step = record.request.steps[stepIndex];
+  if (!step || step.type !== 'act' || stepIndex !== stepRecords.length) {
+    throw incomplete(`sequence completed action is not the next request step: ${completed.stepId}`);
+  }
+  const beforeScene = readScene(execDir, completed.sceneId);
+  const afterScene = completed.sceneIdAfter ? readScene(execDir, completed.sceneIdAfter) : null;
+  if (!beforeScene || completed.sceneIdAfter && !afterScene) {
+    throw incomplete(`sequence completed action Scene is missing: ${completed.operationId}`);
+  }
+  const unknown = completed.outcomeKnown === false || completed.outcome === 'UNKNOWN'
+    || completed.actionResult?.outcomeKnown === false;
+  const failed = !unknown && (completed.outcome === 'FAILED'
+    || completed.actionResult?.lifecycle?.status === 'FAILED');
+  const status = unknown ? 'UNKNOWN' : failed ? 'FAILED' : 'COMPLETED';
+  const error = unknown
+    ? { code: 'SEQUENCE_ACTION_OUTCOME_UNKNOWN', message: 'action outcome is unknown after interruption' }
+    : failed ? { code: 'SEQUENCE_ACTION_FAILED', message: 'device reported a known action failure' } : null;
+  const steps = [actionStepRecord(
+    step, stepIndex, completed.operationId, beforeScene, afterScene,
+    completed.actionResult || completed.action, status, error,
+  )];
+  let recoveryError = error;
+  const adjacentCapture = record.request.steps[stepIndex + 1];
+  if (status === 'COMPLETED' && adjacentCapture?.type === 'capture') {
+    const origins = afterScene?.captureOrigins || [];
+    const explicitCaptureCompleted = afterScene?.stepId === adjacentCapture.id
+      && afterScene.relatedOperationId === completed.operationId
+      && origins.includes('AGENT_REQUESTED') && origins.includes('ACTION_POST');
+    const fallbackFinalScene = afterScene?.stepId === step.id
+      && afterScene.relatedOperationId === completed.operationId
+      && origins.includes('ACTION_POST') && origins.includes('SEQUENCE_FINAL')
+      && !origins.includes('AGENT_REQUESTED');
+    if (explicitCaptureCompleted) {
+      steps.push(captureStepRecord(adjacentCapture, stepIndex + 1, beforeScene, afterScene));
+    } else if (fallbackFinalScene) {
+      recoveryError = {
+        code: 'SEQUENCE_CAPTURE_FAILED',
+        message: 'adjacent capture failed before the final Scene handoff',
+      };
+      steps.push(captureStepRecord(
+        adjacentCapture, stepIndex + 1, beforeScene, null, 'FAILED', recoveryError,
+      ));
+    } else {
+      throw incomplete(`sequence adjacent capture cannot be reconstructed: ${adjacentCapture.id}`);
+    }
+  }
+  return {
+    afterScene,
+    status,
+    error: recoveryError,
+    steps,
+  };
+}
+
 function terminalizeRecoveredSequence(execDir, record, update, options) {
   const finalRecord = writeSequenceRecord(execDir, {
     ...record,
     terminal: true,
     status: 'SEQUENCE_INTERRUPTED',
     endedAt: now(options),
-    remainingMs: sequenceDurationMs(options.remainingMs ?? record.remainingMs),
+    remainingMs: recoveryRemainingMs(record, options),
     technicalFacts: sequenceTechnicalFactRefs(execDir, record.sequenceId),
     ...update,
   });
@@ -1054,6 +1221,8 @@ function terminalizeRecoveredSequence(execDir, record, update, options) {
       finalSceneRef: finalRecord.finalSceneRef,
       sequenceRecordRef: finalRecord.sequenceRecordRef,
       recordSha256: finalRecord.integrity.recordSha256,
+      elapsedMs: finalRecord.elapsedMs,
+      failure: finalRecord.failure || null,
       decisionId: finalRecord.decisionId || null,
     }, options);
   }
@@ -1093,6 +1262,8 @@ function repairSequenceBoundaryEvents(execDir, record, options) {
     finalSceneRef: record.finalSceneRef,
     sequenceRecordRef: record.sequenceRecordRef,
     recordSha256: record.integrity.recordSha256,
+    elapsedMs: record.elapsedMs,
+    failure: record.failure || null,
     decisionId: record.decisionId || null,
   }, options);
   return true;
@@ -1117,6 +1288,22 @@ function recoverInterruptedSequences(execDir, options = {}) {
     let failure = record.failure || { code: 'SEQUENCE_INTERRUPTED', message: 'Sequence stopped after Runtime interruption' };
     let outcomeKnown = record.outcomeKnown !== false;
     let captureAttempted = false;
+
+    if (!draft) {
+      const closed = recoverClosedActionStep(execDir, record, stepRecords);
+      if (closed) {
+        stepRecords.push(...closed.steps);
+        if (closed.afterScene) {
+          sceneRefs.add(closed.afterScene.sceneId);
+          if (closed.afterScene.screenshot?.ref) screenshotRefs.add(closed.afterScene.screenshot.ref);
+          if ((closed.afterScene.captureOrigins || []).includes('SEQUENCE_FINAL')) finalScene = closed.afterScene;
+        }
+        if (closed.error) {
+          failure = closed.error;
+          outcomeKnown = closed.status !== 'UNKNOWN';
+        }
+      }
+    }
 
     if (draft) {
       const beforeScene = readScene(execDir, draft.sceneId);
@@ -1260,6 +1447,7 @@ function recoverInterruptedSequences(execDir, options = {}) {
 
 module.exports = {
   assertSequenceIntegrity,
+  findSequence,
   findTerminalSequence,
   persistSequenceScreenshotScene,
   readSequences,

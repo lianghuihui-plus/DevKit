@@ -146,13 +146,15 @@ assert.strictEqual((strictFailure.calls.match(/uiautomator dump/g) || []).length
 const helperCapture = runAdapter(capture, 'helper', 'success', 'capture-helper');
 assert.strictEqual(helperCapture.result.status, 0, helperCapture.result.stderr);
 assert.strictEqual(helperCapture.json.artifacts.screenshot, 'screenshots/capture-helper.png');
-assert.strictEqual(helperCapture.json.captureTiming.androidUiBackend.selected, 'helper');
-assert.strictEqual((helperCapture.calls.match(/exec-out screencap/g) || []).length, 0);
+assert.strictEqual(helperCapture.json.captureTiming.androidUiBackend.selected, 'uiautomator');
+assert.strictEqual((helperCapture.calls.match(/helper/g) || []).length, 0);
+assert.strictEqual((helperCapture.calls.match(/exec-out screencap/g) || []).length, 1);
 assert.strictEqual(fs.readdirSync(path.join(helperCapture.out, 'screenshots')).length, 1);
 
 const fallbackCapture = runAdapter(capture, 'auto', 'fail', 'capture-fallback');
 assert.strictEqual(fallbackCapture.result.status, 0, fallbackCapture.result.stderr);
 assert.strictEqual(fallbackCapture.json.captureTiming.androidUiBackend.selected, 'uiautomator');
+assert.strictEqual((fallbackCapture.calls.match(/helper/g) || []).length, 0);
 assert.strictEqual((fallbackCapture.calls.match(/exec-out screencap/g) || []).length, 1);
 
 fs.rmSync(root, { recursive: true, force: true });

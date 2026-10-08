@@ -66,11 +66,13 @@ function fixture(platform) {
 for (const platform of ['android', 'harmony', 'ios']) {
   const { execDir, execution, binding } = fixture(platform);
   let timeoutMs = null;
+  const spans = [];
   const result = invokeScreenshotCapture(execDir, {
     context: { execution }, operationId: `capture-${platform}`,
   }, {
     now: '2026-09-20T00:00:01.000Z',
     timeoutMs: 900,
+    onAdapterSpan: (span) => spans.push(span),
     env: { ...process.env, MAVT_ANDROID_HELPER_SESSION_STATE: '/stale/session.json' },
     runner(command, args, options) {
       assert.ok(command.endsWith('/scripts/platform/capture.sh'));
@@ -104,6 +106,10 @@ for (const platform of ['android', 'harmony', 'ios']) {
   assert.strictEqual(result.evidence.width, 1);
   assert.strictEqual(result.evidence.height, 1);
   assert.match(result.evidence.sha256, /^[0-9a-f]{64}$/);
+  assert.strictEqual(spans.length, 1);
+  assert.strictEqual(spans[0].name, 'adapter');
+  assert.strictEqual(spans[0].kind, 'CAPTURE');
+  assert.ok(Number.isFinite(spans[0].durationMs));
 }
 
 console.log('platform capture passed');

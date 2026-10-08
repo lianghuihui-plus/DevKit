@@ -110,8 +110,13 @@ function summarize(execDir, totalElapsedMs, openInvocation = null, options = {})
     explicitWaitMs: 0,
   };
   let recoveryAdapterMs = 0;
-  for (const span of spans.filter((entry) => entry.name === 'adapter')) {
+  for (const span of spans) {
     const duration = Math.max(0, Number(span.durationMs) || 0);
+    if (span.name === 'sequenceWait') {
+      raw.explicitWaitMs += Math.min(duration, Math.max(0, Number(span.explicitWaitMs) || duration));
+      continue;
+    }
+    if (span.name !== 'adapter') continue;
     const settle = Math.min(duration, Math.max(0, Number(span.postActionSettleMs) || 0));
     const afterSettle = duration - settle;
     const explicitWait = Math.min(afterSettle, Math.max(0, Number(span.explicitWaitMs) || 0));
@@ -119,7 +124,7 @@ function summarize(execDir, totalElapsedMs, openInvocation = null, options = {})
     raw.postActionSettleMs += settle;
     raw.explicitWaitMs += explicitWait;
     if (span.kind === 'ACTION') raw.actionDeviceMs += device;
-    if (span.kind === 'OBSERVE') raw.observationCaptureMs += device;
+    if (['OBSERVE', 'CAPTURE'].includes(span.kind)) raw.observationCaptureMs += device;
     if (span.runtimeOperation === 'recover') recoveryAdapterMs += duration;
   }
   raw.knowledgeQueryMs = operationMs('knowledge');

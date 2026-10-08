@@ -45,7 +45,7 @@ function metrics(execution, result, events, endedAt, execDir = null, options = {
     status: record.status,
     completedStepCount: (record.steps || []).filter((step) => step.status === 'COMPLETED').length,
     actionStepCount: (record.steps || []).filter((step) => step.type === 'act').length,
-    failedStepId: (record.steps || []).find((step) => step.status === 'FAILED')?.stepId || null,
+    failedStepId: (record.steps || []).find((step) => step.status !== 'COMPLETED')?.stepId || null,
     finalSceneRef: record.finalSceneRef || null,
     recordSha256: record.integrity?.recordSha256 || null,
   }));

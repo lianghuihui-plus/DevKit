@@ -42,6 +42,7 @@ function harness(execDir, outcomes = [], behavior = {}) {
       invokeDeviceOperation: (_dir, payload, kind, options) => {
         calls.push({ kind, operationId: payload.operationId, timeoutMs: options.timeoutMs });
         if (kind === 'ACTION') {
+          now += behavior.actionMs || 0;
           const actionError = behavior.actionErrors?.shift();
           if (actionError) throw actionError;
           const outcome = outcomes.shift() || {};
@@ -56,6 +57,7 @@ function harness(execDir, outcomes = [], behavior = {}) {
           error.code = 'OBSERVATION_SCREENSHOT_FAILED';
           throw error;
         }
+        if (kind === 'OBSERVE') now += behavior.observeMs || 0;
         return { adapterResult: { schemaVersion: 1, type: 'observation', platform: 'harmony', app: initial.app,
           artifacts: { screenshot: initial.screenshot.ref, layout: null, logs: [] } },
         evidence: { ref: initial.screenshot.ref, sha256: initial.screenshot.sha256, width: initial.screenshot.width,
@@ -63,6 +65,7 @@ function harness(execDir, outcomes = [], behavior = {}) {
       },
       invokeScreenshotCapture: (_dir, payload, options) => {
         calls.push({ kind: 'CAPTURE', operationId: payload.operationId, timeoutMs: options.timeoutMs });
+        now += behavior.captureMs || 0;
         if (behavior.failCapture) {
           const error = new Error('intermediate screenshot failed');
           error.code = 'OBSERVATION_SCREENSHOT_FAILED';
@@ -74,6 +77,40 @@ function harness(execDir, outcomes = [], behavior = {}) {
       },
     },
   };
+}
+
+{
+  const execDir = fixture();
+  const h = harness(execDir, [], { actionMs: 30, captureMs: 40, observeMs: 60 });
+  const spans = [];
+  const result = runSequence(execDir, request(execDir, [
+    { id: 'settle', type: 'wait', ms: 100 },
+    capture('evidence', 'SCREENSHOT_ONLY'),
+    act('submit'),
+  ]), { ...h.options, onAdapterSpan: (span) => spans.push(span) });
+  assert.strictEqual(result.elapsedMs, 230);
+  assert.deepStrictEqual(result.steps.map((step) => [step.stepId, step.durationMs]), [
+    ['settle', 100],
+    ['evidence', 40],
+    ['submit', 90],
+  ]);
+  assert.deepStrictEqual(spans, [{
+    name: 'sequenceWait', kind: 'WAIT', durationMs: 100, explicitWaitMs: 100,
+  }]);
+}
+
+{
+  const execDir = fixture();
+  const h = harness(execDir, [], { actionMs: 30, captureMs: 40, observeMs: 60 });
+  const result = runSequence(execDir, request(execDir, [
+    act('submit'),
+    capture('evidence', 'SCREENSHOT_ONLY'),
+  ]), h.options);
+  assert.strictEqual(result.elapsedMs, 130);
+  assert.deepStrictEqual(result.steps.map((step) => [step.stepId, step.durationMs]), [
+    ['submit', 70],
+    ['evidence', 40],
+  ]);
 }
 
 {
@@ -156,6 +193,22 @@ for (const [duration, waits] of [[7000, [2000]], [5000, []]]) {
   assert.strictEqual(h.calls.filter((call) => call.kind === 'OBSERVE').length, 1);
   assert.ok(result.finalSceneRef);
   assert.strictEqual(result.status, waits.length ? 'SEQUENCE_COMPLETED' : 'SEQUENCE_PARTIAL');
+}
+
+for (const [name, steps, expectedType] of [
+  ['capture without usable budget', [capture('no-budget-capture', 'SCREENSHOT_ONLY'), act('must-not-run')], 'capture'],
+  ['action without usable budget', [act('no-budget-action')], 'act'],
+]) {
+  const execDir = fixture();
+  const h = harness(execDir);
+  const result = runSequence(execDir, request(execDir, steps), { ...h.options, remainingMs: 4000 });
+  assert.strictEqual(result.status, 'SEQUENCE_PARTIAL', name);
+  assert.strictEqual(result.steps.length, 1, name);
+  assert.strictEqual(result.steps[0].type, expectedType, name);
+  assert.strictEqual(result.steps[0].status, 'NOT_RUN', name);
+  assert.strictEqual(result.steps[0].error.code, 'SEQUENCE_TIMEOUT', name);
+  assert.strictEqual(result.steps[0].postSceneRef, null, name);
+  assertSequenceIntegrity(execDir, readSequences(execDir)[0]);
 }
 
 {
@@ -261,6 +314,21 @@ for (const [duration, waits] of [[7000, [2000]], [5000, []]]) {
   assert.strictEqual(h.calls.filter((call) => call.kind === 'OBSERVE').length, 1);
   assert.strictEqual(result.steps[0].postSceneRef, result.finalSceneRef);
   assert.strictEqual(result.steps.some((step) => step.stepId === 'b'), false);
+}
+
+{
+  const execDir = fixture();
+  const h = harness(execDir, [], { failCapture: true, failObserve: true });
+  const result = runSequence(execDir, request(execDir, [act('a'), act('must-not-run')]), h.options);
+  assert.strictEqual(result.status, 'SEQUENCE_PARTIAL');
+  assert.strictEqual(result.finalSceneRef, null);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'ACTION').length, 1);
+  const record = readSequences(execDir)[0];
+  const factCodes = record.technicalFacts.map((technicalFactRef) => (
+    store.events(execDir).find((event) => event.technicalFactRef === technicalFactRef)?.code
+  )).sort();
+  assert.deepStrictEqual(factCodes, ['POST_ACTION_CAPTURE_FAILED', 'SEQUENCE_FINAL_CAPTURE_FAILED']);
+  assertSequenceIntegrity(execDir, record);
 }
 
 {
