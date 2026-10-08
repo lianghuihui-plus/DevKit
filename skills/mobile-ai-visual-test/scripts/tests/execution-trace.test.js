@@ -179,9 +179,13 @@ for (const removed of ['data-panel="raw-panel"', 'class="story-card', 'class="ch
   assert.strictEqual(html.includes(removed), false, removed);
 }
 for (const expected of [
-  '.process-layout{display:grid;grid-template-columns:minmax(310px,.72fr) minmax(580px,1.28fr);height:',
-  '.step-list{min-height:0;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain',
-  '.step-inspector{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain',
+  '.process-layout{display:grid;grid-template-columns:minmax(330px,.74fr) minmax(580px,1.26fr);align-items:start;min-height:660px;overflow:visible',
+  '.operation-group{border-bottom:1px solid var(--line)',
+  '.step-list{position:sticky;top:46px;max-height:calc(100vh - 58px);overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain',
+  '.step-inspector{min-width:0;overflow:visible',
+  '.device-shot[data-shot-orientation="landscape"] .shot-media{width:min(360px,100%)',
+  '.shot-compare.has-spatial.has-landscape{grid-template-columns:repeat(2,minmax(0,1fr))',
+  '.shot-compare.has-mixed>.device-shot[data-shot-orientation="landscape"],.sequence-scene-compare.has-mixed>.device-shot[data-shot-orientation="landscape"]{grid-column:1/-1',
   '.flow-workspace{display:grid;grid-template-columns:minmax(420px,1.15fr) minmax(360px,.85fr)',
   '.flow-information-column{min-width:0',
   '@media(max-width:920px){.flow-workspace{grid-template-columns:1fr}',
@@ -190,6 +194,7 @@ for (const expected of [
   'list.scrollTop-=listRect.top-selectedRect.top',
   'list.scrollTop+=selectedRect.bottom-listRect.bottom',
 ]) assert.ok(html.includes(expected), expected);
+assert.strictEqual(html.includes('.step-inspector{min-width:0;min-height:0;overflow-y:auto'), false);
 assert.strictEqual((html.match(/workspace\?\.scrollIntoView\(\{block:'start'\}\)/g) || []).length, 1, 'step jumps should reveal the execution workspace');
 assert.strictEqual(html.includes("kind==='trace'"), false);
 assert.ok(html.includes("document.querySelector('[data-flow-node-detail=\"'+ref+'\"]')?.scrollIntoView({block:'nearest'})"));

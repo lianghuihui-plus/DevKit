@@ -158,6 +158,7 @@ function projectCurrentNarrative(report) {
   const sequenceRecords = report.latest ? require('../case-runtime/sequence-service').readSequences(report.latest) : [];
   const sequenceByDecision = new Map(sequenceRecords.filter((record) => record.decisionId)
     .map((record) => [record.decisionId, record]));
+  const sequenceById = new Map(sequenceRecords.map((record) => [record.sequenceId, record]));
 
   const planHistory = flowEvents.map((event) => ({
     version: event.revision, time: event.time, reason: event.reason,
@@ -294,6 +295,63 @@ function projectCurrentNarrative(report) {
     });
   });
   const steps = decisionSteps.map((step, index) => ({ ...step, number: index + 1 }));
+  const operationGroups = [];
+  const sequenceGroups = new Map();
+  for (const step of steps) {
+    if (!step.sequenceId && step.operation !== 'runSequence') {
+      operationGroups.push({
+        kind: step.operation === 'act' ? 'ACT' : 'STEP',
+        sourceOperation: step.operation,
+        decisionId: step.decisionId,
+        purpose: step.purpose,
+        time: step.time,
+        status: step.processState,
+        beforeScene: step.beforeScene,
+        afterScene: step.afterScene,
+        steps: [step],
+      });
+      continue;
+    }
+    const record = step.sequenceId ? sequenceById.get(step.sequenceId) || null
+      : sequenceByDecision.get(step.decisionId) || null;
+    const sequenceId = step.sequenceId || record?.sequenceId || null;
+    const groupId = sequenceId || step.decisionId;
+    let group = sequenceGroups.get(groupId);
+    if (!group) {
+      const declaredFinalScene = sceneSummary(scenes.get(record?.finalSceneRef)) || null;
+      group = {
+        kind: 'RUN_SEQUENCE',
+        sourceOperation: 'runSequence',
+        groupId,
+        sequenceId,
+        decisionId: step.decisionId,
+        purpose: record?.purpose || step.purpose,
+        time: record?.startedAt || step.time,
+        status: record?.status || 'SEQUENCE_NOT_RECORDED',
+        durationMs: record?.elapsedMs ?? null,
+        beforeScene: step.beforeScene,
+        afterScene: declaredFinalScene || step.afterScene,
+        finalSceneSource: declaredFinalScene ? 'DECLARED' : step.afterScene ? 'LAST_AVAILABLE' : 'UNAVAILABLE',
+        requestStep: step.sequenceId ? null : step,
+        steps: [],
+      };
+      sequenceGroups.set(groupId, group);
+      operationGroups.push(group);
+    }
+    if (step.sequenceId) {
+      group.steps.push(step);
+      if (group.finalSceneSource !== 'DECLARED' && step.afterScene) {
+        group.afterScene = step.afterScene;
+        group.finalSceneSource = 'LAST_AVAILABLE';
+      }
+    }
+  }
+  const operationMetrics = {
+    standaloneActCount: operationGroups.filter((group) => group.kind === 'ACT').length,
+    sequenceCount: operationGroups.filter((group) => group.kind === 'RUN_SEQUENCE').length,
+    sequenceActionCount: operationGroups.filter((group) => group.kind === 'RUN_SEQUENCE')
+      .reduce((count, group) => count + group.steps.filter((step) => step.operation === 'act').length, 0),
+  };
 
   for (const check of checks) {
     check.relatedSteps = steps.filter((step) => step.expectationRefs.includes(check.expectationRef))
@@ -317,6 +375,8 @@ function projectCurrentNarrative(report) {
     plan: latest(planHistory),
     planHistory,
     steps,
+    operationGroups,
+    operationMetrics,
     finalDecision: finalDecisionEvent ? {
       decisionId: finalDecisionEvent.decisionId,
       time: finalDecisionEvent.time,

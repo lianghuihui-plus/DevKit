@@ -92,6 +92,8 @@ function sceneEntry(report, event, index) {
     observation: {
       ref: screenshot,
       sha256: event.screenshotSha256 || scene?.screenshot?.sha256 || null,
+      width: scene?.screenshot?.width || null,
+      height: scene?.screenshot?.height || null,
       usable: Boolean(screenshot),
       app: event.app || scene?.app || null,
       technicalSignals: event.technicalSignals || scene?.technicalSignals || null,
@@ -323,6 +325,7 @@ function buildExecutionTrace(report) {
   const screenshots = observations.filter((entry) => entry.artifacts?.screenshot).map((entry, index) => ({
     id: `screenshot-${index + 1}`, index, ref: entry.artifacts.screenshot, operationId: entry.operationId,
     time: entry.time, phase: entry.phase, purpose: entry.observationPurpose, title: entry.title,
+    width: entry.observation?.width || null, height: entry.observation?.height || null,
     captureOrigins: entry.captureOrigins,
     captureMode: entry.captureMode, promoted: entry.promoted, sequenceId: entry.sequenceId, stepId: entry.stepId,
   }));
@@ -342,6 +345,8 @@ function buildExecutionTrace(report) {
         phase: action.phase,
         purpose: 'ACTION_SPATIAL_EVIDENCE',
         title: `动作落点：${action.title}`,
+        width: action.spatialEvidence?.screenshot?.width || null,
+        height: action.spatialEvidence?.screenshot?.height || null,
       };
       screenshots.push(spatialScreenshot);
       action.spatialEvidenceScreenshot = spatialScreenshot;
