@@ -15,5 +15,4 @@ Scene 只发布一张 Agent 视觉截图，四边标尺位于 App 内容外。�
 
 - action.ref 与 action.type 互斥；ActionRef 所需 action.input 字段必须存在。
 - 视觉坐标按 Scene 截图四边标尺填写 0 到 10000 的整数；原点在左上，X 向右，Y 向下。
-- 下一步需要根据新 Scene 作视觉理解、业务判断或重新规划时使用 act。
 - ActionRef、动态输入或 Scene 无效时拒绝 effect；业务判断通过 inspect 和 recordResult 单独提交。

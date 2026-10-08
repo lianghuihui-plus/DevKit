@@ -66,6 +66,13 @@ for (const [operation, input] of [
   const { mode, ...withoutMode } = input;
   assert.ok(validateAgentFacingRequest({ operation, input: withoutMode }).length, `${operation} requires mode`);
 }
+assertValid({ operation: 'knowledge', input: {
+  mode: 'query', sceneRef: SCENE_REF, query: '入口未显示',
+  context: { page: '创作页', operation: '横向滑动入口' },
+} });
+assertInvalid({ operation: 'knowledge', input: {
+  mode: 'query', sceneRef: SCENE_REF, query: '入口未显示', context: { app: 'com.example.other' },
+} }, 'input.context.app');
 for (const [operation, input] of [
   ['inspect', { mode: 'elements', sceneRef: 'scene-1' }],
   ['knowledge', { mode: 'query', sceneRef: 'scene-1', query: 'Issue', queryId: 'query-1' }],

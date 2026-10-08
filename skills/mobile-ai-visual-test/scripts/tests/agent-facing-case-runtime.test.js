@@ -342,8 +342,12 @@ const translations = [
     operation: 'act', basedOnSceneId: scene.sceneId, visual: { gesture: 'swipe', from: [0.5, 0.8], to: [0.5, 0.2] },
     decision: { purpose: '向上滚动', expectationRefs: [] },
   }],
-  [request('knowledge', { mode: 'query', sceneRef, query: '权限弹窗出现后语音录入无法继续', checkNodeRefs: ['N2'] }), {
+  [request('knowledge', {
+    mode: 'query', sceneRef, query: '权限弹窗出现后语音录入无法继续', checkNodeRefs: ['N2'],
+    context: { page: '语音录入页', operation: '长按录音按钮' },
+  }), {
     operation: 'knowledge', basedOnSceneId: scene.sceneId, query: '权限弹窗出现后语音录入无法继续',
+    context: { page: '语音录入页', operation: '长按录音按钮' },
     decision: { purpose: '调查当前异常的已知解释和处理规则', expectationRefs: ['N2'] },
   }],
   [request('recover', { mode: 'restart', sceneRef, reason: '目标 App 卡死' }), {

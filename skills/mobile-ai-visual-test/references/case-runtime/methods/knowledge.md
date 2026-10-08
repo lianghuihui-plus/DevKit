@@ -7,7 +7,7 @@
 ## 调用分支
 
 ```typescript
-knowledge({ mode: "query", sceneRef: string, query: string, checkNodeRefs?: string[], flowContext?: object })
+knowledge({ mode: "query", sceneRef: string, query: string, context?: object, checkNodeRefs?: string[], flowContext?: object })
 knowledge({ mode: "review", sceneRef: string, queryId: string, conclusion: "APPLICABLE_FOUND" | "NO_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT", assessments: object[], flowContext?: object })
 ```
 
@@ -19,6 +19,7 @@ knowledge({ mode: "review", sceneRef: string, queryId: string, conclusion: "APPL
 | `sceneRef` | 是 | `string` | 当前 Scene |
 | `query` | 否/条件 | `string` | 待调查问题 |
 | `queryId` | 否/条件 | `string` | 已有查询引用 |
+| `context` | 否/条件 | `object` | 可选的已确认页面和业务操作提示；不要猜测 |
 | `checkNodeRefs` | 否/条件 | `string[]` | 相关 CHECK 节点 |
 | `conclusion` | 否/条件 | `"APPLICABLE_FOUND" \| "NO_APPLICABLE" \| "CONFLICTING" \| "INSUFFICIENT"` | 候选复核结论 |
 | `assessments` | 否/条件 | `object[]` | 逐候选适用性判断 |
@@ -27,6 +28,7 @@ knowledge({ mode: "review", sceneRef: string, queryId: string, conclusion: "APPL
 ## 结构字段
 
 ```typescript
+input.context: { page?: string; operation?: string }
 input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 input.assessments: Array<{ entryId: string; status: "APPLICABLE" | "NOT_APPLICABLE" | "CONFLICTING" | "INSUFFICIENT"; reason: string }>
 ```
@@ -38,7 +40,7 @@ input.assessments: Array<{ entryId: string; status: "APPLICABLE" | "NOT_APPLICAB
 ## 上下文校验
 
 - 复核必须覆盖当前 query 候选约束。
-- 出现预期不符、操作无效果或异常反复，且平台、版本、账号、配置、条件适用性、同类异常处理方式或原文歧义可能影响下一步时，尽早使用 knowledge，不要等到结果收口。不存在这些外部依赖时不机械查询。
+- 出现预期不符、操作无效果、异常反复、原因不明或无法形成可靠判断时，优先并尽早使用 knowledge，不要等到收口。只有问题已由现场证据或明确技术事实完整解释，且知识不会影响下一步或结论时才不查询；无适用候选仍按现场证据判断。
 
 ## 成功状态
 

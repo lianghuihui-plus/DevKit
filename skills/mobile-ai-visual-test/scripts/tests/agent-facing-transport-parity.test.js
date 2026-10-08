@@ -20,11 +20,25 @@ const definitions = createToolDefinitions();
 assert.strictEqual(definitions.length, Object.keys(PUBLIC_CONTRACT.methods).length);
 assert.deepStrictEqual(definitions.map((item) => item.name), Object.keys(PUBLIC_CONTRACT.methods));
 
-const forbidden = ['executionId', 'dispatchSequence', 'dispatchLease', 'capabilityId', 'operation', 'token', 'requestPath'];
+function propertyPaths(schema, target, prefix = []) {
+  const paths = [];
+  for (const [name, child] of Object.entries(schema?.properties || {})) {
+    const pathParts = [...prefix, name];
+    if (name === target) paths.push(pathParts.join('.'));
+    paths.push(...propertyPaths(child, target, pathParts));
+  }
+  for (const branch of schema?.oneOf || []) paths.push(...propertyPaths(branch, target, prefix));
+  return paths;
+}
+
+const forbidden = ['executionId', 'dispatchSequence', 'dispatchLease', 'capabilityId', 'token', 'requestPath'];
 for (const definition of definitions) {
   assert.strictEqual(definition.inputSchema.type, 'object', `${definition.name} must be an MCP object input schema`);
   const encoded = JSON.stringify(definition.inputSchema);
   for (const field of forbidden) assert.strictEqual(encoded.includes(field), false, `${definition.name} schema leaks ${field}`);
+  assert.deepStrictEqual(propertyPaths(definition.inputSchema, 'operation'),
+    definition.name === 'knowledge' ? ['context.operation'] : [],
+    `${definition.name} schema exposes operation outside the allowed knowledge query context`);
   assert.strictEqual(encoded.includes('capability'), false, `${definition.name} capability is bound by its MCP tool name`);
   const method = PUBLIC_CONTRACT.methods[definition.name];
   assert.deepStrictEqual(definition.inputSchema, method.inputSchema);
