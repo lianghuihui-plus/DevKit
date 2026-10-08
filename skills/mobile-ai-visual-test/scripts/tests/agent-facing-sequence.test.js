@@ -13,7 +13,7 @@ const resources = require('../case-runtime/agent-resource-store');
 const { run } = require('../case-runtime/agent-facing-client');
 const { AGENT_OPERATIONS } = require('../case-runtime/runtime-broker');
 const { execute } = require('../case-runtime/runtime-core');
-const { runSequence } = require('../case-runtime/sequence-service');
+const { readSequences, runSequence } = require('../case-runtime/sequence-service');
 
 process.env.MAVT_SELF_TEST = '1';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-public-sequence-'));
@@ -156,5 +156,65 @@ assert.ok(captureFailed.resources.some((item) => item.type === 'sequenceResult')
   }));
   const retry = run(incompleteFixture.execDir, incompleteRequest, options);
   assert.strictEqual(retry.error.code, 'SEQUENCE_RECORD_INCOMPLETE', JSON.stringify(retry));
+}
+
+{
+  const recoveryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-public-sequence-terminal-repair-'));
+  createTestWorkspace(recoveryRoot);
+  const recoveryFixture = createCurrentFixture(recoveryRoot, { suffix: 'terminal-sequence-repair' });
+  const recoveryExecutionPath = path.join(recoveryFixture.execDir, 'execution.json');
+  const recoveryExecution = JSON.parse(fs.readFileSync(recoveryExecutionPath, 'utf8'));
+  fs.writeFileSync(recoveryExecutionPath, `${JSON.stringify({
+    ...recoveryExecution, endedAt: null, status: 'RUNNING', lifecycle: 'RUNNING', finalized: false,
+  }, null, 2)}\n`);
+  fs.writeFileSync(path.join(recoveryFixture.execDir, 'runtime.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    executionId: recoveryExecution.executionId,
+    status: 'READY',
+    entry: path.join(recoveryFixture.execDir, 'agent-facing-client.js'),
+    broker: { allowedOperations: AGENT_OPERATIONS },
+  }, null, 2)}\n`);
+  const recoveryBasis = JSON.parse(fs.readFileSync(
+    path.join(recoveryFixture.execDir, 'scenes', 'scene-0002.json'), 'utf8'));
+  store.writeScene(recoveryFixture.execDir, recoveryBasis);
+  const recoverySceneRef = resources.publishScene(recoveryFixture.execDir, recoveryBasis.sceneId).data.ref;
+  const recoveryRequest = { operation: 'runSequence', input: {
+    sceneRef: recoverySceneRef,
+    purpose: 'retry completed work after terminal event repair',
+    steps: [{ id: 'wait', type: 'wait', ms: 0 }],
+  } };
+  const internal = translateAgentFacingRequest(recoveryFixture.execDir, recoveryRequest);
+  let adapterCalls = 0;
+  const recoveryOptions = {
+    remainingMs: 30000,
+    clock: () => 0,
+    invokeDeviceOperation(_execDir, _payload, kind) {
+      adapterCalls += 1;
+      assert.strictEqual(kind, 'OBSERVE');
+      return {
+        adapterResult: {
+          schemaVersion: 1, type: 'observation', platform: 'harmony', app: recoveryBasis.app,
+          artifacts: { screenshot: recoveryBasis.screenshot.ref, layout: null, logs: [] },
+        },
+        evidence: {
+          ref: recoveryBasis.screenshot.ref, sha256: recoveryBasis.screenshot.sha256,
+          width: recoveryBasis.screenshot.width, height: recoveryBasis.screenshot.height, usable: true,
+        },
+      };
+    },
+  };
+  assert.throws(() => runSequence(recoveryFixture.execDir, internal, {
+    ...recoveryOptions, interruptAfter: 'sequence-terminal-record-persisted',
+  }), (error) => error.code === 'MAVT_SEQUENCE_INTERRUPTED');
+  const terminalRecord = readSequences(recoveryFixture.execDir)[0];
+  const callsBeforeRetry = adapterCalls;
+  const retry = run(recoveryFixture.execDir, recoveryRequest, recoveryOptions);
+  assert.strictEqual(retry.status, 'SUCCEEDED', JSON.stringify(retry));
+  assert.strictEqual(retry.result.outcome, 'SEQUENCE_COMPLETED');
+  assert.strictEqual(retry.result.sequenceId, terminalRecord.sequenceId);
+  assert.strictEqual(retry.result.idempotent, true);
+  assert.strictEqual(retry.result.sceneRef.endsWith(`:${terminalRecord.finalSceneRef}`), true);
+  assert.ok(retry.result.sequenceResultRef);
+  assert.strictEqual(adapterCalls, callsBeforeRetry);
 }
 console.log('agent-facing sequence passed');

@@ -108,7 +108,10 @@ for (const scenario of [
   { name: 'post-scene', interruptAfter: 'post-scene-persisted', expectedRecoveryCaptures: 0 },
   { name: 'observed', interruptAfter: 'observe', expectedRecoveryCaptures: 0 },
   { name: 'final-scene', interruptAfter: 'sequence-final-scene-persisted', expectedRecoveryCaptures: 0 },
-  { name: 'terminal-record-before-event', interruptAfter: 'sequence-terminal-record-persisted', expectedRecoveryCaptures: 0 },
+  {
+    name: 'terminal-record-before-event', interruptAfter: 'sequence-terminal-record-persisted',
+    expectedRecoveryCaptures: 0, expectedRecoveries: 0,
+  },
 ]) {
   const execDir = fixture(scenario.name);
   const h = harness(execDir, scenario.interruptAfter);
@@ -117,7 +120,7 @@ for (const scenario of [
   const beforeActionDispatches = h.calls.filter((call) => call.kind === 'ACTION').length;
 
   const recovered = recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined });
-  assert.strictEqual(recovered.length, 1, scenario.name);
+  assert.strictEqual(recovered.length, scenario.expectedRecoveries ?? 1, scenario.name);
   assert.strictEqual(sequenceDrafts(execDir).length, 0, scenario.name);
   assert.strictEqual(h.calls.slice(beforeRecoveryCalls).filter((call) => call.kind === 'ACTION').length, 0, scenario.name);
   assert.strictEqual(h.calls.filter((call) => call.kind === 'ACTION').length, beforeActionDispatches, scenario.name);
@@ -159,7 +162,7 @@ for (const scenario of [
   assert.strictEqual(original.terminal, true);
   const calls = h.calls.length;
   const recovered = recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined });
-  assert.strictEqual(recovered.length, 1);
+  assert.strictEqual(recovered.length, 0);
   assert.strictEqual(h.calls.length, calls);
   assert.strictEqual(readSequences(execDir)[0].integrity.recordSha256, original.integrity.recordSha256);
   assert.deepStrictEqual(validateSequenceEvidenceGraph(execDir).sequenceIds, [original.sequenceId]);

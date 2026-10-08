@@ -1101,12 +1101,8 @@ function repairSequenceBoundaryEvents(execDir, record, options) {
 function recoverInterruptedSequences(execDir, options = {}) {
   const recovered = [];
   for (const storedRecord of readSequences(execDir)) {
-    const repairedTerminal = repairSequenceBoundaryEvents(execDir, storedRecord, options);
+    repairSequenceBoundaryEvents(execDir, storedRecord, options);
     if (storedRecord.terminal === true) {
-      if (repairedTerminal) recovered.push({
-        kind: 'sequence', sequenceId: storedRecord.sequenceId,
-        status: storedRecord.status, response: responseFromSequenceRecord(storedRecord),
-      });
       continue;
     }
     let record = assertSequenceIntegrity(execDir, storedRecord);
