@@ -19,9 +19,9 @@ function assertInvalid(request, field, message) {
 }
 
 assert.ok(AGENT_FACING_CAPABILITIES.includes('recordResult'));
-assert.ok(AGENT_FACING_CAPABILITIES.includes('runPlan'));
+assert.ok(AGENT_FACING_CAPABILITIES.includes('runSequence'));
 
-assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
+assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
 for (const method of Object.values(PUBLIC_CONTRACT.methods)) {
   assert.ok(method.responseProjection, `${method.name} must declare its response projection`);
   assertValid(method.minimalExample);
@@ -73,15 +73,12 @@ for (const [operation, input] of [
   ['finish', { mode: 'complete', summary: 'Done', reason: 'Not run' }],
 ]) assert.ok(validateAgentFacingRequest({ operation, input }).length, `${operation} rejects mixed modes`);
 
-assertValid({ operation: 'runPlan', input: {
-  submissionId: 'submission-1',
+assertValid({ operation: 'runSequence', input: {
   sceneRef: SCENE_REF,
   purpose: '完成短时交互',
-  maxDurationMs: 2500,
-  onFailure: 'STOP',
   steps: [
-    { id: 'tap', type: 'act', actionRef: 'visual:tap', input: { point: [5000, 5000] } },
-    { id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false },
+    { id: 'tap', type: 'act', action: { type: 'tap', target: { point: [5000, 5000] } } },
+    { id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', purpose: '记录操作后截图' },
   ],
 } });
 

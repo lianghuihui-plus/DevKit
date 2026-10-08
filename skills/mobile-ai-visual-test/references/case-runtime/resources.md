@@ -30,8 +30,7 @@
 | `knowledgeDocument` | 完整知识条目正文。 |
 | `knowledgeReview` | Agent 提交的知识适用性审查。 |
 | `actionSpatialEvidence` | 动作落点、轨迹及标注截图资源。 |
-| `planResult` | 命令组合的完整结果与步骤证据引用。 |
-| `planEvidence` | 组合命令某一步的完整采集或技术检查证据。 |
+| `sequenceResult` | 动作序列的完整结果与步骤证据引用。 |
 | `externalActionDeclaration` | Agent 登记的框架外动作事实。 |
 | `technicalFact` | 持久化的技术事实与诊断。 |
 | `caseResult` | 最终用例结果与证据引用。 |

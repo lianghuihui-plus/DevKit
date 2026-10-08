@@ -276,13 +276,11 @@ for (const [type, eventType, body] of [
 
 // Existing artifact authorities are reused; only the catalog binding is added.
 for (const [type, relative, body] of [
-  ['planEvidence', 'operations/plan-evidence/check-1.json', { type: 'check', passed: true }],
+  ['layout', 'layouts/check-1.json', { type: 'check', passed: true }],
   ['actionSpatialEvidence', 'action-spatial-evidence/action-1.json', { operationId: 'action-1', requested: { x: 1, y: 2 } }],
-  ['planResult', 'operations/plans/plan-1.json', { planId: 'plan-1', status: 'PLAN_COMPLETED', steps: [], evidence: {} }],
   ['caseResult', 'result.json', { verdict: 'PASS', checks: [] }],
 ]) {
   fs.mkdirSync(path.dirname(path.join(other.dir, relative)), { recursive: true });
-  if (type === 'planResult') body.integrity = { recordSha256: crypto.createHash('sha256').update(require('../lib/contract-utils').canonicalJson(body)).digest('hex') };
   writeJsonAtomic(path.join(other.dir, relative), body);
   if (type === 'caseResult') {
     assert.throws(() => resources.publishArtifact(other.dir, type, relative), { code: 'RESOURCE_INTEGRITY_INVALID' });
@@ -300,18 +298,18 @@ assert.ok(!fs.readdirSync(path.join(other.dir, 'operations/resources/snapshots')
 
 // A published file cannot be replaced by a symbolic link, even within scope.
 writeJsonAtomic(path.join(other.dir, 'source.json'), { stable: true });
-const linked = resources.publishArtifact(other.dir, 'planEvidence', 'source.json');
+const linked = resources.publishArtifact(other.dir, 'layout', 'source.json');
 fs.renameSync(path.join(other.dir, 'source.json'), path.join(other.dir, 'moved.json'));
 fs.symlinkSync(path.join(other.dir, 'moved.json'), path.join(other.dir, 'source.json'));
 assert.throws(() => resources.readPublishedResource(other.dir, linked.data.ref), { code: 'RESOURCE_INTEGRITY_INVALID' });
-assert.throws(() => resources.publishArtifact(other.dir, 'planEvidence', '../execution-a/execution.json'), { code: 'RESOURCE_INTEGRITY_INVALID' });
+assert.throws(() => resources.publishArtifact(other.dir, 'layout', '../execution-a/execution.json'), { code: 'RESOURCE_INTEGRITY_INVALID' });
 assert.throws(() => resources.resourceRef(other.dir, 'scene', path.resolve(other.dir)), { code: 'RESOURCE_INTEGRITY_INVALID' });
 const beforeEvents = fs.readFileSync(path.join(other.dir, 'events.jsonl'), 'utf8');
 fs.appendFileSync(path.join(other.dir, 'events.jsonl'), '{"partial":');
 resources.readPublishedResource(other.dir, originalFlow.data.ref);
 assert.strictEqual(fs.readFileSync(path.join(other.dir, 'events.jsonl'), 'utf8'), `${beforeEvents}{"partial":`);
-writeJsonAtomic(path.join(other.dir, 'operations/plans/pending.json'), { status: 'RUNNING' });
-assert.throws(() => resources.publishArtifact(other.dir, 'planResult', 'operations/plans/pending.json'), { code: 'RESOURCE_INTEGRITY_INVALID' });
+writeJsonAtomic(path.join(other.dir, 'operations/sequences/pending.json'), { status: 'RUNNING' });
+assert.throws(() => resources.publishArtifact(other.dir, 'sequenceResult', 'operations/sequences/pending.json'), { code: 'RESOURCE_INTEGRITY_INVALID' });
 const tamperedEvents = beforeEvents.split('\n').filter(Boolean).map((line) => {
   const event = JSON.parse(line);
   return JSON.stringify(event.eventId === revision1.caseFlow.eventId ? { ...event, summary: 'mutated history' } : event);

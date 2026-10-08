@@ -49,7 +49,7 @@ writeJsonAtomic(path.join(execDir, 'runtime.json'), {
   status: 'READY',
   entry: path.join(execDir, 'agent-facing-client.js'),
   broker: {
-    allowedOperations: ['observe', 'act', 'runPlan', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status'],
+    allowedOperations: ['observe', 'act', 'runSequence', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status'],
   },
 });
 const scene = {
@@ -99,7 +99,7 @@ const prePlanSceneRef = agentResources.publishScene(execDir, prePlanScene.sceneI
 
 function request(operation, input = {}) { return { operation, input }; }
 function assertEnvelope(response, status = 'SUCCEEDED') {
-  assert.strictEqual(response.status, status);
+  assert.strictEqual(response.status, status, JSON.stringify(response));
   assert.strictEqual(response.protocol, 'agent-facing');
   assert.deepStrictEqual(Object.keys(response).sort(), [
     'protocol', 'status', 'operation', 'result', 'resources',
@@ -511,7 +511,7 @@ for (const [response, status] of [
   [{ status: 'REQUEST_INVALID', code: 'ACTION_INPUT_INVALID' }, 'REJECTED'],
   [{ status: 'TECHNICAL', code: 'CASE_RUNTIME_TECHNICAL' }, 'FAILED'],
   [{ status: 'SCENE', code: 'ACTION_OUTCOME_UNKNOWN', action: { outcomeKnown: false } }, 'UNKNOWN'],
-  [{ status: 'TECHNICAL', code: 'PLAN_ACTION_OUTCOME_UNKNOWN' }, 'UNKNOWN'],
+  [{ status: 'TECHNICAL', code: 'SEQUENCE_ACTION_OUTCOME_UNKNOWN' }, 'UNKNOWN'],
   [{ status: 'SCENE', action: { operationId: 'action-unknown', status: 'UNKNOWN' } }, 'UNKNOWN'],
   [{ status: 'SCENE', action: { command: { status: 'UNKNOWN' } } }, 'UNKNOWN'],
   [{ status: 'SCENE_CHANGED', code: 'CASE_RUNTIME_SCENE_STALE' }, 'REJECTED'],
@@ -530,29 +530,44 @@ const nestedScalar = projectAgentFacingResponse(execDir, {
 }, initialPlanRequest);
 assert.strictEqual(nestedScalar.result.revision, undefined, 'allowlisted scalar fields cannot leak complex internal objects');
 
-for (const outcome of ['PLAN_PARTIAL', 'PLAN_INTERRUPTED']) {
-  const knownPlan = projectAgentFacingResponse(execDir, {
-    status: outcome, outcomeKnown: true, code: outcome === 'PLAN_PARTIAL' ? 'PLAN_CHECK_FAILED' : 'PLAN_TIMEOUT',
-    planId: 'plan-known', data: { ref: 'plan-result-known', type: 'planResult', content: { steps: ['complete evidence'] } },
-  }, request('runPlan'));
-  assertEnvelope(knownPlan);
-  assert.strictEqual(knownPlan.result.outcome, outcome);
-  assert.strictEqual(knownPlan.result.planId, 'plan-known');
-  assert.strictEqual(knownPlan.data.type, 'planResult');
+for (const outcome of ['SEQUENCE_PARTIAL', 'SEQUENCE_INTERRUPTED']) {
+  const knownSequence = projectAgentFacingResponse(execDir, {
+    status: outcome, outcomeKnown: true, code: 'SEQUENCE_TIMEOUT', sequenceId: 'sequence-known',
+  }, request('runSequence'), {
+    resourceProvider: () => ({ result: { sequenceResultRef: 'result-known', sceneRef: 'scene-known' },
+      resources: [{ ref: 'result-known', type: 'sequenceResult', role: 'sequenceResult', integrity: 'sha256:known' },
+        { ref: 'scene-known', type: 'scene', role: 'scene', integrity: 'sha256:known' }] }),
+  });
+  assertEnvelope(knownSequence, 'FAILED');
+  assert.strictEqual(knownSequence.result.outcome, outcome);
+  assert.strictEqual(knownSequence.result.sequenceId, 'sequence-known');
+  assert.strictEqual(knownSequence.data, undefined);
+  assert.deepStrictEqual(knownSequence.resources.map((item) => item.type), ['sequenceResult', 'scene']);
 }
-const unknownPlan = projectAgentFacingResponse(execDir, {
-  status: 'PLAN_INTERRUPTED', outcomeKnown: false, planId: 'plan-unknown', idempotent: true,
-  result: { scene: { huge: true }, planId: 'plan-unknown', unexpected: 'must not leak' },
-  data: { ref: 'plan-result-unknown', type: 'planResult', content: { huge: true } },
-}, request('runPlan'), {
-  resourceProvider: () => ({ result: { planResultRef: 'plan-result-unknown', unexpected: 'must not leak' } }),
+const captureFailure = projectAgentFacingResponse(execDir, {
+  status: 'SEQUENCE_PARTIAL', code: 'POST_ACTION_CAPTURE_FAILED', sequenceId: 'sequence-capture',
+}, request('runSequence'), {
+  resourceProvider: () => ({ result: { sequenceResultRef: 'result-capture' },
+    resources: [{ ref: 'result-capture', type: 'sequenceResult', role: 'sequenceResult', integrity: 'sha256:known' }] }),
 });
-assertEnvelope(unknownPlan, 'UNKNOWN');
-assert.deepStrictEqual(unknownPlan.result, {
-  outcome: 'PLAN_INTERRUPTED', planResultRef: 'plan-result-unknown', planId: 'plan-unknown', idempotent: true,
+assertEnvelope(captureFailure, 'FAILED');
+assert.strictEqual(captureFailure.error.code, 'SEQUENCE_STEP_FAILED');
+assert.strictEqual(captureFailure.resources[0].type, 'sequenceResult');
+const unknownSequence = projectAgentFacingResponse(execDir, {
+  status: 'SEQUENCE_INTERRUPTED', outcomeKnown: false, sequenceId: 'sequence-unknown', idempotent: true,
+  result: { scene: { huge: true }, unexpected: 'must not leak' },
+}, request('runSequence'), {
+  resourceProvider: () => ({ result: { sequenceResultRef: 'result-unknown', sceneRef: 'scene-unknown', unexpected: 'must not leak' },
+    resources: [{ ref: 'result-unknown', type: 'sequenceResult', role: 'sequenceResult', integrity: 'sha256:known' },
+      { ref: 'scene-unknown', type: 'scene', role: 'scene', integrity: 'sha256:known' }] }),
 });
-assert.strictEqual(unknownPlan.data, undefined);
-assert.strictEqual(unknownPlan.error.retryable, false);
+assertEnvelope(unknownSequence, 'UNKNOWN');
+assert.deepStrictEqual(unknownSequence.result, {
+  outcome: 'SEQUENCE_INTERRUPTED', sequenceResultRef: 'result-unknown', sequenceId: 'sequence-unknown', sceneRef: 'scene-unknown', idempotent: true,
+  deliveryStatus: 'UNKNOWN', commandDeliveryKnown: false,
+});
+assert.strictEqual(unknownSequence.data, undefined);
+assert.strictEqual(unknownSequence.error.retryable, false);
 const rejectedAct = projectAgentFacingResponse(execDir, {
   status: 'SCENE_CHANGED', result: { sceneRef: scene.sceneId, revision: 999, action: { huge: true } },
 }, request('act'));

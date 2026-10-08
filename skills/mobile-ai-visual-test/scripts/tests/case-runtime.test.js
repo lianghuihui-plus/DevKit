@@ -177,7 +177,7 @@ for (const hidden of ['basedOnSceneId', 'capabilityId', 'contractDefinitions', '
 assert.strictEqual(fs.statSync(started.runtime.entry).mode & 0o111, 0o111);
 assert.deepStrictEqual(started.runtime.status, 'READY');
 assert.strictEqual(Object.prototype.hasOwnProperty.call(started.runtime.broker, 'schemaVersion'), false);
-assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'runPlan', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
+assert.deepStrictEqual(started.runtime.broker.allowedOperations, ['observe', 'act', 'runSequence', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
 assert.strictEqual(started.execution.caseProcessingStartedAt, T0);
 assert.strictEqual(started.execution.handoffReadyAt, T0);
 assert.strictEqual(started.execution.handoffConsumedAt, undefined, 'loader reads the handoff without consuming it');

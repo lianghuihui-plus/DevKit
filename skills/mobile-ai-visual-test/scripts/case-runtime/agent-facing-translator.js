@@ -9,7 +9,7 @@ const {
   documentationRefFor,
 } = require('./agent-facing-contract');
 const { resolveActionRef } = require('./capability-catalog');
-const { normalizePlanSteps, normalizedPoint } = require('../lib/visual-coordinate-grid');
+const { normalizedPoint } = require('../lib/visual-coordinate-grid');
 const { successEnvelope, errorEnvelope } = require('../lib/agent-facing-envelope');
 
 function inputError(issues) {
@@ -102,9 +102,6 @@ function contextualIssues(execDir, request, scene) {
       issues.push(issue('mode', '当前 Scene 没有可检查的上一动作落点标注图', 'ACTION_SPATIAL_EVIDENCE_REQUIRED'));
     }
   }
-  if (request.operation === 'runPlan' && scene && request.sceneRef !== scene.sceneId) {
-    issues.push(issue('sceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
-  }
   if (request.operation === 'act' && scene) {
     if (request.sceneRef && request.sceneRef !== scene.sceneId) {
       issues.push(issue('sceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
@@ -188,27 +185,68 @@ function visualRequest(actionRef, input) {
   return { gesture, point: normalizedPoint(input.point), ...(gesture === 'longPress' ? { durationMs: input.durationMs } : {}) };
 }
 
+function facadeAction(action) {
+  if (action.ref?.startsWith('visual:')) {
+    throw inputError([issue('input.action.ref', '自主视觉动作使用 action.type 和 action.target', 'ACTION_NOT_AVAILABLE')]);
+  }
+  return {
+    actionRef: action.ref || `visual:${action.type}`,
+    input: action.ref ? action.input : { ...action.target, ...(action.durationMs ? { durationMs: action.durationMs } : {}) },
+    action,
+  };
+}
+
+function translateFacadeAction(execDir, scene, action, field = 'input.action.ref') {
+  const facade = facadeAction(action);
+  if (facade.actionRef.startsWith('visual:')) return { visual: visualRequest(facade.actionRef, facade.input || {}) };
+  let capability;
+  try { capability = resolveActionRef(scene, facade.actionRef, executionPlatform(execDir)); }
+  catch (error) { if (error.code !== 'ACTION_REF_INVALID') throw error; }
+  if (!capability) throw inputError([issue(field, 'ActionRef 对当前 Scene 不可用', 'ACTION_NOT_AVAILABLE')]);
+  return { capabilityId: capability.id, ...(facade.input ? { input: facade.input } : {}) };
+}
+
 function translateAgentFacingRequest(execDir, request) {
   const structural = validateAgentFacingRequest(request);
   if (structural.length) throw inputError(structural);
   request = { ...request.input, operation: request.operation };
   if (request.operation === 'read') return { operation: 'read', ref: request.ref };
   request = require('./agent-resource-store').resolveRequestReferences(execDir, request);
-  if (request.operation === 'act') {
-    const action = request.action;
-    if (action.ref?.startsWith('visual:')) {
-      throw inputError([issue('input.action.ref', '自主视觉动作使用 action.type 和 action.target', 'ACTION_NOT_AVAILABLE')]);
-    }
-    request = {
-      ...request,
-      actionRef: action.ref || `visual:${action.type}`,
-      input: action.ref ? action.input : { ...action.target, ...(action.durationMs ? { durationMs: action.durationMs } : {}) },
-      purpose: request.purpose || '执行 Agent 选择的动作',
-    };
-  }
+  if (request.operation === 'act') request = { ...request, ...facadeAction(request.action),
+    purpose: request.purpose || '执行 Agent 选择的动作' };
   const current = currentScene(execDir);
   const scene = request.operation === 'inspect' ? sceneByRef(execDir, request.sceneRef) : current;
-  const contextual = contextualIssues(execDir, request, scene);
+  let translatedSequence = null;
+  let replay = false;
+  if (request.operation === 'runSequence') {
+    const basis = sceneByRef(execDir, request.sceneRef);
+    if (!basis) throw inputError([issue('input.sceneRef', 'Scene 不存在', 'SCENE_CHANGED')]);
+    translatedSequence = {
+      operation: 'runSequence', basedOnSceneId: request.sceneRef, purpose: request.purpose,
+      steps: request.steps.map((step, index) => step.type === 'act'
+        ? { id: step.id, type: 'act', ...translateFacadeAction(execDir, basis, step.action, `input.steps[${index}].action.ref`) }
+        : step),
+      ...(request.flowContext ? { flowContext: request.flowContext } : {}),
+      decision: { purpose: request.purpose, expectationRefs: [] },
+    };
+    try { replay = !!require('./sequence-service').findTerminalSequence(execDir, translatedSequence); }
+    catch (error) { if (error.code !== 'SEQUENCE_INVALID') throw error; }
+  }
+  const contextual = request.operation === 'runSequence'
+    ? contextualIssues(execDir, { operation: 'observe', flowContext: request.flowContext }, scene)
+    : contextualIssues(execDir, request, scene);
+  if (request.operation === 'runSequence' && !replay && scene && request.sceneRef !== scene.sceneId) {
+    contextual.push(issue('sceneRef', `当前 Scene 是 ${scene.sceneId}`, 'SCENE_CHANGED'));
+  }
+  if (request.operation === 'runSequence' && !replay) {
+    request.steps.forEach((step, index) => {
+      if (step.type !== 'act') return;
+      const actionRequest = { operation: 'act', sceneRef: request.sceneRef, ...facadeAction(step.action) };
+      contextual.push(...contextualIssues(execDir, actionRequest, scene).map((item) => ({
+        ...item, field: `steps[${index}].${item.field.replace(/^actionRef/, 'action.ref').replace(/^input\./, 'action.input.')}`,
+      })));
+    });
+  }
   if (contextual.length) throw inputError(contextual.map((item) => ({
     ...item,
     field: item.field === 'operation' ? 'operation'
@@ -243,31 +281,14 @@ function translateAgentFacingRequest(execDir, request) {
       results: request.results.map(({ checkNodeRef, ...item }) => ({ ...item, expectationRef: checkNodeRef })),
     };
   } else if (request.operation === 'act') {
-    const internalCapability = request.actionRef.startsWith('visual:')
-      ? null : resolveActionRef(scene, request.actionRef, executionPlatform(execDir));
     translated = {
       operation: 'act', basedOnSceneId: scene.sceneId,
       ...flowContext,
-      ...(request.actionRef.startsWith('visual:')
-        ? { visual: visualRequest(request.actionRef, request.input || {}) }
-        : {
-          capabilityId: internalCapability.id,
-          ...(request.input ? { input: request.input } : {}),
-        }),
+      ...translateFacadeAction(execDir, scene, request.action),
       decision: { purpose: request.purpose, expectationRefs: [] },
     };
-  } else if (request.operation === 'runPlan') {
-    translated = {
-      operation: 'runPlan',
-      submissionId: request.submissionId,
-      basedOnSceneId: request.sceneRef,
-      purpose: request.purpose,
-      maxDurationMs: request.maxDurationMs,
-      onFailure: request.onFailure,
-      steps: normalizePlanSteps(request.steps),
-      ...flowContext,
-      decision: { purpose: request.purpose, expectationRefs: [] },
-    };
+  } else if (request.operation === 'runSequence') {
+    translated = translatedSequence;
   } else if (request.operation === 'knowledge' && request.mode === 'review') {
     const query = store.events(execDir).find((event) => event.type === 'knowledgeQueried' && event.queryId === request.queryId);
     translated = {
@@ -324,12 +345,12 @@ function responseProjection(request, outcome) {
 
 function publicErrorStatus(response) {
   if (response.status === 'UNKNOWN' || response.outcomeKnown === false
-    || ['ACTION_OUTCOME_UNKNOWN', 'PLAN_ACTION_OUTCOME_UNKNOWN'].includes(response.code)
+    || ['ACTION_OUTCOME_UNKNOWN', 'SEQUENCE_ACTION_OUTCOME_UNKNOWN'].includes(response.code)
     || response.action?.outcomeKnown === false || response.action?.deliveryStatus === 'UNKNOWN'
     || response.action?.status === 'UNKNOWN' || response.action?.command?.status === 'UNKNOWN'
     || response.recovery?.status === 'UNKNOWN') return 'UNKNOWN';
   if (['REJECTED', 'REQUEST_INVALID', 'INPUT_INVALID', 'SCENE_CHANGED', 'RESULT_INCOMPLETE'].includes(response.status)) return 'REJECTED';
-  if (['FAILED', 'TECHNICAL', 'TIME_LIMIT'].includes(response.status)
+  if (['FAILED', 'TECHNICAL', 'TIME_LIMIT', 'SEQUENCE_PARTIAL', 'SEQUENCE_INTERRUPTED'].includes(response.status)
     || response.action?.command?.status === 'REJECTED' || response.action?.deviceExecution?.status === 'FAILED') return 'FAILED';
   return null;
 }
@@ -338,9 +359,10 @@ function projectAgentFacingError(response, request = null, resources = [], provi
   const status = publicErrorStatus(response) || 'FAILED';
   const operation = Object.hasOwn(PUBLIC_CONTRACT.methods, request?.operation) ? request.operation : null;
   const failureCode = response.code || response.action?.failureCode || response.action?.deviceExecution?.failureCode;
-  const code = status === 'UNKNOWN' ? (operation === 'runPlan' ? 'PLAN_ACTION_OUTCOME_UNKNOWN' : 'ACTION_OUTCOME_UNKNOWN')
+  const code = status === 'UNKNOWN' ? (operation === 'runSequence' ? 'SEQUENCE_ACTION_OUTCOME_UNKNOWN' : 'ACTION_OUTCOME_UNKNOWN')
     : response.status === 'SCENE_CHANGED' ? 'SCENE_CHANGED'
-      : PUBLIC_CONTRACT.errors[failureCode] ? failureCode : 'CASE_RUNTIME_TECHNICAL';
+      : PUBLIC_CONTRACT.errors[failureCode] ? failureCode
+        : operation === 'runSequence' ? 'SEQUENCE_STEP_FAILED' : 'CASE_RUNTIME_TECHNICAL';
   const definition = PUBLIC_CONTRACT.errors[code];
   return errorEnvelope({
     operation, status, code,
@@ -382,7 +404,9 @@ function projectResponseResult(response, request, provided = {}) {
     invalidatedResultRefs: response.caseFlowChange?.invalidatedResultRefs,
     idempotentCheckNodeIds: response.unchanged,
     operationId: action?.operationRef ?? response.operationId,
-    planId: response.planId,
+    sequenceId: response.sequenceId,
+    sequenceResultRef: provided.result?.sequenceResultRef,
+    sceneRef: provided.result?.sceneRef || response.finalSceneRef || response.sceneRef,
     deliveryStatus: action?.deliveryStatus ?? (response.outcomeKnown === false ? 'UNKNOWN' : undefined),
     commandDeliveryKnown: action?.commandDeliveryKnown ?? response.outcomeKnown,
     candidateCount: response.candidateCount ?? response.candidates?.length,

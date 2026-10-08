@@ -294,64 +294,6 @@ function validateScene(execDir, sceneId, event, files, options = {}) {
   return scene;
 }
 
-function validatePlanEvidenceGraph(execDir, suppliedEvents = null, suppliedScenes = null, suppliedFiles = null) {
-  const events = suppliedEvents || store.events(execDir);
-  const sceneEvents = suppliedScenes || new Map(events.filter((event) => event.type === 'sceneObserved')
-    .map((event) => [event.sceneId, event]));
-  const files = suppliedFiles || new Set();
-  const requested = new Map(events.filter((event) => event.type === 'planRequested')
-    .map((event) => [event.planId, event]));
-  const terminal = new Map(events.filter((event) => ['planCompleted', 'planInterrupted'].includes(event.type))
-    .map((event) => [event.planId, event]));
-  const { assertPlanIntegrity, readPlans } = require('./plan-service');
-  const plans = readPlans(execDir);
-  const records = new Map(plans.map((record) => [record.planId, record]));
-  for (const [planId, event] of requested) {
-    if (!records.has(planId)) throw contractError('PLAN_RECORD_INCOMPLETE', `plan record is missing: ${planId}`);
-    const expectedRef = `operations/plans/${planId}.json`;
-    if (event.planRecordRef !== expectedRef) throw contractError('PLAN_RECORD_INCOMPLETE', `plan event reference is invalid: ${planId}`);
-  }
-  for (const record of plans) {
-    assertPlanIntegrity(record);
-    const expectedRef = `operations/plans/${record.planId}.json`;
-    if (record.executionId !== readJson(path.join(execDir, 'execution.json'), null)?.executionId
-      || record.planRecordRef !== expectedRef || !requested.has(record.planId)) {
-      throw contractError('PLAN_RECORD_INCOMPLETE', `plan record binding is invalid: ${record.planId}`);
-    }
-    const terminalEvent = terminal.get(record.planId);
-    if (!terminalEvent || terminalEvent.status !== record.status
-      || terminalEvent.planRecordRef !== expectedRef
-      || terminalEvent.recordSha256 !== record.integrity.recordSha256) {
-      throw contractError('PLAN_RECORD_INCOMPLETE', `plan terminal event is invalid: ${record.planId}`);
-    }
-    files.add(expectedRef);
-    for (const sceneRef of record.evidence?.sceneRefs || []) {
-      if (!sceneEvents.has(sceneRef)) throw contractError('PLAN_RECORD_INCOMPLETE', `plan references an unknown Scene: ${sceneRef}`);
-    }
-    const knownScreenshots = new Set([...sceneEvents.values()].map((event) => event.screenshotRef).filter(Boolean));
-    for (const screenshotRef of record.evidence?.screenshotRefs || []) {
-      if (!knownScreenshots.has(screenshotRef)) throw contractError('PLAN_RECORD_INCOMPLETE', `plan references an unknown screenshot: ${screenshotRef}`);
-    }
-    const evidenceRefs = new Set([
-      ...(record.evidence?.locatorRefs || []),
-      ...(record.evidence?.checkRefs || []),
-      ...(record.technicalFacts || []),
-      ...(record.steps || []).flatMap((step) => step.outputRefs || [])
-        .filter((ref) => typeof ref === 'string' && ref.startsWith('operations/plan-evidence/')),
-    ]);
-    for (const ref of evidenceRefs) {
-      const artifact = resolveArtifact(execDir, ref);
-      const evidence = readJson(artifact, null);
-      if (!fs.existsSync(artifact) || !fs.statSync(artifact).isFile()
-        || evidence?.schemaVersion !== 1 || evidence.planId !== record.planId) {
-        throw contractError('PLAN_RECORD_INCOMPLETE', `plan evidence is invalid: ${ref}`);
-      }
-      files.add(ref);
-    }
-  }
-  return { files: [...files].sort(), planIds: [...records.keys()].sort() };
-}
-
 function validateSequenceEvidenceGraph(execDir, suppliedEvents = null, suppliedScenes = null, suppliedFiles = null) {
   const events = suppliedEvents || store.events(execDir);
   const sceneEvents = suppliedScenes || new Map(events.filter((event) => event.type === 'sceneObserved')
@@ -434,7 +376,6 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   }
   const files = new Set();
   for (const [sceneId, event] of byScene) validateScene(execDir, sceneId, event, files, options);
-  const planEvidence = validatePlanEvidenceGraph(execDir, events, byScene, files);
   const sequenceEvidence = validateSequenceEvidenceGraph(execDir, events, byScene, files);
   for (const event of events.filter((entry) => entry.type === 'actionCompleted' && entry.spatialEvidenceRef)) {
     const expectedRef = evidenceRef(event.operationId);
@@ -510,7 +451,7 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   return {
     files: [...files].sort(), events, result, sceneRefs: refs,
     technicalFacts: technicalFacts(events), expectationCoverage, knowledgeCoverage, searchCoverage,
-    planEvidence, sequenceEvidence,
+    sequenceEvidence,
     visualInspectionCoverage,
   };
 }
@@ -530,7 +471,6 @@ module.exports = {
   validateCaseRuntimeEvidenceGraph,
   validateExpectationCoverage,
   validateKnowledgeClosure,
-  validatePlanEvidenceGraph,
   validateSequenceEvidenceGraph,
   validateSearchAbsence,
   validateVisualInspectionCoverage,

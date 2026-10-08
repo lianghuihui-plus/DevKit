@@ -52,9 +52,9 @@
 
 ## D9：短时命令组合只消除往返，不接管业务判断
 
-- 决策：`runPlan` 接受有界的确定性动作、等待、采集、定位、技术检查和证据检查点序列，由 Runtime 连续执行；Case Agent 仍负责组合计划、解释证据和记录业务检查结果。
+- 决策：`runSequence` 接受由当前 Scene 完整确定的有界动作、等待和可选采集序列，由 Runtime 连续执行；Case Agent 仍负责解释证据和记录业务检查结果。
 - 原因：短暂出现的控件可能在 Agent 两次决策之间消失，但 Runtime 没有能力理解视觉语义、业务目标或用例结论。
-- 影响：定位只消费 Agent 明确提供的元素、点或区域，check 只返回技术事实，计划内 checkpoint 只固化证据；`runPlan` 不自动完成 Case Flow CHECK，也不限制 Agent 使用普通动作或任意视觉坐标。
+- 影响：Runtime 自动保存动作后截图并返回最终完整 Scene；`runSequence` 不自动完成 Case Flow CHECK，也不限制 Agent 使用单动作 `act` 或任意视觉坐标。
 
 ## D10：Baseline Flow 固化原始语义，执行修订不能弱化检查点
 

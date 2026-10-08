@@ -67,7 +67,7 @@ assert.deepStrictEqual(roleResources('case-executor').sort(), [
   'references/case-runtime/methods/plan.md',
   'references/case-runtime/methods/record-result.md',
   'references/case-runtime/methods/act.md',
-  'references/case-runtime/methods/run-plan.md',
+  'references/case-runtime/methods/run-sequence.md',
   'references/case-runtime/methods/knowledge.md',
   'references/case-runtime/methods/recover.md',
   'references/case-runtime/methods/finish.md',
@@ -75,7 +75,7 @@ assert.deepStrictEqual(roleResources('case-executor').sort(), [
   'references/case-runtime/errors.md',
   'references/case-runtime/errors/transport.md',
   'references/case-runtime/errors/scene-action.md',
-  'references/case-runtime/errors/plan.md',
+  'references/case-runtime/errors/sequence.md',
   'references/case-runtime/errors/flow-result.md',
   'references/case-runtime/errors/knowledge-recovery.md',
   'references/case-runtime/errors/runtime.md',
@@ -109,7 +109,7 @@ assert.match(casePrompt, /Case Flow/);
 assert.match(casePrompt, /checkNodeRef/);
 assert.match(casePrompt, /view_image/);
 assert.match(casePrompt, /统一 `read`/);
-assert.match(casePrompt, /observe.*inspect.*plan.*recordResult.*act.*runPlan.*knowledge.*recover.*finish/);
+assert.match(casePrompt, /observe.*inspect.*plan.*recordResult.*act.*runSequence.*knowledge.*recover.*finish/);
 assert.match(casePrompt, /动态值只取自当前 Brief、Scene 或响应/);
 assert.doesNotMatch(casePrompt, /retryWith|nextCall|technicalContext/);
 assert.match(casePrompt, /控件树为空.*不得.*页面空白/);
@@ -124,7 +124,7 @@ assert.match(casePrompt, /不能仅因当前 CHECK 已 PASS 就提前结束/);
 const actionSelfCheckGuidance = `${casePrompt}\n${caseExecutionPrinciples}`;
 assert.match(actionSelfCheckGuidance, /动作前.*可观察.*预期/);
 assert.match(actionSelfCheckGuidance, /技术.*不.*证明.*目标.*业务/);
-assert.match(actionSelfCheckGuidance, /预期不一致.*核对.*目标.*坐标.*落点/);
+assert.match(actionSelfCheckGuidance, /效果不符.*核对.*动作.*坐标.*落点/);
 for (const [name, guidance] of [
   ['Case Prompt', casePrompt],
   ['execution principles', caseExecutionPrinciples],
@@ -152,7 +152,7 @@ assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);
 for (const internalField of ['basedOnSceneId', 'capabilityId', 'inspectVisual', 'inspectScene', 'knowledgeReview', 'contractDefinitions', 'allowedOperations']) {
   assert.strictEqual(casePrompt.includes(internalField), false, `Case Prompt must not expose internal field ${internalField}`);
 }
-assert.deepStrictEqual(AGENT_OPERATIONS, ['observe', 'act', 'runPlan', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
+assert.deepStrictEqual(AGENT_OPERATIONS, ['observe', 'act', 'runSequence', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
 assert.deepStrictEqual(AGENT_OPERATIONS, Object.entries(OPERATION_CONTRACT)
   .filter(([, definition]) => definition.agentAccessible).map(([operation]) => operation));
 for (const [operation, definition] of Object.entries(OPERATION_CONTRACT)) {

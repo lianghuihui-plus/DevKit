@@ -77,18 +77,18 @@ const sanitizedTransaction = sanitizeTransactionValue({
   deviceResult: { inputEffect: { expectedText: 'transaction-private', actualText: 'transaction-private' } },
 });
 assert.strictEqual(JSON.stringify(sanitizedTransaction).includes('transaction-private'), false);
-const redactedPlanRequest = redactRequest({
-  operation: 'runPlan',
+const redactedSequenceRequest = redactRequest({
+  operation: 'runSequence',
   input: {
     steps: [{
-      id: 'login', type: 'act', actionRef: 'field:inputText',
-      input: { text: 'telemetry-private', expectedText: 'telemetry-private' },
+      id: 'login', type: 'act', action: { ref: 'field:inputText',
+        input: { text: 'telemetry-private', expectedText: 'telemetry-private' } },
     }],
   },
 });
-assert.strictEqual(JSON.stringify(redactedPlanRequest).includes('telemetry-private'), false);
-assert.strictEqual(redactedPlanRequest.input.steps[0].input.text, '[REDACTED]');
-assert.strictEqual(redactedPlanRequest.input.steps[0].input.expectedText, '[REDACTED]');
+assert.strictEqual(JSON.stringify(redactedSequenceRequest).includes('telemetry-private'), false);
+assert.strictEqual(redactedSequenceRequest.input.steps[0].action.input.text, '[REDACTED]');
+assert.strictEqual(redactedSequenceRequest.input.steps[0].action.input.expectedText, '[REDACTED]');
 
 assert.strictEqual(classifyRuntimeDisplay(2232, 1008).displayClass, 'PHONE_LIKE');
 assert.strictEqual(classifyRuntimeDisplay(1008, 2232).displayClass, 'PHONE_LIKE');

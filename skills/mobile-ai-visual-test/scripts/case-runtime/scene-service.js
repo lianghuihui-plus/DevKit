@@ -117,7 +117,7 @@ function sceneFromObservation(execDir, observation, execution, previousAction = 
 }
 
 function optionsSource(previousAction, observation) {
-  if (observation.planId) return 'runPlan';
+  if (observation.sequenceId) return 'runSequence';
   return previousAction ? 'act' : 'observe';
 }
 

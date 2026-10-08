@@ -20,7 +20,7 @@ const {
 const { assertLinks, buildDocs, outputFiles } = require('../build-agent-facing-docs');
 const { projectAgentFacingError } = require('../case-runtime/agent-facing-translator');
 const { errorResponse } = require('../coordinator-agent');
-for (const operation of ['recordResult', 'runPlan']) {
+for (const operation of ['recordResult', 'runSequence']) {
   const value = projectAgentFacingError({ status: 'REQUEST_INVALID', code: 'AGENT_INPUT_INVALID', issues: [] }, { operation, input: {} });
   assert.strictEqual(value.error.operationDocumentationRef, `references/case-runtime/methods/${operation.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}.md`);
 }
@@ -40,16 +40,12 @@ for (const [contractModule, operation] of [[require('../case-runtime/agent-facin
 
 const root = path.resolve(__dirname, '../..');
 assert.match(caseContract.methods.read.minimalExample.input.ref, /^mavt:[a-f0-9]{24}:scene:.+$/);
-const publicPlanSteps = caseContract.methods.runPlan.inputSchema.properties.steps.items;
-const internalPlanSteps = require('../case-runtime/plan-contract').PLAN_STEP_SCHEMA;
-assert.notStrictEqual(publicPlanSteps, internalPlanSteps);
-assert.strictEqual(publicPlanSteps.oneOf.length, 6);
-assert.strictEqual(publicPlanSteps.oneOf[0].properties.id.pattern, internalPlanSteps.oneOf[0].properties.id.pattern);
-assert.strictEqual(publicPlanSteps.oneOf[3].properties.sourceRef.pattern, internalPlanSteps.oneOf[3].properties.sourceRef.pattern);
-assert.deepStrictEqual(publicPlanSteps.oneOf[0].properties.input.properties.point.items,
+const publicSequenceSteps = caseContract.methods.runSequence.inputSchema.properties.steps.items;
+assert.strictEqual(publicSequenceSteps.oneOf.length, 3);
+assert.deepStrictEqual(publicSequenceSteps.oneOf[0].properties.action.oneOf[1].properties.target.properties.point.items,
   { type: 'integer', minimum: 0, maximum: 10000 });
-assert.deepStrictEqual(internalPlanSteps.oneOf[0].properties.input.properties.point.items,
-  { type: 'number', minimum: 0, maximum: 1 });
+assert.deepStrictEqual(Object.keys(caseContract.methods.runSequence.inputSchema.properties).sort(),
+  ['flowContext', 'purpose', 'sceneRef', 'steps']);
 const requiredMethodFields = [
   'name', 'summary', 'requestSchema', 'inputSchema', 'responseProjection', 'parameterDescriptions',
   'conditionalRequirements', 'contextualValidationRules', 'successStatuses',
@@ -80,7 +76,7 @@ function assertContract(contract, expectedMethods) {
   }
 }
 
-assertContract(caseContract, ['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
+assertContract(caseContract, ['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
 assertContract(coordinatorContract, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun', 'read']);
 assert.ok(caseContract.methods.finish.contextualValidationRules.some((rule) =>
   /预期不符.*操作无效果.*异常反复.*收口前.*知识调查.*外部依赖.*不机械查询/.test(rule)),
@@ -143,8 +139,8 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const caseIndex = read('references/case-runtime.md');
 const coordinatorIndex = read('references/coordinator.md');
 const confirmRunPage = read('references/coordinator/methods/confirm-run.md');
-assert.match(read('references/case-runtime/methods/run-plan.md'), /steps: Array<object(?: \| object)+>/);
-assert.doesNotMatch(read('references/case-runtime/methods/run-plan.md'), /steps: object(?: \| object)+\[\]/);
+assert.match(read('references/case-runtime/methods/run-sequence.md'), /steps: Array<object(?: \| object)+>/);
+assert.doesNotMatch(read('references/case-runtime/methods/run-sequence.md'), /steps: object(?: \| object)+\[\]/);
 assert.ok(Buffer.byteLength(caseIndex) <= 6 * 1024);
 assert.ok(caseIndex.split('\n').length <= 160);
 assert.ok(Buffer.byteLength(coordinatorIndex) <= 4 * 1024);

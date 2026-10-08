@@ -191,9 +191,9 @@ function validateRuntimeRequest(value) {
     }
     if (value.visual?.gesture === 'longPress') validateLongPressTiming(value.visual.durationMs, value.observationPolicy);
   }
-  if (operation === 'runPlan') {
+  if (operation === 'runSequence') {
     try {
-      require('./plan-contract').validatePlanRequest(value);
+      require('./sequence-contract').validateSequenceRequest(value);
     } catch (error) {
       throw contractError('CASE_RUNTIME_REQUEST_INVALID', error.message, {
         issues: error.issues,

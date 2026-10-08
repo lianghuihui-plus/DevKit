@@ -54,7 +54,7 @@ Authoring Agent 使用适合来源格式的工具完整读取输入，自主形�
 
 Case Agent 从 Handoff 获得 execution 写入所有权、原始用例、环境摘要、当前 Scene、已有 Case Flow、Case Prompt 和预绑定 Runtime Client。正常业务执行只面对九个业务能力和一个统一资源读取能力：
 
-- `observe`、`inspect`、`plan`、`runPlan`、`recordResult`
+- `observe`、`inspect`、`plan`、`runSequence`、`recordResult`
 - `act`、`knowledge`、`recover`、`finish`
 - `read`：按 Runtime 返回的 typed ref 读取完整资源
 
@@ -119,7 +119,7 @@ Scene 是设备现场事实，不是计划或结论。`observe` 显式采集 Sce
 
 Agent-facing Scene 提供紧凑摘要和关联资源引用；Case Agent 将返回的 `layoutRef` 或 `elementSetRef` 原样交给 `read(ref)` 读取完整结构，用 `inspect(mode="visual")` 登记实际看到的图片事实，用 `inspect(mode="action")` 登记动作落点事实。纯视觉内容、系统弹窗、Toast、遮罩、键盘、动画、长按过程及证据冲突不能仅依赖控件树判断。
 
-`runPlan` 用于童锁等短时交互窗口：Case Agent 一次提交由动作、等待、采集、确定性定位、技术检查和证据检查点组成的有界命令序列，Runtime 在计划内部连续执行，避免每个步骤都等待一次 Agent 决策。定位只解析已声明的元素、点或区域，技术检查只验证采集可用、元素状态、前台状态或引用存在等确定性事实；它们不识别业务目标，也不产生业务 CHECK 结论。Agent 读取计划证据后仍须自行判断并通过 `recordResult` 记录结果。
+`runSequence` 顺序执行由当前 Scene 完整确定的动作、等待与可选采集步骤。Runtime 为动作自动保存截图并返回最终完整 Scene；步骤间需要视觉理解、业务判断或重新规划时，Case Agent 在边界前结束序列并使用 `act`。序列记录和技术状态不产生业务 CHECK 结论，Agent 读取证据后仍须通过 `recordResult` 记录结果。
 
 坐标动作保存请求坐标、实际投递坐标、可选设备触点、坐标换算、标注截图和整屏像素比较。Runtime 只陈述投递和画面事实，不判断 Agent 是否选对目标或动作是否达到业务预期。
 

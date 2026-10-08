@@ -66,20 +66,16 @@ function processState({ operation, action, knowledge, recovery, visualInspection
   return 'UNKNOWN';
 }
 
-function planStepKey(planId, stepId) {
-  return planId && stepId ? `${planId}:${stepId}` : null;
-}
-
-function planStepState(planStep, action, scene) {
-  if (planStep?.type === 'planStepFailed' || planStep?.status === 'FAILED') return 'ISSUE';
-  if (planStep?.stepType === 'act') {
-    if (!action) return planStep?.type === 'planStepCompleted' ? 'EXECUTED' : 'UNKNOWN';
+function sequenceStepState(step, action, scene) {
+  if (step?.status === 'FAILED') return 'ISSUE';
+  if (step?.type === 'act') {
+    if (!action) return step?.status === 'COMPLETED' ? 'EXECUTED' : 'UNKNOWN';
     if (action.status === 'FAILED') return 'ISSUE';
     if (['UNKNOWN', 'PENDING'].includes(action.status)) return 'UNKNOWN';
     return 'EXECUTED';
   }
-  if (planStep?.stepType === 'capture' && scene) return 'OBSERVED';
-  return planStep?.type === 'planStepCompleted' ? 'EXECUTED' : 'UNKNOWN';
+  if (step?.type === 'capture' && scene) return 'OBSERVED';
+  return step?.status === 'COMPLETED' ? 'EXECUTED' : 'UNKNOWN';
 }
 
 function actionView(report, events, action, resultByOperation) {
@@ -143,7 +139,7 @@ function projectCurrentNarrative(report) {
   const requestedActions = events.filter((event) => event.type === 'actionRequested');
   const actionResults = events.filter((event) => ['actionCompleted', 'actionOutcomeUnknown'].includes(event.type));
   const actionByDecision = new Map(requestedActions.filter((event) => event.decisionId).map((event) => [event.decisionId, event]));
-  const actionByPlanStep = new Map(requestedActions.map((event) => [planStepKey(event.planId, event.stepId), event]).filter(([key]) => key));
+  const actionByOperation = new Map(requestedActions.map((event) => [event.operationId, event]));
   const resultByOperation = new Map(actionResults.map((event) => [event.operationId, event]));
   const postSceneByOperation = new Map(events.filter((event) => event.type === 'sceneObserved' && event.relatedOperationId)
     .map((event) => [event.relatedOperationId, event]));
@@ -157,15 +153,9 @@ function projectCurrentNarrative(report) {
     .map((event) => [event.decisionId, event]));
   const flowContextByDecision = new Map(events.filter((event) => event.type === 'flowContextRecorded' && event.decisionId)
     .map((event) => [event.decisionId, event]));
-  const planByDecision = new Map(events.filter((event) => event.type === 'planRequested' && event.decisionId)
-    .map((event) => [event.decisionId, event.planId]));
-  const planStepsByPlan = new Map();
-  for (const event of events.filter((candidate) => ['planStepCompleted', 'planStepFailed'].includes(candidate.type))) {
-    if (!planStepsByPlan.has(event.planId)) planStepsByPlan.set(event.planId, []);
-    planStepsByPlan.get(event.planId).push(event);
-  }
-  const sceneByPlanStep = new Map(events.filter((event) => event.type === 'sceneObserved')
-    .map((event) => [planStepKey(event.planId, event.stepId), event]).filter(([key]) => key));
+  const sequenceRecords = report.latest ? require('../case-runtime/sequence-service').readSequences(report.latest) : [];
+  const sequenceByDecision = new Map(sequenceRecords.filter((record) => record.decisionId)
+    .map((record) => [record.decisionId, record]));
 
   const planHistory = flowEvents.map((event) => ({
     version: event.revision, time: event.time, reason: event.reason,
@@ -268,34 +258,34 @@ function projectCurrentNarrative(report) {
         technicalIssue,
       }),
     };
-    if (event.requestedOperation !== 'runPlan') return [baseStep];
+    if (event.requestedOperation !== 'runSequence') return [baseStep];
 
-    const planId = planByDecision.get(event.decisionId);
-    const planSteps = planStepsByPlan.get(planId) || [];
-    if (!planId || !planSteps.length) return [baseStep];
-    return planSteps.map((planStep, planStepIndex) => {
-      const key = planStepKey(planId, planStep.stepId);
-      const stepAction = actionByPlanStep.get(key) || null;
+    const sequence = sequenceByDecision.get(event.decisionId);
+    if (!sequence?.steps?.length) return [baseStep];
+    return sequence.steps.map((sequenceStep, stepIndex) => {
+      const stepAction = actionByOperation.get(sequenceStep.operationId) || null;
       const stepActionView = actionView(report, events, stepAction, resultByOperation);
-      const stepScene = sceneByPlanStep.get(key) || null;
+      const before = scenes.get(sequenceStep.preSceneRef) || null;
+      const after = scenes.get(sequenceStep.postSceneRef) || null;
       return {
         ...baseStep,
-        time: planStep.time || baseStep.time,
-        operation: planStep.stepType || 'unknown',
-        planId,
-        planStepId: planStep.stepId,
-        planStep: {
-          status: planStep.status || (planStep.type === 'planStepFailed' ? 'FAILED' : 'COMPLETED'),
-          durationMs: planStep.durationMs ?? null,
-          error: planStep.error || null,
-          inputRefs: planStep.inputRefs || [],
-          outputRefs: planStep.outputRefs || [],
+        operation: sequenceStep.type,
+        sequenceId: sequence.sequenceId,
+        sequenceStepId: sequenceStep.stepId,
+        sequenceStep: {
+          status: sequenceStep.status,
+          durationMs: sequenceStep.durationMs ?? null,
+          error: sequenceStep.error || null,
+          preSceneRef: sequenceStep.preSceneRef,
+          postSceneRef: sequenceStep.postSceneRef || null,
+          operationId: sequenceStep.operationId || null,
         },
         action: stepActionView,
-        sceneId: stepScene?.sceneId || baseStep.sceneId,
-        afterScene: sceneSummary(stepScene),
-        postAssessment: planStepIndex === planSteps.length - 1 ? baseStep.postAssessment : null,
-        processState: planStepState(planStep, stepActionView, stepScene),
+        sceneId: sequenceStep.preSceneRef || baseStep.sceneId,
+        beforeScene: sceneSummary(before),
+        afterScene: sceneSummary(after),
+        postAssessment: stepIndex === sequence.steps.length - 1 ? baseStep.postAssessment : null,
+        processState: sequenceStepState(sequenceStep, stepActionView, after),
       };
     });
   });

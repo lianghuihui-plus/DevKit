@@ -4,11 +4,11 @@ const { validateAgentJson } = require('../lib/agent-json-contract');
 const { initialStateStrategy } = require('../lib/app-provisioning');
 const { safeActionTechnicalDetails } = require('../lib/action-result');
 const { AGENT_FACING_PROTOCOL, AGENT_FACING_STATUSES, RESOURCE_DESCRIPTOR_SCHEMA, requestEnvelopeSchema } = require('../lib/agent-facing-envelope');
-const { PLAN_STEP_SCHEMA: INTERNAL_PLAN_STEP_SCHEMA, MAX_PLAN_STEPS, MAX_PLAN_DURATION_MS } = require('./plan-contract');
-const { GRID_MAX, normalizePlanSteps } = require('../lib/visual-coordinate-grid');
+const { MAX_SEQUENCE_STEPS, MAX_SEQUENCE_DURATION_MS, validateSequenceRequest } = require('./sequence-contract');
+const { GRID_MAX } = require('../lib/visual-coordinate-grid');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
-const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runPlan', 'knowledge', 'recover', 'finish']);
+const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
 const STRING = { type: 'string', minLength: 1 };
 const STRING_ARRAY = { type: 'array', items: STRING };
 const RESOURCE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:[^:]+:.+$' };
@@ -41,33 +41,11 @@ const ACTION = { oneOf: [
   object({ type: { const: 'swipe' }, target: object({ from: POINT, to: POINT }, ['from', 'to']) }, ['type', 'target']),
 ] };
 
-function planStepSchemaWithGridCoordinates(schema) {
-  return Object.freeze({ oneOf: schema.oneOf.map((branch) => {
-    const type = branch.properties.type.const;
-    if (type === 'act') {
-      const input = branch.properties.input;
-      return { ...branch, properties: { ...branch.properties, input: { ...input, properties: {
-        ...input.properties, point: POINT, from: POINT, to: POINT,
-      } } } };
-    }
-    if (type === 'locate') {
-      const locator = branch.properties.locator;
-      return { ...branch, properties: { ...branch.properties, locator: { ...locator,
-        oneOf: locator.oneOf.map((candidate) => {
-          const kind = candidate.properties.kind.const;
-          if (kind === 'POINT') return { ...candidate, properties: { ...candidate.properties, point: POINT } };
-          if (kind === 'REGION') return { ...candidate, properties: {
-            ...candidate.properties, region: { ...POINT, minItems: 4, maxItems: 4 },
-          } };
-          return candidate;
-        }),
-      } } };
-    }
-    return branch;
-  }) });
-}
-
-const PLAN_STEP_SCHEMA = planStepSchemaWithGridCoordinates(INTERNAL_PLAN_STEP_SCHEMA);
+const SEQUENCE_STEP_SCHEMA = { oneOf: [
+  object({ id: STRING, type: { const: 'act' }, action: ACTION }, ['id', 'type', 'action']),
+  object({ id: STRING, type: { const: 'wait' }, ms: { type: 'integer', minimum: 0, maximum: MAX_SEQUENCE_DURATION_MS } }, ['id', 'type', 'ms']),
+  object({ id: STRING, type: { const: 'capture' }, mode: { enum: ['SCREENSHOT_ONLY', 'FULL_SCENE'] }, purpose: STRING }, ['id', 'type', 'mode', 'purpose']),
+] };
 
 const ASSESSMENT = object({
   entryId: STRING,
@@ -135,12 +113,11 @@ const SCHEMAS = Object.freeze({
   act: object({
     sceneRef: SCENE_REF, action: ACTION, purpose: STRING, flowContext: FLOW_CONTEXT,
   }, ['sceneRef', 'action']),
-  runPlan: object({
-    submissionId: STRING, sceneRef: SCENE_REF,
-    purpose: STRING, maxDurationMs: { type: 'integer', minimum: 1, maximum: MAX_PLAN_DURATION_MS }, onFailure: { enum: ['STOP', 'CONTINUE'] },
-    steps: { type: 'array', minItems: 1, maxItems: MAX_PLAN_STEPS, items: PLAN_STEP_SCHEMA },
+  runSequence: object({
+    sceneRef: SCENE_REF, purpose: STRING,
+    steps: { type: 'array', minItems: 1, maxItems: MAX_SEQUENCE_STEPS, items: SEQUENCE_STEP_SCHEMA },
     flowContext: FLOW_CONTEXT,
-  }, ['submissionId', 'sceneRef', 'purpose', 'maxDurationMs', 'onFailure', 'steps']),
+  }, ['sceneRef', 'purpose', 'steps']),
   knowledgeQuery: object({
     mode: { const: 'query' }, sceneRef: SCENE_REF, query: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
   }, ['mode', 'sceneRef', 'query']),
@@ -195,15 +172,15 @@ const PUBLIC_ERRORS = Object.freeze({
   KNOWLEDGE_REVIEW_INVALID: { group: 'knowledge-recovery', retryable: true, summary: '知识候选复核不满足当前 query 约束。', recovery: '逐条覆盖当前 query 返回的候选并给出适用性原因，再提交同一 queryId。' },
   APP_INITIAL_STATE_UNAVAILABLE: { group: 'knowledge-recovery', retryable: true, resourceTypes: ['technicalFact'], summary: '授权的初始状态准备未完成。', recovery: '读取 technicalFact 资源确认制品、设备或平台准备失败原因；完成技术处置后重试同一 recover(mode="prepare") 的 input.targetState。' },
   ACTION_OUTCOME_UNKNOWN: { group: 'scene-action', retryable: false, resourceTypes: ['scene', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作可能已经投递，禁止自动重放。', recovery: '禁止重放动作；先 observe 当前现场，并结合 action 落点证据判断下一步。' },
-  PLAN_INVALID: { group: 'plan', retryable: true, summary: '命令计划不满足步数、时限、引用或定位类型约束。', recovery: '按 issues 修正有限步骤和前向引用；不要添加循环、脚本或未注册定位类型。' },
-  PLAN_STEP_FAILED: { group: 'plan', retryable: true, summary: '计划在指定步骤发生确定性技术失败。', recovery: '检查已完成前缀、失败步骤和证据；根据当前 Scene 重新形成新的 submissionId。' },
-  PLAN_SUBMISSION_CONFLICT: { group: 'plan', retryable: false, summary: '同一 submissionId 对应了不同的规范化请求。', recovery: '原请求重试必须保持内容不变；业务上确需新计划时使用新的 submissionId。' },
-  PLAN_RECORD_INCOMPLETE: { group: 'plan', retryable: false, summary: '计划快照缺失、未终结或摘要校验失败。', recovery: '停止重放可能已执行的动作，保留 execution 进行技术排障。' },
-  LOCATOR_UNSUPPORTED: { group: 'plan', retryable: true, summary: '当前 Runtime 不支持所声明的定位类型。', recovery: '改用当前 Scene 可验证的 ELEMENT_REF、POINT 或 REGION；不能可靠定位时交回 Agent。' },
-  TARGET_NOT_FOUND: { group: 'plan', retryable: true, summary: '声明的 Scene、控件或定位目标不存在。', recovery: '查看计划已采集的 Scene 证据，重新选择可验证引用；不要猜测目标坐标。' },
-  PLAN_CHECK_FAILED: { group: 'plan', retryable: true, summary: '技术检查无法执行或谓词不受支持。', recovery: '只使用文档列出的确定性技术谓词；业务判断留给 Agent。' },
-  PLAN_ACTION_OUTCOME_UNKNOWN: { group: 'plan', retryable: false, resourceTypes: ['planResult', 'scene', 'screenshot', 'actionSpatialEvidence', 'planEvidence', 'technicalFact'], summary: '计划动作可能已投递，结果未知。', recovery: '禁止重放计划或动作；先检查已有证据并 observe 当前现场。' },
-  PLAN_TIMEOUT: { group: 'plan', retryable: true, summary: '计划未能在声明的有限时限内完成。', recovery: '检查已完成前缀和各步耗时；缩短计划或在新 Scene 上使用新的 submissionId。' },
+  SEQUENCE_INVALID: { group: 'sequence', retryable: true, summary: '动作序列请求无效。', recovery: '检查步骤和当前 Scene 后重新提交。' },
+  SEQUENCE_RECORD_INCOMPLETE: { group: 'sequence', retryable: false, summary: '动作序列记录不完整。', recovery: '保留 execution 进行技术排障，避免重放动作。' },
+  SEQUENCE_ACTION_OUTCOME_UNKNOWN: { group: 'sequence', retryable: false, resourceTypes: ['scene', 'sequenceResult', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作可能已投递，结果未知。', recovery: '禁止重放；先检查返回的 Scene 与证据。' },
+  SEQUENCE_TIMEOUT: { group: 'sequence', retryable: true, resourceTypes: ['scene', 'sequenceResult', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作序列超时。', recovery: '读取已完成步骤和最终 Scene，再决定下一步。' },
+  SEQUENCE_STEP_FAILED: { group: 'sequence', retryable: true, resourceTypes: ['scene', 'sequenceResult', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作序列步骤失败。', recovery: '读取失败步骤和最终 Scene，再决定下一步。' },
+  SEQUENCE_ACTION_FAILED: { group: 'sequence', retryable: true, resourceTypes: ['scene', 'sequenceResult', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '设备报告动作失败。', recovery: '读取最终 Scene 和动作证据后决定下一步。' },
+  SEQUENCE_CAPTURE_FAILED: { group: 'sequence', retryable: true, resourceTypes: ['scene', 'sequenceResult', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '序列采集失败。', recovery: '读取可用证据后重新观察现场。' },
+  SEQUENCE_FINAL_CAPTURE_FAILED: { group: 'sequence', retryable: true, resourceTypes: ['scene', 'sequenceResult', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '最终 Scene 采集失败。', recovery: '读取序列记录与技术事实，再观察当前现场。' },
+  SEQUENCE_INTERRUPTED: { group: 'sequence', retryable: false, resourceTypes: ['scene', 'sequenceResult', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作序列被中断。', recovery: '读取恢复后的现场与已完成步骤，不要盲目重放。' },
   CASE_RESULT_INCOMPLETE: { group: 'flow-result', retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。', recovery: '逐项处置全部 Baseline CHECK 和最终活跃的补充 CHECK；可用 PASS、FAIL、BLOCKED、INCONCLUSIVE、条件检查的 NOT_APPLICABLE，或提供理由的 WAIVED。' },
   CASE_FINAL_REVIEW_REQUIRED: { group: 'flow-result', retryable: true, summary: '最终收口前必须重新核对完整原始用例。', recovery: '阅读响应中的 originalCase 和 finalReviewInstruction，确认完整业务目标、条件分支和最终结果后重新提交同一 finish 请求。' },
   TIME_LIMIT: { group: 'flow-result', retryable: false, summary: '已停止新的设备动作。', recovery: '不再执行设备动作；使用已有证据收口可判断项，并披露未完成项和时间限制。' },
@@ -320,23 +297,18 @@ const PUBLIC_METHODS = Object.freeze({
     minimalExample: { operation: 'act', input: { sceneRef: EXAMPLE_SCENE_REF, action: { ref: 'button-1:tap' } } },
     additionalExamples: [{ sceneRef: EXAMPLE_SCENE_REF, action: { type: 'tap', target: { point: [8400, 2810] } } }],
   }),
-  runPlan: method('runPlan', '不需要中间 Agent 判断时，连续执行已确定的有限步骤。', SCHEMAS.runPlan, {
-    submissionId: '本次计划提交的幂等键', sceneRef: '当前 Scene',
-    purpose: '计划的业务目的', maxDurationMs: `计划总时限，1 到 ${MAX_PLAN_DURATION_MS} 毫秒`, onFailure: 'STOP 或受限 CONTINUE',
-    steps: '最多 12 个声明式步骤', flowContext: '当前 Case Flow 节点和可选分支选择',
+  runSequence: method('runSequence', '连续执行已确定的动作、等待与采集。', SCHEMAS.runSequence, {
+    sceneRef: '当前 Scene', purpose: '动作序列的业务目的',
+    steps: '最多 12 个动作、等待或采集步骤', flowContext: '当前 Case Flow 节点和可选分支选择',
   }, {
-    responseProjection: projection(['planResultRef', 'planId', 'idempotent'], 'planResult', ['scene', 'screenshot', 'actionSpatialEvidence', 'planEvidence', 'technicalFact']),
-    conditionalRequirements: ['步骤 id 唯一；$<stepId>.<field> 只能引用已完成的先前步骤。capture 输出 sceneRef，locate 输出 point，可用于 act.input.pointRef。', '视觉 act 和 POINT/REGION locator 坐标按 Scene 截图四边标尺填写 0 到 10000 的整数。', '包含 act 时 onFailure 必须为 STOP。需要间隔点击时使用 act/wait/act。'],
-    contextualValidationRules: ['步骤间插入 Agent 决策会增加延迟或降低成功率，且当前事实已足以确定全部步骤时使用 runPlan。', '视觉理解、业务判断或重新规划由 Agent 完成；计划必须在此类边界前结束。', 'Runtime 只执行确定性命令并返回证据；视觉变化和业务结论由 Agent 判断。'],
-    successStatuses: ['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'],
-    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'PLAN_INVALID', 'PLAN_STEP_FAILED', 'PLAN_SUBMISSION_CONFLICT', 'PLAN_RECORD_INCOMPLETE', 'LOCATOR_UNSUPPORTED', 'TARGET_NOT_FOUND', 'PLAN_CHECK_FAILED', 'PLAN_ACTION_OUTCOME_UNKNOWN', 'PLAN_TIMEOUT', 'CASE_RUNTIME_TECHNICAL'],
-    sideEffects: ['按顺序投递计划中的设备动作', '保存步骤事件和 Scene 证据'],
-    idempotency: '相同 submissionId 和请求摘要返回原计划；未知动作结果永不重放。',
-    minimalExample: {
-      operation: 'runPlan', input: { submissionId: 'run-plan-1', sceneRef: EXAMPLE_SCENE_REF, purpose: '完成短时交互',
-      maxDurationMs: 2500, onFailure: 'STOP',
-      steps: [{ id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false }] },
-    },
+    responseProjection: projection(['sequenceResultRef', 'sequenceId', 'sceneRef', 'idempotent', 'deliveryStatus', 'commandDeliveryKnown'], 'scene', ['sequenceResult', 'scene', 'screenshot', 'actionSpatialEvidence', 'technicalFact']),
+    conditionalRequirements: ['步骤 id 唯一；视觉动作坐标按 Scene 截图四边标尺填写 0 到 10000 的整数。'],
+    contextualValidationRules: ['两个及以上动作已由当前证据完整确定、步骤间不需要视觉理解、业务判断或重新规划时，优先使用 runSequence。', '动作后需要立即判断时使用 act；单动作后仍需按指定时机 wait 或 capture 时可以使用 runSequence。'],
+    successStatuses: ['SEQUENCE_COMPLETED'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'SCENE_CHANGED', 'SEQUENCE_INVALID', 'SEQUENCE_STEP_FAILED', 'SEQUENCE_RECORD_INCOMPLETE', 'SEQUENCE_ACTION_OUTCOME_UNKNOWN', 'SEQUENCE_TIMEOUT', 'CASE_RUNTIME_TECHNICAL'],
+    sideEffects: ['按顺序投递动作', '保存动作后截图并采集最终完整 Scene'],
+    idempotency: '相同规范化请求返回已签名终态；未知动作结果永不重放。',
+    minimalExample: { operation: 'runSequence', input: { sceneRef: EXAMPLE_SCENE_REF, purpose: '完成短时交互', steps: [{ id: 'tap', type: 'act', action: { ref: 'button-1:tap' } }] } },
   }),
   knowledge: method('knowledge', '查询知识，或登记指定 query 的候选复核结果。', { type: 'object', oneOf: [SCHEMAS.knowledgeQuery, SCHEMAS.knowledgeReview] }, {
     mode: 'query 或 review', sceneRef: '当前 Scene', query: '待调查问题', queryId: '已有查询引用',
@@ -408,8 +380,7 @@ const PUBLIC_CONTRACT = Object.freeze({
     knowledgeDocument: { summary: '完整知识条目正文。' },
     knowledgeReview: { summary: 'Agent 提交的知识适用性审查。' },
     actionSpatialEvidence: { summary: '动作落点、轨迹及标注截图资源。' },
-    planResult: { summary: '命令组合的完整结果与步骤证据引用。' },
-    planEvidence: { summary: '组合命令某一步的完整采集或技术检查证据。' },
+    sequenceResult: { summary: '动作序列的完整结果与步骤证据引用。' },
     externalActionDeclaration: { summary: 'Agent 登记的框架外动作事实。' },
     technicalFact: { summary: '持久化的技术事实与诊断。' },
     caseResult: { summary: '最终用例结果与证据引用。' },
@@ -450,22 +421,18 @@ function validateAgentFacingRequest(request) {
     message: messageFor(issue),
     code: issue.code === 'REQUIRED' ? 'FIELD_REQUIRED' : issue.code,
   }));
-  if (!issues.length && request?.operation === 'runPlan') {
+  if (!issues.length && request?.operation === 'runSequence') {
     const input = request.input;
     try {
-      require('./plan-contract').validatePlanRequest({
-        operation: 'runPlan', submissionId: input.submissionId, basedOnSceneId: input.sceneRef,
-        purpose: input.purpose, maxDurationMs: input.maxDurationMs, onFailure: input.onFailure,
-        steps: normalizePlanSteps(input.steps), ...(input.flowContext ? { flowContext: input.flowContext } : {}),
+      validateSequenceRequest({
+        operation: 'runSequence', basedOnSceneId: 'scene-0001', purpose: input.purpose,
+        steps: input.steps.map((step) => step.type === 'act'
+          ? { id: step.id, type: step.type, capabilityId: 'public-action' }
+          : step), ...(input.flowContext ? { flowContext: input.flowContext } : {}),
         decision: { purpose: input.purpose, expectationRefs: [] },
       });
     } catch (error) {
-      return (error.issues || []).map((item) => ({
-        field: `input.${item.fieldPath === 'basedOnSceneId' ? 'sceneRef' : item.fieldPath}`,
-        expected: item.expected,
-        message: `计划字段应为 ${item.expected}`,
-        code: item.code,
-      }));
+      return [{ field: 'input.steps', message: error.message, code: 'SEQUENCE_INVALID' }];
     }
   }
   return issues;

@@ -71,9 +71,9 @@ for (const request of [
   { operation: 'status' },
   { operation: 'prepare', preparation: { targetState: 'APP_LOCAL_STATE_EMPTY' } },
   {
-    operation: 'runPlan', submissionId: 'submission-1', basedOnSceneId: 'scene-0001',
-    purpose: '完成短时交互', maxDurationMs: 2500, onFailure: 'STOP',
-    steps: [{ id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false }],
+    operation: 'runSequence', basedOnSceneId: 'scene-0001',
+    purpose: '完成短时交互',
+    steps: [{ id: 'shot', type: 'capture', mode: 'SCREENSHOT_ONLY', purpose: '记录截图' }],
   },
   { operation: 'act', basedOnSceneId: 'scene-0001', capabilityId: 'scene-0001:tap:el-1', decision: { purpose: '进入目标页', expectationRefs: ['E1'] } },
   { operation: 'finish', basedOnSceneId: 'scene-0002', result: flowResult, decision: { purpose: '保存结论', expectationRefs: ['N1'] } },

@@ -175,10 +175,9 @@ function publishResource(execDir, descriptor, content) {
       source = { kind: 'json', path: relative, mediaType: 'application/json' };
     }
     const loaded = sourceValue(execDir, source);
-    if (type === 'planResult') {
-      if (!['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'].includes(loaded.value?.status)) throw fail('plan result is not terminal');
-      const { integrity, ...unsigned } = loaded.value;
-      if (integrity?.recordSha256 !== jsonHash(unsigned)) throw fail('terminal plan integrity is invalid');
+    if (type === 'sequenceResult') {
+      require('./sequence-service').assertSequenceIntegrity(execDir, loaded.value);
+      if (loaded.value.terminal !== true) throw fail('sequence result is not terminal');
     }
     if (type === 'caseResult' && !store.loadExecution(execDir, { allowFinalized: true }).finalized) throw fail('case result is not committed');
     const canonical = projectSource(type, loaded.value, params, { ...source, ...loaded });
@@ -247,7 +246,7 @@ function publishArtifact(execDir, type, relative, associations = [], params = {}
   const text = type === 'knowledgeDocument';
   const source = { kind: text ? 'text' : 'json', path: relative,
     mediaType: text ? 'text/markdown' : 'application/json', encoding: 'utf-8' };
-  const dependencies = ['planEvidence', 'planResult', 'caseResult'].includes(type)
+  const dependencies = ['sequenceResult', 'caseResult'].includes(type)
     ? artifactAssociations(execDir, sourceValue(execDir, source).value, resourceRef(execDir, type, relative), relative)
     : { refMap: {}, associations: [] };
   return publishResource(execDir, { type, id: relative, source,
@@ -290,14 +289,14 @@ function artifactAssociations(execDir, content, selfRef, selfId) {
     if (Array.isArray(value)) return value.forEach((item) => visit(item, field));
     if (value && typeof value === 'object') return Object.entries(value).forEach(([key, item]) => visit(item,
       /Refs$/.test(field) && !/Refs?$/.test(key) ? field : key));
-    if (typeof value !== 'string' || !/(?:Refs?|ref)$/.test(field) || refMap[value] || value === selfRef) return;
+    if (typeof value !== 'string' || (!/(?:Refs?|ref)$/.test(field) && field !== 'technicalFacts')
+      || refMap[value] || value === selfRef) return;
     let resource;
     if (value.startsWith('mavt:')) resource = readPublishedResource(execDir, value);
     else if (/^scene-[\w-]+$/.test(value)) resource = publishScene(execDir, value);
     else if (/^screenshots\/[^/]+\.(png|jpg|svg)$/.test(value)) resource = publishScreenshot(execDir, { ref: value });
     else if (/^layouts\/[^/]+\.json$/.test(value)) resource = publishArtifact(execDir, 'layout', value);
     else if (/^knowledge\/[^/]+\.md$/.test(value)) resource = publishArtifact(execDir, 'knowledgeDocument', value);
-    else if (/^operations\/plan-evidence\/[^/]+\.json$/.test(value)) resource = publishArtifact(execDir, 'planEvidence', value);
     else if (/^action-spatial-evidence\/[^/]+\.json$/.test(value)) resource = publishSpatial(execDir, value);
     else if (/^technical-/.test(value)) {
       const event = store.events(execDir).find((item) => item.technicalFactRef === value);
@@ -443,27 +442,19 @@ function provideOperationResources(execDir, response, request) {
       else if (values.reviews.length) result.knowledgeReviewRef = values.reviews.at(-1).data.ref;
     }
   }
-  if (request.operation === 'runPlan' && response.planId) {
-    const relative = `operations/plans/${response.planId}.json`;
-    const record = sourceValue(execDir, { kind: 'json', path: relative }).value;
-    if (['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED'].includes(record.status)) {
-      const associations = [];
-      const refMap = {};
-      const walk = (value) => {
-        if (Array.isArray(value)) return value.forEach(walk);
-        if (value && typeof value === 'object') return Object.values(value).forEach(walk);
-        if (typeof value !== 'string' || refMap[value]) return;
-        let found;
-        if (/^scene-\d+$/.test(value)) found = publishScene(execDir, value);
-        else if (/^operations\/plan-evidence\/[^/]+\.json$/.test(value)) found = publishArtifact(execDir, 'planEvidence', value);
-        else if (/^action-spatial-evidence\/[^/]+\.json$/.test(value)) found = publishSpatial(execDir, value);
-        else if (/^screenshots\/[^/]+\.(png|jpg|svg)$/.test(value)) found = publishScreenshot(execDir, { ref: value });
-        if (found) { add(found); associations.push(found.descriptor); refMap[value] = found.data.ref; }
-      };
-      walk(record.evidence); walk(record.steps);
-      primary = add(publishArtifact(execDir, 'planResult', relative, associations, { refMap }));
-      result.planResultRef = primary.data.ref;
+  if (request.operation === 'runSequence' && response.sequenceId) {
+    if (response.finalSceneRef) {
+      const scene = add(publishScene(execDir, response.finalSceneRef));
+      result.sceneRef = scene.data.ref;
+      if (response.status === 'SEQUENCE_COMPLETED') primary = scene;
     }
+    const relative = `operations/sequences/${response.sequenceId}.json`;
+    const sequence = add(publishArtifact(execDir, 'sequenceResult', relative));
+    result.sequenceResultRef = sequence.data.ref;
+    result.sequenceId = response.sequenceId;
+    result.idempotent = response.idempotent === true;
+    result.commandDeliveryKnown = response.outcomeKnown !== false;
+    result.deliveryStatus = response.outcomeKnown === false ? 'UNKNOWN' : 'KNOWN';
   }
   if (response.status === 'EXTERNAL_ACTION_RECORDED') {
     const event = events.filter((item) => item.type === 'externalActionDeclared').at(-1);

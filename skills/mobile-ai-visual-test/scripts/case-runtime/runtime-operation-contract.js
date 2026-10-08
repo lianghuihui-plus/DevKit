@@ -265,22 +265,21 @@ const OPERATION_CONTRACT = deepFreeze({
     ],
     responses: ['SCENE', 'SCENE_CHANGED', 'RECOVERY_APPLIED', 'TIME_LIMIT', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
-  runPlan: defineOperation({
+  runSequence: defineOperation({
     agentAccessible: true,
-    summary: 'Execute a bounded declarative action/capture/locate/check plan under one Runtime lock.',
-    whenToUse: ['A short-lived UI state cannot survive another Agent decision cycle.'],
-    requestSchema: operationSchema('runPlan', {
-      submissionId: STRING, basedOnSceneId: STRING, purpose: STRING,
-      maxDurationMs: { type: 'integer', minimum: 1 }, onFailure: { enum: ['STOP', 'CONTINUE'] },
+    summary: 'Execute a bounded deterministic action/wait/capture sequence under one Runtime lock.',
+    whenToUse: ['All steps are determined from the current Scene and need no intermediate Agent decision.'],
+    requestSchema: operationSchema('runSequence', {
+      basedOnSceneId: STRING, purpose: STRING,
       steps: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object' } },
       decision: { $ref: 'decision' },
-    }, ['operation', 'submissionId', 'basedOnSceneId', 'purpose', 'maxDurationMs', 'onFailure', 'steps']),
-    examples: [example('transient-controls', {
-      operation: 'runPlan', submissionId: 'run-plan-033-attempt-01', basedOnSceneId: 'scene-0012',
-      purpose: '唤起视频控制栏并解除童锁', maxDurationMs: 2500, onFailure: 'STOP',
-      steps: [{ id: 'controls', type: 'capture', mode: 'SCREENSHOT_ONLY', promote: false }],
+    }, ['operation', 'basedOnSceneId', 'purpose', 'steps']),
+    examples: [example('deterministic-actions', {
+      operation: 'runSequence', basedOnSceneId: 'scene-0012',
+      purpose: '连续执行已确定的动作',
+      steps: [{ id: 'tap', type: 'act', visual: { gesture: 'tap', point: [0.5, 0.5] } }],
     })],
-    responses: ['PLAN_COMPLETED', 'PLAN_PARTIAL', 'PLAN_INTERRUPTED', 'REQUEST_INVALID', 'TECHNICAL'],
+    responses: ['SEQUENCE_COMPLETED', 'SEQUENCE_PARTIAL', 'SEQUENCE_INTERRUPTED', 'REQUEST_INVALID', 'TECHNICAL'],
   }),
   inspectVisual: defineOperation({
     agentAccessible: true,

@@ -151,8 +151,8 @@ function execute(execDir, request, options = {}) {
       store.loadExecution(execDir, { allowFinalized: true });
       const recoveredTransactions = [
         ...require('./preparation-service').recoverPendingPreparation(execDir, { ...options, allowFinalized: true }),
+        ...require('./sequence-service').recoverInterruptedSequences(execDir, { ...options, allowFinalized: true }),
         ...require('./recovery-service').recoverPendingTransactions(execDir, { ...options, allowFinalized: true }),
-        ...require('./plan-service').recoverInterruptedPlans(execDir, { ...options, allowFinalized: true }),
       ];
       const pendingFinish = resultService.resumePendingFinish(execDir, { ...options, openInvocation: invocation });
       if (request.operation === 'status') {
@@ -190,6 +190,11 @@ function execute(execDir, request, options = {}) {
           scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)),
         };
       }
+      if (request.operation === 'runSequence') {
+        const sequence = require('./sequence-service');
+        const terminal = sequence.findTerminalSequence(execDir, request);
+        if (terminal) return sequence.responseFromSequenceRecord(terminal, { idempotent: true });
+      }
       assertSceneBasis(execDir, request);
       const flowContext = require('./case-flow-service').validateFlowContext(execDir, request.flowContext);
       narrative = request.operation === 'recordExpectationResults'
@@ -216,7 +221,7 @@ function execute(execDir, request, options = {}) {
       if (request.operation === 'recover' && recoveredRecovery) {
         return { ...recoveredRecovery.response, remainingMs: budget.remainingMs };
       }
-      if (budget.exhausted && ['prepare', 'observe', 'act', 'runPlan', 'recover'].includes(request.operation)) {
+      if (budget.exhausted && ['prepare', 'observe', 'act', 'runSequence', 'recover'].includes(request.operation)) {
         return { status: 'TIME_LIMIT', remainingMs: 0, technicalFactRef: budget.technicalFactRef, scene: sceneService.projectSceneSummary(store.readCurrentScene(execDir)) };
       }
       let response;
@@ -246,7 +251,9 @@ function execute(execDir, request, options = {}) {
       else if (request.operation === 'prepare') response = require('./preparation-service').prepare(execDir, enrichedRequest, runtimeOptions);
       else if (request.operation === 'observe') response = sceneService.observe(execDir, { ...runtimeOptions, purpose: request.purpose, decisionId: enrichedRequest.decisionId });
       else if (request.operation === 'act') response = actionService.act(execDir, enrichedRequest, runtimeOptions);
-      else if (request.operation === 'runPlan') response = require('./plan-service').runPlan(execDir, request, {
+      else if (request.operation === 'runSequence') response = require('./sequence-service').runSequence(execDir, {
+        ...request, decision: enrichedRequest.decision,
+      }, {
         ...runtimeOptions,
         decisionId: narrative.decisionEvent?.decisionId || null,
         remainingMs: budget.remainingMs,
@@ -320,8 +327,8 @@ function reconcileExecution(execDir, options = {}) {
   return store.withRuntimeLock(execDir, () => {
     const recoveredTransactions = [
       ...require('./preparation-service').recoverPendingPreparation(execDir, { ...options, allowFinalized: true }),
+      ...require('./sequence-service').recoverInterruptedSequences(execDir, { ...options, allowFinalized: true }),
       ...require('./recovery-service').recoverPendingTransactions(execDir, { ...options, allowFinalized: true }),
-      ...require('./plan-service').recoverInterruptedPlans(execDir, { ...options, allowFinalized: true }),
     ];
     const finish = resultService.resumePendingFinish(execDir, options);
     return { recoveredTransactions, finish, status: runtimeStatus(execDir) };
