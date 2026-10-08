@@ -125,3 +125,31 @@
 
 - The helper only consumes an already-completed screenshot adapter result; device invocation and deadline policy remain the caller's responsibility.
 - Two-action orchestration and explicit capture execution remain later phases.
+
+## Task 4A2e2 - Multi-action Sequence execution
+
+### Files
+
+- Extended `scripts/case-runtime/sequence-service.js` from the terminal single-action path to act-only sequences.
+- Updated `scripts/case-runtime/scene-service.js` so a final full observation can derive action evidence and scroll state from an unpromoted intermediate Scene.
+- Added and registered `scripts/tests/sequence-two-actions.test.js`.
+
+### RED
+
+- `node scripts/tests/sequence-two-actions.test.js` failed with `SEQUENCE_NOT_IMPLEMENTED: this runtime revision supports exactly one act step`.
+- After the execution loop was added, the same test failed with `DEVICE_BINDING_CHANGED` because lightweight capture bypassed the Task 4 unified device-operation injection.
+
+### GREEN
+
+- `node scripts/tests/sequence-two-actions.test.js` passed after intermediate capture reused the supplied `CAPTURE` device-operation injection.
+- `node scripts/tests/sequence-single-action.test.js` and `node scripts/tests/sequence-screenshot-scene.test.js` passed.
+
+### Evidence
+
+- Every act is resolved against the submitted basis Scene before the Sequence record or any adapter call is written.
+- The first action is closed against one unpromoted `SCREENSHOT_ONLY` Scene with `ACTION_POST`; the second action is closed against the promoted final `FULL_SCENE` with `ACTION_POST` and `SEQUENCE_FINAL`.
+- Step records form an exact pre/post chain, action drafts close once, and exact replay after final Scene promotion performs no adapter call.
+
+### Self-review
+
+- This phase supports successful act-only chains. Wait, explicit capture, failure closure, timeout terminalization, and crash recovery remain later Task 4 phases.

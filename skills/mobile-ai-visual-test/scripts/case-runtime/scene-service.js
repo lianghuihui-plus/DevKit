@@ -167,7 +167,7 @@ function observe(execDir, options = {}) {
   const metadata = normalizedCaptureMetadata(options);
   const promote = options.promote !== false;
   const execution = store.loadExecution(execDir, { allowFinalized: options.allowFinalized === true });
-  const previousScene = store.readCurrentScene(execDir);
+  const previousScene = options.previousScene || store.readCurrentScene(execDir);
   const operationId = store.nextId(execDir, 'observation');
   const invoked = (options.invokeDeviceOperation || invokeDeviceOperation)(execDir, {
     context: { execution },

@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { canonicalJson, contractError } = require('../lib/contract-utils');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { invokeScreenshotCapture } = require('../platform/device-port');
 const {
   FINAL_SCENE_RESERVE_MS,
   SEQUENCE_STATUSES,
@@ -260,40 +261,51 @@ function now(options) {
   return options.now || new Date().toISOString();
 }
 
+function actionRequestFor(step, basisSceneId, purpose, decisionId) {
+  return {
+    basedOnSceneId: basisSceneId,
+    ...(step.capabilityId ? { capabilityId: step.capabilityId } : {}),
+    ...(step.input !== undefined ? { input: step.input } : {}),
+    ...(step.visual ? { visual: step.visual } : {}),
+    decision: { purpose, expectationRefs: [] },
+    decisionId: decisionId || null,
+  };
+}
+
+function dispatchedPreviousAction(dispatched) {
+  return {
+    ...dispatched.action,
+    lifecycle: { status: classifyActionOutcome(dispatched.adapterResult) },
+  };
+}
+
 function runSequence(execDir, request, options = {}) {
   const existing = findTerminalSequence(execDir, request);
   if (existing) return responseFromSequenceRecord(existing, { idempotent: true });
 
   const normalized = normalizeSequenceRequest(request);
-  if (normalized.steps.length !== 1 || normalized.steps[0].type !== 'act') {
-    throw contractError('SEQUENCE_NOT_IMPLEMENTED', 'this runtime revision supports exactly one act step');
+  if (!normalized.steps.every((step) => step.type === 'act')) {
+    throw contractError('SEQUENCE_NOT_IMPLEMENTED', 'this runtime revision supports act-only sequences');
   }
 
   const execution = store.loadExecution(execDir);
   const beforeScene = store.readCurrentScene(execDir);
   if (!beforeScene || beforeScene.sceneId !== normalized.basedOnSceneId) return sceneChanged(beforeScene);
 
-  const step = normalized.steps[0];
-  const actionRequest = {
-    basedOnSceneId: beforeScene.sceneId,
-    ...(step.capabilityId ? { capabilityId: step.capabilityId } : {}),
-    ...(step.input !== undefined ? { input: step.input } : {}),
-    ...(step.visual ? { visual: step.visual } : {}),
-    decision: { purpose: normalized.purpose, expectationRefs: [] },
-    decisionId: options.decisionId || null,
-  };
-  const resolvedAction = resolveActionRequest(beforeScene, actionRequest, execution.platform);
-  if (resolvedAction.stale) return sceneChanged(beforeScene);
+  const preparedActions = normalized.steps.map((step) => {
+    const actionRequest = actionRequestFor(
+      step, beforeScene.sceneId, normalized.purpose, options.decisionId,
+    );
+    const resolvedAction = resolveActionRequest(beforeScene, actionRequest, execution.platform);
+    return { step, actionRequest, resolvedAction };
+  });
+  if (preparedActions.some(({ resolvedAction }) => resolvedAction.stale)) return sceneChanged(beforeScene);
 
   const clock = options.clock || Date.now;
   const startedMs = clock();
   const durationMs = sequenceDurationMs(options.remainingMs);
   const deadline = startedMs + durationMs;
-  const actionTimeoutMs = deadline - clock() - FINAL_SCENE_RESERVE_MS;
-  if (actionTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', 'sequence has no usable action budget before final Scene reserve');
-
   const sequenceId = store.nextId(execDir, 'sequence');
-  const operationId = store.nextId(execDir, 'action');
   const recordRef = path.relative(path.resolve(execDir), sequencePath(execDir, sequenceId));
   let record = writeSequenceRecord(execDir, {
     schemaVersion: 1,
@@ -326,68 +338,123 @@ function runSequence(execDir, request, options = {}) {
     decisionId: options.decisionId || null,
   }, options);
 
-  const dispatched = dispatchAction(execDir, {
-    ...actionRequest,
-    sequenceId,
-    stepId: step.id,
-  }, {
-    ...options,
-    beforeScene,
-    resolvedAction,
-    operationId,
-    timeoutMs: actionTimeoutMs,
-  });
-  if (dispatched.status !== 'ACTION_DISPATCHED') {
-    throw contractError('SEQUENCE_NOT_IMPLEMENTED', 'prevalidated action did not dispatch');
-  }
-  if (classifyActionOutcome(dispatched.adapterResult) !== 'COMPLETED') {
-    throw contractError('SEQUENCE_NOT_IMPLEMENTED', 'action failure completion is not implemented in this runtime revision');
+  let workingScene = beforeScene;
+  let finalScene = null;
+  const stepRecords = [];
+  const sceneRefs = [beforeScene.sceneId];
+  const screenshotRefs = [beforeScene.screenshot.ref];
+
+  for (const [stepIndex, prepared] of preparedActions.entries()) {
+    const { step, actionRequest, resolvedAction } = prepared;
+    const actionTimeoutMs = deadline - clock() - FINAL_SCENE_RESERVE_MS;
+    if (actionTimeoutMs <= 0) {
+      throw contractError('SEQUENCE_TIMEOUT', `sequence has no usable action budget before step ${step.id}`);
+    }
+    const operationId = store.nextId(execDir, 'action');
+    const dispatched = dispatchAction(execDir, {
+      ...actionRequest,
+      basedOnSceneId: workingScene.sceneId,
+      sequenceId,
+      stepId: step.id,
+    }, {
+      ...options,
+      beforeScene: workingScene,
+      resolvedAction,
+      operationId,
+      timeoutMs: actionTimeoutMs,
+    });
+    if (dispatched.status !== 'ACTION_DISPATCHED') {
+      throw contractError('SEQUENCE_NOT_IMPLEMENTED', `prevalidated action did not dispatch: ${step.id}`);
+    }
+    if (classifyActionOutcome(dispatched.adapterResult) !== 'COMPLETED') {
+      throw contractError('SEQUENCE_NOT_IMPLEMENTED', 'action failure completion is not implemented in this runtime revision');
+    }
+
+    const terminalAction = stepIndex === preparedActions.length - 1;
+    let postScene;
+    if (terminalAction) {
+      const finalTimeoutMs = deadline - clock();
+      if (finalTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', 'sequence deadline reached before final Scene capture');
+      sceneService.observe(execDir, {
+        ...options,
+        purpose: 'SEQUENCE_FINAL',
+        captureOrigins: ['ACTION_POST', 'SEQUENCE_FINAL'],
+        relatedOperationId: operationId,
+        sequenceId,
+        stepId: step.id,
+        previousAction: dispatchedPreviousAction(dispatched),
+        previousScene: workingScene,
+        promote: true,
+        preAdapterDelayMs: dispatched.action.action.type === 'wait' ? 0 : 500,
+        timeoutMs: finalTimeoutMs,
+      });
+      postScene = store.readCurrentScene(execDir);
+      finalScene = postScene;
+    } else {
+      const captureTimeoutMs = deadline - clock() - FINAL_SCENE_RESERVE_MS;
+      if (captureTimeoutMs <= 0) {
+        throw contractError('SEQUENCE_TIMEOUT', `sequence has no capture budget after step ${step.id}`);
+      }
+      const captureOperationId = store.nextId(execDir, 'capture');
+      const capture = options.invokeScreenshotCapture
+        || (options.invokeDeviceOperation
+          ? (dir, payload, captureOptions) => options.invokeDeviceOperation(dir, payload, 'CAPTURE', captureOptions)
+          : invokeScreenshotCapture);
+      const invoked = capture(execDir, {
+        context: { execution }, operationId: captureOperationId,
+      }, { ...options, timeoutMs: captureTimeoutMs });
+      postScene = persistSequenceScreenshotScene(execDir, invoked, execution, {
+        operationId: captureOperationId,
+        purpose: 'ACTION_POST',
+        captureOrigins: ['ACTION_POST'],
+        relatedOperationId: operationId,
+        sequenceId,
+        stepId: step.id,
+        previousAction: dispatchedPreviousAction(dispatched),
+        beforeScene: workingScene,
+        decisionId: options.decisionId || null,
+      }, { promote: false, now: now(options) });
+    }
+
+    const action = completeDispatchedAction(execDir, dispatched, postScene, {
+      decisionId: options.decisionId || null,
+      sequenceId,
+      stepId: step.id,
+      preSceneRef: workingScene.sceneId,
+    }, { ...options, promoteScene: terminalAction });
+    stepRecords.push({
+      stepId: step.id,
+      stepIndex,
+      type: 'act',
+      status: 'COMPLETED',
+      operationId,
+      preSceneRef: workingScene.sceneId,
+      postSceneRef: postScene.sceneId,
+      action: action.action,
+    });
+    sceneRefs.push(postScene.sceneId);
+    screenshotRefs.push(postScene.screenshot.ref);
+    workingScene = postScene;
+    record = writeSequenceRecord(execDir, {
+      ...record,
+      steps: stepRecords,
+      evidence: {
+        sceneRefs: [...new Set(sceneRefs)],
+        screenshotRefs: [...new Set(screenshotRefs)],
+      },
+      remainingMs: Math.max(0, deadline - clock()),
+    });
   }
 
-  const finalTimeoutMs = deadline - clock();
-  if (finalTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', 'sequence deadline reached before final Scene capture');
-  sceneService.observe(execDir, {
-    ...options,
-    purpose: 'SEQUENCE_FINAL',
-    captureOrigins: ['ACTION_POST', 'SEQUENCE_FINAL'],
-    relatedOperationId: operationId,
-    sequenceId,
-    stepId: step.id,
-    previousAction: {
-      ...dispatched.action,
-      lifecycle: { status: 'COMPLETED' },
-    },
-    promote: true,
-    preAdapterDelayMs: dispatched.action.action.type === 'wait' ? 0 : 500,
-    timeoutMs: finalTimeoutMs,
-  });
-  const finalScene = store.readCurrentScene(execDir);
-  const action = completeDispatchedAction(execDir, dispatched, finalScene, {
-    decisionId: options.decisionId || null,
-    sequenceId,
-    stepId: step.id,
-    preSceneRef: beforeScene.sceneId,
-  }, { ...options, promoteScene: true });
-  const stepRecord = {
-    stepId: step.id,
-    stepIndex: 0,
-    type: 'act',
-    status: 'COMPLETED',
-    operationId,
-    preSceneRef: beforeScene.sceneId,
-    postSceneRef: finalScene.sceneId,
-    action: action.action,
-  };
-  const screenshotRefs = [...new Set([beforeScene.screenshot.ref, finalScene.screenshot.ref])];
   record = writeSequenceRecord(execDir, {
     ...record,
     terminal: true,
     status: 'SEQUENCE_COMPLETED',
     endedAt: now(options),
-    steps: [stepRecord],
+    steps: stepRecords,
     evidence: {
-      sceneRefs: [beforeScene.sceneId, finalScene.sceneId],
-      screenshotRefs,
+      sceneRefs: [...new Set(sceneRefs)],
+      screenshotRefs: [...new Set(screenshotRefs)],
     },
     finalSceneRef: finalScene.sceneId,
     remainingMs: Math.max(0, deadline - clock()),

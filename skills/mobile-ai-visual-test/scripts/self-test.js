@@ -61,6 +61,7 @@ const suites = Object.freeze({
   sequenceRecord: 'tests/sequence-record.test.js',
   sequenceScreenshotScene: 'tests/sequence-screenshot-scene.test.js',
   sequenceSingleAction: 'tests/sequence-single-action.test.js',
+  sequenceTwoActions: 'tests/sequence-two-actions.test.js',
   sceneCaptureOrigin: 'tests/scene-capture-origin.test.js',
   batchCancellation: 'tests/batch-cancellation.test.js',
   batchReconcile: 'tests/batch-reconcile.test.js',
