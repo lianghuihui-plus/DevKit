@@ -96,7 +96,7 @@ function sceneEntry(report, event, index) {
       app: event.app || scene?.app || null,
       technicalSignals: event.technicalSignals || scene?.technicalSignals || null,
     },
-    artifacts: { screenshot, layout: safeRef(event.layoutRef || scene?.layoutRef), logs: [] },
+    artifacts: { screenshot, layout: safeRef(event.layoutRef || scene?.layoutRef) },
     raw: sanitizeOperationValue(event),
   };
 }

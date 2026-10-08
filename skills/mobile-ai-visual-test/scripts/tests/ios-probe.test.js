@@ -69,11 +69,13 @@ try {
   const selected = probe(['--device', '00008027-001120DE3A40402E']);
   assert.strictEqual(selected.device, '00008027-001120DE3A40402E');
   assert.strictEqual(selected.capabilities.deviceType, 'realDevice');
+  assert.strictEqual(Object.hasOwn(selected.capabilities, 'logs'), false);
   assert.strictEqual(selected.deviceSelectionRequired, false);
   assert.strictEqual(selected.deviceDetected, true);
   assert.strictEqual(selected.executionReady, false);
   assert.ok(selected.diagnostics.some((item) => item.id === 'iosRealDeviceSigningIncomplete'));
   assert.ok(!selected.diagnostics.some((item) => item.id === 'iosDeviceUnavailable'));
+  assert.ok(!selected.diagnostics.some((item) => item.id === 'iosRealDeviceLogsUnavailable'));
 
   const explicitType = probe([
     '--device', '00008027-001120DE3A40402E', '--device-type', 'realDevice',

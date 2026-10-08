@@ -67,7 +67,7 @@ scripts/prepare-env.sh --platform android --device '<serial>' --android-ui-backe
 
 - 连接真机或启动模拟器。
 - `devecocli device list` 能看到目标设备。
-- 设备支持 `uitest`、`screenCap`、`dumpLayout`、`aa dump`、`hilog` 和 `DisplayManagerService` 状态读取。
+- 设备支持 `uitest`、`screenCap`、`dumpLayout`、`aa dump` 和 `DisplayManagerService` 状态读取。
 
 验证：
 
@@ -152,4 +152,3 @@ scripts/platform/adapters/ios/prepare-real-device.sh \
 
 - `prepare-real-device.sh` 只用于人工预热和诊断，不是正式 case 执行入口。
 - 正式执行时，把真机参数写入环境确认 binding；同一批次不得隐式切换设备或签名参数。
-- iOS 真机日志当前不作为可用能力；截图、控件树、前台 App 和动作能力由 Appium/WDA 提供。

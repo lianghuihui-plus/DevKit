@@ -12,7 +12,6 @@ xcode_org_id="${MAVT_IOS_XCODE_ORG_ID:-}"
 xcode_signing_id="${MAVT_IOS_XCODE_SIGNING_ID:-}"
 updated_wda_bundle_id="${MAVT_IOS_UPDATED_WDA_BUNDLE_ID:-}"
 show_xcode_log="${MAVT_IOS_SHOW_XCODE_LOG:-}"
-show_ios_log="${MAVT_IOS_SHOW_IOS_LOG:-}"
 use_new_wda="${MAVT_IOS_USE_NEW_WDA:-}"
 allow_provisioning="${MAVT_IOS_ALLOW_PROVISIONING_DEVICE_REGISTRATION:-}"
 wda_launch_timeout="${MAVT_IOS_WDA_LAUNCH_TIMEOUT:-}"
@@ -26,7 +25,7 @@ usage() {
     "  MAVT_IOS_DEVICE, MAVT_IOS_APP or MAVT_IOS_BUNDLE" \
     "  MAVT_IOS_XCODE_ORG_ID, MAVT_IOS_XCODE_SIGNING_ID, MAVT_IOS_UPDATED_WDA_BUNDLE_ID" \
     "  MAVT_IOS_APPIUM_SERVER, MAVT_IOS_WDA_LOCAL_PORT, MAVT_IOS_WDA_URL" \
-    "  MAVT_IOS_SHOW_XCODE_LOG, MAVT_IOS_SHOW_IOS_LOG, MAVT_IOS_USE_NEW_WDA" \
+    "  MAVT_IOS_SHOW_XCODE_LOG, MAVT_IOS_USE_NEW_WDA" \
     "  MAVT_IOS_ALLOW_PROVISIONING_DEVICE_REGISTRATION, MAVT_IOS_WDA_LAUNCH_TIMEOUT, MAVT_IOS_DERIVED_DATA_PATH" \
     "" \
     "Options:" \
@@ -35,7 +34,6 @@ usage() {
     "  --wda-local-port <port>          Local WDA port" \
     "  --web-driver-agent-url <url>     Reuse an existing WDA URL" \
     "  --show-xcode-log [true|false]    Print xcodebuild output through Appium" \
-    "  --show-ios-log [true|false]      Print iOS device logs through Appium" \
     "  --use-new-wda [true|false]       Force a fresh WDA startup" \
     "  --allow-provisioning-device-registration [true|false]" \
     "  --wda-launch-timeout <ms>        WDA startup timeout" \
@@ -110,10 +108,6 @@ while [[ $# -gt 0 ]]; do
       read_optional_bool show_xcode_log "${2:-}"
       shift "$OPTION_BOOL_SHIFT"
       ;;
-    --show-ios-log)
-      read_optional_bool show_ios_log "${2:-}"
-      shift "$OPTION_BOOL_SHIFT"
-      ;;
     --use-new-wda)
       read_optional_bool use_new_wda "${2:-}"
       shift "$OPTION_BOOL_SHIFT"
@@ -171,7 +165,6 @@ args=(
 [[ -n "$wda_local_port" ]] && args+=(--wda-local-port "$wda_local_port")
 [[ -n "$wda_url" ]] && args+=(--web-driver-agent-url "$wda_url")
 [[ -n "$show_xcode_log" ]] && args+=(--show-xcode-log "$show_xcode_log")
-[[ -n "$show_ios_log" ]] && args+=(--show-ios-log "$show_ios_log")
 [[ -n "$use_new_wda" ]] && args+=(--use-new-wda "$use_new_wda")
 [[ -n "$allow_provisioning" ]] && args+=(--allow-provisioning-device-registration "$allow_provisioning")
 [[ -n "$wda_launch_timeout" ]] && args+=(--wda-launch-timeout "$wda_launch_timeout")

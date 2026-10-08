@@ -13,6 +13,7 @@ const {
   validateActionExecution,
 } = require('../lib/action-contract');
 const { run, runAllowFailure } = require('./support/process');
+const { BINDING_SCHEMA } = require('../lib/coordinator-interface-contract');
 const { sessionCapabilities } = require('../platform/adapters/ios/lib/appium-client');
 const { pngSize, scaleVisualPoint, sourceViewport } = require('../platform/adapters/ios/lib/screen-space');
 const {
@@ -51,7 +52,10 @@ const emptyProbe = childProcess.spawnSync('/bin/bash', [
 });
 fs.rmSync(emptyProbePath, { recursive: true, force: true });
 assert.strictEqual(emptyProbe.status, 0, emptyProbe.stderr);
-assert.strictEqual(JSON.parse(emptyProbe.stdout).platform, 'harmony');
+const emptyProbeJson = JSON.parse(emptyProbe.stdout);
+assert.strictEqual(emptyProbeJson.platform, 'harmony');
+assert.strictEqual(Object.hasOwn(emptyProbeJson.capabilities, 'logs'), false);
+assert.strictEqual(Object.hasOwn(emptyProbeJson.capabilities, 'hilog'), false);
 
 for (const platform of platforms) {
   const constraints = describeActionConstraints(platform, 'formal-execution');
@@ -115,6 +119,7 @@ const helperProbe = JSON.parse(run('./scripts/platform/adapters/android/probe.sh
   '--android-ui-backend', 'helper',
 ], { env: { ...process.env, PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin` } }));
 assert.deepStrictEqual(helperProbe.capabilities.androidUiBackend, { requested: 'helper' });
+assert.strictEqual(Object.hasOwn(helperProbe.capabilities, 'logs'), false);
 
 const fakeHdcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-harmony-long-press-'));
 const fakeHdcLog = path.join(fakeHdcDir, 'hdc-args.txt');
@@ -548,11 +553,14 @@ const iosSessionCapabilities = sessionCapabilities({ appId: 'com.example.ios' },
 assert.strictEqual(iosSessionCapabilities['appium:autoLaunch'], false);
 assert.strictEqual(iosSessionCapabilities['appium:newCommandTimeout'], 0,
   'framework-managed iOS sessions must not expire while the Agent is deciding');
+assert.strictEqual(Object.hasOwn(sessionCapabilities({ showIOSLog: true }), 'appium:showIOSLog'), false);
+assert.strictEqual(Object.hasOwn(BINDING_SCHEMA.properties, 'showIOSLog'), false);
 const iosProbeArgs = environmentAdapterArgs({
   platform: 'ios', deviceId: 'ios-device', appId: 'com.example.ios', deviceType: 'realDevice',
-  xcodeOrgId: 'TEAM', xcodeSigningId: 'Apple Development', updatedWDABundleId: 'com.example.wda',
+  xcodeOrgId: 'TEAM', xcodeSigningId: 'Apple Development', updatedWDABundleId: 'com.example.wda', showIOSLog: true,
 }, 'probe');
 assert.strictEqual(iosProbeArgs.includes('--app'), false);
+assert.strictEqual(iosProbeArgs.includes('--show-ios-log'), false);
 for (const flag of ['--device-type', '--xcode-org-id', '--xcode-signing-id', '--updated-wda-bundle-id']) assert.ok(iosProbeArgs.includes(flag), flag);
 
 const iosRestart = JSON.parse(run('./scripts/platform/adapters/ios/action.sh', [
@@ -626,6 +634,12 @@ assert.strictEqual(iosDismissKeyboard.command.status, 'ACCEPTED');
 assert.strictEqual(iosDismissKeyboard.deviceExecution.status, 'UNVERIFIED');
 assert.strictEqual(iosDismissKeyboard.action, 'dismissKeyboard');
 const iosObservationDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-ios-observe-'));
+const removedIosLogFlag = runAllowFailure('./scripts/platform/adapters/ios/observe.sh', [
+  '--device', 'ios-device', '--app', 'com.example.ios', '--out', iosObservationDir,
+  '--label', 'removed-log-flag', '--show-ios-log', 'true',
+], { env: { ...process.env, MAVT_IOS_FAKE: '1' } });
+assert.notStrictEqual(removedIosLogFlag.status, 0);
+assert.match(removedIosLogFlag.stderr, /未知参数/);
 const iosObservation = JSON.parse(run('./scripts/platform/adapters/ios/observe.sh', [
   '--device', 'ios-device', '--app', 'com.example.ios', '--out', iosObservationDir, '--label', 'signals',
 ], { env: { ...process.env, MAVT_IOS_FAKE: '1', MAVT_IOS_FAKE_KEYBOARD_SHOWN: '1' } }));
@@ -635,6 +649,9 @@ assert.deepStrictEqual(iosObservation.technicalSignals.captureTiming.order, ['la
 assert.ok(Date.parse(iosObservation.technicalSignals.captureTiming.layoutCompletedAt)
   <= Date.parse(iosObservation.technicalSignals.captureTiming.screenshotCompletedAt));
 assert.ok(iosObservation.technicalSignals.captureTiming.spanMs >= 0);
+assert.strictEqual(Object.hasOwn(iosObservation.artifacts, 'logs'), false);
+assert.strictEqual(Object.hasOwn(iosObservation.capabilities, 'logs'), false);
+assert.strictEqual(Object.hasOwn(iosObservation.raw, 'logFiles'), false);
 
 for (const relative of [
   '../platform/adapters/android/observe.sh',

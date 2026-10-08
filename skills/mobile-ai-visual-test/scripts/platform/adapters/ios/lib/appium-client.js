@@ -79,7 +79,6 @@ function sessionCapabilities(target, options = {}) {
   if (target.xcodeSigningId) alwaysMatch['appium:xcodeSigningId'] = target.xcodeSigningId;
   if (target.updatedWDABundleId) alwaysMatch['appium:updatedWDABundleId'] = target.updatedWDABundleId;
   if (target.showXcodeLog !== undefined) alwaysMatch['appium:showXcodeLog'] = target.showXcodeLog;
-  if (target.showIOSLog !== undefined) alwaysMatch['appium:showIOSLog'] = target.showIOSLog;
   if (target.useNewWDA !== undefined) alwaysMatch['appium:useNewWDA'] = target.useNewWDA;
   if (target.allowProvisioningDeviceRegistration !== undefined) {
     alwaysMatch['appium:allowProvisioningDeviceRegistration'] = target.allowProvisioningDeviceRegistration;

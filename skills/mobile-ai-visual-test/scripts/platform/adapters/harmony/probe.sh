@@ -45,7 +45,6 @@ screen_cap="false"
 dump_layout="false"
 aa_dump="false"
 window_dump="false"
-hilog="false"
 display_dump=""
 display_dump_ok="false"
 if [[ -n "$device" || "$(printf '%s\n' "$targets" | sed '/^\s*$/d' | wc -l | tr -d ' ')" = "1" ]]; then
@@ -60,7 +59,6 @@ if [[ -n "$device" || "$(printf '%s\n' "$targets" | sed '/^\s*$/d' | wc -l | tr 
     [[ -s "$tmp_dir/aa-dump.txt" ]] && aa_dump="true"
     [[ -s "$tmp_dir/window-dump.txt" ]] && window_dump="true"
   fi
-  run_probe_optional 5 "$atoms_dir/logs.sh" --device "$device" --out-dir "$tmp_dir/logs" --label probe && hilog="true" || true
   set +e
   display_dump="$("${hdc_prefix[@]}" shell hidumper -s DisplayManagerService -a -a 2>/dev/null)"
   display_status=$?
@@ -69,8 +67,8 @@ if [[ -n "$device" || "$(printf '%s\n' "$targets" | sed '/^\s*$/d' | wc -l | tr 
 fi
 
 node -e '
-const { classifyRuntimeDisplay, normalizeDeviceFormFactor } = require(process.argv[10]);
-const { parseDeviceList, parseDisplayState, selectDeviceProfile } = require(process.argv[11]);
+const { classifyRuntimeDisplay, normalizeDeviceFormFactor } = require(process.argv[9]);
+const { parseDeviceList, parseDisplayState, selectDeviceProfile } = require(process.argv[10]);
 const hdc = !!process.argv[3];
 const device = process.argv[1] || null;
 const uitestVersion = process.argv[4] || null;
@@ -78,14 +76,13 @@ const screenCap = process.argv[5] === "true";
 const dumpLayout = process.argv[6] === "true";
 const aaDump = process.argv[7] === "true";
 const windowDump = process.argv[8] === "true";
-const hilog = process.argv[9] === "true";
-const explicitFormFactorRaw = process.argv[12] || "";
+const explicitFormFactorRaw = process.argv[11] || "";
 const explicitFormFactor = normalizeDeviceFormFactor(explicitFormFactorRaw);
 if (explicitFormFactorRaw && !explicitFormFactor) {
   console.error(`无效 --device-form-factor: ${explicitFormFactorRaw}`);
   process.exit(2);
 }
-const devices = parseDeviceList(process.argv[13] || "");
+const devices = parseDeviceList(process.argv[12] || "");
 let selectedProfile = selectDeviceProfile(devices, device);
 if (explicitFormFactor && selectedProfile) {
   selectedProfile.deviceFormFactor = explicitFormFactor;
@@ -95,8 +92,8 @@ if (explicitFormFactor && selectedProfile) {
   devices.push(selectedProfile);
 }
 const deviceFormFactor = explicitFormFactor || selectedProfile?.deviceFormFactor || null;
-const display = parseDisplayState(process.argv[14] || "");
-const displayCommandOk = process.argv[15] === "true";
+const display = parseDisplayState(process.argv[13] || "");
+const displayCommandOk = process.argv[14] === "true";
 const displayReadable = displayCommandOk && display.readable;
 const runtimeDisplay = classifyRuntimeDisplay(display.width, display.height);
 const hasTarget = hdc && !!device;
@@ -127,9 +124,6 @@ if (hasTarget && !dumpLayout) {
 if (hasTarget && !aaDump) {
   diag("harmonyAaDumpUnavailable", "ERROR", "HarmonyOS 启动或前台应用识别能力不可用", "确认 aa dump 可执行；launchApp/restartApp 依赖该能力", "hdc shell aa dump");
 }
-if (hasTarget && !hilog) {
-  diag("harmonyLogsUnavailable", "WARN", "HarmonyOS hilog 不可用", "确认 hdc shell hilog 可执行；日志缺失不阻塞核心视觉测试", "hdc shell hilog");
-}
 if (hasTarget && !deviceFormFactor) {
   diag("harmonyDeviceFormFactorUnknown", "WARN", "无法确认鸿蒙静态设备形态", "该信息只用于诊断；冷启动策略将使用运行时屏幕比例", "devecocli device list");
 }
@@ -152,7 +146,6 @@ const data = {
     screenshot: screenCap,
     layout: dumpLayout,
     foregroundApp: aaDump || windowDump,
-    logs: hilog,
     launchApp: canLaunchApp,
     deviceFormFactor,
     startupDisplay: {
@@ -170,10 +163,9 @@ const data = {
     screenCap,
     dumpLayout,
     aaDump,
-    windowDump,
-    hilog
+    windowDump
   }
 };
 console.log(JSON.stringify(data, null, 2));
-' "$device" "$targets" "$(command -v hdc || true)" "$uitest_version" "$screen_cap" "$dump_layout" "$aa_dump" "$window_dump" "$hilog" \
+' "$device" "$targets" "$(command -v hdc || true)" "$uitest_version" "$screen_cap" "$dump_layout" "$aa_dump" "$window_dump" \
   "$script_dir/../../../lib/startup-display.js" "$script_dir/lib/display-state.js" "$device_form_factor" "$device_list" "$display_dump" "$display_dump_ok"

@@ -48,19 +48,12 @@ local_png="$out/screenshots/${label}.png"
 local_json="$out/layouts/${label}.json"
 local_aa_dump="$out/logs/${label}-aa-dump.txt"
 local_window_dump="$out/logs/${label}-window-dump.txt"
-local_pidof="$out/logs/${label}-pidof.txt"
-local_hilog="$out/logs/${label}-hilog.txt"
 local_errors="$out/logs/${label}-errors.txt"
 
 : >"$local_errors"
 
 capture_started_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
 
-log_args=(--out-dir "$out/logs" --label "$label")
-if [[ -n "$bundle" ]]; then
-  log_args+=(--app "$bundle")
-fi
-"$atoms_dir/logs.sh" "${device_args[@]}" "${log_args[@]}" >"$out/logs/${label}-logs.json" 2>>"$local_errors" || true
 "$atoms_dir/foreground.sh" "${device_args[@]}" --aa-out "$local_aa_dump" --window-out "$local_window_dump" >"$out/logs/${label}-foreground.json" 2>>"$local_errors" || true
 
 dump_args=(--remote "$remote_json" --out "$local_json" --log "$out/logs/${label}-dump-layout.txt")
@@ -83,8 +76,8 @@ node -e '
 const path = require("path");
 const fs = require("fs");
 const out = process.argv[1], label = process.argv[2], png = process.argv[3], json = process.argv[4], device = process.argv[5], app = process.argv[6];
-const aaDump = process.argv[7], windowDump = process.argv[8], pidofFile = process.argv[9], hilog = process.argv[10], errorsFile = process.argv[11], foregroundJson = process.argv[12];
-const captureStartedAt = process.argv[13], layoutCompletedAt = process.argv[14], screenshotCompletedAt = process.argv[15];
+const errorsFile = process.argv[7], foregroundJson = process.argv[8];
+const captureStartedAt = process.argv[9], layoutCompletedAt = process.argv[10], screenshotCompletedAt = process.argv[11];
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();
   const sign = offset >= 0 ? "+" : "-";
@@ -101,17 +94,12 @@ function read(file) {
 function readJson(file) {
   try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null; } catch { return null; }
 }
-function hasUsableContent(file) {
-  const text = read(file).trim();
-  return !!text && !/command failed or timed out/.test(text);
-}
 const fg = readJson(foregroundJson);
 const foregroundAbility = fg?.foregroundAbility || null;
 const foregroundProcess = fg?.foregroundProcess || null;
 const focusedWindow = fg?.focusedWindow || null;
 const foregroundLine = foregroundAbility?.line || foregroundProcess?.line || focusedWindow?.line || null;
 const foregroundApp = foregroundAbility?.bundleName || foregroundProcess?.processName || null;
-const logs = [aaDump, windowDump, pidofFile, hilog, errorsFile].map(rel).filter(Boolean);
 const screenshotRel = rel(png);
 const layoutRel = rel(json);
 const errors = read(errorsFile).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -123,8 +111,7 @@ console.log(JSON.stringify({
   label,
   artifacts: {
     screenshot: screenshotRel,
-    layout: layoutRel,
-    logs
+    layout: layoutRel
   },
   device: {
     id: device || null,
@@ -135,13 +122,12 @@ console.log(JSON.stringify({
     foregroundApp,
     entry: foregroundAbility?.abilityName || null,
     inTargetApp: app && foregroundApp ? foregroundApp === app : null,
-    processId: hasUsableContent(pidofFile) ? read(pidofFile).trim().split(/\s+/)[0] : foregroundProcess?.pid || null
+    processId: foregroundProcess?.pid || null
   },
   capabilities: {
     screenshot: !!screenshotRel,
     layout: !!layoutRel,
-    foregroundApp: !!foregroundLine,
-    logs: logs.length > 0
+    foregroundApp: !!foregroundLine
   },
   technicalSignals: {
     captureTiming: {
@@ -157,10 +143,9 @@ console.log(JSON.stringify({
     foregroundAbility,
     foregroundProcess,
     focusedWindow,
-    errors,
-    logFiles: logs
+    errors
   },
   screenshot: screenshotRel,
   layout: layoutRel
 }, null, 2));
-' "$out" "$label" "$local_png" "$local_json" "$device" "$bundle" "$local_aa_dump" "$local_window_dump" "$local_pidof" "$local_hilog" "$local_errors" "$out/logs/${label}-foreground.json" "$capture_started_at" "$layout_completed_at" "$screenshot_completed_at"
+' "$out" "$label" "$local_png" "$local_json" "$device" "$bundle" "$local_errors" "$out/logs/${label}-foreground.json" "$capture_started_at" "$layout_completed_at" "$screenshot_completed_at"

@@ -14,7 +14,6 @@ const IOS_ONLY_FIELDS = new Set([
   'xcodeSigningId',
   'updatedWDABundleId',
   'showXcodeLog',
-  'showIOSLog',
   'useNewWDA',
   'allowProvisioningDeviceRegistration',
   'wdaLaunchTimeout',
@@ -145,7 +144,6 @@ function environmentAdapterArgs(binding, purpose = 'observe') {
     add('--xcode-signing-id', binding.xcodeSigningId);
     add('--updated-wda-bundle-id', binding.updatedWDABundleId);
     add('--show-xcode-log', binding.showXcodeLog);
-    add('--show-ios-log', binding.showIOSLog);
     add('--use-new-wda', binding.useNewWDA);
     add('--allow-provisioning-device-registration', binding.allowProvisioningDeviceRegistration);
     add('--wda-launch-timeout', binding.wdaLaunchTimeout);

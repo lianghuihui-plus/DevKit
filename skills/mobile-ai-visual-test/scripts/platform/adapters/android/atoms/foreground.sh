@@ -3,11 +3,13 @@ set -euo pipefail
 
 device=""
 out=""
+app=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device) device="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
+    --app|--bundle) app="${2:-}"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
@@ -18,6 +20,10 @@ if [[ -n "$device" ]]; then
 fi
 
 dump="$("${adb_prefix[@]}" shell dumpsys window 2>/dev/null || true)"
+process_id=""
+if [[ -n "$app" ]]; then
+  process_id="$("${adb_prefix[@]}" shell pidof "$app" 2>/dev/null | tr -d '\r' | awk '{print $1}' || true)"
+fi
 if [[ -n "$out" ]]; then
   mkdir -p "$(dirname "$out")"
   printf '%s\n' "$dump" >"$out"
@@ -25,6 +31,7 @@ fi
 
 node -e '
 const text = process.argv[1] || "";
+const processId = process.argv[2] || null;
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();
   const sign = offset >= 0 ? "+" : "-";
@@ -52,5 +59,5 @@ for (const pattern of patterns) {
     break;
   }
 }
-console.log(JSON.stringify({schemaVersion:1,type:"foreground",platform:"android",time:localIso(),ok:!!foreground,foreground}, null, 2));
-' "$dump"
+console.log(JSON.stringify({schemaVersion:1,type:"foreground",platform:"android",time:localIso(),ok:!!foreground,foreground,processId}, null, 2));
+' "$dump" "$process_id"

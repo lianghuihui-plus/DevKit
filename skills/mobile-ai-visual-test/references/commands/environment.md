@@ -29,7 +29,6 @@ Probe a platform
 | `--xcode-signing-id` | 否 | Signing identity for real-device WDA |
 | `--updated-wda-bundle-id` | 否 | Unique WDA bundle identifier for real devices |
 | `--show-xcode-log` | 否 | Enable Xcode build logging |
-| `--show-ios-log` | 否 | Enable iOS device logging |
 | `--use-new-wda` | 否 | Force a new WDA deployment |
 | `--allow-provisioning-device-registration` | 否 | Allow Xcode to register the real device |
 | `--wda-launch-timeout` | 否 | WDA launch timeout in milliseconds |
@@ -71,7 +70,6 @@ Prepare a platform
 | `--xcode-signing-id` | 否 | Signing identity for real-device WDA |
 | `--updated-wda-bundle-id` | 否 | Unique WDA bundle identifier for real devices |
 | `--show-xcode-log` | 否 | Enable Xcode build logging |
-| `--show-ios-log` | 否 | Enable iOS device logging |
 | `--use-new-wda` | 否 | Force a new WDA deployment |
 | `--allow-provisioning-device-registration` | 否 | Allow Xcode to register the real device |
 | `--wda-launch-timeout` | 否 | WDA launch timeout in milliseconds |

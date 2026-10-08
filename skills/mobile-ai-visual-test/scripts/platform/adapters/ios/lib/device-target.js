@@ -71,9 +71,6 @@ function parseArgs(argv) {
       case '--show-xcode-log':
         options.showXcodeLog = argv[i + 1] && !argv[i + 1].startsWith('--') ? parseBoolean(argv[++i]) : true;
         break;
-      case '--show-ios-log':
-        options.showIOSLog = argv[i + 1] && !argv[i + 1].startsWith('--') ? parseBoolean(argv[++i]) : true;
-        break;
       case '--use-new-wda':
         options.useNewWDA = argv[i + 1] && !argv[i + 1].startsWith('--') ? parseBoolean(argv[++i]) : true;
         break;
@@ -180,7 +177,6 @@ function buildTarget(options = {}) {
     xcodeSigningId: options.xcodeSigningId || process.env.MAVT_IOS_XCODE_SIGNING_ID || '',
     updatedWDABundleId: options.updatedWDABundleId || process.env.MAVT_IOS_UPDATED_WDA_BUNDLE_ID || '',
     showXcodeLog: parseBoolean(options.showXcodeLog, parseBoolean(process.env.MAVT_IOS_SHOW_XCODE_LOG)),
-    showIOSLog: parseBoolean(options.showIOSLog, parseBoolean(process.env.MAVT_IOS_SHOW_IOS_LOG)),
     useNewWDA: parseBoolean(options.useNewWDA, parseBoolean(process.env.MAVT_IOS_USE_NEW_WDA)),
     allowProvisioningDeviceRegistration: parseBoolean(options.allowProvisioningDeviceRegistration, parseBoolean(process.env.MAVT_IOS_ALLOW_PROVISIONING_DEVICE_REGISTRATION)),
     wdaLaunchTimeout: parseOptionalNumber(options.wdaLaunchTimeout || process.env.MAVT_IOS_WDA_LAUNCH_TIMEOUT),
