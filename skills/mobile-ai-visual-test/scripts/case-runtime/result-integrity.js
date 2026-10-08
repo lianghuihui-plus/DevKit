@@ -352,6 +352,57 @@ function validatePlanEvidenceGraph(execDir, suppliedEvents = null, suppliedScene
   return { files: [...files].sort(), planIds: [...records.keys()].sort() };
 }
 
+function validateSequenceEvidenceGraph(execDir, suppliedEvents = null, suppliedScenes = null, suppliedFiles = null) {
+  const events = suppliedEvents || store.events(execDir);
+  const sceneEvents = suppliedScenes || new Map(events.filter((event) => event.type === 'sceneObserved')
+    .map((event) => [event.sceneId, event]));
+  const files = suppliedFiles || new Set();
+  const requested = new Map(events.filter((event) => event.type === 'sequenceRequested')
+    .map((event) => [event.sequenceId, event]));
+  const terminal = new Map(events.filter((event) => ['sequenceCompleted', 'sequenceInterrupted'].includes(event.type))
+    .map((event) => [event.sequenceId, event]));
+  const { assertSequenceIntegrity, readSequences } = require('./sequence-service');
+  const records = new Map(readSequences(execDir).map((record) => [record.sequenceId, record]));
+  for (const [sequenceId, event] of requested) {
+    const record = records.get(sequenceId);
+    if (!record) throw contractError('SEQUENCE_RECORD_INCOMPLETE', `sequence record is missing: ${sequenceId}`);
+    if (event.sequenceRecordRef !== record.sequenceRecordRef || event.requestKey !== record.requestKey) {
+      throw contractError('SEQUENCE_RECORD_INCOMPLETE', `sequence request event is invalid: ${sequenceId}`);
+    }
+  }
+  for (const record of records.values()) {
+    assertSequenceIntegrity(execDir, record);
+    if (!requested.has(record.sequenceId)) {
+      throw contractError('SEQUENCE_RECORD_INCOMPLETE', `sequence request event is missing: ${record.sequenceId}`);
+    }
+    const terminalEvent = terminal.get(record.sequenceId);
+    if (record.terminal !== true || !terminalEvent || terminalEvent.status !== record.status
+      || terminalEvent.sequenceRecordRef !== record.sequenceRecordRef
+      || terminalEvent.recordSha256 !== record.integrity.recordSha256) {
+      throw contractError('SEQUENCE_RECORD_INCOMPLETE', `sequence terminal event is invalid: ${record.sequenceId}`);
+    }
+    files.add(record.sequenceRecordRef);
+    for (const sceneRef of record.evidence?.sceneRefs || []) {
+      if (!sceneEvents.has(sceneRef)) {
+        throw contractError('SEQUENCE_RECORD_INCOMPLETE', `sequence references an unknown Scene: ${sceneRef}`);
+      }
+    }
+    const knownScreenshots = new Set([...sceneEvents.values()].map((event) => event.screenshotRef).filter(Boolean));
+    for (const screenshotRef of record.evidence?.screenshotRefs || []) {
+      if (!knownScreenshots.has(screenshotRef)) {
+        throw contractError('SEQUENCE_RECORD_INCOMPLETE', `sequence references an unknown screenshot: ${screenshotRef}`);
+      }
+    }
+    const knownTechnicalFacts = new Set(events.map((event) => event.technicalFactRef).filter(Boolean));
+    for (const technicalFactRef of record.technicalFacts || []) {
+      if (!knownTechnicalFacts.has(technicalFactRef)) {
+        throw contractError('SEQUENCE_RECORD_INCOMPLETE', `sequence references an unknown technical fact: ${technicalFactRef}`);
+      }
+    }
+  }
+  return { files: [...files].sort(), sequenceIds: [...records.keys()].sort() };
+}
+
 function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, options = {}) {
   const execution = readJson(path.join(execDir, 'execution.json'), null);
   if (!execution || execution.schemaVersion !== 14) {
@@ -384,6 +435,7 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
   const files = new Set();
   for (const [sceneId, event] of byScene) validateScene(execDir, sceneId, event, files, options);
   const planEvidence = validatePlanEvidenceGraph(execDir, events, byScene, files);
+  const sequenceEvidence = validateSequenceEvidenceGraph(execDir, events, byScene, files);
   for (const event of events.filter((entry) => entry.type === 'actionCompleted' && entry.spatialEvidenceRef)) {
     const expectedRef = evidenceRef(event.operationId);
     if (event.spatialEvidenceRef !== expectedRef) {
@@ -457,7 +509,8 @@ function validateCaseRuntimeEvidenceGraph(execDir, suppliedResult = null, option
     : validateVisualInspectionCoverage(execDir, result, events, byScene, validationProfile);
   return {
     files: [...files].sort(), events, result, sceneRefs: refs,
-    technicalFacts: technicalFacts(events), expectationCoverage, knowledgeCoverage, searchCoverage, planEvidence,
+    technicalFacts: technicalFacts(events), expectationCoverage, knowledgeCoverage, searchCoverage,
+    planEvidence, sequenceEvidence,
     visualInspectionCoverage,
   };
 }
@@ -478,6 +531,7 @@ module.exports = {
   validateExpectationCoverage,
   validateKnowledgeClosure,
   validatePlanEvidenceGraph,
+  validateSequenceEvidenceGraph,
   validateSearchAbsence,
   validateVisualInspectionCoverage,
   validateResultIntegrity,

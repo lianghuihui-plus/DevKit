@@ -37,6 +37,28 @@ function request(basedOnSceneId, stepId = 'tap') {
   };
 }
 
+function promoteFinalScene(execDir, sequenceId = 'sequence-0001') {
+  const basis = store.readCurrentScene(execDir);
+  const finalScene = {
+    ...basis,
+    sceneId: 'scene-0003',
+    captureOrigins: ['SEQUENCE_FINAL'],
+    sequenceId,
+    stepId: null,
+  };
+  store.writeScene(execDir, finalScene);
+  store.appendEvent(execDir, 'sceneObserved', {
+    sceneId: finalScene.sceneId,
+    screenshotRef: finalScene.screenshot.ref,
+    screenshotSha256: finalScene.screenshot.sha256,
+    promoted: true,
+    captureOrigins: finalScene.captureOrigins,
+    sequenceId,
+    stepId: null,
+  }, { allowFinalized: true });
+  return finalScene;
+}
+
 function terminalRecord(execDir, value) {
   const sequenceId = value.sequenceId || 'sequence-0001';
   return {
@@ -61,6 +83,7 @@ function terminalRecord(execDir, value) {
 {
   const current = fixture('terminal');
   const original = request(store.readCurrentScene(current.execDir).sceneId);
+  promoteFinalScene(current.execDir);
   const unsigned = terminalRecord(current.execDir, {
     requestKey: sequenceRequestKey(original),
     basedOnSceneRef: original.basedOnSceneId,
@@ -72,8 +95,7 @@ function terminalRecord(execDir, value) {
   assert.deepStrictEqual(readSequences(current.execDir), [second]);
   assert.deepStrictEqual(assertSequenceIntegrity(current.execDir, second), second);
 
-  const promoted = { ...store.readCurrentScene(current.execDir), sceneId: 'scene-9999' };
-  store.writeScene(current.execDir, promoted);
+  store.writeScene(current.execDir, { ...store.readCurrentScene(current.execDir), sceneId: 'scene-9999' });
   const replay = findTerminalSequence(current.execDir, original, {
     remainingMs: 1,
     decisionId: 'different-runtime-metadata',
@@ -118,6 +140,7 @@ function terminalRecord(execDir, value) {
 {
   const current = fixture('tampered');
   const original = request(store.readCurrentScene(current.execDir).sceneId);
+  promoteFinalScene(current.execDir);
   const saved = writeSequenceRecord(current.execDir, terminalRecord(current.execDir, {
     requestKey: sequenceRequestKey(original),
     basedOnSceneRef: original.basedOnSceneId,

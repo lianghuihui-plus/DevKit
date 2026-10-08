@@ -231,7 +231,9 @@ function completeUnknownDispatchedAction(execDir, unknown, afterScene, metadata 
 function recordCaptureFailureTechnicalFact(execDir, operationId, metadata, action, error, options) {
   const code = 'POST_ACTION_CAPTURE_FAILED';
   const existing = store.events(execDir).find((event) => event.type === 'technicalIssue'
-    && event.operationId === operationId && event.code === code);
+    && event.operationId === operationId && event.code === code
+    && (metadata.sequenceId ? event.sequenceId === metadata.sequenceId : true)
+    && (metadata.stepId ? event.stepId === metadata.stepId : true));
   if (existing) return existing;
   return store.appendEvent(execDir, 'technicalIssue', {
     operationId,
@@ -240,6 +242,8 @@ function recordCaptureFailureTechnicalFact(execDir, operationId, metadata, actio
     message: actionErrorMessage(error, action),
     operation: 'act',
     decisionId: metadata.decisionId || null,
+    sequenceId: metadata.sequenceId || null,
+    stepId: metadata.stepId || null,
   }, options);
 }
 

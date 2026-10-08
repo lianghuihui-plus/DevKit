@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runSequence, readSequences, assertSequenceIntegrity } = require('../case-runtime/sequence-service');
+const { validateSequenceEvidenceGraph } = require('../case-runtime/result-integrity');
 const store = require('../case-runtime/store');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
@@ -106,6 +107,9 @@ for (const [name, steps, captureModes, origins] of [
     assert.ok(actionSteps.every((step) => step.postSceneRef), name);
   }
   assertSequenceIntegrity(execDir, readSequences(execDir)[0]);
+  const graph = validateSequenceEvidenceGraph(execDir);
+  assert.deepStrictEqual(graph.sequenceIds, [result.sequenceId], name);
+  assert.ok(graph.files.includes(result.sequenceRecordRef), name);
 }
 
 {
@@ -154,6 +158,9 @@ for (const [duration, waits] of [[7000, [2000]], [5000, []]]) {
   const completed = JSON.parse(fs.readFileSync(path.join(execDir, 'operations', `${result.steps[0].operationId}.json`), 'utf8'));
   assert.strictEqual(completed.sceneIdAfter, null);
   assert.ok(completed.captureFailureTechnicalFactRef);
+  const record = readSequences(execDir)[0];
+  assert.deepStrictEqual(record.technicalFacts, [completed.captureFailureTechnicalFactRef]);
+  assertSequenceIntegrity(execDir, record);
 }
 
 {

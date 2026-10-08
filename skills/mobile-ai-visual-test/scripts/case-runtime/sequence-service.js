@@ -93,8 +93,8 @@ function assertSequenceIntegrity(execDir, record) {
     const expectedKey = sequenceRequestKey({ operation: 'runSequence', ...record.request });
     if (record.requestKey !== expectedKey) throw incomplete('sequence record request key does not match its stable request');
   }
+  const events = store.events(execDir);
   if (record.terminal === true && (record.steps || []).length) {
-    const events = store.events(execDir);
     let expectedSceneRef = record.basedOnSceneRef;
     let previousStep = null;
     for (const step of record.steps) {
@@ -116,6 +116,15 @@ function assertSequenceIntegrity(execDir, record) {
           && event.stepId === step.stepId);
         if (requested.length !== 1) throw incomplete(`sequence action request is not unique: ${step.stepId}`);
         const completed = transactions.readCompletedAction(execDir, step.operationId);
+        if (step.status === 'NOT_SENT') {
+          const completionEvents = events.filter((event) => event.operationId === step.operationId
+            && ['actionCompleted', 'actionOutcomeUnknown'].includes(event.type));
+          if (completed || completionEvents.length || step.postSceneRef) {
+            throw incomplete(`sequence unsent action has completion evidence: ${step.stepId}`);
+          }
+          previousStep = step;
+          continue;
+        }
         if (!completed || completed.sequenceId !== record.sequenceId || completed.stepId !== step.stepId) {
           throw incomplete(`sequence action operation is invalid: ${step.stepId}`);
         }
@@ -127,7 +136,10 @@ function assertSequenceIntegrity(execDir, record) {
           const actionCompleted = events.filter((event) => event.type === 'actionCompleted'
             && event.operationId === step.operationId && event.sequenceId === record.sequenceId
             && event.stepId === step.stepId);
-          if (actionCompleted.length !== 1) throw incomplete(`sequence action completion is not unique: ${step.stepId}`);
+          const expectedCompletionCount = step.postSceneRef ? 1 : 0;
+          if (actionCompleted.length !== expectedCompletionCount) {
+            throw incomplete(`sequence action completion is not unique: ${step.stepId}`);
+          }
         }
         if (step.action?.type === 'inputText' && step.action.text !== '[REDACTED]') {
           throw incomplete(`sequence action contains raw input text: ${step.stepId}`);
@@ -145,13 +157,22 @@ function assertSequenceIntegrity(execDir, record) {
       if (step.postSceneRef) expectedSceneRef = step.postSceneRef;
       previousStep = step;
     }
-    if (record.finalSceneRef) {
-      const finalScene = readScene(execDir, record.finalSceneRef);
-      const currentScene = store.readCurrentScene(execDir);
-      if (!finalScene || currentScene?.sceneId !== finalScene.sceneId
-        || !(finalScene.captureOrigins || []).includes('SEQUENCE_FINAL')) {
-        throw incomplete('sequence final Scene is not the promoted SEQUENCE_FINAL Scene');
-      }
+  }
+  if (record.terminal === true && record.finalSceneRef) {
+    const finalScene = readScene(execDir, record.finalSceneRef);
+    const finalSceneEvents = events.filter((event) => event.type === 'sceneObserved'
+      && event.sceneId === record.finalSceneRef && event.sequenceId === record.sequenceId);
+    if (!finalScene || finalSceneEvents.length !== 1 || finalSceneEvents[0].promoted !== true
+      || !(finalScene.captureOrigins || []).includes('SEQUENCE_FINAL')) {
+      throw incomplete('sequence final Scene is not the promoted SEQUENCE_FINAL Scene');
+    }
+  } else if (record.terminal === true) {
+    const technicalFactRefs = new Set(record.technicalFacts || []);
+    const finalCaptureFailure = events.find((event) => event.type === 'technicalIssue'
+      && event.sequenceId === record.sequenceId && technicalFactRefs.has(event.technicalFactRef)
+      && ['POST_ACTION_CAPTURE_FAILED', 'SEQUENCE_FINAL_CAPTURE_FAILED'].includes(event.code));
+    if (!finalCaptureFailure) {
+      throw incomplete('sequence without a final Scene lacks a final-capture technical fact');
     }
   }
   return record;
@@ -351,6 +372,35 @@ function readScene(execDir, sceneId) {
   return readJson(path.join(store.paths(execDir).scenes, `${sceneId}.json`), null);
 }
 
+function interruptAt(options, boundary) {
+  if (options.interruptAfter !== boundary) return;
+  const error = new Error(`MAVT_SEQUENCE_INTERRUPTED: ${boundary}`);
+  error.code = 'MAVT_SEQUENCE_INTERRUPTED';
+  error.interruptAfter = boundary;
+  throw error;
+}
+
+function sequenceTechnicalFactRefs(execDir, sequenceId) {
+  return store.events(execDir)
+    .filter((event) => event.sequenceId === sequenceId && event.technicalFactRef)
+    .map((event) => event.technicalFactRef);
+}
+
+function recordSequenceFinalCaptureFailure(execDir, record, error, options = {}) {
+  const existing = store.events(execDir).find((event) => event.type === 'technicalIssue'
+    && event.sequenceId === record.sequenceId && event.code === 'SEQUENCE_FINAL_CAPTURE_FAILED');
+  if (existing) return existing;
+  return store.appendEvent(execDir, 'technicalIssue', {
+    code: 'SEQUENCE_FINAL_CAPTURE_FAILED',
+    ...(error.code ? { internalCode: error.code } : {}),
+    message: 'Sequence final Scene capture failed',
+    operation: 'runSequence',
+    sequenceId: record.sequenceId,
+    stepId: null,
+    decisionId: record.decisionId || null,
+  }, options);
+}
+
 function uniquePush(values, ...items) {
   for (const item of items.filter(Boolean)) if (!values.includes(item)) values.push(item);
 }
@@ -497,6 +547,7 @@ function runSequence(execDir, request, options = {}) {
     sequenceRecordRef: recordRef,
     decisionId: options.decisionId || null,
   }, options);
+  interruptAt(options, 'sequence-created');
 
   let workingScene = beforeScene;
   let finalScene = null;
@@ -624,7 +675,9 @@ function runSequence(execDir, request, options = {}) {
         }
       } catch (captureError) {
         const fact = recordCaptureFailureTechnicalFact(
-          execDir, operationId, error.actionDispatch, error.actionDispatch.action, captureError, options,
+          execDir, operationId, {
+            ...error.actionDispatch, sequenceId, stepId: step.id,
+          }, error.actionDispatch.action, captureError, options,
         );
         completeUnknownDispatchedAction(execDir, {
           ...error.actionDispatch, operationId, code: error.code, message: error.message,
@@ -759,7 +812,9 @@ function runSequence(execDir, request, options = {}) {
       }
       if (!postScene) {
         const fact = recordCaptureFailureTechnicalFact(
-          execDir, operationId, { decisionId: options.decisionId || null }, dispatched.action.action, captureError, options,
+          execDir, operationId, {
+            decisionId: options.decisionId || null, sequenceId, stepId: step.id,
+          }, dispatched.action.action, captureError, options,
         );
         const action = completeDispatchedAction(execDir, dispatched, null, {
           decisionId: options.decisionId || null, sequenceId, stepId: step.id, preSceneRef: workingScene.sceneId,
@@ -771,6 +826,7 @@ function runSequence(execDir, request, options = {}) {
       }
     }
 
+    interruptAt(options, 'post-scene-persisted');
     const action = completeDispatchedAction(execDir, dispatched, postScene, {
       decisionId: options.decisionId || null,
       sequenceId,
@@ -820,8 +876,11 @@ function runSequence(execDir, request, options = {}) {
       uniquePush(screenshotRefs, finalScene.screenshot.ref);
     } catch (error) {
       failure ||= { code: error.code || 'SEQUENCE_FINAL_CAPTURE_FAILED', message: 'final Scene capture failed' };
+      recordSequenceFinalCaptureFailure(execDir, record, error, options);
     }
   }
+
+  interruptAt(options, 'sequence-final-scene-persisted');
 
   record = writeSequenceRecord(execDir, {
     ...record,
@@ -836,16 +895,254 @@ function runSequence(execDir, request, options = {}) {
     },
     finalSceneRef: finalScene?.sceneId || null,
     remainingMs: Math.max(0, deadline - clock()),
+    technicalFacts: sequenceTechnicalFactRefs(execDir, sequenceId),
     failure,
   });
   store.appendEvent(execDir, 'sequenceCompleted', {
     sequenceId,
     status: record.status,
+    outcomeKnown: record.outcomeKnown,
     finalSceneRef: finalScene?.sceneId || null,
     sequenceRecordRef: recordRef,
+    recordSha256: record.integrity.recordSha256,
     decisionId: options.decisionId || null,
   }, options);
   return responseFromSequenceRecord(record);
+}
+
+function sequenceDrafts(execDir, sequenceId) {
+  const directory = store.paths(execDir).transactions;
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory)
+    .filter((name) => name.startsWith('action-') && name.endsWith('.draft.json'))
+    .map((name) => readJson(path.join(directory, name), null))
+    .filter((draft) => draft?.sequenceId === sequenceId);
+}
+
+function sequenceScenes(execDir, sequenceId) {
+  return store.events(execDir)
+    .filter((event) => event.type === 'sceneObserved' && event.sequenceId === sequenceId)
+    .map((event) => readScene(execDir, event.sceneId))
+    .filter(Boolean);
+}
+
+function recoveryPreviousAction(draft, unknown) {
+  return {
+    operationId: draft.operationId,
+    lifecycle: { status: unknown ? 'UNKNOWN' : classifyActionOutcome(draft.deviceResult || {}) },
+    action: draft.action,
+    command: unknown ? { status: 'UNKNOWN' } : draft.deviceResult?.command,
+    deviceExecution: unknown ? { status: 'UNVERIFIED' } : draft.deviceResult?.deviceExecution,
+  };
+}
+
+function recoveryFinalScene(execDir, record, previousScene, draft, unknown, options) {
+  const metadata = {
+    purpose: 'SEQUENCE_FINAL_RECOVERY',
+    captureOrigins: draft ? ['ACTION_POST', 'SEQUENCE_FINAL'] : ['SEQUENCE_FINAL'],
+    sequenceId: record.sequenceId,
+    stepId: draft?.stepId || null,
+    previousScene,
+    promote: true,
+    timeoutMs: sequenceDurationMs(options.remainingMs ?? record.remainingMs),
+  };
+  if (draft) {
+    metadata.relatedOperationId = draft.operationId;
+    metadata.previousAction = recoveryPreviousAction(draft, unknown);
+  }
+  return fullScene(execDir, options, metadata);
+}
+
+function recoveredActionStep(record, draft, beforeScene, afterScene, action, status, error) {
+  const stepIndex = record.request.steps.findIndex((step) => step.id === draft.stepId);
+  const step = record.request.steps[stepIndex];
+  if (!step || step.type !== 'act') throw incomplete(`sequence recovery cannot resolve action step: ${draft.stepId}`);
+  return actionStepRecord(step, stepIndex, draft.operationId, beforeScene, afterScene, action, status, error);
+}
+
+function terminalizeRecoveredSequence(execDir, record, update, options) {
+  const finalRecord = writeSequenceRecord(execDir, {
+    ...record,
+    terminal: true,
+    status: 'SEQUENCE_INTERRUPTED',
+    endedAt: now(options),
+    remainingMs: sequenceDurationMs(options.remainingMs ?? record.remainingMs),
+    technicalFacts: sequenceTechnicalFactRefs(execDir, record.sequenceId),
+    ...update,
+  });
+  const terminalEvent = store.events(execDir).find((event) => (
+    ['sequenceCompleted', 'sequenceInterrupted'].includes(event.type)
+      && event.sequenceId === record.sequenceId
+  ));
+  if (!terminalEvent) {
+    store.appendEvent(execDir, 'sequenceInterrupted', {
+      sequenceId: record.sequenceId,
+      status: finalRecord.status,
+      outcomeKnown: finalRecord.outcomeKnown,
+      finalSceneRef: finalRecord.finalSceneRef,
+      sequenceRecordRef: finalRecord.sequenceRecordRef,
+      recordSha256: finalRecord.integrity.recordSha256,
+      decisionId: finalRecord.decisionId || null,
+    }, options);
+  }
+  assertSequenceIntegrity(execDir, finalRecord);
+  return finalRecord;
+}
+
+function recoverInterruptedSequences(execDir, options = {}) {
+  const recovered = [];
+  for (const storedRecord of readSequences(execDir).filter((record) => record.terminal !== true)) {
+    let record = assertSequenceIntegrity(execDir, storedRecord);
+    const drafts = sequenceDrafts(execDir, record.sequenceId);
+    if (drafts.length > 1) throw incomplete(`sequence has multiple pending action transactions: ${record.sequenceId}`);
+    const draft = drafts[0] || null;
+    const scenes = sequenceScenes(execDir, record.sequenceId);
+    let finalScene = scenes.filter((scene) => (scene.captureOrigins || []).includes('SEQUENCE_FINAL')).at(-1) || null;
+    const stepRecords = [...(record.steps || [])];
+    const sceneRefs = new Set(record.evidence?.sceneRefs || [record.basedOnSceneRef]);
+    const screenshotRefs = new Set(record.evidence?.screenshotRefs || []);
+    let failure = record.failure || { code: 'SEQUENCE_INTERRUPTED', message: 'Sequence stopped after Runtime interruption' };
+    let outcomeKnown = record.outcomeKnown !== false;
+    let captureAttempted = false;
+
+    if (draft) {
+      const beforeScene = readScene(execDir, draft.sceneId);
+      if (!beforeScene) throw incomplete(`sequence action basis Scene is missing: ${draft.operationId}`);
+      if (draft.status === 'PREPARED') {
+        const stepIndex = record.request.steps.findIndex((step) => step.id === draft.stepId);
+        const step = record.request.steps[stepIndex];
+        if (!step || step.type !== 'act') throw incomplete(`sequence recovery cannot resolve prepared step: ${draft.stepId}`);
+        fs.unlinkSync(transactions.actionDraftPath(execDir, draft.operationId));
+        stepRecords.push({
+          stepId: step.id,
+          stepIndex,
+          type: 'act',
+          status: 'NOT_SENT',
+          operationId: draft.operationId,
+          preSceneRef: beforeScene.sceneId,
+          postSceneRef: null,
+          action: draft.action,
+          error: failure,
+        });
+      } else if (['DISPATCHED', 'RESULT_RECORDED', 'OBSERVED'].includes(draft.status)) {
+        const unknown = draft.status === 'DISPATCHED' || draft.outcomeKnown === false;
+        let postScene = scenes.filter((scene) => scene.relatedOperationId === draft.operationId).at(-1) || null;
+        if (!postScene && draft.sceneIdAfter) postScene = readScene(execDir, draft.sceneIdAfter);
+        if (!postScene && draft.status !== 'OBSERVED') {
+          captureAttempted = true;
+          try {
+            postScene = recoveryFinalScene(execDir, record, beforeScene, draft, unknown, options);
+          } catch (error) {
+            const fact = recordCaptureFailureTechnicalFact(execDir, draft.operationId, {
+              decisionId: draft.decisionId || record.decisionId || null,
+              sequenceId: record.sequenceId,
+              stepId: draft.stepId,
+            }, draft.action, error, options);
+            const completionOptions = {
+              ...options,
+              promoteScene: true,
+              captureFailureTechnicalFactRef: fact.technicalFactRef,
+            };
+            if (unknown) {
+              completeUnknownDispatchedAction(execDir, {
+                operationId: draft.operationId,
+                beforeScene,
+                action: draft.action,
+                code: 'ACTION_OUTCOME_UNKNOWN_AFTER_INTERRUPTION',
+                message: 'action dispatch completed without a recorded device result',
+              }, null, {
+                sequenceId: record.sequenceId, stepId: draft.stepId, preSceneRef: beforeScene.sceneId,
+              }, completionOptions);
+            } else {
+              completeDispatchedAction(execDir, {
+                operationId: draft.operationId,
+                beforeScene,
+                action: { action: draft.action },
+                adapterResult: draft.deviceResult,
+              }, null, {
+                sequenceId: record.sequenceId, stepId: draft.stepId, preSceneRef: beforeScene.sceneId,
+              }, completionOptions);
+            }
+            const code = unknown ? 'SEQUENCE_ACTION_OUTCOME_UNKNOWN' : 'POST_ACTION_CAPTURE_FAILED';
+            failure = { code, message: 'Sequence recovery could not capture the final Scene' };
+            outcomeKnown = !unknown;
+            stepRecords.push(recoveredActionStep(
+              record, draft, beforeScene, null, draft.action, unknown ? 'UNKNOWN' : 'FAILED', failure,
+            ));
+          }
+        }
+
+        if (postScene) {
+          let action;
+          if (draft.status === 'OBSERVED') {
+            action = postScene.previousAction || draft.actionResult || { action: draft.action };
+            transactions.completeAction(execDir, draft, { actionResult: action, recoveredAfterInterruption: true });
+          } else if (unknown) {
+            action = completeUnknownDispatchedAction(execDir, {
+              operationId: draft.operationId,
+              beforeScene,
+              action: draft.action,
+              code: 'ACTION_OUTCOME_UNKNOWN_AFTER_INTERRUPTION',
+              message: 'action dispatch completed without a recorded device result',
+            }, postScene, {
+              sequenceId: record.sequenceId, stepId: draft.stepId, preSceneRef: beforeScene.sceneId,
+            }, { ...options, promoteScene: (postScene.captureOrigins || []).includes('SEQUENCE_FINAL') });
+          } else {
+            action = completeDispatchedAction(execDir, {
+              operationId: draft.operationId,
+              beforeScene,
+              action: { action: draft.action },
+              adapterResult: draft.deviceResult,
+            }, postScene, {
+              sequenceId: record.sequenceId, stepId: draft.stepId, preSceneRef: beforeScene.sceneId,
+            }, { ...options, promoteScene: (postScene.captureOrigins || []).includes('SEQUENCE_FINAL') });
+          }
+          const status = unknown ? 'UNKNOWN'
+            : classifyActionOutcome(draft.deviceResult || action) === 'FAILED' ? 'FAILED' : 'COMPLETED';
+          if (unknown) {
+            failure = { code: 'SEQUENCE_ACTION_OUTCOME_UNKNOWN', message: 'action outcome is unknown after interruption' };
+            outcomeKnown = false;
+          }
+          stepRecords.push(recoveredActionStep(record, draft, beforeScene, postScene, action, status,
+            status === 'COMPLETED' ? null : failure));
+          sceneRefs.add(postScene.sceneId);
+          if (postScene.screenshot?.ref) screenshotRefs.add(postScene.screenshot.ref);
+          if ((postScene.captureOrigins || []).includes('SEQUENCE_FINAL')) finalScene = postScene;
+        }
+      } else {
+        throw incomplete(`sequence action draft has unsupported state: ${draft.status}`);
+      }
+    }
+
+    if (!finalScene && !captureAttempted) {
+      captureAttempted = true;
+      const previousScene = scenes.at(-1) || readScene(execDir, record.basedOnSceneRef);
+      try {
+        finalScene = recoveryFinalScene(execDir, record, previousScene, null, false, options);
+      } catch (error) {
+        recordSequenceFinalCaptureFailure(execDir, record, error, options);
+      }
+    }
+    if (finalScene) {
+      sceneRefs.add(finalScene.sceneId);
+      if (finalScene.screenshot?.ref) screenshotRefs.add(finalScene.screenshot.ref);
+    }
+
+    record = terminalizeRecoveredSequence(execDir, record, {
+      steps: stepRecords.sort((left, right) => left.stepIndex - right.stepIndex),
+      evidence: { sceneRefs: [...sceneRefs], screenshotRefs: [...screenshotRefs] },
+      finalSceneRef: finalScene?.sceneId || null,
+      outcomeKnown,
+      failure,
+    }, options);
+    recovered.push({
+      kind: 'sequence',
+      sequenceId: record.sequenceId,
+      status: record.status,
+      response: responseFromSequenceRecord(record),
+    });
+  }
+  return recovered;
 }
 
 module.exports = {
@@ -853,6 +1150,7 @@ module.exports = {
   findTerminalSequence,
   persistSequenceScreenshotScene,
   readSequences,
+  recoverInterruptedSequences,
   responseFromSequenceRecord,
   runSequence,
   sequencePath,
