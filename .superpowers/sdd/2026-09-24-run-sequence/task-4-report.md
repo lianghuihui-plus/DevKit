@@ -153,3 +153,97 @@
 ### Self-review
 
 - This phase supports successful act-only chains. Wait, explicit capture, failure closure, timeout terminalization, and crash recovery remain later Task 4 phases.
+
+## Task 4A3 - General Sequence execution and integrity
+
+### Files
+
+- Extended `scripts/case-runtime/sequence-service.js` with wait/capture steps, adjacent capture coalescing, final-reserve enforcement, known/unknown action failure closure, and terminal record integrity.
+- Exported the existing capture-failure fact helper from `scripts/case-runtime/action-service.js` for Sequence-owned action closure.
+- Added and registered `scripts/tests/sequence-service.test.js`; updated the single-action characterization for the now-supported wait-only path.
+
+### Evidence
+
+- The capture topology matrix covers successful action chains, adjacent screenshot/full captures, terminal screenshot handoff, intermediate full captures, wait-only, and capture-only Sequences.
+- Exact replay ignores changed Runtime metadata while changed stable input remains subject to stale-Scene validation.
+- Waits and nonterminal adapter calls preserve the 4000 ms final-Scene reserve; insufficient waits are never partially executed.
+- Known action failures, unknown outcomes, automatic screenshot failures, and final observation failures all stop the suffix and close any action draft without redispatch.
+- Terminal integrity verifies stable request keys, signatures, action/event identity, pre/post Scene chains, final Scene promotion, and input-text redaction.
+
+### Verification
+
+- `node scripts/tests/sequence-service.test.js`
+- `node scripts/tests/sequence-two-actions.test.js`
+- `node scripts/tests/sequence-single-action.test.js`
+- `node scripts/tests/sequence-record.test.js`
+
+All commands passed after correcting the integrity rule for an adjacent explicit capture that intentionally shares the preceding action's post Scene.
+
+### Remaining
+
+- Task 4B still owns crash-matrix recovery, result-integrity integration, combined focused verification, and independent Task 4 review.
+
+## Task 4B - Recovery state machine and evidence integrity
+
+### Files
+
+- Added `recoverInterruptedSequences` and persistent-boundary interruption hooks to `scripts/case-runtime/sequence-service.js`.
+- Bound capture-failure technical facts to Sequence/step identity in `scripts/case-runtime/action-service.js`.
+- Added Sequence record/event/Scene validation to `scripts/case-runtime/result-integrity.js`.
+- Replaced the recovery placeholder with the full crash matrix in `scripts/tests/sequence-recovery.test.js` and registered it in `scripts/self-test.js`.
+
+### RED / GREEN
+
+- The recovery suite first failed because `recoverInterruptedSequences` was not exported.
+- The final-capture failure assertion first failed because terminal records did not retain the action's technical-fact reference.
+- The result-integrity assertion first failed because no Sequence evidence-graph validator existed.
+- The historical replay regression first failed because integrity incorrectly required the final Scene to remain the current Scene instead of proving that it had been promoted through its `sceneObserved` event.
+
+### Evidence
+
+- Recovery covers record-created, PREPARED, DISPATCHED, RESULT_RECORDED, post-Scene-persisted, OBSERVED, and final-Scene-persisted boundaries.
+- Every recovery performs zero ACTION dispatches, leaves no Sequence-owned draft, emits at most one action completion, performs at most one additional capture, writes one signed terminal record, and is idempotent on repetition.
+- DISPATCHED recovery closes as unknown without redispatch even when final capture also fails.
+- Existing post/final Scenes are reused, so the last three crash boundaries require no additional capture.
+- Sequence evidence integrity binds request and terminal events, signed records, Scene/screenshot references, technical facts, and historical promoted-final-Scene evidence.
+
+### Verification
+
+- All focused Task 1-4 lifecycle suites passed.
+- `node scripts/self-test.js` passed with the Sequence service and recovery suites registered.
+
+### Remaining
+
+- Independent combined Task 4 review is the only remaining Task 4 gate.
+
+## Task 4 Fix Round 1 - Review findings
+
+### Files
+
+- Updated `scripts/case-runtime/sequence-service.js` to redact typed input in signed Sequence records, terminalize direct capture failures, verify null-post capture-failure facts, and stop before an adjacent capture after known action failure.
+- Updated `scripts/platform/device-port.js` so every bounded observation honors its requested pre-adapter delay, including `SEQUENCE_FINAL` observations.
+- Extended `scripts/tests/sequence-service.test.js` and `scripts/tests/device-operation-timeout.test.js` with focused regressions.
+
+### RED
+
+- Typed-input persistence failed with `true !== false` because the signed record JSON contained `sequence-secret-13223222360`.
+- Direct screenshot capture failure escaped `runSequence` as `OBSERVATION_SCREENSHOT_FAILED` instead of returning a partial terminal response.
+- The real production `device-port` boundary failed with `0 !== 500` for a `SEQUENCE_FINAL` observation delay.
+- Null-post integrity failed with `Missing expected exception` after the completed action was pointed at a foreign Sequence/step technical fact.
+- Known action failure followed by explicit capture failed because result steps were `['fails', 'must-not-capture']` instead of stopping at `['fails']`.
+
+### GREEN
+
+- `node scripts/tests/sequence-service.test.js` passed after each Sequence-service fix.
+- `node scripts/tests/device-operation-timeout.test.js` passed after the production observation boundary honored the supplied settle delay.
+- `node scripts/tests/sequence-recovery.test.js` passed with no action redispatch and unchanged crash recovery behavior.
+- `node scripts/tests/action-completion.test.js`, `node scripts/tests/action-recovery-ownership.test.js`, and `node scripts/tests/scene-capture-origin.test.js` passed.
+- `node scripts/tests/sequence-record.test.js`, `node scripts/tests/sequence-single-action.test.js`, `node scripts/tests/sequence-two-actions.test.js`, and `node scripts/tests/platform-capture.test.js` passed.
+
+### Evidence and invariants
+
+- Sequence request keys still use the submitted stable request for replay-first lookup, while the persisted recovery request replaces only `input.text` with `[REDACTED]`.
+- A failed direct non-final capture records a failed step, stops the suffix, and attempts one final full Scene; a failed terminal full capture records a final-capture fact and returns a signed partial result.
+- Null-post action closure now requires the referenced `POST_ACTION_CAPTURE_FAILED` event to match the action operation, Sequence, step, and the record's technical-fact list.
+- Adjacent explicit capture coalescing remains active only after successful actions; known failures proceed directly to final full-Scene closure.
+- The 4000 ms reserve, exact retry, stale-Scene validation, successful capture coalescing, recovery no-redispatch behavior, and Task 5 public surfaces remain unchanged.

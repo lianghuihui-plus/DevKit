@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runSequence, readSequences, assertSequenceIntegrity } = require('../case-runtime/sequence-service');
+const { buildCapabilities } = require('../case-runtime/capability-catalog');
 const { validateSequenceEvidenceGraph } = require('../case-runtime/result-integrity');
 const store = require('../case-runtime/store');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
@@ -75,6 +76,27 @@ function harness(execDir, outcomes = [], behavior = {}) {
   };
 }
 
+{
+  const execDir = fixture();
+  const scene = store.readCurrentScene(execDir);
+  scene.elements = [{
+    id: 'secret-field', text: '', role: 'TextField', bounds: [80, 210, 360, 270],
+    clickable: false, checkable: false, editable: true, enabled: true, visible: true, focused: false,
+  }];
+  scene.capabilities = buildCapabilities(scene, 'harmony');
+  store.writeScene(execDir, scene);
+  const inputCapability = scene.capabilities.find((capability) => capability.kind === 'inputText');
+  const secret = 'sequence-secret-13223222360';
+  const h = harness(execDir);
+  runSequence(execDir, request(execDir, [{
+    id: 'type-secret', type: 'act', capabilityId: inputCapability.id,
+    input: { text: secret, mode: 'replace' },
+  }]), h.options);
+  const recordText = fs.readFileSync(path.join(execDir, readSequences(execDir)[0].sequenceRecordRef), 'utf8');
+  assert.strictEqual(recordText.includes(secret), false);
+  assert.strictEqual(readSequences(execDir)[0].request.steps[0].input.text, '[REDACTED]');
+}
+
 for (const [name, steps, captureModes, origins] of [
   ['two actions', [act('a'), act('b')], ['SCREENSHOT_ONLY', 'FULL_SCENE'], [['ACTION_POST'], ['ACTION_POST', 'SEQUENCE_FINAL']]],
   ['explicit screenshot between actions', [act('a'), capture('shot', 'SCREENSHOT_ONLY'), act('b')], ['SCREENSHOT_ONLY', 'FULL_SCENE'], [['AGENT_REQUESTED', 'ACTION_POST'], ['ACTION_POST', 'SEQUENCE_FINAL']]],
@@ -139,6 +161,36 @@ for (const [duration, waits] of [[7000, [2000]], [5000, []]]) {
 {
   const execDir = fixture();
   const h = harness(execDir, [], { failCapture: true });
+  const result = runSequence(execDir, request(execDir, [
+    capture('direct-shot', 'SCREENSHOT_ONLY'), act('must-not-run'),
+  ]), h.options);
+  assert.strictEqual(result.status, 'SEQUENCE_PARTIAL');
+  assert.strictEqual(result.steps[0].stepId, 'direct-shot');
+  assert.strictEqual(result.steps[0].status, 'FAILED');
+  assert.strictEqual(result.steps.some((step) => step.stepId === 'must-not-run'), false);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'CAPTURE').length, 1);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'OBSERVE').length, 1);
+  assert.ok(result.finalSceneRef);
+  assertSequenceIntegrity(execDir, readSequences(execDir)[0]);
+}
+
+{
+  const execDir = fixture();
+  const h = harness(execDir, [], { failObserve: true });
+  const result = runSequence(execDir, request(execDir, [capture('direct-full', 'FULL_SCENE')]), h.options);
+  assert.strictEqual(result.status, 'SEQUENCE_PARTIAL');
+  assert.strictEqual(result.finalSceneRef, null);
+  assert.strictEqual(result.steps[0].status, 'FAILED');
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'OBSERVE').length, 1);
+  const record = readSequences(execDir)[0];
+  assert.strictEqual(record.terminal, true);
+  assert.strictEqual(record.technicalFacts.length, 1);
+  assertSequenceIntegrity(execDir, record);
+}
+
+{
+  const execDir = fixture();
+  const h = harness(execDir, [], { failCapture: true });
   const result = runSequence(execDir, request(execDir, [act('a'), act('b')]), h.options);
   assert.strictEqual(result.status, 'SEQUENCE_PARTIAL');
   assert.strictEqual(h.calls.filter((call) => call.kind === 'ACTION').length, 1);
@@ -161,6 +213,22 @@ for (const [duration, waits] of [[7000, [2000]], [5000, []]]) {
   const record = readSequences(execDir)[0];
   assert.deepStrictEqual(record.technicalFacts, [completed.captureFailureTechnicalFactRef]);
   assertSequenceIntegrity(execDir, record);
+  const foreignFact = store.appendEvent(execDir, 'technicalIssue', {
+    operationId: result.steps[0].operationId,
+    code: 'POST_ACTION_CAPTURE_FAILED',
+    message: 'foreign Sequence capture failed',
+    operation: 'act',
+    sequenceId: 'sequence-foreign',
+    stepId: 'foreign-step',
+  });
+  fs.writeFileSync(path.join(execDir, 'operations', `${result.steps[0].operationId}.json`), `${JSON.stringify({
+    ...completed,
+    captureFailureTechnicalFactRef: foreignFact.technicalFactRef,
+  }, null, 2)}\n`);
+  assert.throws(() => assertSequenceIntegrity(execDir, record), (error) => (
+    error.code === 'SEQUENCE_RECORD_INCOMPLETE'
+      && /capture-failure closure/.test(error.message)
+  ));
 }
 
 {
@@ -193,6 +261,20 @@ for (const outcome of [{ command: 'REJECTED' }, { device: 'FAILED' }, { failureC
   assert.notStrictEqual(result.status, 'SEQUENCE_COMPLETED');
   assert.strictEqual(h.calls.filter((call) => call.kind === 'ACTION').length, 1);
   assert.ok(result.finalSceneRef);
+}
+
+{
+  const execDir = fixture();
+  const h = harness(execDir, [{ command: 'REJECTED' }]);
+  const result = runSequence(execDir, request(execDir, [
+    act('fails'), capture('must-not-capture', 'SCREENSHOT_ONLY'), act('must-not-run'),
+  ]), h.options);
+  assert.strictEqual(result.status, 'SEQUENCE_PARTIAL');
+  assert.deepStrictEqual(result.steps.map((step) => step.stepId), ['fails']);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'CAPTURE').length, 0);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'OBSERVE').length, 1);
+  assert.strictEqual(result.steps[0].postSceneRef, result.finalSceneRef);
+  assertSequenceIntegrity(execDir, readSequences(execDir)[0]);
 }
 
 console.log('sequence-service.test.js: all assertions passed');

@@ -255,7 +255,7 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
       } : {})
       : observationAdapterArgs(binding, execDir, validated.operationId);
     const runner = options.runner || defaultRunner;
-    const preAdapterDelayMs = kind === 'OBSERVE' && validated.request?.purpose === 'POST_ACTION'
+    const preAdapterDelayMs = kind === 'OBSERVE'
       ? Math.max(0, Number(options.preAdapterDelayMs) || 0) : 0;
     const timeoutMs = requirePositiveOperationTimeout(boundedOperationTimeoutMs(execution, options), options);
     const env = binding.platform === 'android'

@@ -76,6 +76,17 @@ function incomplete(message) {
   return contractError('SEQUENCE_RECORD_INCOMPLETE', message);
 }
 
+function redactedSequenceRequest(request) {
+  return {
+    ...request,
+    steps: request.steps.map((step) => (
+      step.type === 'act' && step.input?.text !== undefined
+        ? { ...step, input: { ...step.input, text: '[REDACTED]' } }
+        : step
+    )),
+  };
+}
+
 function assertSequenceIntegrity(execDir, record) {
   if (!record || record.schemaVersion !== 1) throw incomplete('sequence record schema is invalid');
   validSequenceId(record.sequenceId);
@@ -90,8 +101,15 @@ function assertSequenceIntegrity(execDir, record) {
     throw incomplete(`sequence record integrity is invalid: ${record.sequenceId}`);
   }
   if (record.request) {
-    const expectedKey = sequenceRequestKey({ operation: 'runSequence', ...record.request });
-    if (record.requestKey !== expectedKey) throw incomplete('sequence record request key does not match its stable request');
+    const containsRedactedInput = record.request.steps.some((step) => step.type === 'act'
+      && step.input?.text === '[REDACTED]');
+    const containsRawInput = record.request.steps.some((step) => step.type === 'act'
+      && step.input?.text !== undefined && step.input.text !== '[REDACTED]');
+    if (containsRawInput) throw incomplete('sequence request contains raw input text');
+    if (!containsRedactedInput) {
+      const expectedKey = sequenceRequestKey({ operation: 'runSequence', ...record.request });
+      if (record.requestKey !== expectedKey) throw incomplete('sequence record request key does not match its stable request');
+    }
   }
   const events = store.events(execDir);
   if (record.terminal === true && (record.steps || []).length) {
@@ -150,8 +168,17 @@ function assertSequenceIntegrity(execDir, record) {
             || completed.sceneIdAfter !== step.postSceneRef) {
             throw incomplete(`sequence post Scene is invalid: ${step.stepId}`);
           }
-        } else if (completed.sceneIdAfter !== null || !completed.captureFailureTechnicalFactRef) {
-          throw incomplete(`sequence action without post Scene lacks capture-failure closure: ${step.stepId}`);
+        } else {
+          const captureFailureFact = events.find((event) => event.type === 'technicalIssue'
+            && event.technicalFactRef === completed.captureFailureTechnicalFactRef
+            && event.code === 'POST_ACTION_CAPTURE_FAILED'
+            && event.operationId === step.operationId
+            && event.sequenceId === record.sequenceId
+            && event.stepId === step.stepId);
+          if (completed.sceneIdAfter !== null || !captureFailureFact
+            || !(record.technicalFacts || []).includes(captureFailureFact.technicalFactRef)) {
+            throw incomplete(`sequence action without post Scene lacks capture-failure closure: ${step.stepId}`);
+          }
         }
       }
       if (step.postSceneRef) expectedSceneRef = step.postSceneRef;
@@ -464,16 +491,17 @@ function actionStepRecord(step, stepIndex, operationId, beforeScene, afterScene,
   };
 }
 
-function captureStepRecord(step, stepIndex, beforeScene, afterScene) {
+function captureStepRecord(step, stepIndex, beforeScene, afterScene, status = 'COMPLETED', error = null) {
   return {
     stepId: step.id,
     stepIndex,
     type: 'capture',
-    status: 'COMPLETED',
+    status,
     mode: step.mode,
     purpose: step.purpose,
     preSceneRef: beforeScene.sceneId,
-    postSceneRef: afterScene.sceneId,
+    postSceneRef: afterScene?.sceneId || null,
+    ...(error ? { error } : {}),
   };
 }
 
@@ -521,7 +549,7 @@ function runSequence(execDir, request, options = {}) {
     sequenceId,
     executionId: execution.executionId,
     requestKey: sequenceRequestKey(request),
-    request: normalized,
+    request: redactedSequenceRequest(normalized),
     basedOnSceneRef: beforeScene.sceneId,
     purpose: normalized.purpose,
     flowContext: normalized.flowContext || null,
@@ -596,28 +624,39 @@ function runSequence(execDir, request, options = {}) {
         break;
       }
       const origins = ['AGENT_REQUESTED', ...(terminalCapture && step.mode === 'FULL_SCENE' ? ['SEQUENCE_FINAL'] : [])];
-      const postScene = step.mode === 'FULL_SCENE'
-        ? (() => {
-          if (terminalCapture) finalCaptureAttempted = true;
-          return fullScene(execDir, options, {
-          purpose: step.purpose,
-          captureOrigins: origins,
-          sequenceId,
-          stepId: step.id,
-          previousScene: workingScene,
-          promote: terminalCapture,
-          timeoutMs,
+      let postScene;
+      try {
+        postScene = step.mode === 'FULL_SCENE'
+          ? (() => {
+            if (terminalCapture) finalCaptureAttempted = true;
+            return fullScene(execDir, options, {
+            purpose: step.purpose,
+            captureOrigins: origins,
+            sequenceId,
+            stepId: step.id,
+            previousScene: workingScene,
+            promote: terminalCapture,
+            timeoutMs,
+            });
+          })()
+          : screenshotScene(execDir, execution, options, {
+            purpose: step.purpose,
+            captureOrigins: origins,
+            sequenceId,
+            stepId: step.id,
+            previousScene: workingScene,
+            promote: false,
+            timeoutMs,
           });
-        })()
-        : screenshotScene(execDir, execution, options, {
-          purpose: step.purpose,
-          captureOrigins: origins,
-          sequenceId,
-          stepId: step.id,
-          previousScene: workingScene,
-          promote: false,
-          timeoutMs,
-        });
+      } catch (error) {
+        failure = { code: error.code || 'SEQUENCE_CAPTURE_FAILED', message: 'Sequence capture step failed' };
+        stepRecords.push(captureStepRecord(step, stepIndex, workingScene, null, 'FAILED', failure));
+        if (terminalCapture && step.mode === 'FULL_SCENE') {
+          recordSequenceFinalCaptureFailure(execDir, record, error, options);
+        }
+        persistProgress();
+        break;
+      }
       stepRecords.push(captureStepRecord(step, stepIndex, workingScene, postScene));
       uniquePush(sceneRefs, postScene.sceneId);
       uniquePush(screenshotRefs, postScene.screenshot.ref);
@@ -706,9 +745,9 @@ function runSequence(execDir, request, options = {}) {
 
     if (dispatched.status !== 'ACTION_DISPATCHED') throw incomplete(`prevalidated action did not dispatch: ${step.id}`);
     const outcome = classifyActionOutcome(dispatched.adapterResult);
-    const adjacentCapture = normalized.steps[stepIndex + 1]?.type === 'capture'
-      ? normalized.steps[stepIndex + 1] : null;
     const actionMustTerminate = outcome !== 'COMPLETED';
+    const adjacentCapture = !actionMustTerminate && normalized.steps[stepIndex + 1]?.type === 'capture'
+      ? normalized.steps[stepIndex + 1] : null;
     const captureStepIndex = adjacentCapture ? stepIndex + 1 : null;
     const captureIsTerminal = captureStepIndex === normalized.steps.length - 1;
     let postScene;

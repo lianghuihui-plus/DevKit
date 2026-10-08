@@ -38,9 +38,10 @@ function fixture(name) {
   return { execDir, execution, binding };
 }
 
-function runner(binding, expectedTimeoutMs) {
+function runner(binding, expectedTimeoutMs, expectedPreAdapterDelayMs = 0) {
   return (_command, args, options) => {
     assert.strictEqual(options.timeoutMs, expectedTimeoutMs);
+    assert.strictEqual(options.preAdapterDelayMs, expectedPreAdapterDelayMs);
     if (options.kind === 'ACTION') {
       return {
         status: 0,
@@ -98,6 +99,20 @@ for (const [name, now, expectedTimeoutMs] of [
     operationId: `observation-${name}`,
     request: { purpose: 'CURRENT_SCENE' },
   }, 'OBSERVE', options);
+}
+
+{
+  const { execDir, execution, binding } = fixture('sequence-final-settle');
+  invokeDeviceOperation(execDir, {
+    context: { execution },
+    operationId: 'observation-sequence-final-settle',
+    request: { purpose: 'SEQUENCE_FINAL' },
+  }, 'OBSERVE', {
+    now: '2026-09-24T10:00:01.000Z',
+    timeoutMs: 1200,
+    preAdapterDelayMs: 500,
+    runner: runner(binding, 1200, 500),
+  });
 }
 
 const noBudget = fixture('no-budget');
