@@ -291,7 +291,7 @@ function invokeDeviceOperation(execDir, validated, kind, options = {}) {
         throw contractError('DURING_ACTION_OBSERVATION_MISSING', 'adapter did not return the requested during-action screenshot');
       }
       duringActionEvidence = validateObservationArtifacts(execDir, {
-        artifacts: { screenshot: capture.artifacts.screenshot, layout: null, logs: [] },
+        artifacts: { screenshot: capture.artifacts.screenshot, layout: null },
         app: adapterResult.app,
       });
     }

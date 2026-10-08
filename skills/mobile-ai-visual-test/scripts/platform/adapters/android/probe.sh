@@ -48,7 +48,6 @@ run_probe_optional() {
 screenshot="false"
 layout="false"
 foreground_app="false"
-logs="false"
 screen=""
 dependencies_json="[]"
 helper_status_json="$(node -e 'console.log(JSON.stringify({requested:process.argv[1],installed:false,enabled:false,compatible:false,versionCode:0,protocolVersion:null}))' "$android_ui_backend")"
@@ -59,7 +58,6 @@ if [[ -n "$adb_path" && -n "$device" ]]; then
   if run_probe_optional 5 "$atoms_dir/foreground.sh" --device "$device" --out "$tmp_dir/window.txt"; then
     foreground_app="true"
   fi
-  run_probe_optional 5 "$atoms_dir/logs.sh" --device "$device" --out-dir "$tmp_dir/logs" --label probe && logs="true" || true
   screen="$("${adb_prefix[@]}" shell wm size 2>/dev/null | sed -n 's/.*Physical size: //p' | head -1 | tr -d '\r' || true)"
   dependencies_json="$("$atoms_dir/mavt-ime.sh" --device "$device" --status 2>/dev/null | node -e '
 let input = "";
@@ -84,11 +82,10 @@ const targets = (process.argv[3] || "").split(/\r?\n/).filter(Boolean);
 const screenshot = process.argv[4] === "true";
 const layout = process.argv[5] === "true";
 const foregroundApp = process.argv[6] === "true";
-const logs = process.argv[7] === "true";
-const screen = process.argv[8] || null;
-const dependencies = JSON.parse(process.argv[9] || "[]");
-const androidUiBackend = process.argv[10];
-const androidHelper = JSON.parse(process.argv[11]);
+const screen = process.argv[7] || null;
+const dependencies = JSON.parse(process.argv[8] || "[]");
+const androidUiBackend = process.argv[9];
+const androidHelper = JSON.parse(process.argv[10]);
 const hasTarget = adb && !!device;
 const actions = [];
 if (hasTarget) actions.push("launchApp", "restartApp", "tap", "doubleTap", "toggle", "longPress", "inputText", "swipe", "back", "home", "wait");
@@ -108,10 +105,7 @@ if (hasTarget && !layout) {
   diag("androidLayoutSampleUnavailable", "WARN", "当前页面未取得 Android 控件树样本，执行时将自动使用截图继续", "无需阻塞环境确认；如静态页面也持续缺失控件树，再检查 uiautomator dump 能力", "adb shell uiautomator dump");
 }
 if (hasTarget && !foregroundApp) {
-  diag("androidForegroundUnavailable", "ERROR", "Android 前台应用识别不可用", "确认 dumpsys window/activity 可执行，并保持设备处于可调试状态", "adb shell dumpsys window");
-}
-if (hasTarget && !logs) {
-  diag("androidLogsUnavailable", "WARN", "Android 日志能力不可用", "确认 adb logcat 可执行；日志缺失不阻塞核心视觉测试", "adb logcat -d");
+  diag("androidForegroundUnavailable", "ERROR", "Android 前台应用识别不可用", "确认 dumpsys window 可执行，并保持设备处于可调试状态", "adb shell dumpsys window");
 }
 if (hasTarget && androidUiBackend === "helper" && !androidHelper.compatible) {
   diag("androidHelperIncompatible", "ERROR", "Android Accessibility Helper 需要 Android 11 或更高版本", "改用 Android 11+ 设备，或将 androidUiBackend 设为 uiautomator", "adb shell getprop ro.build.version.sdk");
@@ -132,7 +126,6 @@ console.log(JSON.stringify({
     screenshot,
     layout,
     foregroundApp,
-    logs,
     launchApp: hasTarget,
     actions,
     preparationStrategies: hasTarget ? ["CLEAR_APP_DATA", "REINSTALL_APP"] : [],
@@ -145,4 +138,4 @@ console.log(JSON.stringify({
     implemented: true
   }
 }, null, 2));
-' "$adb_path" "$device" "$targets" "$screenshot" "$layout" "$foreground_app" "$logs" "$screen" "$dependencies_json" "$android_ui_backend" "$helper_status_json"
+' "$adb_path" "$device" "$targets" "$screenshot" "$layout" "$foreground_app" "$screen" "$dependencies_json" "$android_ui_backend" "$helper_status_json"

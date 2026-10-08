@@ -171,7 +171,6 @@ async function runProbe(argv) {
 
   const hasTarget = !!selection.selected && !selection.typeMismatch;
   const implemented = xcode && simctl && appiumCli && xcuitestDriver && hasTarget;
-  const logsImplemented = implemented && target.deviceType === 'simulator';
   const diagnostics = [];
   const addDiagnostic = (id, level, message, howToFix, check) => {
     diagnostics.push({ id, level, message, howToFix, check });
@@ -200,9 +199,6 @@ async function runProbe(argv) {
   if (target.deviceType === 'realDevice') {
     if (!fakeEnabled() && (!target.xcodeOrgId || !target.xcodeSigningId || !target.updatedWDABundleId)) {
       addDiagnostic('iosRealDeviceSigningIncomplete', 'ERROR', 'iOS 真机 WDA 签名参数不完整', '正式真机执行前请在环境确认 binding 中固定 Team ID、Signing ID 和 WDA bundle id；详见 references/installation.md#ios-真机', 'scripts/environment.js confirm --binding-json <json> ...');
-    }
-    if (!logsImplemented) {
-      addDiagnostic('iosRealDeviceLogsUnavailable', 'WARN', 'iOS 真机日志暂不作为可用能力', '这是当前适配限制，不影响截图、控件树和动作能力', 'scripts/probe-env.sh --platform ios --device <udid> --device-type realDevice');
     }
   }
   if (appiumCli && !appiumServer) {
@@ -243,7 +239,6 @@ async function runProbe(argv) {
       screenshot: implemented,
       layout: implemented,
       foregroundApp: implemented,
-      logs: logsImplemented,
       launchApp: implemented,
       actions: implemented ? ['launchApp', 'restartApp', 'tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard', 'wait'] : [],
       preparationStrategies: implemented ? ['REINSTALL_APP'] : [],
@@ -604,7 +599,6 @@ async function runObserve(argv) {
   ensureDir(path.join(out, 'logs'));
   const screenshotPath = path.join(out, 'screenshots', `${label}.png`);
   const sourcePath = path.join(out, 'layouts', `${label}.xml`);
-  const logPath = path.join(out, 'logs', `${label}-ios-log.txt`);
   const errorPath = path.join(out, 'logs', `${label}-errors.txt`);
   const errors = [];
   let foreground = null;
@@ -621,7 +615,6 @@ async function runObserve(argv) {
     if (process.env.MAVT_TEST_PNG && fs.existsSync(process.env.MAVT_TEST_PNG)) fs.copyFileSync(process.env.MAVT_TEST_PNG, screenshotPath);
     else fs.writeFileSync(screenshotPath, 'fake-ios-png');
     screenshotCompletedAt = new Date().toISOString();
-    fs.writeFileSync(logPath, 'fake ios log\n');
     foreground = { bundleId: target.appId || 'com.example.demo', pid: 1234, name: 'Demo' };
     screen = '393x852';
     keyboardShown = process.env.MAVT_IOS_FAKE_KEYBOARD_SHOWN === '1';
@@ -667,15 +660,9 @@ async function runObserve(argv) {
         screenshotCompletedAt = new Date().toISOString();
       }
     }, { autoLaunch: false });
-    if (target.deviceType === 'simulator' && target.device) {
-      const logs = run('xcrun', ['simctl', 'spawn', target.device, 'log', 'show', '--last', '30s', '--style', 'compact'], { timeout: 15000 });
-      fs.writeFileSync(logPath, logs.ok ? logs.stdout : logs.stderr);
-      if (!logs.ok) errors.push(`[logs] ${logs.stderr}`);
-    }
   }
 
   if (errors.length) fs.writeFileSync(errorPath, `${errors.join('\n')}\n`);
-  const logs = [logPath, errorPath].map((file) => rel(out, file)).filter(Boolean);
   const screenshotRel = rel(out, screenshotPath);
   const layoutRel = rel(out, sourcePath);
   const foregroundApp = foreground?.bundleId || null;
@@ -688,7 +675,6 @@ async function runObserve(argv) {
     artifacts: {
       screenshot: screenshotRel,
       layout: layoutRel,
-      logs,
     },
     device: {
       id: target.device || null,
@@ -705,7 +691,6 @@ async function runObserve(argv) {
       screenshot: !!screenshotRel,
       layout: !!layoutRel,
       foregroundApp: !!foregroundApp,
-      logs: logs.length > 0,
     },
     technicalSignals: {
       ...(keyboardShown !== undefined ? { keyboardShown } : {}),
@@ -721,7 +706,6 @@ async function runObserve(argv) {
     raw: {
       foreground,
       errors,
-      logFiles: logs,
     },
     screenshot: screenshotRel,
     layout: layoutRel,
@@ -857,21 +841,6 @@ async function runAtom(atom, argv) {
       const active = await appium.request(target.appiumServer, 'POST', `/session/${sessionId}/execute/sync`, { script: 'mobile: activeAppInfo', args: [] });
       writeJson(atomResult('foreground', { foreground: active.value || null }));
     }, sessionOptions);
-    return;
-  }
-  if (atom === 'logs') {
-    const outDir = optionValue(rest, '--out-dir');
-    const label = safeLabel(optionValue(rest, '--label', 'observe'));
-    if (!outDir) throw new Error('logs 需要 --out-dir');
-    ensureDir(outDir);
-    const outFile = path.join(outDir, `${label}-ios-log.txt`);
-    if (target.deviceType === 'simulator' && target.device) {
-      const logs = run('xcrun', ['simctl', 'spawn', target.device, 'log', 'show', '--last', '30s', '--style', 'compact'], { timeout: 15000 });
-      fs.writeFileSync(outFile, logs.ok ? logs.stdout : logs.stderr);
-    } else {
-      fs.writeFileSync(outFile, 'iOS real-device logs are not implemented yet.\n');
-    }
-    writeJson(atomResult('logs', { files: [path.resolve(outFile)] }));
     return;
   }
   if (atom === 'launch-app') {

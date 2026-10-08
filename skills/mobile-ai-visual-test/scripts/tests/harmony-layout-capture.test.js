@@ -7,11 +7,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-harmony-layout-'));
 const bin = path.join(temp, 'bin');
 const state = path.join(temp, 'state');
 fs.mkdirSync(bin, { recursive: true });
 fs.mkdirSync(state, { recursive: true });
+const pngFixture = path.join(state, 'fixture.png');
+fs.writeFileSync(pngFixture, PNG);
 
 const emptyTree = JSON.stringify({
   attributes: { bounds: '[0,0][0,0]', type: '' },
@@ -36,6 +39,9 @@ if [[ "\${1:-}" == "-t" ]]; then shift 2; fi
 printf '%s\n' "$*" >> "$MAVT_FAKE_HDC_LOG"
 remote_file="$MAVT_FAKE_HDC_STATE/remote.json"
 if [[ "\${1:-}" == "shell" && "\${2:-}" == "rm" ]]; then rm -f "$remote_file"; exit 0; fi
+if [[ "\${1:-}" == "shell" && "\${2:-}" == "aa" ]]; then exit 0; fi
+if [[ "\${1:-}" == "shell" && "\${2:-}" == "hidumper" ]]; then exit 0; fi
+if [[ "\${1:-}" == "shell" && "\${2:-}" == "uitest" && "\${3:-}" == "screenCap" ]]; then exit 0; fi
 if [[ "\${1:-}" == "shell" && "\${2:-}" == "uitest" && "\${3:-}" == "dumpLayout" ]]; then
   has_bundle=false
   for arg in "$@"; do [[ "$arg" == "-b" ]] && has_bundle=true; done
@@ -47,7 +53,13 @@ if [[ "\${1:-}" == "shell" && "\${2:-}" == "uitest" && "\${3:-}" == "dumpLayout"
   echo 'DumpLayout saved'
   exit 0
 fi
-if [[ "\${1:-}" == "file" && "\${2:-}" == "recv" ]]; then cp "$remote_file" "\${4}"; exit 0; fi
+if [[ "\${1:-}" == "file" && "\${2:-}" == "recv" ]]; then
+  case "\${3:-}" in
+    *.png) cp "$MAVT_PNG_FIXTURE" "\${4}" ;;
+    *) cp "$remote_file" "\${4}" ;;
+  esac
+  exit 0
+fi
 exit 2
 `);
 fs.chmodSync(fakeHdc, 0o755);
@@ -71,6 +83,7 @@ function run(mode) {
       MAVT_FAKE_HDC_STATE: state,
       MAVT_FAKE_HDC_MODE: mode,
       MAVT_FAKE_HDC_LOG: hdcLog,
+      MAVT_PNG_FIXTURE: pngFixture,
       MAVT_EMPTY_TREE: emptyTree,
       MAVT_MERGED_TREE: mergedTree,
       MAVT_APP_TREE: appTree,
@@ -100,6 +113,32 @@ const empty = run('empty');
 assert.strictEqual(empty.result.status, 1);
 assert.strictEqual(fs.existsSync(empty.out), false);
 assert.match(empty.result.stderr, /Harmony dump-tree failed/);
+
+const observeOut = path.join(temp, 'observe');
+const observeLog = path.join(temp, 'observe-hdc.log');
+const observation = childProcess.spawnSync(path.resolve(__dirname, '../platform/adapters/harmony/observe.sh'), [
+  '--device', 'harmony-device', '--app', 'com.example.harmony', '--out', observeOut, '--label', 'no-device-logs',
+], {
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    MAVT_FAKE_HDC_STATE: state,
+    MAVT_FAKE_HDC_MODE: 'merged',
+    MAVT_FAKE_HDC_LOG: observeLog,
+    MAVT_PNG_FIXTURE: pngFixture,
+    MAVT_EMPTY_TREE: emptyTree,
+    MAVT_MERGED_TREE: mergedTree,
+    MAVT_APP_TREE: appTree,
+  },
+});
+assert.strictEqual(observation.status, 0, observation.stderr);
+const observationJson = JSON.parse(observation.stdout);
+const observationCommands = fs.readFileSync(observeLog, 'utf8');
+assert.strictEqual(observationCommands.includes('hilog'), false);
+assert.strictEqual(Object.hasOwn(observationJson.artifacts, 'logs'), false);
+assert.strictEqual(Object.hasOwn(observationJson.capabilities, 'logs'), false);
+assert.strictEqual(Object.hasOwn(observationJson.raw, 'logFiles'), false);
 
 fs.rmSync(temp, { recursive: true, force: true });
 console.log('harmony-layout-capture passed');

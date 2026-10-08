@@ -158,7 +158,7 @@ function observe(execDir, options = {}) {
     scope: 'case',
     observationPurpose: options.purpose || 'CURRENT_SCENE',
     warmSessionGeneration: execution.warmSessionGeneration,
-    artifacts: result.artifacts || { screenshot: invoked.evidence.ref, layout: null, logs: [] },
+    artifacts: result.artifacts || { screenshot: invoked.evidence.ref, layout: null },
     app: result.app || null,
     technicalSignals: result.technicalSignals || null,
     time: options.now || result.time || new Date().toISOString(),

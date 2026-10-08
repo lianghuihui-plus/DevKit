@@ -116,9 +116,14 @@ assert.strictEqual(helper.json.artifacts.screenshot, 'screenshots/observation-he
 assert.strictEqual(helper.json.artifacts.layout, 'layouts/observation-helper.xml');
 assert.strictEqual(helper.json.technicalSignals.androidUiBackend.selected, 'helper');
 assert.strictEqual(helper.json.technicalSignals.layoutCapture.status, 'AVAILABLE');
+assert.strictEqual(helper.json.app.processId, '1234');
 assert.deepStrictEqual(helper.json.technicalSignals.captureTiming.order, ['helperSnapshot']);
 assert.strictEqual((helper.calls.match(/uiautomator dump/g) || []).length, 0);
 assert.strictEqual((helper.calls.match(/exec-out screencap/g) || []).length, 0);
+assert.strictEqual((helper.calls.match(/logcat/g) || []).length, 0);
+assert.strictEqual(Object.hasOwn(helper.json.artifacts, 'logs'), false);
+assert.strictEqual(Object.hasOwn(helper.json.capabilities, 'logs'), false);
+assert.strictEqual(Object.hasOwn(helper.json.raw, 'logFiles'), false);
 
 const parallel = runAdapter(observe, 'helper', 'barrier', 'observation-parallel');
 assert.strictEqual(parallel.result.status, 0, parallel.result.stderr);

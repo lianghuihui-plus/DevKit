@@ -51,9 +51,6 @@ fi
 local_png="$out/screenshots/${label}.png"
 local_xml="$out/layouts/${label}.xml"
 local_window_dump="$out/logs/${label}-window-dump.txt"
-local_activity_dump="$out/logs/${label}-activity-dump.txt"
-local_pidof="$out/logs/${label}-pidof.txt"
-local_logcat="$out/logs/${label}-logcat.txt"
 local_errors="$out/logs/${label}-errors.txt"
 local_dump_tree_json="$out/logs/${label}-dump-tree.json"
 local_dump_layout="$out/logs/${label}-dump-layout.txt"
@@ -67,13 +64,11 @@ selected_backend="uiautomator"
 fallback_code=""
 helper_status=20
 
-log_args=(--out-dir "$out/logs" --label "$label")
+foreground_args=(--out "$local_window_dump")
 if [[ -n "$bundle" ]]; then
-  log_args+=(--app "$bundle")
+  foreground_args+=(--app "$bundle")
 fi
-"$atoms_dir/logs.sh" "${device_args[@]}" "${log_args[@]}" >"$out/logs/${label}-logs.json" 2>>"$local_errors" &
-logs_pid=$!
-"$atoms_dir/foreground.sh" "${device_args[@]}" --out "$local_window_dump" >"$out/logs/${label}-foreground.json" 2>>"$local_errors" &
+"$atoms_dir/foreground.sh" "${device_args[@]}" "${foreground_args[@]}" >"$out/logs/${label}-foreground.json" 2>>"$local_errors" &
 foreground_pid=$!
 
 helper_pid=""
@@ -84,7 +79,6 @@ if [[ "$android_ui_backend" != "uiautomator" && -n "${MAVT_ANDROID_HELPER_SESSIO
     >"$local_helper_meta" 2>"$local_helper_error" &
   helper_pid=$!
 elif [[ "$android_ui_backend" == "helper" ]]; then
-  wait "$logs_pid" || true
   wait "$foreground_pid" || true
   rm -f "$local_png" "$local_xml"
   echo "ANDROID_HELPER_SESSION_MISSING: strict Helper session is unavailable" >&2
@@ -97,7 +91,6 @@ if [[ -n "$helper_pid" ]]; then
   helper_status=$?
   set -e
 fi
-wait "$logs_pid" || true
 wait "$foreground_pid" || true
 
 if [[ "$helper_status" -eq 0 ]]; then
@@ -132,9 +125,9 @@ node -e '
 const path = require("path");
 const fs = require("fs");
 const out = process.argv[1], label = process.argv[2], png = process.argv[3], xml = process.argv[4], device = process.argv[5], app = process.argv[6];
-const windowDump = process.argv[7], activityDump = process.argv[8], pidofFile = process.argv[9], logcat = process.argv[10], errorsFile = process.argv[11], foregroundJson = process.argv[12], dumpTreeJson = process.argv[13];
-const captureStartedAt = process.argv[14], layoutCompletedAt = process.argv[15], screenshotCompletedAt = process.argv[16];
-const requestedBackend = process.argv[17], selectedBackend = process.argv[18], fallbackCode = process.argv[19] || null, helperMetaFile = process.argv[20];
+const windowDump = process.argv[7], errorsFile = process.argv[8], foregroundJson = process.argv[9], dumpTreeJson = process.argv[10];
+const captureStartedAt = process.argv[11], layoutCompletedAt = process.argv[12], screenshotCompletedAt = process.argv[13];
+const requestedBackend = process.argv[14], selectedBackend = process.argv[15], fallbackCode = process.argv[16] || null, helperMetaFile = process.argv[17];
 function localIso(date = new Date()) {
   const offset = -date.getTimezoneOffset();
   const sign = offset >= 0 ? "+" : "-";
@@ -147,10 +140,6 @@ function rel(file) {
 }
 function read(file) {
   return file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-}
-function hasUsableContent(file) {
-  const text = read(file).trim();
-  return !!text && !/command failed or timed out/.test(text);
 }
 function readJson(file) {
   try { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null; } catch { return null; }
@@ -177,9 +166,7 @@ function normalizeActivity(packageName, activity) {
 }
 const foregroundEvent = readJson(foregroundJson);
 const windowText = read(windowDump);
-const activityText = read(activityDump);
-const foreground = foregroundEvent?.foreground || parseComponent(windowText) || parseComponent(activityText);
-const logs = [windowDump, activityDump, pidofFile, logcat, errorsFile].map(rel).filter(Boolean);
+const foreground = foregroundEvent?.foreground || parseComponent(windowText);
 const screenshotRel = rel(png);
 const layoutRel = rel(xml);
 const errors = read(errorsFile).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -200,8 +187,7 @@ console.log(JSON.stringify({
   label,
   artifacts: {
     screenshot: screenshotRel,
-    layout: layoutRel,
-    logs
+    layout: layoutRel
   },
   device: {
     id: device || null,
@@ -212,13 +198,12 @@ console.log(JSON.stringify({
     foregroundApp: foreground?.packageName || null,
     entry: foreground?.activityName || null,
     inTargetApp: app && foreground?.packageName ? foreground.packageName === app : null,
-    processId: hasUsableContent(pidofFile) ? read(pidofFile).trim().split(/\s+/)[0] : null
+    processId: foregroundEvent?.processId || null
   },
   capabilities: {
     screenshot: !!screenshotRel,
     layout: !!layoutRel,
-    foregroundApp: !!foreground,
-    logs: logs.length > 0
+    foregroundApp: !!foreground
   },
   technicalSignals: {
     androidUiBackend: {
@@ -242,10 +227,9 @@ console.log(JSON.stringify({
   raw: {
     foregroundLine: foreground?.line || null,
     foreground,
-    errors,
-    logFiles: logs
+    errors
   },
   screenshot: screenshotRel,
   layout: layoutRel
 }, null, 2));
-' "$out" "$label" "$local_png" "$local_xml" "$device" "$bundle" "$local_window_dump" "$local_activity_dump" "$local_pidof" "$local_logcat" "$local_errors" "$out/logs/${label}-foreground.json" "$local_dump_tree_json" "$capture_started_at" "$layout_completed_at" "$screenshot_completed_at" "$android_ui_backend" "$selected_backend" "$fallback_code" "$local_helper_meta"
+' "$out" "$label" "$local_png" "$local_xml" "$device" "$bundle" "$local_window_dump" "$local_errors" "$out/logs/${label}-foreground.json" "$local_dump_tree_json" "$capture_started_at" "$layout_completed_at" "$screenshot_completed_at" "$android_ui_backend" "$selected_backend" "$fallback_code" "$local_helper_meta"
