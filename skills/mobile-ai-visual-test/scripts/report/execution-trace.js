@@ -82,6 +82,7 @@ function sceneEntry(report, event, index) {
     expectedOutcome: null,
     summary: screenshot ? '已取得当前页面现场' : '当前现场缺少截图',
     observationPurpose: event.purpose || 'CURRENT_SCENE',
+    captureOrigins: event.captureOrigins || scene?.captureOrigins || [],
     relatedOperationId: event.relatedOperationId || null,
     captureMode: event.captureMode || scene?.captureMode || 'FULL_SCENE',
     promoted: event.promoted !== false,
@@ -322,6 +323,7 @@ function buildExecutionTrace(report) {
   const screenshots = observations.filter((entry) => entry.artifacts?.screenshot).map((entry, index) => ({
     id: `screenshot-${index + 1}`, index, ref: entry.artifacts.screenshot, operationId: entry.operationId,
     time: entry.time, phase: entry.phase, purpose: entry.observationPurpose, title: entry.title,
+    captureOrigins: entry.captureOrigins,
     captureMode: entry.captureMode, promoted: entry.promoted, sequenceId: entry.sequenceId, stepId: entry.stepId,
   }));
   const screenshotByRef = new Map(screenshots.map((shot) => [shot.ref, shot]));

@@ -173,7 +173,7 @@ function executeRun(execDir, request, options = {}) {
     }
     return projectAgentFacingError({
       status: 'FAILED',
-      code: 'CASE_RUNTIME_TECHNICAL',
+      code: error.code === 'SEQUENCE_RECORD_INCOMPLETE' ? error.code : 'CASE_RUNTIME_TECHNICAL',
       message: error.message || String(error),
       retryable: false,
     }, request);

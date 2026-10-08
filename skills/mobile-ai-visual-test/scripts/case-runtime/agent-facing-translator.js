@@ -406,7 +406,8 @@ function projectResponseResult(response, request, provided = {}) {
     operationId: action?.operationRef ?? response.operationId,
     sequenceId: response.sequenceId,
     sequenceResultRef: provided.result?.sequenceResultRef,
-    sceneRef: provided.result?.sceneRef || response.finalSceneRef || response.sceneRef,
+    sceneRef: provided.result?.sceneRef ?? response.finalSceneRef ?? response.sceneRef
+      ?? (Object.hasOwn(response, 'finalSceneRef') ? null : undefined),
     deliveryStatus: action?.deliveryStatus ?? (response.outcomeKnown === false ? 'UNKNOWN' : undefined),
     commandDeliveryKnown: action?.commandDeliveryKnown ?? response.outcomeKnown,
     candidateCount: response.candidateCount ?? response.candidates?.length,

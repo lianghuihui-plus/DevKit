@@ -13,6 +13,7 @@ const resources = require('../case-runtime/agent-resource-store');
 const { run } = require('../case-runtime/agent-facing-client');
 const { AGENT_OPERATIONS } = require('../case-runtime/runtime-broker');
 const { execute } = require('../case-runtime/runtime-core');
+const { runSequence } = require('../case-runtime/sequence-service');
 
 process.env.MAVT_SELF_TEST = '1';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-public-sequence-'));
@@ -129,7 +130,31 @@ const captureFailed = run(fixture.execDir, { operation: 'runSequence', input: {
 } });
 assert.strictEqual(captureFailed.status, 'FAILED', JSON.stringify(captureFailed));
 assert.ok(captureFailed.result.sequenceResultRef);
-assert.strictEqual(captureFailed.result.sceneRef, undefined);
+assert.strictEqual(captureFailed.result.sceneRef, null);
 assert.ok(captureFailed.resources.some((item) => item.type === 'technicalFact'));
 assert.ok(captureFailed.resources.some((item) => item.type === 'sequenceResult'));
+
+{
+  const recoveryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-public-sequence-incomplete-'));
+  createTestWorkspace(recoveryRoot);
+  const incompleteFixture = createCurrentFixture(recoveryRoot, { suffix: 'incomplete-sequence' });
+  const incompleteExecutionPath = path.join(incompleteFixture.execDir, 'execution.json');
+  const incompleteExecution = JSON.parse(fs.readFileSync(incompleteExecutionPath, 'utf8'));
+  fs.writeFileSync(incompleteExecutionPath, `${JSON.stringify({
+    ...incompleteExecution, endedAt: null, status: 'RUNNING', lifecycle: 'RUNNING', finalized: false,
+  }, null, 2)}\n`);
+  store.writeScene(incompleteFixture.execDir, JSON.parse(fs.readFileSync(
+    path.join(incompleteFixture.execDir, 'scenes', 'scene-0002.json'), 'utf8')));
+  const incompleteSceneRef = resources.publishScene(incompleteFixture.execDir, 'scene-0002').data.ref;
+  const incompleteRequest = { operation: 'runSequence', input: {
+    sceneRef: incompleteSceneRef, purpose: 'retry interrupted work',
+    steps: [{ id: 'wait', type: 'wait', ms: 0 }],
+  } };
+  const internal = translateAgentFacingRequest(incompleteFixture.execDir, incompleteRequest);
+  assert.throws(() => runSequence(incompleteFixture.execDir, internal, {
+    remainingMs: 30000, clock: () => 0, interruptAfter: 'sequence-created',
+  }));
+  const retry = run(incompleteFixture.execDir, incompleteRequest, options);
+  assert.strictEqual(retry.error.code, 'SEQUENCE_RECORD_INCOMPLETE', JSON.stringify(retry));
+}
 console.log('agent-facing sequence passed');

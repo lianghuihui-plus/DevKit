@@ -125,7 +125,10 @@ function assertSequenceIntegrity(execDir, record) {
         && coalescedCaptureScene.relatedOperationId === previousStep.operationId
         && (coalescedCaptureScene.captureOrigins || []).includes('AGENT_REQUESTED')
         && (coalescedCaptureScene.captureOrigins || []).includes('ACTION_POST');
-      if (step.preSceneRef !== expectedSceneRef && !isValidCoalescedCapture) {
+      const failedAdjacentCapture = step.type === 'capture' && step.status === 'FAILED'
+        && previousStep?.type === 'act' && step.preSceneRef === previousStep.preSceneRef
+        && step.postSceneRef === null;
+      if (step.preSceneRef !== expectedSceneRef && !isValidCoalescedCapture && !failedAdjacentCapture) {
         throw incomplete(`sequence step chain is invalid: ${step.stepId}`);
       }
       if (step.type === 'act') {
@@ -568,6 +571,7 @@ function runSequence(execDir, request, options = {}) {
     technicalFacts: [],
     failure: null,
   });
+  interruptAt(options, 'sequence-record-persisted');
   store.appendEvent(execDir, 'sequenceRequested', {
     sequenceId,
     requestKey: record.requestKey,
@@ -692,9 +696,9 @@ function runSequence(execDir, request, options = {}) {
       const finalTimeoutMs = deadline - clock();
       let postScene = null;
       try {
-        if (finalTimeoutMs > 0) {
-          finalCaptureAttempted = true;
-          postScene = fullScene(execDir, options, {
+        finalCaptureAttempted = true;
+        if (finalTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', 'sequence deadline reached before unknown action final capture');
+        postScene = fullScene(execDir, options, {
             purpose: 'SEQUENCE_FINAL',
             captureOrigins: ['ACTION_POST', 'SEQUENCE_FINAL'],
             relatedOperationId: operationId,
@@ -710,8 +714,7 @@ function runSequence(execDir, request, options = {}) {
             previousScene: workingScene,
             promote: true,
             timeoutMs: finalTimeoutMs,
-          });
-        }
+        });
       } catch (captureError) {
         const fact = recordCaptureFailureTechnicalFact(
           execDir, operationId, {
@@ -752,6 +755,7 @@ function runSequence(execDir, request, options = {}) {
     const captureIsTerminal = captureStepIndex === normalized.steps.length - 1;
     let postScene;
     let automaticCaptureFailed = false;
+    let explicitCaptureFailed = false;
 
     try {
       if (adjacentCapture) {
@@ -820,6 +824,29 @@ function runSequence(execDir, request, options = {}) {
         });
       }
     } catch (captureError) {
+      if (adjacentCapture && !finalCaptureAttempted) {
+        explicitCaptureFailed = true;
+        try {
+          const finalTimeoutMs = deadline - clock();
+          if (finalTimeoutMs <= 0) throw contractError('SEQUENCE_TIMEOUT', 'sequence deadline reached before final Scene capture');
+          finalCaptureAttempted = true;
+          postScene = fullScene(execDir, options, {
+            purpose: 'SEQUENCE_FINAL',
+            captureOrigins: ['ACTION_POST', 'SEQUENCE_FINAL'],
+            relatedOperationId: operationId,
+            sequenceId,
+            stepId: step.id,
+            previousAction: dispatchedPreviousAction(dispatched),
+            previousScene: workingScene,
+            promote: true,
+            timeoutMs: finalTimeoutMs,
+          });
+          finalScene = postScene;
+          failure = { code: captureError.code || 'SEQUENCE_CAPTURE_FAILED', message: 'Sequence explicit capture failed' };
+        } catch (finalError) {
+          recordSequenceFinalCaptureFailure(execDir, record, finalError, options);
+        }
+      }
       const wasIntermediateAutomaticCapture = !actionMustTerminate
         && !adjacentCapture && stepIndex !== normalized.steps.length - 1;
       if (wasIntermediateAutomaticCapture) {
@@ -860,6 +887,9 @@ function runSequence(execDir, request, options = {}) {
         }, { ...options, promoteScene: false, captureFailureTechnicalFactRef: fact.technicalFactRef });
         failure = { code: captureError.code || 'POST_ACTION_CAPTURE_FAILED', message: 'post-action capture failed' };
         stepRecords.push(actionStepRecord(step, stepIndex, operationId, workingScene, null, action, 'FAILED', failure));
+        if (adjacentCapture) {
+          stepRecords.push(captureStepRecord(adjacentCapture, captureStepIndex, workingScene, null, 'FAILED', failure));
+        }
         persistProgress();
         break;
       }
@@ -883,7 +913,9 @@ function runSequence(execDir, request, options = {}) {
     workingScene = postScene;
 
     if (adjacentCapture) {
-      stepRecords.push(captureStepRecord(adjacentCapture, captureStepIndex, actionBeforeScene, postScene));
+      stepRecords.push(captureStepRecord(adjacentCapture, captureStepIndex, actionBeforeScene,
+        explicitCaptureFailed ? null : postScene, explicitCaptureFailed ? 'FAILED' : 'COMPLETED',
+        explicitCaptureFailed ? failure : null));
       stepIndex += 1;
     }
     if (outcome !== 'COMPLETED') {
@@ -891,7 +923,7 @@ function runSequence(execDir, request, options = {}) {
       persistProgress();
       break;
     }
-    if (automaticCaptureFailed) {
+    if (automaticCaptureFailed || explicitCaptureFailed) {
       persistProgress();
       break;
     }
@@ -937,6 +969,7 @@ function runSequence(execDir, request, options = {}) {
     technicalFacts: sequenceTechnicalFactRefs(execDir, sequenceId),
     failure,
   });
+  interruptAt(options, 'sequence-terminal-record-persisted');
   store.appendEvent(execDir, 'sequenceCompleted', {
     sequenceId,
     status: record.status,
@@ -1028,9 +1061,54 @@ function terminalizeRecoveredSequence(execDir, record, update, options) {
   return finalRecord;
 }
 
+function repairSequenceBoundaryEvents(execDir, record, options) {
+  assertSequenceIntegrity(execDir, record);
+  const events = store.events(execDir);
+  const requested = events.filter((event) => event.type === 'sequenceRequested'
+    && event.sequenceId === record.sequenceId);
+  const terminal = events.filter((event) => ['sequenceCompleted', 'sequenceInterrupted'].includes(event.type)
+    && event.sequenceId === record.sequenceId);
+  if (requested.length > 1 || requested[0] && (requested[0].requestKey !== record.requestKey
+    || requested[0].sequenceRecordRef !== record.sequenceRecordRef)
+    || terminal.length > 1 || terminal[0] && (record.terminal !== true
+      || terminal[0].status !== record.status
+      || terminal[0].recordSha256 !== record.integrity.recordSha256
+      || terminal[0].sequenceRecordRef !== record.sequenceRecordRef)) {
+    throw incomplete(`sequence boundary events are invalid: ${record.sequenceId}`);
+  }
+  if (!requested.length) {
+    store.appendEvent(execDir, 'sequenceRequested', {
+      sequenceId: record.sequenceId,
+      requestKey: record.requestKey,
+      basedOnSceneRef: record.basedOnSceneRef,
+      sequenceRecordRef: record.sequenceRecordRef,
+      decisionId: record.decisionId || null,
+    }, options);
+  }
+  if (record.terminal !== true || terminal.length) return false;
+  store.appendEvent(execDir, record.status === 'SEQUENCE_INTERRUPTED' ? 'sequenceInterrupted' : 'sequenceCompleted', {
+    sequenceId: record.sequenceId,
+    status: record.status,
+    outcomeKnown: record.outcomeKnown,
+    finalSceneRef: record.finalSceneRef,
+    sequenceRecordRef: record.sequenceRecordRef,
+    recordSha256: record.integrity.recordSha256,
+    decisionId: record.decisionId || null,
+  }, options);
+  return true;
+}
+
 function recoverInterruptedSequences(execDir, options = {}) {
   const recovered = [];
-  for (const storedRecord of readSequences(execDir).filter((record) => record.terminal !== true)) {
+  for (const storedRecord of readSequences(execDir)) {
+    const repairedTerminal = repairSequenceBoundaryEvents(execDir, storedRecord, options);
+    if (storedRecord.terminal === true) {
+      if (repairedTerminal) recovered.push({
+        kind: 'sequence', sequenceId: storedRecord.sequenceId,
+        status: storedRecord.status, response: responseFromSequenceRecord(storedRecord),
+      });
+      continue;
+    }
     let record = assertSequenceIntegrity(execDir, storedRecord);
     const drafts = sequenceDrafts(execDir, record.sequenceId);
     if (drafts.length > 1) throw incomplete(`sequence has multiple pending action transactions: ${record.sequenceId}`);

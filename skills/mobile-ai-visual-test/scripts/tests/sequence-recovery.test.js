@@ -10,6 +10,7 @@ const {
   recoverInterruptedSequences,
   runSequence,
 } = require('../case-runtime/sequence-service');
+const { validateSequenceEvidenceGraph } = require('../case-runtime/result-integrity');
 const store = require('../case-runtime/store');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
@@ -99,6 +100,7 @@ function sequenceDrafts(execDir) {
 }
 
 for (const scenario of [
+  { name: 'record-before-request-event', interruptAfter: 'sequence-record-persisted', expectedRecoveryCaptures: 1 },
   { name: 'record-created', interruptAfter: 'sequence-created', expectedRecoveryCaptures: 1 },
   { name: 'prepared', interruptAfter: 'action-prepared', expectedRecoveryCaptures: 1 },
   { name: 'dispatched', interruptAfter: 'action-dispatched', expectedRecoveryCaptures: 1 },
@@ -106,6 +108,7 @@ for (const scenario of [
   { name: 'post-scene', interruptAfter: 'post-scene-persisted', expectedRecoveryCaptures: 0 },
   { name: 'observed', interruptAfter: 'observe', expectedRecoveryCaptures: 0 },
   { name: 'final-scene', interruptAfter: 'sequence-final-scene-persisted', expectedRecoveryCaptures: 0 },
+  { name: 'terminal-record-before-event', interruptAfter: 'sequence-terminal-record-persisted', expectedRecoveryCaptures: 0 },
 ]) {
   const execDir = fixture(scenario.name);
   const h = harness(execDir, scenario.interruptAfter);
@@ -129,6 +132,7 @@ for (const scenario of [
   assert.strictEqual(records[0].terminal, true, scenario.name);
   assert.ok(records[0].integrity?.recordSha256, scenario.name);
   assertSequenceIntegrity(execDir, records[0]);
+  assert.deepStrictEqual(validateSequenceEvidenceGraph(execDir).sequenceIds, [records[0].sequenceId]);
   const actionCompleted = store.events(execDir).filter((event) => (
     event.type === 'actionCompleted' && event.sequenceId === records[0].sequenceId
   ));
@@ -144,6 +148,28 @@ for (const scenario of [
   assert.deepStrictEqual(recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined }), [], scenario.name);
   assert.strictEqual(h.calls.length, callsAfterFirstRecovery, scenario.name);
   assert.strictEqual(readSequences(execDir)[0].integrity.recordSha256, signature, scenario.name);
+}
+
+{
+  const execDir = fixture('terminal-event-repair');
+  const h = harness(execDir, 'sequence-terminal-record-persisted');
+  const originalRequest = sequenceRequest(execDir);
+  assert.throws(() => runSequence(execDir, originalRequest, h.options));
+  const original = readSequences(execDir)[0];
+  assert.strictEqual(original.terminal, true);
+  const calls = h.calls.length;
+  const recovered = recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined });
+  assert.strictEqual(recovered.length, 1);
+  assert.strictEqual(h.calls.length, calls);
+  assert.strictEqual(readSequences(execDir)[0].integrity.recordSha256, original.integrity.recordSha256);
+  assert.deepStrictEqual(validateSequenceEvidenceGraph(execDir).sequenceIds, [original.sequenceId]);
+  const replay = runSequence(execDir, originalRequest, { ...h.options, interruptAfter: undefined });
+  assert.strictEqual(replay.idempotent, true);
+  assert.strictEqual(replay.sequenceId, original.sequenceId);
+  assert.strictEqual(h.calls.length, calls);
+  assert.deepStrictEqual(recoverInterruptedSequences(execDir, { ...h.options, interruptAfter: undefined }), []);
+  assert.strictEqual(store.events(execDir).filter((event) => event.sequenceId === original.sequenceId
+    && ['sequenceCompleted', 'sequenceInterrupted'].includes(event.type)).length, 1);
 }
 
 {

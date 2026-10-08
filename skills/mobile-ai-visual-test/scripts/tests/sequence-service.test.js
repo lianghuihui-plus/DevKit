@@ -176,6 +176,69 @@ for (const [duration, waits] of [[7000, [2000]], [5000, []]]) {
 
 {
   const execDir = fixture();
+  const h = harness(execDir, [], { failCapture: true });
+  const result = runSequence(execDir, request(execDir, [
+    act('a'), capture('explicit-post', 'SCREENSHOT_ONLY'), act('must-not-run'),
+  ]), h.options);
+  assert.strictEqual(result.status, 'SEQUENCE_PARTIAL');
+  assert.strictEqual(result.steps[0].postSceneRef, result.finalSceneRef);
+  assert.strictEqual(result.steps[1].status, 'FAILED');
+  assert.strictEqual(result.steps.some((step) => step.stepId === 'must-not-run'), false);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'OBSERVE').length, 1);
+  const finalScene = JSON.parse(fs.readFileSync(path.join(execDir, 'scenes', `${result.finalSceneRef}.json`), 'utf8'));
+  assert.deepStrictEqual(finalScene.captureOrigins, ['ACTION_POST', 'SEQUENCE_FINAL']);
+  assert.strictEqual(finalScene.relatedOperationId, result.steps[0].operationId);
+  assertSequenceIntegrity(execDir, readSequences(execDir)[0]);
+}
+
+{
+  const execDir = fixture();
+  let clockMs = 0;
+  const unknown = Object.assign(new Error('delivery uncertain'), { code: 'DEVICE_ACTION_FAILED' });
+  const h = harness(execDir);
+  const result = runSequence(execDir, request(execDir, [act('expires'), act('must-not-run')]), {
+    ...h.options,
+    clock: () => clockMs,
+    invokeDeviceOperation(dir, payload, kind, options) {
+      if (kind === 'ACTION') {
+        clockMs = 30000;
+        throw unknown;
+      }
+      return h.options.invokeDeviceOperation(dir, payload, kind, options);
+    },
+  });
+  assert.strictEqual(result.outcomeKnown, false);
+  assert.strictEqual(result.finalSceneRef, null);
+  assert.strictEqual(result.steps[0].status, 'UNKNOWN');
+  assert.strictEqual(result.steps[0].postSceneRef, null);
+  assert.strictEqual(result.steps.some((step) => step.stepId === 'must-not-run'), false);
+  assert.strictEqual(h.calls.filter((call) => call.kind === 'OBSERVE').length, 0);
+  const completed = JSON.parse(fs.readFileSync(path.join(execDir, 'operations', `${result.steps[0].operationId}.json`), 'utf8'));
+  assert.strictEqual(completed.sceneIdAfter, null);
+  assert.ok(completed.captureFailureTechnicalFactRef);
+  assert.strictEqual(store.events(execDir).filter((event) => event.type === 'actionOutcomeUnknown'
+    && event.operationId === result.steps[0].operationId).length, 1);
+  assert.strictEqual(fs.readdirSync(store.paths(execDir).transactions)
+    .filter((name) => name.endsWith('.draft.json')).length, 0);
+  assertSequenceIntegrity(execDir, readSequences(execDir)[0]);
+}
+
+{
+  const execDir = fixture();
+  const h = harness(execDir, [], { failCapture: true, failObserve: true });
+  const result = runSequence(execDir, request(execDir, [
+    act('a'), capture('explicit-post', 'SCREENSHOT_ONLY'), act('must-not-run'),
+  ]), h.options);
+  assert.strictEqual(result.finalSceneRef, null);
+  assert.strictEqual(result.steps[0].postSceneRef, null);
+  assert.strictEqual(result.steps[1].status, 'FAILED');
+  const completed = JSON.parse(fs.readFileSync(path.join(execDir, 'operations', `${result.steps[0].operationId}.json`), 'utf8'));
+  assert.ok(completed.captureFailureTechnicalFactRef);
+  assertSequenceIntegrity(execDir, readSequences(execDir)[0]);
+}
+
+{
+  const execDir = fixture();
   const h = harness(execDir, [], { failObserve: true });
   const result = runSequence(execDir, request(execDir, [capture('direct-full', 'FULL_SCENE')]), h.options);
   assert.strictEqual(result.status, 'SEQUENCE_PARTIAL');
