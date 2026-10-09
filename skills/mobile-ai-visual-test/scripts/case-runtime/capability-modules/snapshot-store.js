@@ -49,9 +49,38 @@ function loadCatalog(execDir) {
   return catalog ? validateCatalog(execDir, catalog) : null;
 }
 
+function ensureCatalogPublication(execDir, catalog, options = {}) {
+  const definitionPublications = catalog.available.map((item) => {
+    const relative = `${DEFINITION_DIRECTORY}/${item.definitionDigest}.json`;
+    const definition = readJson(path.join(execDir, relative), null);
+    if (!definition || definitionDigest(definition) !== item.definitionDigest
+      || definition.name !== item.name || definition.moduleId !== item.moduleId) {
+      invalid(`capability definition does not match catalog: ${item.name}`);
+    }
+    const publication = resources.publishArtifact(execDir, 'capabilityDefinition', relative);
+    if (publication.data.ref !== item.capabilityRef) invalid(`capability reference changed: ${item.name}`);
+    return publication;
+  });
+  resources.publishArtifact(execDir, 'capabilityCatalog', CATALOG_RELATIVE,
+    definitionPublications.map((item) => item.descriptor));
+  const frozenEvents = store.events(execDir).filter((event) => event.type === 'capabilityCatalogFrozen');
+  if (frozenEvents.some((event) => event.catalogDigest !== catalog.digest)) {
+    invalid('capability catalog event digest does not match the frozen catalog');
+  }
+  if (!frozenEvents.length) {
+    store.appendEvent(execDir, 'capabilityCatalogFrozen', {
+      catalogSchemaVersion: 1,
+      catalogDigest: catalog.digest,
+      availableCount: catalog.availableCount,
+      unavailableModuleCount: catalog.unavailableModules.length,
+    }, options);
+  }
+  return catalog;
+}
+
 function freezeCatalog(execDir, discovery, options = {}) {
   const existing = loadCatalog(execDir);
-  if (existing) return existing;
+  if (existing) return ensureCatalogPublication(execDir, existing, options);
   const execution = store.loadExecution(execDir);
   const definitionsDirectory = path.join(execDir, DEFINITION_DIRECTORY);
   fs.mkdirSync(definitionsDirectory, { recursive: true });
@@ -70,6 +99,7 @@ function freezeCatalog(execDir, discovery, options = {}) {
         providerCapabilityName: candidate.name,
         summary: candidate.summary,
         inputSchema: candidate.inputSchema,
+        ...(candidate.sensitiveFields ? { sensitiveFields: candidate.sensitiveFields } : {}),
         ...(candidate.invocation ? { invocation: candidate.invocation } : {}),
       };
       const digest = definitionDigest(definition);
@@ -105,15 +135,7 @@ function freezeCatalog(execDir, discovery, options = {}) {
   };
   const catalog = { ...payload, digest: catalogDigest(payload) };
   writeImmutableJson(path.join(execDir, CATALOG_RELATIVE), catalog);
-  resources.publishArtifact(execDir, 'capabilityCatalog', CATALOG_RELATIVE,
-    definitionPublications.map((item) => item.descriptor));
-  store.appendEvent(execDir, 'capabilityCatalogFrozen', {
-    catalogSchemaVersion: 1,
-    catalogDigest: catalog.digest,
-    availableCount: catalog.availableCount,
-    unavailableModuleCount: catalog.unavailableModules.length,
-  }, options);
-  return catalog;
+  return ensureCatalogPublication(execDir, catalog, options);
 }
 
 function resolveCapability(execDir, capabilityRef) {
@@ -133,6 +155,7 @@ module.exports = {
   DEFINITION_DIRECTORY,
   catalogDigest,
   definitionDigest,
+  ensureCatalogPublication,
   freezeCatalog,
   loadCatalog,
   resolveCapability,

@@ -2,12 +2,14 @@
 'use strict';
 
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { writeJsonAtomic } = require('../lib/execution-lifecycle');
 const resources = require('../case-runtime/agent-resource-store');
 const store = require('../case-runtime/store');
+const { queryCapabilities } = require('../case-runtime/capability-modules/broker');
 const {
   freezeCatalog,
   loadCatalog,
@@ -68,6 +70,16 @@ assert.strictEqual(store.events(execDir).filter((event) => event.type === 'capab
 assert.strictEqual(store.events(execDir).find((event) => event.type === 'capabilityCatalogFrozen').catalogDigest, first.digest);
 const catalogRef = resources.resourceRef(execDir, 'capabilityCatalog', path.relative(execDir, catalogPath));
 assert.strictEqual(resources.readPublishedResource(execDir, catalogRef).data.type, 'capabilityCatalog');
+
+const catalogRegistry = path.join(execDir, 'operations', 'resources', 'catalog',
+  `${crypto.createHash('sha256').update(catalogRef).digest('hex')}.json`);
+fs.unlinkSync(catalogRegistry);
+fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
+const recovered = queryCapabilities(execDir, { capabilityProviders: [], now: '2026-10-09T12:00:00.000Z' });
+assert.deepStrictEqual(recovered.data.content, first);
+assert.strictEqual(resources.readPublishedResource(execDir, catalogRef).data.type, 'capabilityCatalog');
+assert.strictEqual(store.events(execDir).filter((event) => event.type === 'capabilityCatalogFrozen').length, 1);
+assert.strictEqual(store.events(execDir)[0].catalogDigest, first.digest);
 
 const tampered = { ...first, availableCount: 99 };
 writeJsonAtomic(catalogPath, tampered);

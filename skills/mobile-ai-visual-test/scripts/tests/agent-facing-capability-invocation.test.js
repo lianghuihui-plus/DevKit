@@ -51,6 +51,13 @@ const provider = {
     if (request.input.studentId === 'unknown') {
       return { status: 'UNKNOWN', summary: 'connection closed', output: null, diagnostic: 'delivery uncertain' };
     }
+    if (request.input.studentId === 'invalid-output') {
+      return { status: 'SUCCEEDED', summary: 'provider returned a non-JSON output', output: 1n, diagnostic: null };
+    }
+    if (request.input.studentId === 'oversized-diagnostic') {
+      return { status: 'FAILED', summary: 'oversized diagnostic', output: null,
+        diagnostic: 'x'.repeat((4 * 1024 * 1024) + 1) };
+    }
     return { status: 'SUCCEEDED', summary: 'student updated', output: { studentId: request.input.studentId, access_token: 'output-secret' }, diagnostic: null };
   },
 };
@@ -103,6 +110,29 @@ assert.strictEqual(unknown.status, 'UNKNOWN');
 assert.strictEqual(unknown.error.code, 'CAPABILITY_OUTCOME_UNKNOWN');
 assert.strictEqual(unknown.error.retryable, false);
 
+const invalidOutput = run(execDir, { operation: 'useCapability', input: {
+  capabilityRef, input: { studentId: 'invalid-output', token: 'input-secret' }, purpose: 'Reject invalid provider output',
+} }, options);
+assert.strictEqual(invalidOutput.status, 'UNKNOWN');
+assert.strictEqual(invalidOutput.error.code, 'CAPABILITY_OUTCOME_UNKNOWN');
+assert.ok(invalidOutput.resources.some((item) => item.type === 'capabilityInvocation'));
+const invalidOutputRecord = resources.readPublishedResource(execDir,
+  invalidOutput.resources.find((item) => item.type === 'capabilityInvocation').ref).data.content;
+assert.strictEqual(invalidOutputRecord.status, 'UNKNOWN');
+assert.match(invalidOutputRecord.diagnostic, /JSON-serializable/);
+
+const oversized = run(execDir, { operation: 'useCapability', input: {
+  capabilityRef, input: { studentId: 'oversized-diagnostic', token: 'input-secret' }, purpose: 'Bound provider diagnostic',
+} }, options);
+assert.strictEqual(oversized.status, 'FAILED');
+const oversizedRecord = resources.readPublishedResource(execDir,
+  oversized.resources.find((item) => item.type === 'capabilityInvocation').ref).data.content;
+assert.ok(Buffer.byteLength(oversizedRecord.diagnostic) < 100);
+assert.match(oversizedRecord.diagnostic, /^\[TRUNCATED: originalBytes=\d+\]$/);
+const oversizedTechnical = resources.readPublishedResource(execDir,
+  oversized.resources.find((item) => item.type === 'technicalFact').ref).data.content;
+assert.strictEqual(oversizedTechnical.message, oversizedRecord.diagnostic);
+
 const fakeRef = resources.resourceRef(execDir, 'capabilityDefinition', 'not-published');
 const unknownRef = run(execDir, { operation: 'useCapability', input: {
   capabilityRef: fakeRef, input: {}, purpose: 'Try an unknown capability',
@@ -125,9 +155,9 @@ assert.strictEqual(finalized.status, 'REJECTED');
 assert.strictEqual(finalized.error.code, 'CASE_RUNTIME_FINALIZED');
 
 const events = store.events(execDir);
-assert.strictEqual(events.filter((event) => event.type === 'capabilityInvocationRequested').length, 3);
+assert.strictEqual(events.filter((event) => event.type === 'capabilityInvocationRequested').length, 5);
 assert.strictEqual(events.filter((event) => [
   'capabilityInvocationCompleted', 'capabilityInvocationFailed', 'capabilityInvocationOutcomeUnknown',
-].includes(event.type)).length, 3);
+].includes(event.type)).length, 5);
 
 console.log('agent-facing capability invocation tests passed');

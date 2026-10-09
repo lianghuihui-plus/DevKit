@@ -19,7 +19,7 @@
 - Provider methods are synchronous: `probe(context)`, `listCapabilities(context, probeResult)`, and `invoke(request, context)`.
 - stdin and MCP expose the same fixed `queryCapabilities` and `useCapability` methods.
 - Do not modify Handoff, Case Brief, device Runtime Core, Coordinator, Batch state, Case Flow, Knowledge, CHECK ledger, or verdict aggregation.
-- Live `bcm-cs` discovery is auth-blocked by HTTP 403, so provider coverage uses a fake executable and live smoke testing is optional.
+- Automated coverage uses a fake executable with the real `result.params/required/rest` response shape; live `bcm-cs` smoke testing remains read-only and optional because environment availability can change.
 
 ---
 
@@ -112,7 +112,7 @@ Expected: FAIL because `snapshot-store.js` does not exist.
 - [x] **Step 3: Implement immutable schema-1 snapshots**
 
 ```js
-// capability-modules/catalog.json
+// capabilities/catalog.snapshot.json
 {
   schemaVersion: 1,
   executionId,
@@ -243,7 +243,7 @@ function invokeCapability(execDir, request, options = {}) {
 }
 ```
 
-Persist requested and terminal events, map provider `SUCCEEDED | FAILED | UNKNOWN` without retry, omit secret-like keys from summaries/diagnostics, and retain bounded structured output only in `capabilityInvocation`.
+Persist requested and terminal events, map provider `SUCCEEDED | FAILED | UNKNOWN` without retry, omit secret-like keys and module-declared sensitive values from summaries/diagnostics, and retain only bounded structured output and text in `capabilityInvocation` and technical facts.
 
 - [x] **Step 4: Run the focused suite and verify GREEN**
 
@@ -333,7 +333,7 @@ git commit -m "feat(mavt): add bcm-cs capability provider"
 - [x] **Step 1: Write failing artifact, trace, and guidance tests**
 
 ```js
-assert.ok(manifest.artifacts.some((item) => item.path.endsWith('capability-modules/catalog.json')));
+assert.ok(manifest.artifacts.some((item) => item.path.endsWith('capabilities/catalog.snapshot.json')));
 assert.deepStrictEqual(trace.capabilityInvocations[0].status, 'SUCCEEDED');
 assert.match(casePrompt, /Baseline Flow.*queryCapabilities.*首次业务动作/s);
 assert.doesNotMatch(renderedHtml, /secret-token-value/);

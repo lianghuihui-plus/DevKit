@@ -10,6 +10,18 @@ const {
 } = require('./adapter');
 const { commandSucceeded, discoveryResult, invocationResult } = require('./response-mapper');
 
+function findPreviewId(value, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 8) return null;
+  for (const key of ['preview_id', 'previewId']) {
+    if (typeof value[key] === 'string' && value[key]) return value[key];
+  }
+  for (const child of Object.values(value)) {
+    const found = findPreviewId(child, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
 function createBcmCsProvider(options = {}) {
   return {
     manifest: {
@@ -48,6 +60,10 @@ function createBcmCsProvider(options = {}) {
           diagnostics.push('capability without a stable id was excluded');
           continue;
         }
+        if (item?.availability?.available === false) {
+          diagnostics.push(`capability ${id} was excluded because it is not currently available`);
+          continue;
+        }
         try {
           const result = adapter.describe(id);
           if (!commandSucceeded(result)) throw new Error('describe command failed');
@@ -69,7 +85,37 @@ function createBcmCsProvider(options = {}) {
           diagnostic: 'frozen BCM invocation descriptor is missing' };
       }
       const name = request.capability.providerCapabilityName || request.capability.name;
-      return invocationResult(createAdapter(context, options).invoke(invocation, request.input), name);
+      const adapter = createAdapter(context, options);
+      const prepare = (endpoint, input) => {
+        const body = { ...input };
+        let apiPath = endpoint.path;
+        for (const parameter of endpoint.pathParameters || []) {
+          if (!Object.hasOwn(body, parameter)) throw new Error(`BCM path parameter is missing: ${parameter}`);
+          apiPath = apiPath.replaceAll(`{${parameter}}`, encodeURIComponent(String(body[parameter])));
+          delete body[parameter];
+        }
+        return { endpoint: { ...endpoint, path: apiPath }, body };
+      };
+      try {
+        const executeInput = { ...request.input };
+        if (invocation.preview) {
+          const preview = prepare(invocation.preview, request.input);
+          const previewOutcome = invocationResult(adapter.invoke(preview.endpoint, preview.body), `${name} preview`);
+          if (previewOutcome.status !== 'SUCCEEDED') return previewOutcome;
+          const previewId = findPreviewId(previewOutcome.output);
+          if (invocation.confirmationRequired && !previewId) {
+            return { status: 'FAILED', summary: `BCM capability ${name} preview failed`, output: previewOutcome.output,
+              diagnostic: 'BCM preview response did not contain preview_id' };
+          }
+          if (previewId) executeInput.preview_id = previewId;
+        }
+        if (invocation.confirmationRequired) executeInput.confirm = true;
+        const execute = prepare(invocation, executeInput);
+        return invocationResult(adapter.invoke(execute.endpoint, execute.body), name);
+      } catch (error) {
+        return { status: 'FAILED', summary: `BCM capability ${name} failed`, output: null,
+          diagnostic: error?.message || String(error) };
+      }
     },
   };
 }

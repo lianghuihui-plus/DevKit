@@ -4,7 +4,14 @@ const path = require('path');
 const { validateAgentJson } = require('../../lib/agent-json-contract');
 const { createRegistry, defaultProviders } = require('./registry');
 const { beginInvocation, completeInvocation } = require('./invocation-store');
-const { CATALOG_RELATIVE, definitionDigest, freezeCatalog, loadCatalog, resolveCapability } = require('./snapshot-store');
+const {
+  CATALOG_RELATIVE,
+  definitionDigest,
+  ensureCatalogPublication,
+  freezeCatalog,
+  loadCatalog,
+  resolveCapability,
+} = require('./snapshot-store');
 const resources = require('../agent-resource-store');
 const store = require('../store');
 
@@ -35,7 +42,7 @@ function queryCapabilities(execDir, options = {}) {
     if (!catalog) {
       const context = providerContext(execDir, options);
       catalog = freezeCatalog(execDir, registryFor(options).discover(context), options);
-    }
+    } else catalog = ensureCatalogPublication(execDir, catalog, options);
     const catalogRef = resources.resourceRef(execDir, 'capabilityCatalog', CATALOG_RELATIVE);
     const publication = resources.readPublishedResource(execDir, catalogRef);
     return {
@@ -59,11 +66,25 @@ function rejectedReference(error) {
 
 function normalizeOutcome(value) {
   if (value && ['SUCCEEDED', 'FAILED', 'UNKNOWN'].includes(value.status)) {
+    let output = value.output === undefined ? null : value.output;
+    let diagnostic = value.diagnostic === undefined ? null : value.diagnostic;
+    try {
+      const outputJson = JSON.stringify(output);
+      const diagnosticJson = JSON.stringify(diagnostic);
+      if (outputJson === undefined || diagnosticJson === undefined) throw new TypeError('undefined JSON value');
+      output = JSON.parse(outputJson);
+      diagnostic = JSON.parse(diagnosticJson);
+    } catch (_error) {
+      return {
+        status: 'UNKNOWN', summary: 'provider returned an invalid outcome', output: null,
+        diagnostic: 'provider output and diagnostic must be JSON-serializable',
+      };
+    }
     return {
       status: value.status,
       summary: typeof value.summary === 'string' ? value.summary : '',
-      output: value.output === undefined ? null : value.output,
-      diagnostic: value.diagnostic === undefined ? null : value.diagnostic,
+      output,
+      diagnostic,
     };
   }
   return { status: 'UNKNOWN', summary: 'provider returned an invalid outcome', output: null, diagnostic: 'provider outcome contract invalid' };

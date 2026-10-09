@@ -413,7 +413,7 @@ Artifact Manifest 必须包含已经生成的 catalog、definition 和 invocatio
 2. `bcm-cs version` 获取实现版本。
 3. `bcm-cs --output json capabilities list` 获取能力目录。
 
-当前本机 `bcm-cs 0.1.1` 已安装，但能力目录请求返回 HTTP 403。该情况映射为 `UNAVAILABLE`，不会阻断 MAVT execution，也不会发布不可调用工具。
+当前本机 `bcm-cs 0.1.1` 已安装。能力目录成功响应使用 `result.capabilities`，单项描述使用 `result.params`、`result.required` 和 `result.rest`；Provider 按该真实响应契约完成规范化。HTTP 403 等发现失败仍映射为 `UNAVAILABLE`，不会阻断 MAVT execution，也不会发布不可调用工具。
 
 成功的 list 响应作为 `discoverySeed` 传给 `listCapabilities`，同一次目录构建不会重复执行 list。
 
@@ -426,6 +426,8 @@ bcm-cs --output json capabilities describe <capability_id>
 ```
 
 Adapter 将 CLI 描述规范化为 Provider capability。无法得到受支持的 object input schema、缺少稳定 ID、缺少可执行调用描述或描述格式无效的单项能力被排除，并写入 catalog diagnostic；其他能力继续可用。
+
+真实 BCM capability ID 允许使用下划线。`params + required` 被规范化为严格 object schema；`description` 和 `default` 作为 Agent 可读注解保留。`params.*.sensitive` 与 `output.sensitive_fields` 不进入输入 Schema，而是转成冻结 definition 的模块级脱敏声明，叠加到 Broker 的统一脱敏规则。BCM 同时将 `output.sensitive_fields` 中确实存在于 `params` 的同名字段或简单复数形式视为敏感输入，兼容真实 manifest 中 `phone_number` / `phone_numbers` 的声明方式。`availability.available === false` 的项目不发布为可调用能力。`rest.execute` 和 `rest.query` 均可形成调用描述，Provider 自动补全 `/api/v1/bcm-tools` 前缀并安全替换 `{parameter}` 路径参数。
 
 首版在首次 `queryCapabilities` 时完整发现并冻结定义，以确保 `read(capabilityRef)`、动态校验和实际调用使用同一 Schema。若后续发现能力数量导致明显查询开销，再增加按 CLI 版本与服务地址绑定的共享缓存；首版不提前引入缓存一致性机制。
 
@@ -440,6 +442,8 @@ Adapter 只使用 `child_process.spawnSync` 或 `execFileSync` 参数数组，�
 
 具体命令参数或 API method/path/body 只来自冻结的 CLI capability 描述和经过 Schema 校验的 Agent 输入。Agent 不传二进制路径、服务地址或任意附加 flags。
 
+当 capability 声明 preview endpoint 时，Provider 先执行 preview；需要 BCM confirm 协议时，Provider 从 preview 响应提取 `preview_id`，再以 `confirm=true` 调用 execute endpoint。该流程只满足 BCM 服务端写协议，不增加 Agent 权限确认或人工审批。
+
 ### 13.4 脱敏
 
 Broker 提供统一递归脱敏器，至少处理大小写不敏感的以下字段：
@@ -448,7 +452,7 @@ Broker 提供统一递归脱敏器，至少处理大小写不敏感的以下字�
 authorization, token, access_token, refresh_token, password, cookie, set-cookie, secret
 ```
 
-Provider 可以追加模块专属字段，但不能关闭统一脱敏。脱敏只影响持久化和 Agent 投影，不改变实际调用参数。
+Provider 可以追加模块专属字段，但不能关闭统一脱敏。持久化输出使用模块声明的敏感输入与敏感输出字段并集，避免 Provider 在返回体中回显敏感输入时落盘。错误摘要、诊断和 technical fact 同时按模块敏感键与本次请求的敏感输入值脱敏，覆盖字段化数据、`key=value` 文本和无字段名回显。结构化输出、摘要和诊断在脱敏后均执行 4 MiB 持久化上限，超限文本保留字符串类型并替换为简短截断标记。脱敏只影响持久化和 Agent 投影，不改变实际调用参数。
 
 ## 14. 格式与版本
 

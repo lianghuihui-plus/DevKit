@@ -9,7 +9,7 @@ const {
 const { createRegistry } = require('../case-runtime/capability-modules/registry');
 
 const definition = {
-  name: 'student.update',
+  name: 'student_update',
   summary: 'Update one student',
   inputSchema: {
     type: 'object',
@@ -57,6 +57,30 @@ assert.throws(() => validateCapabilityDefinition({ ...definition, inputSchema: {
 assert.throws(() => validateCapabilityDefinition({ ...definition, inputSchema: {
   type: 'object', properties: { value: { format: 'email' } }, additionalProperties: false,
 } }), (error) => error.code === 'CAPABILITY_DEFINITION_INVALID' && /format/.test(error.message));
+assert.deepStrictEqual(validateCapabilityDefinition({ ...definition, inputSchema: {
+  type: 'object', properties: { value: { type: 'string', description: 'Value', default: 'ready' } },
+  additionalProperties: false,
+} }).inputSchema.properties.value.default, 'ready');
+assert.deepStrictEqual(validateCapabilityDefinition({ ...definition,
+  sensitiveFields: { input: ['identity'], output: ['phone_number'] },
+}).sensitiveFields, { input: ['identity'], output: ['phone_number'] });
+assert.throws(() => validateCapabilityDefinition({ ...definition,
+  sensitiveFields: { input: 'identity', output: [] },
+}), (error) => error.code === 'CAPABILITY_DEFINITION_INVALID');
+for (const inputSchema of [
+  { type: 'object', properties: { value: { $ref: 'value' } }, additionalProperties: false },
+  { type: 'object', properties: { value: { type: 'string', pattern: '[' } }, additionalProperties: false },
+  { type: 'object', properties: { value: { type: 'string' } }, required: 42, additionalProperties: false },
+  { type: 'object', properties: { value: { type: 'string', enum: 'ready' } }, additionalProperties: false },
+  { type: 'object', properties: { value: { type: 'object', const: { mode: 'ready' } } }, additionalProperties: false },
+  { type: 'object', properties: { value: { type: 'string', minimum: 1 } }, additionalProperties: false },
+  { type: 'object', properties: { value: { type: 'integer', minLength: 1 } }, additionalProperties: false },
+  { type: 'object', properties: { value: { type: 'string', minItems: 1 } }, additionalProperties: false },
+  { type: 'object', properties: { value: { type: 'array', additionalProperties: false } }, additionalProperties: false },
+]) {
+  assert.throws(() => validateCapabilityDefinition({ ...definition, inputSchema }),
+    (error) => error.code === 'CAPABILITY_DEFINITION_INVALID');
+}
 
 assert.throws(() => createRegistry([readyProvider, readyProvider]),
   (error) => error.code === 'CAPABILITY_PROVIDER_DUPLICATE');
