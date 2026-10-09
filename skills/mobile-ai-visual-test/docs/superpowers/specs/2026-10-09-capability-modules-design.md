@@ -10,10 +10,10 @@ MAVT 当前向 Case Agent 提供设备观察、动作、知识调查、恢复和
 
 ## 2. 目标
 
-1. Case Agent 能知道当前 execution 有哪些外部工具可用，并按用例语义自主选择。
+1. Case Agent 建立 Baseline Flow 后能主动查询当前 execution 有哪些外部工具可用，并按用例语义自主选择。
 2. 新模块只需实现统一 Provider 接口并注册，不修改 Case Runtime 的业务状态机。
 3. 每项具体工具保留独立名称、说明和 JSON Schema，不被压缩成原始 Shell 字符串。
-4. stdin Facade 与 MCP 使用同一权威契约和同一 Broker。
+4. 现有流程只新增查询能力和使用能力两个入口，stdin Facade 与 MCP 使用同一权威契约和同一 Broker。
 5. 工具调用具备输入校验、超时、确定的结果语义、不可变留痕和报告展示。
 6. 首版提供 `bcm-cs` 模块，并消费 CLI 自带的 `capabilities list/describe` 能力。
 
@@ -46,7 +46,7 @@ Registry 中成功注册、探测为可用并发布给 Case Agent 的全部工�
 
 ```mermaid
 flowchart LR
-  A["Case Agent"] --> F["Case Agent Facade"]
+  A["Case Agent"] -->|"queryCapabilities / useCapability"| F["Case Agent Facade"]
   F --> B["Capability Broker"]
   B --> R["Module Registry"]
   B --> V["Dynamic Schema Validator"]
@@ -62,9 +62,10 @@ flowchart LR
 
 - Registry 只管理受信任的内置 Provider。
 - Provider 负责发现自己的具体工具，并把工具调用翻译到 CLI、HTTP、数据库或脚本。
-- Broker 负责冻结目录、解析 opaque ref、二次 Schema 校验、调用 Provider、映射统一状态和持久化。
+- Broker 在首次查询时负责冻结目录，并负责解析 opaque ref、二次 Schema 校验、调用 Provider、映射统一状态和持久化。
 - Case Runtime 不理解各工具的业务字段，也不判断工具使用是否符合用例语义。
 - Case Agent 仍是 execution 内唯一业务理解者。
+- Handoff、Brief、Case Flow、设备动作和结果聚合不承担模块发现或调用职责。
 
 ## 6. 目录与依赖
 
@@ -140,7 +141,7 @@ register(require('./modules/bcm-cs'));
 }
 ```
 
-`UNAVAILABLE` 是探测事实，不使 execution 初始化失败。该模块不会进入可调用目录，Brief 只保留紧凑诊断，避免 Agent 猜测或直接调用未绑定 CLI。
+`UNAVAILABLE` 是探测事实，不使能力查询失败。该模块不会进入可调用目录，`queryCapabilities` 只返回紧凑诊断，避免 Agent 猜测或直接调用未绑定 CLI。
 
 `discoverySeed` 是仅在当前目录构建过程中传给 `listCapabilities` 的临时值，不直接持久化或投影。Provider 可以用它复用 probe 已完成的远端发现结果，避免正常路径重复请求。
 
@@ -200,19 +201,23 @@ Provider 返回：
 
 Provider 不返回 Agent-facing envelope，也不直接写 execution 事件。统一响应和持久化由 Broker 完成。
 
-## 8. 能力目录与冻结
+## 8. 能力查询与冻结
 
-### 8.1 创建时机
+### 8.1 查询时机
 
-Execution 创建后、Handoff 生成前构建能力目录：
+Case Agent 取得 Handoff 后继续遵循现有规则：先通读原始用例并通过 `plan` 建立 Baseline Flow。Baseline 建立后、首次业务动作前调用一次 `queryCapabilities`：
 
-1. Registry 加载内置 Provider。
-2. 对每个 Provider 执行 `probe`。
-3. 对 `READY` Provider 执行 `listCapabilities(context, probeResult)`。
-4. 校验工具定义并生成不可变快照。
-5. 将快照摘要写入 execution，并发布 typed resources。
+1. Broker 检查当前 execution 是否已有冻结目录。
+2. 没有目录时，Registry 加载内置 Provider。
+3. 对每个 Provider 执行 `probe`。
+4. 对 `READY` Provider 执行 `listCapabilities(context, probeResult)`。
+5. 校验工具定义并生成不可变快照。
+6. 追加 `capabilityCatalogFrozen` 事件，绑定目录 digest。
+7. 发布目录和 definition typed resources。
 
-能力发现失败只影响对应模块，不阻断设备测试。若所有外部模块均不可用，MAVT 仍按现有流程运行。
+后续 `queryCapabilities` 直接返回同一快照，不重新访问 Provider。Continuation Agent 同样复用原目录。能力发现失败只影响对应模块，不阻断设备测试；若所有外部模块均不可用，查询仍成功返回空的 available 列表和诊断。
+
+能力查询不读取或修改 Case Flow，不触发设备观察，也不改变 execution 业务状态。
 
 ### 8.2 持久化
 
@@ -227,41 +232,40 @@ capabilities/
     └── <operation-id>.json
 ```
 
-Catalog 保存：
+Catalog 自身使用独立的 `schemaVersion: 1`，并保存：
 
 - Provider ID、版本、实现版本和探测事实。
-- 工具名称、摘要、definition digest 和 opaque `toolRef`。
+- 工具名称、摘要、definition digest 和 opaque `capabilityRef`。
 - 目录生成时间和整体 digest。
 
-工具定义按内容寻址并保持不可变。调用只接受当前 execution 目录发布的 `toolRef`，不能由模块名和工具名自行拼接，也不能跨 execution 使用。
+工具定义按内容寻址并保持不可变。调用只接受当前 execution 目录发布的 `capabilityRef`，不能由模块名和工具名自行拼接，也不能跨 execution 使用。冻结事件中的 digest 必须与目录内容一致。
 
-### 8.3 Brief 投影
-
-Case Brief 新增：
-
-```js
-tools: {
-  available: [
-    { name: 'bcm-cs.student.update', summary: '修改学员信息', toolRef: 'mavt:...' },
-  ],
-  catalogRef: 'mavt:...',
-  unavailableModules: [
-    { id: 'bcm-cs', reason: 'capability service returned HTTP 403' },
-  ],
-}
-```
-
-Brief 只内联名称、摘要和 ref。完整 `inputSchema` 通过 `read(toolRef)` 按需读取，继续遵循现有渐进披露原则。
+不修改 Case Brief。能力目录只由 `queryCapabilities` 返回：主资源内联名称、摘要和 ref，完整 `inputSchema` 通过 `read(capabilityRef)` 按需读取，继续遵循现有渐进披露原则。
 
 ## 9. Agent-facing 契约
 
-### 9.1 新增 `useTool`
+Case Runtime 公共能力只新增两个稳定入口。
 
-Case Runtime 公共能力新增一个稳定入口：
+### 9.1 `queryCapabilities`
 
 ```typescript
-useTool({
-  toolRef: string;
+queryCapabilities({})
+```
+
+成功返回：
+
+- `result.outcome = CAPABILITY_CATALOG_READY`
+- `result.catalogRef`
+- `result.availableCount`
+- 主资源 `capabilityCatalog`
+
+目录主资源包含 available 工具的全名、摘要和 `capabilityRef`，以及 unavailableModules 的紧凑诊断。调用幂等；首次调用发现并冻结，后续调用读取冻结目录。
+
+### 9.2 `useCapability`
+
+```typescript
+useCapability({
+  capabilityRef: string;
   input: object;
   purpose: string;
   flowContext?: {
@@ -271,37 +275,36 @@ useTool({
 })
 ```
 
-公共 Schema 只能约束 `input` 是 object；Broker 使用 `toolRef` 对应的冻结 `inputSchema` 进行第二层严格校验。失败返回字段级 issues，不调用 Provider。
+公共 Schema 只能约束 `input` 是 object；Broker 使用 `capabilityRef` 对应的冻结 `inputSchema` 进行第二层严格校验。失败返回字段级 issues，不调用 Provider。
 
-不增加 `listTools` 和 `describeTool`：
+不增加独立的 describe 操作：
 
-- 目录已经随 Brief 提供。
-- `read(catalogRef)` 读取完整目录。
-- `read(toolRef)` 读取单项定义。
+- `queryCapabilities` 已经返回目录。
+- `read(capabilityRef)` 读取单项定义。
 - 避免为同一数据再引入平行读取协议。
 
-### 9.2 stdin 与 MCP
+### 9.3 stdin 与 MCP
 
 stdin 请求继续使用：
 
 ```json
 {
-  "operation": "useTool",
+  "operation": "useCapability",
   "input": {
-    "toolRef": "mavt:...:toolDefinition:...",
+    "capabilityRef": "mavt:...:capabilityDefinition:...",
     "input": {},
     "purpose": "建立用例要求的服务端状态"
   }
 }
 ```
 
-MCP 暴露固定的 `useTool`，其请求经过同一个 `validateAgentFacingRequest`、Translator 和 Broker。首版不把动态能力展开成可变 MCP 顶层方法，原因是：
+MCP 暴露固定的 `queryCapabilities` 和 `useCapability`，请求经过同一个 `validateAgentFacingRequest`、Translator 和 Broker。首版不把动态能力展开成可变 MCP 顶层方法，原因是：
 
 - 当前 stdin 与 MCP 共享静态权威契约。
 - 动态顶层方法会使两个 transport 的工具集合和校验路径分叉。
-- Handoff 已能通过工具目录让 Agent 获得具体工具名称与 Schema。
+- `queryCapabilities` 与 typed resource 已能让 Agent 获得具体工具名称与 Schema。
 
-后续若宿主支持 execution 级动态 MCP 注册，可仅增加投影层，把动态方法映射回同一 `useTool`，不改变 Provider 或 Broker。
+后续若宿主支持 execution 级动态 MCP 注册，可仅增加投影层，把动态方法映射回同一 `useCapability`，不改变 Provider 或 Broker。
 
 ## 10. 调用流程
 
@@ -313,9 +316,15 @@ sequenceDiagram
   participant M as Provider
   participant X as External System
 
-  A->>F: read(toolRef)
+  A->>F: plan(Baseline Flow)
+  A->>F: queryCapabilities()
+  F->>B: query frozen catalog
+  B->>M: first query only: probe + listCapabilities
+  B-->>F: catalog resource
+  F-->>A: names + summaries + capabilityRefs
+  A->>F: read(capabilityRef)
   F-->>A: frozen definition + inputSchema
-  A->>F: useTool(toolRef, input, purpose)
+  A->>F: useCapability(capabilityRef, input, purpose)
   F->>B: validated public request
   B->>B: resolve ref + validate dynamic schema
   B->>B: persist invocationRequested
@@ -328,34 +337,34 @@ sequenceDiagram
   F-->>A: Agent-facing envelope
 ```
 
-`context` 只提供必要执行事实：execution 目录、workspace、平台、目标 App 摘要、operation ID、当前时间和受控进程执行器。它不把 Case 原文、Case Flow 或结果判断交给 Provider。
+`context` 只提供必要执行事实：execution 目录、workspace、平台、目标 App 摘要、operation ID、当前时间和受控进程执行器。它不把 Case 原文、Case Flow 或结果判断交给 Provider。`queryCapabilities` 和 `useCapability` 均由 Agent-facing Runtime Broker 直接分派，不进入设备 Runtime Core。
 
 ## 11. 结果和错误语义
 
 ### 11.1 成功
 
-`SUCCEEDED` 表示 Provider 按自身契约完成调用并获得成功响应。返回：
+`SUCCEEDED` 表示 Provider 按自身契约完成调用并获得成功响应。`useCapability` 返回：
 
-- `result.outcome = TOOL_COMPLETED`
-- `result.toolName`
+- `result.outcome = CAPABILITY_COMPLETED`
+- `result.capabilityName`
 - `result.invocationRef`
-- 主资源 `toolInvocation`
+- 主资源 `capabilityInvocation`
 
-工具原始复杂输出只保存在 `toolInvocation` 资源中，不重复内联到 `result`。
+模块原始复杂输出只保存在 `capabilityInvocation` 资源中，不重复内联到 `result`。
 
 ### 11.2 拒绝
 
 以下情况使用顶层 `REJECTED`，且 Provider 未被调用：
 
-- `toolRef` 未知、跨 execution 或完整性错误。
+- `capabilityRef` 未知、跨 execution 或完整性错误。
 - 动态输入不符合冻结 Schema。
 - execution 已收口。
 
 稳定错误码：
 
-- `TOOL_UNKNOWN`
-- `TOOL_SCOPE_MISMATCH`
-- `TOOL_INPUT_INVALID`
+- `CAPABILITY_UNKNOWN`
+- `CAPABILITY_SCOPE_MISMATCH`
+- `CAPABILITY_INPUT_INVALID`
 
 ### 11.3 已知失败
 
@@ -365,11 +374,11 @@ Provider 明确知道调用未成功时使用顶层 `FAILED`：
 - 服务端返回确定错误响应。
 - 输出不符合模块契约且模块能确定没有成功结果。
 
-错误码统一投影为 `TOOL_EXECUTION_FAILED`，模块诊断放入 `technicalFact` 和 invocation 资源。
+错误码统一投影为 `CAPABILITY_EXECUTION_FAILED`，模块诊断放入 `technicalFact` 和 invocation 资源。
 
 ### 11.4 结果未知
 
-调用已可能送达外部系统，但因超时、连接中断或进程异常无法确定结果时使用顶层 `UNKNOWN`，错误码为 `TOOL_OUTCOME_UNKNOWN`。框架不自动重放；Case Agent 根据用例和可用查询能力决定是否调查或重新设置。
+调用已可能送达外部系统，但因超时、连接中断或进程异常无法确定结果时使用顶层 `UNKNOWN`，错误码为 `CAPABILITY_OUTCOME_UNKNOWN`。框架不自动重放；Case Agent 根据用例和可用查询能力决定是否调查或重新设置。
 
 ### 11.5 并发与状态漂移
 
@@ -379,10 +388,10 @@ Provider 明确知道调用未成功时使用顶层 `FAILED`：
 
 每次调用至少保存两个追加事件：
 
-- `toolInvocationRequested`
-- `toolInvocationCompleted`、`toolInvocationFailed` 或 `toolInvocationOutcomeUnknown`
+- `capabilityInvocationRequested`
+- `capabilityInvocationCompleted`、`capabilityInvocationFailed` 或 `capabilityInvocationOutcomeUnknown`
 
-`toolInvocation` 资源包含：
+`capabilityInvocation` 资源包含：
 
 - 工具定义 digest 和名称。
 - 脱敏后的输入。
@@ -390,9 +399,9 @@ Provider 明确知道调用未成功时使用顶层 `FAILED`：
 - 模块返回状态、摘要和脱敏输出。
 - 对应 technical fact 引用（如果有）。
 
-工具调用进入 execution trace 和报告步骤，展示工具名、目的、状态和摘要。成功工具结果默认是外部状态事实，不自动成为 UI CHECK 的通过证据；业务检查仍由 Case Agent 使用 Scene、视觉、知识和允许的技术事实完成。
+能力调用进入 execution trace 和报告步骤，展示能力名、目的、状态和摘要。成功调用结果默认是外部状态事实，不自动成为 UI CHECK 的通过证据；业务检查仍由 Case Agent 使用 Scene、视觉、知识和允许的技术事实完成。
 
-Artifact Manifest 必须包含已使用的定义快照和 invocation 文件；未使用工具的 definition 仍属于冻结目录的一部分，但不要求单独展示在报告正文。
+Artifact Manifest 必须包含已经生成的 catalog、definition 和 invocation 文件；未使用能力的 definition 仍属于冻结目录的一部分，但不要求单独展示在报告正文。未调用 `queryCapabilities` 的非 Agent execution 不产生能力目录。
 
 ## 13. `bcm-cs` Provider
 
@@ -418,7 +427,7 @@ bcm-cs --output json capabilities describe <capability_id>
 
 Adapter 将 CLI 描述规范化为 Provider capability。无法得到受支持的 object input schema、缺少稳定 ID、缺少可执行调用描述或描述格式无效的单项能力被排除，并写入 catalog diagnostic；其他能力继续可用。
 
-首版在 execution 初始化时完整发现并冻结定义，以确保 `read(toolRef)`、动态校验和实际调用使用同一 Schema。若后续发现能力数量导致明显启动开销，再增加按 CLI 版本与服务地址绑定的共享缓存；首版不提前引入缓存一致性机制。
+首版在首次 `queryCapabilities` 时完整发现并冻结定义，以确保 `read(capabilityRef)`、动态校验和实际调用使用同一 Schema。若后续发现能力数量导致明显查询开销，再增加按 CLI 版本与服务地址绑定的共享缓存；首版不提前引入缓存一致性机制。
 
 ### 13.3 调用
 
@@ -441,29 +450,32 @@ authorization, token, access_token, refresh_token, password, cookie, set-cookie,
 
 Provider 可以追加模块专属字段，但不能关闭统一脱敏。脱敏只影响持久化和 Agent 投影，不改变实际调用参数。
 
-## 14. Execution 格式
+## 14. 格式与版本
 
-新增必需的 capability catalog、事件类型和 artifact manifest 绑定属于 execution 持久化格式变化，因此：
+能力模块是 execution 的独立可选子协议，不升级当前 execution schema 14：
 
-- `EXECUTION_SCHEMA_VERSION` 从 14 升为 15。
-- 新 Runtime 只创建和执行 schema 15。
-- schema 14 历史 execution 不迁移、不补写、不继续执行，保持现有“重跑生成当前格式”策略。
-- Reader、Completion、Result Integrity、Report 和测试同步只接受 schema 15。
+- `execution.json`、Scene、Case Flow、Result 和 Completion 格式保持不变。
+- `capabilities/catalog.snapshot.json` 使用独立 `schemaVersion: 1`。
+- `capabilityCatalogFrozen` 事件绑定目录 digest 和 schema 版本。
+- 没有目录冻结事件的 execution 表示尚未查询能力，不是格式损坏。
+- Continuation 发现冻结事件后必须复用并校验原目录，不重新发现。
+- Artifact Manifest 按现有规则纳入实际生成的能力文件。
 
-Agent-facing public contract 增加 `useTool` 后，`caseProtocolSha` 自然变化；新增 Provider 实现也通过 runtime implementation digest 绑定。
+Agent-facing public contract 增加 `queryCapabilities` 和 `useCapability` 后，`caseProtocolSha` 自然变化；新增 Provider 实现也通过 runtime implementation digest 绑定。旧的活动 execution 仍遵循现有协议和实现摘要匹配规则，不为能力模块增加迁移路径。
 
 ## 15. Prompt 与文档
 
 Case Agent Prompt 增加以下原则：
 
+- 建立 Baseline Flow 后、首次业务动作前调用一次 `queryCapabilities`；Continuation 仍读取同一冻结目录。
 - 工具目录中的能力均可按用例需要直接使用。
 - 工具用于建立或调查执行条件，不替代对 App 现场的业务判断。
 - 工具成功结果是调用时刻事实，不承诺外部状态持续不变。
 - 不因低概率并发主动重复查询；只有出现实际矛盾时才调查或重新设置。
-- `TOOL_OUTCOME_UNKNOWN` 不自动重放。
+- `CAPABILITY_OUTCOME_UNKNOWN` 不自动重放。
 - 工具明确失败属于技术或环境事实，不直接判产品 FAIL。
 
-`build-agent-facing-docs.js` 从权威契约生成 `useTool` 方法页、资源目录和定向错误恢复文档，不在 Prompt 中复制请求 Schema。
+`build-agent-facing-docs.js` 从权威契约生成 `queryCapabilities`、`useCapability` 方法页、资源目录和定向错误恢复文档，不在 Prompt 中复制请求 Schema。
 
 ## 16. 测试策略
 
@@ -476,8 +488,9 @@ Case Agent Prompt 增加以下原则：
 ### 16.2 Snapshot 与引用
 
 - 相同定义产生稳定 digest。
-- `toolRef` 不可拼接、不可跨 execution、不可篡改。
-- Brief 只内联紧凑目录，完整 Schema 通过 `read` 获取。
+- `capabilityRef` 不可拼接、不可跨 execution、不可篡改。
+- 首次查询生成目录，重复查询不重新访问 Provider。
+- 查询结果只内联紧凑目录，完整 Schema 通过 `read` 获取。
 - continuation 复用原 execution 快照，不重新发现工具。
 
 ### 16.3 Broker
@@ -485,12 +498,12 @@ Case Agent Prompt 增加以下原则：
 - 动态 Schema 校验通过后才调用 Provider。
 - `SUCCEEDED / FAILED / UNKNOWN` 正确映射。
 - `UNKNOWN` 不触发自动重放。
-- finalized execution 只允许 `read`，不允许 `useTool`。
+- finalized execution 只允许 `read`，不允许 `queryCapabilities` 或 `useCapability`。
 - 输入、输出和错误诊断完成脱敏。
 
 ### 16.4 Transport
 
-- stdin 与 MCP 对相同 `useTool` 请求生成相同内部请求和响应。
+- stdin 与 MCP 对相同 `queryCapabilities`、`useCapability` 请求生成相同内部请求和响应。
 - MCP 继续直接使用公共权威 Schema。
 
 ### 16.5 `bcm-cs`
@@ -503,7 +516,7 @@ Case Agent Prompt 增加以下原则：
 
 ### 16.6 格式与报告
 
-- schema 15 全链路一致。
+- execution schema 保持 14，capability catalog schema 1 独立校验。
 - Artifact Manifest 覆盖目录和已调用产物。
 - execution trace 与 HTML 报告展示工具调用。
 - 全量 `node scripts/self-test.js` 通过。
@@ -513,39 +526,40 @@ Case Agent Prompt 增加以下原则：
 | 区域 | 改动 |
 |---|---|
 | `case-runtime/capability-modules/` | 新增 Provider contract、Registry、Broker、快照与 bcm-cs 模块 |
-| `case-runtime/lifecycle.js` | execution 初始化时构建目录；Brief 发布工具摘要和 ref |
-| `case-runtime/agent-facing-contract.js` | 新增 `useTool`、资源类型和错误定义 |
-| `case-runtime/agent-facing-translator.js` | 解析 tool ref，保留动态输入给 Broker 校验 |
-| `case-runtime/runtime-core.js` | 分派 `useTool`，接入时间预算和事件生命周期 |
+| `case-runtime/agent-facing-contract.js` | 新增 `queryCapabilities`、`useCapability`、资源类型和错误定义 |
+| `case-runtime/agent-facing-translator.js` | 解析 capability ref，保留动态输入给 Broker 校验 |
+| `case-runtime/runtime-broker.js` | 直接分派查询和使用能力，不进入设备 Runtime Core |
 | `case-runtime/agent-resource-store.js` | 发布 catalog、definition 和 invocation 资源 |
-| `case-runtime/mcp-server.js` | 通过公共契约自动暴露固定 `useTool` |
+| `case-runtime/mcp-server.js` | 通过公共契约自动暴露两个固定入口 |
 | `lib/agent-contract-manifest.js` | 确认模块进入 runtime implementation digest |
 | `lib/execution-artifact-manifest.js` | 纳入 capability 产物 |
 | `report/` | 将工具调用投影到 trace 和详情报告 |
 | `prompts/`、`references/` | 增加工具使用原则及生成文档 |
 | `tests/`、`self-test.js` | 增加模块、Broker、bcm-cs、报告和端到端测试 |
 
+明确不修改 Coordinator、Batch 状态机、Handoff、Case Brief、设备 Adapter、`act`、`runSequence`、Case Flow、Knowledge、CHECK ledger 和 verdict 聚合。
+
 ## 18. 实施顺序
 
 1. 先以测试定义 Provider contract、Catalog snapshot 和 opaque ref。
-2. 实现 Registry、Snapshot Store 和 execution 初始化集成。
-3. 以测试定义 `useTool` 公共契约和动态 Schema 校验。
+2. 实现 Registry、Snapshot Store 和首次查询冻结逻辑。
+3. 以测试定义 `queryCapabilities`、`useCapability` 公共契约和动态 Schema 校验。
 4. 实现 Broker、事件、资源和错误投影。
 5. 实现 fake Provider 端到端路径及 stdin/MCP 一致性。
 6. 实现 `bcm-cs` Provider 和 fake executable 测试。
-7. 更新 schema 15、Artifact Manifest、Reader 和完整性校验。
+7. 更新独立 catalog schema、Artifact Manifest 和完整性校验。
 8. 更新 Prompt、生成文档、trace 和 HTML 报告。
 9. 运行生成文档检查、定向测试和全量 self-test。
 
 ## 19. 验收标准
 
-1. Case Brief 能列出当前 execution 实际可用的具体工具。
-2. Agent 可读取任意工具的冻结 Schema，并通过 `useTool` 调用。
+1. Case Agent 建立 Baseline Flow 后可通过 `queryCapabilities` 获得当前 execution 实际可用的具体工具。
+2. Agent 可读取任意工具的冻结 Schema，并通过 `useCapability` 调用。
 3. 两个输入形式完全不同的 fake 模块可以同时注册和调用，无需修改 Broker。
 4. `bcm-cs` 可用时，其发现能力进入目录；HTTP 403 等不可用状态不阻断设备测试。
 5. 所有已发布工具均可直接调用，没有额外授权流程。
 6. 服务器变更不自动恢复，并发正常路径没有额外校验或重试。
 7. 调用的成功、失败和未知结果完整持久化并出现在报告中。
 8. stdin 与 MCP 共享同一契约和执行路径。
-9. schema 15、协议摘要、实现摘要和 Artifact Manifest 一致。
+9. execution schema 保持 14，catalog schema 1、协议摘要、实现摘要和 Artifact Manifest 一致。
 10. 全量 `node scripts/self-test.js` 通过。
