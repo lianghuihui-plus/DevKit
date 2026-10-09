@@ -93,7 +93,7 @@ git commit -m "feat(mavt): define capability provider contract"
 - Consumes: `appendEvent(execDir, type, payload, options)` and existing opaque resource helpers.
 - Produces: `loadCatalog(execDir)`, `freezeCatalog(execDir, discovery, options)`, `resolveCapability(execDir, capabilityRef)`, and typed resources `capabilityCatalog` / `capabilityDefinition`.
 
-- [ ] **Step 1: Write failing freeze and integrity tests**
+- [x] **Step 1: Write failing freeze and integrity tests**
 
 ```js
 const first = freezeCatalog(execDir, discovery, { now: () => '2026-10-09T10:00:00.000Z' });
@@ -103,13 +103,13 @@ assert.strictEqual(readPublishedResource(execDir, first.available[0].capabilityR
 assert.throws(() => resolveCapability(otherExecDir, first.available[0].capabilityRef), /scope|integrity/i);
 ```
 
-- [ ] **Step 2: Run the focused suites and verify RED**
+- [x] **Step 2: Run the focused suites and verify RED**
 
 Run: `node scripts/tests/capability-catalog-store.test.js`
 
 Expected: FAIL because `snapshot-store.js` does not exist.
 
-- [ ] **Step 3: Implement immutable schema-1 snapshots**
+- [x] **Step 3: Implement immutable schema-1 snapshots**
 
 ```js
 // capability-modules/catalog.json
@@ -125,13 +125,13 @@ Expected: FAIL because `snapshot-store.js` does not exist.
 
 Write the catalog and per-definition JSON atomically, publish opaque refs through the existing store, and append one `capabilityCatalogFrozen` event containing only schema version, digest, and counts.
 
-- [ ] **Step 4: Run focused resource suites and verify GREEN**
+- [x] **Step 4: Run focused resource suites and verify GREEN**
 
 Run: `node scripts/self-test.js agentFacingResources capabilityCatalogStore`
 
 Expected: PASS; a second freeze reuses byte-equivalent data and never probes or rewrites.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add skills/mobile-ai-visual-test/scripts/case-runtime/capability-modules/snapshot-store.js skills/mobile-ai-visual-test/scripts/case-runtime/agent-resource-store.js skills/mobile-ai-visual-test/scripts/tests/agent-facing-resources.test.js skills/mobile-ai-visual-test/scripts/tests/capability-catalog-store.test.js skills/mobile-ai-visual-test/scripts/self-test.js
