@@ -97,8 +97,8 @@ const casePrompt = read('prompts/case-agent.md');
 const caseExecutionPrinciples = read('references/case-execution-principles.md');
 assert.ok(roleResources('case-executor').includes('references/case-execution-principles.md'));
 assert.match(casePrompt, /references\/case-execution-principles\.md/);
-assert.ok(Buffer.byteLength(casePrompt) + Buffer.byteLength(caseExecutionPrinciples) <= 10.5 * 1024,
-  'Case Agent prompt and execution principles must stay within the reviewed attention budget');
+assert.ok(Buffer.byteLength(casePrompt) + Buffer.byteLength(caseExecutionPrinciples) <= 10 * 1024,
+  'Case Agent prompt and execution principles must preserve attention-budget headroom');
 for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkpointId', 'turnId']) {
   assert.strictEqual(casePrompt.includes(obsolete), false, `Case Prompt must not expose ${obsolete}`);
 }
@@ -139,6 +139,8 @@ for (const [name, guidance] of [
     `${name} must direct knowledge lookup before result finalization`);
   assert.match(guidance, /现场证据.*明确技术事实.*完整解释.*才不查询/,
     `${name} must limit skipping knowledge to fully explained issues`);
+  assert.match(guidance, /知识不会影响下一步或结论.*才不查询/,
+    `${name} must only skip knowledge when it cannot affect the next action or verdict`);
   assert.match(guidance, /无适用候选.*现场证据|无候选.*不适用.*现场证据/,
     `${name} must preserve scene-based judgment after an unhelpful query`);
 }

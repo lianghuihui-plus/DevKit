@@ -130,6 +130,15 @@ assert.match(executionGranularityGuidance, /`runSequence`.*连续执行.*步骤�
 assert.match(executionGranularityGuidance, /同一执行意图.*两者.*优先.*`runSequence`/);
 assert.doesNotMatch(executionGranularityGuidance, /动作后需要立即判断|两个及以上动作已由当前证据完整确定/);
 assert.match(executionGranularityGuidance, /自动保存动作后截图.*最终完整 Scene.*不要机械添加 capture/);
+assert.match(executionGranularityGuidance,
+  /Toast、Snackbar.*同一 `runSequence`[\s\S]*动作、等待、`SCREENSHOT_ONLY`、等待、`SCREENSHOT_ONLY`/,
+  'transient visual evidence must use two delayed lightweight captures in the triggering sequence');
+assert.match(executionGranularityGuidance,
+  /两次等待.*由 Agent.*按业务和平台.*分别决定.*不设统一时长/,
+  'the Agent must choose both transient capture delays from the business and platform context');
+assert.match(executionGranularityGuidance,
+  /Runtime 自动.*最终完整 Scene.*不计入.*不能替代.*两次采集/,
+  'the automatic final full Scene must not replace either transient capture');
 assert.match(CASE_PUBLIC_CONTRACT.methods.act.summary, /一个动作.*新 Scene.*控制权.*Agent/);
 assert.match(CASE_PUBLIC_CONTRACT.methods.runSequence.summary, /连续执行预先给定的动作.*步骤间不交还控制权.*最终 Scene/);
 const knowledgeGuidance = [
