@@ -18,6 +18,8 @@ const {
 } = require('../case-runtime/agent-facing-translator');
 const { run } = require('../case-runtime/agent-facing-client');
 const runtimeStore = require('../case-runtime/store');
+const runtimeCore = require('../case-runtime/runtime-core');
+const { loadCatalog } = require('../case-runtime/capability-modules/snapshot-store');
 const agentResources = require('../case-runtime/agent-resource-store');
 const { createActionSpatialEvidence, projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 const { readJson, writeJsonAtomic } = require('../lib/execution-lifecycle');
@@ -254,6 +256,49 @@ assertEnvelope(replayedPlan);
 assert.strictEqual(replayedPlan.result.idempotent, true);
 assert.strictEqual(replayedPlan.result.revision, 1);
 assert.strictEqual(runtimeStore.events(execDir).filter((event) => event.type === 'caseFlowRevised').length, 1);
+
+const capabilityProvider = {
+  manifest: { id: 'fixture', version: '1.0.0', summary: 'Fixture capability provider' },
+  probe() { return { status: 'READY', implementationVersion: 'fixture 1', discoverySeed: null }; },
+  listCapabilities() {
+    return [{
+      name: 'student.update', summary: 'Update one student',
+      inputSchema: {
+        type: 'object', additionalProperties: false,
+        properties: { studentId: { type: 'string', minLength: 1 } }, required: ['studentId'],
+      },
+    }];
+  },
+  invoke({ input }) {
+    return { status: 'SUCCEEDED', summary: `student ${input.studentId} updated`, output: { studentId: input.studentId } };
+  },
+};
+const originalRuntimeExecute = runtimeCore.execute;
+let capabilityRuntimeCoreCalls = 0;
+runtimeCore.execute = (...args) => {
+  capabilityRuntimeCoreCalls += 1;
+  return originalRuntimeExecute(...args);
+};
+try {
+  const catalogResponse = run(execDir, request('queryCapabilities'), {
+    capabilityProviders: [capabilityProvider], now: '2026-09-11T00:00:01.710Z',
+  });
+  assertEnvelope(catalogResponse);
+  const capabilityRef = catalogResponse.data.content.available[0].capabilityRef;
+  const definitionResponse = run(execDir, request('read', { ref: capabilityRef }));
+  assertEnvelope(definitionResponse);
+  assert.strictEqual(definitionResponse.data.type, 'capabilityDefinition');
+  const invocationResponse = run(execDir, request('useCapability', {
+    capabilityRef, input: { studentId: '42' }, purpose: '准备学员数据', flowContext: { nodeRef: 'N1' },
+  }), { capabilityProviders: [capabilityProvider], now: '2026-09-11T00:00:01.720Z' });
+  assertEnvelope(invocationResponse);
+  assert.strictEqual(invocationResponse.result.outcome, 'CAPABILITY_COMPLETED');
+} finally {
+  runtimeCore.execute = originalRuntimeExecute;
+}
+assert.strictEqual(capabilityRuntimeCoreCalls, 0, 'capability query and invocation must bypass device Runtime Core');
+assert.strictEqual(readJson(path.join(execDir, 'execution.json')).schemaVersion, 14);
+assert.strictEqual(loadCatalog(execDir).schemaVersion, 1);
 
 const spatialRef = createActionSpatialEvidence(execDir, {
   operationId: 'action-0001',

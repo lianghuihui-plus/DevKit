@@ -375,7 +375,7 @@ git commit -m "docs(mavt): publish capability usage to agents and reports"
 - Consumes: complete Agent-facing capability flow.
 - Produces: regression proof that capability query/use is additive and old executions remain governed by existing protocol digest checks.
 
-- [ ] **Step 1: Add a failing end-to-end test**
+- [x] **Step 1: Add a failing end-to-end test**
 
 ```js
 // plan -> queryCapabilities -> read(definition) -> useCapability -> observe/finish
@@ -384,23 +384,23 @@ assert.strictEqual(readJson(path.join(execDir, 'execution.json')).schemaVersion,
 assert.strictEqual(loadCatalog(execDir).schemaVersion, 1);
 ```
 
-- [ ] **Step 2: Run focused end-to-end tests and verify RED**
+- [x] **Step 2: Run focused end-to-end tests and verify RED**
 
 Run: `node scripts/self-test.js agentFacingCaseRuntime boundaries entrypoints`
 
 Expected: FAIL until formal entrypoints and architecture assertions recognize the two additive operations.
 
-- [ ] **Step 3: Complete only the compatibility wiring exposed by the failing tests**
+- [x] **Step 3: Complete only the compatibility wiring exposed by the failing tests**
 
 Keep finalized execution behavior unchanged: only `read` remains available after finalization. Keep `runtimeSha` coverage automatic through the existing recursive `scripts/case-runtime/` implementation digest.
 
-- [ ] **Step 4: Run full verification**
+- [x] **Step 4: Run full verification**
 
 Run: `node scripts/self-test.js`
 
 Expected: every registered suite passes with no warnings.
 
-- [ ] **Step 5: Inspect the diff and commit**
+- [x] **Step 5: Inspect the diff and commit**
 
 ```bash
 git diff --check

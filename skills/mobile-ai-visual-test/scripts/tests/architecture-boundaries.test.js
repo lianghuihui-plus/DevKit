@@ -65,6 +65,8 @@ assert.deepStrictEqual(roleResources('case-executor').sort(), [
   'references/case-runtime/methods/observe.md',
   'references/case-runtime/methods/inspect.md',
   'references/case-runtime/methods/plan.md',
+  'references/case-runtime/methods/query-capabilities.md',
+  'references/case-runtime/methods/use-capability.md',
   'references/case-runtime/methods/record-result.md',
   'references/case-runtime/methods/act.md',
   'references/case-runtime/methods/run-sequence.md',
@@ -73,6 +75,7 @@ assert.deepStrictEqual(roleResources('case-executor').sort(), [
   'references/case-runtime/methods/finish.md',
   'references/case-runtime/action-refs.md',
   'references/case-runtime/errors.md',
+  'references/case-runtime/errors/capability.md',
   'references/case-runtime/errors/transport.md',
   'references/case-runtime/errors/scene-action.md',
   'references/case-runtime/errors/sequence.md',
@@ -110,6 +113,7 @@ assert.match(casePrompt, /checkNodeRef/);
 assert.match(casePrompt, /view_image/);
 assert.match(casePrompt, /统一 `read`/);
 assert.match(casePrompt, /observe.*inspect.*plan.*recordResult.*act.*runSequence.*knowledge.*recover.*finish/);
+assert.match(casePrompt, /plan.*queryCapabilities.*useCapability.*recordResult/);
 assert.match(casePrompt, /动态值只取自当前 Brief、Scene 或响应/);
 assert.doesNotMatch(casePrompt, /retryWith|nextCall|technicalContext/);
 assert.match(casePrompt, /控件树为空.*不得.*页面空白/);

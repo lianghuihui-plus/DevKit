@@ -39,7 +39,7 @@ input.flowContext: { nodeRef: string; selectedEdgeRef?: string }
 
 ## 副作用
 
-- 调用所选 Provider；外部修改持续存在
+- 调用所选能力实现；外部修改持续存在
 - 追加调用事件并保存脱敏 invocation 资源
 
 ## 幂等性

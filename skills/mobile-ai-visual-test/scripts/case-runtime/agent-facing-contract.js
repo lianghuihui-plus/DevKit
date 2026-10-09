@@ -295,7 +295,7 @@ const PUBLIC_METHODS = Object.freeze({
     responseProjection: projection(['catalogRef', 'availableCount'], 'capabilityCatalog', ['capabilityDefinition']),
     successStatuses: ['CAPABILITY_CATALOG_READY'],
     sideEffects: ['首次查询冻结能力目录并追加目录事件'],
-    idempotency: '首次查询后始终读取同一冻结目录，不再探测 Provider。',
+    idempotency: '首次查询后始终读取同一冻结目录，不再探测能力实现。',
     minimalExample: { operation: 'queryCapabilities', input: {} },
   }),
   useCapability: method('useCapability', '调用当前冻结目录中的一项外部能力。', SCHEMAS.useCapability, {
@@ -307,7 +307,7 @@ const PUBLIC_METHODS = Object.freeze({
     contextualValidationRules: ['先调用 queryCapabilities，再读取所选 capabilityRef 的 definition；不拼接引用。'],
     successStatuses: ['CAPABILITY_COMPLETED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'CAPABILITY_UNKNOWN', 'CAPABILITY_SCOPE_MISMATCH', 'CAPABILITY_INPUT_INVALID', 'CAPABILITY_EXECUTION_FAILED', 'CAPABILITY_OUTCOME_UNKNOWN', 'CASE_RUNTIME_FINALIZED', 'CASE_RUNTIME_TECHNICAL'],
-    sideEffects: ['调用所选 Provider；外部修改持续存在', '追加调用事件并保存脱敏 invocation 资源'],
+    sideEffects: ['调用所选能力实现；外部修改持续存在', '追加调用事件并保存脱敏 invocation 资源'],
     idempotency: '不自动重试；每次请求都是独立调用，UNKNOWN 禁止盲目重放。',
     minimalExample: { operation: 'useCapability', input: {
       capabilityRef: 'mavt:0123456789abcdef01234567:capabilityDefinition:definition-1',
