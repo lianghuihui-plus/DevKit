@@ -35,7 +35,7 @@
 - Consumes: `validateAgentJson(value, schema, options)` from `scripts/lib/agent-json-contract.js`.
 - Produces: `validateProvider(provider)`, `validateCapabilityDefinition(definition)`, `createRegistry(providers)`, and `registry.discover(context)`.
 
-- [ ] **Step 1: Write the failing provider and registry tests**
+- [x] **Step 1: Write the failing provider and registry tests**
 
 ```js
 assert.throws(() => validateProvider({ manifest: { id: 'Bad ID' } }), /manifest/i);
@@ -46,13 +46,13 @@ assert.deepStrictEqual(createRegistry([readyProvider, unavailableProvider]).disc
 });
 ```
 
-- [ ] **Step 2: Run the focused suite and verify RED**
+- [x] **Step 2: Run the focused suite and verify RED**
 
 Run: `node scripts/tests/capability-module-contract.test.js`
 
 Expected: FAIL because `capability-modules/contract.js` does not exist.
 
-- [ ] **Step 3: Implement strict manifest, definition, and registry validation**
+- [x] **Step 3: Implement strict manifest, definition, and registry validation**
 
 ```js
 function createRegistry(providers) {
@@ -67,13 +67,13 @@ function createRegistry(providers) {
 }
 ```
 
-- [ ] **Step 4: Run the suite and verify GREEN**
+- [x] **Step 4: Run the suite and verify GREEN**
 
 Run: `node scripts/tests/capability-module-contract.test.js`
 
 Expected: PASS with READY, UNAVAILABLE, malformed, and duplicate-provider cases covered.
 
-- [ ] **Step 5: Register the suite and commit**
+- [x] **Step 5: Register the suite and commit**
 
 ```bash
 git add skills/mobile-ai-visual-test/scripts/case-runtime/capability-modules/contract.js skills/mobile-ai-visual-test/scripts/case-runtime/capability-modules/registry.js skills/mobile-ai-visual-test/scripts/tests/capability-module-contract.test.js skills/mobile-ai-visual-test/scripts/self-test.js

@@ -45,6 +45,7 @@ const suites = Object.freeze({
   caseFlow: 'tests/case-flow-service.test.js',
   caseFlowResultIntegrity: 'tests/case-flow-result-integrity.test.js',
   caseStatusProjection: 'tests/case-status-projection.test.js',
+  capabilityModuleContract: 'tests/capability-module-contract.test.js',
   caseRuntime: 'tests/case-runtime.test.js',
   actionRequest: 'tests/action-request.test.js',
   actionSequenceHooks: 'tests/action-sequence-hooks.test.js',
