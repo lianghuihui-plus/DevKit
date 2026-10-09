@@ -272,7 +272,7 @@ git commit -m "feat(mavt): invoke frozen agent capabilities"
 - Consumes: `/Users/cm/.bcm-cs/bin/bcm-cs` by default, overrideable as `context.bcmCsExecutable` in tests, and controlled `execFileSync` injection.
 - Produces: provider manifest `id: 'bcm-cs'`; discovery from `--output json capabilities list/describe`; invocation from the frozen CLI execution descriptor.
 
-- [ ] **Step 1: Write a fake executable and failing provider tests**
+- [x] **Step 1: Write a fake executable and failing provider tests**
 
 ```js
 const provider = createBcmCsProvider({ executable: fakeExecutable });
@@ -284,13 +284,13 @@ assert.deepStrictEqual(provider.invoke({ capability: definitions[0], input: { st
 
 The fixture must record argv and return realistic complete JSON for version, list, describe, success, failure, malformed output, 403, and timeout cases.
 
-- [ ] **Step 2: Run the focused suite and verify RED**
+- [x] **Step 2: Run the focused suite and verify RED**
 
 Run: `node scripts/tests/bcm-cs-capability-provider.test.js`
 
 Expected: FAIL because the provider does not exist.
 
-- [ ] **Step 3: Implement bounded CLI discovery and invocation**
+- [x] **Step 3: Implement bounded CLI discovery and invocation**
 
 ```js
 execFileSync(executable, ['--output', 'json', 'capabilities', 'describe', capabilityId], {
@@ -300,13 +300,13 @@ execFileSync(executable, ['--output', 'json', 'capabilities', 'describe', capabi
 
 Reuse `probeResult.discoverySeed`, exclude malformed individual descriptions with diagnostics, never use a shell, never accept executable/path/flags from Agent input, and map uncertain process outcomes to `UNKNOWN`.
 
-- [ ] **Step 4: Run provider and broker suites and verify GREEN**
+- [x] **Step 4: Run provider and broker suites and verify GREEN**
 
 Run: `node scripts/self-test.js bcmCsCapabilityProvider capabilityModuleContract agentFacingCapabilityQuery agentFacingCapabilityInvocation`
 
 Expected: PASS without contacting the live BCM service.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add skills/mobile-ai-visual-test/scripts/case-runtime/capability-modules skills/mobile-ai-visual-test/scripts/tests/bcm-cs-capability-provider.test.js skills/mobile-ai-visual-test/scripts/self-test.js

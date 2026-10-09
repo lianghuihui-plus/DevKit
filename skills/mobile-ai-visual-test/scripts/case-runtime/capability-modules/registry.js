@@ -41,7 +41,7 @@ function createRegistry(providers = []) {
           const listed = provider.listCapabilities(context, probeResult);
           if (!Array.isArray(listed)) throw contractError('CAPABILITY_DISCOVERY_INVALID', 'provider list must return an array');
           const definitions = [];
-          const diagnostics = [];
+          const diagnostics = [...(listed.diagnostics || [])];
           const names = new Set();
           for (const candidate of listed) {
             try {
@@ -72,4 +72,8 @@ function createRegistry(providers = []) {
   });
 }
 
-module.exports = { createRegistry };
+function defaultProviders() {
+  return [require('./modules/bcm-cs')];
+}
+
+module.exports = { createRegistry, defaultProviders };

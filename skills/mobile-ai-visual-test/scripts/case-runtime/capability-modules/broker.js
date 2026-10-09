@@ -2,7 +2,7 @@
 
 const path = require('path');
 const { validateAgentJson } = require('../../lib/agent-json-contract');
-const { createRegistry } = require('./registry');
+const { createRegistry, defaultProviders } = require('./registry');
 const { beginInvocation, completeInvocation } = require('./invocation-store');
 const { CATALOG_RELATIVE, definitionDigest, freezeCatalog, loadCatalog, resolveCapability } = require('./snapshot-store');
 const resources = require('../agent-resource-store');
@@ -26,7 +26,7 @@ function providerContext(execDir, options = {}) {
 }
 
 function registryFor(options) {
-  return options.capabilityRegistry || createRegistry(options.capabilityProviders || []);
+  return options.capabilityRegistry || createRegistry(options.capabilityProviders || defaultProviders());
 }
 
 function queryCapabilities(execDir, options = {}) {

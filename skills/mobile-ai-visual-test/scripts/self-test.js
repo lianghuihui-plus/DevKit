@@ -64,6 +64,7 @@ const suites = Object.freeze({
   sceneCaptureOrigin: 'tests/scene-capture-origin.test.js',
   batchCancellation: 'tests/batch-cancellation.test.js',
   batchReconcile: 'tests/batch-reconcile.test.js',
+  bcmCsCapabilityProvider: 'tests/bcm-cs-capability-provider.test.js',
   crossPlatformExecution: 'tests/cross-platform-execution.test.js',
   runtimeEnhancements: 'tests/runtime-enhancements.test.js',
   resultMatrix: 'tests/result-matrix.test.js',
