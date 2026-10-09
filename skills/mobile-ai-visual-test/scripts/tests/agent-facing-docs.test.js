@@ -90,7 +90,7 @@ function assertContract(contract, expectedMethods) {
   }
 }
 
-assertContract(caseContract, ['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
+assertContract(caseContract, ['observe', 'read', 'inspect', 'plan', 'queryCapabilities', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
 assertContract(coordinatorContract, ['prepareRun', 'confirmRun', 'advanceRun', 'cancelRun', 'read']);
 assert.ok(caseContract.methods.finish.contextualValidationRules.some((rule) =>
   /预期不符.*操作无效果.*异常反复.*无法形成可靠判断.*优先.*知识调查.*现场证据.*技术事实.*才不查询/.test(rule)),

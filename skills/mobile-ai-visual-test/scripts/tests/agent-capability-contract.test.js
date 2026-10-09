@@ -73,7 +73,7 @@ assert.ok(validateCoordinatorRequest({ operation: 'read', input: { ref: 'run-sum
 assert.strictEqual(CASE_PUBLIC_CONTRACT.protocol, 'agent-facing');
 assert.deepStrictEqual(Object.keys(CASE_PUBLIC_CONTRACT.methods), AGENT_FACING_CAPABILITIES);
 assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
-assert.strictEqual(AGENT_FACING_CAPABILITIES.length, 10, 'Case Agent contract includes the uniform resource reader');
+assert.strictEqual(AGENT_FACING_CAPABILITIES.length, 11, 'Case Agent contract includes resource reading and capability discovery');
 assertExamples(CASE_PUBLIC_CONTRACT.methods, validateAgentFacingRequest, { forbidPaths: true });
 assert.ok(roleResources('case-executor').includes('references/case-execution-principles.md'));
 

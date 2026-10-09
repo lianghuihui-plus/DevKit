@@ -211,6 +211,7 @@ function translateAgentFacingRequest(execDir, request) {
   if (structural.length) throw inputError(structural);
   request = { ...request.input, operation: request.operation };
   if (request.operation === 'read') return { operation: 'read', ref: request.ref };
+  if (request.operation === 'queryCapabilities') return { operation: 'queryCapabilities' };
   request = require('./agent-resource-store').resolveRequestReferences(execDir, request);
   if (request.operation === 'act') request = { ...request, ...facadeAction(request.action),
     purpose: request.purpose || '执行 Agent 选择的动作' };
@@ -419,6 +420,8 @@ function projectResponseResult(response, request, provided = {}) {
     verificationRequired: response.status === 'EXTERNAL_ACTION_RECORDED' ? true : undefined,
     preparationState: request?.operation === 'recover' && request.input?.mode === 'prepare'
       ? response.preparation?.status : undefined,
+    catalogRef: response.catalogRef,
+    availableCount: response.availableCount,
     executionId: response.executionId,
     verdict: response.verdict,
     ...response.result,

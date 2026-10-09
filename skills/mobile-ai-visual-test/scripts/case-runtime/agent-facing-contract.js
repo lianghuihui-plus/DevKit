@@ -8,7 +8,7 @@ const { MAX_SEQUENCE_STEPS, MAX_SEQUENCE_DURATION_MS, validateSequenceRequest } 
 const { GRID_MAX } = require('../lib/visual-coordinate-grid');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
-const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
+const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'queryCapabilities', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
 const STRING = { type: 'string', minLength: 1 };
 const STRING_ARRAY = { type: 'array', items: STRING };
 const RESOURCE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:[^:]+:.+$' };
@@ -111,6 +111,7 @@ const SCHEMAS = Object.freeze({
     observation: STRING, checkNodeRefs: STRING_ARRAY, flowContext: FLOW_CONTEXT,
   }, ['mode', 'sceneRef', 'observation'])) },
   plan: object({ caseFlow: CASE_FLOW_UPDATE }, ['caseFlow']),
+  queryCapabilities: object({}, []),
   recordResult: object({
     results: { type: 'array', minItems: 1, items: RESULT_REQUEST },
   }, ['results']),
@@ -276,6 +277,13 @@ const PUBLIC_METHODS = Object.freeze({
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REVISION_CONFLICT', 'CASE_FLOW_NODE_IDENTITY_CHANGED', 'CASE_FLOW_EDGE_IDENTITY_CHANGED', 'CASE_RUNTIME_TECHNICAL'],
     idempotency: '规范化后语义等价的 Case Flow 请求只写一次 revision，幂等键由框架内部派生。',
     minimalExample: { operation: 'plan', input: { caseFlow: { baseRevision: null, summary: '验证目标', entryNodeRef: 'N1', nodes: [{ ref: 'N1', type: 'CHECK', text: '结果可见', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' }, { ref: 'N2', type: 'END', text: '完成' }], edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [] } } },
+  }),
+  queryCapabilities: method('queryCapabilities', '查询并冻结当前 execution 可用的外部能力目录。', SCHEMAS.queryCapabilities, {}, {
+    responseProjection: projection(['catalogRef', 'availableCount'], 'capabilityCatalog', ['capabilityDefinition']),
+    successStatuses: ['CAPABILITY_CATALOG_READY'],
+    sideEffects: ['首次查询冻结能力目录并追加目录事件'],
+    idempotency: '首次查询后始终读取同一冻结目录，不再探测 Provider。',
+    minimalExample: { operation: 'queryCapabilities', input: {} },
   }),
   recordResult: method('recordResult', '独立记录验证点结果，不采集 Scene、不执行动作。', SCHEMAS.recordResult, {
     results: '已形成判断的验证结果和证据引用',

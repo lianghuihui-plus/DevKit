@@ -155,7 +155,7 @@ git commit -m "feat(mavt): freeze capability catalogs per execution"
 - Consumes: `createRegistry(providers)`, `freezeCatalog(execDir, discovery, options)`, and the existing Agent-facing response envelope.
 - Produces: public `queryCapabilities({})` and `queryCapabilities(execDir, options)` in the capability broker.
 
-- [ ] **Step 1: Write failing public-contract and query tests**
+- [x] **Step 1: Write failing public-contract and query tests**
 
 ```js
 assert.deepStrictEqual(validateAgentFacingRequest({ operation: 'queryCapabilities', input: {} }), []);
@@ -165,13 +165,13 @@ assert.deepStrictEqual(response.result.available.map((item) => item.name), ['fix
 assert.strictEqual(response.data.type, 'capabilityCatalog');
 ```
 
-- [ ] **Step 2: Run focused suites and verify RED**
+- [x] **Step 2: Run focused suites and verify RED**
 
 Run: `node scripts/tests/agent-facing-capability-query.test.js`
 
 Expected: FAIL because `queryCapabilities` is not in the public contract.
 
-- [ ] **Step 3: Add the fixed operation and direct Broker dispatch**
+- [x] **Step 3: Add the fixed operation and direct Broker dispatch**
 
 ```js
 if (request.operation === 'queryCapabilities') {
@@ -181,13 +181,13 @@ if (request.operation === 'queryCapabilities') {
 
 The operation must not enter `runtimeCore.execute`; it returns compact names, summaries, refs, unavailable diagnostics, and the catalog as primary data.
 
-- [ ] **Step 4: Run public-contract, transport, and query suites and verify GREEN**
+- [x] **Step 4: Run public-contract, transport, and query suites and verify GREEN**
 
 Run: `node scripts/self-test.js agentCapabilityContract agentFacingTransportParity agentFacingCapabilityQuery`
 
 Expected: PASS with identical stdin/MCP translation and repeated-query snapshot reuse.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add skills/mobile-ai-visual-test/scripts/case-runtime skills/mobile-ai-visual-test/scripts/tests skills/mobile-ai-visual-test/scripts/self-test.js

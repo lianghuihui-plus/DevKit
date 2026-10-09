@@ -430,6 +430,12 @@ function provideOperationResources(execDir, response, request) {
   const result = {};
   let primary;
   const add = (value) => { if (value) published.push(value); return value; };
+  if (request.operation === 'queryCapabilities' && response.catalogRef) {
+    const value = add(readPublishedResource(execDir, response.catalogRef));
+    primary = value;
+    result.catalogRef = value.data.ref;
+    result.availableCount = value.data.content.availableCount;
+  }
   if (request.operation === 'finish' && response.code === 'CASE_FINAL_REVIEW_REQUIRED') {
     result.finalReviewRequired = true;
     result.finalReviewInstruction = '请重新阅读下面的完整原始用例，确认最终结果覆盖其完整业务目标、条件分支和最终结果；不要只根据 CHECK ledger 是否完整来结束用例。核对后重新提交 finish，无需回复确认。';

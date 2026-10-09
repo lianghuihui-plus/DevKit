@@ -33,7 +33,7 @@ function executeAgentRequest(execDir, request, options = {}) {
 }
 
 function executeFacadeRequest(execDir, request, options = {}) {
-  if (['reviewKnowledge', 'recordCaseFlow', 'recordExpectationResults', 'prepare'].includes(request?.operation)) {
+  if (['queryCapabilities', 'reviewKnowledge', 'recordCaseFlow', 'recordExpectationResults', 'prepare'].includes(request?.operation)) {
     const resolved = path.resolve(execDir);
     const runtime = readJson(path.join(resolved, 'runtime.json'), null);
     if (!isSupportedBroker(runtime?.broker) || !runtime?.entry) {
@@ -43,6 +43,9 @@ function executeFacadeRequest(execDir, request, options = {}) {
       };
     }
     require('./lifecycle').recordTimingAnchor({ executionDir: resolved, field: 'handoffConsumedAt', now: options.now, lockHeld: options.lockHeld });
+    if (request.operation === 'queryCapabilities') {
+      return require('./capability-modules/broker').queryCapabilities(resolved, options);
+    }
     return runtimeCore.execute(resolved, request, options);
   }
   return executeAgentRequest(execDir, request, options);
