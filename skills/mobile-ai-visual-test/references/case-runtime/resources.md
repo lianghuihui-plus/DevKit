@@ -18,6 +18,9 @@
 | 类型 | 内容 |
 |---|---|
 | `caseBrief` | 冻结的 Case Agent prompt、用例和 execution 启动信息。 |
+| `capabilityCatalog` | 当前 execution 冻结的外部能力目录。 |
+| `capabilityDefinition` | 一项外部能力的冻结定义和输入 Schema。 |
+| `capabilityInvocation` | 一次外部能力调用的脱敏结果记录。 |
 | `scene` | 一次采集的完整 Scene 与截图、布局、控件资源引用。 |
 | `screenshot` | 唯一的 Agent 视觉截图；App 内容外自带四边 0–10000 坐标标尺和内容区域元数据。 |
 | `layout` | 该 Scene 的完整原始控件树；按 mediaType 返回 JSON 对象或 XML 文本。 |

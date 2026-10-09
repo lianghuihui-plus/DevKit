@@ -13,7 +13,7 @@ const { assertCurrentExecution, currentDisplayModel, readExecutionReport, select
 const { findActiveExecutions } = require('../lib/execution-lifecycle');
 const { createExecutionClosure } = require('../lib/execution-closure');
 const { completionPaths, sha256File } = require('../lib/completion-contract');
-const { buildExecutionArtifactManifest, validateExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
+const { buildExecutionArtifactManifest, executionArtifactFiles, validateExecutionArtifactManifest } = require('../lib/execution-artifact-manifest');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -21,6 +21,20 @@ process.env.MAVT_SELF_TEST = '1';
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-reader-'));
 const workspace = path.join(temp, 'workspace');
 createTestWorkspace(workspace);
+
+const capabilityArtifactDir = path.join(temp, 'capability-artifact-execution');
+fs.mkdirSync(path.join(capabilityArtifactDir, 'capabilities', 'definitions'), { recursive: true });
+fs.mkdirSync(path.join(capabilityArtifactDir, 'capabilities', 'invocations'), { recursive: true });
+fs.writeFileSync(path.join(capabilityArtifactDir, 'execution.json'), JSON.stringify({ schemaVersion: 14 }));
+fs.writeFileSync(path.join(capabilityArtifactDir, 'capabilities', 'catalog.snapshot.json'), '{}');
+fs.writeFileSync(path.join(capabilityArtifactDir, 'capabilities', 'definitions', 'definition.json'), '{}');
+fs.writeFileSync(path.join(capabilityArtifactDir, 'capabilities', 'invocations', 'invocation.json'), '{}');
+assert.deepStrictEqual(executionArtifactFiles(capabilityArtifactDir), [
+  'capabilities/catalog.snapshot.json',
+  'capabilities/definitions/definition.json',
+  'capabilities/invocations/invocation.json',
+  'execution.json',
+]);
 
 const fixtures = new Map();
 for (const verdict of ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']) {

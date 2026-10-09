@@ -85,6 +85,7 @@ assert.deepStrictEqual(trace.narrative.operationMetrics, {
   standaloneActCount: 1,
   sequenceCount: 1,
   sequenceActionCount: 2,
+  capabilityCount: 0,
 });
 assert.strictEqual(trace.narrative.operationGroups.length, 2);
 const sequenceGroup = trace.narrative.operationGroups.find((group) => group.kind === 'RUN_SEQUENCE');

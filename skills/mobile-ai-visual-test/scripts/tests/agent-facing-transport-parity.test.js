@@ -39,7 +39,8 @@ for (const definition of definitions) {
   assert.deepStrictEqual(propertyPaths(definition.inputSchema, 'operation'),
     definition.name === 'knowledge' ? ['context.operation'] : [],
     `${definition.name} schema exposes operation outside the allowed knowledge query context`);
-  assert.strictEqual(encoded.includes('capability'), false, `${definition.name} capability is bound by its MCP tool name`);
+  assert.deepStrictEqual(propertyPaths(definition.inputSchema, 'capability'), [],
+    `${definition.name} must not expose the obsolete capability selector`);
   const method = PUBLIC_CONTRACT.methods[definition.name];
   assert.deepStrictEqual(definition.inputSchema, method.inputSchema);
   assert.strictEqual(definition.inputSchema, method.inputSchema, 'MCP must expose the authoritative schema directly');

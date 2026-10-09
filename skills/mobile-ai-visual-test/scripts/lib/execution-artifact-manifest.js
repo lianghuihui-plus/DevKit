@@ -19,7 +19,7 @@ const CURRENT_ROOT_FILES = new Set([
   'metrics.json',
   'validation-profile.snapshot.json',
 ]);
-const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge', 'action-spatial-evidence', 'scenes', 'operations', 'telemetry']);
+const EVIDENCE_DIRS = new Set(['screenshots', 'layouts', 'logs', 'knowledge', 'action-spatial-evidence', 'scenes', 'operations', 'telemetry', 'capabilities']);
 
 function manifestPath(execDir) {
   return path.join(execDir, MANIFEST_FILE);

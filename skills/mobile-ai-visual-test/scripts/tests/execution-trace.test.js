@@ -55,6 +55,57 @@ assert.strictEqual(trace.narrative.steps.length, 1);
 assert.strictEqual(trace.narrative.finalDecision.conclusion, '验证结果为 PASS');
 assert.strictEqual(trace.narrative.coverage.covered, 1);
 
+const capabilitySecret = 'secret-token-value';
+const capabilityReport = {
+  ...report,
+  events: [...report.events, {
+    schemaVersion: 1,
+    sequence: 100,
+    time: '2026-10-09T10:00:00.000Z',
+    type: 'capabilityInvocationRequested',
+    capabilityInvocationId: 'capability-invocation-0001',
+    capabilityName: 'bcm-cs.student.update',
+    purpose: '准备学员数据',
+    flowContext: { nodeRef: 'N1', selectedEdgeRef: 'L1' },
+    input: { studentId: '42', token: capabilitySecret },
+  }, {
+    schemaVersion: 1,
+    sequence: 101,
+    time: '2026-10-09T10:00:01.000Z',
+    type: 'capabilityInvocationCompleted',
+    capabilityInvocationId: 'capability-invocation-0001',
+    capabilityName: 'bcm-cs.student.update',
+    purpose: '准备学员数据',
+    status: 'SUCCEEDED',
+    summary: '学员配置已更新',
+  }],
+};
+const capabilityTrace = buildExecutionTrace(capabilityReport);
+assert.strictEqual(capabilityTrace.capabilityInvocations.length, 1);
+assert.deepStrictEqual(capabilityTrace.capabilityInvocations[0], {
+  capabilityInvocationId: 'capability-invocation-0001',
+  capabilityName: 'bcm-cs.student.update',
+  purpose: '准备学员数据',
+  status: 'SUCCEEDED',
+  summary: '学员配置已更新',
+  time: '2026-10-09T10:00:01.000Z',
+  flowContext: { nodeRef: 'N1', selectedEdgeRef: 'L1' },
+  operationId: 'capability-invocation-0001',
+});
+assert.strictEqual(capabilityTrace.counts.capabilityInvocations, 1);
+assert.strictEqual(capabilityTrace.entries.some((entry) => entry.category === 'CAPABILITY'), true);
+const capabilityStep = capabilityTrace.narrative.steps.find((step) => step.operation === 'useCapability');
+assert.strictEqual(capabilityStep.capability.name, 'bcm-cs.student.update');
+assert.strictEqual(capabilityStep.capability.status, 'SUCCEEDED');
+assert.deepStrictEqual(capabilityStep.flowContext, { nodeRef: 'N1', selectedEdgeRef: 'L1' });
+assert.strictEqual(capabilityTrace.narrative.operationMetrics.capabilityCount, 1);
+assert.strictEqual(JSON.stringify(capabilityTrace).includes(capabilitySecret), false);
+const capabilityHtml = renderCurrentContextHtml(fixture.caseJson, capabilityReport);
+for (const text of ['bcm-cs.student.update', '准备学员数据', '学员配置已更新', 'CAPABILITY']) {
+  assert.ok(capabilityHtml.includes(text), text);
+}
+assert.strictEqual(capabilityHtml.includes(capabilitySecret), false);
+
 const initialFlowEvent = report.events.find((event) => event.type === 'caseFlowRevised');
 const revisedFlowEvent = {
   ...initialFlowEvent,

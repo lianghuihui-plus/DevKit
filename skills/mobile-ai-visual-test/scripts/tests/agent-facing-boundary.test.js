@@ -21,7 +21,7 @@ function assertInvalid(request, field, message) {
 assert.ok(AGENT_FACING_CAPABILITIES.includes('recordResult'));
 assert.ok(AGENT_FACING_CAPABILITIES.includes('runSequence'));
 
-assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'read', 'inspect', 'plan', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
+assert.deepStrictEqual(AGENT_FACING_CAPABILITIES, ['observe', 'read', 'inspect', 'plan', 'queryCapabilities', 'useCapability', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
 for (const method of Object.values(PUBLIC_CONTRACT.methods)) {
   assert.ok(method.responseProjection, `${method.name} must declare its response projection`);
   assertValid(method.minimalExample);
