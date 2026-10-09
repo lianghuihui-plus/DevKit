@@ -186,21 +186,28 @@ function validateKnowledgeClosure(result, events, execution = null) {
   };
 }
 
-function validateSearchAbsence(execDir, result, execution, expectationCoverage = null) {
+function searchAbsenceIssues(execDir, checks, execution, expectationCoverage = null) {
   const missing = [];
   const expectationByRef = new Map((expectationCoverage?.expectations || []).map((item) => [item.id, item]));
-  for (const check of result.checks) {
+  for (const check of checks) {
     const checkNodeRef = checkRef(check);
-    const searchFailure = expectationByRef.get(checkNodeRef)?.verificationKind === 'SEARCH_EXISTENCE'
+    const evidenceBasis = check.evidenceBasis || check.evidence?.evidenceBasis;
+    const sceneRefs = check.sceneRefs || check.evidence?.sceneRefs || [];
+    const verificationKind = expectationByRef.get(checkNodeRef)?.verificationKind || check.verificationKind;
+    const searchFailure = verificationKind === 'SEARCH_EXISTENCE'
       && check.status === 'FAIL';
-    if (searchFailure && check.evidenceBasis?.type !== 'SEARCH_ABSENCE') {
+    if (searchFailure && evidenceBasis?.type !== 'SEARCH_ABSENCE') {
       missing.push({ field: `checks.${checkNodeRef}.evidenceBasis`, reason: '搜索型验证点的不存在结论必须引用完整列表覆盖' });
       continue;
     }
-    if (check.evidenceBasis?.type !== 'SEARCH_ABSENCE') continue;
-    const ref = check.evidenceBasis.scrollContextRef;
-    const sceneRef = check.evidenceBasis.sceneRef;
-    if (!(check.sceneRefs || []).includes(sceneRef)) {
+    if (evidenceBasis?.type !== 'SEARCH_ABSENCE') continue;
+    if (check.status === 'PASS') {
+      missing.push({ field: `checks.${checkNodeRef}.evidenceBasis`, reason: 'PASS 结果不能使用不存在结论证据' });
+      continue;
+    }
+    const ref = evidenceBasis.scrollContextRef;
+    const sceneRef = evidenceBasis.sceneRef;
+    if (!sceneRefs.includes(sceneRef)) {
       missing.push({ field: `checks.${checkNodeRef}.evidenceBasis`, reason: `覆盖 Scene ${sceneRef} 未被该检查引用` });
       continue;
     }
@@ -219,6 +226,11 @@ function validateSearchAbsence(execDir, result, execution, expectationCoverage =
       missing.push({ field: `checks.${checkNodeRef}.evidenceBasis`, reason: `滚动覆盖 ${ref} 尚不能支持完整列表不存在结论` });
     }
   }
+  return missing;
+}
+
+function validateSearchAbsence(execDir, result, execution, expectationCoverage = null) {
+  const missing = searchAbsenceIssues(execDir, result.checks, execution, expectationCoverage);
   if (missing.length) throw contractError('CASE_RESULT_INCOMPLETE', 'CaseResult list search evidence is incomplete', { missing });
   return { searchAbsenceRefs: result.checks.map((check) => check.evidenceBasis?.scrollContextRef).filter(Boolean) };
 }
@@ -471,6 +483,7 @@ module.exports = {
   validateCaseRuntimeEvidenceGraph,
   validateExpectationCoverage,
   validateKnowledgeClosure,
+  searchAbsenceIssues,
   validateSequenceEvidenceGraph,
   validateSearchAbsence,
   validateVisualInspectionCoverage,

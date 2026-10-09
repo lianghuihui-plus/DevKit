@@ -1,6 +1,6 @@
 # CaseRuntime.recordResult
 
-独立记录验证点结果，不采集 Scene、不执行动作。
+独立记录已完成证据闭环的验证点结果；成功表示整批结果均已闭环，不采集 Scene、不执行动作。
 
 签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
 
@@ -27,7 +27,8 @@ input.results: Array<{ checkNodeRef: string; status: "PASS" | "FAIL" | "INCONCLU
 
 ## 上下文校验
 
-- 所有结果先完整校验；任一结果无效时整批不写入。
+- 所有结果先完整校验且证据闭合；任一结果无效或未闭合时整批不写入。
+- 引用 Scene 的结果必须先对同一 Scene 使用 inspect(mode="visual") 登记视觉事实。
 - Baseline CHECK 始终可处置；补充 CHECK 仅在最终 Working Flow 中活跃时进入结束闭环。
 - 知识、Scene 和技术事实可支撑豁免，但 Runtime 不要求知识命中，也不判断豁免理由是否充分。
 
@@ -55,6 +56,7 @@ input.results: Array<{ checkNodeRef: string; status: "PASS" | "FAIL" | "INCONCLU
 - [`BINDING_INVALID`](../errors/transport.md#error-binding-invalid)
 - [`EXPECTATION_UNKNOWN`](../errors/flow-result.md#error-expectation-unknown)
 - [`EVIDENCE_REFERENCE_INVALID`](../errors/flow-result.md#error-evidence-reference-invalid)
+- [`VISUAL_INSPECTION_REQUIRED`](../errors/scene-action.md#error-visual-inspection-required)
 - [`RECORD_RESULT_INVALID`](../errors/flow-result.md#error-record-result-invalid)
 - [`CASE_RUNTIME_TECHNICAL`](../errors/knowledge-recovery.md#error-case-runtime-technical)
 

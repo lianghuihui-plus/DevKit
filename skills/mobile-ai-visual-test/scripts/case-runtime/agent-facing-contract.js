@@ -277,14 +277,14 @@ const PUBLIC_METHODS = Object.freeze({
     idempotency: '规范化后语义等价的 Case Flow 请求只写一次 revision，幂等键由框架内部派生。',
     minimalExample: { operation: 'plan', input: { caseFlow: { baseRevision: null, summary: '验证目标', entryNodeRef: 'N1', nodes: [{ ref: 'N1', type: 'CHECK', text: '结果可见', verificationKind: 'DIRECT_OBSERVATION', sourceBasis: '原始用例预期', requirement: 'REQUIRED' }, { ref: 'N2', type: 'END', text: '完成' }], edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [] } } },
   }),
-  recordResult: method('recordResult', '独立记录验证点结果，不采集 Scene、不执行动作。', SCHEMAS.recordResult, {
+  recordResult: method('recordResult', '独立记录已完成证据闭环的验证点结果；成功表示整批结果均已闭环，不采集 Scene、不执行动作。', SCHEMAS.recordResult, {
     results: '已形成判断的验证结果和证据引用',
   }, {
     responseProjection: projection(['recordedResultRefs', 'idempotentCheckNodeIds'], null, ['checkpointResult', 'checkpointLedger']),
     conditionalRequirements: ['WAIVED 必须提供独立非空 reason；其他状态不得提供 reason。', 'NOT_APPLICABLE 只允许用于 CONDITIONAL 检查点。'],
-    contextualValidationRules: ['所有结果先完整校验；任一结果无效时整批不写入。', 'Baseline CHECK 始终可处置；补充 CHECK 仅在最终 Working Flow 中活跃时进入结束闭环。', '知识、Scene 和技术事实可支撑豁免，但 Runtime 不要求知识命中，也不判断豁免理由是否充分。'],
+    contextualValidationRules: ['所有结果先完整校验且证据闭合；任一结果无效或未闭合时整批不写入。', '引用 Scene 的结果必须先对同一 Scene 使用 inspect(mode="visual") 登记视觉事实。', 'Baseline CHECK 始终可处置；补充 CHECK 仅在最终 Working Flow 中活跃时进入结束闭环。', '知识、Scene 和技术事实可支撑豁免，但 Runtime 不要求知识命中，也不判断豁免理由是否充分。'],
     successStatuses: ['RESULTS_RECORDED'],
-    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID', 'RECORD_RESULT_INVALID', 'CASE_RUNTIME_TECHNICAL'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID', 'VISUAL_INSPECTION_REQUIRED', 'RECORD_RESULT_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['追加 expectation result 事件'], idempotency: '相同结果重复提交不追加重复事件。',
     minimalExample: { operation: 'recordResult', input: { results: [{ checkNodeRef: 'N1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: [EXAMPLE_SCENE_REF] } }] } },
   }),

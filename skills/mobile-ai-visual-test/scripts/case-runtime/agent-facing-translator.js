@@ -88,9 +88,11 @@ function contextualIssues(execDir, request, scene) {
     }
     if (!issues.length) {
       try {
-        require('./expectation-result-service').prepareExpectationResults(execDir, request.results.map(({ checkNodeRef, ...item }) => ({
+        const resultService = require('./expectation-result-service');
+        const prepared = resultService.prepareExpectationResults(execDir, request.results.map(({ checkNodeRef, ...item }) => ({
           ...item, expectationRef: checkNodeRef,
         })));
+        issues.push(...resultService.expectationResultClosureIssues(execDir, prepared));
       } catch (error) {
         issues.push(issue('results', error.message, ['EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID'].includes(error.code)
           ? error.code : 'RECORD_RESULT_INVALID'));
@@ -358,7 +360,7 @@ function publicErrorStatus(response) {
   return null;
 }
 
-function projectAgentFacingError(response, request = null, resources = [], provided = {}) {
+function projectAgentFacingError(response, request = null, resources = [], provided = {}, options = {}) {
   const status = publicErrorStatus(response) || 'FAILED';
   const operation = Object.hasOwn(PUBLIC_CONTRACT.methods, request?.operation) ? request.operation : null;
   const failureCode = response.code || response.action?.failureCode || response.action?.deviceExecution?.failureCode;
@@ -369,7 +371,7 @@ function projectAgentFacingError(response, request = null, resources = [], provi
   const definition = PUBLIC_CONTRACT.errors[code];
   return errorEnvelope({
     operation, status, code,
-    result: projectResponseResult(response, request, provided).result,
+    result: projectResponseResult(response, request, provided, options).result,
     retryable: status === 'UNKNOWN' ? false : (response.retryable ?? definition.retryable),
     ...(response.issues ? { issues: response.issues.map((item) => ({
       field: item.field || item.fieldPath || 'request',
@@ -385,7 +387,7 @@ function projectAgentFacingError(response, request = null, resources = [], provi
   });
 }
 
-function projectResponseResult(response, request, provided = {}) {
+function projectResponseResult(response, request, provided = {}, options = {}) {
   const internalOutcome = response.result?.outcome || response.status;
   const outcome = request?.operation === 'observe' && internalOutcome === 'SCENE' ? 'SCENE_CAPTURED'
     : request?.operation === 'inspect' && internalOutcome === 'VISUAL_INSPECTED' ? 'VISUAL_OBSERVATION_RECORDED'
@@ -395,9 +397,15 @@ function projectResponseResult(response, request, provided = {}) {
   if (!projection) return { projection: null, result: {} };
   const inspection = response.visualInspection || response.actionInspection || {};
   const action = response.action ? projectPreviousAction(response.action) : null;
+  const internalSceneRef = Object.hasOwn(response, 'finalSceneRef')
+    ? response.finalSceneRef
+    : response.result?.sceneRef ?? response.sceneRef ?? inspection.sceneId ?? response.sceneId ?? response.scene?.sceneId;
+  const providerSceneRef = Object.hasOwn(provided.result || {}, 'sceneRef')
+    ? provided.result.sceneRef
+    : Object.hasOwn(response, 'finalSceneRef') && response.finalSceneRef === null ? null : undefined;
+  const sceneRef = options.providerPresent ? providerSceneRef : provided.result?.sceneRef ?? internalSceneRef;
   const values = {
     outcome,
-    sceneRef: response.sceneRef || response.sceneId || inspection.sceneId || response.scene?.sceneId,
     inspectionId: inspection.inspectionId || response.inspectionId,
     checkNodeIds: inspection.expectationRefs,
     revision: response.caseFlow?.revision,
@@ -409,8 +417,6 @@ function projectResponseResult(response, request, provided = {}) {
     operationId: action?.operationRef ?? response.operationId,
     sequenceId: response.sequenceId,
     sequenceResultRef: provided.result?.sequenceResultRef,
-    sceneRef: provided.result?.sceneRef ?? response.finalSceneRef ?? response.sceneRef
-      ?? (Object.hasOwn(response, 'finalSceneRef') ? null : undefined),
     deliveryStatus: action?.deliveryStatus ?? (response.outcomeKnown === false ? 'UNKNOWN' : undefined),
     commandDeliveryKnown: action?.commandDeliveryKnown ?? response.outcomeKnown,
     candidateCount: response.candidateCount ?? response.candidates?.length,
@@ -423,6 +429,7 @@ function projectResponseResult(response, request, provided = {}) {
     verdict: response.verdict,
     ...response.result,
     ...provided.result,
+    sceneRef,
     outcome,
   };
   const scalar = (value) => value === null || ['string', 'number', 'boolean'].includes(typeof value);
@@ -433,12 +440,15 @@ function projectResponseResult(response, request, provided = {}) {
 }
 
 function projectAgentFacingResponse(execDir, response, request = null, options = {}) {
-  // The resource provider owns persistence and canonical content. No current Scene/global
-  // state is appended here, and no reference is synthesized by the wire projector.
+  // When configured, the resource provider owns persistence and canonical Scene refs.
+  // Providerless projection retains the internal-ID fallback used by direct callers.
+  const providerPresent = typeof options.resourceProvider === 'function';
   const provided = options.resourceProvider?.(execDir, response, request) || {};
   const failure = publicErrorStatus(response);
-  if (failure) return projectAgentFacingError(response, request, provided.resources || response.resources || [], provided);
-  const { projection, result } = projectResponseResult(response, request, provided);
+  if (failure) {
+    return projectAgentFacingError(response, request, provided.resources || response.resources || [], provided, { providerPresent });
+  }
+  const { projection, result } = projectResponseResult(response, request, provided, { providerPresent });
   if (!projection) return projectAgentFacingError({ status: 'FAILED', code: 'CASE_RUNTIME_TECHNICAL' }, request);
   const candidateData = provided.data || response.data;
   const primaryType = projection.primaryResourceType === '$resourceType'

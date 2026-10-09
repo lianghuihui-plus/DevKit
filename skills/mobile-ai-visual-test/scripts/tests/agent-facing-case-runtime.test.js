@@ -292,14 +292,24 @@ assert.deepStrictEqual(inputMismatch.technicalResult, {
 });
 assert.ok(!JSON.stringify(inputMismatch).includes('13223'));
 
+const newerScene = { ...scene, sceneId: 'scene-0008', previousAction: null };
+writeJsonAtomic(path.join(execDir, 'current-scene.json'), newerScene);
+writeJsonAtomic(path.join(execDir, 'scenes', `${newerScene.sceneId}.json`), newerScene);
+const newerSceneRef = agentResources.publishScene(execDir, newerScene.sceneId).data.ref;
 const inspected = run(execDir, request('inspect', {
   mode: 'action', sceneRef, observation: '滑动轨迹位于目标卡片区域上方', checkNodeRefs: ['N2'],
 }), { now: '2026-09-11T00:00:01.700Z' });
 assertEnvelope(inspected);
 assert.strictEqual(inspected.result.outcome, 'ACTION_SPATIAL_OBSERVATION_RECORDED');
+assert.strictEqual(inspected.result.sceneRef, sceneRef,
+  'historical action inspection must return the inspected Scene');
+assert.ok(inspected.resources.some((resource) => resource.ref === sceneRef && resource.type === 'scene'));
+assert.ok(!inspected.resources.some((resource) => resource.ref === newerSceneRef),
+  'historical action inspection must not publish the current Scene as its result');
 const inspectionEvent = runtimeStore.events(execDir).find((event) => event.type === 'actionSpatialInspected');
 assert.strictEqual(inspectionEvent.operationId, 'action-0001');
 assert.strictEqual(inspectionEvent.caseFlowRevision, 1);
+writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 const externalRecovery = run(execDir, request('recover', {
   mode: 'external', reason: 'Runtime 无法表达当前技术恢复操作',
   externalAction: { summary: '已使用平台原生工具恢复当前 App 连接', tool: 'platform-cli' },
@@ -483,6 +493,19 @@ const provided = projectAgentFacingResponse(execDir, { status: 'SCENE' }, reques
 });
 assert.deepStrictEqual(provided.data, canonicalScene);
 assert.strictEqual(provided.result.unexpected, undefined);
+const providerWithoutScene = projectAgentFacingResponse(execDir, {
+  status: 'SCENE', sceneId: scene.sceneId, result: { sceneRef: scene.sceneId },
+}, request('observe'), {
+  resourceProvider: () => ({ resources: [] }),
+});
+assert.strictEqual(Object.hasOwn(providerWithoutScene.result, 'sceneRef'), false,
+  'a configured provider must not fall back to an unpublished internal Scene ID');
+assert.deepStrictEqual(providerWithoutScene.resources, []);
+const providerlessScene = projectAgentFacingResponse(execDir, {
+  status: 'SCENE', sceneId: scene.sceneId,
+}, request('observe'));
+assert.strictEqual(providerlessScene.result.sceneRef, scene.sceneId,
+  'internal Scene fallback remains available when no resource provider is configured');
 const acceptedAct = projectAgentFacingResponse(execDir, {
   status: 'SCENE', sceneId: scene.sceneId,
   action: { operationId: 'action-accepted', action: { type: 'tap' }, command: { status: 'ACCEPTED' } },

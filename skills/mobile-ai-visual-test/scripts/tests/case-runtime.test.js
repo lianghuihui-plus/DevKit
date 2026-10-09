@@ -1156,7 +1156,8 @@ assert.strictEqual(rendered.status, 'UPDATED');
 const contextHtml = fs.readFileSync(path.join(caseDir, 'platforms', 'harmony', 'CONTEXT.html'), 'utf8');
 assert.match(contextHtml, /目标内容正常显示/);
 assert.match(contextHtml, /页面保持在目标 App/);
-assert.match(contextHtml, /Runtime 请求错误/);
+assert.match(contextHtml, /Agent 请求被拒绝/);
+assert.match(contextHtml, /Runtime 内部错误/);
 for (const text of ['结果概览', '用例流程', 'Baseline Flow', '执行轨迹', '检查点', '为什么做', '预期效果', '实际效果', '2\/2', '详细日志']) {
   assert.ok(contextHtml.includes(text), text);
 }

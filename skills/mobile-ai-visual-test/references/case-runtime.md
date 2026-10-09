@@ -19,7 +19,7 @@
 | [`read`](case-runtime/methods/read.md) | 按原样引用读取一个资源。 | `read({ ref: string })` |
 | [`inspect`](case-runtime/methods/inspect.md) | 登记 Agent 已观察到的视觉或动作事实。 | `inspect({ mode: "visual", sceneRef: string, observation: string, checkNodeRefs?: string[], flowContext?: object }) / inspect({ mode: "action", sceneRef: string, observation: string, checkNodeRefs?: string[], flowContext?: object })` |
 | [`plan`](case-runtime/methods/plan.md) | 创建或修订完整 Case Flow。 | `plan({ caseFlow: object })` |
-| [`recordResult`](case-runtime/methods/record-result.md) | 独立记录验证点结果，不采集 Scene、不执行动作。 | `recordResult({ results: object[] })` |
+| [`recordResult`](case-runtime/methods/record-result.md) | 独立记录已完成证据闭环的验证点结果；成功表示整批结果均已闭环，不采集 Scene、不执行动作。 | `recordResult({ results: object[] })` |
 | [`act`](case-runtime/methods/act.md) | 执行一个动作并返回完整新 Scene，控制权立即交还 Agent。 | `act({ sceneRef: string, action: object \| object \| object \| object, purpose?: string, flowContext?: object })` |
 | [`runSequence`](case-runtime/methods/run-sequence.md) | 连续执行预先给定的动作、等待与采集；步骤间不交还控制权，结束后返回最终 Scene 和步骤证据。 | `runSequence({ sceneRef: string, purpose: string, steps: Array<{ type: "act"; ... } \| { type: "wait"; ... } \| { type: "capture"; ... }>, flowContext?: object })` |
 | [`knowledge`](case-runtime/methods/knowledge.md) | 查询知识，或登记指定 query 的候选复核结果。 | `knowledge({ mode: "query", sceneRef: string, query: string, context?: object, checkNodeRefs?: string[], flowContext?: object }) / knowledge({ mode: "review", sceneRef: string, queryId: string, conclusion: "APPLICABLE_FOUND" \| "NO_APPLICABLE" \| "CONFLICTING" \| "INSUFFICIENT", assessments: object[], flowContext?: object })` |

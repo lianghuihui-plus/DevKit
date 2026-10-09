@@ -423,6 +423,13 @@ function publishFinalResources(execDir, events = store.events(execDir)) {
   ];
 }
 
+function responseSceneId(response, request) {
+  if (request.operation === 'inspect') {
+    return response.visualInspection?.sceneId || response.actionInspection?.sceneId || response.sceneId;
+  }
+  return response.scene?.sceneId || response.sceneId;
+}
+
 function provideOperationResources(execDir, response, request) {
   const events = store.events(execDir);
   const finalizedFinish = request.operation === 'finish' && store.loadExecution(execDir, { allowFinalized: true }).finalized;
@@ -435,7 +442,7 @@ function provideOperationResources(execDir, response, request) {
     result.finalReviewInstruction = '请重新阅读下面的完整原始用例，确认最终结果覆盖其完整业务目标、条件分支和最终结果；不要只根据 CHECK ledger 是否完整来结束用例。核对后重新提交 finish，无需回复确认。';
     result.originalCase = finalReview.sourceText(execDir);
   }
-  const sceneId = response.scene?.sceneId || response.sceneId || response.visualInspection?.sceneId || response.actionInspection?.sceneId;
+  const sceneId = responseSceneId(response, request);
   if (sceneId && ['observe', 'act', 'inspect', 'recover'].includes(request.operation)) {
     const value = add(publishScene(execDir, sceneId));
     result.sceneRef = value.data.ref;

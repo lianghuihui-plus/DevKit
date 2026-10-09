@@ -46,18 +46,22 @@ caseFlowService.revise(execDir, {
   edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [],
 });
 
-let receipt = applyExpectationResults(execDir, [{
+assert.throws(() => applyExpectationResults(execDir, [{
   expectationRef: 'N1', status: 'PASS', actual: '标题可见', evidence: { sceneRefs: ['scene-0001'] },
-}], { submissionId: 'decision-1', basedOnSceneRef: 'scene-0001' });
-assert.deepStrictEqual(receipt.updated, ['N1']);
-assert.deepStrictEqual(finishReadiness(execDir).unresolved, [{
-  expectationRef: 'N1', reasons: ['VISUAL_INSPECTION_REQUIRED'],
-}]);
+}], { submissionId: 'decision-1', basedOnSceneRef: 'scene-0001' }),
+(error) => error.code === 'CASE_RESULT_INVALID'
+  && error.issues.some((issue) => issue.code === 'VISUAL_INSPECTION_REQUIRED'));
+assert.strictEqual(store.events(execDir).some((event) => event.type === 'expectationResultUpdated'), false,
+  'an unresolved result batch must not persist any result event');
 
 store.appendEvent(execDir, 'visualInspected', {
   inspectionId: 'inspection-0001', sceneId: 'scene-0001', screenshotRef: 'screenshots/scene.png',
   screenshotSha256: 'sha', observation: '标题可见', expectationRefs: ['N1'],
 });
+let receipt = applyExpectationResults(execDir, [{
+  expectationRef: 'N1', status: 'PASS', actual: '标题可见', evidence: { sceneRefs: ['scene-0001'] },
+}], { submissionId: 'decision-1', basedOnSceneRef: 'scene-0001' });
+assert.deepStrictEqual(receipt.updated, ['N1']);
 assert.strictEqual(finishReadiness(execDir).ready, true);
 assert.deepStrictEqual(caseStateSummary(execDir).expectations, {
   active: 1, resolved: 1, unresolved: [], conflicts: [],
@@ -156,5 +160,91 @@ assert.deepStrictEqual(buildCaseResultFromLedger(execDir, { summary: '仅基线�
   { checkNodeRef: 'N1', status: 'WAIVED', actual: '本次未执行该检查', reason: '已获得本次执行例外' },
 ]);
 
+const searchExecDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-expectation-search-ledger-'));
+fs.mkdirSync(path.join(searchExecDir, 'scenes'));
+fs.mkdirSync(path.join(searchExecDir, 'transactions'));
+fs.writeFileSync(path.join(searchExecDir, 'events.jsonl'), '');
+writeJsonAtomic(path.join(searchExecDir, 'execution.json'), {
+  schemaVersion: 14, runtime: 'case-runtime', executionId: 'execution-search-ledger', status: 'RUNNING', finalized: false,
+  platform: 'android', startedAt: '2026-09-16T00:00:00.000Z', warmSessionGeneration: 3,
+  targetBinding: { appId: 'com.example' },
+});
+const searchScene = {
+  sceneId: 'scene-search-complete', generation: 3,
+  screenshot: { ref: 'screenshots/scene-search-complete.png', sha256: 'search-scene-sha' },
+  app: { appId: 'com.example', inTargetApp: true },
+  scrollContexts: [{
+    id: 'scroll-complete', generation: 3, trackingStatus: 'TRACKING', coverage: 'CONTIGUOUS',
+    reachedStart: 'CONFIRMED', reachedEnd: 'CONFIRMED', absenceConclusionSupported: true,
+  }],
+};
+const otherScene = {
+  sceneId: 'scene-other', generation: 3,
+  screenshot: { ref: 'screenshots/scene-other.png', sha256: 'other-scene-sha' },
+  app: { appId: 'com.example', inTargetApp: true }, scrollContexts: [],
+};
+for (const candidate of [searchScene, otherScene]) {
+  writeJsonAtomic(path.join(searchExecDir, 'scenes', `${candidate.sceneId}.json`), candidate);
+  store.appendEvent(searchExecDir, 'sceneObserved', {
+    sceneId: candidate.sceneId, screenshotRef: candidate.screenshot.ref,
+    screenshotSha256: candidate.screenshot.sha256, app: candidate.app,
+  });
+  store.appendEvent(searchExecDir, 'visualInspected', {
+    inspectionId: `inspection-${candidate.sceneId}`, sceneId: candidate.sceneId,
+    screenshotRef: candidate.screenshot.ref, screenshotSha256: candidate.screenshot.sha256,
+    observation: '已检查搜索列表', expectationRefs: ['N1'],
+  });
+}
+writeJsonAtomic(path.join(searchExecDir, 'current-scene.json'), searchScene);
+caseFlowService.revise(searchExecDir, {
+  baseRevision: null, summary: '验证完整列表中不存在目标', entryNodeRef: 'N1',
+  nodes: [
+    { ref: 'N1', type: 'CHECK', text: '列表中存在目标', verificationKind: 'SEARCH_EXISTENCE', sourceBasis: '原始用例预期', requirement: 'REQUIRED' },
+    { ref: 'N2', type: 'END', text: '完成' },
+  ],
+  edges: [{ ref: 'L1', from: 'N1', to: 'N2' }], uncertainties: [],
+});
+const searchAbsence = {
+  sceneRef: searchScene.sceneId, scrollContextRef: searchScene.scrollContexts[0].id,
+};
+function assertSearchResultRejected(result, messagePart) {
+  const before = store.events(searchExecDir).filter((event) => event.type === 'expectationResultUpdated').length;
+  assert.throws(() => applyExpectationResults(searchExecDir, [result]),
+    (error) => error.code === 'CASE_RESULT_INVALID'
+      && error.issues.some((issue) => issue.code === 'RECORD_RESULT_INVALID'
+        && issue.field === 'results[0].evidence.searchAbsence'
+        && issue.message.includes(messagePart)));
+  assert.strictEqual(store.events(searchExecDir).filter((event) => event.type === 'expectationResultUpdated').length, before,
+    'invalid search evidence must not persist a result event');
+}
+
+assertSearchResultRejected({
+  expectationRef: 'N1', status: 'FAIL', actual: '完整列表未发现目标',
+  evidence: { sceneRefs: [searchScene.sceneId] },
+}, '必须引用完整列表覆盖');
+assertSearchResultRejected({
+  expectationRef: 'N1', status: 'PASS', actual: '目标存在',
+  evidence: { sceneRefs: [searchScene.sceneId], searchAbsence },
+}, 'PASS');
+assertSearchResultRejected({
+  expectationRef: 'N1', status: 'FAIL', actual: '完整列表未发现目标',
+  evidence: { sceneRefs: [otherScene.sceneId], searchAbsence },
+}, '未被该检查引用');
+writeJsonAtomic(path.join(searchExecDir, 'scenes', `${searchScene.sceneId}.json`), {
+  ...searchScene,
+  scrollContexts: searchScene.scrollContexts.map((context) => ({ ...context, generation: 2 })),
+});
+assertSearchResultRejected({
+  expectationRef: 'N1', status: 'FAIL', actual: '完整列表未发现目标',
+  evidence: { sceneRefs: [searchScene.sceneId], searchAbsence },
+}, '不属于当前 generation');
+writeJsonAtomic(path.join(searchExecDir, 'scenes', `${searchScene.sceneId}.json`), searchScene);
+assert.deepStrictEqual(applyExpectationResults(searchExecDir, [{
+  expectationRef: 'N1', status: 'FAIL', actual: '完整列表未发现目标',
+  evidence: { sceneRefs: [searchScene.sceneId], searchAbsence },
+}]), { updated: ['N1'], idempotent: [] });
+assert.strictEqual(finishReadiness(searchExecDir).ready, true);
+
 fs.rmSync(execDir, { recursive: true, force: true });
+fs.rmSync(searchExecDir, { recursive: true, force: true });
 console.log('expectation result ledger passed');

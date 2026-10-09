@@ -36,15 +36,22 @@ for (const verdict of ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED']) {
 }
 
 for (const [verdict, fixture] of fixtures) {
-  const report = readExecutionReport(fixture.execDir);
+  let report = readExecutionReport(fixture.execDir);
   const authoritativeFiles = ['execution.json', 'metrics.json', 'result.json', 'events.jsonl', 'artifact-manifest.json', 'completion.json'];
   const beforeProtocolRead = authoritativeFiles.map((name) => fs.readFileSync(path.join(fixture.execDir, name)));
   recordAgentFacing(fixture.execDir, { operation: 'read', input: { ref: 'private-ref' } }, {
     protocol: 'agent-facing', status: 'SUCCEEDED', operation: 'read', result: { outcome: 'READ' }, resources: [],
     data: { ref: 'private-ref', type: 'caseResult', content: { verdict: 'PROTOCOL_VERDICT_MUST_NOT_WIN', command: 'private-command' } },
   }, 7);
-  assert.strictEqual(projectExecutionMetrics(readExecutionReport(fixture.execDir)).agentFacing.requestCount, 1);
-  assert.deepStrictEqual(projectExecutionMetrics(readExecutionReport(fixture.execDir)).agentFacing.readTargetTypeCounts, { caseResult: 1 });
+  recordAgentFacing(fixture.execDir, { operation: 'recordResult', input: { results: [] } }, {
+    protocol: 'agent-facing', status: 'REJECTED', operation: 'recordResult', result: {}, resources: [],
+    error: { code: 'VISUAL_INSPECTION_REQUIRED', retryable: true },
+  }, 3);
+  const projectedMetrics = projectExecutionMetrics(readExecutionReport(fixture.execDir));
+  assert.strictEqual(projectedMetrics.agentFacing.requestCount, 2);
+  assert.strictEqual(projectedMetrics.agentFacing.statusCounts.REJECTED, 1);
+  assert.deepStrictEqual(projectedMetrics.agentFacing.readTargetTypeCounts, { caseResult: 1 });
+  report = { ...readExecutionReport(fixture.execDir), metrics: projectedMetrics };
   assert.strictEqual(readExecutionReport(fixture.execDir).display.verdict, verdict);
   assert.deepStrictEqual(authoritativeFiles.map((name) => fs.readFileSync(path.join(fixture.execDir, name))), beforeProtocolRead,
     'post-finalization protocol telemetry must not rewrite sealed business artifacts');
@@ -89,9 +96,11 @@ for (const [verdict, fixture] of fixtures) {
     assert.ok(markdown.includes(text), `markdown ${text}`);
   }
   assert.ok(markdown.includes(`执行结论：${{ PASS: '通过', FAIL: '失败', INCONCLUSIVE: '无法判断', BLOCKED: '阻塞' }[verdict]}`));
-  for (const text of ['结果概览', '原始用例', '用例流程', '执行轨迹', '检查点', '详细日志', '验证点结果', '执行记录', 'Runtime 请求错误', '用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
+  for (const text of ['结果概览', '原始用例', '用例流程', '执行轨迹', '检查点', '详细日志', 'Agent 结论', '验证点结果', '执行记录', 'Agent 请求被拒绝', 'Runtime 内部错误', '用例总耗时', '时长口径', '协调准备', '初始态准备', '交接准备', '交接调度', 'Agent 阶段', '报告发布延迟', 'Runtime 活跃', 'Adapter 活跃', 'Agent 与调度间隙']) {
     assert.ok(html.includes(text), text);
   }
+  assert.match(html, /<dt>Agent 请求被拒绝<\/dt><dd class="direct"><b>1<\/b>/);
+  assert.match(html, /<dt>Runtime 内部错误<\/dt><dd class="direct"><b>0<\/b>/);
   assert.strictEqual((html.match(/role="tab"/g) || []).length, 5);
   assert.strictEqual(html.includes('data-panel-view="checkpoints"'), false);
   for (const hook of ['class="product-bar"', 'class="report-head"', 'class="report-tabs"', 'class="verdict-banner', 'class="metric-strip"', 'class="summary-columns"', 'class="flow-workspace"', 'class="process-layout"', 'class="step-list"', 'class="step-inspector"', 'class="logs-toolbar"']) {

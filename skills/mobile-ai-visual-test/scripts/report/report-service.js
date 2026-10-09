@@ -374,6 +374,7 @@ function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = 
       contextHtml = unavailable.html;
       executionId = current.execution?.executionId || null;
     } else {
+      current = { ...current, metrics: projectExecutionMetrics(current) };
       let publication = null;
       if (current.execution?.batchId) {
         try {
@@ -406,6 +407,7 @@ function writeCaseReports(caseDir, caseJson, _state = {}, _notes = [], report = 
   publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata);
   if (needsPublicationTiming && recordCaseReportPublicationTiming(caseDir, current, options)) {
     current = readExecutionReport(current.latest);
+    current = { ...current, metrics: projectExecutionMetrics(current) };
     contextMarkdown = renderCurrentContextMarkdown(snapshot, current);
     contextHtml = renderCurrentContextHtml(snapshot, current);
     publishBundle(runtimeDir, { 'CONTEXT.md': contextMarkdown, 'CONTEXT.html': contextHtml }, metadata);

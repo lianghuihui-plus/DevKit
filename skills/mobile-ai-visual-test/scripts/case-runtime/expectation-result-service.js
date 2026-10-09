@@ -136,6 +136,7 @@ function prepareExpectationResults(execDir, values, options = {}) {
     validateEvidenceRefs(execDir, evidence, expectationRef, input.status);
     return {
       expectationRef,
+      verificationKind: expectations.get(expectationRef).verificationKind,
       status: input.status,
       actual: ensureString(input.actual, `expectationResults[${index}].actual`, 'EXPECTATION_RESULT_INVALID').trim(),
       ...(reason ? { reason } : {}),
@@ -160,24 +161,66 @@ function currentResultFor(execDir, expectationRef, semanticHash) {
     && event.expectationSemanticHash === semanticHash && !invalid.has(event.resultUpdateId)).at(-1) || null;
 }
 
-function checkClosure(execDir, result) {
+function basicClosureReasons(execDir, result) {
   if (!result) return ['RESULT_MISSING'];
   const reasons = [];
   const events = store.events(execDir);
   if (['PASS', 'FAIL'].includes(result.status) && !(result.evidence?.sceneRefs || []).length) reasons.push('EVIDENCE_REQUIRED');
   const inspected = new Set(events.filter((event) => event.type === 'visualInspected').map((event) => event.sceneId));
   if ((result.evidence?.sceneRefs || []).some((ref) => !inspected.has(ref))) reasons.push('VISUAL_INSPECTION_REQUIRED');
-  if (result.evidence?.evidenceBasis) {
-    const scene = require('../lib/execution-lifecycle').readJson(
-      require('path').join(store.paths(execDir).scenes, `${result.evidence.evidenceBasis.sceneRef}.json`), null,
-    );
-    const context = (scene?.scrollContexts || []).find((item) => item.id === result.evidence.evidenceBasis.scrollContextRef);
-    if (!context?.absenceConclusionSupported) reasons.push('SEARCH_COVERAGE_REQUIRED');
+  return reasons;
+}
+
+function checkClosure(execDir, result) {
+  const reasons = basicClosureReasons(execDir, result);
+  if (!result) return reasons;
+  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  if (require('./result-integrity').searchAbsenceIssues(execDir, [result], execution).length) {
+    reasons.push('SEARCH_COVERAGE_REQUIRED');
   }
   return [...new Set(reasons)];
 }
 
+function expectationResultClosureIssues(execDir, prepared) {
+  const issueByReason = {
+    EVIDENCE_REQUIRED: {
+      field: 'evidence.sceneRefs',
+      code: 'RECORD_RESULT_INVALID',
+      message: 'PASS 或 FAIL 结果必须引用至少一个 Scene',
+    },
+    VISUAL_INSPECTION_REQUIRED: {
+      field: 'evidence.sceneRefs',
+      code: 'VISUAL_INSPECTION_REQUIRED',
+      message: '引用的 Scene 必须先通过 inspect(mode="visual") 登记视觉事实',
+    },
+  };
+  const execution = readJson(path.join(execDir, 'execution.json'), null);
+  const { searchAbsenceIssues } = require('./result-integrity');
+  return prepared.flatMap((item, index) => {
+    const basicIssues = basicClosureReasons(execDir, item).map((reason) => {
+      const details = issueByReason[reason] || {
+        field: 'evidence', code: 'RECORD_RESULT_INVALID', message: `结果证据尚未闭合：${reason}`,
+      };
+      return {
+        field: `results[${index}].${details.field}`,
+        code: details.code,
+        message: details.message,
+      };
+    });
+    const searchIssues = searchAbsenceIssues(execDir, [item], execution).map((issue) => ({
+      field: `results[${index}].evidence.searchAbsence`,
+      code: 'RECORD_RESULT_INVALID',
+      message: issue.reason,
+    }));
+    return [...basicIssues, ...searchIssues];
+  });
+}
+
 function commitPreparedResults(execDir, prepared, options = {}) {
+  const issues = expectationResultClosureIssues(execDir, prepared);
+  if (issues.length) {
+    throw contractError('CASE_RESULT_INVALID', 'expectation results are not closed', { issues });
+  }
   const updated = [];
   const idempotent = [];
   for (const item of prepared) {
@@ -188,7 +231,6 @@ function commitPreparedResults(execDir, prepared, options = {}) {
       continue;
     }
     const resultUpdateId = store.nextId(execDir, 'resultUpdate');
-    const closure = checkClosure(execDir, item);
     store.appendEvent(execDir, 'expectationResultUpdated', {
       resultUpdateId,
       submissionId: options.submissionId || null,
@@ -198,7 +240,7 @@ function commitPreparedResults(execDir, prepared, options = {}) {
       ...(item.reason ? { reason: item.reason } : {}),
       evidence: item.evidence,
       expectationSemanticHash: item.expectationSemanticHash,
-      closure: { state: closure.length ? 'UNRESOLVED' : 'RESOLVED', reasons: closure },
+      closure: { state: 'RESOLVED', reasons: [] },
       decisionId: options.decisionId || null,
       basedOnSceneRef: options.basedOnSceneRef || null,
     }, options);
@@ -272,7 +314,8 @@ function currentLedger(execDir) {
   const expectations = activeExpectations(execDir);
   return Object.fromEntries([...expectations].map(([ref, point]) => {
     const result = currentResultFor(execDir, ref, point.semanticHash);
-    return [ref, { expectationRef: ref, text: point.text, semanticHash: point.semanticHash, result, reasons: checkClosure(execDir, result) }];
+    const closureResult = result ? { ...result, verificationKind: point.verificationKind } : result;
+    return [ref, { expectationRef: ref, text: point.text, semanticHash: point.semanticHash, result, reasons: checkClosure(execDir, closureResult) }];
   }));
 }
 
@@ -376,6 +419,7 @@ module.exports = {
   caseStateSummary,
   commitPreparedResults,
   currentLedger,
+  expectationResultClosureIssues,
   expectationSemanticHash,
   finishReadiness,
   invalidateForCaseModelChange,

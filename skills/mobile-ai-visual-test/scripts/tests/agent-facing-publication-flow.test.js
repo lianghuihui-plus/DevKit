@@ -139,15 +139,38 @@ assert.strictEqual(forged.outcomeKnown, undefined, 'a mismatched fact must not e
 assert.strictEqual(forged.operationId, undefined);
 assert.strictEqual(forged.extraPayload, undefined);
 assert.notStrictEqual(forged.technicalFactRef, unknownFact.technicalFactRef);
-assert.strictEqual(run(started.execDir, {
+const historicalDir = path.join(temp, 'historical-inspect');
+fs.cpSync(started.execDir, historicalDir, { recursive: true });
+const historicalScene = require('../case-runtime/store').readCurrentScene(historicalDir);
+historicalScene.screenshot.path = path.join(historicalDir, historicalScene.screenshot.ref);
+historicalScene.evidenceChannels.visual.attachment.path = historicalScene.screenshot.path;
+require('../case-runtime/store').writeScene(historicalDir, historicalScene);
+const historicalSceneResource = require('../case-runtime/agent-resource-store').publishScene(historicalDir, historicalScene.sceneId);
+const current = run(historicalDir, { operation: 'observe', input: { purpose: '推进到更新现场' } }, {
+  runner,
+  now: '2026-09-16T01:00:00.275Z',
+});
+assert.notStrictEqual(current.data.ref, historicalSceneResource.data.ref);
+const inspectedHistorical = run(historicalDir, {
   operation: 'inspect', input: {
-    sceneRef: observed.data.ref,
+    sceneRef: historicalSceneResource.data.ref,
     mode: 'visual',
     observation: '首页标题清晰可见',
     checkNodeRefs: ['N2'],
   },
-}, { now: '2026-09-16T01:00:00.300Z' }).result.outcome, 'VISUAL_OBSERVATION_RECORDED');
-assert.strictEqual(run(started.execDir, {
+}, { now: '2026-09-16T01:00:00.300Z' });
+assert.strictEqual(inspectedHistorical.result.outcome, 'VISUAL_OBSERVATION_RECORDED', JSON.stringify(inspectedHistorical));
+assert.strictEqual(inspectedHistorical.result.sceneRef, historicalSceneResource.data.ref,
+  'historical visual inspection must return the inspected Scene');
+assert.ok(inspectedHistorical.resources.some((resource) => resource.ref === historicalSceneResource.data.ref && resource.type === 'scene'));
+assert.ok(!inspectedHistorical.resources.some((resource) => resource.ref === current.data.ref),
+  'historical inspection must not publish the current Scene as its result');
+assert.strictEqual(new Set(inspectedHistorical.resources.map((resource) => resource.ref)).size,
+  inspectedHistorical.resources.length, 'an Agent-facing response must not repeat resource refs');
+const historicalInspectionEvent = require('../case-runtime/store').events(historicalDir)
+  .find((event) => event.type === 'visualInspected' && event.inspectionId === inspectedHistorical.result.inspectionId);
+assert.strictEqual(historicalInspectionEvent.sceneId, historicalScene.sceneId);
+const resultRequest = {
   operation: 'recordResult', input: {
     results: [{
       checkNodeRef: 'N2',
@@ -156,7 +179,21 @@ assert.strictEqual(run(started.execDir, {
       evidence: { sceneRefs: [observed.data.ref] },
     }],
   },
-}, { now: '2026-09-16T01:00:00.400Z' }).result.outcome, 'RESULTS_RECORDED');
+};
+const unresolvedResult = run(started.execDir, resultRequest, { now: '2026-09-16T01:00:00.290Z' });
+assert.strictEqual(unresolvedResult.status, 'REJECTED');
+assert.strictEqual(unresolvedResult.error.code, 'VISUAL_INSPECTION_REQUIRED');
+assert.strictEqual(unresolvedResult.error.retryable, true);
+assert.strictEqual(run(started.execDir, {
+  operation: 'inspect', input: {
+    sceneRef: observed.data.ref,
+    mode: 'visual',
+    observation: '首页标题清晰可见',
+    checkNodeRefs: ['N2'],
+  },
+}, { now: '2026-09-16T01:00:00.300Z' }).result.outcome, 'VISUAL_OBSERVATION_RECORDED');
+assert.strictEqual(run(started.execDir, resultRequest,
+  { now: '2026-09-16T01:00:00.400Z' }).result.outcome, 'RESULTS_RECORDED');
 const interruptedDir = path.join(temp, 'interrupted-finish-publication');
 fs.cpSync(started.execDir, interruptedDir, { recursive: true });
 const interruptedScene = require('../case-runtime/store').readCurrentScene(interruptedDir);
