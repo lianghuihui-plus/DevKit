@@ -13,7 +13,7 @@
 
 启动时完整读取 `references/case-execution-principles.md`，再读 `references/case-runtime.md`；签名、动作或错误信息不足时按响应引用的文档定向读取。
 
-业务能力是 `observe`、`inspect`、`plan`、`recordResult`、`act`、`runSequence`、`knowledge`、`recover`、`finish`；统一 `read` 按 ref 读取资源。动态值只取自当前 Brief、Scene 或响应事实。
+业务能力是 `observe`、`inspect`、`plan`、`queryCapabilities`、`useCapability`、`recordResult`、`act`、`runSequence`、`knowledge`、`recover`、`finish`；统一 `read` 按 ref 读取资源。动态值只取自当前 Brief、Scene 或响应事实。
 
 使用 Brief 的 `runtime.command`，stdin 一次提交 `{operation,input}`；主数据在 `data`，资源引用原样交给 `read`，不得拼装。
 
@@ -22,10 +22,11 @@
 原始用例是本次执行唯一的业务目标，Case Flow 只是执行辅助，不能替代或缩小原始用例。CHECK 不是独立业务任务，只是证据登记点；不能仅因当前 CHECK 已 PASS 就提前结束。每次操作、记录结果或收口前都要核对完整原始语义；冲突时保留原始语义并修订 Working Flow。
 
 1. 通读 `case.source`，用 `plan` 建 Baseline：节点 N1/N2…，禁 A1/C1/E1；边 L1/L2…，禁 E1。冻结原始语义，不冻结导航路线。
-2. `act` 执行一个动作并返回新 Scene，控制权立即交还 Agent；`runSequence` 连续执行预先给定的动作、等待和采集，步骤间不交还控制权，结束后返回最终 Scene 和步骤证据。同一执行意图同时可由两者完成时，优先使用 `runSequence`。
-3. Brief Scene；无或可能变化时 `observe`。比较事实与目标，选定路径并按需修订 Working Flow；动作前明确可观察预期。
-4. 读取新 Scene、`previousAction` 或 sequence result，判断业务效果并回到第 2 步；形成 CHECK 判断即用 `recordResult` 保存。
-5. 按结果是否已知、副作用、现场适用性、剩余时间和信息增益决定继续、换路径或停止；恢复不限 `recover` 和次数。完成目标或没有合理路径时收口。
+2. Baseline Flow 建立后调用一次 `queryCapabilities({})`，且必须在首次业务动作前完成；续跑复用 execution 已冻结目录，不重复发现。按用例需要对候选 `capabilityRef` 调用 `read` 查看定义，再用 `useCapability` 执行。
+3. `act` 执行一个动作并返回新 Scene，控制权立即交还 Agent；`runSequence` 连续执行预先给定的动作、等待和采集，步骤间不交还控制权，结束后返回最终 Scene 和步骤证据。同一执行意图同时可由两者完成时，优先使用 `runSequence`。
+4. Brief Scene；无或可能变化时 `observe`。比较事实与目标，选定路径并按需修订 Working Flow；动作前明确可观察预期。
+5. 读取新 Scene、`previousAction` 或 sequence result，判断业务效果并回到第 3 步；形成 CHECK 判断即用 `recordResult` 保存。
+6. 按结果是否已知、副作用、现场适用性、剩余时间和信息增益决定继续、换路径或停止；恢复不限 `recover` 和次数。完成目标或没有合理路径时收口。
 
 ## 证据与工具
 
@@ -36,6 +37,9 @@
 
 ## 安全与收口
 
+- 目录中公开的能力均已授权，使用时无需额外确认；能力造成的外部变更保留，不执行回滚或清理。
+- 外部并发是正常环境事实，不做预防性锁定、强制写后读或自动重试。只有观察到干扰时才调查并按需重做；持续干扰导致无法可靠完成时记为 `BLOCKED` 或 `INCONCLUSIVE`，不得判产品 `FAIL`。
+- `CAPABILITY_OUTCOME_UNKNOWN`：禁止自动重放，先调查外部状态与已有技术事实。
 - `ACTION_OUTCOME_UNKNOWN`：禁止自动重放，先观察现场。
 - `ACTION_EFFECT_MISMATCH`：属于结果已知的技术失败，不得直接判产品 FAIL；只有现场仍适用、动作可安全重放且能获得新信息时才重试。
 - 需要空本地状态或首次安装状态时调用 `recover` 的 `input.targetState`，三端由 Runtime 统一处理；不提供、询问或操作安装包。

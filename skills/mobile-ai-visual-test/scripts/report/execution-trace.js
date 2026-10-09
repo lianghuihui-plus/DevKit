@@ -9,6 +9,8 @@ const { assertSequenceIntegrity } = require('../case-runtime/sequence-service');
 
 const STATE_CHANGING_ACTIONS = new Set(['tap', 'doubleTap', 'toggle', 'longPress', 'inputText', 'swipe', 'back', 'home', 'dismissKeyboard']);
 const VERDICT_LABELS = Object.freeze({ PASS: '通过', FAIL: '失败', BLOCKED: '阻塞', INCONCLUSIVE: '无法判断', NOT_RUN: '无法执行' });
+const SECRET_OPERATION_KEY = /^(?:authorization|token|access_token|refresh_token|password|cookie|set-cookie|secret)$/i;
+const SECRET_OPERATION_TEXT = /\b(authorization|token|access_token|refresh_token|password|cookie|set-cookie|secret)(\s*[:=]\s*)([^\s,;]+)/gi;
 
 function actionLabel(value) {
   const displayed = displayAction(value);
@@ -34,15 +36,46 @@ function redactAction(action) {
   return action.type === 'inputText' ? { ...action, text: '[已脱敏]' } : { ...action };
 }
 
-function sanitizeOperationValue(value) {
-  if (Array.isArray(value)) return value.map(sanitizeOperationValue);
+function sanitizeOperationValue(value, key = '') {
+  if (SECRET_OPERATION_KEY.test(key)) return '[REDACTED]';
+  if (typeof value === 'string') return value.replace(SECRET_OPERATION_TEXT, '$1$2[REDACTED]');
+  if (Array.isArray(value)) return value.map((item) => sanitizeOperationValue(item));
   if (!value || typeof value !== 'object') return value;
   const copy = {};
-  for (const [key, item] of Object.entries(value)) copy[key] = sanitizeOperationValue(item);
+  for (const [name, item] of Object.entries(value)) copy[name] = sanitizeOperationValue(item, name);
   if (copy.type === 'inputText' && Object.prototype.hasOwnProperty.call(copy, 'text')) copy.text = '[已脱敏]';
   if (Object.prototype.hasOwnProperty.call(copy, 'expectedText')) copy.expectedText = '[已脱敏]';
   if (Object.prototype.hasOwnProperty.call(copy, 'actualText')) copy.actualText = '[已脱敏]';
   return copy;
+}
+
+function capabilityInvocationEntry(event, request, index) {
+  const outcome = event.status || (event.type === 'capabilityInvocationCompleted' ? 'SUCCEEDED'
+    : event.type === 'capabilityInvocationFailed' ? 'FAILED' : 'UNKNOWN');
+  const capabilityInvocationId = event.capabilityInvocationId || request.capabilityInvocationId || null;
+  const capabilityName = event.capabilityName || request.capabilityName || '未命名能力';
+  const purpose = event.purpose || request.purpose || '';
+  const summary = event.summary || '';
+  return {
+    sequence: index + 1,
+    time: event.time || '',
+    durationMs: null,
+    phase: 'EXECUTE',
+    category: 'CAPABILITY',
+    operationId: capabilityInvocationId,
+    capabilityInvocationId,
+    capabilityName,
+    purpose,
+    flowContext: request.flowContext || null,
+    title: `调用能力：${capabilityName}`,
+    summary,
+    outcome: {
+      status: outcome === 'UNKNOWN' ? 'UNCERTAIN' : outcome,
+      code: outcome === 'UNKNOWN' ? 'CAPABILITY_OUTCOME_UNKNOWN' : outcome === 'FAILED' ? 'CAPABILITY_EXECUTION_FAILED' : null,
+      summary,
+    },
+    raw: sanitizeOperationValue({ event, request }),
+  };
 }
 
 function decisionField(event, field) {
@@ -249,6 +282,8 @@ function buildExecutionTrace(report) {
   const invocationEnds = invocations.filter((entry) => entry.phase === 'END');
   const decisions = new Map(events.filter((event) => event.type === 'agentDecisionRecorded').map((event) => [event.decisionId, projectDecision(event)]));
   const requested = new Map(events.filter((event) => event.type === 'actionRequested').map((event) => [event.operationId, event]));
+  const capabilityRequested = new Map(events.filter((event) => event.type === 'capabilityInvocationRequested')
+    .map((event) => [event.capabilityInvocationId, event]));
   const entries = [];
 
   for (const [index, event] of events.entries()) {
@@ -278,7 +313,11 @@ function buildExecutionTrace(report) {
       });
       continue;
     }
-    if (['executionStarted', 'actionRequested'].includes(event.type)) continue;
+    if (['capabilityInvocationCompleted', 'capabilityInvocationFailed', 'capabilityInvocationOutcomeUnknown'].includes(event.type)) {
+      entries.push(capabilityInvocationEntry(event, capabilityRequested.get(event.capabilityInvocationId) || {}, index));
+      continue;
+    }
+    if (['executionStarted', 'actionRequested', 'capabilityInvocationRequested'].includes(event.type)) continue;
     const entry = eventEntry(event, index);
     if (entry) entries.push(entry);
   }
@@ -296,6 +335,16 @@ function buildExecutionTrace(report) {
   entries.forEach((entry, index) => { entry.sequence = index + 1; });
   const observations = entries.filter((entry) => entry.category === 'OBSERVATION');
   const actions = entries.filter((entry) => entry.category === 'ACTION');
+  const capabilityInvocations = entries.filter((entry) => entry.category === 'CAPABILITY').map((entry) => ({
+    capabilityInvocationId: entry.capabilityInvocationId,
+    capabilityName: entry.capabilityName,
+    purpose: entry.purpose,
+    status: entry.outcome.status === 'UNCERTAIN' ? 'UNKNOWN' : entry.outcome.status,
+    summary: entry.summary,
+    time: entry.time,
+    flowContext: entry.flowContext,
+    operationId: entry.operationId,
+  }));
   const observationByScene = new Map(observations.map((entry) => [entry.sceneId, entry]));
   const postObservationByOperation = new Map(observations.filter((entry) => entry.relatedOperationId).map((entry) => [entry.relatedOperationId, entry]));
 
@@ -381,6 +430,7 @@ function buildExecutionTrace(report) {
     pathEntries: entries.filter((entry) => entry.category !== 'RESULT' && !(entry.category === 'OBSERVATION' && entry.relatedOperationId)),
     screenshots,
     sequences: projectSequences(report, events),
+    capabilityInvocations,
     recoveryAnchor,
     narrative: buildExecutionNarrative(report),
     counts: {
@@ -391,6 +441,7 @@ function buildExecutionTrace(report) {
       inputEffects: { total: 0, statuses: {}, attempts: 0, settledMs: 0 }, knowledge: entries.filter((entry) => entry.category === 'KNOWLEDGE').length,
       recoveries: entries.filter((entry) => entry.category === 'RECOVERY').length,
       preparations: entries.filter((entry) => entry.category === 'PREPARATION' && entry.outcome?.status === 'SUCCEEDED').length,
+      capabilityInvocations: capabilityInvocations.length,
     },
     raw: sanitizeOperationValue({ execution: report.execution, result: report.result, metrics: report.metrics, events, invocations }),
   };

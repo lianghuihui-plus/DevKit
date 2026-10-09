@@ -125,6 +125,8 @@ for (const relative of [
   'references/case-runtime.md',
   'references/case-runtime/resources.md',
   'references/case-runtime/methods/read.md',
+  'references/case-runtime/methods/query-capabilities.md',
+  'references/case-runtime/methods/use-capability.md',
   'references/case-runtime/action-refs.md',
   'references/case-runtime/errors.md',
   'references/case-runtime/errors/scene-action.md',
@@ -152,8 +154,13 @@ for (const [entrypoint, definition] of Object.entries(INTERFACE_CONTRACTS)) {
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const caseIndex = read('references/case-runtime.md');
 const coordinatorIndex = read('references/coordinator.md');
+const casePrompt = read('prompts/case-agent.md');
+const executionPrinciples = read('references/case-execution-principles.md');
 const confirmRunPage = read('references/coordinator/methods/confirm-run.md');
 const runSequencePage = read('references/case-runtime/methods/run-sequence.md');
+assert.match(casePrompt, /Baseline[\s\S]*queryCapabilities[\s\S]*首次业务动作/);
+assert.match(casePrompt, /CAPABILITY_OUTCOME_UNKNOWN[\s\S]*禁止.*重放/);
+assert.match(executionPrinciples, /queryCapabilities[\s\S]*useCapability/);
 assert.doesNotMatch(runSequencePage, /Array<object \| object \| object>/);
 assert.match(runSequencePage, /Array<\{ type: "act"; \.\.\. \} \| \{ type: "wait"; \.\.\. \} \| \{ type: "capture"; \.\.\. \}>/);
 assert.ok(Buffer.byteLength(caseIndex) <= 6 * 1024);

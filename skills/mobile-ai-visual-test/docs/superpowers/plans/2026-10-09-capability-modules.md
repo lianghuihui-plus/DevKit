@@ -330,7 +330,7 @@ git commit -m "feat(mavt): add bcm-cs capability provider"
 - Consumes: `capabilityCatalogFrozen` and capability invocation events/resources.
 - Produces: artifact manifest entries, redacted capability trace rows, generated method/resource/error docs, and explicit Case Agent timing guidance.
 
-- [ ] **Step 1: Write failing artifact, trace, and guidance tests**
+- [x] **Step 1: Write failing artifact, trace, and guidance tests**
 
 ```js
 assert.ok(manifest.artifacts.some((item) => item.path.endsWith('capability-modules/catalog.json')));
@@ -339,25 +339,25 @@ assert.match(casePrompt, /Baseline Flow.*queryCapabilities.*首次业务动作/s
 assert.doesNotMatch(renderedHtml, /secret-token-value/);
 ```
 
-- [ ] **Step 2: Run the focused suites and verify RED**
+- [x] **Step 2: Run the focused suites and verify RED**
 
 Run: `node scripts/self-test.js trace report agentFacingDocs agentCapabilityContract`
 
 Expected: FAIL on missing capability artifacts, trace projection, and generated documentation.
 
-- [ ] **Step 3: Implement projections and regenerate docs**
+- [x] **Step 3: Implement projections and regenerate docs**
 
 Run: `node scripts/build-agent-facing-docs.js`
 
 The report shows capability name, purpose, outcome, time, and flow context; it does not expose raw secrets or turn capability outcomes into product verdicts.
 
-- [ ] **Step 4: Run focused suites and verify GREEN**
+- [x] **Step 4: Run focused suites and verify GREEN**
 
 Run: `node scripts/self-test.js trace report agentFacingDocs agentCapabilityContract boundaries`
 
 Expected: PASS and generated files match the authoritative contract.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add skills/mobile-ai-visual-test/scripts/lib/execution-artifact-manifest.js skills/mobile-ai-visual-test/scripts/report skills/mobile-ai-visual-test/scripts/tests skills/mobile-ai-visual-test/prompts/case-agent.md skills/mobile-ai-visual-test/references

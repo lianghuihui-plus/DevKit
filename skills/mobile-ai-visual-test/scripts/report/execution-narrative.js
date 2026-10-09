@@ -159,6 +159,13 @@ function projectCurrentNarrative(report) {
   const sequenceByDecision = new Map(sequenceRecords.filter((record) => record.decisionId)
     .map((record) => [record.decisionId, record]));
   const sequenceById = new Map(sequenceRecords.map((record) => [record.sequenceId, record]));
+  const capabilityRequests = new Map(events.filter((event) => event.type === 'capabilityInvocationRequested')
+    .map((event) => [event.capabilityInvocationId, event]));
+  const capabilityResults = events.filter((event) => [
+    'capabilityInvocationCompleted',
+    'capabilityInvocationFailed',
+    'capabilityInvocationOutcomeUnknown',
+  ].includes(event.type));
 
   const planHistory = flowEvents.map((event) => ({
     version: event.revision, time: event.time, reason: event.reason,
@@ -208,6 +215,7 @@ function projectCurrentNarrative(report) {
     const projectedAction = actionView(report, events, action, resultByOperation);
     const recoveryView = recovery ? { operationId: recovery.operationId, status: recovery.type === 'appRecovered' ? 'SUCCEEDED' : recovery.type === 'recoveryFailed' ? 'FAILED' : 'UNKNOWN', reason: recovery.reason || recovery.message || '' } : null;
     const baseStep = {
+      eventSequence: event.sequence,
       number: 0,
       decisionId: event.decisionId,
       time: event.time,
@@ -294,13 +302,53 @@ function projectCurrentNarrative(report) {
       };
     });
   });
-  const steps = decisionSteps.map((step, index) => ({ ...step, number: index + 1 }));
+  const capabilitySteps = capabilityResults.map((event) => {
+    const request = capabilityRequests.get(event.capabilityInvocationId) || {};
+    const status = event.status || (event.type === 'capabilityInvocationCompleted' ? 'SUCCEEDED'
+      : event.type === 'capabilityInvocationFailed' ? 'FAILED' : 'UNKNOWN');
+    return {
+      eventSequence: event.sequence,
+      number: 0,
+      decisionId: event.capabilityInvocationId,
+      operationId: event.capabilityInvocationId,
+      time: event.time,
+      operation: 'useCapability',
+      sceneId: null,
+      assessment: '',
+      observation: '',
+      conclusion: event.summary || '',
+      purpose: event.purpose || request.purpose || '',
+      expectedOutcome: '',
+      expectationRefs: [],
+      expectationTargets: [],
+      caseFlowRevision: null,
+      flowContext: request.flowContext || null,
+      capability: {
+        invocationId: event.capabilityInvocationId,
+        name: event.capabilityName || request.capabilityName || '未命名能力',
+        status,
+        summary: event.summary || '',
+        technicalFactRef: event.technicalFactRef || null,
+      },
+      action: null,
+      knowledge: null,
+      recovery: null,
+      visualInspection: null,
+      beforeScene: null,
+      afterScene: null,
+      postAssessment: null,
+      processState: status === 'SUCCEEDED' ? 'EXECUTED' : status === 'FAILED' ? 'ISSUE' : 'UNKNOWN',
+    };
+  });
+  const steps = [...decisionSteps, ...capabilitySteps]
+    .sort((left, right) => Number(left.eventSequence || 0) - Number(right.eventSequence || 0))
+    .map(({ eventSequence: _eventSequence, ...step }, index) => ({ ...step, number: index + 1 }));
   const operationGroups = [];
   const sequenceGroups = new Map();
   for (const step of steps) {
     if (!step.sequenceId && step.operation !== 'runSequence') {
       operationGroups.push({
-        kind: step.operation === 'act' ? 'ACT' : 'STEP',
+        kind: step.operation === 'act' ? 'ACT' : step.operation === 'useCapability' ? 'CAPABILITY' : 'STEP',
         sourceOperation: step.operation,
         decisionId: step.decisionId,
         purpose: step.purpose,
@@ -351,6 +399,7 @@ function projectCurrentNarrative(report) {
     sequenceCount: operationGroups.filter((group) => group.kind === 'RUN_SEQUENCE').length,
     sequenceActionCount: operationGroups.filter((group) => group.kind === 'RUN_SEQUENCE')
       .reduce((count, group) => count + group.steps.filter((step) => step.operation === 'act').length, 0),
+    capabilityCount: operationGroups.filter((group) => group.kind === 'CAPABILITY').length,
   };
 
   for (const check of checks) {
