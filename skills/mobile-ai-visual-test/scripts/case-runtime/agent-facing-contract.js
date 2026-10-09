@@ -8,7 +8,7 @@ const { MAX_SEQUENCE_STEPS, MAX_SEQUENCE_DURATION_MS, validateSequenceRequest } 
 const { GRID_MAX } = require('../lib/visual-coordinate-grid');
 
 const AGENT_FACING_INTERFACE_KIND = 'AGENT_FACING';
-const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'queryCapabilities', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
+const AGENT_FACING_CAPABILITIES = Object.freeze(['observe', 'read', 'inspect', 'plan', 'queryCapabilities', 'useCapability', 'recordResult', 'act', 'runSequence', 'knowledge', 'recover', 'finish']);
 const STRING = { type: 'string', minLength: 1 };
 const STRING_ARRAY = { type: 'array', items: STRING };
 const RESOURCE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:[^:]+:.+$' };
@@ -19,6 +19,7 @@ const KNOWLEDGE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:knowledgeDo
 const KNOWLEDGE_REF_ARRAY = { type: 'array', items: KNOWLEDGE_REF };
 const TECHNICAL_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:technicalFact:.+$' };
 const TECHNICAL_REF_ARRAY = { type: 'array', items: TECHNICAL_REF };
+const CAPABILITY_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:capabilityDefinition:.+$' };
 const CASE_FLOW_NODE_REF = { type: 'string', pattern: '^N[1-9]\\d*$' };
 const CASE_FLOW_EDGE_REF = { type: 'string', pattern: '^L[1-9]\\d*$' };
 const EXAMPLE_SCENE_REF = 'mavt:0123456789abcdef01234567:scene:scene-1';
@@ -112,6 +113,12 @@ const SCHEMAS = Object.freeze({
   }, ['mode', 'sceneRef', 'observation'])) },
   plan: object({ caseFlow: CASE_FLOW_UPDATE }, ['caseFlow']),
   queryCapabilities: object({}, []),
+  useCapability: object({
+    capabilityRef: CAPABILITY_REF,
+    input: { type: 'object' },
+    purpose: STRING,
+    flowContext: FLOW_CONTEXT,
+  }, ['capabilityRef', 'input', 'purpose']),
   recordResult: object({
     results: { type: 'array', minItems: 1, items: RESULT_REQUEST },
   }, ['results']),
@@ -151,6 +158,12 @@ const PUBLIC_ERRORS = Object.freeze({
   RESOURCE_SCOPE_MISMATCH: { group: 'transport', retryable: false, summary: '资源引用属于其他作用域。', recovery: '使用发布该引用的已绑定 command。' },
   RESOURCE_INTEGRITY_INVALID: { group: 'runtime', retryable: false, summary: '已发布资源缺失或完整性校验失败。', recovery: '保留现场并报告资源完整性故障。' },
   RESOURCE_FORMAT_UNSUPPORTED: { group: 'runtime', retryable: false, summary: '资源声明的内容格式不受支持或与文件格式冲突。', recovery: '保留 Scene 中其余可用资源，并根据 resourceDiagnostics 排查采集格式。' },
+  CAPABILITY_CATALOG_INVALID: { group: 'capability', retryable: false, summary: '冻结能力目录缺失或完整性无效。', recovery: '保留 execution 和能力目录文件进行技术排障，不覆盖已有目录。' },
+  CAPABILITY_UNKNOWN: { group: 'capability', retryable: true, summary: '能力引用未发布或不在当前冻结目录。', recovery: '调用 queryCapabilities，并原样使用目录返回的 capabilityRef。' },
+  CAPABILITY_SCOPE_MISMATCH: { group: 'capability', retryable: false, summary: '能力引用属于其他 execution。', recovery: '使用当前 execution 的 queryCapabilities 返回的 capabilityRef。' },
+  CAPABILITY_INPUT_INVALID: { group: 'capability', retryable: true, summary: '能力输入不符合冻结 definition 的 Schema。', recovery: '读取 capabilityRef 对应 definition，按 issues 修正 input 一次。' },
+  CAPABILITY_EXECUTION_FAILED: { group: 'capability', retryable: true, resourceTypes: ['capabilityInvocation', 'technicalFact'], summary: '能力模块明确返回调用失败。', recovery: '读取 invocation 和 technicalFact，修复明确的外部条件后再决定是否调用。' },
+  CAPABILITY_OUTCOME_UNKNOWN: { group: 'capability', retryable: false, resourceTypes: ['capabilityInvocation', 'technicalFact'], summary: '能力调用可能已送达，但结果无法确认。', recovery: '不要自动重放；按用例需要查询外部状态或观察 App，再决定是否重新设置。' },
   AGENT_INPUT_INVALID: { group: 'transport', retryable: true, summary: '请求结构、类型或条件字段不合法。', recovery: '根据 issues 修正当前方法请求一次；字段只取自当前方法页和 Runtime 响应。' },
   AGENT_INPUT_STALLED: { group: 'transport', retryable: false, summary: '同类输入错误连续发生，停止自动猜测。', recovery: '停止修改参数，读取当前方法页并核对绑定命令；仍不一致时保留请求和响应进行技术排障。' },
   PROTOCOL_MISMATCH: { group: 'transport', retryable: false, summary: 'Prompt、文档、客户端或 execution 协议不一致。', recovery: '停止执行该 execution，保留 Loader 输出和摘要；使用当前 Skill 新建 execution，不修改旧 execution。' },
@@ -284,6 +297,22 @@ const PUBLIC_METHODS = Object.freeze({
     sideEffects: ['首次查询冻结能力目录并追加目录事件'],
     idempotency: '首次查询后始终读取同一冻结目录，不再探测 Provider。',
     minimalExample: { operation: 'queryCapabilities', input: {} },
+  }),
+  useCapability: method('useCapability', '调用当前冻结目录中的一项外部能力。', SCHEMAS.useCapability, {
+    capabilityRef: 'queryCapabilities 返回并可通过 read 查看完整 definition 的引用',
+    input: '严格符合冻结 inputSchema 的能力输入', purpose: '本次调用的业务目的',
+    flowContext: '当前 Case Flow 节点和可选分支选择',
+  }, {
+    responseProjection: projection(['capabilityName', 'invocationRef'], 'capabilityInvocation', ['technicalFact']),
+    contextualValidationRules: ['先调用 queryCapabilities，再读取所选 capabilityRef 的 definition；不拼接引用。'],
+    successStatuses: ['CAPABILITY_COMPLETED'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'CAPABILITY_UNKNOWN', 'CAPABILITY_SCOPE_MISMATCH', 'CAPABILITY_INPUT_INVALID', 'CAPABILITY_EXECUTION_FAILED', 'CAPABILITY_OUTCOME_UNKNOWN', 'CASE_RUNTIME_FINALIZED', 'CASE_RUNTIME_TECHNICAL'],
+    sideEffects: ['调用所选 Provider；外部修改持续存在', '追加调用事件并保存脱敏 invocation 资源'],
+    idempotency: '不自动重试；每次请求都是独立调用，UNKNOWN 禁止盲目重放。',
+    minimalExample: { operation: 'useCapability', input: {
+      capabilityRef: 'mavt:0123456789abcdef01234567:capabilityDefinition:definition-1',
+      input: {}, purpose: '建立用例所需的服务器状态',
+    } },
   }),
   recordResult: method('recordResult', '独立记录验证点结果，不采集 Scene、不执行动作。', SCHEMAS.recordResult, {
     results: '已形成判断的验证结果和证据引用',

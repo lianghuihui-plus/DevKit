@@ -132,6 +132,7 @@ module.exports = {
   CATALOG_RELATIVE,
   DEFINITION_DIRECTORY,
   catalogDigest,
+  definitionDigest,
   freezeCatalog,
   loadCatalog,
   resolveCapability,

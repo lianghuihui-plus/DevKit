@@ -210,7 +210,7 @@ git commit -m "feat(mavt): expose capability discovery to case agents"
 - Consumes: frozen `capabilityDefinition`, `validateAgentJson(input, inputSchema)`, and provider `invoke({ capability, input }, context)`.
 - Produces: public `useCapability({ capabilityRef, input, purpose, flowContext? })`, `invokeCapability(execDir, request, options)`, and typed resource `capabilityInvocation`.
 
-- [ ] **Step 1: Write failing invocation tests**
+- [x] **Step 1: Write failing invocation tests**
 
 ```js
 const invalid = executeFacadeRequest(execDir, { operation: 'useCapability', input: {
@@ -226,13 +226,13 @@ assert.strictEqual(success.status, 'SUCCEEDED');
 assert.strictEqual(success.data.type, 'capabilityInvocation');
 ```
 
-- [ ] **Step 2: Run the focused suite and verify RED**
+- [x] **Step 2: Run the focused suite and verify RED**
 
 Run: `node scripts/tests/agent-facing-capability-invocation.test.js`
 
 Expected: FAIL because `useCapability` is absent.
 
-- [ ] **Step 3: Implement ref resolution, dynamic validation, invocation, and redaction**
+- [x] **Step 3: Implement ref resolution, dynamic validation, invocation, and redaction**
 
 ```js
 function invokeCapability(execDir, request, options = {}) {
@@ -245,13 +245,13 @@ function invokeCapability(execDir, request, options = {}) {
 
 Persist requested and terminal events, map provider `SUCCEEDED | FAILED | UNKNOWN` without retry, omit secret-like keys from summaries/diagnostics, and retain bounded structured output only in `capabilityInvocation`.
 
-- [ ] **Step 4: Run the focused suite and verify GREEN**
+- [x] **Step 4: Run the focused suite and verify GREEN**
 
 Run: `node scripts/self-test.js agentFacingCapabilityInvocation agentFacingResources agentFacingBoundary`
 
 Expected: PASS for success, failed, unknown, timeout, thrown provider, invalid input, forged ref, cross-execution ref, and finalized-execution rejection.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add skills/mobile-ai-visual-test/scripts/case-runtime skills/mobile-ai-visual-test/scripts/tests skills/mobile-ai-visual-test/scripts/self-test.js

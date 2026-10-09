@@ -212,6 +212,7 @@ function translateAgentFacingRequest(execDir, request) {
   request = { ...request.input, operation: request.operation };
   if (request.operation === 'read') return { operation: 'read', ref: request.ref };
   if (request.operation === 'queryCapabilities') return { operation: 'queryCapabilities' };
+  if (request.operation === 'useCapability') return request;
   request = require('./agent-resource-store').resolveRequestReferences(execDir, request);
   if (request.operation === 'act') request = { ...request, ...facadeAction(request.action),
     purpose: request.purpose || '执行 Agent 选择的动作' };
@@ -363,7 +364,8 @@ function projectAgentFacingError(response, request = null, resources = [], provi
   const status = publicErrorStatus(response) || 'FAILED';
   const operation = Object.hasOwn(PUBLIC_CONTRACT.methods, request?.operation) ? request.operation : null;
   const failureCode = response.code || response.action?.failureCode || response.action?.deviceExecution?.failureCode;
-  const code = status === 'UNKNOWN' ? (operation === 'runSequence' ? 'SEQUENCE_ACTION_OUTCOME_UNKNOWN' : 'ACTION_OUTCOME_UNKNOWN')
+  const code = status === 'UNKNOWN' ? (operation === 'useCapability' ? 'CAPABILITY_OUTCOME_UNKNOWN'
+    : operation === 'runSequence' ? 'SEQUENCE_ACTION_OUTCOME_UNKNOWN' : 'ACTION_OUTCOME_UNKNOWN')
     : response.status === 'SCENE_CHANGED' ? 'SCENE_CHANGED'
       : PUBLIC_CONTRACT.errors[failureCode] ? failureCode
         : operation === 'runSequence' ? 'SEQUENCE_STEP_FAILED' : 'CASE_RUNTIME_TECHNICAL';
@@ -422,6 +424,8 @@ function projectResponseResult(response, request, provided = {}) {
       ? response.preparation?.status : undefined,
     catalogRef: response.catalogRef,
     availableCount: response.availableCount,
+    capabilityName: response.capabilityName,
+    invocationRef: provided.result?.invocationRef || response.invocationRef,
     executionId: response.executionId,
     verdict: response.verdict,
     ...response.result,
