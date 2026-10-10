@@ -45,8 +45,10 @@ assert.strictEqual(jsonLayout.descriptor.mediaType, 'application/json');
 assert.deepStrictEqual(jsonLayout.data.content, scene.layout);
 const binary = resources.readPublishedResource(dir, observed.data.content.screenshotRef).data.content;
 assert.notStrictEqual(binary.sha256, crypto.createHash('sha256').update(png).digest('hex'));
-assert.notStrictEqual(binary.path, fs.realpathSync(path.join(dir, 'screenshots/scene-0001.png')));
-assert.match(binary.path, /screenshots\/coordinate-grid\/scene-0001\.png$/);
+assert.strictEqual(fs.existsSync(binary.path), true);
+assert.strictEqual(path.relative(fs.realpathSync(dir), binary.path).startsWith('..'), true);
+assert.deepStrictEqual({ width: binary.width, height: binary.height }, { width: 165, height: 109 });
+assert.strictEqual(fs.existsSync(path.join(dir, 'screenshots', 'coordinate-grid')), false);
 assert.deepStrictEqual(binary.coordinateSpace, {
   kind: 'SCREENSHOT_GRID', minimum: 0, maximum: 10000,
   origin: 'TOP_LEFT', xDirection: 'RIGHT', yDirection: 'DOWN',
@@ -322,6 +324,9 @@ store.updateExecution(dir, { finalized: true });
 assert.strictEqual(run(dir, { operation: 'read', input: { ref: observed.data.ref } }).status, 'SUCCEEDED');
 assert.strictEqual(run(dir, { operation: 'observe', input: {} }).error.code, 'CASE_RUNTIME_FINALIZED');
 fs.writeFileSync(binary.path, 'tampered');
+const restoredBinary = resources.readPublishedResource(dir, observed.data.content.screenshotRef).data.content;
+assert.strictEqual(restoredBinary.sha256, binary.sha256);
+fs.writeFileSync(path.join(dir, 'screenshots/scene-0001.png'), 'tampered authority');
 assert.throws(() => resources.readPublishedResource(dir, observed.data.content.screenshotRef), { code: 'RESOURCE_INTEGRITY_INVALID' });
 assert.strictEqual(run(dir, { operation: 'read', input: { ref: observed.data.content.screenshotRef } }).status, 'FAILED');
 console.log('agent-facing resources tests passed');

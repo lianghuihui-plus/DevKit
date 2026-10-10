@@ -909,7 +909,7 @@ const spatialAction = run(started.execDir, {
     observation: '当前现场左上角可作为无副作用测试位置',
     conclusion: '执行一次视觉点击以检查 Runtime 返回证据',
     purpose: '验证动作空间证据闭环',
-    expectedOutcome: '返回请求点、投递点和带底图的标注附件',
+    expectedOutcome: '返回请求点、投递点和临时落点视图',
     expectationRefs: [],
   },
 }, { runner, now: '2026-09-03T10:00:01.950Z' });
@@ -918,9 +918,14 @@ assert.strictEqual(spatialAction.action.spatialEvidence.certainty, 'DISPATCH_ONL
 assert.deepStrictEqual(spatialAction.action.spatialEvidence.requested.point, { x: 0, y: 0 });
 assert.deepStrictEqual(spatialAction.action.spatialEvidence.dispatched.point, { x: 0, y: 0 });
 assert.strictEqual(spatialAction.action.spatialEvidence.deviceActual, null);
+assert.strictEqual(spatialAction.action.spatialEvidence.annotatedScreenshot.persistence, 'TRANSIENT');
 assert.strictEqual(spatialAction.action.spatialEvidence.annotatedScreenshot.attachment.mediaType, 'image/png');
-assert.strictEqual(spatialAction.action.spatialEvidence.annotatedScreenshot.tool, 'view_image');
 assert.strictEqual(fs.existsSync(spatialAction.action.spatialEvidence.annotatedScreenshot.path), true);
+assert.strictEqual(path.relative(fs.realpathSync(started.execDir),
+  fs.realpathSync(spatialAction.action.spatialEvidence.annotatedScreenshot.path)).startsWith('..'), true);
+assert.match(spatialAction.action.spatialEvidence.screenshot.ref, /^screenshots\/[^/]+\.png$/);
+assert.strictEqual(fs.existsSync(path.join(started.execDir,
+  `action-spatial-evidence/${spatialAction.action.operationId}.png`)), false);
 const spatialOperationId = spatialAction.action.operationId;
 const spatialEvent = require('../case-runtime/store').events(started.execDir)
   .find((event) => event.type === 'actionCompleted' && event.operationId === spatialOperationId);
@@ -931,6 +936,11 @@ const spatialOperation = JSON.parse(fs.readFileSync(path.join(started.execDir, '
 assert.strictEqual(spatialOperation.spatialEvidenceRef, spatialEvent.spatialEvidenceRef);
 assert.strictEqual(spatialOperation.actionResult.spatialEvidenceRef, spatialEvent.spatialEvidenceRef);
 assert.strictEqual(spatialOperation.actionResult.spatialEvidence, undefined);
+const persistedSpatialScene = JSON.parse(fs.readFileSync(path.join(started.execDir, 'current-scene.json'), 'utf8'));
+assert.strictEqual(persistedSpatialScene.previousAction.spatialEvidenceRef, spatialEvent.spatialEvidenceRef);
+assert.strictEqual(persistedSpatialScene.previousAction.spatialEvidence, undefined);
+assert.strictEqual(JSON.stringify(persistedSpatialScene).includes('TRANSIENT'), false);
+assert.strictEqual(JSON.stringify(persistedSpatialScene).includes(spatialAction.action.spatialEvidence.annotatedScreenshot.path), false);
 const spatialInspection = run(started.execDir, {
   operation: 'inspectScene',
   basedOnSceneId: currentSceneId(),
@@ -1118,6 +1128,12 @@ assert.strictEqual(committed.completion.validationProfileSha, validationProfile.
 const committedManifest = JSON.parse(fs.readFileSync(path.join(started.execDir, 'artifact-manifest.json'), 'utf8'));
 assert.ok(committedManifest.files.some((entry) => entry.path === 'validation-profile.snapshot.json'));
 assert.strictEqual(committed.completion.verdict, 'PASS');
+assert.deepStrictEqual(committed.retention, {
+  status: 'UNCHANGED',
+  limit: 3,
+  completedCount: 1,
+  removedExecutionIds: [],
+});
 assert.strictEqual(committed.state.status, 'FINALIZING');
 assert.deepStrictEqual(committed.state.finalization, { cause: 'COMPLETED', executionsSettled: false, casesCommitted: true, platformReleased: false });
 assert.strictEqual(reconcileBatch({ workspaceRoot: root, batchId, implementationSha: contract.implementationSha, adapter, now: T0 }).action, 'SETTLE_EXECUTIONS');

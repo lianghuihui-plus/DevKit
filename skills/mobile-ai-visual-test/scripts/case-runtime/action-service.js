@@ -141,7 +141,7 @@ function completeDispatchedAction(execDir, dispatched, afterScene, metadata = {}
     transactions.completeAction(execDir, transaction, { actionResult: persistedActionResult(actionResult) });
     return actionResult;
   }
-  afterScene.previousAction = actionResult;
+  afterScene.previousAction = persistedActionResult(actionResult);
   store.writeScene(execDir, afterScene, { promote: options.promoteScene });
   if (!store.events(execDir).some((event) => event.type === 'actionCompleted' && event.operationId === transaction.operationId)) {
     store.appendEvent(execDir, 'actionCompleted', {
@@ -420,13 +420,7 @@ function act(execDir, request, options = {}) {
       relatedOperationId: operationId,
       preAdapterDelayMs: dispatchedAction.action.type === 'wait' ? 0 : 500,
       previousAction: {
-        operationId,
-        lifecycle: { status: classifyActionOutcome(dispatched.adapterResult) },
-        action: dispatchedAction.action,
-        command: dispatchedAction.command,
-        deviceExecution: dispatchedAction.deviceExecution,
-        evidence: dispatchedAction.evidence,
-        ...(dispatchedAction.spatialEvidence ? { spatialEvidence: dispatchedAction.spatialEvidence } : {}),
+        ...persistedActionResult(dispatchedAction),
       },
       decisionId: request.decisionId || null,
     });
@@ -461,6 +455,7 @@ module.exports = {
   completeDispatchedAction,
   completeUnknownDispatchedAction,
   dispatchAction,
+  persistedActionResult,
   recordCaptureFailureTechnicalFact,
   redactedAction,
 };

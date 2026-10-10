@@ -19,6 +19,7 @@ const {
   completeDispatchedAction,
   completeUnknownDispatchedAction,
   dispatchAction,
+  persistedActionResult,
   recordCaptureFailureTechnicalFact,
 } = require('./action-service');
 const sceneService = require('./scene-service');
@@ -429,10 +430,10 @@ function actionRequestFor(step, basisSceneId, purpose, decisionId) {
 }
 
 function dispatchedPreviousAction(dispatched) {
-  return {
+  return persistedActionResult({
     ...dispatched.action,
     lifecycle: { status: classifyActionOutcome(dispatched.adapterResult) },
-  };
+  });
 }
 
 function readScene(execDir, sceneId) {

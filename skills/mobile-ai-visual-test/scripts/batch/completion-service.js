@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { contractError } = require('../lib/contract-utils');
 const { appendJsonl, readJson, withFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
+const { pruneCompletedExecutions } = require('../lib/execution-retention');
 const { loadBatch, readBatchState, saveBatch } = require('./state-repository');
 const {
   buildCurrentCompletion,
@@ -64,6 +65,11 @@ function commitCurrentCase(options) {
     }
     if (options.interruptAfter === 'runtime') throw new Error('MAVT_BATCH_COMMIT_INTERRUPTED: runtime');
     const completion = publishCurrentCompletion(execDir, buildCurrentCompletion(execDir, state, item, prepared, runtime));
+    const retention = pruneCompletedExecutions({
+      workspaceRoot: options.workspaceRoot,
+      executionsRoot: path.dirname(execDir),
+      now: options.now,
+    });
     if (draft.stage === 'RUNTIME_RELEASED') {
       draft.stage = 'COMPLETION_WRITTEN';
       writeJsonAtomic(loaded.paths.caseCommitDraft, draft);
@@ -107,7 +113,7 @@ function commitCurrentCase(options) {
     }
     if (options.interruptAfter === 'event') throw new Error('MAVT_BATCH_COMMIT_INTERRUPTED: event');
     if (fs.existsSync(loaded.paths.caseCommitDraft)) fs.unlinkSync(loaded.paths.caseCommitDraft);
-    return { state, item, completion, runtime };
+    return { state, item, completion, runtime, retention };
   }, { now: options.now });
 }
 
