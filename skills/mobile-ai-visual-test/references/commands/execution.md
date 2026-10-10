@@ -178,7 +178,7 @@ node '<skill-root>/scripts/batch.js' start --workspace '<workspace>' --batch-id 
 <a id="batch-commit"></a>
 ## scripts/batch.js commit
 
-Commit a completed current execution and refresh its report
+Commit a completed current execution and publish its case report
 
 **角色：** `maintenance`
 
@@ -193,7 +193,7 @@ node <skill-root>/scripts/batch.js commit --workspace <workspace> --batch-id <id
 | `--workspace` | 是 | Absolute or relative MAVT workspace path |
 | `--batch-id` | 是 | Execution request and batch identifier |
 
-**成功：** `committed case and dashboard refresh status`
+**成功：** `committed case and case report publication status`
 
 **最小示例：**
 

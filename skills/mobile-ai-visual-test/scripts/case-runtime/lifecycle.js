@@ -17,6 +17,7 @@ const {
 const { sourceSha, validateCaseContract } = require('../execution/contracts/case-contract');
 const { allocateExecutionId, atomicWrite, readJson, writeJsonAtomic, withFileLock } = require('../lib/execution-lifecycle');
 const { assertWorkspace } = require('../lib/workspace');
+const { signature } = require('../lib/agent-facing-signature');
 const runtimeCore = require('./runtime-core');
 const store = require('./store');
 const { createValidationProfile, PROFILE_FILE } = require('../execution/contracts/validation-profile-contract');
@@ -26,6 +27,29 @@ const {
 } = require('./runtime-operation-contract');
 
 const EXECUTION_SCHEMA_VERSION = 14;
+
+const STARTUP_GUIDE = Object.freeze([
+  '直接使用本 Brief 的 case.source、casePrompt、executionPrinciples、scene 和 caseFlow；启动时不要预读本地参考文档。',
+  '通读 case.source，用 plan 建立 Baseline Case Flow；已有 caseFlow 时先核对并按需修订。',
+  'Baseline 后调用一次 queryCapabilities；首次业务动作前完成。',
+  'Brief scene 缺失或可能变化时调用 observe；随后选择 act 或 runSequence。',
+  '只有当前方法字段不足或 Runtime 返回 documentationRef 时，才定向读取对应方法或错误文档。',
+]);
+
+const EXECUTION_PRINCIPLES = Object.freeze([
+  '原始用例是唯一业务目标；完整阅读并保留若、如果、可选、可能、无需、跳过、直到等限定词，Case Flow 不能替代、缩小或改写原意。',
+  '同一事实的不同取值都可进入正常路径时建 DECISION，分支内验证建 CONDITIONAL CHECK；不得把条件检查改成 REQUIRED CHECK。',
+  'Baseline 冻结原意；每条正常 END 路径必须能处置 REQUIRED CHECK，未进入分支的 CONDITIONAL CHECK 记 NOT_APPLICABLE，不新增原文未要求的检查点。',
+  'Working Flow 表达实际路径；Scene、动作效果、环境或原文理解变化时可修订路线，但不得改写 Baseline CHECK。',
+  '同一意图可用 act 或 runSequence 时优先 runSequence；瞬态结果在同一 sequence 中按业务时序使用两次 SCREENSHOT_ONLY，最终完整 Scene 不能替代。',
+  '动作结果必须用新 Scene、previousAction 或 sequence result 核验；技术成功不证明业务成功，业务结论通过 recordResult 保存。',
+  'ACTION_OUTCOME_UNKNOWN 和 CAPABILITY_OUTCOME_UNKNOWN 禁止自动重放，先观察或调查外部状态。',
+  'PASS 和 FAIL 必须有直接支持 CHECK 的可靠业务证据；技术异常不能改报产品 FAIL，证据冲突或覆盖不足用 INCONCLUSIVE，有效技术事实可支撑 BLOCKED。',
+  '只有覆盖目标可能范围并确认边界后才能判断不存在；否则披露搜索范围或使用 INCONCLUSIVE。',
+  '出现预期不符、操作无效果、异常反复、原因不明或无法可靠判断时优先尽早 knowledge；无适用候选仍按现场证据判断。',
+  'NOT_RUN 仅在必要条件于 execution 权限、事实和能力内无法建立、无安全合理路径、尚未验证相应业务 CHECK、且已有 Scene 或技术事实说明原因时使用。',
+  '正常结束用 finish(mode="complete")；收口前核对条件、分支、范围、CHECK、证据和不确定项。',
+]);
 
 function createBoundAgentFacingClient(execDir) {
   const entry = path.join(execDir, 'agent-facing-client.js');
@@ -66,7 +90,23 @@ function buildCaseBrief(executionDir, execution, caseJson, sourceText, runtime, 
       protocol: agentContract.AGENT_FACING_PROTOCOL,
       command,
       documentation: 'references/case-runtime.md',
+      startup: [...STARTUP_GUIDE],
+      methodIndex: Object.fromEntries(Object.entries(agentContract.PUBLIC_CONTRACT.methods).map(([name, definition]) => [name, {
+        summary: definition.summary,
+        signature: signature(definition),
+      }])),
+      invocation: {
+        transport: 'STDIN_JSON',
+        requestFormat: '{"operation":"<method>","input":{...}}',
+        shellTemplate: `${command} <<'MAVT_REQUEST'\n<REQUEST_JSON>\nMAVT_REQUEST`,
+        rules: [
+          '原样保留 shellTemplate 第一行的完整 runtime.command，只替换 <REQUEST_JSON>。不得重建客户端路径、删改 --dispatch-sequence 或追加位置参数。',
+          'REQUEST_JSON 直接使用 JSON.stringify 等价的单个 JSON 对象；不要使用 Buffer、base64 或 shell 字符串拼接。',
+          '单引号、中文、$ 和反引号可直接放入 JSON 字符串；带单引号的 heredoc 分隔符会阻止 shell 展开。',
+        ],
+      },
     },
+    executionPrinciples: [...EXECUTION_PRINCIPLES],
     caseFlow,
     ...(caseFlow ? { caseFlowRef: require('./agent-resource-store').publishEvent(executionDir, 'caseFlow', caseFlow).data.ref } : {}),
     scene: fullScene ? require('./agent-resource-store').publishScene(executionDir, fullScene.sceneId).data.content : null,

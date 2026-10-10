@@ -279,6 +279,49 @@ fs.writeFileSync(corruptedTimingSidecar, '{ invalid json');
 assert.doesNotThrow(() => renderIndexForRoot(corruptedTimingRoot));
 assert.strictEqual(require('../report/report-service').collectIndexCases(corruptedTimingRoot)[0].status, 'PASS');
 assert.strictEqual(fs.readFileSync(corruptedTimingSidecar, 'utf8'), '{ invalid json');
+
+const caseOnlyPublicationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-case-only-publication-'));
+createTestWorkspace(caseOnlyPublicationRoot);
+const caseOnlyFixture = createCurrentFixture(caseOnlyPublicationRoot, { verdict: 'PASS', suffix: 'case-only' });
+const caseOnlyIndexPath = path.join(caseOnlyPublicationRoot, 'index.html');
+renderIndexForRoot(caseOnlyPublicationRoot);
+const caseOnlyIndexTime = new Date('2026-08-01T00:00:00.000Z');
+fs.utimesSync(caseOnlyIndexPath, caseOnlyIndexTime, caseOnlyIndexTime);
+const caseOnlyIndexBefore = fs.readFileSync(caseOnlyIndexPath);
+const caseOnlyPublication = refreshCommittedCaseReports(caseOnlyFixture.caseDir, 'harmony');
+assert.strictEqual(caseOnlyPublication.status, 'UPDATED');
+assert.strictEqual(caseOnlyPublication.indexRefresh, 'DEFERRED');
+assert.strictEqual(caseOnlyPublication.indexHtml, null);
+assert.deepStrictEqual(
+  fs.readFileSync(caseOnlyIndexPath),
+  caseOnlyIndexBefore,
+  'per-case publication must not rebuild or mutate the workspace-wide index',
+);
+assert.strictEqual(fs.statSync(caseOnlyIndexPath).mtimeMs, caseOnlyIndexTime.getTime());
+assert.strictEqual(fs.existsSync(caseOnlyPublication.platformContextHtml), true);
+assert.strictEqual(fs.existsSync(caseOnlyPublication.caseContextHtml), true);
+
+const unrelatedBrokenReportRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-unrelated-broken-report-'));
+createTestWorkspace(unrelatedBrokenReportRoot);
+const terminalTarget = createCurrentFixture(unrelatedBrokenReportRoot, {
+  verdict: 'PASS', suffix: 'terminal-target', platform: 'harmony',
+});
+const unrelatedPublished = createCurrentFixture(unrelatedBrokenReportRoot, {
+  verdict: 'PASS', suffix: 'unrelated-published', platform: 'ios',
+});
+refreshCommittedCaseReports(terminalTarget.caseDir, 'harmony');
+refreshCommittedCaseReports(unrelatedPublished.caseDir, 'ios');
+refreshBatchIndex(unrelatedBrokenReportRoot, [terminalTarget.caseDir], 'harmony');
+const unrelatedIndexPath = path.join(unrelatedBrokenReportRoot, 'index.html');
+const unrelatedIndexBefore = fs.readFileSync(unrelatedIndexPath);
+fs.unlinkSync(path.join(unrelatedPublished.runtimeDir, 'CONTEXT.html'));
+assert.throws(
+  () => refreshBatchIndex(unrelatedBrokenReportRoot, [terminalTarget.caseDir], 'harmony'),
+  /REPORT_LINK_TARGET_MISSING/,
+  'terminal publication must not write an index with dangling links from a non-target published case',
+);
+assert.deepStrictEqual(fs.readFileSync(unrelatedIndexPath), unrelatedIndexBefore);
+
 for (const expected of ['RETRY_REQUIRED', 'RETRY_REQUIRED', 'DEGRADED']) {
   recordPublicationAttempt(reportRoot, 'batch-transient', 'batch', {
     status: 'FAILED', errorCode: 'EXECUTION_LOCKED', reason: 'same lock contention',
@@ -399,6 +442,7 @@ const unpublishedSibling = createCurrentFixture(unpublishedSiblingRoot, {
 });
 writeCaseReports(unpublishedSibling.caseDir, unpublishedSibling.caseJson);
 assert.doesNotThrow(() => refreshCommittedCaseReports(publishedSibling.caseDir, 'harmony'));
+refreshBatchIndex(unpublishedSiblingRoot, [publishedSibling.caseDir], 'harmony');
 const unpublishedSiblingIndex = fs.readFileSync(path.join(unpublishedSiblingRoot, 'index.html'), 'utf8');
 assert.ok(unpublishedSiblingIndex.includes('published-sibling'));
 assert.strictEqual(
@@ -408,10 +452,15 @@ assert.strictEqual(
 );
 refreshCommittedCaseReports(unpublishedSibling.caseDir, 'ios');
 fs.unlinkSync(path.join(unpublishedSibling.runtimeDir, 'CONTEXT.html'));
-assert.throws(
-  () => refreshCommittedCaseReports(publishedSibling.caseDir, 'harmony'),
-  /REPORT_LINK_TARGET_MISSING: .*platforms\/ios\/CONTEXT\.html/,
-  'a missing artifact from an actually published snapshot must remain an integrity error',
+assert.doesNotThrow(() => refreshCommittedCaseReports(publishedSibling.caseDir, 'harmony'));
+assert.doesNotThrow(() => refreshBatchIndex(
+  unpublishedSiblingRoot,
+  [publishedSibling.caseDir, unpublishedSibling.caseDir],
+));
+assert.strictEqual(
+  fs.existsSync(path.join(unpublishedSibling.runtimeDir, 'CONTEXT.html')),
+  true,
+  'terminal publication must repair and validate workspace-wide report artifacts',
 );
 
 const platformBoundaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-report-platform-boundary-'));
@@ -438,10 +487,11 @@ assert.strictEqual(
   'publishing one platform must not publish another session platform',
 );
 assert.strictEqual(
-  fs.readFileSync(path.join(platformBoundaryRoot, 'index.html'), 'utf8').includes('data-platform-run="android"'),
+  fs.existsSync(path.join(platformBoundaryRoot, 'index.html')),
   false,
 );
 refreshCommittedCaseReports(boundaryAndroid.caseDir, 'android');
+refreshBatchIndex(platformBoundaryRoot, [boundaryAndroid.caseDir]);
 const platformBoundaryIndex = fs.readFileSync(path.join(platformBoundaryRoot, 'index.html'), 'utf8');
 assert.ok(platformBoundaryIndex.includes('iOS'));
 assert.ok(platformBoundaryIndex.includes('Android'));
@@ -474,6 +524,7 @@ readRefreshResult(iosRefresh);
 readRefreshResult(androidRefresh);
 waitForFile(concurrentLock.releasedPath);
 
+refreshBatchIndex(concurrentRoot, [concurrentIos.caseDir]);
 const concurrentIndex = fs.readFileSync(path.join(concurrentRoot, 'index.html'), 'utf8');
 const concurrentMetadata = JSON.parse(fs.readFileSync(path.join(concurrentRoot, 'report-metadata.json'), 'utf8'));
 const concurrentCaseContext = fs.readFileSync(path.join(concurrentIos.caseDir, 'CONTEXT.html'), 'utf8');

@@ -250,7 +250,8 @@ fs.utimesSync(unrelatedContext, fixedTime, fixedTime);
 const incremental = refreshCommittedCaseReports(fixtures[0].caseDir, 'harmony');
 const metricsAfterRefresh = fs.readFileSync(metricsPath);
 assert.strictEqual(incremental.status, 'UPDATED');
-assert.strictEqual(fs.existsSync(incremental.indexHtml), true);
+assert.strictEqual(incremental.indexHtml, null);
+assert.strictEqual(incremental.indexRefresh, 'DEFERRED');
 assert.strictEqual(fs.existsSync(incremental.platformContextHtml), true);
 assert.strictEqual(fs.statSync(unrelatedContext).mtimeMs, fixedTime.getTime());
 assert.deepStrictEqual(metricsAfterRefresh, metricsBeforeRefresh);
@@ -273,7 +274,7 @@ const isolatedIncremental = refreshCommittedCaseReports(activeFixture.caseDir, '
 assert.strictEqual(isolatedIncremental.status, 'UPDATED');
 assert.strictEqual(fs.statSync(brokenContext).mtimeMs, fixedTime.getTime());
 assert.strictEqual(
-  fs.readFileSync(isolatedIncremental.indexHtml, 'utf8').includes('报告数据异常'),
+  fs.readFileSync(path.join(isolationRoot, 'index.html'), 'utf8').includes('报告数据异常'),
   false,
   'an unpublished corrupt execution must not replace the published dashboard snapshot',
 );

@@ -17,6 +17,11 @@ const { OPERATION_CONTRACT } = runtimeOperationContract;
 
 const root = path.resolve(__dirname, '../..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
+assert.doesNotMatch(
+  read('prompts/case-agent.md'),
+  /启动时完整读取\s*`references\/case-execution-principles\.md`/,
+  'Case Agent startup must not require preloading local reference documents',
+);
 const envelopeSource = read('scripts/lib/agent-facing-envelope.js');
 assert.deepStrictEqual(fs.readdirSync(path.join(root, 'references'), { withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
@@ -99,7 +104,6 @@ assert.ok(AGENT_FACING_CAPABILITIES.includes('read'));
 const casePrompt = read('prompts/case-agent.md');
 const caseExecutionPrinciples = read('references/case-execution-principles.md');
 assert.ok(roleResources('case-executor').includes('references/case-execution-principles.md'));
-assert.match(casePrompt, /references\/case-execution-principles\.md/);
 assert.ok(Buffer.byteLength(casePrompt) + Buffer.byteLength(caseExecutionPrinciples) <= 10 * 1024,
   'Case Agent prompt and execution principles must preserve attention-budget headroom');
 for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkpointId', 'turnId']) {

@@ -18,6 +18,7 @@ const { buildExecutionNarrative } = require('../report/execution-narrative');
 const { refreshCommittedCaseReports } = require('../report/report-service');
 const { acquireFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
 const { claimTokenFor } = require('../lib/dispatch-lease');
+const { signature } = require('../lib/agent-facing-signature');
 const { createTestExecutionRequest, createTestWorkspace } = require('./support/workspace-fixture');
 
 process.env.MAVT_SELF_TEST = '1';
@@ -141,10 +142,56 @@ assert.strictEqual(started.brief.case.source, sourceText);
 assert.strictEqual(started.brief.scene, null);
 assert.strictEqual(path.dirname(started.runtime.entry), started.execDir);
 assert.strictEqual(started.brief.runtime.entry, undefined);
-assert.deepStrictEqual(Object.keys(started.brief.runtime).sort(), ['command', 'documentation', 'interfaceKind', 'protocol']);
+assert.deepStrictEqual(Object.keys(started.brief.runtime).sort(), [
+  'command', 'documentation', 'interfaceKind', 'invocation', 'methodIndex', 'protocol', 'startup',
+]);
 assert.strictEqual(started.brief.runtime.protocol, 'agent-facing');
 assert.strictEqual(started.brief.runtime.documentation, 'references/case-runtime.md');
 assert.match(started.brief.runtime.command, /--dispatch-sequence 1$/);
+assert.match(started.brief.runtime.invocation.shellTemplate, /--dispatch-sequence 1 <<'MAVT_REQUEST'/);
+assert.ok(started.brief.runtime.invocation.shellTemplate.includes('<REQUEST_JSON>'));
+assert.ok(started.brief.runtime.invocation.rules.some((rule) => /Buffer/.test(rule)));
+assert.ok(started.brief.runtime.invocation.rules.some((rule) => /不得重建|原样/.test(rule)));
+assert.deepStrictEqual(Object.keys(started.brief.runtime.methodIndex), [
+  'observe', 'read', 'inspect', 'plan', 'queryCapabilities', 'useCapability', 'recordResult',
+  'act', 'runSequence', 'knowledge', 'recover', 'finish',
+]);
+for (const [operation, definition] of Object.entries(require('../case-runtime/agent-facing-contract').PUBLIC_CONTRACT.methods)) {
+  assert.deepStrictEqual(started.brief.runtime.methodIndex[operation], {
+    summary: definition.summary,
+    signature: signature(definition),
+  });
+}
+assert.ok(started.brief.runtime.startup.some((step) => /首次业务动作前/.test(step)));
+assert.ok(started.brief.executionPrinciples.some((principle) => /原始用例/.test(principle)));
+const embeddedPrinciples = started.brief.executionPrinciples.join('\n');
+assert.match(embeddedPrinciples, /DECISION.*CONDITIONAL CHECK/);
+assert.match(embeddedPrinciples, /每条正常 END 路径.*REQUIRED CHECK/);
+assert.match(embeddedPrinciples, /覆盖目标可能范围.*不存在/);
+assert.match(embeddedPrinciples, /瞬态.*SCREENSHOT_ONLY/);
+assert.match(embeddedPrinciples, /NOT_RUN.*必要条件.*无法建立/);
+assert.match(embeddedPrinciples, /尚未验证.*业务 CHECK/);
+const specialRuntimeRequest = {
+  operation: 'observe',
+  input: { purpose: '引号\'、中文、$HOME、`date` 和换行\n保持原样' },
+};
+const specialRuntimeInvocation = started.brief.runtime.invocation.shellTemplate
+  .replace('<REQUEST_JSON>', JSON.stringify(specialRuntimeRequest));
+const specialRuntimeResponse = JSON.parse(childProcess.execSync(specialRuntimeInvocation, { encoding: 'utf8' }));
+assert.strictEqual(specialRuntimeResponse.operation, 'observe');
+assert.notStrictEqual(specialRuntimeResponse.error?.code, 'AGENT_INPUT_INVALID');
+assert.notStrictEqual(specialRuntimeResponse.error?.code, 'BINDING_INVALID');
+const transportShellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
+const stdinEchoScript = "let value=''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { value += chunk; }); process.stdin.on('end', () => process.stdout.write(value));";
+const stdinEchoCommand = `${transportShellQuote(process.execPath)} -e ${transportShellQuote(stdinEchoScript)} --`;
+const transportProbe = started.brief.runtime.invocation.shellTemplate
+  .replace(transportShellQuote(started.runtime.entry), stdinEchoCommand)
+  .replace('<REQUEST_JSON>', JSON.stringify(specialRuntimeRequest));
+assert.deepStrictEqual(
+  JSON.parse(childProcess.execSync(transportProbe, { encoding: 'utf8' })),
+  specialRuntimeRequest,
+  'the published invocation template must preserve stdin JSON without shell expansion',
+);
 assert.strictEqual(started.brief.runtime.commands, undefined);
 assert.strictEqual(started.brief.runtime.allowedOperations, undefined);
 assert.strictEqual(started.brief.runtime.interfaceKind, 'AGENT_FACING');
@@ -263,7 +310,10 @@ assert.strictEqual(continuationBrief.case.source, sourceText);
 assert.strictEqual(continuationBrief.caseFlow.summary, frozenCaseSpec.summary);
 assert.strictEqual(continuationBrief.resumeState.caseFlow.revision, 1);
 assert.strictEqual(continuationBrief.resumeState.caseModel, undefined);
-assert.deepStrictEqual(Object.keys(continuationBrief.runtime).sort(), ['command', 'documentation', 'interfaceKind', 'protocol']);
+assert.deepStrictEqual(Object.keys(continuationBrief.runtime).sort(), [
+  'command', 'documentation', 'interfaceKind', 'invocation', 'methodIndex', 'protocol', 'startup',
+]);
+assert.match(continuationBrief.runtime.invocation.shellTemplate, /--dispatch-sequence 2 <<'MAVT_REQUEST'/);
 const replacedWriter = JSON.parse(childProcess.execSync(started.brief.runtime.command, {
   encoding: 'utf8', input: JSON.stringify({ operation: 'observe', input: {} }),
 }));

@@ -11,11 +11,11 @@
 
 ## Runtime
 
-启动时完整读取 `references/case-execution-principles.md`，再读 `references/case-runtime.md`；不足时按响应引用定向读。
+启动原则、方法短索引和调用模板已冻结在 Brief 的 `executionPrinciples`、`runtime.startup`、`runtime.methodIndex` 与 `runtime.invocation`。启动时不要预读本地参考文档；只有当前方法字段不足或 Runtime 返回 `documentationRef` 时才定向读取。
 
 能力：`observe`、`inspect`、`plan`、`queryCapabilities`、`useCapability`、`recordResult`、`act`、`runSequence`、`knowledge`、`recover`、`finish`；统一 `read` 按 ref 读资源。动态值只取自当前 Brief、Scene 或响应事实。
 
-以 Brief 的 `runtime.command` 向 stdin 一次提交 `{operation,input}`；主数据在 `data`；资源引用原样交 `read`，不拼装。
+使用 Brief 的 `runtime.invocation.shellTemplate`，仅替换 `<REQUEST_JSON>`，不得重建命令、删改 `--dispatch-sequence` 或使用 `Buffer` 转码。向 stdin 一次提交 `{operation,input}`；主数据在 `data`；资源引用原样交 `read`，不拼装。
 
 ## 执行循环
 

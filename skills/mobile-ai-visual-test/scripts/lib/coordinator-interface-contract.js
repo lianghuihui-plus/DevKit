@@ -261,7 +261,7 @@ const INTERFACE_CONTRACT_DEFINITIONS = {
       command('start', 'Create the next opaque Case Agent Handoff', 'node scripts/batch.js start --workspace <workspace> --batch-id <id> [--continuation-reason <reason>]', {
         ...commonBatchFlags, continuationReason: flag(false, 'Required only when replacing a lost Agent handle', { value: '<reason>' }),
       }, ['node', 'scripts/batch.js', 'start', '--workspace', '<workspace>', '--batch-id', '<batch-id>'], ['Agent dispatch metadata and optional opaque handoff']),
-      command('commit', 'Commit a completed current execution and refresh its report', 'node scripts/batch.js commit --workspace <workspace> --batch-id <id>', commonBatchFlags, ['node', 'scripts/batch.js', 'commit', '--workspace', '<workspace>', '--batch-id', '<batch-id>'], ['committed case and dashboard refresh status']),
+      command('commit', 'Commit a completed current execution and publish its case report', 'node scripts/batch.js commit --workspace <workspace> --batch-id <id>', commonBatchFlags, ['node', 'scripts/batch.js', 'commit', '--workspace', '<workspace>', '--batch-id', '<batch-id>'], ['committed case and case report publication status']),
       command('status', 'Read batch state without advancing it', 'node scripts/batch.js status --workspace <workspace> --batch-id <id>', commonBatchFlags, ['node', 'scripts/batch.js', 'status', '--workspace', '<workspace>', '--batch-id', '<batch-id>'], ['batch state and platform runtime status']),
       command('cancel', 'Record user cancellation', 'node scripts/batch.js cancel --workspace <workspace> --batch-id <id> --reason <reason>', {
         ...commonBatchFlags, reason: flag(true, 'Cancellation reason', { value: '<reason>' }),

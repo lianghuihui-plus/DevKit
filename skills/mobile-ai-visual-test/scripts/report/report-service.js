@@ -521,7 +521,7 @@ function refreshBatchIndexUnlocked(rootDir, targetCaseDirs, platform = '') {
     error.code = 'REPORT_PUBLICATION_INCOMPLETE';
     throw error;
   }
-  assertIndexLinks(rootDir, selected);
+  assertIndexLinks(rootDir, cases);
   return renderIndexArtifacts(rootDir, cases);
 }
 
@@ -532,27 +532,27 @@ function refreshBatchIndex(rootDir, targetCaseDirs, platform = '') {
 function refreshCommittedCaseReportsUnlocked(caseDir, platform) {
   const rootDir = caseRootFromCaseDir(caseDir);
   let itemError = null;
-  const projections = new Map();
+  let caseNo = null;
+  let caseKey = null;
   try {
     const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
+    caseNo = caseJson.identity.caseNo || null;
+    caseKey = caseJson.identity.caseKey || null;
     const report = readLatestExecutionReport(caseDir, { platform });
     if (!report) throw new Error(`CURRENT_EXECUTION_REQUIRED: ${platform}`);
     writeCaseReports(caseDir, caseJson, {}, [], report, { platform, skipRootOverview: true });
     const publishedProjection = buildPublishedCaseReportProjection(caseDir, caseJson);
-    projections.set(path.resolve(caseDir), publishedProjection);
     writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: publishedProjection.platforms });
   } catch (error) {
     itemError = reportErrorModel(rootDir, caseDir, error);
     publishReportError(caseDir, itemError);
   }
-  const errors = itemError ? new Map([[caseDir, itemError]]) : new Map();
-  const cases = collectIndexCases(rootDir, { errors, projections });
-  assertIndexLinks(rootDir, cases);
-  const indexHtml = renderIndexArtifacts(rootDir, cases);
   return {
-    status: itemError ? 'REPORT_ERROR' : 'UPDATED', platform, indexHtml,
-    caseNo: itemError?.caseNo || cases.find((entry) => entry.caseDir === caseDir)?.caseNo || null,
-    caseKey: itemError?.caseKey || cases.find((entry) => entry.caseDir === caseDir)?.caseKey || null,
+    status: itemError ? 'REPORT_ERROR' : 'UPDATED', platform,
+    indexRefresh: 'DEFERRED',
+    indexHtml: null,
+    caseNo: itemError?.caseNo || caseNo,
+    caseKey: itemError?.caseKey || caseKey,
     caseContextHtml: path.join(caseDir, 'CONTEXT.html'),
     platformContextHtml: path.join(caseRuntimeDir(caseDir, platform), 'CONTEXT.html'),
     ...(itemError ? { errorCode: itemError.reportErrorCode, reason: itemError.reason } : {}),
