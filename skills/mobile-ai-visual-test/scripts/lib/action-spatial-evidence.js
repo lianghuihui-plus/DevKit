@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { contractError } = require('./contract-utils');
+const { canonicalJson, contractError } = require('./contract-utils');
 const { encodePngRgba, inspectPng, readPngRgba } = require('./image-evidence');
 const { isSafeRelativeArtifact, resolveArtifact } = require('./execution-evidence');
-const { atomicWrite, writeJsonAtomic } = require('./execution-lifecycle');
+const { writeJsonAtomic } = require('./execution-lifecycle');
+const { cachedPng } = require('./visual-view-cache');
 
 const EVIDENCE_DIR = 'action-spatial-evidence';
 const POINT_ACTIONS = new Set(['tap', 'doubleTap', 'toggle', 'longPress', 'inputText']);
@@ -146,15 +148,6 @@ function basisScreenshot(execDir, basisObservationRef) {
     : null;
 }
 
-function screenshotPoint(point, evidence, screenshot) {
-  const viewport = evidence.viewport;
-  if (!viewport || (viewport.width === screenshot.width && viewport.height === screenshot.height)) return point;
-  return {
-    x: point.x * screenshot.width / viewport.width,
-    y: point.y * screenshot.height / viewport.height,
-  };
-}
-
 function markerPoints(value, kind) {
   if (!value) return [];
   return kind === 'POINT' ? [value.point] : [value.from, value.to];
@@ -169,6 +162,36 @@ function validateBounds(bounds) {
   if (Number(bounds[2]) <= Number(bounds[0]) || Number(bounds[3]) <= Number(bounds[1])) {
     throw contractError('ACTION_SPATIAL_EVIDENCE_INVALID', 'action spatial evidence bounds must have positive width and height');
   }
+}
+
+function screenshotPoint(point, evidence, screenshot) {
+  const viewport = evidence.viewport;
+  if (!viewport || (viewport.width === screenshot.width && viewport.height === screenshot.height)) return point;
+  return {
+    x: point.x * screenshot.width / viewport.width,
+    y: point.y * screenshot.height / viewport.height,
+  };
+}
+
+function overlayGeometry(evidence) {
+  const screenshot = evidence.screenshot;
+  const requestedRaw = markerPoints(evidence.requested, evidence.kind);
+  const requested = evidence.source === 'visual'
+    ? requestedRaw
+    : requestedRaw.map((point) => screenshotPoint(point, evidence, screenshot));
+  const dispatched = markerPoints(evidence.dispatched, evidence.kind)
+    .map((point) => screenshotPoint(point, evidence, screenshot));
+  const actual = markerPoints(evidence.actual || evidence.deviceActual, evidence.kind)
+    .map((point) => screenshotPoint(point, evidence, screenshot));
+  const bounds = evidence.requested.bounds && evidence.source !== 'visual'
+    ? [
+      screenshotPoint({ x: evidence.requested.bounds[0], y: evidence.requested.bounds[1] }, evidence, screenshot),
+      screenshotPoint({ x: evidence.requested.bounds[2], y: evidence.requested.bounds[3] }, evidence, screenshot),
+    ].flatMap((point) => [point.x, point.y])
+    : evidence.requested.bounds;
+  const radius = Math.max(8, Math.round(Math.min(screenshot.width, screenshot.height) * 0.012));
+  const stroke = Math.max(3, Math.round(radius / 4));
+  return { requested, dispatched, actual, bounds, radius, stroke };
 }
 
 const MARKER_COLORS = Object.freeze({
@@ -189,10 +212,7 @@ function paintDisc(image, centerX, centerY, radius, color) {
       const dy = y - centerY;
       if (dx * dx + dy * dy > squaredRadius) continue;
       const offset = (y * image.width + x) * 4;
-      image.pixels[offset] = color[0];
-      image.pixels[offset + 1] = color[1];
-      image.pixels[offset + 2] = color[2];
-      image.pixels[offset + 3] = color[3];
+      for (let channel = 0; channel < 4; channel++) image.pixels[offset + channel] = color[channel];
     }
   }
 }
@@ -213,14 +233,11 @@ function drawDashedLine(image, from, to, stroke, color) {
   const dy = to.y - from.y;
   const length = Math.hypot(dx, dy);
   if (!length) return;
-  const dash = stroke * 3;
-  const gap = stroke * 2;
-  for (let offset = 0; offset < length; offset += dash + gap) {
-    const end = Math.min(length, offset + dash);
+  for (let offset = 0; offset < length; offset += stroke * 5) {
+    const end = Math.min(length, offset + stroke * 3);
     drawLine(image,
       { x: from.x + dx * offset / length, y: from.y + dy * offset / length },
-      { x: from.x + dx * end / length, y: from.y + dy * end / length },
-      stroke, color);
+      { x: from.x + dx * end / length, y: from.y + dy * end / length }, stroke, color);
   }
 }
 
@@ -257,46 +274,69 @@ function drawBounds(image, bounds, stroke) {
   drawDashedLine(image, { x: left, y: bottom }, { x: left, y: top }, stroke, MARKER_COLORS.requested);
 }
 
-function writeAnnotatedScreenshot(execDir, evidence) {
-  const screenshot = evidence.screenshot;
-  const ref = path.posix.join(EVIDENCE_DIR, `${evidence.operationId}.png`);
-  const file = resolveArtifact(execDir, ref);
-  const requestedRaw = markerPoints(evidence.requested, evidence.kind);
-  const requested = evidence.source === 'visual'
-    ? requestedRaw
-    : requestedRaw.map((point) => screenshotPoint(point, evidence, screenshot));
-  const dispatched = markerPoints(evidence.dispatched, evidence.kind)
-    .map((point) => screenshotPoint(point, evidence, screenshot));
-  const actual = markerPoints(evidence.actual, evidence.kind)
-    .map((point) => screenshotPoint(point, evidence, screenshot));
-  const radius = Math.max(8, Math.round(Math.min(screenshot.width, screenshot.height) * 0.012));
-  const stroke = Math.max(3, Math.round(radius / 4));
-  const image = readPngRgba(resolveArtifact(execDir, screenshot.ref));
-  const bounds = evidence.requested.bounds && evidence.source !== 'visual'
-    ? [
-      screenshotPoint({ x: evidence.requested.bounds[0], y: evidence.requested.bounds[1] }, evidence, screenshot),
-      screenshotPoint({ x: evidence.requested.bounds[2], y: evidence.requested.bounds[3] }, evidence, screenshot),
-    ].flatMap((point) => [point.x, point.y])
-    : evidence.requested.bounds;
-  drawBounds(image, bounds, stroke);
+function paintOverlay(image, evidence) {
+  const geometry = overlayGeometry(evidence);
+  drawBounds(image, geometry.bounds, geometry.stroke);
   if (evidence.kind === 'GESTURE') {
-    drawArrow(image, requested[0], requested[1], stroke, MARKER_COLORS.requested);
-    drawArrow(image, dispatched[0], dispatched[1], stroke, MARKER_COLORS.dispatched);
+    drawArrow(image, geometry.requested[0], geometry.requested[1], geometry.stroke, MARKER_COLORS.requested);
+    drawArrow(image, geometry.dispatched[0], geometry.dispatched[1], geometry.stroke, MARKER_COLORS.dispatched);
   }
-  for (const point of requested) drawCircle(image, point, radius, stroke, MARKER_COLORS.requested);
-  for (const point of dispatched) {
-    drawLine(image, { x: point.x - radius, y: point.y }, { x: point.x + radius, y: point.y }, stroke, MARKER_COLORS.dispatched);
-    drawLine(image, { x: point.x, y: point.y - radius }, { x: point.x, y: point.y + radius }, stroke, MARKER_COLORS.dispatched);
+  for (const point of geometry.requested) drawCircle(image, point, geometry.radius, geometry.stroke, MARKER_COLORS.requested);
+  for (const point of geometry.dispatched) {
+    drawLine(image, { x: point.x - geometry.radius, y: point.y }, { x: point.x + geometry.radius, y: point.y }, geometry.stroke, MARKER_COLORS.dispatched);
+    drawLine(image, { x: point.x, y: point.y - geometry.radius }, { x: point.x, y: point.y + geometry.radius }, geometry.stroke, MARKER_COLORS.dispatched);
   }
-  for (const point of actual) {
-    const extent = radius * 0.85;
-    drawLine(image, { x: point.x, y: point.y - extent }, { x: point.x + extent, y: point.y }, stroke, MARKER_COLORS.actual);
-    drawLine(image, { x: point.x + extent, y: point.y }, { x: point.x, y: point.y + extent }, stroke, MARKER_COLORS.actual);
-    drawLine(image, { x: point.x, y: point.y + extent }, { x: point.x - extent, y: point.y }, stroke, MARKER_COLORS.actual);
-    drawLine(image, { x: point.x - extent, y: point.y }, { x: point.x, y: point.y - extent }, stroke, MARKER_COLORS.actual);
+  for (const point of geometry.actual) {
+    const extent = geometry.radius * 0.85;
+    drawLine(image, { x: point.x, y: point.y - extent }, { x: point.x + extent, y: point.y }, geometry.stroke, MARKER_COLORS.actual);
+    drawLine(image, { x: point.x + extent, y: point.y }, { x: point.x, y: point.y + extent }, geometry.stroke, MARKER_COLORS.actual);
+    drawLine(image, { x: point.x, y: point.y + extent }, { x: point.x - extent, y: point.y }, geometry.stroke, MARKER_COLORS.actual);
+    drawLine(image, { x: point.x - extent, y: point.y }, { x: point.x, y: point.y - extent }, geometry.stroke, MARKER_COLORS.actual);
   }
-  atomicWrite(file, encodePngRgba(image));
-  return ref;
+  return image;
+}
+
+function renderActionSpatialView(sourcePath, evidence) {
+  const sourceBytes = fs.readFileSync(sourcePath);
+  const sourceSha256 = crypto.createHash('sha256').update(sourceBytes).digest('hex');
+  const overlayKey = canonicalJson({
+    sourceSha256,
+    source: evidence.source,
+    kind: evidence.kind,
+    requested: evidence.requested,
+    dispatched: evidence.dispatched,
+    actual: evidence.actual,
+    viewport: evidence.viewport,
+    screenshot: evidence.screenshot,
+  });
+  return cachedPng('action-spatial', overlayKey, () => {
+    const image = readPngRgba(sourcePath);
+    return encodePngRgba(paintOverlay(image, evidence));
+  });
+}
+
+function renderTransientAnnotatedScreenshot(execDir, evidence) {
+  return renderActionSpatialView(resolveArtifact(execDir, evidence.screenshot.ref), evidence);
+}
+
+function actionSpatialOverlayDataUri(evidence) {
+  if (!evidence?.screenshot) return null;
+  const { width, height } = evidence.screenshot;
+  const geometry = overlayGeometry(evidence);
+  const requested = geometry.requested.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="${geometry.radius}" fill="none" stroke="#2563eb" stroke-width="${geometry.stroke}"/>`).join('');
+  const dispatched = geometry.dispatched.map((point) => `<path d="M${point.x - geometry.radius} ${point.y}H${point.x + geometry.radius}M${point.x} ${point.y - geometry.radius}V${point.y + geometry.radius}" fill="none" stroke="#f59e0b" stroke-width="${geometry.stroke}"/>`).join('');
+  const actual = geometry.actual.map((point) => {
+    const extent = geometry.radius * 0.85;
+    return `<path d="M${point.x} ${point.y - extent}L${point.x + extent} ${point.y}L${point.x} ${point.y + extent}L${point.x - extent} ${point.y}Z" fill="none" stroke="#16a34a" stroke-width="${geometry.stroke}"/>`;
+  }).join('');
+  const bounds = geometry.bounds
+    ? `<rect x="${geometry.bounds[0]}" y="${geometry.bounds[1]}" width="${geometry.bounds[2] - geometry.bounds[0]}" height="${geometry.bounds[3] - geometry.bounds[1]}" fill="none" stroke="#2563eb" stroke-width="${geometry.stroke}" stroke-dasharray="${geometry.stroke * 3} ${geometry.stroke * 2}"/>`
+    : '';
+  const arrows = evidence.kind === 'GESTURE'
+    ? `<defs><marker id="requested-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#2563eb"/></marker><marker id="dispatched-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#f59e0b"/></marker></defs><path d="M${geometry.requested[0].x} ${geometry.requested[0].y}L${geometry.requested[1].x} ${geometry.requested[1].y}" stroke="#2563eb" stroke-width="${geometry.stroke}" marker-end="url(#requested-arrow)"/><path d="M${geometry.dispatched[0].x} ${geometry.dispatched[0].y}L${geometry.dispatched[1].x} ${geometry.dispatched[1].y}" stroke="#f59e0b" stroke-width="${geometry.stroke}" marker-end="url(#dispatched-arrow)"/>`
+    : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${arrows}${bounds}${requested}${dispatched}${actual}</svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
 function evidenceRef(operationId) {
@@ -347,12 +387,9 @@ function createActionSpatialEvidence(execDir, validated, adapterResult) {
     certainty: detail.actual ? 'DEVICE_CONFIRMED' : 'DISPATCH_ONLY',
     ...(screenshot ? { screenshot } : {}),
     consistency: 'MATCHED',
-    annotatedScreenshotRef: screenshot
-      ? path.posix.join(EVIDENCE_DIR, `${validated.operationId}.png`)
-      : null,
+    annotatedScreenshotRef: null,
   };
   validateActionSpatialEvidence(evidence, { operationId: validated.operationId, actionType: action.type, ref });
-  if (screenshot) writeAnnotatedScreenshot(execDir, evidence);
   writeJsonAtomic(file, evidence);
   return ref;
 }
@@ -399,7 +436,7 @@ function validateActionSpatialEvidence(value, expected = {}) {
     ];
     if (!isSafeRelativeArtifact(value.screenshot.ref)
       || ![value.screenshot.width, value.screenshot.height].every((number) => Number.isFinite(Number(number)) && Number(number) > 0)
-      || !supportedAnnotatedRefs.includes(value.annotatedScreenshotRef)) {
+      || (value.annotatedScreenshotRef !== null && !supportedAnnotatedRefs.includes(value.annotatedScreenshotRef))) {
       throw contractError('ACTION_SPATIAL_EVIDENCE_INVALID', 'action spatial evidence screenshot metadata is invalid');
     }
   } else if (value.annotatedScreenshotRef !== null) {
@@ -436,14 +473,14 @@ function readActionSpatialEvidence(execDir, ref, options = {}) {
         || image.height !== Number(value.screenshot.height)) {
         throw contractError('ACTION_SPATIAL_EVIDENCE_INVALID', `action spatial evidence screenshot metadata disagrees with ${value.screenshot.ref}`);
       }
-      const annotatedPath = resolveArtifact(execDir, value.annotatedScreenshotRef);
-      if (path.extname(value.annotatedScreenshotRef) === '.png') {
+      const annotatedPath = value.annotatedScreenshotRef ? resolveArtifact(execDir, value.annotatedScreenshotRef) : null;
+      if (annotatedPath && path.extname(value.annotatedScreenshotRef) === '.png') {
         const annotated = inspectPng(annotatedPath);
         if (annotated.decodeStatus !== 'VALID' || annotated.width !== Number(value.screenshot.width)
           || annotated.height !== Number(value.screenshot.height)) {
           throw contractError('ACTION_SPATIAL_EVIDENCE_INVALID', `annotated action screenshot is invalid: ${value.annotatedScreenshotRef}`);
         }
-      } else {
+      } else if (annotatedPath) {
         const svg = fs.readFileSync(annotatedPath, 'utf8');
         if (!/^<svg\b/.test(svg) || !svg.includes('<image href="data:image/png;base64,')) {
           throw contractError('ACTION_SPATIAL_EVIDENCE_INVALID', `annotated action screenshot is not self-contained: ${value.annotatedScreenshotRef}`);
@@ -457,16 +494,32 @@ function readActionSpatialEvidence(execDir, ref, options = {}) {
 function projectActionSpatialEvidence(execDir, ref, options = {}) {
   if (!ref) return null;
   const value = readActionSpatialEvidence(execDir, ref, options);
-  const annotatedScreenshot = value.annotatedScreenshotRef ? {
-    ref: value.annotatedScreenshotRef,
-    tool: 'view_image',
-    path: resolveArtifact(execDir, value.annotatedScreenshotRef),
-    attachment: {
-      type: 'image',
-      mediaType: path.extname(value.annotatedScreenshotRef) === '.png' ? 'image/png' : 'image/svg+xml',
+  let annotatedScreenshot = null;
+  if (value.annotatedScreenshotRef) {
+    annotatedScreenshot = {
+      ref: value.annotatedScreenshotRef,
+      tool: 'view_image',
       path: resolveArtifact(execDir, value.annotatedScreenshotRef),
-    },
-  } : null;
+      attachment: {
+        type: 'image',
+        mediaType: path.extname(value.annotatedScreenshotRef) === '.png' ? 'image/png' : 'image/svg+xml',
+        path: resolveArtifact(execDir, value.annotatedScreenshotRef),
+      },
+    };
+  } else if (value.screenshot) {
+    annotatedScreenshot = {
+      persistence: 'TRANSIENT',
+      baseRef: value.screenshot.ref,
+    };
+    if (options.renderTransient !== false) {
+      const rendered = renderTransientAnnotatedScreenshot(execDir, value);
+      Object.assign(annotatedScreenshot, {
+        tool: 'view_image',
+        path: rendered.path,
+        attachment: { type: 'image', mediaType: 'image/png', path: rendered.path },
+      });
+    }
+  }
   return {
     schemaVersion: value.schemaVersion,
     type: value.type,
@@ -488,9 +541,11 @@ function projectActionSpatialEvidence(execDir, ref, options = {}) {
 
 module.exports = {
   EVIDENCE_DIR,
+  actionSpatialOverlayDataUri,
   createActionSpatialEvidence,
   evidenceRef,
   projectActionSpatialEvidence,
   readActionSpatialEvidence,
+  renderActionSpatialView,
   validateActionSpatialEvidence,
 };

@@ -55,6 +55,22 @@ assert.strictEqual(trace.narrative.steps.length, 1);
 assert.strictEqual(trace.narrative.finalDecision.conclusion, '验证结果为 PASS');
 assert.strictEqual(trace.narrative.coverage.covered, 1);
 
+const directEvidencePath = path.join(fixture.execDir, 'action-spatial-evidence', 'action-0001.json');
+const directEvidence = JSON.parse(fs.readFileSync(directEvidencePath, 'utf8'));
+fs.unlinkSync(path.join(fixture.execDir, directEvidence.annotatedScreenshotRef));
+directEvidence.annotatedScreenshotRef = null;
+fs.writeFileSync(directEvidencePath, `${JSON.stringify(directEvidence, null, 2)}\n`);
+const directTrace = buildExecutionTrace(report);
+const directAction = directTrace.entries.find((entry) => entry.category === 'ACTION');
+assert.strictEqual(directTrace.screenshots.length, 3);
+assert.strictEqual(directAction.spatialEvidenceScreenshot.ref, 'screenshots/scene-0001.png');
+assert.match(directAction.spatialEvidenceScreenshot.overlayDataUri, /^data:image\/svg\+xml,/);
+assert.strictEqual(fs.existsSync(path.join(fixture.execDir, 'action-spatial-evidence', 'action-0001.png')), false);
+assert.strictEqual(fs.existsSync(path.join(fixture.execDir, 'action-spatial-evidence', 'action-0001.svg')), false);
+const directHtml = renderCurrentContextHtml(fixture.caseJson, report);
+assert.ok(directHtml.includes('查看动作落点'));
+assert.ok(directHtml.includes('data:image/svg+xml,'));
+
 const capabilitySecret = 'secret-token-value';
 const capabilityReport = {
   ...report,

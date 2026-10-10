@@ -12,10 +12,10 @@ MAVT 当前向 Case Agent 提供设备观察、动作、知识调查、恢复和
 
 1. Case Agent 建立 Baseline Flow 后能主动查询当前 execution 有哪些外部工具可用，并按用例语义自主选择。
 2. 新模块只需实现统一 Provider 接口并注册，不修改 Case Runtime 的业务状态机。
-3. 每项具体工具保留独立名称、说明和 JSON Schema，不被压缩成原始 Shell 字符串。
+3. 模块按自身原生形态发布能力；通用层只要求稳定名称、简要说明和调用输入 Schema，不解释模块业务参数。
 4. 现有流程只新增查询能力和使用能力两个入口，stdin Facade 与 MCP 使用同一权威契约和同一 Broker。
 5. 工具调用具备输入校验、超时、确定的结果语义、不可变留痕和报告展示。
-6. 首版提供 `bcm-cs` 模块，并消费 CLI 自带的 `capabilities list/describe` 能力。
+6. 首版提供 `bcm-cs` 模块，向 Agent 发布固定可执行文件的原生 CLI 入口。
 
 ## 3. 非目标
 
@@ -24,7 +24,7 @@ MAVT 当前向 Case Agent 提供设备观察、动作、知识调查、恢复和
 3. 不通过 MAVT 锁解决外部系统并发；BCM 同时被其他用户或系统修改是客观环境事实。
 4. 不承诺外部状态在一次成功调用后持续不变。
 5. 首版不从 workspace 或任意外部目录加载第三方 JavaScript 模块。
-6. 不允许 Agent 直接提交任意可执行文件、Shell 命令或未声明参数。
+6. 不允许 Agent 选择任意可执行文件、Shell 或进程环境；模块可以通过严格 Schema 接收其原生参数。
 
 ## 4. 已确认原则
 
@@ -61,7 +61,7 @@ flowchart LR
 职责边界：
 
 - Registry 只管理受信任的内置 Provider。
-- Provider 负责发现自己的具体工具，并把工具调用翻译到 CLI、HTTP、数据库或脚本。
+- Provider 负责探测模块可用性、发布模块原生能力的简要定义，并把调用交给 CLI、HTTP、数据库或脚本。
 - Broker 在首次查询时负责冻结目录，并负责解析 opaque ref、二次 Schema 校验、调用 Provider、映射统一状态和持久化。
 - Case Runtime 不理解各工具的业务字段，也不判断工具使用是否符合用例语义。
 - Case Agent 仍是 execution 内唯一业务理解者。
@@ -152,16 +152,20 @@ register(require('./modules/bcm-cs'));
 ```js
 [
   {
-    name: 'student.update',
-    summary: '修改学员信息',
+    name: 'cli',
+    summary: '直接运行 bcm-cs 原生 CLI；可先查询 help 和能力清单，再执行高层业务命令。',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        studentId: { type: 'string', minLength: 1 },
-        fields: { type: 'object' },
+        args: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'string', minLength: 1 },
+          description: 'bcm-cs 后的原生 argv，例如 ["live", "instant", "create", "--help"]',
+        },
       },
-      required: ['studentId', 'fields'],
+      required: ['args'],
     },
   },
 ]
@@ -172,10 +176,10 @@ register(require('./modules/bcm-cs'));
 - `name` 在模块内唯一，允许用点表达业务层次。
 - `inputSchema` 必须是 JSON object schema，并且只使用现有 `agent-json-contract` 验证器支持的 JSON Schema 子集。
 - 定义不得携带凭证、环境 Token 或绝对秘密路径。
-- Provider 可以静态返回，也可以从外部系统动态发现。
+- Provider 可以静态返回，也可以从外部系统动态发现；通用层不要求一个业务动作对应一个 capability definition。
 - 所有成功发现的能力都会暴露，不再经过权限过滤。
 
-Agent-facing 全名固定为 `<module-id>.<capability-name>`，例如 `bcm-cs.student.update`；Provider 的 `invoke` 仍接收模块内名称 `student.update`。
+Agent-facing 全名固定为 `<module-id>.<capability-name>`，例如 `bcm-cs.cli`；Provider 的 `invoke` 仍接收模块内名称 `cli`。
 
 ### 7.4 `invoke(request, context)`
 
@@ -407,42 +411,41 @@ Artifact Manifest 必须包含已经生成的 catalog、definition 和 invocatio
 
 ### 13.1 探测
 
-依次执行：
+执行：
 
 1. 从 `BCM_CS_BIN` 或默认命令名 `bcm-cs` 解析可执行文件。
 2. `bcm-cs version` 获取实现版本。
-3. `bcm-cs --output json capabilities list` 获取能力目录。
 
-当前本机 `bcm-cs 0.1.1` 已安装。能力目录成功响应使用 `result.capabilities`，单项描述使用 `result.params`、`result.required` 和 `result.rest`；Provider 按该真实响应契约完成规范化。HTTP 403 等发现失败仍映射为 `UNAVAILABLE`，不会阻断 MAVT execution，也不会发布不可调用工具。
+版本命令成功即表示本地模块可用；Provider 不把 BCM 服务端某次响应作为整个 CLI 是否可用的前提。二进制缺失、执行失败或探测超时映射为 `UNAVAILABLE`，不会阻断 MAVT execution，也不会发布不可调用入口。
 
-成功的 list 响应作为 `discoverySeed` 传给 `listCapabilities`，同一次目录构建不会重复执行 list。
+Provider 不在发现阶段访问具体业务接口，不产生常规场景额外网络成本。
 
 ### 13.2 能力发现
 
-对 list 返回的每个 capability ID 执行：
+Provider 静态发布一个能力：
 
 ```text
-bcm-cs --output json capabilities describe <capability_id>
+bcm-cs.cli
 ```
 
-Adapter 将 CLI 描述规范化为 Provider capability。无法得到受支持的 object input schema、缺少稳定 ID、缺少可执行调用描述或描述格式无效的单项能力被排除，并写入 catalog diagnostic；其他能力继续可用。
+其输入只包含必填字符串数组 `args`，表示固定 `bcm-cs` 可执行文件之后的 argv。定义摘要明确提示 Agent 可先执行 `--help`、`capabilities list`、`capabilities describe`，再按 CLI 原生说明选择高层命令。
 
-真实 BCM capability ID 允许使用下划线。`params + required` 被规范化为严格 object schema；`description` 和 `default` 作为 Agent 可读注解保留。`params.*.sensitive` 与 `output.sensitive_fields` 不进入输入 Schema，而是转成冻结 definition 的模块级脱敏声明，叠加到 Broker 的统一脱敏规则。BCM 同时将 `output.sensitive_fields` 中确实存在于 `params` 的同名字段或简单复数形式视为敏感输入，兼容真实 manifest 中 `phone_number` / `phone_numbers` 的声明方式。`availability.available === false` 的项目不发布为可调用能力。`rest.execute` 和 `rest.query` 均可形成调用描述，Provider 自动补全 `/api/v1/bcm-tools` 前缀并安全替换 `{parameter}` 路径参数。
+MAVT 不读取或解释 BCM 的 method、path、body、preview、confirm、teacher ID、手机号转换、幂等键或房间查询协议。这些均由 `bcm-cs` 自身的高层命令负责，避免 MAVT 与 CLI 业务契约重复并绕过 CLI 已有流程。
 
-首版在首次 `queryCapabilities` 时完整发现并冻结定义，以确保 `read(capabilityRef)`、动态校验和实际调用使用同一 Schema。若后续发现能力数量导致明显查询开销，再增加按 CLI 版本与服务地址绑定的共享缓存；首版不提前引入缓存一致性机制。
+能力目录仍在首次 `queryCapabilities` 时冻结；冻结的是 `bcm-cs.cli` 的稳定入口定义和探测到的实现版本，而不是 BCM 某时刻的业务能力列表。Agent 需要最新业务命令时通过该入口直接查询 CLI。
 
 ### 13.3 调用
 
-Adapter 只使用 `child_process.spawnSync` 或 `execFileSync` 参数数组，禁止 `shell: true` 和字符串命令拼接。固定要求 JSON 输出，并设置：
+Adapter 只使用 `child_process.spawnSync` 或 `execFileSync` 参数数组，禁止 `shell: true` 和字符串命令拼接，并设置：
 
 - 发现命令 15 秒进程超时，调用命令 60 秒进程超时。
 - stdout/stderr 各 4 MiB 上限。
 - UTF-8 解码。
-- 对 CLI 退出码、JSON 响应和 HTTP 错误的确定映射。
+- 对 CLI 退出码、信号和超时的确定映射。
 
-具体命令参数或 API method/path/body 只来自冻结的 CLI capability 描述和经过 Schema 校验的 Agent 输入。Agent 不传二进制路径、服务地址或任意附加 flags。
+Provider 执行 `bcm-cs <args...>`，其中 `args` 来自经过 Schema 校验的 Agent 输入。Agent 不传二进制路径、Shell、cwd 或环境变量；所有参数均作为独立 argv 元素原样传递。
 
-当 capability 声明 preview endpoint 时，Provider 先执行 preview；需要 BCM confirm 协议时，Provider 从 preview 响应提取 `preview_id`，再以 `confirm=true` 调用 execute endpoint。该流程只满足 BCM 服务端写协议，不增加 Agent 权限确认或人工审批。
+退出码为 0 时，JSON stdout 保持结构化对象，普通文本 stdout 也作为成功输出返回，因此 help 等原生命令可以直接使用。确定的非零退出映射为 `FAILED`；进程超时、信号中断或连接中断等结果不确定场景映射为 `UNKNOWN`。Provider 不自动重放命令。
 
 ### 13.4 脱敏
 
@@ -453,6 +456,8 @@ authorization, token, access_token, refresh_token, password, cookie, set-cookie,
 ```
 
 Provider 可以追加模块专属字段，但不能关闭统一脱敏。持久化输出使用模块声明的敏感输入与敏感输出字段并集，避免 Provider 在返回体中回显敏感输入时落盘。错误摘要、诊断和 technical fact 同时按模块敏感键与本次请求的敏感输入值脱敏，覆盖字段化数据、`key=value` 文本和无字段名回显。结构化输出、摘要和诊断在脱敏后均执行 4 MiB 持久化上限，超限文本保留字符串类型并替换为简短截断标记。脱敏只影响持久化和 Agent 投影，不改变实际调用参数。
+
+当模块将 `args` 声明为敏感 argv 时，统一留痕保留子命令、flag 名和非敏感值，只遮盖手机号、凭证类 flag 的值，并同时支持 `--flag value` 与 `--flag=value`。只有被识别为敏感的真实值参与输出 literal redaction，避免 help、命令名和普通参数被过度擦除。
 
 ## 14. 格式与版本
 
@@ -512,10 +517,11 @@ Case Agent Prompt 增加以下原则：
 
 ### 16.5 `bcm-cs`
 
-- 使用 fake executable 覆盖 version、list、describe 和 invoke。
-- 覆盖二进制缺失、HTTP 403、无效 JSON、非零退出、超时、超量输出。
+- 使用 fake executable 覆盖 version、help、JSON 命令和高层业务命令。
+- 覆盖二进制缺失、普通文本输出、JSON 输出、非零退出和超时。
 - 验证参数数组调用，不经过 Shell。
-- 验证发现到的不同业务 Schema 均能发布和调用。
+- 验证目录只发布 `bcm-cs.cli`，argv 不被 MAVT 改写或翻译。
+- 验证命令输入和错误诊断经过统一留痕与脱敏。
 - 真实环境只做显式 smoke test；自动测试不依赖 BCM 服务可用。
 
 ### 16.6 格式与报告
@@ -529,7 +535,8 @@ Case Agent Prompt 增加以下原则：
 
 | 区域 | 改动 |
 |---|---|
-| `case-runtime/capability-modules/` | 新增 Provider contract、Registry、Broker、快照与 bcm-cs 模块 |
+| `case-runtime/capability-modules/modules/bcm-cs/` | 将 BCM Provider 收敛为固定可执行文件的原生 CLI 入口 |
+| `case-runtime/capability-modules/invocation-store.js` | 对敏感 argv 做保留命令结构的值级脱敏 |
 | `case-runtime/agent-facing-contract.js` | 新增 `queryCapabilities`、`useCapability`、资源类型和错误定义 |
 | `case-runtime/agent-facing-translator.js` | 解析 capability ref，保留动态输入给 Broker 校验 |
 | `case-runtime/runtime-broker.js` | 直接分派查询和使用能力，不进入设备 Runtime Core |
@@ -560,7 +567,7 @@ Case Agent Prompt 增加以下原则：
 1. Case Agent 建立 Baseline Flow 后可通过 `queryCapabilities` 获得当前 execution 实际可用的具体工具。
 2. Agent 可读取任意工具的冻结 Schema，并通过 `useCapability` 调用。
 3. 两个输入形式完全不同的 fake 模块可以同时注册和调用，无需修改 Broker。
-4. `bcm-cs` 可用时，其发现能力进入目录；HTTP 403 等不可用状态不阻断设备测试。
+4. `bcm-cs version` 成功时发布 `bcm-cs.cli`；远端 HTTP 403 等错误只影响对应调用，不阻断设备测试。
 5. 所有已发布工具均可直接调用，没有额外授权流程。
 6. 服务器变更不自动恢复，并发正常路径没有额外校验或重试。
 7. 调用的成功、失败和未知结果完整持久化并出现在报告中。

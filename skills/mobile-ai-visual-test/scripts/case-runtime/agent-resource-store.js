@@ -122,9 +122,20 @@ function projectSource(type, raw, params, source) {
   if (type === 'caseBrief') return { ...raw.brief, casePrompt: raw.casePrompt };
   if (type === 'elementSet') return raw.elements || [];
   if (type === 'layout') return source.field ? raw[source.field] : raw;
-  if (type === 'screenshot') return { path: source.file, width: params.width, height: params.height,
-    sha256: source.sha256, mediaType: params.mediaType || 'image/png',
-    ...(params.coordinateSpace ? { coordinateSpace: params.coordinateSpace } : {}) };
+  if (type === 'screenshot') {
+    let rendered = { path: source.file, width: params.width, height: params.height, sha256: source.sha256 };
+    if (params.renderMode === 'COORDINATE_RULER') {
+      rendered = require('../lib/coordinate-ruler').renderCoordinateRulerView(source.file, source.sha256);
+    } else if (params.renderMode === 'ACTION_SPATIAL') {
+      rendered = {
+        ...require('../lib/action-spatial-evidence').renderActionSpatialView(source.file, params.actionSpatialEvidence),
+        width: params.width,
+        height: params.height,
+      };
+    }
+    return { ...rendered, mediaType: params.mediaType || 'image/png',
+      ...(params.coordinateSpace ? { coordinateSpace: params.coordinateSpace } : {}) };
+  }
   if (type === 'scene') {
     const { buildCapabilities, actionRefFor } = require('./capability-catalog');
     const { projectPreviousAction } = require('./agent-facing-contract');
@@ -260,9 +271,11 @@ function publishScreenshot(execDir, screenshot) {
   if (image && !image.width) throw fail('screenshot dimensions are unavailable');
   const dimensions = image || { width: screenshot.width, height: screenshot.height };
   const mediaType = screenshot.mediaType || (relative.endsWith('.svg') ? 'image/svg+xml' : 'image/png');
-  return publishResource(execDir, { type: 'screenshot', id: relative,
+  return publishResource(execDir, { type: 'screenshot', id: screenshot.resourceId || relative,
     source: { kind: 'binary', path: relative, mediaType, encoding: 'binary' },
     params: { width: dimensions.width, height: dimensions.height, mediaType,
+      ...(screenshot.renderMode ? { renderMode: screenshot.renderMode } : {}),
+      ...(screenshot.actionSpatialEvidence ? { actionSpatialEvidence: screenshot.actionSpatialEvidence } : {}),
       ...(screenshot.coordinateSpace ? { coordinateSpace: screenshot.coordinateSpace } : {}) } });
 }
 
@@ -371,10 +384,23 @@ function publishScene(execDir, sceneId) {
 function publishSpatial(execDir, relative) {
   const raw = sourceValue(execDir, { kind: 'json', path: relative }).value;
   const screenshots = [];
-  if (raw.screenshot?.ref) screenshots.push(publishScreenshot(execDir, raw.screenshot));
-  if (raw.annotatedScreenshotRef) screenshots.push(publishScreenshot(execDir, { ref: raw.annotatedScreenshotRef,
-    width: raw.screenshot?.width, height: raw.screenshot?.height }));
-  const refs = Object.fromEntries(screenshots.map((item) => [item.id || path.relative(execDir, item.data.content.path), item.data.ref]));
+  const refs = {};
+  if (raw.screenshot?.ref) {
+    const screenshot = publishScreenshot(execDir, raw.annotatedScreenshotRef ? raw.screenshot : {
+      ...raw.screenshot,
+      resourceId: `${raw.screenshot.ref}:action-spatial:${raw.operationId}`,
+      renderMode: 'ACTION_SPATIAL',
+      actionSpatialEvidence: raw,
+    });
+    screenshots.push(screenshot);
+    refs[raw.screenshot.ref] = screenshot.data.ref;
+  }
+  if (raw.annotatedScreenshotRef) {
+    const annotated = publishScreenshot(execDir, { ref: raw.annotatedScreenshotRef,
+      width: raw.screenshot?.width, height: raw.screenshot?.height });
+    screenshots.push(annotated);
+    refs[raw.annotatedScreenshotRef] = annotated.data.ref;
+  }
   return publishArtifact(execDir, 'actionSpatialEvidence', relative, screenshots.map((item) => item.descriptor), { refMap: refs });
 }
 

@@ -10,7 +10,6 @@ const {
   projectActionSpatialEvidence,
   readActionSpatialEvidence,
 } = require('../lib/action-spatial-evidence');
-const { inspectPng } = require('../lib/image-evidence');
 const { validateCaseRuntimeEvidenceGraph } = require('../case-runtime/result-integrity');
 const { createCurrentFixture, createTestWorkspace } = require('./support/workspace-fixture');
 
@@ -107,12 +106,23 @@ const annotatedRef = createActionSpatialEvidence(annotatedDir, {
 }, adapterResult({ dispatchedPoint: { x: 0, y: 0 } }));
 const annotated = readActionSpatialEvidence(annotatedDir, annotatedRef);
 assert.strictEqual(annotatedRef, 'action-spatial-evidence/action-0001.json');
-assert.strictEqual(annotated.annotatedScreenshotRef, 'action-spatial-evidence/action-0001.png');
-assert.strictEqual(inspectPng(path.join(annotatedDir, annotated.annotatedScreenshotRef)).decodeStatus, 'VALID');
+assert.strictEqual(annotated.annotatedScreenshotRef, null);
+assert.strictEqual(fs.existsSync(path.join(annotatedDir, 'action-spatial-evidence/action-0001.png')), false);
+const metadataProjection = projectActionSpatialEvidence(annotatedDir, annotatedRef, {
+  operationId: 'action-0001', actionType: 'tap', renderTransient: false,
+});
+assert.deepStrictEqual(metadataProjection.annotatedScreenshot, {
+  persistence: 'TRANSIENT',
+  baseRef: screenshotRef,
+});
 const projection = projectActionSpatialEvidence(annotatedDir, annotatedRef, { operationId: 'action-0001', actionType: 'tap' });
+assert.strictEqual(projection.annotatedScreenshot.persistence, 'TRANSIENT');
+assert.strictEqual(projection.annotatedScreenshot.baseRef, screenshotRef);
 assert.strictEqual(projection.annotatedScreenshot.attachment.mediaType, 'image/png');
-assert.strictEqual(projection.annotatedScreenshot.tool, 'view_image');
 assert.strictEqual(fs.existsSync(projection.annotatedScreenshot.path), true);
+assert.strictEqual(path.relative(fs.realpathSync(annotatedDir),
+  fs.realpathSync(projection.annotatedScreenshot.path)).startsWith('..'), true);
+assert.strictEqual(projection.screenshot.ref, screenshotRef);
 assert.strictEqual(projection.coordinateTransform, 'MATCHED');
 assert.strictEqual(projection.deviceActual, null);
 assert.strictEqual(projection.consistency, undefined);

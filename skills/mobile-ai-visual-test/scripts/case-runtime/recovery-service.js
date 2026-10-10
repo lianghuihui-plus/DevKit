@@ -9,6 +9,7 @@ const { commitRecoveryGeneration } = require('../session/warm-session-store');
 const sceneService = require('./scene-service');
 const store = require('./store');
 const actionTransactions = require('./transaction-manager');
+const { persistedActionResult } = require('./action-service');
 const { safeActionTechnicalDetails, sanitizeAdapterActionResult } = require('../lib/action-result');
 const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 
@@ -77,7 +78,7 @@ function recoverPendingTransactions(execDir, options = {}) {
         purpose: unknown ? 'AFTER_UNKNOWN_ACTION' : 'POST_ACTION',
         relatedOperationId: draft.operationId,
         preAdapterDelayMs: unknown || draft.action?.type === 'wait' ? 0 : 500,
-        previousAction: {
+        previousAction: persistedActionResult({
           operationId: draft.operationId,
           lifecycle: { status: unknown ? 'UNKNOWN' : 'COMPLETED' },
           action: draft.action,
@@ -94,7 +95,7 @@ function recoverPendingTransactions(execDir, options = {}) {
               actionType: draft.action?.type,
             }),
           } : {}),
-        },
+        }),
       });
       if (!unknown && !store.events(execDir).some((event) => event.type === 'actionCompleted' && event.operationId === draft.operationId)) {
         store.appendEvent(execDir, 'actionCompleted', {

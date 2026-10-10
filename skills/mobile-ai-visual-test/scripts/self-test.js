@@ -30,6 +30,7 @@ const suites = Object.freeze({
   spatialEvidence: 'tests/action-spatial-evidence.test.js',
   harmonyInput: 'tests/harmony-input-effect.test.js',
   metrics: 'tests/execution-metrics.test.js',
+  executionRetention: 'tests/execution-retention.test.js',
   report: 'tests/report-reader.test.js',
   trace: 'tests/execution-trace.test.js',
   narrative: 'tests/execution-narrative.test.js',
