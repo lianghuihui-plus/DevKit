@@ -8,6 +8,8 @@ const store = require('../store');
 
 const SECRET_KEY = /^(?:authorization|token|access_token|refresh_token|password|cookie|set-cookie|secret)$/i;
 const SECRET_TEXT = /\b(authorization|token|access_token|refresh_token|password|cookie|set-cookie|secret)(\s*[:=]\s*)([^\s,;]+)/gi;
+const SENSITIVE_ARG_OPTION = /authorization|token|password|cookie|secret|phone|mobile|credential|api[-_]?key/i;
+const PHONE_ARGUMENT = /^(?:(?:\+?86)?1\d{10})(?:[,，](?:(?:\+?86)?1\d{10}))*$/;
 const MAX_PERSISTED_BYTES = 4 * 1024 * 1024;
 
 function escapeRegExp(value) {
@@ -23,10 +25,62 @@ function collectScalars(value, result, depth = 0) {
   } else if (String(value)) result.add(String(value));
 }
 
+function argvOption(value) {
+  return typeof value === 'string' && /^--?[A-Za-z][A-Za-z0-9-]*(?:=|$)/.test(value);
+}
+
+function sensitiveArgOption(value) {
+  const separator = value.indexOf('=');
+  const option = separator >= 0 ? value.slice(0, separator) : value;
+  return SENSITIVE_ARG_OPTION.test(option);
+}
+
+function collectSensitiveArgValue(value, result) {
+  if (!result || !String(value)) return;
+  result.add(String(value));
+  for (const item of String(value).split(/[,，]/)) {
+    if (item) result.add(item);
+  }
+}
+
+function redactArgv(args, sensitiveLiterals = null) {
+  const safe = [];
+  let sensitiveValueExpected = false;
+  for (const arg of args) {
+    if (sensitiveValueExpected && !argvOption(arg)) {
+      collectSensitiveArgValue(arg, sensitiveLiterals);
+      safe.push('[REDACTED]');
+      sensitiveValueExpected = false;
+      continue;
+    }
+    sensitiveValueExpected = false;
+    if (!argvOption(arg)) {
+      if (typeof arg === 'string' && PHONE_ARGUMENT.test(arg)) {
+        collectSensitiveArgValue(arg, sensitiveLiterals);
+        safe.push('[REDACTED]');
+      } else safe.push(arg);
+      continue;
+    }
+    const separator = arg.indexOf('=');
+    if (separator >= 0) {
+      const value = arg.slice(separator + 1);
+      if (sensitiveArgOption(arg)) {
+        collectSensitiveArgValue(value, sensitiveLiterals);
+        safe.push(`${arg.slice(0, separator + 1)}[REDACTED]`);
+      } else safe.push(arg);
+      continue;
+    }
+    safe.push(arg);
+    sensitiveValueExpected = sensitiveArgOption(arg);
+  }
+  return safe;
+}
+
 function sensitiveValues(value, sensitiveKeys, key = '', result = new Set(), depth = 0) {
   if (depth > 32 || !value || typeof value !== 'object') return result;
   for (const [name, item] of Object.entries(value)) {
-    if (sensitiveKeys.has(name)) collectScalars(item, result, depth + 1);
+    if (sensitiveKeys.has(name) && name === 'args' && Array.isArray(item)) redactArgv(item, result);
+    else if (sensitiveKeys.has(name)) collectScalars(item, result, depth + 1);
     else if (item && typeof item === 'object') sensitiveValues(item, sensitiveKeys, name, result, depth + 1);
   }
   return result;
@@ -53,6 +107,7 @@ function boundedText(value, sensitiveKeys, sensitiveLiterals) {
 }
 
 function redact(value, key = '', depth = 0, sensitiveKeys = new Set(), sensitiveLiterals = new Set()) {
+  if (key === 'args' && sensitiveKeys.has(key) && Array.isArray(value)) return redactArgv(value);
   if (SECRET_KEY.test(key) || sensitiveKeys.has(key)) return '[REDACTED]';
   if (depth > 32) return '[TRUNCATED_DEPTH]';
   if (typeof value === 'string') return redactText(value, sensitiveKeys, sensitiveLiterals);
