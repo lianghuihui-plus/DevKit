@@ -33,7 +33,9 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-app-provisioning-'));
 const root = path.join(temp, 'workspace');
 createTestWorkspace(root);
 
-const artifact = path.join(temp, 'fixture.hap');
+const harmonyPackageRoot = workspacePackageRoot(root, 'harmony');
+fs.mkdirSync(harmonyPackageRoot, { recursive: true });
+const artifact = path.join(harmonyPackageRoot, 'fixture.hap');
 fs.writeFileSync(artifact, 'frozen-harmony-artifact');
 const registration = {
   workspaceRoot: root,
@@ -47,13 +49,20 @@ const registration = {
 const first = registerAppArtifact(registration);
 const repeated = registerAppArtifact({ ...registration, now: '2026-09-08T10:01:00.000Z' });
 assert.deepStrictEqual(repeated, first);
-const renamedArtifact = path.join(temp, 'renamed.hap');
+const renamedArtifact = path.join(harmonyPackageRoot, 'renamed.hap');
 fs.copyFileSync(artifact, renamedArtifact);
-assert.deepStrictEqual(registerAppArtifact({ ...registration, sourcePath: renamedArtifact }), first);
+const renamed = registerAppArtifact({ ...registration, sourcePath: renamedArtifact });
+assert.strictEqual(renamed.artifactPath, renamedArtifact);
+assert.strictEqual(renamed.sha256, first.sha256);
 assert.strictEqual(first.mode, 'ARTIFACT_MANAGED');
 assert.strictEqual(first.artifactIdentity.inspection.status, 'UNAVAILABLE');
-assert.ok(first.artifactPath.startsWith(path.join(root, '.mavt', 'app-artifacts')));
-assert.throws(() => registerAppArtifact({ ...registration, version: '9.9.9' }), (error) => error?.code === 'APP_INSTALL_ARTIFACT_CONFLICT');
+assert.strictEqual(first.artifactPath, artifact);
+assert.strictEqual(fs.existsSync(path.join(root, '.mavt', 'app-artifacts')), false);
+assert.throws(() => registerAppArtifact({ ...registration, version: '9.9.9' }),
+  (error) => error?.code === 'APP_INSTALL_ARTIFACT_CONFLICT');
+const externalArtifact = path.join(temp, 'external.hap');
+fs.writeFileSync(externalArtifact, 'external-artifact');
+assert.throws(() => registerAppArtifact({ ...registration, sourcePath: externalArtifact }), (error) => error?.code === 'APP_INSTALL_ARTIFACT_INVALID');
 assert.throws(() => validatePreparationPolicy({
   schemaVersion: 1,
   allowedEffects: ['CLEAR_APP_DATA'],
@@ -140,7 +149,7 @@ assert.throws(() => createInitialStatePreflight({
   now: registration.now,
 }), (error) => error?.code === 'INITIAL_STATE_PREFLIGHT_INVALID');
 
-const inspectedArtifact = path.join(temp, 'inspected.hap');
+const inspectedArtifact = path.join(harmonyPackageRoot, 'inspected.hap');
 fs.writeFileSync(inspectedArtifact, 'inspected-artifact');
 const inspected = registerAppArtifact({
   ...registration,
@@ -153,7 +162,7 @@ const inspected = registerAppArtifact({
   }),
 });
 assert.strictEqual(inspected.artifactIdentity.inspection.status, 'VERIFIED');
-const mismatchedArtifact = path.join(temp, 'mismatched.hap');
+const mismatchedArtifact = path.join(harmonyPackageRoot, 'mismatched.hap');
 fs.writeFileSync(mismatchedArtifact, 'mismatched-artifact');
 assert.throws(() => registerAppArtifact({
   ...registration,
@@ -166,7 +175,8 @@ assert.throws(() => registerAppArtifact({
   }),
 }), (error) => error?.code === 'APP_ARTIFACT_IDENTITY_MISMATCH');
 
-const appDir = path.join(temp, 'Fixture.app');
+const appDir = path.join(workspacePackageRoot(root, 'ios'), 'Fixture.app');
+fs.mkdirSync(workspacePackageRoot(root, 'ios'), { recursive: true });
 fs.mkdirSync(appDir);
 fs.writeFileSync(path.join(appDir, 'Info.plist'), 'fixture');
 fs.symlinkSync(path.join(appDir, 'Info.plist'), path.join(appDir, 'Info-link.plist'));
@@ -177,7 +187,7 @@ assert.throws(() => registerAppArtifact({
   deviceType: 'simulator',
 }), (error) => error?.code === 'APP_INSTALL_ARTIFACT_INVALID');
 
-const iosApp = path.join(temp, 'Installable.app');
+const iosApp = path.join(workspacePackageRoot(root, 'ios'), 'Installable.app');
 fs.mkdirSync(iosApp);
 fs.writeFileSync(path.join(iosApp, 'Info.plist'), 'installable-fixture');
 const iosProvisioning = registerAppArtifact({
@@ -258,8 +268,8 @@ assert.strictEqual(discovered.mode, 'ARTIFACT_MANAGED');
 assert.strictEqual(discovered.appId, 'com.example.workspace-package');
 assert.strictEqual(discovered.version, '6.0.0');
 assert.strictEqual(discovered.build, '600');
-assert.notStrictEqual(discovered.artifactPath, workspaceApp);
-assert.ok(discovered.artifactPath.startsWith(path.join(root, '.mavt', 'app-artifacts')));
+assert.strictEqual(discovered.artifactPath, workspaceApp);
+assert.strictEqual(fs.existsSync(path.join(root, '.mavt', 'app-artifacts')), false);
 writeIosApp('WorkspacePackageDuplicate', 'com.example.workspace-package');
 assert.throws(() => resolveWorkspaceAppProvisioning({
   workspaceRoot: root,

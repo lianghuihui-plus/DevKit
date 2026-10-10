@@ -312,7 +312,22 @@ scene.previousAction = {
 };
 writeJsonAtomic(path.join(execDir, 'current-scene.json'), scene);
 writeJsonAtomic(path.join(execDir, 'scenes', scene.sceneId + '.json'), scene);
-const sceneRef = agentResources.publishScene(execDir, scene.sceneId).data.ref;
+const publishedSpatialScene = agentResources.publishScene(execDir, scene.sceneId);
+const sceneRef = publishedSpatialScene.data.ref;
+const spatialDescriptor = publishedSpatialScene.resources.find((resource) => resource.type === 'actionSpatialEvidence');
+assert.ok(spatialDescriptor);
+const publicSpatial = agentResources.readPublishedResource(execDir, spatialDescriptor.ref);
+const spatialScreenshotDescriptor = publicSpatial.resources.find((resource) => resource.type === 'screenshot');
+assert.ok(spatialScreenshotDescriptor);
+const publicSpatialScreenshot = agentResources.readPublishedResource(execDir, spatialScreenshotDescriptor.ref);
+assert.strictEqual(fs.existsSync(publicSpatialScreenshot.data.content.path), true);
+assert.strictEqual(path.relative(fs.realpathSync(execDir),
+  fs.realpathSync(publicSpatialScreenshot.data.content.path)).startsWith('..'), true);
+assert.deepStrictEqual({ width: publicSpatialScreenshot.data.content.width, height: publicSpatialScreenshot.data.content.height },
+  { width: 1, height: 1 });
+assert.strictEqual(publicSpatialScreenshot.data.content.coordinateSpace, undefined);
+assert.notStrictEqual(publicSpatialScreenshot.data.content.sha256, scene.screenshot.sha256);
+assert.strictEqual(fs.existsSync(path.join(execDir, 'action-spatial-evidence', 'action-0001.png')), false);
 const previous = projectPreviousAction(scene.previousAction);
 assert.strictEqual(previous.spatialEvidence.available, true);
 assert.deepStrictEqual(previous.spatialEvidence.requested, { from: { x: 0, y: 0 }, to: { x: 0, y: 0 } });

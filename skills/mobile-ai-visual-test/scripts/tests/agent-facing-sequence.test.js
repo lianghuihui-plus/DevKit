@@ -103,9 +103,12 @@ const sequenceScreenshots = publicSequence.resources.filter((item) => item.type 
 assert.ok(sequenceScreenshots.length >= 1);
 for (const descriptor of sequenceScreenshots) {
   const screenshot = resources.readPublishedResource(fixture.execDir, descriptor.ref);
-  assert.match(screenshot.data.content.path, /screenshots\/coordinate-grid\//);
+  assert.strictEqual(fs.existsSync(screenshot.data.content.path), true);
+  assert.strictEqual(path.relative(fs.realpathSync(fixture.execDir),
+    fs.realpathSync(screenshot.data.content.path)).startsWith('..'), true);
   assert.strictEqual(screenshot.data.content.coordinateSpace.maximum, 10000);
 }
+assert.strictEqual(fs.existsSync(path.join(fixture.execDir, 'screenshots', 'coordinate-grid')), false);
 const decisionsBeforeReplay = store.events(fixture.execDir).filter((event) => event.type === 'agentDecisionRecorded').length;
 const replay = run(fixture.execDir, oneAction, options);
 assert.strictEqual(replay.status, 'SUCCEEDED', JSON.stringify(replay));

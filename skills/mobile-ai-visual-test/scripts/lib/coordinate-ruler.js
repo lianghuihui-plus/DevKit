@@ -4,9 +4,9 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { contractError } = require('./contract-utils');
-const { atomicWrite } = require('./execution-lifecycle');
 const { resolveArtifact } = require('./execution-evidence');
 const { encodePngRgba, readPngRgba } = require('./image-evidence');
+const { cachedPng } = require('./visual-view-cache');
 const { GRID_MAX } = require('./visual-coordinate-grid');
 
 const MARGIN = Object.freeze({ left: 82, right: 82, top: 54, bottom: 54 });
@@ -132,31 +132,39 @@ function ensureCoordinateRuler(execDir, screenshot) {
   if (screenshot.sha256 && screenshot.sha256 !== sourceSha256) {
     throw contractError('RESOURCE_INTEGRITY_INVALID', 'screenshot authority digest mismatch');
   }
-  const rendered = renderCoordinateRuler(readPngRgba(sourcePath));
-  const outputRef = path.join('screenshots', 'coordinate-grid', path.basename(sourceRef));
-  const outputPath = path.join(path.resolve(execDir), outputRef);
-  const output = encodePngRgba(rendered.image);
-  atomicWrite(outputPath, output);
+  const source = readPngRgba(sourcePath);
   return {
-    ref: outputRef,
-    path: outputPath,
-    sha256: crypto.createHash('sha256').update(output).digest('hex'),
-    width: rendered.image.width,
-    height: rendered.image.height,
+    resourceId: `${sourceRef}:coordinate-grid`,
+    ref: sourceRef,
+    renderMode: 'COORDINATE_RULER',
     coordinateSpace: {
-      ...rendered.coordinateSpace,
+      ...coordinateSpace(source.width, source.height),
       sourceScreenshot: {
         ref: sourceRef,
-        width: rendered.coordinateSpace.contentRect.width,
-        height: rendered.coordinateSpace.contentRect.height,
+        width: source.width,
+        height: source.height,
         sha256: sourceSha256,
       },
     },
   };
 }
 
+function renderCoordinateRulerView(sourcePath, sourceSha256) {
+  const sourceBytes = fs.readFileSync(sourcePath);
+  const actualSha256 = crypto.createHash('sha256').update(sourceBytes).digest('hex');
+  if (actualSha256 !== sourceSha256) throw contractError('RESOURCE_INTEGRITY_INVALID', 'screenshot authority digest mismatch');
+  const source = readPngRgba(sourcePath);
+  const rendered = renderCoordinateRuler(source);
+  return {
+    ...cachedPng('coordinate-ruler', sourceSha256, () => encodePngRgba(rendered.image)),
+    width: rendered.image.width,
+    height: rendered.image.height,
+  };
+}
+
 module.exports = {
   GRID_MAX,
   ensureCoordinateRuler,
+  renderCoordinateRulerView,
   renderCoordinateRuler,
 };

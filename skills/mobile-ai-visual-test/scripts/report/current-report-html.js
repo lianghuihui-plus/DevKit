@@ -71,7 +71,7 @@ function screenshotModel(report, trace) {
     ...shot,
     time: formatDisplayTime(shot.time),
     src: evidenceHref(report, shot.baseRef || shot.ref),
-    overlaySrc: shot.baseRef ? evidenceHref(report, shot.ref) : null,
+    overlaySrc: shot.overlayDataUri || (shot.baseRef ? evidenceHref(report, shot.ref) : null),
   })).filter((shot) => shot.src);
 }
 

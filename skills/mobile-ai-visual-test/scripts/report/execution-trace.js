@@ -307,6 +307,7 @@ function buildExecutionTrace(report) {
           ? sanitizeOperationValue(projectActionSpatialEvidence(report.latest, event.spatialEvidenceRef, {
             operationId: event.operationId,
             actionType: action?.type,
+            renderTransient: false,
           }))
           : null,
         retrySafety: retrySafety(action, outcome), raw: sanitizeOperationValue({ event, request, decision }),
@@ -383,12 +384,18 @@ function buildExecutionTrace(report) {
   for (const action of actions) {
     action.beforeScreenshot = screenshotByRef.get(action.beforeObservation?.ref) || null;
     action.afterScreenshot = screenshotByRef.get(action.afterObservation?.ref) || null;
-    const annotatedRef = safeRef(action.spatialEvidence?.annotatedScreenshot?.ref);
-    if (annotatedRef && action.spatialEvidence?.annotatedScreenshot) {
+    const annotatedScreenshot = action.spatialEvidence?.annotatedScreenshot;
+    const transientBaseRef = annotatedScreenshot?.persistence === 'TRANSIENT'
+      ? safeRef(annotatedScreenshot.baseRef) : null;
+    const annotatedRef = transientBaseRef || safeRef(annotatedScreenshot?.ref);
+    if (annotatedRef && annotatedScreenshot) {
       const spatialScreenshot = {
         id: `action-spatial-evidence-${action.operationId}`,
         index: screenshots.length,
         ref: annotatedRef,
+        ...(transientBaseRef ? {
+          overlayDataUri: require('../lib/action-spatial-evidence').actionSpatialOverlayDataUri(action.spatialEvidence),
+        } : {}),
         operationId: action.operationId,
         time: action.time,
         phase: action.phase,

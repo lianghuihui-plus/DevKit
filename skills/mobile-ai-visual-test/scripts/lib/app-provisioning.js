@@ -29,8 +29,17 @@ function artifactRoot(workspaceRoot) {
   return path.join(path.resolve(workspaceRoot), '.mavt', 'app-artifacts');
 }
 
+function artifactReferenceRoot(workspaceRoot) {
+  return path.join(path.resolve(workspaceRoot), '.mavt', 'app-references');
+}
+
 function workspacePackageRoot(workspaceRoot, platform) {
   return path.join(path.resolve(workspaceRoot), 'app-packages', String(platform || '').toLowerCase());
+}
+
+function isInside(root, target) {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 function contentDigest(target) {
@@ -376,16 +385,21 @@ function validateAppProvisioning(value = null, options = {}) {
   }
   normalizeIdentityInspection(artifactIdentity.inspection, expectedIdentity);
   if (options.workspaceRoot) {
-    const root = artifactRoot(options.workspaceRoot);
     const resolved = path.resolve(provisioning.artifactPath);
-    const relative = path.relative(root, resolved);
-    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw contractError('APP_INSTALL_ARTIFACT_INVALID', 'artifact path is outside the workspace cache');
+    const roots = [
+      workspacePackageRoot(options.workspaceRoot, provisioning.platform),
+      artifactRoot(options.workspaceRoot),
+    ];
+    const root = roots.find((candidate) => isInside(candidate, resolved));
+    if (!root) throw contractError('APP_INSTALL_ARTIFACT_INVALID', 'artifact path is outside the workspace package directory or legacy cache');
     if (!fs.existsSync(resolved)) throw contractError('APP_INSTALL_ARTIFACT_UNAVAILABLE', 'frozen installation artifact is unavailable');
+    if (!fs.existsSync(root) || fs.lstatSync(root).isSymbolicLink()) {
+      throw contractError('APP_INSTALL_ARTIFACT_INVALID', 'artifact root is unavailable or symbolic');
+    }
     const realRoot = fs.realpathSync(root);
     const realArtifact = fs.realpathSync(resolved);
-    const realRelative = path.relative(realRoot, realArtifact);
-    if (!realRelative || realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
-      throw contractError('APP_INSTALL_ARTIFACT_INVALID', 'artifact resolves outside the workspace cache');
+    if (!isInside(realRoot, realArtifact)) {
+      throw contractError('APP_INSTALL_ARTIFACT_INVALID', 'artifact resolves outside the workspace package directory or legacy cache');
     }
     const digest = contentDigest(resolved);
     if (digest.sha256 !== provisioning.sha256 || digest.size !== provisioning.size) throw contractError('APP_INSTALL_ARTIFACT_MISMATCH', 'frozen installation artifact content changed');
@@ -408,21 +422,25 @@ function registerAppArtifact(options) {
   const expectedIdentity = { appId, version, build };
   const inspection = normalizeIdentityInspection(inspectArtifactIdentity({ ...options, sourcePath: source, platform, format }), expectedIdentity);
   const digest = contentDigest(source);
-  const cacheRoot = artifactRoot(options.workspaceRoot);
-  fs.mkdirSync(cacheRoot, { recursive: true });
-  if (fs.lstatSync(cacheRoot).isSymbolicLink()) throw contractError('APP_INSTALL_ARTIFACT_INVALID', 'artifact cache must not be a symbolic link');
-  const destinationDir = path.join(cacheRoot, digest.sha256);
-  const destination = path.join(destinationDir, path.basename(source));
-  const manifestPath = path.join(destinationDir, 'manifest.json');
-  fs.mkdirSync(destinationDir, { recursive: true });
-  if (fs.lstatSync(destinationDir).isSymbolicLink()) throw contractError('APP_INSTALL_ARTIFACT_INVALID', 'artifact cache entry must not be a symbolic link');
+  const packageRoot = workspacePackageRoot(options.workspaceRoot, platform);
+  if (!fs.existsSync(packageRoot) || fs.lstatSync(packageRoot).isSymbolicLink() || !isInside(packageRoot, source)) {
+    throw contractError('APP_INSTALL_ARTIFACT_INVALID', `installation artifact must be stored under ${packageRoot}`);
+  }
+  if (!isInside(fs.realpathSync(packageRoot), fs.realpathSync(source))) {
+    throw contractError('APP_INSTALL_ARTIFACT_INVALID', 'installation artifact resolves outside the workspace package directory');
+  }
+  const referenceDir = path.join(artifactReferenceRoot(options.workspaceRoot), digest.sha256);
+  const sourceKey = crypto.createHash('sha256').update(source).digest('hex').slice(0, 24);
+  const manifestPath = path.join(referenceDir, `${sourceKey}.json`);
+  fs.mkdirSync(referenceDir, { recursive: true });
+  if (fs.lstatSync(referenceDir).isSymbolicLink()) throw contractError('APP_INSTALL_ARTIFACT_INVALID', 'artifact reference directory must not be a symbolic link');
   if (fs.existsSync(manifestPath)) {
-    if (fs.lstatSync(manifestPath).isSymbolicLink()) throw contractError('APP_INSTALL_ARTIFACT_CONFLICT', 'cached artifact manifest must not be a symbolic link');
+    if (fs.lstatSync(manifestPath).isSymbolicLink()) throw contractError('APP_INSTALL_ARTIFACT_CONFLICT', 'artifact reference manifest must not be a symbolic link');
     let existing;
     try {
       existing = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     } catch (error) {
-      throw contractError('APP_INSTALL_ARTIFACT_CONFLICT', `cached artifact manifest is invalid: ${error.message}`);
+      throw contractError('APP_INSTALL_ARTIFACT_CONFLICT', `artifact reference manifest is invalid: ${error.message}`);
     }
     const validated = validateAppProvisioning(existing, {
       workspaceRoot: options.workspaceRoot,
@@ -437,7 +455,6 @@ function registerAppArtifact(options) {
     }
     return validated;
   }
-  if (!fs.existsSync(destination)) fs.cpSync(source, destination, { recursive: true, errorOnExist: true, preserveTimestamps: false });
   const value = {
     schemaVersion: APP_PROVISIONING_SCHEMA_VERSION,
     mode: 'ARTIFACT_MANAGED',
@@ -451,7 +468,7 @@ function registerAppArtifact(options) {
     artifactIdentity: { expected: expectedIdentity, inspection },
     sha256: digest.sha256,
     size: digest.size,
-    artifactPath: destination,
+    artifactPath: source,
     registeredAt: options.now || new Date().toISOString(),
   };
   const validated = validateAppProvisioning(value, {
