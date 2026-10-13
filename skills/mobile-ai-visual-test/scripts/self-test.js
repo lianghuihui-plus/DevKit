@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const suites = Object.freeze({
+  setupDependencies: 'tests/setup-dependencies.test.js',
   contract: 'tests/contract.test.js',
   platform: 'tests/platform-contract.test.js',
   deviceOperationTimeout: 'tests/device-operation-timeout.test.js',
