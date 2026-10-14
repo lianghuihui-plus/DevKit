@@ -287,17 +287,12 @@ const caseOnlyIndexPath = path.join(caseOnlyPublicationRoot, 'index.html');
 renderIndexForRoot(caseOnlyPublicationRoot);
 const caseOnlyIndexTime = new Date('2026-08-01T00:00:00.000Z');
 fs.utimesSync(caseOnlyIndexPath, caseOnlyIndexTime, caseOnlyIndexTime);
-const caseOnlyIndexBefore = fs.readFileSync(caseOnlyIndexPath);
 const caseOnlyPublication = refreshCommittedCaseReports(caseOnlyFixture.caseDir, 'harmony');
 assert.strictEqual(caseOnlyPublication.status, 'UPDATED');
-assert.strictEqual(caseOnlyPublication.indexRefresh, 'DEFERRED');
-assert.strictEqual(caseOnlyPublication.indexHtml, null);
-assert.deepStrictEqual(
-  fs.readFileSync(caseOnlyIndexPath),
-  caseOnlyIndexBefore,
-  'per-case publication must not rebuild or mutate the workspace-wide index',
-);
-assert.strictEqual(fs.statSync(caseOnlyIndexPath).mtimeMs, caseOnlyIndexTime.getTime());
+assert.strictEqual(caseOnlyPublication.indexRefresh, 'UPDATED');
+assert.strictEqual(caseOnlyPublication.indexHtml, caseOnlyIndexPath);
+assert.ok(fs.statSync(caseOnlyIndexPath).mtimeMs > caseOnlyIndexTime.getTime());
+assert.ok(fs.readFileSync(caseOnlyIndexPath, 'utf8').includes(caseOnlyFixture.caseJson.identity.caseKey));
 assert.strictEqual(fs.existsSync(caseOnlyPublication.platformContextHtml), true);
 assert.strictEqual(fs.existsSync(caseOnlyPublication.caseContextHtml), true);
 
@@ -451,8 +446,21 @@ assert.strictEqual(
   'an execution must not appear in the index before its platform report is published',
 );
 refreshCommittedCaseReports(unpublishedSibling.caseDir, 'ios');
-fs.unlinkSync(path.join(unpublishedSibling.runtimeDir, 'CONTEXT.html'));
-assert.doesNotThrow(() => refreshCommittedCaseReports(publishedSibling.caseDir, 'harmony'));
+const missingSiblingContext = path.join(unpublishedSibling.runtimeDir, 'CONTEXT.html');
+const missingSiblingHref = path.relative(unpublishedSiblingRoot, missingSiblingContext).replace(/\\/g, '/');
+fs.unlinkSync(missingSiblingContext);
+const siblingRefresh = refreshCommittedCaseReports(publishedSibling.caseDir, 'harmony');
+assert.strictEqual(siblingRefresh.status, 'UPDATED');
+assert.strictEqual(siblingRefresh.indexRefresh, 'UPDATED');
+const tolerantIndex = fs.readFileSync(siblingRefresh.indexHtml, 'utf8');
+assert.ok(tolerantIndex.includes(publishedSibling.caseJson.identity.caseKey));
+assert.strictEqual(
+  tolerantIndex.includes(`href="${missingSiblingHref}"`),
+  false,
+  'a broken sibling report link must not block the current case dashboard refresh',
+);
+assert.ok(tolerantIndex.includes('class="report-button report-link-unavailable"'));
+assert.ok(tolerantIndex.includes('报告健康异常 · iOS'));
 assert.doesNotThrow(() => refreshBatchIndex(
   unpublishedSiblingRoot,
   [publishedSibling.caseDir, unpublishedSibling.caseDir],
@@ -486,10 +494,9 @@ assert.strictEqual(
   false,
   'publishing one platform must not publish another session platform',
 );
-assert.strictEqual(
-  fs.existsSync(path.join(platformBoundaryRoot, 'index.html')),
-  false,
-);
+const iosOnlyIndex = fs.readFileSync(path.join(platformBoundaryRoot, 'index.html'), 'utf8');
+assert.ok(iosOnlyIndex.includes('data-platform-run="ios"'));
+assert.strictEqual(iosOnlyIndex.includes('data-platform-run="android"'), false);
 refreshCommittedCaseReports(boundaryAndroid.caseDir, 'android');
 refreshBatchIndex(platformBoundaryRoot, [boundaryAndroid.caseDir]);
 const platformBoundaryIndex = fs.readFileSync(path.join(platformBoundaryRoot, 'index.html'), 'utf8');

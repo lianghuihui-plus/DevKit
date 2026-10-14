@@ -429,6 +429,47 @@ function assertIndexLinks(rootDir, cases) {
   }
 }
 
+function availableIndexHref(rootDir, href) {
+  if (!href) return null;
+  const target = path.resolve(rootDir, href);
+  return target.startsWith(`${path.resolve(rootDir)}${path.sep}`) && fs.existsSync(target) ? href : null;
+}
+
+function tolerateUnavailableIndexLinks(rootDir, cases) {
+  return cases.map((item) => {
+    const issues = Array.isArray(item.reportIssues) ? item.reportIssues.slice() : [];
+    const platforms = (item.platforms || []).map((platform) => {
+      if (availableIndexHref(rootDir, platform.contextHref)) return platform;
+      issues.push({
+        platform: platform.platform || null,
+        readability: 'ARTIFACT_UNAVAILABLE',
+        status: 'REPORT_LINK_UNAVAILABLE',
+        errorCode: 'REPORT_LINK_TARGET_MISSING',
+        reason: `报告链接暂不可用：${platform.contextHref || '-'}`,
+      });
+      return { ...platform, contextHref: null };
+    });
+    const contextHref = availableIndexHref(rootDir, item.contextHref);
+    if (item.contextHref && !contextHref) {
+      issues.push({
+        platform: null,
+        readability: 'ARTIFACT_UNAVAILABLE',
+        status: 'REPORT_LINK_UNAVAILABLE',
+        errorCode: 'REPORT_LINK_TARGET_MISSING',
+        reason: `用例报告链接暂不可用：${item.contextHref}`,
+      });
+    }
+    return {
+      ...item,
+      platforms,
+      contextHref,
+      reportHealth: issues.length && (!item.reportHealth || item.reportHealth === 'HEALTHY')
+        ? 'DEGRADED' : (item.reportHealth || 'HEALTHY'),
+      reportIssues: issues,
+    };
+  });
+}
+
 function batchPublicationResult(rootDir, batchId, cases, errors, projections) {
   const contract = readJson(path.join(rootDir, 'runs', batchId, 'contract.json'), null);
   const targets = Array.isArray(contract?.targets) ? contract.targets : [];
@@ -534,6 +575,7 @@ function refreshCommittedCaseReportsUnlocked(caseDir, platform) {
   let itemError = null;
   let caseNo = null;
   let caseKey = null;
+  const projections = new Map();
   try {
     const caseJson = validateCaseContract(readJson(path.join(caseDir, 'case.json')));
     caseNo = caseJson.identity.caseNo || null;
@@ -542,15 +584,20 @@ function refreshCommittedCaseReportsUnlocked(caseDir, platform) {
     if (!report) throw new Error(`CURRENT_EXECUTION_REQUIRED: ${platform}`);
     writeCaseReports(caseDir, caseJson, {}, [], report, { platform, skipRootOverview: true });
     const publishedProjection = buildPublishedCaseReportProjection(caseDir, caseJson);
+    projections.set(path.resolve(caseDir), publishedProjection);
     writeCaseReports(caseDir, caseJson, {}, [], null, { platforms: publishedProjection.platforms });
   } catch (error) {
     itemError = reportErrorModel(rootDir, caseDir, error);
     publishReportError(caseDir, itemError);
   }
+  const errors = itemError ? new Map([[caseDir, itemError]]) : new Map();
+  const cases = tolerateUnavailableIndexLinks(rootDir, collectIndexCases(rootDir, { errors, projections }));
+  assertIndexLinks(rootDir, cases);
+  const indexHtml = renderIndexArtifacts(rootDir, cases);
   return {
     status: itemError ? 'REPORT_ERROR' : 'UPDATED', platform,
-    indexRefresh: 'DEFERRED',
-    indexHtml: null,
+    indexRefresh: 'UPDATED',
+    indexHtml,
     caseNo: itemError?.caseNo || caseNo,
     caseKey: itemError?.caseKey || caseKey,
     caseContextHtml: path.join(caseDir, 'CONTEXT.html'),
