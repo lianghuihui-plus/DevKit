@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { technicalFactView, technicalFacts } = require('../lib/technical-facts');
 const { projectActionSpatialEvidence } = require('../lib/action-spatial-evidence');
 
@@ -9,6 +11,17 @@ function bySequence(left, right) {
 
 function latest(items) {
   return items.slice().sort(bySequence).at(-1) || null;
+}
+
+function capabilityInvocationRecord(report, invocationId) {
+  if (!report.latest || !/^[A-Za-z0-9._-]+$/.test(invocationId || '')) return null;
+  const file = path.join(report.latest, 'capabilities', 'invocations', `${invocationId}.json`);
+  try {
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return record?.type === 'capabilityInvocation' && record.operationId === invocationId ? record : null;
+  } catch {
+    return null;
+  }
 }
 
 function flowContext(event) {
@@ -304,6 +317,7 @@ function projectCurrentNarrative(report) {
   });
   const capabilitySteps = capabilityResults.map((event) => {
     const request = capabilityRequests.get(event.capabilityInvocationId) || {};
+    const record = capabilityInvocationRecord(report, event.capabilityInvocationId);
     const status = event.status || (event.type === 'capabilityInvocationCompleted' ? 'SUCCEEDED'
       : event.type === 'capabilityInvocationFailed' ? 'FAILED' : 'UNKNOWN');
     return {
@@ -329,6 +343,13 @@ function projectCurrentNarrative(report) {
         status,
         summary: event.summary || '',
         technicalFactRef: event.technicalFactRef || null,
+        durationMs: record?.elapsedMs ?? null,
+        startedAt: record?.startedAt || null,
+        endedAt: record?.endedAt || null,
+        input: record?.input ?? request.input ?? null,
+        output: record?.output ?? null,
+        diagnostic: record?.diagnostic ?? null,
+        recordRef: record ? `capabilities/invocations/${event.capabilityInvocationId}.json` : null,
       },
       action: null,
       knowledge: null,
