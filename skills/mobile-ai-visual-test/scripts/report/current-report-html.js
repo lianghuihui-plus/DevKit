@@ -40,6 +40,7 @@ function icon(name) {
     chevronRight: '<path d="m9 18 6-6-6-6"/>',
     chevronDown: '<path d="m6 9 6 6 6-6"/>',
     sequence: '<path d="M4 6h6M14 6h6M7 6v12M7 12h7M14 12v6M14 18h6"/>',
+    terminal: '<path d="m4 7 4 4-4 4M10 15h6"/><rect x="2" y="4" width="20" height="16" rx="2"/>',
     pointer: '<path d="m5 3 14 9-6 2-3 6z"/>',
     camera: '<path d="M14.5 4 16 7h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3l1.5-3z"/><circle cx="12" cy="13" r="3"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
@@ -241,7 +242,7 @@ function visualOperationKind(kind) {
 }
 
 function operationIconName(kind) {
-  return { ACT: 'pointer', RUN_SEQUENCE: 'sequence', SEQUENCE_ACTION: 'sequence', CAPABILITY: 'sequence', CAPTURE: 'camera', WAIT: 'clock', OBSERVE: 'observe' }[visualOperationKind(kind)] || 'check';
+  return { ACT: 'pointer', RUN_SEQUENCE: 'sequence', SEQUENCE_ACTION: 'sequence', CAPABILITY: 'terminal', CAPTURE: 'camera', WAIT: 'clock', OBSERVE: 'observe' }[visualOperationKind(kind)] || 'check';
 }
 
 function operationKindLabel(kind) {
@@ -259,12 +260,13 @@ function renderStepRow(shots, step, index, options = {}) {
   const evidenceCount = [sceneShot(shots, step.beforeScene), sceneShot(shots, step.afterScene)].filter(Boolean).length;
   const kind = options.sequence ? sequenceStepKind(step) : step.operation === 'act' ? 'ACT' : String(step.operation || 'STEP').toUpperCase();
   const visualKind = visualOperationKind(kind);
+  const durationMs = step.sequenceStep?.durationMs ?? step.capability?.durationMs ?? null;
   const source = options.sequence ? `序列内动作 · ${kind}` : kind === 'ACT' ? '独立 ACT'
     : kind === 'USECAPABILITY' ? `CAPABILITY · ${step.capability?.name || '未命名能力'}` : kind;
   const sequenceAttributes = options.sequence
     ? ` data-sequence-parent="${escapeHtml(options.sequenceId)}" data-sequence-step-kind="${escapeHtml(kind)}" data-sequence-step="${escapeHtml(`${options.sequenceId}:${step.sequenceStepId || ''}`)}"`
     : '';
-  return `<button type="button" class="step-row${index === 0 ? ' active' : ''}${status === 'ISSUE' ? ' failed' : ''}${hasKnowledge ? ' has-knowledge' : ''}${options.sequence ? ' sequence-child-row' : ''}" data-step="${index}"${sequenceAttributes}><span class="step-number">${String(step.number).padStart(2, '0')}</span><span class="step-state step-kind-icon kind-${visualKind.toLowerCase()}" data-operation-icon="${visualKind}" title="${escapeHtml(operationKindLabel(visualKind))}">${icon(operationIconName(visualKind))}</span><span class="step-copy"><small>${escapeHtml(source)} · ${escapeHtml(formatDisplayTime(step.time))}</small><b>${escapeHtml(step.purpose || actionLabel(step.action?.value))}</b><em>${escapeHtml(label(PROCESS_STATE_LABELS, status, status))}${step.sequenceStep ? ` · ${escapeHtml(optionalDuration(step.sequenceStep.durationMs))}` : ''} · ${escapeHtml((step.expectationRefs || []).join(' · ') || '未关联验证点')}${hasKnowledge ? ' · 知识 1' : ''}${evidenceCount ? ` · 证据 ${evidenceCount}` : ''}</em></span><span class="step-arrow">${icon('chevronRight')}</span></button>`;
+  return `<button type="button" class="step-row${index === 0 ? ' active' : ''}${status === 'ISSUE' ? ' failed' : ''}${hasKnowledge ? ' has-knowledge' : ''}${options.sequence ? ' sequence-child-row' : ''}" data-step="${index}"${sequenceAttributes}><span class="step-number">${String(step.number).padStart(2, '0')}</span><span class="step-state step-kind-icon kind-${visualKind.toLowerCase()}" data-operation-icon="${visualKind}" title="${escapeHtml(operationKindLabel(visualKind))}">${icon(operationIconName(visualKind))}</span><span class="step-copy"><small>${escapeHtml(source)} · ${escapeHtml(formatDisplayTime(step.time))}</small><b>${escapeHtml(step.purpose || actionLabel(step.action?.value))}</b><em>${escapeHtml(label(PROCESS_STATE_LABELS, status, status))}${durationMs !== null ? ` · ${escapeHtml(optionalDuration(durationMs))}` : ''} · ${escapeHtml((step.expectationRefs || []).join(' · ') || '未关联验证点')}${hasKnowledge ? ' · 知识 1' : ''}${evidenceCount ? ` · 证据 ${evidenceCount}` : ''}</em></span><span class="step-arrow">${icon('chevronRight')}</span></button>`;
 }
 
 function renderSequenceDetail(shots, group, hidden = true) {
@@ -281,7 +283,73 @@ function renderSequenceDetail(shots, group, hidden = true) {
   return `<article class="sequence-detail" data-sequence-detail="${escapeHtml(groupId)}"${hidden ? ' hidden' : ''}><div class="sequence-detail-head"><div><span>RUN SEQUENCE · ${escapeHtml(group.sequenceId || 'Sequence 记录尚未形成')}</span><h2>${escapeHtml(group.purpose || '连续操作')}</h2></div><span class="status status-${group.status === 'SEQUENCE_COMPLETED' ? 'pass' : 'issue'}"><i></i>${escapeHtml(label(SEQUENCE_STATUS_LABELS, group.status, group.status || '状态未知'))}</span></div><dl class="sequence-overview-metrics"><div><dt>总耗时</dt><dd>${escapeHtml(optionalDuration(group.durationMs))}</dd></div><div><dt>步骤数</dt><dd>${group.steps.length}</dd></div><div><dt>序列内动作</dt><dd>${actionCount}</dd></div><div><dt>显式采集</dt><dd>${captureCount}</dd></div></dl><dl class="sequence-scene-refs"><div><dt>Sequence 起点</dt><dd>${escapeHtml(group.beforeScene?.sceneId || '未记录')}</dd></div><div><dt>Sequence 最终现场</dt><dd>${escapeHtml(finalSceneText)}</dd></div></dl><div class="sequence-scene-compare${shotComparisonClasses([before, after])}">${renderShot(before, 'Sequence 起点')}${renderShot(after, finalCaption)}</div><section class="sequence-step-index"><header><b>Sequence 步骤</b><span>${group.steps.length ? '点击查看单步意图与证据' : '尚未形成可展示的执行步骤'}</span></header>${stepLinks || '<p class="sequence-empty-steps">Sequence 记录尚未形成，没有 ACT / WAIT / CAPTURE 子步骤。</p>'}</section><button type="button" class="log-jump" data-sequence-logs="${escapeHtml(group.sequenceId || group.decisionId || '')}">${icon('logs')}查看该 Sequence 详细日志</button></article>`;
 }
 
+function capabilityPayloadText(value) {
+  if (value === null || value === undefined) return '未记录';
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+function capabilityResultRoot(value) {
+  let current = value;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) break;
+    const wrapper = ['result', 'output', 'data', 'preview']
+      .find((key) => Object.prototype.hasOwnProperty.call(current, key) && current[key] !== null);
+    if (!wrapper) break;
+    current = current[wrapper];
+  }
+  return current;
+}
+
+function capabilityResultRows(value, pathParts = [], rows = [], depth = 0) {
+  if (rows.length >= 8 || value === null || value === undefined || value === '') return rows;
+  if (Array.isArray(value)) {
+    const scalars = value.every((item) => item === null || ['string', 'number', 'boolean'].includes(typeof item));
+    rows.push({
+      label: pathParts.join('.') || 'result',
+      value: scalars ? value.map((item) => String(item)).join(' · ') : `${value.length} 项`,
+    });
+    return rows;
+  }
+  if (typeof value !== 'object') {
+    rows.push({ label: pathParts.join('.') || 'result', value: String(value) });
+    return rows;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (rows.length >= 8) break;
+    const nextPath = [...pathParts, key];
+    if (item && typeof item === 'object' && depth < 2) capabilityResultRows(item, nextPath, rows, depth + 1);
+    else if (item !== null && item !== undefined && item !== '') {
+      rows.push({ label: nextPath.join('.'), value: typeof item === 'object' ? capabilityPayloadText(item) : String(item) });
+    }
+  }
+  return rows;
+}
+
+function renderCapabilityStepDetail(step, index) {
+  const capability = step.capability;
+  const status = stepStatus(step);
+  const resultRoot = capabilityResultRoot(capability.output);
+  const resultRows = typeof resultRoot === 'string' ? [] : capabilityResultRows(resultRoot);
+  const outputText = capabilityPayloadText(capability.output);
+  const inputText = capabilityPayloadText(capability.input);
+  const textPreview = typeof resultRoot === 'string'
+    ? `${resultRoot.slice(0, 1600)}${resultRoot.length > 1600 ? '\n…' : ''}` : null;
+  const resultContent = resultRows.length
+    ? `<dl class="capability-result-grid" data-capability-result-summary>${resultRows.map((item) => `<div><dt>${escapeHtml(item.label)}</dt><dd>${escapeHtml(item.value)}</dd></div>`).join('')}</dl>`
+    : `<pre class="capability-code capability-result-text"><code>${escapeHtml(textPreview || outputText)}</code></pre>`;
+  const diagnostic = capability.diagnostic
+    ? `<section class="capability-section capability-diagnostic"><header><b>诊断信息</b><span>能力返回的错误或补充诊断</span></header><pre class="capability-code"><code>${escapeHtml(capabilityPayloadText(capability.diagnostic))}</code></pre></section>` : '';
+  const fullOutput = capability.output === null || capability.output === undefined
+    ? '' : `<details class="capability-full-output"><summary>查看完整脱敏输出</summary><pre class="capability-code"><code>${escapeHtml(outputText)}</code></pre></details>`;
+  const flowNode = step.flowContext?.nodeRef
+    ? `${step.flowContext.nodeRef}${step.flowContext.selectedEdgeRef ? ` · ${step.flowContext.selectedEdgeRef}` : ''}` : '-';
+  const logRef = step.operationId || capability.invocationId || '';
+  return `<article class="step-detail capability-step-detail" data-step-detail="${index}" data-capability-detail="${escapeHtml(capability.invocationId || '')}"${index ? ' hidden' : ''}><div class="inspector-head"><div><span>步骤 ${step.number} · CAPABILITY</span><h2>${escapeHtml(step.purpose || '能力调用')}</h2></div><span class="status status-${status.toLowerCase()}"><i></i>${escapeHtml(label(PROCESS_STATE_LABELS, status, status))}</span></div><dl class="step-reasoning"><div><dt>为什么做</dt><dd>${escapeHtml(step.purpose || '未记录操作目的')}</dd></div><div><dt>预期效果</dt><dd>${escapeHtml(step.expectedOutcome || '完成能力调用并取得后续步骤所需结果')}</dd></div><div><dt>实际效果</dt><dd>${escapeHtml(capability.summary || step.conclusion || '未记录能力调用结果')}</dd></div></dl><dl class="capability-call-meta"><div><dt>能力</dt><dd>${escapeHtml(capability.name || '-')}</dd></div><div><dt>调用状态</dt><dd>${escapeHtml(capability.status || 'UNKNOWN')}</dd></div><div><dt>耗时</dt><dd>${escapeHtml(optionalDuration(capability.durationMs))}</dd></div><div><dt>流程节点</dt><dd>${escapeHtml(flowNode)}</dd></div><div><dt>调用记录</dt><dd>${escapeHtml(capability.invocationId || '-')}</dd></div><div><dt>记录文件</dt><dd>${escapeHtml(capability.recordRef || '旧执行未记录详情文件')}</dd></div></dl><section class="capability-section"><header><b>调用输入</b><span>来自已持久化的脱敏 invocation 记录</span></header><pre class="capability-code"><code>${escapeHtml(inputText)}</code></pre></section><section class="capability-section"><header><b>${typeof resultRoot === 'string' ? '文本结果' : '结构化结果'}</b><span>摘要用于阅读，完整内容保留在下方</span></header>${resultContent}</section>${diagnostic}<p class="capability-evidence-note">能力调用结果不替代后续 UI 验证；业务状态仍由后续观察、操作和检查点证据确认。</p>${fullOutput}<button type="button" class="log-jump" data-step-logs="${escapeHtml(logRef)}">${icon('logs')}查看该步骤详细日志</button></article>`;
+}
+
 function renderStepDetail(report, trace, narrative, shots, step, index) {
+  if (step.capability) return renderCapabilityStepDetail(step, index);
   const before = sceneShot(shots, step.beforeScene);
   const after = sceneShot(shots, step.afterScene);
   const spatial = shots.find((shot) => shot.operationId === step.action?.operationId && shot.purpose === 'ACTION_SPATIAL_EVIDENCE') || null;
@@ -295,13 +363,12 @@ function renderStepDetail(report, trace, narrative, shots, step, index) {
   const expectationRows = (step.expectationTargets || []).map((item) => `<div><b>${escapeHtml(item.ref)} · ${escapeHtml(item.text)}</b><span>本步骤当时推进</span></div>`).join('');
   const shotCount = [before, spatial, after].filter(Boolean).length;
   const sequenceDetails = step.sequenceStep ? `<dl class="sequence-step-details"><div><dt>序列来源</dt><dd>${escapeHtml(step.sequenceId || '-')} · ${escapeHtml(step.sequenceStepId || '-')}</dd></div><div><dt>步骤状态</dt><dd>${escapeHtml(step.sequenceStep.status || 'UNKNOWN')}</dd></div><div><dt>步骤耗时</dt><dd>${escapeHtml(optionalDuration(step.sequenceStep.durationMs))}</dd></div>${step.sequenceStep.purpose ? `<div><dt>采集目的</dt><dd>${escapeHtml(step.sequenceStep.purpose)}</dd></div>` : ''}${step.sequenceStep.captureOrigins?.length ? `<div><dt>采集来源</dt><dd>${escapeHtml(step.sequenceStep.captureOrigins.join(' · '))}</dd></div>` : ''}${sequenceFailure ? `<div><dt>错误代码</dt><dd>${escapeHtml(sequenceFailure.code || 'SEQUENCE_STEP_FAILED')}</dd></div>` : ''}</dl>` : '';
-  const capabilityDetails = step.capability ? `<dl class="sequence-step-details"><div><dt>能力</dt><dd>${escapeHtml(step.capability.name || '-')}</dd></div><div><dt>调用状态</dt><dd>${escapeHtml(step.capability.status || 'UNKNOWN')}</dd></div><div><dt>调用记录</dt><dd>${escapeHtml(step.capability.invocationId || '-')}</dd></div>${step.flowContext?.nodeRef ? `<div><dt>流程节点</dt><dd>${escapeHtml(step.flowContext.nodeRef)}${step.flowContext.selectedEdgeRef ? ` · ${escapeHtml(step.flowContext.selectedEdgeRef)}` : ''}</dd></div>` : ''}</dl>` : '';
   const sequenceEvidenceNote = step.sequenceId && sequenceStepKind(step) === 'ACT'
     ? '<p class="sequence-evidence-note">动作后自动截图归属当前 ACT</p>'
     : step.sequenceId && sequenceStepKind(step) === 'CAPTURE'
       ? '<p class="sequence-evidence-note explicit">Agent 显式采集</p>' : '';
   const logRef = step.action?.operationId || step.recovery?.operationId || step.operationId || step.sequenceId || step.decisionId || '';
-  return `<article class="step-detail" data-step-detail="${index}"${index ? ' hidden' : ''}><div class="inspector-head"><div><span>步骤 ${step.number} · ${escapeHtml(step.operation || '决策')}</span><h2>${escapeHtml(step.purpose || actionLabel(step.action?.value) || '业务执行步骤')}</h2></div><span class="status status-${status.toLowerCase()}"><i></i>${escapeHtml(label(PROCESS_STATE_LABELS, status, status))}</span></div><dl class="step-reasoning"><div><dt>为什么做</dt><dd>${escapeHtml(step.purpose || '未记录操作目的')}</dd></div><div><dt>预期效果</dt><dd>${escapeHtml(step.expectedOutcome || '未记录预期效果')}</dd></div><div><dt>实际效果</dt><dd>${escapeHtml(actual)}</dd></div></dl>${sequenceDetails}${capabilityDetails}${expectationRows ? `<div class="step-expectations">${expectationRows}</div>` : ''}${knowledge.investigation ? renderKnowledgeInvestigation(report, knowledge.investigation, { purpose: step.purpose, expectationRefs: step.expectationRefs, sceneId: step.sceneId, refs: knowledge.refs, impact: step.conclusion }) : ''}${renderActionDetails(step)}${renderSpatialEvidence(step, spatial)}${sequenceEvidenceNote}<div class="shot-compare${spatial ? ' has-spatial' : ''}${shotComparisonClasses([before, spatial, after])}">${renderShot(before, '操作前最近现场')}${spatial ? renderShot(spatial, '动作落点') : ''}${renderShot(after, '操作后')}</div><div class="evidence-row"><span><small>当时推进目标</small><b>${escapeHtml(expectations)}</b></span><span><small>操作记录</small><b>${escapeHtml(logRef || '-')}</b></span><span><small>证据状态</small><b>${shotCount ? `可用 · ${shotCount} 项` : '未记录截图'}${knowledge.refs.length ? ' · 含知识引用' : ''}</b></span></div><button type="button" class="log-jump" data-step-logs="${escapeHtml(logRef)}">${icon('logs')}查看该步骤详细日志</button></article>`;
+  return `<article class="step-detail" data-step-detail="${index}"${index ? ' hidden' : ''}><div class="inspector-head"><div><span>步骤 ${step.number} · ${escapeHtml(step.operation || '决策')}</span><h2>${escapeHtml(step.purpose || actionLabel(step.action?.value) || '业务执行步骤')}</h2></div><span class="status status-${status.toLowerCase()}"><i></i>${escapeHtml(label(PROCESS_STATE_LABELS, status, status))}</span></div><dl class="step-reasoning"><div><dt>为什么做</dt><dd>${escapeHtml(step.purpose || '未记录操作目的')}</dd></div><div><dt>预期效果</dt><dd>${escapeHtml(step.expectedOutcome || '未记录预期效果')}</dd></div><div><dt>实际效果</dt><dd>${escapeHtml(actual)}</dd></div></dl>${sequenceDetails}${expectationRows ? `<div class="step-expectations">${expectationRows}</div>` : ''}${knowledge.investigation ? renderKnowledgeInvestigation(report, knowledge.investigation, { purpose: step.purpose, expectationRefs: step.expectationRefs, sceneId: step.sceneId, refs: knowledge.refs, impact: step.conclusion }) : ''}${renderActionDetails(step)}${renderSpatialEvidence(step, spatial)}${sequenceEvidenceNote}<div class="shot-compare${spatial ? ' has-spatial' : ''}${shotComparisonClasses([before, spatial, after])}">${renderShot(before, '操作前最近现场')}${spatial ? renderShot(spatial, '动作落点') : ''}${renderShot(after, '操作后')}</div><div class="evidence-row"><span><small>当时推进目标</small><b>${escapeHtml(expectations)}</b></span><span><small>操作记录</small><b>${escapeHtml(logRef || '-')}</b></span><span><small>证据状态</small><b>${shotCount ? `可用 · ${shotCount} 项` : '未记录截图'}${knowledge.refs.length ? ' · 含知识引用' : ''}</b></span></div><button type="button" class="log-jump" data-step-logs="${escapeHtml(logRef)}">${icon('logs')}查看该步骤详细日志</button></article>`;
 }
 
 function renderProcess(report, trace, narrative, shots) {
@@ -379,7 +446,7 @@ function styles() {
 
 function behavior(screenshots) {
   const json = JSON.stringify(screenshots).replace(/</g, '\\u003c');
-  return `<style>${supplementaryStyles()}${sourcePanelStyles()}${timingAndStateStyles()}.operation-metrics>span{display:grid;grid-template-columns:28px minmax(0,1fr);gap:7px;align-items:center}.operation-metrics>span>.operation-metric-copy{padding:0;border:0}.operation-metric-icon{display:grid;place-items:center;width:25px;height:25px;border-radius:5px;background:#eaf1f8;color:#315e8a;font-style:normal}.operation-metric-icon .icon{width:14px}.operation-metric-icon[data-operation-icon="RUN_SEQUENCE"]{background:var(--accent-soft);color:var(--accent)}.operation-metric-icon[data-operation-icon="SEQUENCE_ACTION"]{background:#f2edf6;color:#73558c}.step-kind-icon{width:22px;height:22px;border-radius:5px}.step-kind-icon .icon{width:13px}.step-kind-icon.kind-act{background:#eaf1f8;color:#315e8a}.step-kind-icon.kind-capture{background:var(--blocked-soft);color:var(--blocked)}.step-kind-icon.kind-wait{background:var(--pending-soft);color:var(--pending)}.step-kind-icon.kind-observe{background:#f2edf6;color:#73558c}.sequence-child-row:before{top:50%}.sequence-group-head.no-children{grid-template-columns:1fr}.sequence-empty-steps{margin:0;padding:10px;border-top:1px solid var(--line);color:var(--muted);font-size:9px}.sequence-scene-refs{display:grid;grid-template-columns:1fr 1fr;margin:0 0 12px;border:1px solid var(--line);background:var(--surface-2)}.sequence-scene-refs div{min-width:0;padding:8px 10px}.sequence-scene-refs div+div{border-left:1px solid var(--line)}.sequence-scene-refs dt{color:var(--muted);font-size:8px}.sequence-scene-refs dd{margin:2px 0 0;font:9px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}@media(max-width:620px){.sequence-scene-refs{grid-template-columns:1fr}.sequence-scene-refs div+div{border-top:1px solid var(--line);border-left:0}}</style><script>
+  return `<style>${supplementaryStyles()}${sourcePanelStyles()}${timingAndStateStyles()}${capabilityStyles()}.operation-metrics>span{display:grid;grid-template-columns:28px minmax(0,1fr);gap:7px;align-items:center}.operation-metrics>span>.operation-metric-copy{padding:0;border:0}.operation-metric-icon{display:grid;place-items:center;width:25px;height:25px;border-radius:5px;background:#eaf1f8;color:#315e8a;font-style:normal}.operation-metric-icon .icon{width:14px}.operation-metric-icon[data-operation-icon="RUN_SEQUENCE"]{background:var(--accent-soft);color:var(--accent)}.operation-metric-icon[data-operation-icon="SEQUENCE_ACTION"]{background:#f2edf6;color:#73558c}.step-kind-icon{width:22px;height:22px;border-radius:5px}.step-kind-icon .icon{width:13px}.step-kind-icon.kind-act{background:#eaf1f8;color:#315e8a}.step-kind-icon.kind-capture{background:var(--blocked-soft);color:var(--blocked)}.step-kind-icon.kind-wait{background:var(--pending-soft);color:var(--pending)}.step-kind-icon.kind-observe{background:#f2edf6;color:#73558c}.sequence-child-row:before{top:50%}.sequence-group-head.no-children{grid-template-columns:1fr}.sequence-empty-steps{margin:0;padding:10px;border-top:1px solid var(--line);color:var(--muted);font-size:9px}.sequence-scene-refs{display:grid;grid-template-columns:1fr 1fr;margin:0 0 12px;border:1px solid var(--line);background:var(--surface-2)}.sequence-scene-refs div{min-width:0;padding:8px 10px}.sequence-scene-refs div+div{border-left:1px solid var(--line)}.sequence-scene-refs dt{color:var(--muted);font-size:8px}.sequence-scene-refs dd{margin:2px 0 0;font:9px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}@media(max-width:620px){.sequence-scene-refs{grid-template-columns:1fr}.sequence-scene-refs div+div{border-top:1px solid var(--line);border-left:0}}</style><script>
 const screenshots=${json};
 const tabs=[...document.querySelectorAll('[data-report-tab]')];const panels=[...document.querySelectorAll('[data-panel-view]')];
 function selectTab(name){tabs.forEach(tab=>{const active=tab.dataset.reportTab===name;tab.classList.toggle('active',active);tab.setAttribute('aria-selected',String(active))});panels.forEach(panel=>panel.hidden=panel.dataset.panelView!==name);requestAnimationFrame(()=>renderMermaidPanel(name));}
@@ -438,6 +505,10 @@ function supplementaryStyles() {
 
 function sourcePanelStyles() {
   return `.document-panel{display:block}.document-panel .case-document{width:min(980px,100%);margin:0 auto;padding:8px 20px 32px;border:0}@media(max-width:620px){.document-panel .case-document{padding:4px 2px 24px}}`;
+}
+
+function capabilityStyles() {
+  return `.step-kind-icon.kind-capability,.operation-metric-icon[data-operation-icon="CAPABILITY"]{background:#e9f2ee;color:#28634b}.capability-call-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:0 0 14px;border:1px solid var(--line);background:var(--surface-2)}.capability-call-meta>div{min-width:0;padding:9px 10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.capability-call-meta>div:nth-child(3n){border-right:0}.capability-call-meta>div:nth-last-child(-n+3){border-bottom:0}.capability-call-meta dt{color:var(--muted);font-size:8px}.capability-call-meta dd{margin:2px 0 0;font:9px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.capability-section{margin:0 0 14px}.capability-section>header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}.capability-section>header b{font-size:11px}.capability-section>header span{color:var(--muted);font-size:8px;text-align:right}.capability-code{max-height:320px;margin:0;padding:11px 12px;border:1px solid #31404b;border-radius:4px;background:#18232d;color:#dbe5eb;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:9px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}.capability-result-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.capability-result-grid>div{min-width:0;padding:8px 10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.capability-result-grid>div:nth-child(2n){border-right:0}.capability-result-grid dt{color:var(--muted);font-size:8px;overflow-wrap:anywhere}.capability-result-grid dd{margin:2px 0 0;font:10px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.capability-diagnostic{padding:10px;border-left:3px solid var(--fail);background:var(--fail-soft)}.capability-evidence-note{margin:0 0 14px;padding:8px 10px;border-left:3px solid var(--accent);background:var(--accent-soft);color:var(--text-2);font-size:9px}.capability-full-output{margin:0;border-top:1px solid var(--line)}.capability-full-output summary{padding:9px 0;color:var(--accent);cursor:pointer;font-size:10px;font-weight:750}.capability-full-output .capability-code{margin-bottom:4px}@media(max-width:620px){.capability-call-meta,.capability-result-grid{grid-template-columns:1fr}.capability-call-meta>div,.capability-call-meta>div:nth-child(3n),.capability-result-grid>div,.capability-result-grid>div:nth-child(2n){border-right:0;border-bottom:1px solid var(--line)}.capability-call-meta>div:last-child,.capability-result-grid>div:last-child{border-bottom:0}.capability-section>header{align-items:flex-start;flex-direction:column}.capability-section>header span{text-align:left}}`;
 }
 
 function checkpointAndMermaidStyles() {

@@ -96,6 +96,36 @@ const capabilityReport = {
     summary: '学员配置已更新',
   }],
 };
+const capabilityInvocationDir = path.join(fixture.execDir, 'capabilities', 'invocations');
+fs.mkdirSync(capabilityInvocationDir, { recursive: true });
+fs.writeFileSync(path.join(capabilityInvocationDir, 'capability-invocation-0001.json'), `${JSON.stringify({
+  schemaVersion: 1,
+  type: 'capabilityInvocation',
+  operationId: 'capability-invocation-0001',
+  capabilityName: 'bcm-cs.student.update',
+  purpose: '准备学员数据',
+  input: {
+    args: ['live', 'instant', 'create', '--student-phone', '[REDACTED]'],
+    studentId: '42',
+    token: '[REDACTED]',
+  },
+  startedAt: '2026-10-09T10:00:00.000Z',
+  endedAt: '2026-10-09T10:00:01.250Z',
+  elapsedMs: 1250,
+  status: 'SUCCEEDED',
+  summary: '学员配置已更新',
+  output: {
+    result: {
+      output: {
+        room_uuid: 'room-001',
+        room_name: 'MAVT 待开始直播',
+        state: 0,
+        student_count: 1,
+      },
+    },
+  },
+  diagnostic: null,
+}, null, 2)}\n`);
 const capabilityTrace = buildExecutionTrace(capabilityReport);
 assert.strictEqual(capabilityTrace.capabilityInvocations.length, 1);
 assert.deepStrictEqual(capabilityTrace.capabilityInvocations[0], {
@@ -113,13 +143,31 @@ assert.strictEqual(capabilityTrace.entries.some((entry) => entry.category === 'C
 const capabilityStep = capabilityTrace.narrative.steps.find((step) => step.operation === 'useCapability');
 assert.strictEqual(capabilityStep.capability.name, 'bcm-cs.student.update');
 assert.strictEqual(capabilityStep.capability.status, 'SUCCEEDED');
+assert.strictEqual(capabilityStep.capability.durationMs, 1250);
+assert.deepStrictEqual(capabilityStep.capability.input, {
+  args: ['live', 'instant', 'create', '--student-phone', '[REDACTED]'],
+  studentId: '42',
+  token: '[REDACTED]',
+});
+assert.deepStrictEqual(capabilityStep.capability.output.result.output, {
+  room_uuid: 'room-001',
+  room_name: 'MAVT 待开始直播',
+  state: 0,
+  student_count: 1,
+});
 assert.deepStrictEqual(capabilityStep.flowContext, { nodeRef: 'N1', selectedEdgeRef: 'L1' });
 assert.strictEqual(capabilityTrace.narrative.operationMetrics.capabilityCount, 1);
 assert.strictEqual(JSON.stringify(capabilityTrace).includes(capabilitySecret), false);
 const capabilityHtml = renderCurrentContextHtml(fixture.caseJson, capabilityReport);
-for (const text of ['bcm-cs.student.update', '准备学员数据', '学员配置已更新', 'CAPABILITY']) {
+for (const text of [
+  'bcm-cs.student.update', '准备学员数据', '学员配置已更新', 'CAPABILITY',
+  '调用输入', '结构化结果', '完整脱敏输出', 'room-001', 'MAVT 待开始直播', '1.3 秒',
+  '能力调用结果不替代后续 UI 验证',
+]) {
   assert.ok(capabilityHtml.includes(text), text);
 }
+assert.match(capabilityHtml, /data-capability-detail="capability-invocation-0001"/);
+assert.match(capabilityHtml, /data-capability-result-summary/);
 assert.strictEqual(capabilityHtml.includes(capabilitySecret), false);
 
 const initialFlowEvent = report.events.find((event) => event.type === 'caseFlowRevised');
