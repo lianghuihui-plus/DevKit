@@ -30,6 +30,8 @@ flowchart LR
   RF --> R["Runtime Core"]
   R --> D["Device Port / Adapter"]
   R --> K["Knowledge"]
+  R --> X["Capability Broker / Providers"]
+  X --> E["External Systems"]
   R --> S["Execution Store"]
   A -->|"结果摘要"| M
   B --> P["Completion / Report"]
@@ -52,9 +54,10 @@ Authoring Agent 使用适合来源格式的工具完整读取输入，自主形�
 
 ### 2.3 Case Agent
 
-Case Agent 从 Handoff 获得 execution 写入所有权、原始用例、环境摘要、当前 Scene、已有 Case Flow、Case Prompt 和预绑定 Runtime Client。正常业务执行只面对九个业务能力和一个统一资源读取能力：
+Case Agent 从 Handoff 获得 execution 写入所有权、原始用例、环境摘要、当前 Scene、已有 Case Flow、Case Prompt 和预绑定 Runtime Client。正常业务执行只面对十一个业务能力和一个统一资源读取能力：
 
 - `observe`、`inspect`、`plan`、`runSequence`、`recordResult`
+- `queryCapabilities`、`useCapability`
 - `act`、`knowledge`、`recover`、`finish`
 - `read`：按 Runtime 返回的 typed ref 读取完整资源
 
@@ -62,7 +65,7 @@ Case Agent 自己理解用例、制定和调整 Case Flow、调查现场、形�
 
 ### 2.4 确定性框架
 
-Coordinator 管理 run 与 Batch；Handoff 绑定 execution、dispatch 和写入者；Runtime 管理 Scene、Case Flow、动作、证据、结果与事务；Adapter 只负责平台事实和设备操作；Report 只读 execution 并生成派生产物。
+Coordinator 管理 run 与 Batch；Handoff 绑定 execution、dispatch 和写入者；Runtime 管理 Scene、Case Flow、动作、证据、结果与事务；Capability Broker 管理 execution 级能力目录和外部调用留痕；Provider 只实现自身探测、能力描述和调用；Adapter 只负责平台事实和设备操作；Report 只读 execution 并生成派生产物。
 
 ## 3. 通信与生命周期
 
@@ -73,6 +76,7 @@ sequenceDiagram
   participant A as Case Agent
   participant R as Case Runtime
   participant D as Adapter
+  participant X as Capability Provider
 
   M->>C: prepareRun / confirmRun / advanceRun
   C->>C: freeze environment + source
@@ -81,6 +85,14 @@ sequenceDiagram
   A->>R: observe
   R->>D: capture Scene
   A->>R: plan Case Flow
+  opt execution 有可用外部能力
+    A->>R: queryCapabilities
+    R->>X: probe / listCapabilities
+    R-->>A: frozen catalog + definition refs
+    A->>R: read definition / useCapability
+    R->>X: invoke validated input
+    R-->>A: invocation fact
+  end
   loop 执行、调查与调整
     A->>R: inspect / act / knowledge / recover / plan
     R->>D: observation or device action
@@ -117,7 +129,7 @@ Baseline 中的 CHECK 始终需要处置；最终 Working Flow 中仍活跃的�
 
 Scene 是设备现场事实，不是计划或结论。`observe` 显式采集 Scene，`act` 执行一个动作后自动采集新 Scene。内部 Scene 完整保存截图、布局、控件、动作能力、系统信号、滚动上下文和上一动作事实。
 
-Agent-facing Scene 提供紧凑摘要和关联资源引用；Case Agent 将返回的 `layoutRef` 或 `elementSetRef` 原样交给 `read(ref)` 读取完整结构，用 `inspect(mode="visual")` 登记实际看到的图片事实，用 `inspect(mode="action")` 登记动作落点事实。纯视觉内容、系统弹窗、Toast、遮罩、键盘、动画、长按过程及证据冲突不能仅依赖控件树判断。
+Agent-facing Scene 提供紧凑摘要和关联资源引用；Case Agent 将返回的 `layoutRef` 或 `elementSetRef` 原样交给 `read(ref)` 读取完整结构，用 `inspect(mode="visual")` 登记实际看到的图片事实，用 `inspect(mode="action")` 登记动作落点事实。`inspect` 的 Agent-facing `sceneRef` 和资源描述始终绑定被检查的 Scene，即使当前 Scene 已经变化，也不改指向当前现场。纯视觉内容、系统弹窗、Toast、遮罩、键盘、动画、长按过程及证据冲突不能仅依赖控件树判断。
 
 `runSequence` 顺序执行由当前 Scene 完整确定的动作、等待与可选采集步骤。Runtime 为动作自动保存截图并返回最终完整 Scene；步骤间需要视觉理解、业务判断或重新规划时，Case Agent 在边界前结束序列并使用 `act`。序列记录和技术状态不产生业务 CHECK 结论，Agent 读取证据后仍须通过 `recordResult` 记录结果。
 
@@ -125,9 +137,17 @@ Agent-facing Scene 提供紧凑摘要和关联资源引用；Case Agent 将返�
 
 ### 4.3 结果
 
-Case Agent 通过 `recordResult` 增量记录 CHECK status：`PASS / FAIL / INCONCLUSIVE / BLOCKED / NOT_APPLICABLE / WAIVED`。Runtime 维护追加式 ledger，并在检查点语义变化时使旧判断失效；它只校验证据引用、状态适用性和闭环，不代替 Agent 作业务判断。
+Case Agent 通过 `recordResult` 增量记录 CHECK status：`PASS / FAIL / INCONCLUSIVE / BLOCKED / NOT_APPLICABLE / WAIVED`。Runtime 在写入任何事件前验证整批结果的证据引用、视觉检查和搜索覆盖是否闭环；任一结果未闭环时整批拒绝，不留下部分或临时结果。Runtime 维护追加式 ledger，并在检查点语义变化时使旧判断失效；它只校验证据引用、状态适用性和闭环，不代替 Agent 作业务判断。
 
 正常 `finish` 只提交摘要和可选不确定项，Runtime 从 ledger 组装 checks，并按 `FAIL > BLOCKED > INCONCLUSIVE > PASS` 聚合 verdict；`NOT_APPLICABLE` 和 `WAIVED` 不参与降级。用例级 `NOT_RUN` 只通过独立 finish 模式形成且不包含 CHECK，用于必要执行条件无法在当前权限和能力内建立、没有安全继续路径并且尚未进入相应验证的情况。技术异常不得报告为产品 FAIL，结果未知的动作或破坏性准备不得自动重放。
+
+### 4.4 外部能力
+
+Case Agent 在 Baseline Flow 建立后、首次业务动作前调用 `queryCapabilities`。Capability Broker 通过注册 Provider 的 `probe` 和 `listCapabilities` 构建目录，校验定义后按 execution 冻结 `catalog.snapshot.json`；后续查询和 continuation 始终复用同一目录。目录返回紧凑索引和不透明 `capabilityRef`，完整输入 Schema 通过 `read(ref)` 获取；`useCapability` 解析当前 execution 发布的引用、再次校验动态输入，再调用对应 Provider。
+
+Provider 暴露的能力即视为 execution 已获授权。Broker 不理解模块业务参数，不保存外部旧值，不自动回滚、预锁、写后读取或重试。调用结果统一为 `SUCCEEDED / FAILED / UNKNOWN` 并形成不可变的脱敏记录；成功只证明调用时刻的外部状态事实，不自动成为 CHECK 通过证据，结果未知的调用不得自动重放。
+
+当前内置 Provider 只发布 `bcm-cs.cli`。它通过 `bcm-cs version` 探测固定可执行文件，并将经过 Schema 校验的 `args` 作为独立 argv 元素传入有界子进程；不允许 Agent 选择二进制、Shell、工作目录或进程环境，也不在 MAVT 内解释 BCM 业务命令。结构化或文本输出、失败诊断和敏感 argv 在持久化前统一限长并脱敏。
 
 ## 5. 执行隔离与资源所有权
 
@@ -170,6 +190,9 @@ layouts/
 logs/
 operations/
 knowledge/
+capabilities/
+├── catalog.snapshot.json
+└── invocations/
 telemetry/
 action-spatial-evidence/
 result.json
@@ -178,17 +201,19 @@ artifact-manifest.json
 completion.json
 ```
 
-运行期状态、锁和事务草稿不属于最终证据。Case Runtime 请求通过 stdin 或绑定 MCP 工具进入，不使用一次性请求文件。Completion 与 Artifact Manifest 绑定当前 execution 所需的快照、证据、结果和协议摘要。
+运行期状态、锁和事务草稿不属于最终证据。Case Runtime 请求通过 stdin 或绑定 MCP 工具进入，不使用一次性请求文件。Completion 与 Artifact Manifest 绑定当前 execution 所需的快照、证据、结果、实际生成的能力目录与调用记录，以及协议摘要。
 
 Execution 收口、平台资源释放、Batch 业务终态和报告发布是独立事实。报告失败不会把已完成 Batch 改回等待态；只有冻结目标的报告全部成功、没有报告错误且链接有效，发布状态才能成为 `PUBLISHED`。
 
-Narrative Projector 从当前 execution 事件生成步骤、Case Flow revision、分支与检查结果，Renderer 只消费 ViewModel，不回写 execution。
+Coordinator 的终态 `runSummary` 是某一报告发布状态下的不可变快照。发布状态未变化时复用当前引用；从待重试或降级状态恢复为新状态时发布新快照并原子更新终态指针，旧引用继续可读。
+
+Narrative Projector 从当前 execution 事件生成步骤、Case Flow revision、分支、外部能力调用与检查结果，Renderer 只消费 ViewModel，不回写 execution。报告明确区分 Agent 自由文本结论、Agent-facing 请求被拒绝和 Runtime 内部错误，不把三者混为同一类失败。
 
 报告主体是本地静态产物；用例流程图在对应页面首次展示时从固定版本 CDN 按需加载 Mermaid，并校验 Subresource Integrity。网络不可用或加载失败只影响流程图渲染，结构化流程和其他报告内容仍可使用。
 
 ## 8. 版本与兼容边界
 
-当前唯一支持的 Execution schema 为 14。Runtime、Batch、Reader 和 Report 都只处理 schema 14；旧工作空间目录和原始用例仍可创建 schema 14 的新 Run，历史 execution 保持原样并明确显示为不支持、需要重跑。
+当前唯一支持的 Execution schema 为 14。Runtime、Batch、Reader 和 Report 都只处理 schema 14；能力目录是独立可选子协议，使用 `schemaVersion: 1`，不改变 Execution schema。旧工作空间目录和原始用例仍可创建 schema 14 的新 Run，历史 execution 保持原样并明确显示为不支持、需要重跑。
 
 协议摘要按角色和模块分组。修改报告不改变 Runtime 摘要，修改单个平台 Adapter 不改变其他平台。schema 标识只属于独立持久化根或真实跨进程协议，内部模块不维护并行版本。
 
@@ -200,7 +225,7 @@ scripts/
 ├── coordinator-agent.js   # 执行协调 Agent 正常入口
 ├── batch/                 # 初始化、派发、提交、收尾与 reconcile
 ├── case/                  # 原始用例导入
-├── case-runtime/          # Case Facade、Case Flow、Runtime、事务与 Store
+├── case-runtime/          # Case Facade、Case Flow、Runtime、能力模块、事务与 Store
 ├── execution/contracts/   # Case 与 ValidationProfile 契约
 ├── lib/                   # 共享契约、证据、Reader 与运行控制
 ├── platform/              # Device Port 与三平台 Adapter
