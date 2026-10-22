@@ -23,7 +23,7 @@ function parse(argv) {
   if (!value || !path.isAbsolute(value)) throw bundleError('MAVT_ENTRY_INPUT_INVALID', 'provide an absolute workspace path');
   return { operation, workspace: path.resolve(value), run: values['--run'] };
 }
-function listRuns(workspace) {
+function listRuns(workspace, verifiedBundles = null) {
   const directory = path.join(workspace, 'runs');
   if (!fs.existsSync(directory)) return [];
   const result = [];
@@ -31,7 +31,7 @@ function listRuns(workspace) {
     if (entry.name.startsWith('.')) continue;
     try {
       if (!entry.isDirectory()) throw bundleError('MAVT_RUNTIME_BINDING_INVALID', 'Run path is not an ordinary directory');
-      const loaded = readRunBinding(workspace, entry.name);
+      const loaded = readRunBinding(workspace, entry.name, { verifiedBundles });
       result.push({ batchId: entry.name, phase: loaded.state.phase, legacy: !loaded.binding, ...(loaded.binding ? { bundleId: loaded.binding.bundleId } : {}) });
     } catch (error) { result.push({ batchId: entry.name, code: error.code || 'MAVT_RUNTIME_BINDING_INVALID', message: error.message }); }
   }
@@ -50,13 +50,18 @@ function execute(argv) {
   else assertWorkspace(options.workspace);
   const workspace = fs.realpathSync(options.workspace);
   if (options.operation === 'doctor') {
-    const runs = listRuns(workspace);
     const bundles = [];
+    const verifiedBundles = new Map();
     const root = path.join(workspace, '.mavt/runtime-bundles');
     if (fs.existsSync(root)) for (const id of fs.readdirSync(root).filter(name => !name.startsWith('.')).sort()) {
-      try { verifyBundle(path.join(root, id), id); bundles.push({ bundleId: id, status: 'VALID' }); }
+      try {
+        const bundleRoot = path.join(root, id);
+        verifiedBundles.set(id, { bundleRoot, manifest: verifyBundle(bundleRoot, id) });
+        bundles.push({ bundleId: id, status: 'VALID' });
+      }
       catch (error) { bundles.push({ bundleId: id, status: 'INVALID', code: error.code, message: error.message }); }
     }
+    const runs = listRuns(workspace, verifiedBundles);
     return { status: runs.some(run => run.code) || bundles.some(bundle => bundle.status === 'INVALID') ? 'FAILED' : 'SUCCEEDED', workspace, runs, bundles, staging: staging(workspace), reportPath: path.join(workspace, 'index.html') };
   }
   if (options.operation === 'resume') {

@@ -22,6 +22,9 @@ function gate(cli, mcp) {
   return { pass: mcp.p50Ms <= cli.p50Ms * GATES.warmP50Ratio && mcp.p95Ms <= cli.p95Ms * GATES.warmP95Ratio,
     p50LimitMs: cli.p50Ms * GATES.warmP50Ratio, p95LimitMs: cli.p95Ms * GATES.warmP95Ratio };
 }
+function acceptancePass(result) {
+  return result.warmPreviewPass && result.defaultCliPass && result.mcpDefaultSwitchApproved;
+}
 function run(script, args, options = {}) {
   const started = performance.now();
   const child = cp.spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', timeout: 60000, ...options });
@@ -304,7 +307,7 @@ async function main(argv) {
       mcpDefaultSwitchApproved: workloads.every(name => results[name].gates.versusOld.pass && results[name].gates.versusNew.pass) &&
         gate(summarize(independentCold.oldCli), summarize(independentCold.previewMcp)).pass &&
         gate(summarize(independentCold.newCli), summarize(independentCold.previewMcp)).pass };
-    output.pass = output.warmPreviewPass && output.defaultCliPass;
+    output.pass = acceptancePass(output);
     const serialized = JSON.stringify(output, null, 2) + '\n';
     if (outputPath) { fs.mkdirSync(path.dirname(outputPath), { recursive: true }); fs.writeFileSync(outputPath, serialized); }
     process.stdout.write(serialized);
@@ -312,4 +315,4 @@ async function main(argv) {
   } finally { client?.close(); fs.rmSync(root, { recursive: true, force: true }); }
 }
 if (require.main === module) main(process.argv.slice(2)).catch(error => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
-module.exports = { summarize, gate, GATES };
+module.exports = { summarize, gate, acceptancePass, GATES };

@@ -32,6 +32,16 @@ function snapshot(root) {
     return fs.statSync(file).isFile() ? [[relative, fs.readFileSync(file).toString('base64')]] : [];
   });
 }
+function countBundleReads(action) {
+  const read = fs.readFileSync;
+  let count = 0;
+  fs.readFileSync = function(filename, ...args) {
+    if (typeof filename === 'string' && filename.endsWith('/bundle.manifest.json')) count += 1;
+    return read.call(this, filename, ...args);
+  };
+  try { return { value: action(), count }; }
+  finally { fs.readFileSync = read; }
+}
 test('doctor is read-only and knowledge cannot initialize; workspace initializes before pinning', t => {
   const f = fixture(t);
   const before = snapshot(f.workspace);
@@ -49,6 +59,36 @@ test('doctor is read-only and knowledge cannot initialize; workspace initializes
   const stable = snapshot(f.workspace);
   assert.equal(f.cli('doctor', '--workspace', f.workspace).code, 0);
   assert.deepEqual(snapshot(f.workspace), stable);
+});
+
+test('doctor validates a shared Run bundle once per request and rejects later tampering', t => {
+  const f = fixture(t);
+  const opened = f.cli('workspace', '--cwd', f.workspace).data;
+  importDrafts(f.workspace, { cases: [{ sourceLocator: '/fixture/doctor.md#1', title: 'Doctor', sourceText: 'Check screen.' }] });
+  assert.equal(prepare(opened.runtimeRoot, f.workspace).code, 0);
+  const entry = require(path.join(f.pluginRoot, 'scripts/mavt-entry.js'));
+  const checked = countBundleReads(() => entry.execute(['doctor', '--workspace', f.workspace]));
+  assert.equal(checked.value.status, 'SUCCEEDED');
+  assert.equal(checked.count, 1, 'doctor must hash one shared bundle once within this request');
+  fs.appendFileSync(path.join(opened.runtimeRoot, 'scripts/case-runtime/runtime-core.js'), '\n// tampered after doctor\n');
+  assert.equal(entry.execute(['doctor', '--workspace', f.workspace]).status, 'FAILED');
+});
+
+test('Coordinator read rechecks after stdin without a third same-request telemetry hash', t => {
+  const f = fixture(t);
+  const opened = f.cli('workspace', '--cwd', f.workspace).data;
+  importDrafts(f.workspace, { cases: [{ sourceLocator: '/fixture/read.md#1', title: 'Read', sourceText: 'Check screen.' }] });
+  const prepared = prepare(opened.runtimeRoot, f.workspace);
+  assert.equal(prepared.code, 0);
+  const batchId = fs.readdirSync(path.join(f.workspace, 'runs')).find(name => !name.startsWith('.'));
+  const statePath = path.join(f.workspace, 'runs', batchId, 'coordinator-state.json');
+  const coordinator = require(path.join(opened.runtimeRoot, 'scripts/coordinator-agent.js'));
+  const input = JSON.stringify({ operation: 'read', input: { ref: prepared.data.data.ref } });
+  const checked = countBundleReads(() => coordinator.main(['--state', statePath], { stdin: input, returnOnly: true }));
+  assert.equal(checked.value.status, 'SUCCEEDED');
+  assert.equal(checked.count, 2, 'pre-stdin and post-stdin checks must remain, but telemetry can reuse the latter');
+  fs.appendFileSync(path.join(opened.runtimeRoot, 'scripts/case-runtime/runtime-core.js'), '\n// tampered after read\n');
+  assert.equal(coordinator.main(['--state', statePath], { stdin: input, returnOnly: true }).status, 'FAILED');
 });
 
 test('pinned Run resumes/cancels after A disappears and B installed; commands cannot switch code', t => {

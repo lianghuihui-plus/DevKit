@@ -32,7 +32,7 @@ function readRunBinding(workspace, batchId, options = {}) {
       || typeof binding.originPluginVersion !== 'string' || !binding.originPluginVersion) invalid('unsupported binding');
     plainPath(workspace, '.mavt/runtime-bundles', 'directory');
     const bundleRoot = path.join(workspace, '.mavt/runtime-bundles', binding.bundleId);
-    const verified = options.verifiedBundle;
+    const verified = options.verifiedBundle || options.verifiedBundles?.get(binding.bundleId);
     const manifest = verified?.bundleRoot === bundleRoot && isVerifiedManifest(verified.manifest, bundleRoot, binding.bundleId)
       ? verified.manifest : verifyBundle(bundleRoot, binding.bundleId);
     const resolved = bundleLocations(bundleRoot, manifest);

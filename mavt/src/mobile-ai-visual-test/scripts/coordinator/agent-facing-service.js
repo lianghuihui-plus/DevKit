@@ -854,6 +854,7 @@ function executeRunRequestCore(statePath, request, options = {}) {
     const response = successEnvelope({ operation: 'read', result: { outcome: 'READ', resourceRef: resource.data.ref, resourceType: resource.data.type },
       data: resource.data, resources: resource.resources });
     options.agentFacingMetrics.projectionMs += Math.max(0, Date.now() - projectionStartedMs);
+    options.verifiedReadState = initial;
     return response;
   }
   return withFileLock(pathsFor(initial.workspace, initial.batchId).lock, () => {
@@ -869,6 +870,11 @@ function executeRunRequestCore(statePath, request, options = {}) {
 function recordProtocolResponse(statePath, response, durationMs, options = {}) {
   try {
     const state = loadCoordinatorState(statePath);
+    recordProtocolResponseForState(state, response, durationMs, options);
+  } catch { protocolTelemetry.diagnostic(); }
+}
+function recordProtocolResponseForState(state, response, durationMs, options = {}) {
+  try {
     protocolTelemetry.recordAgentFacingEvent(path.join(path.dirname(state.statePath), 'telemetry', 'agent-facing.jsonl'),
       response, durationMs, { ...options, contract: PUBLIC_CONTRACT });
   } catch { protocolTelemetry.diagnostic(); }
@@ -877,7 +883,9 @@ function executeRunRequest(statePath, request, options = {}) {
   const startedMs = Date.now();
   const runOptions = { ...options, agentFacingMetrics: { projectionMs: 0 } };
   const response = executeRunRequestCore(statePath, request, runOptions);
-  recordProtocolResponse(statePath, response, Date.now() - startedMs, runOptions);
+  if (request.operation === 'read' && runOptions.verifiedReadState) {
+    recordProtocolResponseForState(runOptions.verifiedReadState, response, Date.now() - startedMs, runOptions);
+  } else recordProtocolResponse(statePath, response, Date.now() - startedMs, runOptions);
   return response;
 }
 function confirmRun(statePath, request, options = {}) { assertRequest(request, 'confirmRun'); return executeRunRequest(statePath, request, options); }

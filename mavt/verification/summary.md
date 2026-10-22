@@ -42,17 +42,19 @@
 
 ## 0.2.0 MCP 预览开发验证（未安装）
 
-- 普通构建保留固定 CLI 默认，排除 MCP 注册、入口及运行时模块；预览构建通过 `--mcp-preview` 才发布完整闭包。最终本地安装源位于 `dist/mavt-marketplace-0.2.0-final/` 和 `dist/mavt-mcp-preview-0.2.0-final/`，未安装；完整性校验中普通 bundle `93bda7c4200d44cb4b3015870eebc6663d681f1cf543a9cc3bef640bc49d205a` 为 307 个 manifest 文件，预览 bundle `af921e67b1915fb8daa575bcb2b9adcdaf2686aaa03a721849330668ddd5b8db` 为 316 个。
-- 最终 `npm test` 退出码 0：运行时自测 88 组、知识维护自测 6 组、插件测试 76/76、生成文档 51 份。独立 Codex app-server 无模型探针发现 30 个工具、doctor 成功、68 字节 PNG 图片与已发布资源完全一致；该探针没有安装插件，也没有设备/模型执行。
+- 普通构建保留固定 CLI 默认，排除 MCP 注册、入口及运行时模块；预览构建通过 `--mcp-preview` 才发布完整闭包。评审修复后的最终本地安装源位于 `dist/mavt-marketplace-0.2.0-review-fix1/` 和 `dist/mavt-mcp-preview-0.2.0-review-fix1/`，未安装；完整性校验中普通 bundle `f1518157ea02413e5d110b5c657e8bc6b921ab9ef91d03efa22e57a4c288e677` 为 307 个 manifest 文件，预览 bundle `e889bcc6c3f2b71540191fe24a33eccda1602299c8010b49a077532dad6d5634` 为 316 个。此前 `*-final/` 目录是修复前的历史产物，不用于此次评审。
+- 评审修复后 `npm test` 退出码 0：运行时自测 88 组、知识维护自测 6 组、插件测试 79/79、生成文档 51 份。独立 Codex app-server 无模型探针发现 30 个工具、doctor 成功、68 字节 PNG 图片与已发布资源完全一致；该探针没有安装插件，也没有设备/模型执行。
 - 原始比较保留在忽略文件 `verification/mcp-benchmark-default-preview-final-gated.json`；其 30 暖/12 独立冷门槛结果为 `warmPreviewPass=false`、`defaultCliPass=false`、`mcpDefaultSwitchApproved=false`，不得用后续较好的样本覆盖失败记录。
 - 缩小普通包后的完整复测保留在 `verification/mcp-benchmark-task3-packaging-30warm-12cold.json`；五类暖 MCP 调用均通过原 CLI 和普通 CLI 的 p50/p95 门槛，但普通 CLI `knowledgeList` p50 为 27.98 ms，对原 CLI 27.58 ms，导致 `defaultCliPass=false`。12 次独立冷 Loader 加首次 Case 读取 p50/p95：原 CLI 183/211 ms，普通 CLI 160/177 ms，预览 CLI 214/382 ms，预览 MCP 283/291 ms；`mcpDefaultSwitchApproved=false`，默认仍为 CLI。冷预览 CLI 的高 p95 是实测离群值，不隐去。
 - 只读知识 CLI 延迟加载事务模块后，同规格复测保留在 `verification/mcp-benchmark-task3-lazy-knowledge-30warm-12cold.json`；`knowledgeList` 普通 CLI 25.58/27.10 ms 优于原 CLI 26.17/28.17 ms，但普通 CLI doctor 75.46/79.78 ms 对原 CLI 74.40/76.68 ms、Run read p95 128.49 ms 对原 124.62 ms 边缘失守。五类暖 MCP 工作负载通过；独立冷 Case 原 CLI 177/194 ms、普通 CLI 155/163 ms、预览 CLI 203/214 ms、预览 MCP 269/282 ms，故 `defaultCliPass=false`、`mcpDefaultSwitchApproved=false`，基准退出码仍为 1。前三次完整原始测量均保留，不用其中有利样本冒充总门槛通过。
+- 评审修复对 doctor 的 Run 绑定与 bundle 清单、Coordinator read 的执行结果与遥测做同请求复用；测试观察整包清单读取分别从 2 次降为 1 次、3 次降为 2 次，同时保留 stdin 前后校验和下一次调用的篡改拒绝。新原始记录 `verification/mcp-benchmark-task3-review-fix1-30warm-12cold.json` 为同规格 30 暖/12 独立冷：普通 CLI doctor 52.55/55.42 ms 对原 74.32/78.12 ms，Run read 95.63/98.64 ms 对原 115.73/119.81 ms；五类普通 CLI 及暖 MCP p50/p95 门槛均通过，`defaultCliPass=true`、`warmPreviewPass=true`。但独立冷 Case 原 CLI 174/184 ms、普通 CLI 153/159 ms、预览 CLI 202/208 ms、预览 MCP 266/274 ms；`mcpDefaultSwitchApproved=false`，总 `pass=false`、退出码 1，默认 MCP 切换仍未获批准。基准总退出门槛现明确包含冷 MCP 对等，不再可能以暖通过掩盖冷失败。
 - 最新预览工具目录响应为 67,758 字节（定义 67,714 字节）；独立空闲 MCP 服务 RSS 53,888 KiB，一个活跃 worker 时服务加 worker 为 239,424 KiB，30 秒回收 worker 后为 87,280 KiB。普通 CLI 仍是每调用一个子进程，暖 MCP 工具调用没有逐操作 CLI 子进程；此数值不代表模型 token 成本。
 - 离线只读 Run 状态/报告与按需图片读取前后工作区字节未变；图片 68 字节源文件的 MCP 响应为 1,155 字节。真实 Provider `ACTION_OUTCOME_UNKNOWN` 通过 MCP、独立子 Agent 图片可见性、桌面会话重载及设备端到端行为仍待用户验收，不得由离线探针推定。
+- 普通包与预览包同为 `0.2.0`，但 bundle ID 和 MCP 注册不同；尚未执行两者之间的同版本安装/更新/缓存切换。`plugin/read` 的预览发现不能替代该验收，当前不宣称切换已成功。
 
-## 本次清理检查
+## 历史清理检查（0.1.1 基线）
 
-2026-10-22 删除 31 份项目内历史原始记录和旧目录中 9 份完全一致的副本，共 40 个文件，另保留本汇总。四个必要 JSON 均保留。
+以下记录属于 `0.1.1` 清理，不是上文 `0.2.0` 预览开发的构建或安装结论。2026-10-22 删除 31 份项目内历史原始记录和旧目录中 9 份完全一致的副本，共 40 个文件，另保留本汇总。四个必要 JSON 均保留。
 
 - 插件和项目边界测试 26 项通过，失败 0；生成文档 51 份检查通过。
 - 重新构建通过，发布清单内全部文件及 bundle manifest 与现有 `0.1.1` 产物逐字节一致；因此无需递增插件版本或更新安装。
