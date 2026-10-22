@@ -1,110 +1,25 @@
 'use strict';
-
 const assert = require('assert');
-const childProcess = require('child_process');
-const path = require('path');
-const {
-  PUBLIC_CONTRACT,
-  validateAgentFacingRequest,
-} = require('../case-runtime/agent-facing-contract');
-const { parseRequest } = require('../case-runtime/agent-facing-client');
-const {
-  createToolDefinitions,
-  handleMessage,
-  invokeTool,
-  requestForToolCall,
-  validateToolCall,
-} = require('../case-runtime/mcp-server');
+const { PUBLIC_CONTRACT } = require('../case-runtime/agent-facing-contract');
+const { definitions, validate } = require('../mcp/contract');
 
-const definitions = createToolDefinitions();
-assert.strictEqual(definitions.length, Object.keys(PUBLIC_CONTRACT.methods).length);
-assert.deepStrictEqual(definitions.map((item) => item.name), Object.keys(PUBLIC_CONTRACT.methods));
-
-function propertyPaths(schema, target, prefix = []) {
-  const paths = [];
-  for (const [name, child] of Object.entries(schema?.properties || {})) {
-    const pathParts = [...prefix, name];
-    if (name === target) paths.push(pathParts.join('.'));
-    paths.push(...propertyPaths(child, target, pathParts));
-  }
-  for (const branch of schema?.oneOf || []) paths.push(...propertyPaths(branch, target, prefix));
-  return paths;
-}
-
-const forbidden = ['executionId', 'dispatchSequence', 'dispatchLease', 'capabilityId', 'token', 'requestPath'];
-for (const definition of definitions) {
-  assert.strictEqual(definition.inputSchema.type, 'object', `${definition.name} must be an MCP object input schema`);
-  const encoded = JSON.stringify(definition.inputSchema);
-  for (const field of forbidden) assert.strictEqual(encoded.includes(field), false, `${definition.name} schema leaks ${field}`);
-  assert.deepStrictEqual(propertyPaths(definition.inputSchema, 'operation'),
-    definition.name === 'knowledge' ? ['context.operation'] : [],
-    `${definition.name} schema exposes operation outside the allowed knowledge query context`);
-  assert.deepStrictEqual(propertyPaths(definition.inputSchema, 'capability'), [],
-    `${definition.name} must not expose the obsolete capability selector`);
-  const method = PUBLIC_CONTRACT.methods[definition.name];
-  assert.deepStrictEqual(definition.inputSchema, method.inputSchema);
-  assert.strictEqual(definition.inputSchema, method.inputSchema, 'MCP must expose the authoritative schema directly');
-  assert.deepStrictEqual(requestForToolCall(definition.name, method.minimalExample.input), method.minimalExample);
-  const invalidArguments = { unexpected: true };
-  assert.deepStrictEqual(
-    validateToolCall(definition.name, invalidArguments),
-    validateAgentFacingRequest({ operation: definition.name, input: invalidArguments }),
-  );
-}
-
-const calls = [];
+const tools = definitions().filter(tool => tool.name.startsWith('mavt_case_') && tool.name !== 'mavt_case_image');
+assert.strictEqual(tools.length, Object.keys(PUBLIC_CONTRACT.methods).length);
+assert.deepStrictEqual(tools.map(tool => tool.name), Object.keys(PUBLIC_CONTRACT.methods).map(name => 'mavt_case_' + name));
 for (const method of Object.values(PUBLIC_CONTRACT.methods)) {
-  const shellRequest = parseRequest([], JSON.stringify(method.minimalExample));
-  const { operation, input: args } = method.minimalExample;
-  const mcpResponse = invokeTool({
-    execDir: '/bound/execution',
-    options: { marker: 'preserved' },
-    runFacade: (execDir, request, options) => {
-      calls.push({ execDir, request, options });
-      return { protocol: 'agent-facing', status: 'SUCCEEDED', operation: request.operation };
-    },
-  }, method.name, args);
-  assert.deepStrictEqual(calls.at(-1), {
-    execDir: '/bound/execution',
-    request: shellRequest,
-    options: { marker: 'preserved', hostTransport: 'mcp' },
-  });
-  assert.deepStrictEqual(mcpResponse, {
-    protocol: 'agent-facing', status: 'SUCCEEDED', operation,
-  });
+  const tool = tools.find(tool => tool.name === 'mavt_case_' + method.name);
+  assert.strictEqual(tool.inputSchema.properties.input, method.inputSchema,
+    'Case MCP exposes the authoritative method input schema without copying');
+  assert.deepStrictEqual(tool.inputSchema.required, ['contextRef', 'input']);
+  const args = { contextRef: 'mavt-context:loader-issued', input: method.minimalExample.input };
+  assert.doesNotThrow(() => validate(tool.name, args), tool.name);
+  assert.throws(() => validate(tool.name, { ...args, executionId: 'untrusted-execution' }),
+    error => error.code === 'MAVT_MCP_INPUT_INVALID');
+  assert.throws(() => validate(tool.name, { contextRef: args.contextRef, input: { unexpected: true } }),
+    error => error.code === 'MAVT_MCP_INPUT_INVALID');
+  assert.throws(() => validate(tool.name, { input: args.input }),
+    error => error.code === 'MAVT_MCP_INPUT_INVALID');
 }
-assert.strictEqual(calls.length, Object.keys(PUBLIC_CONTRACT.methods).length);
-assert.deepStrictEqual(requestForToolCall('observe', { capability: 'observe' }), { operation: 'observe', input: { capability: 'observe' } });
-assert.ok(validateToolCall('observe', { capability: 'observe' }).length);
-let receivedNull;
-handleMessage({ execDir: '/bound/execution', runFacade: (_dir, request) => { receivedNull = request; return { status: 'REJECTED' }; } },
-  { id: 3, method: 'tools/call', params: { name: 'observe', arguments: null } });
-assert.strictEqual(receivedNull.input, null, 'MCP must preserve invalid input for the shared validator');
-
-const initialized = handleMessage({}, { id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
-assert.deepStrictEqual(initialized.result.serverInfo, { name: 'mavt-case-runtime', version: 'current' });
-for (const status of ['SUCCEEDED', 'REJECTED', 'FAILED', 'UNKNOWN']) {
-  const value = handleMessage({ execDir: '/bound/execution', runFacade: () => ({ status }) },
-    { id: 2, method: 'tools/call', params: { name: 'observe', arguments: {} } });
-  assert.strictEqual(value.result.isError, status !== 'SUCCEEDED');
-}
-
-assert.throws(() => invokeTool({ execDir: '/bound/execution' }, 'missing', {}), (error) => error.code === 'MCP_METHOD_NOT_FOUND');
-
-const specialRequest = {
-  operation: 'observe',
-  input: { purpose: '引号\'、中文、$HOME、`date` 和换行\n保持原样' },
-};
-const parserPath = path.resolve(__dirname, '../case-runtime/agent-facing-client.js');
-const parserScript = `const { parseRequest } = require(${JSON.stringify(parserPath)}); process.stdout.write(JSON.stringify(parseRequest([], require('fs').readFileSync(0, 'utf8'))));`;
-const shellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
-const heredoc = [
-  `${shellQuote(process.execPath)} -e ${shellQuote(parserScript)} <<'MAVT_REQUEST'`,
-  JSON.stringify(specialRequest),
-  'MAVT_REQUEST',
-].join('\n');
-const heredocResult = childProcess.spawnSync('/bin/sh', ['-c', heredoc], { encoding: 'utf8' });
-assert.strictEqual(heredocResult.status, 0, heredocResult.stderr);
-assert.deepStrictEqual(JSON.parse(heredocResult.stdout), specialRequest);
-
-console.log('agent-facing transport parity passed');
+assert.throws(() => validate('mavt_case_missing', {}),
+  error => error.code === 'MAVT_MCP_TOOL_UNKNOWN');
+console.log('agent-facing MCP contract parity passed');

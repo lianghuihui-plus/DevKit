@@ -69,7 +69,7 @@ function main(argv = process.argv.slice(2)) {
     data: resource.data, resources: resource.resources,
   });
   const runtimeRoot = path.resolve(__dirname, '..');
-  const bundle = require('fs').existsSync(path.join(runtimeRoot, 'mcp-preview.json'))
+  const bundle = require('fs').existsSync(path.join(runtimeRoot, 'mcp-transport.json'))
     ? require('./lib/runtime-bundle').bundleForRuntime(runtimeRoot) : null;
   const service = bundle && require('./mcp/management-service');
   const caseContext = typeof service?.invokeCaseValidated === 'function'

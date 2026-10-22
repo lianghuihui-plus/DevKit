@@ -2,19 +2,19 @@
 
 本文件只定义宿主协作方式。Coordinator 决定何时委托、绑定哪个 execution；Case Agent 的业务原则来自原样 Loader 返回的固定 Brief。Case Agent 是内部角色，不重新加载 Authoring 或执行协调 Skill；Brief 中出现原 Skill 身份也不改变角色。
 
-会话能力核验以同一固定 bundle 的 `hosts/codex/harness-requirements.json` 为准，分委托前与子 Agent 执行 Loader 后两阶段。普通委托固定使用 CLI，委托前须实际证明独立上下文、真实创建/等待/取消句柄，以及子 Agent 本地图片查看能力；MCP 工具可见或服务器已连接都不改变传输，也不证明工作进程已热。缺少本地图片查看时停止正常视觉执行。静态 MCP 工具只供另行授权的预览验证，通过 Loader 返回的 execution/dispatch scoped `contextRef` 绑定；该引用不在委托前产生，也不得由 Coordinator 预交付或编造。引用仅提供路由与完整性边界，不代表调用者身份认证或操作系统隔离。
+会话能力核验以同一固定 bundle 的 `hosts/codex/harness-requirements.json` 为准，分委托前与子 Agent 执行 Loader 后两阶段。当前构建的新 Handoff 冻结 `brief.runtime.transport:"MCP"`，公开的 `caseDispatch.transport` 提供相同选择；委托前须证明独立上下文、真实创建/等待/取消句柄、子 Agent 所需 `mavt_case_*` 工具可用，以及 MCP 图片或本地图片查看能力。服务器已连接不证明子 Agent 工具可见或 worker 已热。调用绑定使用 Loader 返回的 execution/dispatch scoped `contextRef`；该引用不在委托前产生，也不得由 Coordinator 预交付或编造。引用仅提供路由与完整性边界，不代表调用者身份认证或操作系统隔离。
 
 ## 能力与上下文
 
-先检查本会话实际工具清单，确认能运行本地命令、以 stdin JSON 调用并等待同一进程、创建独立上下文 Agent、在子 Agent 中读取固定运行时/工作区，并能在子 Agent 中使用本地图片查看工具。使用真实工具名称、参数与返回的句柄，不假设所有 Codex 版本有相同 API，不指定未经支持或用户要求的模型。委托前不要求 execution `contextRef`；它只可能由子 Agent 执行 Loader 后取得。当前固定 Handoff 未携带 Case 传输选择，父 Agent 的 MCP 试用偏好不得变成对 Case 的隐含指令。另行验证 MCP Case 调用时，由验证方核对 Loader 成功响应中的 `role:"case"`、`scope:"execution"`、`contextRef`、`executionId`、`dispatchSequence` 与 `result` 身份字段，再以该原样引用读取本次 Brief；服务端仍须验证固定 bundle、当前 execution 与活跃 dispatch。
+先检查本会话实际工具清单，确认能原样执行并等待 Loader、本机读取固定运行时/工作区、创建独立上下文 Agent，且所需 MCP 工具与图片能力在子 Agent 中确实可用。使用真实工具名称、参数与返回的句柄，不假设所有 Codex 版本有相同 API，不指定未经支持或用户要求的模型。委托前不要求 execution `contextRef`；它只可能由子 Agent 执行 Loader 后取得。子 Agent 核对 Loader 成功响应中的 `role:"case"`、`scope:"execution"`、`contextRef`、`executionId`、`dispatchSequence` 与 `result` 身份字段，再以原样引用调用 `mavt_case_<method>({contextRef,input})`；方法名称大小写与 Brief 方法索引一致。服务端仍验证固定 bundle、当前 execution 与活跃 dispatch。
 
-例如实际提供 `collaboration.spawn_agent` 且支持 `fork_turns: "none"` 时，用该参数创建全新上下文。没有可验证的独立上下文、真实句柄能力或子 Agent 本地图片访问能力时，停止正常视觉执行并报告具体缺失能力；仍可进行已授权的 Authoring/知识维护。不能降级为协调 Agent 亲自执行 Case。职责隔离不是操作系统安全沙箱。
+例如实际提供 `collaboration.spawn_agent` 且支持 `fork_turns: "none"` 时，用该参数创建全新上下文。缺少独立上下文、真实句柄、子 Agent MCP 工具或可用图片查看能力时，停止正常视觉执行并报告具体缺失能力；仍可进行已授权的 Authoring/知识维护。不能降级为协调 Agent 亲自执行 Case，也不因 MCP 调用失败自动用 CLI 重放。旧 Handoff 未选择 MCP 时报告接口不兼容，由原版本处理，不迁移在途任务。职责隔离不是操作系统安全沙箱。
 
 ## 唯一委托与等待
 
 仅在 Facade 返回 `NEED_CASE_AGENT`、且确认没有同 execution 活跃写入 Agent 时创建。发送给新 Agent 的内容只有当前 `caseDispatch.delegationPrompt` 与原样 `loaderCommand`；不添加用例摘录、截图路径、知识、工作区业务判断或父会话历史。协调 Agent 不执行 Loader、不读取 Brief；Case Agent 原样运行 Loader，完整读取响应 `data.content` 中的 Brief，遵循冻结的 `casePrompt`，只处理绑定 execution。
 
-保存返回的真实 Agent 句柄并等待。若创建返回异步设置句柄，按实际工具协议等到可用身份后关联，不能编造已运行状态。Agent 的聊天完成或摘要不是 execution 完成证明；回到原 Coordinator 命令核验、commit、释放并发布，当前 Case commit 前不派发后续 Case。Facade 的 WAITING 不证明 Agent 活着，也不授权新建一个。
+保存返回的真实 Agent 句柄并等待。若创建返回异步设置句柄，按实际工具协议等到可用身份后关联，不能编造已运行状态。Agent 的聊天完成或摘要不是 execution 完成证明；回到同一固定 Run 的 `mavt_run_advance` 核验、commit、释放并发布，当前 Case commit 前不派发后续 Case。Facade 的 WAITING 不证明 Agent 活着，也不授权新建一个。
 
 ## 恢复与取消
 
@@ -24,6 +24,6 @@
 - 宿主已证明原 Agent 停止、execution 未终态：进入固定版本的技术维护文档。已有 `batch.js start --continuation-reason` 属于维护入口，先满足文档前提，由框架替换 dispatch sequence，再回到 Facade 获取固定委托；不能用普通 `advanceRun` 冒充自动接管，也不自行编造 Loader。
 - execution 已终态：由 Coordinator 核验与发布，不重新执行 Case。
 
-用户明确取消时，通过原 Run 命令提交 `cancelRun`；在实际宿主支持的范围内中断对应 Case Agent，并持续核验原 Coordinator 的持久化取消结果。仅操作当前批次拥有的句柄、进程和资源；未知归属或其他活动批次的资源不得终止。宿主中断不证明设备、锁、进程或报告已清理。
+用户明确取消时，使用原 Run 的 `contextRef` 调用 `mavt_run_cancel`；在实际宿主支持的范围内中断对应 Case Agent，并持续核验原 Coordinator 的持久化取消结果。仅操作当前批次拥有的句柄、进程和资源；未知归属或其他活动批次的资源不得终止。宿主中断不证明设备、锁、进程或报告已清理。
 
-恢复时使用 `resume` 返回并校验过的固定 `hostProfilePath`；不拿当前插件的新指引替换旧 Run 规则。无法证明旧写入者停止时，报告阻塞，或在用户要求停止时走取消流程。
+恢复时使用绑定入口返回并校验过的固定 `hostProfilePath`；不拿当前插件的新指引替换旧 Run 规则。无法证明旧写入者停止时，报告阻塞，或在用户要求停止时走取消流程。

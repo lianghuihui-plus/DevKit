@@ -198,6 +198,15 @@ function createAgentHandoff(options) {
     });
     return existing.handoff;
   }
+  // Freeze the transport with the same authority as the Case prompt and Brief.
+  // Source-only and historical runtimes without this distribution marker keep CLI.
+  if (fs.existsSync(path.resolve(__dirname, '../../mcp-transport.json'))) {
+    const { command, invocation, ...runtime } = input.brief.runtime || {};
+    input.brief = { ...input.brief, runtime: { ...runtime, transport: 'MCP', invocation: {
+      transport: 'MCP', toolPrefix: 'mavt_case_', contextRefSource: 'Loader.contextRef',
+      requestFormat: '{"contextRef":"<Loader.contextRef>","input":{...}}', imageTool: 'mavt_case_image',
+    } } };
+  }
   const payload = {
     schemaVersion: HANDOFF_SCHEMA_VERSION,
     handoffId: '',

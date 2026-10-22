@@ -40,14 +40,14 @@ const PUBLIC_ERRORS = Object.freeze({
   COORDINATOR_STATE_INVALID: error('input-state', false, 'Coordinator 绑定状态无效。', '保留诊断，重新创建 run。'),
   COORDINATOR_TERMINAL: error('input-state', false, 'Coordinator 已终止，不能再确认。', '使用 read 或 advanceRun 读取终态。'),
   DECISION_NOT_ALLOWED: error('input-state', true, '决策不适用于当前阶段。', '按当前 runDecision 选择确认分支。'),
-  ENVIRONMENT_NOT_READY: error('environment', true, '设备环境尚未就绪。', '恢复环境后通过原 command 提交 advanceRun。'),
+  ENVIRONMENT_NOT_READY: error('environment', true, '设备环境尚未就绪。', '恢复环境后通过同一固定 Run 绑定提交 advanceRun。'),
   IOS_SIGNING_REQUIRED: error('environment', true, 'iOS 真机缺少签名字段。', '补齐 requiredBindingFields 后提交 CONFIRM_BINDING。'),
-  INPUT_CAPABILITY_NOT_READY: error('environment', true, '设备输入能力准备未完成。', '恢复环境后通过原 command 提交 advanceRun。'),
+  INPUT_CAPABILITY_NOT_READY: error('environment', true, '设备输入能力准备未完成。', '恢复环境后通过同一固定 Run 绑定提交 advanceRun。'),
   PLATFORM_UNAVAILABLE: error('environment', true, '平台或设备不可用。', '根据诊断核对连接和工具。'),
   BATCH_BLOCKED: error('batch', false, '批次已阻塞。', '读取诊断并保留终态。'),
   COORDINATOR_TECHNICAL: error('batch', false, 'Coordinator 技术异常。', '读取诊断并恢复外部条件。'),
   RESOURCE_UNKNOWN: error('resources', false, '资源引用未发布。', '使用同一 Facade 已返回的完整 ref。'),
-  RESOURCE_SCOPE_MISMATCH: error('resources', false, '资源不属于当前 run。', '使用返回该 ref 的绑定 command。'),
+  RESOURCE_SCOPE_MISMATCH: error('resources', false, '资源不属于当前 run。', '使用返回该 ref 的 Run 绑定；MCP 调用须原样复用对应 contextRef。'),
   RESOURCE_INTEGRITY_INVALID: error('resources', false, '资源权威产物完整性校验失败。', '保留原始文件与引用，排查数据损坏。'),
 });
 const base = ['outcome', 'phase', 'command'];
@@ -101,8 +101,8 @@ const PUBLIC_METHODS = Object.freeze(Object.fromEntries(COORDINATOR_CAPABILITIES
   ] : [])].map((input) => ({ operation: name, input })),
 })])));
 const TRANSPORTS = Object.freeze({
-  prepareCommand: { summary: '绑定 workspace 的启动命令。', input: 'stdin 提交一次 {operation,input}；prepareRun.input 只包含 caseNos。', rule: '原样执行 Workspace 提供的 command。', success: 'SUCCEEDED', errors: ['COORDINATOR_INPUT_INVALID', 'COORDINATOR_TECHNICAL'] },
-  coordinatorCommand: { summary: '绑定 run 的单一命令。', input: 'stdin 提交 confirmRun、advanceRun、cancelRun 或 read 请求。', rule: '所有后续操作原样复用 result.command。', success: 'SUCCEEDED', errors: ['COORDINATOR_INPUT_INVALID', 'COORDINATOR_STATE_INVALID', 'COORDINATOR_TECHNICAL'] },
+  prepareCommand: { summary: 'MCP mavt_run_prepare。', input: '提交 {contextRef,input}；input 只包含 caseNos。', rule: '使用 workspace 绑定引用，成功后保留返回的 Run 引用。', success: 'SUCCEEDED', errors: ['COORDINATOR_INPUT_INVALID', 'COORDINATOR_TECHNICAL'] },
+  coordinatorCommand: { summary: '绑定 Run 的 MCP 工具。', input: 'confirmRun、advanceRun、cancelRun、read 分别调用 mavt_run_confirm/advance/cancel/read。', rule: '提交 {contextRef,input}，原样复用该 Run 的 contextRef。', success: 'SUCCEEDED', errors: ['COORDINATOR_INPUT_INVALID', 'COORDINATOR_STATE_INVALID', 'COORDINATOR_TECHNICAL'] },
 });
 const PUBLIC_CONTRACT = Object.freeze({ interfaceKind: AGENT_FACING_INTERFACE_KIND, protocol: AGENT_FACING_PROTOCOL,
   statuses: AGENT_FACING_STATUSES, resourceDescriptorSchema: RESOURCE_DESCRIPTOR_SCHEMA,

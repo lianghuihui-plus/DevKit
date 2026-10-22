@@ -62,7 +62,8 @@ function publishSnapshot(state, type, content, resources = []) {
   return readResource(state, ref);
 }
 function dispatchContent(handoff, source, delegationPrompt, caseNo) {
-  return { caseNo, handoffId: source.handoffId, loaderCommand: handoff.loaderCommand, delegationPrompt };
+  return { caseNo, handoffId: source.handoffId, loaderCommand: handoff.loaderCommand, delegationPrompt,
+    transport: source.brief?.runtime?.transport || 'CLI' };
 }
 function publishDispatch(state, handoff, delegationPrompt, caseNo) {
   try {

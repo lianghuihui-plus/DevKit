@@ -8,29 +8,15 @@ Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handof
 
 启动时读取 `references/coordinator.md` 的方法短索引。只有紧凑签名不足以构造当前调用时才读取对应方法页；收到错误时只读取 `documentationRef` 指向的错误章节，不预读完整错误目录。
 
-普通执行协调 Agent 和 Case Agent 不读取 `references/commands.md`。只有 Authoring、维护或技术排障确实需要直接调用正式 CLI 时，才从该索引进入当前一个功能模块；不要预读其他模块。
+普通执行协调 Agent 和 Case Agent 不读取 `references/commands.md`。只有维护或技术排障确实需要直接调用底层脚本时，才从该索引进入当前一个功能模块；不要预读其他模块。
 
 ## 正常执行入口
 
-入口已返回 Coordinator 绑定时直接使用该绑定；恢复已有 Run 时复用原 Run 命令，不重新调用 Workspace 或 `prepareRun`。只有独立源码使用、尚无绑定的新任务才执行：
+入口已返回 Coordinator 绑定时直接使用原样 `contextRef`；恢复已有 Run 时通过 `mavt_workspace_open({workspace,role:"coordinator",batchId})` 获取原固定 Run 绑定，不重新 prepare 或用当前安装版本接管旧 Run。
 
-```bash
-node <runtime-root>/scripts/workspace.js --cwd <workspace>
-```
+新任务在 READY 工作区调用 `mavt_workspace_open({workspace,role:"coordinator"})`；仅用户明确选择空工作区初始化时调用 `mavt_workspace_init`。使用 workspace 引用调用 `mavt_run_prepare({contextRef,input:{caseNos:[...]}})`；成功后保留返回的 Run 引用，后续调用 `mavt_run_confirm/advance/cancel/read({contextRef,input})`。`confirmRun` 的业务字段取自当前 `data.content.runDecision` 和用户选择。只查询状态或报告时调用 `mavt_run_status/report`，不推进执行。
 
-脚本入口属于本次绑定的运行时目录，`--cwd` 指向测试工作区；不要在测试工作区中解析相对的 `scripts/`。响应提供工作区事实和紧凑的 `coordinatorFacade { interfaceKind, protocol, command, documentation, documentationRoot }` 绑定。执行协调 Agent 使用 `prepareRun`、`confirmRun`、`advanceRun`、`cancelRun` 和统一资源读取 `read`。
-
-相对 `documentation`、`documentationRef` 和 `operationDocumentationRef` 均相对于绑定的绝对 `documentationRoot` 解析；不得使用当前新安装版本的文档解释旧 Run。文档路径不传给资源 `read`。
-
-启动时读取一次 `references/coordinator.md`。仅创建新 Run 时，原样执行已绑定 workspace 的 `coordinatorFacade.command`，通过 stdin 提交请求：
-
-```bash
-node <runtime-root>/scripts/coordinator-agent.js --workspace <workspace> <<'MAVT_REQUEST'
-{"operation":"prepareRun","input":{"caseNos":["014","015"]}}
-MAVT_REQUEST
-```
-
-首次响应的 `result.command` 已绑定当前 run，后续所有操作原样复用这一个命令，通过 stdin 提交 `{operation,input}`。`confirmRun` 的业务字段取自当前 `data.content` 中的 `runDecision` 和用户选择。主复杂数据完整位于 `data`，关联数据通过 `resources` 的类型化引用按需 `read`；不拼接引用。
+相对文档路径均按本次绑定的绝对 `documentationRoot` 解析；旧 Run 使用原固定副本的文档。主复杂数据在 `data`，关联数据通过 `resources` 发布并按需 `mavt_run_read`；不拼装 ref，不把文档路径传给资源读取。工具未连接或旧固定接口不支持 MCP 时报告阻塞，不在新插件中切换 CLI。
 
 ## 返回状态
 
@@ -44,11 +30,11 @@ MAVT_REQUEST
 
 错误按 `error.documentationRef` 处理，输入错误同时读取 `error.operationDocumentationRef`，诊断正文通过关联资源读取。`UNKNOWN` 禁止盲目重放可能已生效的操作。
 
-用户明确停止时，通过原命令提交 `cancelRun`，`input` 只含 `reason`；只有终态 `runSummary` 确认取消完成才结束等待。
+用户明确停止时，使用同一 Run 引用调用 `mavt_run_cancel`，`input` 只含 `reason`；只有终态 `runSummary` 确认取消完成才结束等待。
 
 ## 调用纪律
 
-- 固定命令不得增删参数；输入错误按 `error.issues` 和定向文档修正一次，同类错误再次出现时停止猜字段。
+- 固定 contextRef 原样复用；输入错误按 `error.issues` 和定向文档修正一次，同类错误再次出现时停止猜字段。
 - 执行协调 Agent 不调用 Batch、环境探测、ExecutionRequest、报告渲染或 Case Runtime 的内部 CLI 完成正常业务流程。
 - `advanceRun` 会恢复持久化的 `INITIALIZING_RUN`；初始化中断后不得重新确认或重复启动初始化。
 - 宿主命令返回仍在运行的会话句柄时，继续等待同一进程，不得重复执行 `advanceRun`。
@@ -95,5 +81,5 @@ Coordinator 响应只提供错误原因、诊断、当前资源事实和 `docume
 
 代码和文档绑定恢复不等于宿主 Agent 恢复。原 Case Agent 句柄仍活跃时继续等待；已领取 dispatch 且无法证明原 Agent 已停止时保留 WAITING，不因超时或聊天断开创建新写入者。dispatch 尚未领取且确认没有活跃 Agent 时，只交付已有 Loader。
 
-只有宿主已确认原 Agent 停止、execution 尚未终态时，才能进入技术恢复，按本次固定版本的 `references/commands/execution.md` 中 `scripts/batch.js start` 使用已有 `--continuation-reason` 维护入口，由框架替换 dispatch sequence，再委托不继承协调上下文的新 Case Agent。协调角色只使用返回的委托元数据，不读取 Brief。恢复后使用原命令返回 Facade；无法确认旧写入者停止时保持阻塞或按用户要求取消。
+只有宿主已确认原 Agent 停止、execution 尚未终态时，才能进入技术恢复，按本次固定版本的 `references/commands/execution.md` 中 `scripts/batch.js start` 使用已有 `--continuation-reason` 维护入口，由框架替换 dispatch sequence，再委托不继承协调上下文的新 Case Agent。协调角色只使用返回的委托元数据，不读取 Brief。恢复后使用原 Run 引用返回 Facade；无法确认旧写入者停止时保持阻塞或按用户要求取消。
 

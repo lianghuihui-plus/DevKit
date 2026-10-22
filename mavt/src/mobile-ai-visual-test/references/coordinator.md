@@ -6,12 +6,12 @@
 
 ## 请求与响应
 
-- stdin 一次提交 `{operation,input}`；签名内参数属于 `input`，空输入使用 `{}`。
+- MCP 调用提交 `{contextRef,input}`；签名内参数属于 `input`，空输入使用 `{}`。方法页的 `{operation,input}` 示例用于说明业务参数：工具名决定 operation，MCP 不传该字段；读取 `structuredContent` 的领域响应。
 - 响应为 `{protocol,status,operation,result,resources,data?,error?}`。状态：`SUCCEEDED`、`REJECTED`、`FAILED`、`UNKNOWN`；业务状态在 `result.outcome`。
 - `result` 只含简单事实；主复杂结果完整放入 `data`，关联复杂数据只在 `resources` 发布引用，按需 `read({ref})`。
 - ref 原样复制；不能从路径、ID 或文字拼装。输入错误同时读取 `error.documentationRef` 与 `error.operationDocumentationRef`；其他错误读取前者。
-- 绑定 workspace 的启动命令。stdin 提交一次 {operation,input}；prepareRun.input 只包含 caseNos。原样执行 Workspace 提供的 command。
-- 绑定 run 的单一命令。stdin 提交 confirmRun、advanceRun、cancelRun 或 read 请求。所有后续操作原样复用 result.command。
+- MCP mavt_run_prepare。提交 {contextRef,input}；input 只包含 caseNos。使用 workspace 绑定引用，成功后保留返回的 Run 引用。
+- 绑定 Run 的 MCP 工具。confirmRun、advanceRun、cancelRun、read 分别调用 mavt_run_confirm/advance/cancel/read。提交 {contextRef,input}，原样复用该 Run 的 contextRef。
 
 ## 方法
 

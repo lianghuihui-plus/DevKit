@@ -12,6 +12,6 @@ test('benchmark percentile uses observed samples and flags warm p95 regressions'
 
 test('benchmark acceptance fails when warm calls pass but cold MCP parity fails', () => {
   assert.equal(typeof benchmark.acceptancePass, 'function');
-  assert.equal(benchmark.acceptancePass({ warmPreviewPass: true, defaultCliPass: true, mcpDefaultSwitchApproved: false }), false);
-  assert.equal(benchmark.acceptancePass({ warmPreviewPass: true, defaultCliPass: true, mcpDefaultSwitchApproved: true }), true);
+  assert.equal(benchmark.acceptancePass({ warmMcpPass: true, cliComparisonPass: true, coldMcpParityPass: false }), false);
+  assert.equal(benchmark.acceptancePass({ warmMcpPass: true, cliComparisonPass: true, coldMcpParityPass: true }), true);
 });

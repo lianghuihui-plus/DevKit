@@ -1,13 +1,13 @@
 # MAVT 知识库管理工作流
 
-以下命令是固定 CLI 路径的示例；若入口 Skill 已根据用户明确要求选择 MCP 预览，本页的检查、预检、应用与校验顺序不变，改用该 Skill 所列对应的 `mavt_knowledge_*` 工具，并在同一事务内保持原样 `contextRef`、请求及 `planHash`。不要在一次 prepare/apply 事务中混用两种传输。
+通过入口 Skill 取得固定知识绑定，使用 `mavt_knowledge_*` MCP 工具，并在同一事务内保持原样 `contextRef`、请求及 `planHash`。
 
 ## 1. 确认工作空间
 
 必须取得目标 MAVT 工作空间路径，不得扫描或猜测其他目录。先运行：
 
-```bash
-node <skill-root>/scripts/knowledge-manager.js inspect --workspace <workspace>
+```javascript
+mavt_knowledge_inspect({contextRef})
 ```
 
 只有响应为 `status=VALID` 才能继续。该 Skill 不初始化或修复工作空间。
@@ -16,14 +16,14 @@ node <skill-root>/scripts/knowledge-manager.js inspect --workspace <workspace>
 
 列出条目：
 
-```bash
-node <skill-root>/scripts/knowledge-manager.js list --workspace <workspace>
+```javascript
+mavt_knowledge_list({contextRef})
 ```
 
 按 ID 读取可能重复、重叠或冲突的条目：
 
-```bash
-node <skill-root>/scripts/knowledge-manager.js show --workspace <workspace> --entry-id <entry-id>
+```javascript
+mavt_knowledge_show({contextRef,entryId})
 ```
 
 完整读取用户提供的所有来源。输入可以是文本、文档、表格、图片、缺陷记录或其他可读取材料，不能因为格式不同而跳过内容。
@@ -50,14 +50,14 @@ node <skill-root>/scripts/knowledge-manager.js show --workspace <workspace> --en
 
 先做无副作用预检：
 
-```bash
-node <skill-root>/scripts/knowledge-manager.js prepare --workspace <workspace> --request <request-json>
+```javascript
+mavt_knowledge_prepare({contextRef,request})
 ```
 
 修复全部阻塞错误。质量告警需要结合来源审查，但不会自动阻止操作。用户已经授权新增或修改时，预检成功后直接执行 `apply`，并使用原样 `planHash`：
 
-```bash
-node <skill-root>/scripts/knowledge-manager.js apply --workspace <workspace> --request <request-json> --plan-hash <plan-hash>
+```javascript
+mavt_knowledge_apply({contextRef,request,planHash})
 ```
 
 `KNOWLEDGE_PLAN_STALE` 表示知识、请求或草稿在 prepare 后发生变化；重新检查现状并重新 prepare，不能复用旧哈希。
@@ -66,8 +66,8 @@ node <skill-root>/scripts/knowledge-manager.js apply --workspace <workspace> --r
 
 只读全量校验可随时执行：
 
-```bash
-node <skill-root>/scripts/knowledge-manager.js validate --workspace <workspace>
+```javascript
+mavt_knowledge_validate({contextRef})
 ```
 
 `apply` 已自动执行提交后校验和失败恢复。最终报告：

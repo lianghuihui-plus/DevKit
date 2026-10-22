@@ -9,7 +9,7 @@
 
 **可重试：** 是
 
-**处理：** 恢复环境后通过原 command 提交 advanceRun。
+**处理：** 恢复环境后通过同一固定 Run 绑定提交 advanceRun。
 
 <a id="error-ios-signing-required"></a>
 ## IOS_SIGNING_REQUIRED
@@ -27,7 +27,7 @@ iOS 真机缺少签名字段。
 
 **可重试：** 是
 
-**处理：** 恢复环境后通过原 command 提交 advanceRun。
+**处理：** 恢复环境后通过同一固定 Run 绑定提交 advanceRun。
 
 <a id="error-platform-unavailable"></a>
 ## PLATFORM_UNAVAILABLE

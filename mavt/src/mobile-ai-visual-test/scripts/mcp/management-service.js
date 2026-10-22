@@ -49,7 +49,7 @@ function open(pluginRoot, args, initialize) {
   if (args.batchId) {
     if (args.role !== 'coordinator') throw bundleError('MAVT_MCP_CONTEXT_INVALID', 'Run opening requires coordinator role');
     const loaded = readRunBinding(args.workspace, args.batchId);
-    if (!loaded.binding) return { status: 'REJECTED', code: 'MAVT_LEGACY_RUN_REQUIRES_ORIGINAL_RUNTIME', message: 'Use the original CLI/Loader for this legacy Run', command: loaded.state.command };
+    if (!loaded.binding) return { status: 'REJECTED', code: 'MAVT_LEGACY_RUN_REQUIRES_ORIGINAL_RUNTIME', message: 'This legacy Run requires its original plugin version' };
     pinned = loaded;
   } else pinned = pinBundle(pluginRoot, args.workspace);
   return { status: 'SUCCEEDED', ...createContext({ workspace: args.workspace, bundleId: pinned.bundleId, role: args.role, scope: args.batchId ? 'run' : 'workspace', ...(args.batchId ? { batchId: args.batchId } : {}) }) };
@@ -147,14 +147,13 @@ function execute(pluginRoot, name, args) {
     ? load(context, 'scripts/mcp/management-service.js') : null;
   if (context.role === 'case') {
     if (typeof implementation?.invokeCaseValidated !== 'function') return { status: 'REJECTED', code: 'MAVT_MCP_LEGACY_INTERFACE',
-      message: 'This fixed bundle lacks Case MCP; continue with its original Case CLI/Loader',
-      command: context.runtime?.entry ? `'${context.runtime.entry.replace(/'/g, `'"'"'`)}' --dispatch-sequence ${context.dispatchSequence}` : undefined,
+      message: 'This fixed bundle lacks Case MCP; use its original plugin version',
       runtimeRoot: context.runtimeRoot, documentationRoot: context.documentationRoot, hostProfilePath: context.hostProfilePath };
     return implementation.invokeCaseValidated(context, name, args);
   }
   if (typeof implementation?.invokeValidated !== 'function') return { status: 'REJECTED', code: 'MAVT_MCP_LEGACY_INTERFACE',
-    message: 'This fixed bundle lacks the validated MCP interface; continue with its original CLI/Loader',
-    ...(context.state ? { command: context.state.command } : {}), runtimeRoot: context.runtimeRoot, knowledgeRoot: context.knowledgeRoot };
+    message: 'This fixed bundle lacks the validated MCP interface; use its original plugin version',
+    runtimeRoot: context.runtimeRoot, knowledgeRoot: context.knowledgeRoot };
   return implementation.invokeValidated(context, name, args);
 }
 function toolResult(value) {

@@ -13,8 +13,9 @@ mavt/
 │   └── mavt-knowledge-manager/     # 完整知识维护实现、契约、模板与回归
 ├── skills/                        # 三个 Codex Skill 包装
 ├── hosts/codex/                   # Codex Agent 委托适配
-├── scripts/mavt-entry.js           # 安装后启动、固定版本、恢复和诊断入口
-├── .mcp.json                       # 显式预览构建使用的本地 MCP 注册
+├── scripts/mavt-mcp.js             # 插件唯一正常调用入口
+├── scripts/mavt-entry.js           # 开发验证和技术维护脚本
+├── .mcp.json                      # 本地 MCP 服务注册
 ├── .codex-plugin/plugin.json
 ├── build-plugin.js
 ├── release-files.json
@@ -45,13 +46,7 @@ npm run build
 node build-plugin.js --output /absolute/path/mavt-marketplace
 ```
 
-普通 `0.2.0` 构建保留固定 CLI 为默认，发布包不包含 `.mcp.json`、MCP 入口及 MCP 运行时模块。需要单独试用 MCP 时，显式构建预览包：
-
-```sh
-node build-plugin.js --output /absolute/path/mavt-mcp-preview --mcp-preview
-```
-
-预览包的 `mcpServers` 指向插件相对路径 `./.mcp.json`，其中 Node 入口为 `./scripts/mavt-mcp.js`；复制或移动整个 marketplace 后仍可解析。两种构建不要覆盖现有非空输出目录。本开发任务只构建和离线验证，不自动安装或变更个人 Codex 配置。
+`0.2.1` 只提供一个 MCP 插件版本，默认构建包含完整工具闭包，无需预览开关。`mcpServers` 指向插件相对路径 `./.mcp.json`，Node 入口为 `./scripts/mavt-mcp.js`；复制或移动整个 marketplace 后仍可解析。本开发任务只构建和离线验证，不自动安装或变更个人 Codex 配置。
 
 `npm test` 依次执行 MAVT 运行时回归、知识管理回归、插件/项目边界回归和生成文档检查，不连接手机或模拟器。分开执行可使用 `npm run test:runtime`、`npm run test:knowledge`、`npm run test:plugin` 和 `npm run check:docs`。
 
@@ -80,7 +75,7 @@ git diff -- release-files.json
 node --test tests/build.test.js
 ```
 
-重新生成清单不校验删除的业务合理性；意外缺失应恢复源码。构建生成的 `bundle.manifest.json` 不纳入源码清单。
+重新生成清单不校验删除的业务合理性；意外缺失应恢复源码。构建生成的 `bundle.manifest.json` 和 `runtime/mobile-ai-visual-test/mcp-transport.json` 不纳入源码清单。
 
 ## Codex 安装与使用
 
@@ -92,7 +87,7 @@ codex plugin add mavt@mavt-local
 codex plugin list --marketplace mavt-local --json
 ```
 
-首阶段实际验证版本为 Codex CLI `0.163.0-alpha.10.2`。插件 `0.2.0` 保留三个入口：
+首阶段实际验证版本为 Codex CLI `0.163.0-alpha.10.2`。插件 `0.2.1` 保留三个入口：
 
 | 入口 | 中文显示名 | 职责 |
 | --- | --- | --- |
@@ -102,7 +97,7 @@ codex plugin list --marketplace mavt-local --json
 
 通常先编写用例，再执行测试，按需维护知识；已有用例可直接执行。三个入口的目录名与 frontmatter `name` 一致，中文显示信息放在各自的 `agents/openai.yaml`，自动发现保持默认启用。
 
-普通入口默认使用工作区固定 CLI。用户明确要求试用 MCP 且预览工具实际连接时，Authoring、知识维护和 Run 管理可使用 MCP；旧 Run 仍由其原固定实现处理。正常 Case 委托继续执行原样 Loader 和固定 CLI，由独立子 Agent 本地查看图片；当前 Handoff 没有 Case 传输选择字段，MCP 工具可见不构成切换信号。预览端点的离线验证不等于真实设备、模型或子 Agent 图片可见性验收。30 次暖调用全部 MCP 比较虽通过，12 次独立冷 Case 预览 MCP 仍明显慢于 CLI，因此不切换默认；测量和边界见[验证汇总](verification/summary.md)。
+三个入口及新 Case 执行均使用 MCP。Loader 仍须由独立 Case Agent 原样执行一次，返回其 execution/dispatch 专属 `contextRef`；Handoff 冻结 `runtime.transport:"MCP"`，Brief 不再交付 CLI 命令模板。截图按需通过 `mavt_case_image` 或子 Agent 已验证可见的本地图片查看器读取，实际看图后登记 inspection。worker 由每个 MCP 服务实例共享，最多 5 个，空闲 5 分钟回收。工具缺失或旧固定接口不支持 MCP 时报告阻塞，不在新流程中回退 CLI。冷启动、复用和内存的历史测量及边界见[验证汇总](verification/summary.md)；新版本的设备效果与整批耗时由用户验证。
 
 从 `0.1.0` 升级时，旧入口 `mavt:mavt-case-authoring`、`mavt:mobile-ai-visual-test`、`mavt:mavt-knowledge-manager` 分别替换为上表三个入口。更新安装源后重新运行 `codex plugin add mavt@mavt-local`，新开或重载会话后选择新入口；不保留重复的旧入口别名。已有 Run 仍通过原固定运行时恢复。
 

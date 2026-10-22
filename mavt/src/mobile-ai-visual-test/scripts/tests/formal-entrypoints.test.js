@@ -126,7 +126,7 @@ assert.deepStrictEqual([...contract.requiredResources].sort(), [
 ].sort());
 assert.deepStrictEqual(contract.allowedEntrypoints, [
   'scripts/case-runtime/agent-facing-client.js',
-  'scripts/case-runtime/mcp-server.js',
+  'scripts/mcp/case-service.js',
 ]);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/build-agent-contract.js'), false);
 assert.strictEqual(contract.allowedEntrypoints.includes('scripts/execute-next-work.js'), false);

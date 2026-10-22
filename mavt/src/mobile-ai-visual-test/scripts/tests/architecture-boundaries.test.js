@@ -37,7 +37,7 @@ assert.deepStrictEqual(fs.readdirSync(path.join(root, 'references'), { withFileT
 // Scope the public syntax scan to formal facades/docs; internal capabilityId remains valid.
 const formalSources = [
   'scripts/case-runtime/agent-facing-contract.js', 'scripts/case-runtime/agent-facing-client.js',
-  'scripts/case-runtime/agent-facing-translator.js', 'scripts/case-runtime/mcp-server.js',
+  'scripts/case-runtime/agent-facing-translator.js', 'scripts/mcp/case-service.js',
   'scripts/coordinator/agent-facing-contract.js', 'scripts/coordinator/agent-facing-service.js',
   'scripts/coordinator-agent.js', 'scripts/case-agent-bootstrap.js', 'SKILL.md',
   ...roleResources('case-executor'), ...roleResources('batch-coordinator'),
@@ -91,7 +91,7 @@ assert.deepStrictEqual(roleResources('case-executor').sort(), [
 ].sort());
 assert.deepStrictEqual(roleEntrypoints('case-executor'), [
   'scripts/case-runtime/agent-facing-client.js',
-  'scripts/case-runtime/mcp-server.js',
+  'scripts/mcp/case-service.js',
 ]);
 assert.deepStrictEqual(roleEntrypoints('batch-coordinator'), ['scripts/coordinator-agent.js']);
 assert.strictEqual(roleResources('batch-coordinator').includes('prompts/case-agent.md'), false);
@@ -186,7 +186,8 @@ for (const hidden of ['CLEAR_APP_DATA', 'REINSTALL_APP', 'artifactPath', 'appium
 }
 const promptRequests = [...casePrompt.matchAll(/```json\s*([\s\S]*?)```/g)].map((match) => JSON.parse(match[1]));
 assert.strictEqual(promptRequests.length, 0, 'Runtime request schemas belong in runtime.capabilities, not the prompt');
-assert.match(casePrompt, /stdin.*一次提交.*operation,input/);
+assert.match(casePrompt, /mavt_case_<method>\(\{contextRef,input\}\)/);
+assert.doesNotMatch(casePrompt, /shellTemplate|stdin|--dispatch-sequence/);
 for (const request of promptRequests) assert.doesNotThrow(() => validateRuntimeRequest(request));
 for (const request of promptRequests) if (request.decision) assert.doesNotThrow(() => validateDecision(request.decision));
 assert.doesNotThrow(() => validateDecision({ purpose: '检查结果', expectationRefs: ['E1'] }));

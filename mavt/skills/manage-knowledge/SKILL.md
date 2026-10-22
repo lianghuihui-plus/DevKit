@@ -11,17 +11,15 @@ description: 用户需要查看、校验、新增、修改或删除 MAVT 工作�
 
 ## 工作区与版本绑定
 
-默认使用固定 CLI：从本次实际加载的 `skills/manage-knowledge/SKILL.md` 所在目录向上两级取得 `<plugin-root>`，执行：
+默认使用 MCP，调用 `mavt_workspace_open({workspace,role:"knowledge"})`，无需另行请求试用。保留响应原样返回的 `knowledgeRoot`、`bundleId` 和 `contextRef`，不要猜路径或拼造引用；contextRef 只绑定路由与完整性，不认证调用者身份。所需工具未连接时停止并报告插件连接问题。
 
-```bash
-node '<plugin-root>/scripts/mavt-entry.js' knowledge --workspace '<workspace>'
-```
-
-只有用户明确要求试用 MCP、且预览产物的 `mavt_workspace_open` 和所需 `mavt_knowledge_*` 工具在本会话实际连接时，才调用 `mavt_workspace_open({workspace,role:"knowledge"})`。保留所选入口原样返回的 `knowledgeRoot`、`bundleId` 和（MCP 时）`contextRef`，不要猜路径或拼造引用；contextRef 只绑定路由与完整性，不认证调用者身份。两种入口均只接受已有 READY 工作区；失败时报告原因，不改用 `workspace` 或 `mavt_workspace_init` 隐式初始化。完整读取本次 `<knowledgeRoot>/references/workflow.md`，按所选传输调用固定 CLI `inspect` 或 `mavt_knowledge_inspect({contextRef})`，仅 `status=VALID` 才继续。新增/修改还需读取 `references/knowledge-contract.md`、`references/writing-guide.md` 并使用 `assets/knowledge-entry-template.md`；这些相对路径和文档中的 `<skill-root>` 均以本次 `knowledgeRoot` 为根。其他操作只读相关引用。
+只接受已有 READY 工作区；失败时报告原因，不改用 `mavt_workspace_init` 隐式初始化。固定旧实现返回 `MAVT_MCP_LEGACY_INTERFACE` 时报告接口不兼容，不接管旧绑定。完整读取本次 `<knowledgeRoot>/references/workflow.md`，调用 `mavt_knowledge_inspect({contextRef})`，仅 `status=VALID` 才继续。新增/修改还需读取 `references/knowledge-contract.md`、`references/writing-guide.md` 并使用 `assets/knowledge-entry-template.md`；这些相对路径和文档中的 `<skill-root>` 均以本次 `knowledgeRoot` 为根。其他操作只读相关引用。
 
 ## 操作流程
 
-默认固定 CLI 入口为 `node '<knowledgeRoot>/scripts/knowledge-manager.js' <operation> --workspace '<workspace>' [...]`；CLI 的 `--request` 接收 JSON **文件路径**，不是内联 JSON。显式 MCP 试用时，查看用 `mavt_knowledge_list/show({contextRef,...})`，校验用 `mavt_knowledge_validate({contextRef})`，新增、修改和删除用 `mavt_knowledge_prepare({contextRef,request})` / `mavt_knowledge_apply({contextRef,request,planHash})`。`request` 是对象，结构为 `{schemaVersion:1,reason,operations:[{type:"ADD",draftPath}|{type:"UPDATE",entryId,draftPath}|{type:"DELETE",entryId}]}`；同一事务复用原样请求与 prepare 返回的 `planHash`。一次维护任务的 prepare/apply 保持同一固定副本和传输；MCP 绑定的代码身份由运行时校验。跨会话丢失原绑定时，在当前选定版本重新检查并 `prepare`，不得自动应用旧计划。
+查看用 `mavt_knowledge_list/show({contextRef,...})`，校验用 `mavt_knowledge_validate({contextRef})`，新增、修改和删除用 `mavt_knowledge_prepare({contextRef,request})` / `mavt_knowledge_apply({contextRef,request,planHash})`。`request` 是对象，结构为 `{schemaVersion:1,reason,operations:[{type:"ADD",draftPath}|{type:"UPDATE",entryId,draftPath}|{type:"DELETE",entryId}]}`；同一事务复用原样请求与 prepare 返回的 `planHash`。一次维护任务的 prepare/apply 保持同一固定副本和传输；MCP 绑定的代码身份由运行时校验。跨会话丢失原绑定时，在当前选定版本重新检查并 `prepare`，不得自动应用旧计划。
+
+MCP 返回 UNKNOWN 或结果不明时，按固定事务文档只读核查目标条目和事务记录；未确认结果前不重放 apply。
 
 ## 约束
 

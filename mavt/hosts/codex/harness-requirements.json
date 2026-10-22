@@ -12,17 +12,15 @@
     {
       "id": "case_image_visibility",
       "stage": "PRE_DELEGATION",
-      "transportMode": "CLI_DEFAULT",
       "status": "SESSION_REQUIRED",
-      "evidenceFields": ["caseImageVisibility.localImageVisibleToChild"],
+      "anyEvidenceFields": ["caseImageVisibility.mcpImageVisibleToChild", "caseImageVisibility.localImageVisibleToChild"],
       "failurePolicy": "STOP_VISUAL_EXECUTION"
     },
     {
-      "id": "case_image_visibility",
+      "id": "case_tool_visibility",
       "stage": "PRE_DELEGATION",
-      "transportMode": "MCP_PREVIEW",
       "status": "SESSION_REQUIRED",
-      "anyEvidenceFields": ["caseImageVisibility.mcpImageVisibleToChild", "caseImageVisibility.localImageVisibleToChild"],
+      "evidenceFields": ["caseTools.availableToChild"],
       "failurePolicy": "STOP_VISUAL_EXECUTION"
     },
     {

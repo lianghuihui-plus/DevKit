@@ -29,8 +29,9 @@ for (const resource of linkedResources) {
 
 const workflow = read('references/workflow.md');
 for (const command of ['inspect', 'list', 'show', 'validate', 'prepare', 'apply']) {
-  assert.match(workflow, new RegExp(`knowledge-manager\\.js ${command}\\b`), `${command} command must be documented`);
+  assert.match(workflow, new RegExp(`mavt_knowledge_${command}\\(\\{contextRef`), `${command} MCP tool must document its scoped binding`);
 }
+assert.doesNotMatch(workflow, /knowledge-manager\.js|MCP 预览/);
 assert.match(workflow, /用户明确要求删除/);
 assert.match(workflow, /直接.*apply|apply.*直接/);
 

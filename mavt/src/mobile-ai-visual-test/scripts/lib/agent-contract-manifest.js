@@ -7,7 +7,7 @@ const path = require('path');
 const ROLE_ENTRYPOINTS = Object.freeze({
   'case-executor': Object.freeze([
     'scripts/case-runtime/agent-facing-client.js',
-    'scripts/case-runtime/mcp-server.js',
+    'scripts/mcp/case-service.js',
   ]),
   'batch-coordinator': Object.freeze([
     'scripts/coordinator-agent.js',
@@ -113,6 +113,7 @@ function roleEntrypoints(role) {
 
 function implementationGroups(skillRoot, platform) {
   const sharedRuntime = new Set(SHARED_IMPLEMENTATION_FILES);
+  for (const relative of walkFiles(skillRoot, 'scripts/mcp')) sharedRuntime.add(relative);
   const adapter = new Set(PLATFORM_ENTRYPOINTS);
   adapter.add('scripts/lib/action-result.js');
   for (const relative of walkFiles(skillRoot, `scripts/platform/adapters/${platform}`)) adapter.add(relative);

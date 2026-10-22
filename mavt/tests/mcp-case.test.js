@@ -12,8 +12,7 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 function fixture(t, options = {}) {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-mcp-case-')));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-  const mcpPreview = options.mcpPreview !== false;
-  const built = buildPlugin({ outputRoot: path.join(temp, 'build'), mcpPreview });
+  const built = buildPlugin({ outputRoot: path.join(temp, 'build') });
   if (options.barrier) {
     const filename = path.join(built.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/case-service.js');
     fs.appendFileSync(filename, `\nconst originalInvoke = module.exports.invoke;\nmodule.exports.invoke = function(context, name, args) {\n  if (name === 'mavt_case_act') {\n    require('node:fs').appendFileSync(${JSON.stringify(path.join(temp, 'entered'))}, context.executionId + '\\n');\n    while (!require('node:fs').existsSync(${JSON.stringify(path.join(temp, 'release'))})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);\n  }\n  return originalInvoke(context, name, args);\n};\n`);
@@ -27,7 +26,7 @@ function fixture(t, options = {}) {
   const entry = path.join(built.pluginRoot, 'scripts/mavt-mcp.js');
   const workspace = path.join(temp, 'workspace'); fs.mkdirSync(workspace);
   let server, call, coordinator, prepared;
-  if (mcpPreview) {
+  if (!options.cliSetup) {
     server = require(entry).createServer({ pluginRoot: built.pluginRoot });
     call = (name, args) => server.callTool(name, args).structuredContent;
     const author = call('mavt_workspace_init', { workspace, role: 'author' }).contextRef;
@@ -68,17 +67,23 @@ function fixture(t, options = {}) {
     assert.equal(loader.status, 0, loader.stderr);
     const loaded = JSON.parse(loader.stdout);
     assert.equal(loaded.status, 'SUCCEEDED');
-    if (mcpPreview) assert.ok(loaded.contextRef, 'Preview Loader returns a Case context only after claiming the handoff');
     return { execDir, handoff, loaded, contextRef: loaded.contextRef };
   }
   return { ...built, temp, workspace, entry, server, call, prepared, coordinator, runtimeRoot, resources, startCase };
 }
 
-test('ordinary CLI Loader claims the Case without creating an unused MCP context', t => {
-  const f = fixture(t, { mcpPreview: false });
+test('the single MCP build issues a scoped Loader context even when initialized through the compatibility CLI', t => {
+  const f = fixture(t, { cliSetup: true });
   const loaded = f.startCase('case-cli-default').loaded;
   assert.equal(loaded.status, 'SUCCEEDED');
-  assert.equal(Object.hasOwn(loaded, 'contextRef'), false);
+  assert.ok(loaded.contextRef);
+  assert.equal(loaded.role, 'case');
+  assert.equal(loaded.scope, 'execution');
+  assert.equal(loaded.dispatchSequence, loaded.result.dispatchSequence);
+  assert.equal(loaded.data.content.runtime.transport, 'MCP');
+  assert.equal(loaded.data.content.runtime.command, undefined);
+  assert.equal(loaded.data.content.runtime.invocation.shellTemplate, undefined);
+  assert.equal(loaded.data.content.runtime.invocation.toolPrefix, 'mavt_case_');
   assert.equal(loaded.result.executionId, 'case-cli-default');
 });
 
@@ -216,8 +221,8 @@ test('CLI Case request rejects a dispatch replaced while stdin is withheld', asy
       continuationReason: 'original Agent stopped',
     });
   });
-  assert.equal(result.status, 'REJECTED');
-  assert.equal(result.error.code, 'BINDING_INVALID');
+  assert.equal(result.status, 'REJECTED', JSON.stringify(result));
+  assert.equal(result.error.code, 'BINDING_INVALID', JSON.stringify(result));
 });
 
 test('a supplied manifest cannot bypass Run binding byte verification', t => {
@@ -449,7 +454,7 @@ test('stdio EOF drains accepted operations and releases worker processes', t => 
 
 test('new installation routes an old Case ref through its sealed A implementation', t => {
   const f = fixture(t), a = f.startCase('case-pinned-a');
-  const newer = buildPlugin({ outputRoot: path.join(f.temp, 'newer-b'), mcpPreview: true });
+  const newer = buildPlugin({ outputRoot: path.join(f.temp, 'newer-b') });
   const modulePath = path.join(newer.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/case-service.js');
   fs.appendFileSync(modulePath, "\nmodule.exports.invoke = () => ({ status: 'FAILED', code: 'B_IMPLEMENTATION_USED' });\n");
   const { createManifest } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');
@@ -463,7 +468,9 @@ test('new installation routes an old Case ref through its sealed A implementatio
 
 test('older fixed Loader without Case MCP capability keeps its original CLI handoff', t => {
   const f = fixture(t);
-  const older = buildPlugin({ outputRoot: path.join(f.temp, 'older-a'), mcpPreview: true });
+  const older = buildPlugin({ outputRoot: path.join(f.temp, 'older-a') });
+  // A predates the MCP-only distribution marker. Do not model it as a new MCP Handoff.
+  fs.unlinkSync(path.join(older.pluginRoot, 'runtime/mobile-ai-visual-test/mcp-transport.json'));
   const modulePath = path.join(older.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/management-service.js');
   fs.appendFileSync(modulePath, '\ndelete module.exports.invokeCaseValidated;\n');
   const { createManifest } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');

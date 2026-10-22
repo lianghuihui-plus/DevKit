@@ -18,7 +18,7 @@
 
 **可重试：** 否
 
-**处理：** 使用返回该 ref 的绑定 command。
+**处理：** 使用返回该 ref 的 Run 绑定；MCP 调用须原样复用对应 contextRef。
 
 <a id="error-resource-integrity-invalid"></a>
 ## RESOURCE_INTEGRITY_INVALID

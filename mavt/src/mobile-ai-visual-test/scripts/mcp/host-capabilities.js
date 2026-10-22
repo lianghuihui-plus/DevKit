@@ -20,18 +20,15 @@ function verifiedLoaderBinding(loader) {
     loader.result?.dispatchSequence === loader.dispatchSequence;
 }
 
-function assessHarness(evidence = {}, { stage = 'PRE_DELEGATION', transportMode = 'CLI_DEFAULT' } = {}) {
+function assessHarness(evidence = {}, { stage = 'PRE_DELEGATION' } = {}) {
   if (!['PRE_DELEGATION', 'POST_LOADER'].includes(stage)) throw new TypeError('Unknown Harness assessment stage');
-  if (!['CLI_DEFAULT', 'MCP_PREVIEW'].includes(transportMode)) throw new TypeError('Unknown Harness transport mode');
   const mcpImage = evidence.caseImageVisibility?.mcpImageVisibleToChild === true;
   const localImage = evidence.caseImageVisibility?.localImageVisibleToChild === true;
   const mcpBinding = verifiedLoaderBinding(evidence.loaderResponse);
-  const imageTransport = transportMode === 'MCP_PREVIEW' && mcpImage && (stage === 'PRE_DELEGATION' || mcpBinding)
-    ? 'MCP_IMAGE' : localImage ? 'LOCAL_IMAGE' : transportMode === 'MCP_PREVIEW' && mcpImage ? 'MCP_IMAGE' : null;
+  const imageTransport = mcpImage ? 'MCP_IMAGE' : localImage ? 'LOCAL_IMAGE' : null;
   const applicable = profile.requirements.filter(requirement =>
-    (!requirement.transportMode || requirement.transportMode === transportMode) &&
     (requirement.stage === 'PRE_DELEGATION' || stage === 'POST_LOADER' &&
-      (requirement.stage === 'POST_LOADER' || requirement.stage === 'POST_LOADER_MCP' && imageTransport === 'MCP_IMAGE')));
+      (requirement.stage === 'POST_LOADER' || requirement.stage === 'POST_LOADER_MCP')));
   const missing = applicable.filter(requirement => {
     if (requirement.id === 'loader_claim') return !verifiedLoaderClaim(evidence.loaderResponse);
     if (requirement.id === 'scoped_binding') return !mcpBinding;
@@ -43,7 +40,7 @@ function assessHarness(evidence = {}, { stage = 'PRE_DELEGATION', transportMode 
     .some(item => missing.includes(item.id));
   const canExecuteVisualCase = stage === 'POST_LOADER' && missing.length === 0;
   return { canDelegateVisualCase, canExecuteVisualCase,
-    canUseMcpCase: canExecuteVisualCase && imageTransport === 'MCP_IMAGE', imageTransport,
+    canUseMcpCase: canExecuteVisualCase && mcpBinding, imageTransport,
     bindingStrategy: profile.bindingStrategy,
     checks: applicable.map(requirement => ({ id: requirement.id,
       status: missing.includes(requirement.id) ? 'SESSION_REQUIRED' : 'OBSERVED' })),

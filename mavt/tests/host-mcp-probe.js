@@ -11,9 +11,7 @@ const { buildPlugin } = require('../build-plugin');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
 function fixture(root) {
-  const ordinary = buildPlugin({ outputRoot: path.join(root, 'ordinary') });
-  assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(path.join(ordinary.pluginRoot, '.codex-plugin/plugin.json'))), 'mcpServers'), false);
-  const built = buildPlugin({ outputRoot: path.join(root, 'built'), mcpPreview: true });
+  const built = buildPlugin({ outputRoot: path.join(root, 'built') });
   const entry = path.join(built.pluginRoot, 'scripts/mavt-mcp.js');
   const server = require(entry).createServer({ pluginRoot: built.pluginRoot });
   const call = (name, args) => server.callTool(name, args).structuredContent;

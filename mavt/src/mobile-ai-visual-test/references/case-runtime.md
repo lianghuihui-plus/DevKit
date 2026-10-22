@@ -6,12 +6,12 @@
 
 ## 请求与响应
 
-- stdin 一次提交 `{operation,input}`；签名内参数属于 `input`，空输入使用 `{}`。
+- MCP 调用提交 `{contextRef,input}`；签名内参数属于 `input`，空输入使用 `{}`。方法页的 `{operation,input}` 示例用于说明业务参数：工具名决定 operation，MCP 不传该字段；读取 `structuredContent` 的领域响应。
 - 响应为 `{protocol,status,operation,result,resources,data?,error?}`。状态：`SUCCEEDED`、`REJECTED`、`FAILED`、`UNKNOWN`；业务状态在 `result.outcome`。
 - `result` 只含简单事实；主复杂结果完整放入 `data`，关联复杂数据只在 `resources` 发布引用，按需 `read({ref})`。
 - ref 原样复制；不能从路径、ID 或文字拼装。输入错误同时读取 `error.documentationRef` 与 `error.operationDocumentationRef`；其他错误读取前者。
 - Case Agent 用于领取唯一 execution Handoff 的预绑定 Loader。不附加输入。必须原样执行，不修改哈希、sequence、claim token 或路径。
-- 当前 execution 的预绑定 Case Runtime Client。每轮通过 stdin 提交 {operation,input} 请求。必须原样使用命令绑定；业务字段只按当前方法页构造。
+- 当前 execution 的 MCP 工具 mavt_case_<method>。提交 {contextRef,input}，方法名称及大小写与索引一致。contextRef 原样取自子 Agent 本次 Loader；业务字段只按当前方法页构造。
 
 ## 方法
 

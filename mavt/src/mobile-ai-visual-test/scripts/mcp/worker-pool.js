@@ -5,9 +5,10 @@ const { toolResult } = require('./management-service');
 
 const READ_ONLY = /^mavt_(?:workspace_doctor|run_(?:status|report|read)|case_(?:read|image)|knowledge_(?:inspect|list|show|validate))$/;
 const CONTROL = /^mavt_run_cancel$/;
+const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 function result(status, code, message, extra = {}) { return toolResult({ status, code, message, ...extra }); }
 
-function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs = 30000, maxOperationMs = 1800000 } = {}) {
+function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, maxOperationMs = 1800000 } = {}) {
   if (!Number.isInteger(maxWorkers) || maxWorkers < 3 || maxWorkers > 16 ||
     !Number.isInteger(maxPending) || maxPending < 1 || maxPending > 1024 ||
     !Number.isInteger(idleTimeoutMs) || idleTimeoutMs < 0 ||
@@ -152,4 +153,4 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
   return { callTool, close, stats };
 }
 
-module.exports = { createPool };
+module.exports = { createPool, DEFAULT_IDLE_TIMEOUT_MS };

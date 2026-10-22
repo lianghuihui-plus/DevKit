@@ -131,11 +131,9 @@ test('release builds preserve runtime resources and executable bits with repeata
   const second = buildPlugin({ repoRoot: source, outputRoot: path.join(temp, '第二次 build') });
   assert.deepEqual(inventory(first.marketplaceRoot), inventory(second.marketplaceRoot));
   assert.equal(first.manifest.bundleId, second.manifest.bundleId);
-  assert.equal(first.manifest.pluginVersion, '0.2.0');
+  assert.equal(first.manifest.pluginVersion, '0.2.1');
   const files = inventory(first.pluginRoot).map((entry) => entry.path);
-  assert.deepEqual(files, [...FIXTURE_RELEASE_FILES.filter(relative =>
-    relative !== '.mcp.json' && relative !== 'scripts/mavt-mcp.js' &&
-    !relative.startsWith('runtime/mobile-ai-visual-test/scripts/mcp/')), 'bundle.manifest.json'].sort());
+  assert.deepEqual(files, [...FIXTURE_RELEASE_FILES, 'runtime/mobile-ai-visual-test/mcp-transport.json', 'bundle.manifest.json'].sort());
   const apk = path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test', helper, 'ArtemisAccessibilityHelper.apk');
   assert.deepEqual(fs.readFileSync(apk), inputs[mavtRoot + helper + 'ArtemisAccessibilityHelper.apk']);
   const executable = path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/lib/action-common.sh');
@@ -144,17 +142,15 @@ test('release builds preserve runtime resources and executable bits with repeata
   assert.equal(index.name, 'mavt-local');
   assert.equal(path.resolve(output, index.plugins[0].source.path), first.pluginRoot);
   const plugin = JSON.parse(fs.readFileSync(path.join(first.pluginRoot, '.codex-plugin/plugin.json')));
-  assert.equal(Object.hasOwn(plugin, 'mcpServers'), false, 'ordinary install must not auto-register the MCP catalog');
-  assert.equal(fs.existsSync(path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test/mcp-preview.json')), false);
-  assert.equal(fs.existsSync(path.join(first.pluginRoot, '.mcp.json')), false);
-  assert.equal(fs.existsSync(path.join(first.pluginRoot, 'scripts/mavt-mcp.js')), false);
-  assert.equal(fs.existsSync(path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp')), false);
+  assert.equal(plugin.mcpServers, './.mcp.json');
+  assert.equal(fs.existsSync(path.join(first.pluginRoot, 'scripts/mavt-mcp.js')), true);
+  assert.equal(fs.existsSync(path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp')), true);
 });
 
-test('explicit MCP preview registers the relocatable server and pins the preview marker', t => {
+test('the default build registers a relocatable MCP server and pins the Case transport', t => {
   const { source, temp } = fixture(t);
-  const output = path.join(temp, 'preview-output');
-  const built = buildPlugin({ repoRoot: source, outputRoot: output, mcpPreview: true });
+  const output = path.join(temp, 'mcp-output');
+  const built = buildPlugin({ repoRoot: source, outputRoot: output });
   const relocated = path.join(temp, 'relocated');
   fs.renameSync(output, relocated);
   const pluginRoot = path.join(relocated, 'plugins/mavt');
@@ -165,9 +161,9 @@ test('explicit MCP preview registers the relocatable server and pins the preview
   for (const relative of FIXTURE_RELEASE_FILES.filter(name => name.startsWith('runtime/mobile-ai-visual-test/scripts/mcp/'))) {
     assert.equal(fs.existsSync(path.join(pluginRoot, relative)), true, relative);
   }
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(pluginRoot, 'runtime/mobile-ai-visual-test/mcp-preview.json'))),
-    { schemaVersion: 1, mcpPreview: true });
-  assert.notEqual(built.manifest.bundleId, buildPlugin({ repoRoot: source, outputRoot: path.join(temp, 'ordinary') }).manifest.bundleId);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(pluginRoot, 'runtime/mobile-ai-visual-test/mcp-transport.json'))),
+    { schemaVersion: 1, transport: 'MCP' });
+  assert.equal(built.manifest.bundleId, buildPlugin({ repoRoot: source, outputRoot: path.join(temp, 'same-build') }).manifest.bundleId);
 });
 
 test('development builds can retain runnable regression files', (t) => {

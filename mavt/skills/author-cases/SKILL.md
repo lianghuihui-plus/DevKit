@@ -11,13 +11,9 @@ description: 用户明确要求从任意可读取材料编写、生成、导入�
 
 ## 工作区与版本绑定
 
-用户须提供或明确选定目标工作区，不扫描猜测其他目录。默认使用固定 CLI：从本次实际加载的 `skills/author-cases/SKILL.md` 所在目录向上两级取得 `<plugin-root>`，执行：
+用户须提供或明确选定目标工作区，不扫描猜测其他目录。默认使用 MCP，无需另行请求试用：已有 READY 工作区调用 `mavt_workspace_open({workspace,role:"author"})`，用户明确选定的空工作区调用 `mavt_workspace_init({workspace,role:"author"})`。只使用成功响应原样返回的 `runtimeRoot`、`documentationRoot`、`bundleId` 和 `contextRef`；不拼造引用或路径。MCP context 只绑定路由与完整性，不认证调用者身份。所需工具未连接时停止并报告插件连接问题，不将本次任务悄悄改成 CLI。
 
-```bash
-node '<plugin-root>/scripts/mavt-entry.js' workspace --cwd '<workspace>'
-```
-
-此入口允许初始化用户选定的空工作区；对已有 READY 工作区仍取得固定绑定。只有用户明确要求试用 MCP、且预览产物的 `mavt_workspace_open`、`mavt_workspace_init`、`mavt_cases_import` 在本会话实际连接时，才可改用 MCP：已有 READY 工作区调用 `mavt_workspace_open({workspace,role:"author"})`，明确选定的空工作区调用 `mavt_workspace_init({workspace,role:"author"})`。只使用所选入口成功响应原样返回的 `runtimeRoot`、`documentationRoot`、`bundleId` 和（MCP 时）`contextRef`；不拼造引用或路径。MCP context 只绑定路由与完整性，不认证调用者身份。MCP 不可用或返回 `MAVT_MCP_LEGACY_INTERFACE` 时使用固定 CLI，不用当前安装版本接管旧绑定。
+固定旧实现返回 `MAVT_MCP_LEGACY_INTERFACE` 时报告接口不兼容，不用当前版本接管旧绑定。MCP 调用返回 UNKNOWN 或结果不明时，按本次固定导入文档只读核对目标工作区落盘的用例、标题与来源定位；无法确认则报告结果不明并停止，不编造查询工具或重放导入。
 
 完整读取 `<documentationRoot>/references/case-authoring.md`，仅按本次导入需要读取 `<documentationRoot>/references/commands/authoring.md`。文档中的 `<skill-root>` 指返回的 `runtimeRoot`。脚本与文档均使用本次固定副本，不从工作区猜 `scripts/`，不回退安装缓存或开发源码。
 
@@ -27,13 +23,9 @@ node '<plugin-root>/scripts/mavt-entry.js' workspace --cwd '<workspace>'
 
 每条逻辑用例形成 draft：`sourceLocator` 是可追溯且重导入不变的来源位置，`title` 是可识别标题，`sourceText` 是该用例相关原始内容。可以整理排版，但不预生成 Case Flow，不通过运行 Flow 或操作设备来编写用例。
 
-形成 `{"cases":[...]}` request。默认将 request 写为 JSON 文件，再调用固定 CLI：
+形成 `{"cases":[...]}` request，调用 `mavt_cases_import({contextRef,request})`；`contextRef` 使用本次 Author 入口原样返回值，核对 `structuredContent.cases`。
 
-```bash
-node '<runtimeRoot>/scripts/import-cases.js' --workspace '<workspace>' --request-file '<request-json>'
-```
-
-显式 MCP 试用时调用 `mavt_cases_import({contextRef,request})`，`contextRef` 使用本次 Author 入口原样返回值，核对 `structuredContent.cases`。导入实现负责结构校验、编号、稳定标识、幂等更新和报告刷新，不替 Agent 判断业务边界。核对返回数量、标题与来源定位；不直接写正式用例目录或派生报告绕过导入。
+导入实现负责结构校验、编号、稳定标识、幂等更新和报告刷新，不替 Agent 判断业务边界。核对返回数量、标题与来源定位；不直接写正式用例目录或派生报告绕过导入。
 
 ## 约束
 
@@ -41,4 +33,4 @@ node '<runtimeRoot>/scripts/import-cases.js' --workspace '<workspace>' --request
 
 ## 结果汇报
 
-根据导入脚本返回结果，汇报目标工作区、导入数量、用例标题与来源定位；未请求执行时，到此结束。
+根据导入返回结果，汇报目标工作区、导入数量、用例标题与来源定位；未请求执行时，到此结束。

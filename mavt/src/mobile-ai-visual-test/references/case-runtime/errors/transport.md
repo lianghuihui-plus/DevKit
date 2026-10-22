@@ -27,7 +27,7 @@ Execution 已完成，只能读取已保存资源。
 
 **可重试：** 否
 
-**处理：** 使用发布该引用的已绑定 command。
+**处理：** 使用发布该引用的已绑定运行时；MCP 调用须原样复用对应 contextRef。
 
 <a id="error-agent-input-invalid"></a>
 ## AGENT_INPUT_INVALID
@@ -63,4 +63,4 @@ Execution 或 dispatch 绑定无效。
 
 **可重试：** 否
 
-**处理：** 按 technicalFact 资源核对绑定：sequence 不匹配时原样复用当前 Loader/Brief 中的 command；只有 HANDOFF_REPLACED 才表示该 dispatch 已被真实 continuation 取代；HANDOFF_NOT_CLAIMED 表示 Loader 尚未成功 claim。
+**处理：** 按 technicalFact 资源核对绑定：sequence 不匹配时核对当前 Loader 绑定，MCP 调用原样复用其 contextRef；只有 HANDOFF_REPLACED 才表示该 dispatch 已被真实 continuation 取代；HANDOFF_NOT_CLAIMED 表示 Loader 尚未成功 claim。

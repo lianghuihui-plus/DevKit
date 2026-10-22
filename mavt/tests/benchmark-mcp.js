@@ -9,6 +9,7 @@ const readline = require('node:readline');
 const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { buildPlugin } = require('../build-plugin');
+const { DEFAULT_IDLE_TIMEOUT_MS } = require('../src/mobile-ai-visual-test/scripts/mcp/worker-pool');
 
 // Declared before measurements. Every warm path must beat its own CLI p50 and p95.
 const GATES = Object.freeze({ warmP50Ratio: 1, warmP95Ratio: 1, minimumSamples: 12 });
@@ -23,7 +24,7 @@ function gate(cli, mcp) {
     p50LimitMs: cli.p50Ms * GATES.warmP50Ratio, p95LimitMs: cli.p95Ms * GATES.warmP95Ratio };
 }
 function acceptancePass(result) {
-  return result.warmPreviewPass && result.defaultCliPass && result.mcpDefaultSwitchApproved;
+  return result.warmMcpPass && result.cliComparisonPass && result.coldMcpParityPass;
 }
 function run(script, args, options = {}) {
   const started = performance.now();
@@ -163,15 +164,14 @@ async function main(argv) {
   try {
     const baseline = require(path.join(baselineSource, 'build-plugin')).buildPlugin({ outputRoot: path.join(root, 'old-build') });
     const current = buildPlugin({ outputRoot: path.join(root, 'new-build') });
-    const preview = buildPlugin({ outputRoot: path.join(root, 'preview-build'), mcpPreview: true });
     const old = fixture(baseline.pluginRoot, path.join(root, 'old'));
     const newer = fixture(current.pluginRoot, path.join(root, 'new'));
-    const mcp = fixture(preview.pluginRoot, path.join(root, 'preview'));
-    const oldCli = cliWorkloads(old), newCli = cliWorkloads(newer), previewCli = cliWorkloads(mcp);
-    const coldOldCase = oldCli.caseRead(), coldNewCase = newCli.caseRead(), coldPreviewCase = previewCli.caseRead();
-    assert.equal(Object.hasOwn(newer.brief, 'contextRef'), false, 'ordinary CLI Loader unexpectedly minted an MCP context');
-    assert.ok(mcp.brief.contextRef, 'preview Loader did not mint a scoped MCP context');
-    client = mcpClient(preview.pluginRoot);
+    const mcp = fixture(current.pluginRoot, path.join(root, 'mcp'));
+    const oldCli = cliWorkloads(old), newCli = cliWorkloads(newer);
+    const coldOldCase = oldCli.caseRead(), coldNewCase = newCli.caseRead();
+    assert.ok(newer.brief.contextRef, 'Current Loader must issue the scoped MCP context');
+    assert.ok(mcp.brief.contextRef, 'Current Loader did not mint a scoped MCP context');
+    client = mcpClient(current.pluginRoot);
     const startup = performance.now();
     await client.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'mavt_benchmark', version: '1' } });
     client.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
@@ -187,7 +187,6 @@ async function main(argv) {
     };
     const coldMcpCase = await call('mavt_case_read', { contextRef: mcp.brief.contextRef, input: { ref: mcp.brief.data.ref } });
     assert.deepEqual(comparable('caseRead', coldMcpCase.value), comparable('caseRead', coldOldCase.value));
-    assert.deepEqual(comparable('caseRead', coldPreviewCase.value), comparable('caseRead', coldOldCase.value));
     const pings = [];
     for (let i = 0; i < samples; i++) {
       const started = performance.now(); await client.request('ping', {}); pings.push(performance.now() - started);
@@ -252,12 +251,12 @@ async function main(argv) {
       newCaseRead: cliPeakRss(path.join(newer.opened.runtimeRoot, 'scripts/case-runtime/agent-facing-client.js'), ['--dispatch-sequence', '1'],
         { input: JSON.stringify({ operation: 'read', input: { ref: newer.brief.data.ref } }), env: { ...process.env, MAVT_EXECUTION_DIR: newer.execDir } }),
     };
-    await new Promise(resolve => setTimeout(resolve, 31000));
+    await new Promise(resolve => setTimeout(resolve, DEFAULT_IDLE_TIMEOUT_MS + 1000));
     const reclaimedProcesses = processStats(client.child.pid);
-    assert.equal(reclaimedProcesses.workerCount, 0, '30-second idle worker did not exit');
-    const independentCold = { oldCli: [], newCli: [], previewCli: [], previewMcp: [] };
+    assert.equal(reclaimedProcesses.workerCount, 0, 'Worker did not exit after the default idle timeout');
+    const independentCold = { oldCli: [], newCli: [], mcp: [] };
     for (let i = 0; i < coldSamples; i++) {
-      for (const [name, f] of [['oldCli', old], ['newCli', newer], ['previewCli', mcp]]) {
+      for (const [name, f] of [['oldCli', old], ['newCli', newer]]) {
         const sample = createCaseSample(f, `cold-${name}-${i}`);
         const first = run(path.join(f.opened.runtimeRoot, 'scripts/case-runtime/agent-facing-client.js'), ['--dispatch-sequence', '1'], {
           input: JSON.stringify({ operation: 'read', input: { ref: sample.brief.data.ref } }),
@@ -266,8 +265,8 @@ async function main(argv) {
         assert.deepEqual(comparable('caseRead', first.value), comparable('caseRead', coldOldCase.value));
         independentCold[name].push(sample.loaderMs + first.elapsedMs);
       }
-      const sample = createCaseSample(mcp, `cold-previewMcp-${i}`);
-      const coldClient = mcpClient(preview.pluginRoot);
+      const sample = createCaseSample(mcp, `cold-mcp-${i}`);
+      const coldClient = mcpClient(current.pluginRoot);
       try {
         const started = performance.now();
         await coldClient.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'mavt_benchmark_cold', version: '1' } });
@@ -276,23 +275,21 @@ async function main(argv) {
           arguments: { contextRef: sample.brief.contextRef, input: { ref: sample.brief.data.ref } } });
         assert.equal(response.value.isError, false, JSON.stringify(response.value.structuredContent));
         assert.deepEqual(comparable('caseRead', response.value.structuredContent), comparable('caseRead', coldOldCase.value));
-        independentCold.previewMcp.push(sample.loaderMs + performance.now() - started);
+        independentCold.mcp.push(sample.loaderMs + performance.now() - started);
       } finally { coldClient.close(); }
     }
-    const output = { schemaVersion: 1, node: process.version, baselineSource, baselineBundleId: baseline.manifest.bundleId,
-      newBundleId: current.manifest.bundleId, previewBundleId: preview.manifest.bundleId, gates: GATES, coldConnectMs, coldFirstToolMs,
+    const output = { schemaVersion: 2, node: process.version, baselineSource, baselineBundleId: baseline.manifest.bundleId,
+      newBundleId: current.manifest.bundleId, gates: GATES, coldConnectMs, coldFirstToolMs,
       coldCasePath: { oldCliMs: old.loaderMs + coldOldCase.elapsedMs, newCliMs: newer.loaderMs + coldNewCase.elapsedMs,
-        previewCliMs: mcp.loaderMs + coldPreviewCase.elapsedMs,
         mcpMs: mcp.loaderMs + coldConnectMs + coldMcpCase.elapsedMs,
-        oldLoaderMs: old.loaderMs, newLoaderMs: newer.loaderMs, previewLoaderMs: mcp.loaderMs,
+        oldLoaderMs: old.loaderMs, newLoaderMs: newer.loaderMs, mcpLoaderMs: mcp.loaderMs,
         oldFirstReadMs: coldOldCase.elapsedMs, newFirstReadMs: coldNewCase.elapsedMs,
-        previewCliFirstReadMs: coldPreviewCase.elapsedMs, mcpFirstReadMs: coldMcpCase.elapsedMs },
+        mcpFirstReadMs: coldMcpCase.elapsedMs },
       independentColdCasePath: { sampleCount: coldSamples, oldCli: summarize(independentCold.oldCli),
-        newCli: summarize(independentCold.newCli), previewCli: summarize(independentCold.previewCli),
-        previewMcp: summarize(independentCold.previewMcp),
+        newCli: summarize(independentCold.newCli), mcp: summarize(independentCold.mcp),
         newCliVersusOld: gate(summarize(independentCold.oldCli), summarize(independentCold.newCli)),
-        previewMcpVersusOld: gate(summarize(independentCold.oldCli), summarize(independentCold.previewMcp)),
-        previewMcpVersusNew: gate(summarize(independentCold.newCli), summarize(independentCold.previewMcp)) },
+        mcpVersusOld: gate(summarize(independentCold.oldCli), summarize(independentCold.mcp)),
+        mcpVersusNew: gate(summarize(independentCold.newCli), summarize(independentCold.mcp)) },
       initialWorkspaceEntryMs: { oldCli: old.workspaceEntryMs, newCli: newer.workspaceEntryMs }, catalogBytes: catalog.bytes,
       catalogDefinitionBytes: Buffer.byteLength(JSON.stringify(catalog.value.tools)), transportPing: summarize(pings),
       idleProcesses, activeProcesses, reclaimedProcesses, cliPeakRssKiB,
@@ -301,12 +298,11 @@ async function main(argv) {
       readonlyProgress: { statusBytes: status.bytes, reportBytes: report.bytes, workspaceBytesUnchanged: true },
       cliReadNote: 'Coordinator CLI read and Case CLI read record telemetry; these are measured but not classified byte-readonly.',
       image: { responseBytes: imageRows.at(-1).bytes, sourceBytes: PNG.length, warm: summarize(imageRows.map(item => item.elapsedMs)), workspaceBytesUnchanged: true }, results,
-      warmPreviewPass: workloads.every(name => results[name].gates.versusOld.pass && results[name].gates.versusNew.pass),
-      defaultCliPass: workloads.every(name => results[name].gates.newCliVersusOld.pass) &&
+      warmMcpPass: workloads.every(name => results[name].gates.versusOld.pass && results[name].gates.versusNew.pass),
+      cliComparisonPass: workloads.every(name => results[name].gates.newCliVersusOld.pass) &&
         gate(summarize(independentCold.oldCli), summarize(independentCold.newCli)).pass,
-      mcpDefaultSwitchApproved: workloads.every(name => results[name].gates.versusOld.pass && results[name].gates.versusNew.pass) &&
-        gate(summarize(independentCold.oldCli), summarize(independentCold.previewMcp)).pass &&
-        gate(summarize(independentCold.newCli), summarize(independentCold.previewMcp)).pass };
+      coldMcpParityPass: gate(summarize(independentCold.oldCli), summarize(independentCold.mcp)).pass &&
+        gate(summarize(independentCold.newCli), summarize(independentCold.mcp)).pass };
     output.pass = acceptancePass(output);
     const serialized = JSON.stringify(output, null, 2) + '\n';
     if (outputPath) { fs.mkdirSync(path.dirname(outputPath), { recursive: true }); fs.writeFileSync(outputPath, serialized); }
