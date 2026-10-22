@@ -154,6 +154,36 @@ test('older managed bundle without MCP keeps its original CLI compatibility path
   assert.equal(result.command, prepared.response.result.command);
   assert.deepEqual(snapshot(f.workspace), before);
 });
+test('persisted previous-interface MCP contexts hand off to original CLI without modifying pinned A', t => {
+  const f = fixture(t), author = init(f, 'author');
+  f.call('mavt_cases_import', { contextRef: author, request: draft });
+  const previous = buildPlugin({ outputRoot: path.join(f.temp, 'previous-interface-A') });
+  // Reproduce the published 5a0b263 capability surface: real management dispatch
+  // exists as invokeBound, but the later invokeValidated export does not exist.
+  const publishedModule = path.join(previous.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/management-service.js');
+  fs.appendFileSync(publishedModule, '\ndelete module.exports.invokeValidated;\n');
+  const { createManifest, pinBundle } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');
+  fs.writeFileSync(path.join(previous.pluginRoot, 'bundle.manifest.json'), JSON.stringify(createManifest(previous.pluginRoot, '0.1.1')));
+  const pinned = pinBundle(previous.pluginRoot, f.workspace);
+  const previousService = require(path.join(pinned.runtimeRoot, 'scripts/mcp/management-service'));
+  assert.equal(typeof previousService.invokeBound, 'function');
+  assert.equal(previousService.invokeValidated, undefined);
+  const prepared = require(path.join(pinned.runtimeRoot, 'scripts/coordinator/agent-facing-service')).prepareRunBound(
+    { operation: 'prepareRun', input: { caseNos: ['001'] } }, { workspace: f.workspace });
+  const { createContext } = require(path.join(pinned.runtimeRoot, 'scripts/mcp/bindings'));
+  const run = createContext({ workspace: f.workspace, bundleId: pinned.bundleId, role: 'coordinator', scope: 'run', batchId: prepared.batchId });
+  const knowledge = createContext({ workspace: f.workspace, bundleId: pinned.bundleId, role: 'knowledge', scope: 'workspace' });
+  fs.renameSync(previous.pluginRoot, previous.pluginRoot + '-removed');
+  const before = snapshot(f.workspace);
+  const result = f.call('mavt_run_advance', { contextRef: run.contextRef, input: {} });
+  assert.equal(result.code, 'MAVT_MCP_LEGACY_INTERFACE', JSON.stringify(result));
+  assert.equal(result.command, prepared.response.result.command);
+  assert.equal(result.runtimeRoot, pinned.runtimeRoot);
+  const read = f.call('mavt_knowledge_list', { contextRef: knowledge.contextRef });
+  assert.equal(read.code, 'MAVT_MCP_LEGACY_INTERFACE');
+  assert.equal(read.knowledgeRoot, pinned.knowledgeRoot);
+  assert.deepEqual(snapshot(f.workspace), before, 'neither fixed A bytes, Run state, counters nor telemetry may change');
+});
 test('run resource scope mismatches and malformed inputs stay byte-readonly', t => {
   const f = fixture(t), author = init(f, 'author');
   f.call('mavt_cases_import', { contextRef: author, request: draft });

@@ -130,10 +130,11 @@ function execute(pluginRoot, name, args) {
   }
   const context = resolveContext(args.contextRef);
   // The whole request is validated by its selected, verified pinned implementation.
-  if (!fs.existsSync(path.join(context.runtimeRoot, 'scripts/mcp/management-service.js'))) return { status: 'REJECTED', code: 'MAVT_MCP_LEGACY_INTERFACE',
-    message: 'This fixed bundle predates the MCP interface; continue with its original CLI/Loader',
+  const implementation = fs.existsSync(path.join(context.runtimeRoot, 'scripts/mcp/management-service.js'))
+    ? load(context, 'scripts/mcp/management-service.js') : null;
+  if (typeof implementation?.invokeValidated !== 'function') return { status: 'REJECTED', code: 'MAVT_MCP_LEGACY_INTERFACE',
+    message: 'This fixed bundle lacks the validated MCP interface; continue with its original CLI/Loader',
     ...(context.state ? { command: context.state.command } : {}), runtimeRoot: context.runtimeRoot, knowledgeRoot: context.knowledgeRoot };
-  const implementation = load(context, 'scripts/mcp/management-service.js');
   return implementation.invokeValidated(context, name, args);
 }
 function toolResult(value) {
