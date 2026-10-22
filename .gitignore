@@ -1,3 +1,8 @@
 __pycache__/
 /dist/mavt-marketplace/
 /dist/mavt-marketplace.zip
+
+# Legacy MAVT exports and duplicate prototype verification output.
+/skills/mobile-ai-visual-test.zip
+/skills/mavt-knowledge-manager.zip
+/skills/mobile-ai-visual-test/docs/mavt-plugin-validation/

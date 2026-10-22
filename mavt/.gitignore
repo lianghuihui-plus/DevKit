@@ -1,3 +1,20 @@
 /dist/
 /node_modules/
 .DS_Store
+
+# Local build/test output; source fixtures and bundled runtime resources stay tracked.
+/artifacts/
+/test-results/
+/test-workspaces/
+/coverage/
+/.cache/
+
+# Keep only the maintained verification summary in Git.
+/verification/*
+!/verification/summary.md
+/src/mobile-ai-visual-test/docs/mavt-plugin-validation/
+
+# Local credentials; a documented example may be committed.
+/.env
+/.env.*
+!/.env.example

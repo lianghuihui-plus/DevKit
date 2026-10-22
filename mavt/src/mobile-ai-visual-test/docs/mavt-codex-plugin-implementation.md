@@ -2,11 +2,11 @@
 
 - 日期：2026-10-21。
 - 状态：代码实现及自包含项目迁移、无设备验证已完成；此前插件实现的独立复审已完成，本次迁移经过源码检查及隔离回归；手机、模拟器和桌面 GUI 会话验收待用户执行。
-- 当前分支：`main`；基线：`79f8c37d61d3946be451b0f87d43b7e71823c9cb`；改动尚未提交或发布。
+- 当前分支：`main`；开发基线：`79f8c37d61d3946be451b0f87d43b7e71823c9cb`；插件化代码已提交为 `3621f35`，未推送远端。
 - 当前开发目录：`/Users/cm/GitProj/DevKit/mavt`；已按用户要求从独立工作树转入主工作区，后续直接在 `main` 开发。下列既有验证保留其当时的原始分支与路径记录。
-- 在 main 主工作区重新执行 `npm test` 通过，迁移与验证见 [main 验证记录](../../../verification/2026-10-21-main/summary.json)。
+- 在 main 主工作区重新执行 `npm test` 通过，迁移与验证结论见 [验证汇总](../../../verification/summary.md)。
 - 依据：[技术方案](mavt-codex-plugin-tech-design.md)、[实施计划](../../../docs/plans/2026-10-21-mavt-plugin.md)。
-- 2026-10-22：插件 `0.1.1` 完成三个 Skill 命名与格式统一；本次验证和安装结果见 [入口约定](../../../docs/skill-interface.md)，下方 `2026-10-21` 日志及摘要保留为历史基线。
+- 2026-10-22：插件 `0.1.1` 完成三个 Skill 命名与格式统一；本次验证和安装结果见 [入口约定](../../../docs/skill-interface.md)。原始 JSON 与日志已精简，结论统一保留在验证汇总；历史原始记录可从 Git 提交 `3621f35` 恢复。
 
 ## 实现结果
 
@@ -24,7 +24,7 @@
 
 - [插件 ZIP 交付包](../../../dist/mavt-marketplace.zip)。
 - [完整独立源项目](../../../dist/mavt-source.zip)，含知识管理完整源码与全部回归。
-- 插件制品摘要见 [本次验证汇总](../../../verification/2026-10-21-self-contained/summary.json)，两个归档的校验值见 `dist/SHA256SUMS`。
+- 插件制品基线见 [验证汇总](../../../verification/summary.md)，两个当前归档的校验值见 `dist/SHA256SUMS`。
 - [插件源码与安装说明](../../../README.md)。
 - 以下版本、摘要和文件数量是 `2026-10-21` 的 `0.1.0` 历史验证基线；当前构建以安装源的 plugin.json、bundle.manifest.json 及 `dist/SHA256SUMS` 为准。
 - 历史版本：`0.1.0`。
@@ -44,19 +44,19 @@ codex plugin list --marketplace mavt-local --json
 
 ## 验证证据
 
-本次独立项目验证记录位于 [verification/2026-10-21-self-contained](../../../verification/2026-10-21-self-contained/summary.json)。
+独立项目和入口统一的结论见 [验证汇总](../../../verification/summary.md)。下表保留验证范围，原始日志和 JSON 已从当前源码树精简；需要详细原始输出时从 Git 提交 `3621f35` 恢复。
 
-| 验证 | 结果与边界 | 证据 |
-| --- | --- | --- |
-| MAVT 源码回归 | 88 个 suite 通过；平台相关测试使用离线 fixture/double | [mavt.log](../../../verification/2026-10-21-self-contained/mavt.log) |
-| 知识管理回归 | 6 个 suite 通过 | [knowledge.log](../../../verification/2026-10-21-self-contained/knowledge.log) |
-| 插件专项 | 26 项通过：构建 14、集成 4、发布场景 6、项目边界 2 | [plugin.log](../../../verification/2026-10-21-self-contained/plugin.log) |
-| 生成文档 / Skill 格式 | 51 份生成文档一致；三个入口格式校验通过 | 汇总记录 |
-| 真实 Codex CLI 安装和升级 | 安装、列表、app-server 三入口解析与重载通过；旧缓存自动移除后仍以固定 A 恢复和取消 | [host.json](../../../verification/2026-10-21-self-contained/host.json) |
-| 独立发布包冒烟 | OS sandbox 禁止读取两个源码树后，初始化、导入、Run、恢复、取消、角色契约、知识入口及 doctor 通过 | [smoke.json](../../../verification/2026-10-21-self-contained/smoke.json) |
-| 源项目隔离 | 只取出本项目，禁止读取原始与实现工作树两个 DevKit 根目录，构建及完整 npm test 通过 | [source-isolation.log](../../../verification/2026-10-21-self-contained/source-isolation.log) |
-| ZIP 解压完整性 | 解压后 `verifyBundle` 校验上述 bundleId 与全部 306 项通过 | 汇总记录 |
-| 设备测试 / 桌面 GUI 重载 | 未执行，由用户验收 | 下方清单 |
+| 验证 | 结果与边界 |
+| --- | --- |
+| MAVT 源码回归 | 88 个 suite 通过；平台相关测试使用离线 fixture/double |
+| 知识管理回归 | 6 个 suite 通过 |
+| 插件专项 | 26 项通过：构建 14、集成 4、发布场景 6、项目边界 2 |
+| 生成文档 / Skill 格式 | 51 份生成文档一致；三个入口格式校验通过 |
+| 真实 Codex CLI 安装和升级 | 安装、列表、app-server 三入口解析与重载通过；旧缓存自动移除后仍以固定 A 恢复和取消 |
+| 独立发布包冒烟 | OS sandbox 禁止读取两个源码树后，初始化、导入、Run、恢复、取消、角色契约、知识入口及 doctor 通过 |
+| 源项目隔离 | 只取出本项目，禁止读取原始与实现工作树两个 DevKit 根目录，构建及完整 npm test 通过 |
+| ZIP 解压完整性 | 解压后 `verifyBundle` 校验上述 bundleId 与全部 306 项通过 |
+| 设备测试 / 桌面 GUI 重载 | 未执行，由用户验收，见下方清单 |
 
 专项验证包含真实并发快照发布、发布前进程退出、绑定和状态配对发布、缺失/损坏/错误运行时拒绝且零写入、多 Run 选择、A/B 共享报告锁、固定 A 的知识事务，以及初始化中断、PREPARED/CONSUMED dispatch 和延迟报告恢复。进入执行阶段的场景使用离线 Batch port，没有连接移动设备；安装冒烟在设备确认前取消。
 

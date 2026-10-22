@@ -24,4 +24,4 @@ Skill 目录名与 frontmatter `name` 保持一致，使用小写英文和连字
 - 在临时 Codex home 安装 `0.1.1`，真实 app-server 返回三个新名称、正确中文显示信息且全部 enabled、errors 为空。升级到临时验证版本后，原固定 Run 仍可恢复并在设备确认前取消。
 - 本机已安装的 MAVT 同步更新到 `0.1.1`，实际 app-server 重新发现三个新入口；桌面现有会话的选择器刷新仍以新开或重载会话为准。
 
-证据见 [验证汇总](../verification/2026-10-22-skill-interface/summary.json)、[完整回归日志](../verification/2026-10-22-skill-interface/npm-test.log)、[临时安装与升级](../verification/2026-10-22-skill-interface/host-install.json)。未运行手机、模拟器或设备连接测试。
+结果和验证边界统一保留在 [验证汇总](../verification/summary.md)。原始 JSON 与日志已精简，需要时可从 Git 提交 `3621f35` 恢复。未运行手机、模拟器或设备连接测试。

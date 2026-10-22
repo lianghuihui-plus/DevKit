@@ -20,7 +20,7 @@ mavt/
 ├── package.json
 ├── tests/                         # 构建、安装、升级及项目隔离验证
 ├── docs/                          # 项目边界与实施计划
-└── verification/                  # 无设备验证证据
+└── verification/summary.md        # 无设备验证结论汇总
 ```
 
 两套源码的唯一维护位置均在本项目 `src/` 内。知识管理从原独立 Skill 完整迁入；插件包装调用项目内的实现。构建仅把这些项目内文件组装为分发包，不能从父目录的 Skill 补齐文件。迁移记录见 [项目边界](docs/project-boundary.md)。
@@ -45,6 +45,19 @@ node build-plugin.js --output /absolute/path/mavt-marketplace
 ```
 
 `npm test` 依次执行 MAVT 运行时回归、知识管理回归、插件/项目边界回归和生成文档检查，不连接手机或模拟器。分开执行可使用 `npm run test:runtime`、`npm run test:knowledge`、`npm run test:plugin` 和 `npm run check:docs`。
+
+## 上库边界
+
+| 纳入 Git | 仅本地保留 |
+| --- | --- |
+| `src/`、`skills/`、`hosts/`、入口和构建脚本 | `dist/` 安装源、ZIP、摘要和制品验证输出 |
+| 测试代码、必要的测试 fixture、随运行时交付的 Helper APK/IME 资源及许可证 | `test-results/` 原始测试输出、`artifacts/` 截图与日志、`test-workspaces/` 临时测试工作区 |
+| 插件配置、`package.json`、`release-files.json`、Helper 清单 | `node_modules/`、`coverage/`、`.cache/` 与系统杂项 |
+| 维护文档、`verification/summary.md` 验证结论 | `verification/` 中其他原始 JSON、日志和历史原型输出；本地 `.env` 配置及凭据 |
+
+以上本地输出目录已由本项目 `.gitignore` 忽略；测试日志可直接重定向到 `test-results/`，只将必要结论整理到验证汇总。测试工作区通常放在源码项目外；项目内的临时工作区使用 `test-workspaces/`。凭据不写入源码或测试数据，可维护无真实凭据的 `.env.example`。忽略规则按目录和用途设置，不全局忽略 JSON、图片或 APK，以保留必要配置和测试资源。
+
+发布文件由 `release-files.json` 单独控制：是否上库与是否进入插件安装包是两个边界。源码、测试和设计文档需要上库，但测试和设计文档不进入正式插件包。
 
 ## 发布完整性
 

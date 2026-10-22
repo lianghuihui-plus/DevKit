@@ -12,9 +12,9 @@
 | `src/mavt-knowledge-manager/` | 原完整知识维护模块，含 CLI、事务、契约、模板、开发入口和六组回归 |
 | `skills/`、`hosts/codex/`、`scripts/` | 三个插件入口、Codex 委托指引、安装后启动适配 |
 | `build-plugin.js`、`release-files.json`、`package.json`、`tests/` | 独立构建、生产文件清单和项目测试 |
-| `docs/`、源模块内 `docs/`、`verification/` | 设计、计划、使用说明与验证证据 |
+| `docs/`、源模块内 `docs/`、`verification/summary.md` | 设计、计划、使用说明与验证结论汇总 |
 
-两套原模块从 DevKit 的 `skills/` 迁入此处，未留下第二套维护实现或指向外部源码的符号链接。后续按用户指令，完整实现已转入主工作区 `/Users/cm/GitProj/DevKit/mavt`，直接在 `main` 分支继续开发；改动尚未提交。旧路径中原有的未跟踪文档和归档予以保留。
+两套原模块从 DevKit 的 `skills/` 迁入此处，未留下第二套维护实现或指向外部源码的符号链接。后续按用户指令，完整实现已转入主工作区 `/Users/cm/GitProj/DevKit/mavt`，直接在 `main` 分支继续开发，插件化代码已提交为 `3621f35`。旧路径中未跟踪的文档和归档保留；重复的验证记录已按用户要求移入废纸篓。
 
 源码使用 `src/`，分发物继续使用 `runtime/`，保持现有 bundle 识别、摘要及拒绝损坏分发物的逻辑。若开发源码也采用 `runtime/mobile-ai-visual-test` 路径，原守卫会将它正确识别为应有 manifest 的分发物，导致源码回归失败；本次通过区分目录解决，不放松运行时守卫。
 
@@ -31,3 +31,9 @@
 新增项目边界测试已在迁移前观察到 RED：单独取出原插件根目录，构建访问外部 `skills/` 后失败。迁移后，测试只复制 `mavt/` 到中文/空格路径，从项目外的 cwd 调用其构建器、知识回归、文档检查与安装包冒烟。
 
 进一步在临时目录复制源项目，通过 macOS sandbox 禁止读取原始 DevKit 和实现工作树，再运行构建和完整 `npm test`，证明源码边界而非仅证明安装包边界。最终结果见 [实现报告](../src/mobile-ai-visual-test/docs/mavt-codex-plugin-implementation.md)。设备验收由用户执行。
+
+## Git 跟踪与本地产物
+
+源码、必要运行资源、测试及 fixture、构建配置和维护文档纳入 Git；原始验证输出、安装包、测试工作区、缓存及本地凭据不纳入。详细目录约定见 [项目指南的上库边界](../README.md#上库边界)，验证结论只维护 [统一汇总](../verification/summary.md)。旧 DevKit 两个 MAVT ZIP 和原型验证输出目录也已由父仓库规则忽略，原有其他未跟踪文档保持原样。
+
+本次删除已跟踪的原始验证记录，以后使用忽略规则防止重新误提交；旧记录仍在提交 `3621f35` 的历史中，不重写已有提交。插件发布清单和完整性守卫继续独立生效，Git 忽略规则不替代构建校验。

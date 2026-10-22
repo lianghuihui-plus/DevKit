@@ -1,8 +1,0 @@
-{
-  "pluginId": "mavt@mavt-local",
-  "name": "mavt",
-  "marketplaceName": "mavt-local",
-  "version": "0.1.1",
-  "installedPath": "/Users/cm/.codex/plugins/cache/mavt-local/mavt/0.1.1",
-  "authPolicy": "ON_INSTALL"
-}

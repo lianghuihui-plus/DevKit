@@ -5,7 +5,7 @@
 - 执行范围：前三轮非设备可行性验证；第四轮设备验收由用户执行。
 - 验证对象：临时插件和组装原型，不是正式 MAVT 插件的发布验收。
 - 运行版本：Codex CLI `0.163.0-alpha.10.2`，Node.js `v24.18.0`，macOS。
-- 临时目录：`/private/tmp/mavt-validation.KiF1Dj`；持久化证据见 [summary.json](mavt-plugin-validation/2026-10-21/summary.json)。
+- 历史临时目录：`/private/tmp/mavt-validation.KiF1Dj`；原始 JSON 和日志已精简，阶段结论见 [验证汇总](../../../verification/summary.md)，原始记录可从 Git 提交 `3621f35` 恢复。
 
 ## 1. 结论
 
@@ -46,7 +46,7 @@
 | 子 Agent 执行命令 | 读取指定脚本并得到 execution 角色的 JSON | 固定文件与命令工具可用 |
 | 等待与中断 | 首个子 Agent 完成；另一个子 Agent 经实际工具观察 `running → interrupted` | 不推导 Node 子进程或设备资源已被清理 |
 
-证据：[入口发现](mavt-plugin-validation/2026-10-21/host-skills.json)、[宿主行为与实际子会话](mavt-plugin-validation/2026-10-21/host-behavior.json)。CLI 事件流没有展示全部原生工具事件，因此额外核对了持久化会话中的实际 spawn 参数和两个子会话元数据，没有仅凭最终回复判断 Agent 已创建。
+当时通过入口发现和宿主行为记录核验。CLI 事件流没有展示全部原生工具事件，因此额外核对了持久化会话中的实际 spawn 参数和两个子会话元数据，没有仅凭最终回复判断 Agent 已创建；这些原始输出现已归入 Git 历史。
 
 本轮使用同一桌面安装内的 CLI 和实际 app-server 协议；未在桌面插件页面操作安装、重载或选择 Skill，桌面 UI 的这些行为仍需正式产物验收。
 
@@ -77,7 +77,7 @@
 
 知识维护的 5 组为：contract、store、transaction、cli、mavtCompatibility。未把依赖原根 `SKILL.md` 的布局测试冒充为新布局通过；正式入口语义及测试裁剪仍需正式代码验证。
 
-证据：[15 项检查结果](mavt-plugin-validation/2026-10-21/runtime-results.json)、[MAVT 回归日志](mavt-plugin-validation/2026-10-21/relocated-regression.log)、[知识回归日志](mavt-plugin-validation/2026-10-21/knowledge-regression.log)。
+当时的 15 项检查、MAVT 回归和知识回归原始输出已归入 Git 历史，阶段结果保留在本文及统一验证汇总。
 
 ## 5. 第三轮：版本固定与实际 CLI 升级
 
@@ -90,9 +90,9 @@
 | 完整组装包实际安装 A，再用 plugin add 升级 B | `0.0.0-probe → 0.0.1-probe`，安装缓存路径不同，三个入口切到 B | 当前 CLI 行为，不代表桌面所有重载行为 |
 | 移走独立 home 中旧 A 安装缓存，再推进固定 A 的终态 Run | 仍返回 CANCELLED，命令保留 A bundleId | 覆盖终态继续；活动 execution 升级恢复由第四轮覆盖 |
 
-证据：[实际安装升级](mavt-plugin-validation/2026-10-21/host-upgrade.json)。
+实际安装升级的结果如上表，原始输出已归入 Git 历史。
 
-取消检查首次失败来自验证脚本将 `data.content.outcome` 误当成取消结果；源码契约及已有回归明确使用 `runOutcome`。只修正验证断言并新建未确认 Run 复跑，得到通过；没有修改 MAVT 来迎合测试。保留[首次结果](mavt-plugin-validation/2026-10-21/runtime-first-pass.json)和[复跑记录](mavt-plugin-validation/2026-10-21/cancel-retest.json)。
+取消检查首次失败来自验证脚本将 `data.content.outcome` 误当成取消结果；源码契约及已有回归明确使用 `runOutcome`。只修正验证断言并新建未确认 Run 复跑，得到通过；没有修改 MAVT 来迎合测试。首次结果与复跑记录可从 Git 历史恢复。
 
 ## 6. 尚未验证的非设备实现
 
