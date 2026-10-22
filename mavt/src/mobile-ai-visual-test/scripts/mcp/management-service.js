@@ -102,31 +102,39 @@ function invokeBound(context, name, args) {
   try { return service.executeRunRequest(context.statePath, request, { hostTransport: 'mcp' }); }
   catch (error) { return runFailure(context, request.operation, error); }
 }
-function execute(pluginRoot, name, args) {
+function invokeValidated(context, name, args) {
+  let validationError;
   try { validate(name, args); }
-  catch (error) {
-    // A valid bound Run retains the existing repeated-domain-input stop rule.
-    // Unknown tools, invalid bindings, and all reads reject without recording anything.
-    if (error.code === 'MAVT_MCP_INPUT_INVALID' && ['mavt_run_confirm', 'mavt_run_advance', 'mavt_run_cancel'].includes(name) && typeof args?.contextRef === 'string') {
-      const context = resolveContext(args.contextRef, { role: 'coordinator', scope: 'run' });
-      if (fs.existsSync(path.join(context.runtimeRoot, 'scripts/mcp/management-service.js'))) {
-        const implementation = load(context, 'scripts/mcp/management-service.js');
-        return implementation.runFailure(context, `${name.slice(9)}Run`, Object.assign(new Error(error.message), { code: 'COORDINATOR_INPUT_INVALID', issues: error.issues }));
-      }
-    }
-    throw error;
-  }
-  if (name === 'mavt_workspace_init' || name === 'mavt_workspace_open') return open(pluginRoot, args, name.endsWith('_init'));
-  if (name === 'mavt_workspace_doctor') return diagnostic(args.workspace);
+  catch (error) { if (error.code !== 'MAVT_MCP_INPUT_INVALID') throw error; validationError = error; }
   const role = name.startsWith('mavt_knowledge_') ? 'knowledge' : name === 'mavt_cases_import' ? 'author' : 'coordinator';
   const scope = name.startsWith('mavt_run_') && name !== 'mavt_run_prepare' ? 'run' : 'workspace';
-  const context = resolveContext(args.contextRef, { role, scope });
-  // The chosen implementation belongs to the verified pinned bundle, even after installation changes.
+  if (context.role !== role || context.scope !== scope) throw bundleError('MAVT_MCP_CONTEXT_INVALID', 'context role/scope mismatch');
+  if (validationError) {
+    // Only this pinned contract may record invalid-input facts for its valid Run.
+    if (['mavt_run_confirm', 'mavt_run_advance', 'mavt_run_cancel'].includes(name)) return runFailure(context, `${name.slice(9)}Run`,
+      Object.assign(new Error(validationError.message), { code: 'COORDINATOR_INPUT_INVALID', issues: validationError.issues }));
+    throw validationError;
+  }
+  return invokeBound(context, name, args);
+}
+function execute(pluginRoot, name, args) {
+  if (['mavt_workspace_init', 'mavt_workspace_open', 'mavt_workspace_doctor'].includes(name)) {
+    validate(name, args);
+    return name === 'mavt_workspace_doctor' ? diagnostic(args.workspace) : open(pluginRoot, args, name.endsWith('_init'));
+  }
+  // This stable envelope locates authority only; installed schemas must not inspect
+  // the versioned payload or account failures on behalf of another pinned bundle.
+  if (!args || typeof args !== 'object' || Array.isArray(args) || typeof args.contextRef !== 'string' || !/^mavt-context:[A-Za-z0-9_-]+$/.test(args.contextRef)) {
+    if (!definitions().some(tool => tool.name === name)) throw Object.assign(new Error(`Unknown MAVT tool: ${name}`), { code: 'MAVT_MCP_TOOL_UNKNOWN' });
+    throw Object.assign(new Error('A valid contextRef locator is required'), { code: 'MAVT_MCP_INPUT_INVALID' });
+  }
+  const context = resolveContext(args.contextRef);
+  // The whole request is validated by its selected, verified pinned implementation.
   if (!fs.existsSync(path.join(context.runtimeRoot, 'scripts/mcp/management-service.js'))) return { status: 'REJECTED', code: 'MAVT_MCP_LEGACY_INTERFACE',
     message: 'This fixed bundle predates the MCP interface; continue with its original CLI/Loader',
     ...(context.state ? { command: context.state.command } : {}), runtimeRoot: context.runtimeRoot, knowledgeRoot: context.knowledgeRoot };
   const implementation = load(context, 'scripts/mcp/management-service.js');
-  return implementation.invokeBound(context, name, args);
+  return implementation.invokeValidated(context, name, args);
 }
 function toolResult(value) {
   const failed = ['FAILED', 'REJECTED', 'UNKNOWN', 'REQUEST_INVALID'].includes(value.status);
@@ -152,4 +160,4 @@ function createServer({ pluginRoot }) {
     catch (error) { return toolResult(failureValue(error)); }
   } };
 }
-module.exports = { createServer, execute, invokeBound, runFailure, failureValue, toolResult, diagnostic };
+module.exports = { createServer, execute, invokeValidated, invokeBound, runFailure, failureValue, toolResult, diagnostic };

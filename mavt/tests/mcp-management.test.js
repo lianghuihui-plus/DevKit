@@ -177,3 +177,29 @@ test('valid bound Run retains repeated invalid-input stop rule', t => {
   const status = f.call('mavt_run_status', { contextRef: prepared.contextRef });
   assert.equal(status.phase, 'NEED_ENVIRONMENT_DECISION');
 });
+test('installed B schema divergence cannot reject or stall valid pinned A requests', t => {
+  const f = fixture(t), author = init(f, 'author');
+  f.call('mavt_cases_import', { contextRef: author, request: draft });
+  const coordinator = f.call('mavt_workspace_open', { workspace: f.workspace, role: 'coordinator' }).contextRef;
+  const prepared = f.call('mavt_run_prepare', { contextRef: coordinator, input: { caseNos: ['001'] } });
+  const knowledgeRef = f.call('mavt_workspace_open', { workspace: f.workspace, role: 'knowledge' }).contextRef;
+  const b = buildPlugin({ outputRoot: path.join(f.temp, 'schema-B') });
+  const contractPath = path.join(b.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/contract.js');
+  fs.appendFileSync(contractPath, `\n// B requires an argument that is forbidden by A.\nschemas.mavt_run_advance.properties.input.properties.bOnly = { type: 'boolean' };\nschemas.mavt_run_advance.properties.input.required = ['bOnly'];\nschemas.mavt_knowledge_list.properties.bOnly = { type: 'boolean' };\nschemas.mavt_knowledge_list.required.push('bOnly');\n`);
+  const { createManifest } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');
+  fs.writeFileSync(path.join(b.pluginRoot, 'bundle.manifest.json'), JSON.stringify(createManifest(b.pluginRoot, '0.1.2')));
+  const serverB = require(path.join(b.pluginRoot, 'scripts/mavt-mcp')).createServer({ pluginRoot: b.pluginRoot });
+  const callB = (name, args) => serverB.callTool(name, args).structuredContent;
+  assert.ok(serverB.listTools().find(tool => tool.name === 'mavt_run_advance').inputSchema.properties.input.required.includes('bOnly'));
+  for (let index = 0; index < 2; index += 1) {
+    const result = callB('mavt_run_advance', { contextRef: prepared.contextRef, input: {} });
+    assert.equal(result.status, 'SUCCEEDED', JSON.stringify(result));
+    assert.equal(result.result.outcome, 'NEED_USER_CONFIRMATION');
+  }
+  const statePath = path.join(f.workspace, 'runs', prepared.batchId, 'coordinator-state.json');
+  assert.equal(JSON.parse(fs.readFileSync(statePath)).lastInvalid, null, 'B validation must not increment A invalid-input counters');
+  const before = snapshot(f.workspace);
+  assert.equal(callB('mavt_knowledge_list', { contextRef: knowledgeRef }).status, 'VALID');
+  assert.equal(callB('mavt_knowledge_list', { contextRef: knowledgeRef, bOnly: true }).code, 'MAVT_MCP_INPUT_INVALID', 'B-only accepted fields must be rejected by A before reading');
+  assert.deepEqual(snapshot(f.workspace), before);
+});

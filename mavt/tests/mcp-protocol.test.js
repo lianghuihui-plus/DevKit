@@ -6,6 +6,27 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
 const { buildPlugin } = require('../build-plugin');
+test('null and fractional request IDs cannot initialize or enable tool calls', () => {
+  const { createProtocol } = require('../src/mobile-ai-visual-test/scripts/mcp/protocol');
+  for (const id of [null, 0.5]) {
+    const handler = createProtocol({ listTools: () => [] });
+    const rejected = handler({ jsonrpc: '2.0', id, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+    assert.equal(rejected.error?.code, -32600, JSON.stringify(rejected));
+    assert.equal(handler({ jsonrpc: '2.0', id: 1, method: 'tools/list' }).error.code, -32002);
+    assert.equal(handler({ jsonrpc: '2.0', id, method: 'ping' }).error.code, -32600);
+  }
+});
+test('malformed initialize clientInfo leaves discovery disabled until valid initialization with ID zero', () => {
+  const { createProtocol } = require('../src/mobile-ai-visual-test/scripts/mcp/protocol');
+  for (const clientInfo of [{}, { name: 'test' }, { version: '1' }, { name: 42, version: '1' }, { name: 'test', version: null }]) {
+    const handler = createProtocol({ listTools: () => [] });
+    const rejected = handler({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo } });
+    assert.equal(rejected.error?.code, -32602, JSON.stringify(rejected));
+    assert.equal(handler({ jsonrpc: '2.0', id: 1, method: 'tools/list' }).error.code, -32002);
+    assert.equal(handler({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }).id, 0);
+    assert.deepEqual(handler({ jsonrpc: '2.0', id: 2, method: 'tools/list' }).result, { tools: [] });
+  }
+});
 test('async tool results preserve UNKNOWN and are returned once without retry', async () => {
   const { createProtocol } = require('../src/mobile-ai-visual-test/scripts/mcp/protocol');
   const { toolResult } = require('../src/mobile-ai-visual-test/scripts/mcp/management-service');

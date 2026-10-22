@@ -4,17 +4,19 @@ const VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const response = (id, result) => ({ jsonrpc: '2.0', id, result });
 const error = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
+const requestId = value => typeof value === 'string' || Number.isInteger(value);
 function createProtocol(server) {
   let initialized = false;
   return function handleMessage(message) {
     if (!object(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string' || !message.method ||
-      Object.hasOwn(message, 'id') && !(message.id === null || typeof message.id === 'string' || Number.isFinite(message.id)) ||
-      message.params !== undefined && !object(message.params)) return error(object(message) && (typeof message.id === 'string' || Number.isFinite(message.id)) ? message.id : null, -32600, 'Invalid Request');
+      Object.hasOwn(message, 'id') && !requestId(message.id) ||
+      message.params !== undefined && !object(message.params)) return error(object(message) && requestId(message.id) ? message.id : null, -32600, 'Invalid Request');
     const notification = !Object.hasOwn(message, 'id');
     if (notification) return null; // Notifications never receive responses or perform tool effects.
     const { id, method, params = {} } = message;
     if (method === 'initialize') {
-      if (typeof params.protocolVersion !== 'string' || !object(params.capabilities) || !object(params.clientInfo)) return error(id, -32602, 'Invalid initialize parameters');
+      if (typeof params.protocolVersion !== 'string' || !object(params.capabilities) || !object(params.clientInfo) ||
+        typeof params.clientInfo.name !== 'string' || typeof params.clientInfo.version !== 'string') return error(id, -32602, 'Invalid initialize parameters');
       initialized = true;
       return response(id, { protocolVersion: VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : VERSIONS[0], capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'mavt', version: '1' } });
     }
