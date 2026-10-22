@@ -21,6 +21,18 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
       { contextRef: task.args?.contextRef, workspace: task.args?.workspace, tool: task.name,
         retryable: false, recovery: 'Inspect the pinned Run/Case state and dispatch before deciding any further action' });
   }
+  function undispatched(task, reason) {
+    return result('REJECTED', 'MAVT_MCP_WORKER_NOT_DISPATCHED', reason,
+      { contextRef: task.args?.contextRef, workspace: task.args?.workspace, tool: task.name, retryable: true });
+  }
+  function release(worker, task, outcome) {
+    clearTimeout(task.timer);
+    worker.busy = null;
+    activeKeys.delete(task.key);
+    if (task.readOnly) reads -= 1;
+    else { nonReads -= 1; if (!task.control) effects -= 1; }
+    task.resolve(outcome);
+  }
   function clearIdle(worker) { if (worker.idleTimer) clearTimeout(worker.idleTimer); worker.idleTimer = null; }
   function stopIdle(worker) {
     if (worker.busy || !workers.has(worker)) return;
@@ -38,34 +50,43 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
   }
   function spawnWorker() {
     const child = fork(path.join(__dirname, 'worker-child.js'), [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], execArgv: [] });
-    const worker = { child, busy: null, idleTimer: null, diagnostic: '' };
+    const worker = { child, busy: null, idleTimer: null, diagnostic: '', error: null };
     started += 1; workers.add(worker);
     child.stderr.on('data', chunk => { worker.diagnostic = (worker.diagnostic + chunk.toString()).slice(-2048); });
     child.on('message', message => {
       const task = worker.busy;
       if (!task || message?.id !== task.id) return;
-      clearTimeout(task.timer);
-      worker.busy = null;
-      activeKeys.delete(task.key);
-      if (task.readOnly) reads -= 1;
-      else { nonReads -= 1; if (!task.control) effects -= 1; }
-      task.resolve(message.result);
+      if (message.kind === 'accepted' && task.phase === 'preparing') {
+        // The child cannot enter the domain until this separate start message arrives.
+        task.phase = 'start-sent';
+        try { child.send({ id: task.id, kind: 'start' }, error => {
+          if (error && worker.busy === task) { worker.error = error; child.kill('SIGKILL'); }
+        }); }
+        catch (error) { worker.error = error; child.kill('SIGKILL'); }
+        return;
+      }
+      if (message.kind !== 'result' || task.phase !== 'start-sent') return;
+      release(worker, task, message.result);
       stopIdle(worker);
       drain();
     });
-    child.on('exit', (code, signal) => {
+    function failed(code, signal) {
+      if (!workers.has(worker)) return;
       clearIdle(worker); workers.delete(worker);
       const task = worker.busy;
       if (task) {
-        clearTimeout(task.timer);
-        activeKeys.delete(task.key);
-        if (task.readOnly) reads -= 1;
-        else { nonReads -= 1; if (!task.control) effects -= 1; }
-        task.resolve(unknown(task, task.timeout ? 'Worker timed out after dispatch; effect outcome is unknown'
-          : `Worker exited after dispatch (${signal || code}); effect outcome is unknown`));
+        const detail = worker.error?.message || signal || code;
+        release(worker, task, task.phase === 'start-sent'
+          ? unknown(task, task.timeout ? 'Worker timed out after dispatch; effect outcome is unknown'
+            : `Worker exited after dispatch (${detail}); effect outcome is unknown`)
+          : undispatched(task, task.timeout ? 'Worker timed out before dispatch'
+            : `Worker exited before dispatch (${detail})`));
       }
       drain(); settleClose();
-    });
+    }
+    child.on('error', error => { worker.error = error; if (child.pid) child.kill('SIGKILL'); else failed(null, null); });
+    child.on('exit', failed);
+    child.on('close', failed);
     return worker;
   }
   function eligible(task) { return !activeKeys.has(task.key) &&
@@ -78,13 +99,16 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
   function dispatch(worker, task) {
     clearIdle(worker);
     worker.busy = task;
+    task.phase = 'preparing';
     activeKeys.add(task.key);
     if (task.readOnly) reads += 1;
     else { nonReads += 1; if (!task.control) effects += 1; }
     task.timer = setTimeout(() => { task.timeout = true; worker.child.kill('SIGKILL'); }, maxOperationMs);
     task.timer.unref();
-    try { worker.child.send({ id: task.id, pluginRoot, name: task.name, args: task.args }); }
-    catch (error) { worker.child.kill('SIGKILL'); }
+    try { worker.child.send({ kind: 'prepare', id: task.id, pluginRoot, name: task.name, args: task.args }, error => {
+      if (error && worker.busy === task) { worker.error = error; worker.child.kill('SIGKILL'); }
+    }); }
+    catch (error) { worker.error = error; worker.child.kill('SIGKILL'); }
   }
   function drain() {
     while (pending.length) {
@@ -100,7 +124,13 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
     if (!accepting) return Promise.resolve(result('REJECTED', 'MAVT_MCP_CLOSED', 'Server is draining accepted calls'));
     return new Promise(resolve => {
       const readOnly = READ_ONLY.test(name);
-      const key = `${args.contextRef || args.workspace || `unbound:${++sequence}`}:${readOnly ? 'read' : 'write'}`;
+      let key = `${args.contextRef || args.workspace || `unbound:${++sequence}`}:${readOnly ? 'read' : 'write'}`;
+      if (name.startsWith('mavt_case_') && name !== 'mavt_case_image') {
+        try {
+          const context = require('./bindings').resolveContext(args.contextRef, { role: 'case', scope: 'execution' });
+          key = `case:${context.execDir}:write`;
+        } catch { /* The selected worker returns the authoritative scoped error. */ }
+      }
       const task = { id: ++sequence, key, name, args, readOnly, control: CONTROL.test(name), resolve };
       pending.push(task);
       drain();

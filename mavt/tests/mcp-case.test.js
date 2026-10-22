@@ -189,13 +189,74 @@ test('worker crash reports dispatched Case effect as UNKNOWN once without replay
   t.after(() => asyncServer.close());
   const action = asyncServer.callTool('mavt_case_act', { contextRef: a.contextRef, input: {} });
   await awaitFile(path.join(f.temp, 'entered'));
-  const worker = asyncServer.workerStats().workers.find(item => item.busyKey === `${a.contextRef}:write`);
+  const worker = asyncServer.workerStats().workers.find(item => item.busyKey === `case:${a.execDir}:write`);
   assert.ok(worker?.pid);
   process.kill(worker.pid, 'SIGKILL');
   const result = await within(action);
   assert.equal(result.structuredContent.status, 'UNKNOWN', JSON.stringify(result.structuredContent));
   assert.equal(result.structuredContent.contextRef, a.contextRef);
   assert.equal(fs.readFileSync(path.join(f.temp, 'entered'), 'utf8').trim(), 'case-crash');
+});
+
+test('two Loader references for one execution serialize Case writes and retain invalid-input count', async t => {
+  const f = fixture(t, { barrier: true }), a = f.startCase('case-two-refs');
+  const repeated = spawnSync('/bin/sh', ['-c', a.handoff.loaderCommand], { encoding: 'utf8' });
+  assert.equal(repeated.status, 0, repeated.stderr);
+  const secondRef = JSON.parse(repeated.stdout).contextRef;
+  assert.notEqual(secondRef, a.contextRef);
+  const asyncServer = require(f.entry).createServer({ pluginRoot: f.pluginRoot, workerPool: { maxWorkers: 4, maxPending: 4 } });
+  t.after(() => asyncServer.close());
+  const first = asyncServer.callTool('mavt_case_act', { contextRef: a.contextRef, input: {} });
+  await awaitFile(path.join(f.temp, 'entered'));
+  const second = asyncServer.callTool('mavt_case_act', { contextRef: secondRef, input: {} });
+  try { assert.equal(asyncServer.workerStats().pending, 1, 'the second ref must share the execution write lane'); }
+  finally { fs.writeFileSync(path.join(f.temp, 'release'), 'release'); }
+  assert.equal((await first).structuredContent.error.code, 'AGENT_INPUT_INVALID');
+  assert.equal((await second).structuredContent.error.code, 'AGENT_INPUT_STALLED');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(a.execDir, 'agent-facing-state.json'), 'utf8')).lastInvalid.count, 2);
+});
+
+test('invalid Case read through another Loader reference waits behind the execution write', async t => {
+  const f = fixture(t, { barrier: true }), a = f.startCase('case-read-ref');
+  const repeated = spawnSync('/bin/sh', ['-c', a.handoff.loaderCommand], { encoding: 'utf8' });
+  assert.equal(repeated.status, 0, repeated.stderr);
+  const secondRef = JSON.parse(repeated.stdout).contextRef;
+  const asyncServer = require(f.entry).createServer({ pluginRoot: f.pluginRoot, workerPool: { maxWorkers: 4, maxPending: 4 } });
+  t.after(() => asyncServer.close());
+  const action = asyncServer.callTool('mavt_case_act', { contextRef: a.contextRef, input: {} });
+  await awaitFile(path.join(f.temp, 'entered'));
+  const read = asyncServer.callTool('mavt_case_read', { contextRef: secondRef, input: {} });
+  try { assert.equal(asyncServer.workerStats().pending, 1); }
+  finally { fs.writeFileSync(path.join(f.temp, 'release'), 'release'); }
+  assert.equal((await action).structuredContent.error.code, 'AGENT_INPUT_INVALID');
+  assert.equal((await read).structuredContent.error.code, 'AGENT_INPUT_INVALID');
+});
+
+test('worker exit before accepting a Case call reports definitely undispatched', async t => {
+  const f = fixture(t), a = f.startCase('case-preaccept');
+  const workerPath = path.join(f.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/worker-child.js');
+  fs.writeFileSync(workerPath, `process.exit(17);\n${fs.readFileSync(workerPath, 'utf8')}`);
+  const asyncServer = require(f.entry).createServer({ pluginRoot: f.pluginRoot, workerPool: { maxWorkers: 3, maxPending: 4 } });
+  t.after(() => asyncServer.close());
+  const response = await within(asyncServer.callTool('mavt_case_act', { contextRef: a.contextRef, input: {} }));
+  assert.equal(response.structuredContent.status, 'REJECTED', JSON.stringify(response.structuredContent));
+  assert.equal(response.structuredContent.code, 'MAVT_MCP_WORKER_NOT_DISPATCHED');
+  assert.equal(fs.existsSync(path.join(f.temp, 'entered')), false);
+});
+
+test('worker timeout after entering a Case effect reports UNKNOWN once and clears its lane', async t => {
+  const f = fixture(t, { barrier: true }), a = f.startCase('case-timeout');
+  const asyncServer = require(f.entry).createServer({ pluginRoot: f.pluginRoot,
+    workerPool: { maxWorkers: 3, maxPending: 4, maxOperationMs: 1200 } });
+  t.after(() => asyncServer.close());
+  const action = asyncServer.callTool('mavt_case_act', { contextRef: a.contextRef, input: {} });
+  await awaitFile(path.join(f.temp, 'entered'));
+  const response = await within(action, 5000);
+  assert.equal(response.structuredContent.status, 'UNKNOWN', JSON.stringify(response.structuredContent));
+  assert.match(response.structuredContent.message, /timed out/i);
+  assert.equal(fs.readFileSync(path.join(f.temp, 'entered'), 'utf8').trim(), 'case-timeout');
+  const status = await within(asyncServer.callTool('mavt_run_status', { contextRef: f.prepared.contextRef }));
+  assert.equal(status.structuredContent.status, 'SUCCEEDED');
 });
 
 test('three blocked Case effects and blocked same-Run cancel leave a read lane for status', async t => {
