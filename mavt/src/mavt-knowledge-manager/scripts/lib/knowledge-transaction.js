@@ -71,11 +71,16 @@ function readDraft(draftPath, knowledgeRoot) {
 }
 
 function normalizeRequest(requestPath, knowledgeRoot) {
+  if (requestPath && typeof requestPath === 'object') return normalizeRequestValue(requestPath, knowledgeRoot, null);
   const resolvedRequest = path.resolve(requireString(requestPath, 'request path'));
   if (!fs.existsSync(resolvedRequest) || !fs.statSync(resolvedRequest).isFile()) {
     throw managerError('KNOWLEDGE_TRANSACTION_INVALID', `request file does not exist: ${resolvedRequest}`);
   }
   const raw = readJson(resolvedRequest, 'KNOWLEDGE_TRANSACTION_INVALID', 'request');
+  return normalizeRequestValue(raw, knowledgeRoot, resolvedRequest);
+}
+
+function normalizeRequestValue(raw, knowledgeRoot, resolvedRequest) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw managerError('KNOWLEDGE_TRANSACTION_INVALID', 'request must be an object');
   }
@@ -189,7 +194,8 @@ function buildPlan(workspace, requestPath, options = {}) {
       ...(operation.type === 'ADD' ? { entryId: operation.entry.entryId } : {}),
     })),
   };
-  const hashInput = { workspace: resolved.root, currentIndex, request: normalizedRequest, changes };
+  const hashInput = { workspace: resolved.root, currentIndex, request: normalizedRequest, changes,
+    ...(options.codeIdentity ? { codeIdentity: options.codeIdentity } : {}) };
   return {
     resolved,
     request,

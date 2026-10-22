@@ -826,7 +826,7 @@ function projectResponse(state, operation, response) {
     ...(resource ? { data: resource.data, resources: resource.resources } : {}) });
 }
 
-function prepareRun(request, options = {}) {
+function prepareRunBound(request, options = {}) {
   const startedMs = Date.now();
   assertRequest(request, 'prepareRun');
   const response = prepareCore(request.input, options);
@@ -841,8 +841,9 @@ function prepareRun(request, options = {}) {
   recordProtocolResponse(state.statePath, projected, Date.now() - startedMs, {
     ...options, agentFacingMetrics: { projectionMs },
   });
-  return projected;
+  return { response: projected, workspace: state.workspace, batchId: state.batchId, statePath: state.statePath };
 }
+function prepareRun(request, options = {}) { return prepareRunBound(request, options).response; }
 function executeRunRequestCore(statePath, request, options = {}) {
   assertRequest(request, request?.operation);
   if (request.operation === 'prepareRun') throw coordinatorError('当前 command 已绑定 run，不能创建另一个 run');
@@ -898,6 +899,7 @@ module.exports = {
   confirmRun,
   loadCoordinatorState,
   prepareRun,
+  prepareRunBound,
   recordCoordinatorInputFailure,
   executeRunRequest,
   failureResources,

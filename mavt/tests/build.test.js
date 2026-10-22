@@ -14,6 +14,10 @@ const helper = 'scripts/platform/adapters/android/helper/';
 const mavtRoot = 'src/mobile-ai-visual-test/';
 const inputs = {
   [mavtRoot + 'scripts/coordinator-agent.js']: 'module.exports = {};\n',
+  [mavtRoot + 'scripts/mcp/management-service.js']: 'module.exports = {};\n',
+  [mavtRoot + 'scripts/mcp/protocol.js']: 'module.exports = {};\n',
+  [mavtRoot + 'scripts/mcp/bindings.js']: 'module.exports = {};\n',
+  [mavtRoot + 'scripts/mcp/contract.js']: 'module.exports = {};\n',
   [mavtRoot + 'scripts/lib/action-common.sh']: '#!/bin/sh\nexit 0\n',
   [mavtRoot + 'scripts/platform/adapters/android/ime/AndroidManifest.xml']: '<manifest/>\n',
   [mavtRoot + 'scripts/platform/adapters/android/ime/res/xml/method.xml']: '<input-method/>\n',
@@ -34,6 +38,7 @@ const inputs = {
   'src/mavt-knowledge-manager/references/knowledge-contract.md': 'Knowledge rules\n',
   'src/mavt-knowledge-manager/assets/knowledge-entry-template.md': 'Knowledge template\n',
   'scripts/mavt-entry.js': '#!/usr/bin/env node\nconsole.log("entry");\n',
+  'scripts/mavt-mcp.js': '#!/usr/bin/env node\nconsole.log("mcp");\n',
   'hosts/codex/delegation.md': 'Host rules\n',
 };
 // Deliberate fixture release contract: not derived from the builder or source discovery.
@@ -48,6 +53,10 @@ const FIXTURE_RELEASE_FILES = [
   'runtime/mobile-ai-visual-test/scripts/coordinator-agent.js',
   'runtime/mobile-ai-visual-test/scripts/extra-资源.bin',
   'runtime/mobile-ai-visual-test/scripts/lib/action-common.sh',
+  'runtime/mobile-ai-visual-test/scripts/mcp/bindings.js',
+  'runtime/mobile-ai-visual-test/scripts/mcp/contract.js',
+  'runtime/mobile-ai-visual-test/scripts/mcp/management-service.js',
+  'runtime/mobile-ai-visual-test/scripts/mcp/protocol.js',
   'runtime/mobile-ai-visual-test/scripts/platform/adapters/android/action.sh',
   'runtime/mobile-ai-visual-test/scripts/platform/adapters/android/helper/ArtemisAccessibilityHelper.apk',
   'runtime/mobile-ai-visual-test/scripts/platform/adapters/android/helper/helper_manifest.json',
@@ -59,6 +68,7 @@ const FIXTURE_RELEASE_FILES = [
   'runtime/mobile-ai-visual-test/scripts/platform/adapters/harmony/observe.sh',
   'runtime/mobile-ai-visual-test/scripts/platform/adapters/ios/action.sh',
   'scripts/mavt-entry.js',
+  'scripts/mavt-mcp.js',
   'skills/author-cases/SKILL.md', 'skills/author-cases/agents/openai.yaml',
   'skills/manage-knowledge/SKILL.md', 'skills/manage-knowledge/agents/openai.yaml',
   'skills/run-tests/SKILL.md', 'skills/run-tests/agents/openai.yaml',

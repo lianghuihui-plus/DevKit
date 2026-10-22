@@ -23,6 +23,11 @@ const MAPPINGS = [
 ];
 const REQUIRED = [
   'scripts/mavt-entry.js',
+  'scripts/mavt-mcp.js',
+  `${MAVT}/scripts/mcp/management-service.js`,
+  `${MAVT}/scripts/mcp/protocol.js`,
+  `${MAVT}/scripts/mcp/bindings.js`,
+  `${MAVT}/scripts/mcp/contract.js`,
   'hosts/codex/delegation.md',
   ...['author-cases', 'run-tests', 'manage-knowledge']
     .flatMap((name) => [`skills/${name}/SKILL.md`, `skills/${name}/agents/openai.yaml`]),
