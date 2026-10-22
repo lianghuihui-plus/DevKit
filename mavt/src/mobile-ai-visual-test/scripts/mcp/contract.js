@@ -1,5 +1,6 @@
 'use strict';
 const { PUBLIC_CONTRACT } = require('../coordinator/agent-facing-contract');
+const { PUBLIC_CONTRACT: CASE_CONTRACT } = require('../case-runtime/agent-facing-contract');
 const { validateAgentJson } = require('../lib/agent-json-contract');
 const string = { type: 'string', minLength: 1 };
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -22,6 +23,9 @@ const schemas = {
     return [`mavt_run_${name}`, object({ contextRef, input: { type: 'object', ...PUBLIC_CONTRACT.methods[operationName].inputSchema } })];
   })),
   mavt_run_status: object({ contextRef }), mavt_run_report: object({ contextRef }),
+  ...Object.fromEntries(Object.values(CASE_CONTRACT.methods).map(method => [`mavt_case_${method.name}`,
+    object({ contextRef, input: method.inputSchema })])),
+  mavt_case_image: object({ contextRef, ref: string }),
 };
 const resultProperties = {
   contextRef, planHash: string, code: string, message: string, error: { type: 'object' },
@@ -34,7 +38,7 @@ const OUTPUT_SCHEMA = { type: 'object', description: 'Authoritative domain resul
   { type: 'object', required: ['type', 'cases'], properties: { type: { const: 'caseAuthoringImport' }, cases: { type: 'array', items: { type: 'object' } } }, additionalProperties: true },
 ] };
 function definitions() { return Object.entries(schemas).map(([name, inputSchema]) => ({ name, description: name.replace(/^mavt_/, '').replace(/_/g, ' '), inputSchema, outputSchema: OUTPUT_SCHEMA,
-  annotations: { readOnlyHint: /doctor|inspect|list|show|validate|status|report|_read$/.test(name), destructiveHint: /apply|cancel/.test(name), openWorldHint: /confirm|advance/.test(name) } })); }
+  annotations: { readOnlyHint: /doctor|inspect|list|show|validate|status|report|_read$|_image$/.test(name), destructiveHint: /apply|cancel/.test(name), openWorldHint: /confirm|advance/.test(name) } })); }
 function validate(name, args) {
   if (!Object.hasOwn(schemas, name)) throw Object.assign(new Error(`Unknown MAVT tool: ${name}`), { code: 'MAVT_MCP_TOOL_UNKNOWN' });
   const issues = validateAgentJson(args, schemas[name]);

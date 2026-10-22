@@ -308,4 +308,4 @@ function main(argv = process.argv.slice(2), options = {}) {
 
 if (require.main === module) main();
 
-module.exports = { main, parseRequest, run };
+module.exports = { invalidResponse, main, parseRequest, run };

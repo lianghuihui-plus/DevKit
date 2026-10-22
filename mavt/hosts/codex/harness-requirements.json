@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "bindingStrategy": "STATIC_SCOPED_REFERENCES",
+  "requirements": [
+    {
+      "id": "independent_context",
+      "status": "SESSION_REQUIRED",
+      "evidenceFields": ["independentContext.fresh", "independentContext.separateFromCoordinator"],
+      "failurePolicy": "STOP_VISUAL_EXECUTION"
+    },
+    {
+      "id": "case_image_visibility",
+      "status": "SESSION_REQUIRED",
+      "evidenceFields": ["caseImageVisibility.mcpImageVisibleToChild"],
+      "failurePolicy": "STOP_VISUAL_EXECUTION"
+    },
+    {
+      "id": "agent_handle_wait_cancel",
+      "status": "SESSION_REQUIRED",
+      "evidenceFields": ["agentHandleWaitCancel.realHandle", "agentHandleWaitCancel.wait", "agentHandleWaitCancel.cancel"],
+      "failurePolicy": "STOP_VISUAL_EXECUTION"
+    },
+    {
+      "id": "scoped_binding",
+      "status": "SESSION_REQUIRED",
+      "evidenceFields": ["scopedBinding.contextRefPassedToChild"],
+      "strategy": "STATIC_SCOPED_REFERENCES",
+      "failurePolicy": "STOP_VISUAL_EXECUTION"
+    }
+  ],
+  "offlineVerified": ["MCP tool discovery", "structured tool-call response", "image content transport"],
+  "unverified": ["model use of the Case image", "desktop child-image visibility", "device behavior"],
+  "claimsCallerAuthentication": false,
+  "claimsOsSandboxing": false
+}

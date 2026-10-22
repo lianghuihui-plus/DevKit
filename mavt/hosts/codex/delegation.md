@@ -2,6 +2,8 @@
 
 本文件只定义宿主协作方式。Coordinator 决定何时委托、绑定哪个 execution；Case Agent 的业务原则来自原样 Loader 返回的固定 Brief。Case Agent 是内部角色，不重新加载 Authoring 或执行协调 Skill；Brief 中出现原 Skill 身份也不改变角色。
 
+MCP 的会话能力核验以同一固定 bundle 的 `hosts/codex/harness-requirements.json` 为准。静态工具通过 Loader 返回的 execution/dispatch scoped `contextRef` 绑定；当前宿主须实际证明独立上下文、子 Agent 可见图片及真实创建/等待/取消句柄，缺项时停止视觉执行。引用仅提供路由与完整性边界，不代表调用者身份认证或操作系统隔离。
+
 ## 能力与上下文
 
 先检查本会话实际工具清单，确认能运行本地命令、以 stdin JSON 调用并等待同一进程、创建独立上下文 Agent、在子 Agent 中读取本地图片和固定运行时/工作区。使用真实工具名称、参数与返回的句柄，不假设所有 Codex 版本有相同 API，不指定未经支持或用户要求的模型。

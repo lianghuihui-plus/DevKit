@@ -5,10 +5,12 @@ const crypto = require('node:crypto');
 const { assertWorkspace } = require('../lib/workspace');
 const { bundleError, bundleLocations, plainPath, sha256, verifyBundle } = require('../lib/runtime-bundle');
 const { readRunBinding } = require('../lib/runtime-binding');
+const { assertActiveDispatch } = require('../lib/dispatch-lease');
 function invalid(message) { throw bundleError('MAVT_MCP_CONTEXT_INVALID', message); }
 function workspacePath(workspace) {
   if (typeof workspace !== 'string' || !path.isAbsolute(workspace) || path.resolve(workspace) !== workspace) invalid('workspace must be a canonical absolute path');
-  plainPath(path.parse(workspace).root, workspace.slice(path.parse(workspace).root.length), 'directory');
+  const canonical = fs.realpathSync(workspace);
+  plainPath(path.parse(canonical).root, canonical.slice(path.parse(canonical).root.length), 'directory');
   return workspace;
 }
 function existingPath(root, relative) {
@@ -36,8 +38,12 @@ function safeWorkspace(workspace, { allowUnready = false } = {}) {
 function createContext(binding) {
   safeWorkspace(binding.workspace);
   const manifest = verifyBundle(path.join(binding.workspace, '.mavt/runtime-bundles', binding.bundleId), binding.bundleId);
-  if (!['author', 'knowledge', 'coordinator'].includes(binding.role) || !['workspace', 'run'].includes(binding.scope) ||
+  if (!['author', 'knowledge', 'coordinator', 'case'].includes(binding.role) || !['workspace', 'run', 'execution'].includes(binding.scope) ||
     binding.scope === 'run' && (binding.role !== 'coordinator' || !binding.batchId) || binding.scope === 'workspace' && binding.batchId) invalid('invalid role/scope');
+  if (binding.scope === 'execution') {
+    if (binding.role !== 'case') invalid('execution scope requires Case role');
+    resolveCaseBinding(binding, bundleLocations(path.join(binding.workspace, '.mavt/runtime-bundles', binding.bundleId), manifest));
+  } else if (binding.role === 'case') invalid('Case role requires execution scope');
   const record = { schemaVersion: 1, ...binding };
   const directory = path.join(binding.workspace, '.mavt/mcp-contexts');
   fs.mkdirSync(directory, { recursive: true }); plainPath(binding.workspace, '.mavt/mcp-contexts', 'directory');
@@ -45,7 +51,28 @@ function createContext(binding) {
   const bytes = JSON.stringify(record);
   fs.writeFileSync(path.join(directory, `${id}.json`), bytes + '\n', { flag: 'wx', mode: 0o600 });
   return { contextRef: `mavt-context:${Buffer.from(JSON.stringify({ workspace: binding.workspace, id, digest: sha256(bytes) })).toString('base64url')}`,
-    workspace: binding.workspace, bundleId: manifest.bundleId, role: record.role, scope: record.scope, ...(record.batchId ? { batchId: record.batchId } : {}) };
+    ...bundleLocations(path.join(binding.workspace, '.mavt/runtime-bundles', binding.bundleId), manifest),
+    workspace: binding.workspace, role: record.role, scope: record.scope, ...(record.batchId ? { batchId: record.batchId } : {}),
+    ...(record.executionId ? { executionId: record.executionId, dispatchSequence: record.dispatchSequence } : {}) };
+}
+function resolveCaseBinding(record, locations) {
+  const { workspace, batchId, executionId, caseProtocolSha, dispatchSequence, execDir } = record;
+  if (typeof batchId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(batchId) ||
+    typeof executionId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(executionId) ||
+    typeof caseProtocolSha !== 'string' || !caseProtocolSha || !Number.isInteger(dispatchSequence) || dispatchSequence < 1 ||
+    typeof execDir !== 'string' || !path.isAbsolute(execDir) || path.resolve(execDir) !== execDir) invalid('invalid Case binding');
+  const relative = path.relative(workspace, execDir).split(path.sep);
+  if (relative.length !== 6 || relative[0] !== 'cases' || relative[2] !== 'platforms' || relative[4] !== 'executions' || relative[5] !== executionId) invalid('Case execution path is outside its scope');
+  plainPath(workspace, path.relative(workspace, execDir), 'directory');
+  const execution = JSON.parse(fs.readFileSync(plainPath(execDir, 'execution.json', 'file'), 'utf8'));
+  const runtime = JSON.parse(fs.readFileSync(plainPath(execDir, 'runtime.json', 'file'), 'utf8'));
+  if (execution.schemaVersion !== 14 || execution.executionId !== executionId || execution.batchId !== batchId ||
+    execution.caseProtocolSha !== caseProtocolSha || runtime.executionId !== executionId ||
+    runtime.sessionRef?.statePath !== path.join(workspace, 'runs', batchId, 'coordinator-state.json')) invalid('Case execution identity or protocol changed');
+  const loaded = readRunBinding(workspace, batchId);
+  if (!loaded.binding || loaded.bundleId !== record.bundleId) invalid('Case Run bundle mismatch');
+  assertActiveDispatch(path.join(workspace, 'runs', batchId, 'handoffs', executionId), executionId, dispatchSequence);
+  return { execDir, execution, runtime, state: loaded.state, statePath: loaded.locations.state };
 }
 function resolveContext(contextRef, expected = {}) {
   try {
@@ -61,6 +88,10 @@ function resolveContext(contextRef, expected = {}) {
     const bundleRoot = plainPath(record.workspace, `.mavt/runtime-bundles/${record.bundleId}`, 'directory');
     const manifest = verifyBundle(bundleRoot, record.bundleId);
     const locations = bundleLocations(bundleRoot, manifest);
+    if (record.scope === 'execution') {
+      if (record.role !== 'case') invalid('Case role/scope mismatch');
+      return { ...record, ...locations, ...resolveCaseBinding(record, locations) };
+    }
     if (record.batchId) {
       const loaded = readRunBinding(record.workspace, record.batchId);
       if (!loaded.binding || loaded.bundleId !== record.bundleId) invalid('Run bundle mismatch');
@@ -68,7 +99,8 @@ function resolveContext(contextRef, expected = {}) {
     }
     return { ...record, ...locations };
   } catch (error) {
-    if (String(error.code).startsWith('MAVT_RUNTIME_') || error.code === 'MAVT_MCP_CONTEXT_INVALID' || error.code === 'WORKSPACE_INVALID') throw error;
+    if (String(error.code).startsWith('MAVT_RUNTIME_') || String(error.code).startsWith('HANDOFF_') ||
+      error.code === 'MAVT_MCP_CONTEXT_INVALID' || error.code === 'WORKSPACE_INVALID') throw error;
     invalid(error.message);
   }
 }

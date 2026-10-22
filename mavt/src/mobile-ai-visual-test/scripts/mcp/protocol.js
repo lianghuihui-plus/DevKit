@@ -46,5 +46,6 @@ function main(server, options = {}) {
     if (result && typeof result.then === 'function') result.then(value => { if (value) output.write(JSON.stringify(value) + '\n'); }, failure => output.write(JSON.stringify(error(null, -32603, failure.message)) + '\n'));
     else if (result) output.write(JSON.stringify(result) + '\n');
   });
+  input.on('close', () => { if (server.close) server.close(); });
 }
 module.exports = { createProtocol, main, VERSIONS };

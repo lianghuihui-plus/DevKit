@@ -18,6 +18,7 @@ function runFailure(context, operation, error) {
   return { ...response, message: error.message, ...(error.details !== undefined ? { details: error.details } : {}) };
 }
 function diagnostic(workspace) {
+  workspace = canonicalUserWorkspace(workspace);
   safeWorkspace(workspace);
   const runs = fs.existsSync(path.join(workspace, 'runs')) ? fs.readdirSync(path.join(workspace, 'runs')).filter(name => !name.startsWith('.')).sort().map(batchId => {
     try { const loaded = readRunBinding(workspace, batchId); return { batchId, phase: loaded.state.phase, legacy: !loaded.binding, ...(loaded.binding ? { bundleId: loaded.bundleId } : {}) }; }
@@ -32,8 +33,12 @@ function diagnostic(workspace) {
   return { status: runs.some(run => run.code) || bundles.some(bundle => bundle.status === 'INVALID') ? 'FAILED' : 'SUCCEEDED', workspace, runs, bundles,
     staging: { runs: entries('.mavt/run-staging'), bundles: entries('.mavt/runtime-bundles').filter(name => name.startsWith('.staging-')) }, reportPath: path.join(workspace, 'index.html') };
 }
+function canonicalUserWorkspace(workspace) {
+  workspacePath(workspace);
+  return fs.realpathSync(workspace);
+}
 function open(pluginRoot, args, initialize) {
-  workspacePath(args.workspace);
+  args = { ...args, workspace: canonicalUserWorkspace(args.workspace) };
   if (initialize) {
     // Protect existing trees before ensureWorkspace performs initialization or recovery.
     safeWorkspace(args.workspace, { allowUnready: true });
@@ -63,7 +68,10 @@ function invokeBound(context, name, args) {
       const transaction = knowledge('knowledge-transaction.js');
       for (const operation of args.request.operations) if (operation.draftPath) {
         const draft = operation.draftPath;
-        plainPath(path.parse(draft).root, draft.slice(path.parse(draft).root.length), 'file');
+        if (fs.lstatSync(draft).isSymbolicLink()) throw bundleError('MAVT_MCP_INPUT_INVALID', 'knowledge draft must be an ordinary file');
+        const canonical = fs.realpathSync(draft);
+        plainPath(path.parse(canonical).root, canonical.slice(path.parse(canonical).root.length), 'file');
+        operation.draftPath = canonical;
       }
       if (action === 'apply') existingPath(context.workspace, '.mavt/knowledge-maintenance/backups');
       const options = { codeIdentity: context.bundleId };
@@ -103,6 +111,7 @@ function invokeBound(context, name, args) {
   catch (error) { return runFailure(context, request.operation, error); }
 }
 function invokeValidated(context, name, args) {
+  if (name.startsWith('mavt_case_')) throw bundleError('MAVT_MCP_CONTEXT_INVALID', 'Case execution scope is required');
   let validationError;
   try { validate(name, args); }
   catch (error) { if (error.code !== 'MAVT_MCP_INPUT_INVALID') throw error; validationError = error; }
@@ -116,6 +125,10 @@ function invokeValidated(context, name, args) {
     throw validationError;
   }
   return invokeBound(context, name, args);
+}
+function invokeCaseValidated(context, name, args) {
+  if (context.role !== 'case' || context.scope !== 'execution') throw bundleError('MAVT_MCP_CONTEXT_INVALID', 'Case execution scope is required');
+  return load(context, 'scripts/mcp/case-service').invoke(context, name, args);
 }
 function execute(pluginRoot, name, args) {
   if (['mavt_workspace_init', 'mavt_workspace_open', 'mavt_workspace_doctor'].includes(name)) {
@@ -132,26 +145,34 @@ function execute(pluginRoot, name, args) {
   // The whole request is validated by its selected, verified pinned implementation.
   const implementation = fs.existsSync(path.join(context.runtimeRoot, 'scripts/mcp/management-service.js'))
     ? load(context, 'scripts/mcp/management-service.js') : null;
+  if (context.role === 'case') {
+    if (typeof implementation?.invokeCaseValidated !== 'function') return { status: 'REJECTED', code: 'MAVT_MCP_LEGACY_INTERFACE',
+      message: 'This fixed bundle lacks Case MCP; continue with its original Case CLI/Loader',
+      command: context.runtime?.entry ? `'${context.runtime.entry.replace(/'/g, `'"'"'`)}' --dispatch-sequence ${context.dispatchSequence}` : undefined,
+      runtimeRoot: context.runtimeRoot, documentationRoot: context.documentationRoot, hostProfilePath: context.hostProfilePath };
+    return implementation.invokeCaseValidated(context, name, args);
+  }
   if (typeof implementation?.invokeValidated !== 'function') return { status: 'REJECTED', code: 'MAVT_MCP_LEGACY_INTERFACE',
     message: 'This fixed bundle lacks the validated MCP interface; continue with its original CLI/Loader',
     ...(context.state ? { command: context.state.command } : {}), runtimeRoot: context.runtimeRoot, knowledgeRoot: context.knowledgeRoot };
   return implementation.invokeValidated(context, name, args);
 }
 function toolResult(value) {
+  const { image, ...structured } = value;
   const failed = ['FAILED', 'REJECTED', 'UNKNOWN', 'REQUEST_INVALID'].includes(value.status);
-  const summary = { ...Object.fromEntries(Object.entries(value).filter(([key, entry]) => ['string', 'number', 'boolean'].includes(typeof entry) && !['content', 'command'].includes(key))),
+  const summary = { ...Object.fromEntries(Object.entries(structured).filter(([key, entry]) => ['string', 'number', 'boolean'].includes(typeof entry) && !['content', 'command'].includes(key))),
     status: value.status || value.type || 'SUCCEEDED', ...(value.error ? { error: value.error } : {}),
     ...(value.result ? { result: Object.fromEntries(Object.entries(value.result).filter(([key]) => key !== 'command')) } : {}),
     ...(value.data ? { data: { ref: value.data.ref, type: value.data.type } } : {}),
     ...(value.resources?.length ? { resources: value.resources } : {}),
-    fields: Object.keys(value) };
-  return { content: [{ type: 'text', text: JSON.stringify(summary) }], structuredContent: value, isError: failed };
+    fields: Object.keys(structured) };
+  return { content: [{ type: 'text', text: JSON.stringify(summary) }, ...(image ? [image] : [])], structuredContent: structured, isError: failed };
 }
 function failureValue(error) {
   const code = error.code || 'MAVT_MCP_TECHNICAL';
-  const rejected = /INVALID|STALE|NOT_FOUND|DUPLICATE|CONFLICT|REQUIRED|NOT_ALLOWED|MISSING|RESOURCE_UNKNOWN|MCP_TOOL_UNKNOWN/.test(code) ||
+  const rejected = /INVALID|STALE|NOT_FOUND|DUPLICATE|CONFLICT|REQUIRED|NOT_ALLOWED|MISSING|RESOURCE_UNKNOWN|MCP_TOOL_UNKNOWN|HANDOFF_/.test(code) ||
     code.startsWith('KNOWLEDGE_') && !/FAILED|INTERRUPTED|TECHNICAL/.test(code);
-  return { status: ['UNKNOWN', 'FAILED', 'REJECTED'].includes(error.status) ? error.status : rejected ? 'REJECTED' : 'FAILED', code, message: error.message,
+  return { status: ['UNKNOWN', 'FAILED', 'REJECTED'].includes(error.status) ? error.status : /INTEGRITY|ARTIFACT_CHANGED/.test(code) ? 'FAILED' : rejected ? 'REJECTED' : 'FAILED', code, message: error.message,
     ...(error.details !== undefined ? { details: error.details } : {}), ...(error.issues ? { issues: error.issues } : {}), ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}) };
 }
 function createServer({ pluginRoot }) {
@@ -161,4 +182,4 @@ function createServer({ pluginRoot }) {
     catch (error) { return toolResult(failureValue(error)); }
   } };
 }
-module.exports = { createServer, execute, invokeValidated, invokeBound, runFailure, failureValue, toolResult, diagnostic };
+module.exports = { createServer, execute, invokeCaseValidated, invokeValidated, invokeBound, runFailure, failureValue, toolResult, diagnostic };

@@ -27,8 +27,13 @@ const REQUIRED = [
   `${MAVT}/scripts/mcp/management-service.js`,
   `${MAVT}/scripts/mcp/protocol.js`,
   `${MAVT}/scripts/mcp/bindings.js`,
+  `${MAVT}/scripts/mcp/case-service.js`,
+  `${MAVT}/scripts/mcp/host-capabilities.js`,
+  `${MAVT}/scripts/mcp/worker-child.js`,
+  `${MAVT}/scripts/mcp/worker-pool.js`,
   `${MAVT}/scripts/mcp/contract.js`,
   'hosts/codex/delegation.md',
+  'hosts/codex/harness-requirements.json',
   ...['author-cases', 'run-tests', 'manage-knowledge']
     .flatMap((name) => [`skills/${name}/SKILL.md`, `skills/${name}/agents/openai.yaml`]),
   `${MAVT}/scripts/coordinator-agent.js`,

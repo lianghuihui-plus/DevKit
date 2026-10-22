@@ -62,12 +62,20 @@ function main(argv = process.argv.slice(2)) {
   if (matches.length !== 1) throw Object.assign(new Error('Handoff execution binding is unavailable or ambiguous'), { code: 'HANDOFF_BINDING_INVALID' });
   const resource = require('./case-runtime/agent-resource-store').publishCaseBrief(matches[0], options.handoffPath, options.workspaceRoot);
   const handoff = readJson(options.handoffPath, null);
-  const output = `${JSON.stringify(successEnvelope({ operation: 'bootstrap',
+  claim();
+  const response = successEnvelope({ operation: 'bootstrap',
     result: { outcome: 'CASE_BRIEF_READY', executionId: options.executionId,
       dispatchMode: handoff.mode, dispatchSequence: handoff.sequence },
     data: resource.data, resources: resource.resources,
-  }))}\n`;
-  claim();
+  });
+  const bundle = require('./lib/runtime-bundle').bundleForRuntime(path.resolve(__dirname, '..'));
+  const service = bundle && require('./mcp/management-service');
+  const caseContext = typeof service?.invokeCaseValidated === 'function'
+    ? require('./mcp/bindings').createContext({ workspace: options.workspaceRoot, bundleId: bundle.bundleId,
+      role: 'case', scope: 'execution', batchId: handoff.batchId, executionId: options.executionId,
+      caseProtocolSha: options.caseProtocolSha, dispatchSequence: handoff.sequence, execDir: matches[0] })
+    : null;
+  const output = `${JSON.stringify(caseContext ? { ...response, ...caseContext } : response)}\n`;
   process.stdout.write(output);
 }
 

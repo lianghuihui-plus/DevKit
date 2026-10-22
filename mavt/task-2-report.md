@@ -1,0 +1,21 @@
+# Task 2: Case MCP, images, and Harness contract
+
+## Delivered interface
+
+- The fixed Case Loader claims and validates its handoff before returning `contextRef` alongside the original Case brief. Its value is `mavt-context:<base64url(JSON {workspace,id,digest})>`; the sealed record binds `workspace`, `bundleId`, `role: "case"`, `scope: "execution"`, `batchId`, `executionId`, `caseProtocolSha`, `dispatchSequence`, and `execDir`. Every Case call rechecks the record digest, bundle integrity, Run identity, execution files, and active dispatch. This is a scoped locator, not caller authentication or an OS sandbox.
+- Loader output also contains `bundleRoot`, `runtimeRoot`, `documentationRoot`, `knowledgeRoot`, and `hostProfilePath`. `documentationRoot` is the pinned `runtime/mobile-ai-visual-test` root; Case principles and method/error docs are under `references/case-runtime.md`, `references/case-execution-principles.md`, and `references/case-runtime/{methods,errors}/`. `hostProfilePath` points to the pinned `hosts/codex/delegation.md`; the machine-readable contract is at `bundleRoot/hosts/codex/harness-requirements.json`.
+- Discovery exposes 30 tools: 17 management tools, 12 Case methods from `PUBLIC_CONTRACT`, and `mavt_case_image`. The image tool reads only a requested published screenshot, checks its bytes and metadata, and emits an MCP image block with the exact media type and bytes; it does not create visual-inspection evidence.
+- The actual stdio entry uses a persistent child-process pool by default. `createServer({ workerPool: false })` remains synchronous for direct callers; `createServer({ workerPool: {...} })` permits bounded configuration. Defaults are `maxWorkers: 5`, `maxPending: 64`, `idleTimeoutMs: 30000`, and `maxOperationMs: 1800000`. The effect limit leaves two worker slots available for read/control work, and the non-read limit leaves one for reads; the pool also serializes same-context writes, rejects undispatched overflow as `MAVT_MCP_BUSY`, and reports a dispatched worker death/timeout as `UNKNOWN` without replay. Idle children disconnect after 30 seconds; stdio EOF stops admission, drains accepted calls, then disconnects all children.
+- Older fixed bundles without Case MCP retain the original Loader/CLI handoff. New installations route old Case references through their verified pinned implementation; Skills and default transport remain unchanged.
+
+## Verification
+
+- `npm test`: PASS on 2026-10-22; runtime and knowledge self-tests, 58 plugin tests with zero failures, and 51 generated documentation files checked.
+- `node tests/host-mcp-probe.js`: PASS against the actual Codex app-server using a temporary isolated `HOME`/`CODEX_HOME`, no plugin installation and no model turn. Connected server discovered 30 tools, doctor succeeded, and the 68-byte PNG image block matched the published bytes exactly. Set `MAVT_CODEX_CLI` to select another Codex executable.
+- Regression evidence includes interleaved Cases and cross-scope refusal, replaced dispatch refusal on reads, pinned A/legacy CLI behavior, repeated Case input errors counted `1 -> 2` and stalled, Coordinator status/cancel with blocked Case calls, an idle read lane despite a full effect queue, bounded overflow, crash `UNKNOWN` without replay, EOF drain, and corrupt/missing image rejection.
+
+## Limits and Task 3 handoff
+
+- The host probe proves transport discovery, structured calls, and image bytes only. Independent child context, child-visible images, and real create/wait/cancel handles remain `SESSION_REQUIRED` in the Harness contract; no desktop child or device action was run.
+- Worker crash `UNKNOWN` non-replay is directly covered; the timeout branch and a real external Provider's `UNKNOWN` through Case MCP are not separately simulated here. Existing Case Runtime tests cover domain semantics, but this is a remaining end-to-end evidence gap.
+- Pool throughput and startup overhead are unmeasured. Task 3 must benchmark identical CLI and persistent-MCP workloads, including cold/warm calls, read-only progress, large resources, response bytes, and subprocess counts before considering a Skill default switch. The worker bounds above are functional defaults, not tuned performance claims.
