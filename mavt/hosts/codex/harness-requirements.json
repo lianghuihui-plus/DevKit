@@ -4,26 +4,46 @@
   "requirements": [
     {
       "id": "independent_context",
+      "stage": "PRE_DELEGATION",
       "status": "SESSION_REQUIRED",
       "evidenceFields": ["independentContext.fresh", "independentContext.separateFromCoordinator"],
       "failurePolicy": "STOP_VISUAL_EXECUTION"
     },
     {
       "id": "case_image_visibility",
+      "stage": "PRE_DELEGATION",
+      "transportMode": "CLI_DEFAULT",
       "status": "SESSION_REQUIRED",
-      "evidenceFields": ["caseImageVisibility.mcpImageVisibleToChild"],
+      "evidenceFields": ["caseImageVisibility.localImageVisibleToChild"],
+      "failurePolicy": "STOP_VISUAL_EXECUTION"
+    },
+    {
+      "id": "case_image_visibility",
+      "stage": "PRE_DELEGATION",
+      "transportMode": "MCP_PREVIEW",
+      "status": "SESSION_REQUIRED",
+      "anyEvidenceFields": ["caseImageVisibility.mcpImageVisibleToChild", "caseImageVisibility.localImageVisibleToChild"],
       "failurePolicy": "STOP_VISUAL_EXECUTION"
     },
     {
       "id": "agent_handle_wait_cancel",
+      "stage": "PRE_DELEGATION",
       "status": "SESSION_REQUIRED",
       "evidenceFields": ["agentHandleWaitCancel.realHandle", "agentHandleWaitCancel.wait", "agentHandleWaitCancel.cancel"],
       "failurePolicy": "STOP_VISUAL_EXECUTION"
     },
     {
-      "id": "scoped_binding",
+      "id": "loader_claim",
+      "stage": "POST_LOADER",
       "status": "SESSION_REQUIRED",
-      "evidenceFields": ["scopedBinding.contextRefPassedToChild"],
+      "evidenceFields": ["loaderResponse.result.executionId", "loaderResponse.result.dispatchSequence"],
+      "failurePolicy": "STOP_VISUAL_EXECUTION"
+    },
+    {
+      "id": "scoped_binding",
+      "stage": "POST_LOADER_MCP",
+      "status": "SESSION_REQUIRED",
+      "evidenceFields": ["loaderResponse.contextRef", "loaderResponse.executionId", "loaderResponse.dispatchSequence"],
       "strategy": "STATIC_SCOPED_REFERENCES",
       "failurePolicy": "STOP_VISUAL_EXECUTION"
     }

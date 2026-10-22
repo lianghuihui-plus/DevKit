@@ -42,7 +42,7 @@ function createContext(binding) {
     binding.scope === 'run' && (binding.role !== 'coordinator' || !binding.batchId) || binding.scope === 'workspace' && binding.batchId) invalid('invalid role/scope');
   if (binding.scope === 'execution') {
     if (binding.role !== 'case') invalid('execution scope requires Case role');
-    resolveCaseBinding(binding, bundleLocations(path.join(binding.workspace, '.mavt/runtime-bundles', binding.bundleId), manifest));
+    resolveCaseBinding(binding, bundleLocations(path.join(binding.workspace, '.mavt/runtime-bundles', binding.bundleId), manifest), manifest);
   } else if (binding.role === 'case') invalid('Case role requires execution scope');
   const record = { schemaVersion: 1, ...binding };
   const directory = path.join(binding.workspace, '.mavt/mcp-contexts');
@@ -55,7 +55,7 @@ function createContext(binding) {
     workspace: binding.workspace, role: record.role, scope: record.scope, ...(record.batchId ? { batchId: record.batchId } : {}),
     ...(record.executionId ? { executionId: record.executionId, dispatchSequence: record.dispatchSequence } : {}) };
 }
-function resolveCaseBinding(record, locations) {
+function resolveCaseBinding(record, locations, manifest) {
   const { workspace, batchId, executionId, caseProtocolSha, dispatchSequence, execDir } = record;
   if (typeof batchId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(batchId) ||
     typeof executionId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(executionId) ||
@@ -69,7 +69,7 @@ function resolveCaseBinding(record, locations) {
   if (execution.schemaVersion !== 14 || execution.executionId !== executionId || execution.batchId !== batchId ||
     execution.caseProtocolSha !== caseProtocolSha || runtime.executionId !== executionId ||
     runtime.sessionRef?.statePath !== path.join(workspace, 'runs', batchId, 'coordinator-state.json')) invalid('Case execution identity or protocol changed');
-  const loaded = readRunBinding(workspace, batchId);
+  const loaded = readRunBinding(workspace, batchId, { verifiedBundle: { bundleRoot: locations.bundleRoot, manifest } });
   if (!loaded.binding || loaded.bundleId !== record.bundleId) invalid('Case Run bundle mismatch');
   assertActiveDispatch(path.join(workspace, 'runs', batchId, 'handoffs', executionId), executionId, dispatchSequence);
   return { execDir, execution, runtime, state: loaded.state, statePath: loaded.locations.state };
@@ -90,10 +90,10 @@ function resolveContext(contextRef, expected = {}) {
     const locations = bundleLocations(bundleRoot, manifest);
     if (record.scope === 'execution') {
       if (record.role !== 'case') invalid('Case role/scope mismatch');
-      return { ...record, ...locations, ...resolveCaseBinding(record, locations) };
+      return { ...record, ...locations, ...resolveCaseBinding(record, locations, manifest) };
     }
     if (record.batchId) {
-      const loaded = readRunBinding(record.workspace, record.batchId);
+      const loaded = readRunBinding(record.workspace, record.batchId, { verifiedBundle: { bundleRoot, manifest } });
       if (!loaded.binding || loaded.bundleId !== record.bundleId) invalid('Run bundle mismatch');
       return { ...record, ...locations, state: loaded.state, statePath: loaded.locations.state };
     }

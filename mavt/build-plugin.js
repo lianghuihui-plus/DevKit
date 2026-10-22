@@ -9,6 +9,8 @@ const DEFAULT_REPO = __dirname;
 const MAVT = 'src/mobile-ai-visual-test';
 const KNOWLEDGE = 'src/mavt-knowledge-manager';
 const RELEASE_FILE_LIST = 'release-files.json';
+const PREVIEW_ONLY_FILES = new Set(['.mcp.json', 'scripts/mavt-mcp.js']);
+const PREVIEW_ONLY_PREFIX = 'runtime/mobile-ai-visual-test/scripts/mcp/';
 const MAPPINGS = [
   [`${MAVT}/scripts`, 'runtime/mobile-ai-visual-test/scripts'],
   [`${MAVT}/prompts`, 'runtime/mobile-ai-visual-test/prompts'],
@@ -20,8 +22,10 @@ const MAPPINGS = [
   ['hosts', 'hosts'],
   ['skills', 'skills'],
   ['.codex-plugin/plugin.json', '.codex-plugin/plugin.json'],
+  ['.mcp.json', '.mcp.json'],
 ];
 const REQUIRED = [
+  '.mcp.json',
   'scripts/mavt-entry.js',
   'scripts/mavt-mcp.js',
   `${MAVT}/scripts/mcp/management-service.js`,
@@ -112,7 +116,7 @@ function validateReleasePaths(value) {
     const parts = typeof relative === 'string' ? relative.split('/') : [];
     if (!parts.length || /[\\\x00-\x1f\x7f]/.test(relative) ||
         parts.some((part) => !part || part === '.' || part === '..') ||
-        !MAPPINGS.some(([source, destination]) => source.endsWith('/plugin.json')
+        !MAPPINGS.some(([source, destination]) => source.endsWith('/plugin.json') || destination === '.mcp.json'
           ? relative === destination : relative.startsWith(destination + '/')) ||
         excluded(relative, false)) {
       throw new Error(`Invalid release file path: ${JSON.stringify(relative)}`);
@@ -169,7 +173,7 @@ function writeJson(filename, value) {
   fs.writeFileSync(filename, JSON.stringify(value, null, 2) + '\n');
 }
 
-function buildPlugin({ repoRoot = DEFAULT_REPO, outputRoot, includeTests = false } = {}) {
+function buildPlugin({ repoRoot = DEFAULT_REPO, outputRoot, includeTests = false, mcpPreview = false } = {}) {
   if (!outputRoot || !path.isAbsolute(outputRoot)) throw new Error('Provide an absolute outputRoot (--output /absolute/path).');
   repoRoot = path.resolve(repoRoot);
   outputRoot = path.resolve(outputRoot);
@@ -185,8 +189,13 @@ function buildPlugin({ repoRoot = DEFAULT_REPO, outputRoot, includeTests = false
   const actualHash = crypto.createHash('sha256').update(fs.readFileSync(path.join(helperRoot, 'ArtemisAccessibilityHelper.apk'))).digest('hex');
   if (actualHash !== helper.sha256) throw new Error('Android Helper APK hash does not match helper_manifest.json. Restore the bundled APK and matching manifest.');
   const plugin = JSON.parse(fs.readFileSync(path.join(repoRoot, '.codex-plugin/plugin.json'), 'utf8'));
-  if (plugin.name !== 'mavt' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(plugin.version) || plugin.skills !== './skills/') {
-    throw new Error('Invalid MAVT plugin manifest: require name, semantic version and ./skills/ entry.');
+  if (plugin.name !== 'mavt' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(plugin.version) || plugin.skills !== './skills/' || plugin.mcpServers !== './.mcp.json') {
+    throw new Error('Invalid MAVT plugin manifest: require name, semantic version, ./skills/ and ./.mcp.json entries.');
+  }
+  const registration = JSON.parse(fs.readFileSync(path.join(repoRoot, '.mcp.json'), 'utf8'));
+  if (Object.keys(registration).join(',') !== 'mavt' || registration.mavt.command !== 'node' ||
+    JSON.stringify(registration.mavt.args) !== JSON.stringify(['./scripts/mavt-mcp.js']) || registration.mavt.cwd !== '.') {
+    throw new Error('Invalid MAVT MCP registration: require a plugin-relative Node entry and root cwd.');
   }
   const { createManifest, verifyBundle } = require('./src/mobile-ai-visual-test/scripts/lib/runtime-bundle');
   fs.mkdirSync(path.dirname(outputRoot), { recursive: true });
@@ -194,10 +203,20 @@ function buildPlugin({ repoRoot = DEFAULT_REPO, outputRoot, includeTests = false
   try {
     const pluginRoot = path.join(staging, 'plugins/mavt');
     for (const file of files) {
+      if (!mcpPreview && (PREVIEW_ONLY_FILES.has(file.destination) || file.destination.startsWith(PREVIEW_ONLY_PREFIX))) continue;
       const target = path.join(pluginRoot, file.destination);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.copyFileSync(file.source, target, fs.constants.COPYFILE_EXCL);
       fs.chmodSync(target, file.mode);
+    }
+    if (!mcpPreview) {
+      const filename = path.join(pluginRoot, '.codex-plugin/plugin.json');
+      const ordinaryPlugin = JSON.parse(fs.readFileSync(filename, 'utf8'));
+      delete ordinaryPlugin.mcpServers;
+      writeJson(filename, ordinaryPlugin);
+    } else {
+      writeJson(path.join(pluginRoot, 'runtime/mobile-ai-visual-test/mcp-preview.json'),
+        { schemaVersion: 1, mcpPreview: true });
     }
     const manifest = createManifest(pluginRoot, plugin.version);
     writeJson(path.join(pluginRoot, 'bundle.manifest.json'), manifest);
@@ -225,12 +244,14 @@ function main(argv) {
   }
   let outputRoot = path.join(DEFAULT_REPO, 'dist/mavt-marketplace');
   let includeTests = false;
+  let mcpPreview = false;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--output' && argv[index + 1]) outputRoot = argv[++index];
     else if (argv[index] === '--include-tests') includeTests = true;
-    else throw new Error(`Unknown or incomplete argument: ${argv[index]}. Usage: node build-plugin.js --output /absolute/path [--include-tests]`);
+    else if (argv[index] === '--mcp-preview') mcpPreview = true;
+    else throw new Error(`Unknown or incomplete argument: ${argv[index]}. Usage: node build-plugin.js --output /absolute/path [--include-tests] [--mcp-preview]`);
   }
-  const result = buildPlugin({ outputRoot, includeTests });
+  const result = buildPlugin({ outputRoot, includeTests, mcpPreview });
   process.stdout.write(JSON.stringify({ marketplaceRoot: result.marketplaceRoot, pluginRoot: result.pluginRoot, bundleId: result.manifest.bundleId }) + '\n');
 }
 

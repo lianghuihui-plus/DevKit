@@ -1,0 +1,7 @@
+{
+  "mavt": {
+    "command": "node",
+    "args": ["./scripts/mavt-mcp.js"],
+    "cwd": "."
+  }
+}

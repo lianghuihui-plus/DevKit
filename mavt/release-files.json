@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "files": [
     ".codex-plugin/plugin.json",
+    ".mcp.json",
     "hosts/codex/delegation.md",
     "hosts/codex/harness-requirements.json",
     "runtime/mavt-knowledge-manager/assets/knowledge-entry-template.md",

@@ -85,6 +85,13 @@ assert.deepStrictEqual(run(['list', '--workspace', workspace]).entries.map((item
 assert.match(run(['show', '--workspace', workspace, '--entry-id', 'K-cli-001']).content, /^# K-cli-001/);
 assert.strictEqual(run(['validate', '--workspace', workspace]).entryCount, 1);
 
+const transactionModule = require.resolve('../lib/knowledge-transaction');
+const manager = require('../knowledge-manager');
+for (const [command, extra] of [['inspect', {}], ['list', {}], ['show', { entryId: 'K-cli-001' }], ['validate', {}]]) {
+  assert.strictEqual(manager.execute({ command, workspace, ...extra }).status, 'VALID');
+  assert.strictEqual(require.cache[transactionModule], undefined, `${command} must not load transaction code`);
+}
+
 const updateDraft = path.join(temp, 'update-draft.md');
 const updateRequest = path.join(temp, 'update-request.json');
 fs.writeFileSync(updateDraft, entry('K-cli-001').replace('该现象是已确认的平台差异。', '该现象已经复核并确认适用边界。'));

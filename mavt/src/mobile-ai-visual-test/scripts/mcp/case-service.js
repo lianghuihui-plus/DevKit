@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { PUBLIC_CONTRACT } = require('../case-runtime/agent-facing-contract');
-const { run, invalidResponse } = require('../case-runtime/agent-facing-client');
+const { runInVerifiedCaseContext, invalidResponse } = require('../case-runtime/agent-facing-client');
 const { readPublishedResource } = require('../case-runtime/agent-resource-store');
 const { validate } = require('./contract');
 
@@ -35,7 +35,7 @@ function invoke(context, name, args) {
       field: issue.fieldPath || issue.field || 'input', code: issue.code || 'INVALID', expected: issue.expected,
     })));
   }
-  return run(context.execDir, { operation: method, input: args.input }, { hostTransport: 'mcp' });
+  return runInVerifiedCaseContext(context, { operation: method, input: args.input }, { hostTransport: 'mcp' });
 }
 
 module.exports = { invoke };

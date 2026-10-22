@@ -11,7 +11,9 @@ const { buildPlugin } = require('../build-plugin');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
 function fixture(root) {
-  const built = buildPlugin({ outputRoot: path.join(root, 'built') });
+  const ordinary = buildPlugin({ outputRoot: path.join(root, 'ordinary') });
+  assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(path.join(ordinary.pluginRoot, '.codex-plugin/plugin.json'))), 'mcpServers'), false);
+  const built = buildPlugin({ outputRoot: path.join(root, 'built'), mcpPreview: true });
   const entry = path.join(built.pluginRoot, 'scripts/mavt-mcp.js');
   const server = require(entry).createServer({ pluginRoot: built.pluginRoot });
   const call = (name, args) => server.callTool(name, args).structuredContent;
@@ -41,7 +43,16 @@ function fixture(root) {
   const image = require(path.join(prepared.runtimeRoot, 'scripts/case-runtime/agent-resource-store')).publishResource(execDir,
     { type: 'screenshot', id: 'screenshots/probe.png', source: { kind: 'binary', path: 'screenshots/probe.png', mediaType: 'image/png' },
       params: { width: 1, height: 1, mediaType: 'image/png' } });
-  return { entry, workspace, caseContext, imageRef: image.data.ref };
+  const relocated = path.join(root, 'relocated-marketplace');
+  fs.renameSync(built.marketplaceRoot, relocated);
+  const pluginRoot = path.join(relocated, 'plugins/mavt');
+  const manifest = JSON.parse(fs.readFileSync(path.join(pluginRoot, '.codex-plugin/plugin.json'), 'utf8'));
+  const registration = JSON.parse(fs.readFileSync(path.join(pluginRoot, manifest.mcpServers), 'utf8')).mavt;
+  assert.ok(registration && !path.isAbsolute(registration.command) && registration.args.every(arg => !path.isAbsolute(arg)));
+  const cwd = path.resolve(pluginRoot, registration.cwd);
+  assert.equal(cwd, pluginRoot);
+  assert.equal(path.resolve(cwd, registration.args[0]), path.join(pluginRoot, 'scripts/mavt-mcp.js'));
+  return { pluginRoot, marketplaceRoot: relocated, registration, cwd, workspace, caseContext, imageRef: image.data.ref };
 }
 
 async function main() {
@@ -52,9 +63,9 @@ async function main() {
     fs.mkdirSync(codexHome);
     const env = { PATH: process.env.PATH || '/usr/bin:/bin', HOME: root, CODEX_HOME: codexHome, LANG: process.env.LANG || 'en_US.UTF-8' };
     const command = process.env.MAVT_CODEX_CLI || 'codex';
-    child = cp.spawn(command, ['-c', 'mcp_servers.mavt_probe.command=' + JSON.stringify(process.execPath),
-      '-c', 'mcp_servers.mavt_probe.args=' + JSON.stringify([f.entry]),
-      '-c', 'mcp_servers.mavt_probe.cwd=' + JSON.stringify(root), 'app-server', '--stdio'],
+    child = cp.spawn(command, ['-c', 'mcp_servers.mavt_probe.command=' + JSON.stringify(f.registration.command),
+      '-c', 'mcp_servers.mavt_probe.args=' + JSON.stringify(f.registration.args),
+      '-c', 'mcp_servers.mavt_probe.cwd=' + JSON.stringify(f.cwd), 'app-server', '--stdio'],
     { env, cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
     let nextId = 0;
     const pending = new Map(), diagnostics = [];
@@ -76,6 +87,9 @@ async function main() {
     });
     await call('initialize', { clientInfo: { name: 'mavt_actual_no_model_probe', version: '0' }, capabilities: { experimentalApi: true } });
     child.stdin.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
+    const plugin = await call('plugin/read', { pluginName: 'mavt', marketplacePath: path.join(f.marketplaceRoot, '.agents/plugins/marketplace.json') });
+    assert.ok(plugin.plugin.mcpServers.includes('mavt'));
+    assert.deepEqual(plugin.plugin.skills.map(skill => skill.name).sort(), ['mavt:author-cases', 'mavt:manage-knowledge', 'mavt:run-tests']);
     const started = await call('thread/start', { cwd: root, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only' });
     const threadId = started.thread.id;
     const discovery = await call('mcpServerStatus/list', { threadId, serverName: 'mavt_probe' });
@@ -92,7 +106,8 @@ async function main() {
     assert.deepEqual(Buffer.from(imageBlock.data, 'base64'), PNG, 'Actual host image bytes must match published screenshot');
     assert.equal(doctor.structuredContent?.status, 'SUCCEEDED');
     process.stdout.write(JSON.stringify({ status: 'PASS', noModelTurns: true, noInstall: true,
-      isolatedHome: codexHome, hostStatus: connected.runtimeStatus,
+      isolatedHome: codexHome, hostStatus: connected.runtimeStatus, manifestRegistration: true,
+      relocatedPluginRead: { mcpServers: plugin.plugin.mcpServers, skills: plugin.plugin.skills.map(skill => skill.name).sort() },
       discoveredToolCount: Object.keys(connected.tools).length, discoveredToolNames: Object.keys(connected.tools).sort(),
       doctorStatus: doctor.structuredContent.status,
       image: { ref: f.imageRef, exactBytes: true, byteLength: PNG.length, mediaType: imageBlock.mimeType } }, null, 2) + '\n');

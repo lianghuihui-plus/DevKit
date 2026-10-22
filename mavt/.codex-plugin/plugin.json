@@ -1,8 +1,9 @@
 {
   "name": "mavt",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Mobile AI visual testing, case authoring and knowledge maintenance.",
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "MAVT",
     "shortDescription": "移动端 AI 视觉测试"

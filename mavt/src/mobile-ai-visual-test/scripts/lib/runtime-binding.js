@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { bundleError, bundleForRuntime, bundleLocations, DIGEST, managedDirectories, plainPath, RUNTIME_RELATIVE_ROOT, verifyBundle } = require('./runtime-bundle');
+const { bundleError, bundleForRuntime, bundleLocations, DIGEST, isVerifiedManifest, managedDirectories, plainPath, RUNTIME_RELATIVE_ROOT, verifyBundle } = require('./runtime-bundle');
 const { withFileLock } = require('./execution-lifecycle');
 const DEFAULT_ROOT = path.resolve(__dirname, '../..');
 const quote = value => `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -15,7 +15,7 @@ function pathsFor(workspace, batchId) {
 function readPlainJson(root, relative) {
   return JSON.parse(fs.readFileSync(plainPath(root, relative, 'file'), 'utf8'));
 }
-function readRunBinding(workspace, batchId) {
+function readRunBinding(workspace, batchId, options = {}) {
   const locations = pathsFor(workspace, batchId);
   try {
     const state = readPlainJson(workspace, `runs/${batchId}/coordinator-state.json`);
@@ -32,7 +32,9 @@ function readRunBinding(workspace, batchId) {
       || typeof binding.originPluginVersion !== 'string' || !binding.originPluginVersion) invalid('unsupported binding');
     plainPath(workspace, '.mavt/runtime-bundles', 'directory');
     const bundleRoot = path.join(workspace, '.mavt/runtime-bundles', binding.bundleId);
-    const manifest = verifyBundle(bundleRoot, binding.bundleId);
+    const verified = options.verifiedBundle;
+    const manifest = verified?.bundleRoot === bundleRoot && isVerifiedManifest(verified.manifest, bundleRoot, binding.bundleId)
+      ? verified.manifest : verifyBundle(bundleRoot, binding.bundleId);
     const resolved = bundleLocations(bundleRoot, manifest);
     const host = manifest.files.find(f => f.path === 'hosts/codex/delegation.md');
     if (!host || host.sha256 !== binding.hostProfileSha) invalid('host profile identity mismatch');

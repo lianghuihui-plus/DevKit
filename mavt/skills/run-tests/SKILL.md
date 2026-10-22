@@ -11,19 +11,23 @@ description: 用户需要在 MAVT 工作区执行移动端视觉测试、继续�
 
 ## 工作区与版本绑定
 
-从本次实际加载的 `skills/run-tests/SKILL.md` 所在目录向上两级取得插件根目录 `<plugin-root>`；不依赖环境变量、工作区中的 `scripts/` 或开发仓库路径。命令中的路径须作为独立参数正确引用。
+用户须提供或选择目标工作区；不扫描猜测其他目录。默认使用下述固定 CLI，不因 MCP 工具可见而切换。只有用户明确要求试用 MCP、且预览产物的本次操作所需 `mavt_workspace_*`、`mavt_run_*` 工具实际连接时，才可选 MCP：新任务在已有 READY 工作区调用 `mavt_workspace_open({workspace,role:"coordinator"})`，只在用户明确选择空工作区初始化时调用 `mavt_workspace_init({workspace,role:"coordinator"})`。继续、取消或查询指定 Run 时调用 `mavt_workspace_open({workspace,role:"coordinator",batchId})`；未指定 Run 时先用只读 `mavt_workspace_doctor({workspace})` 列出候选，多候选由用户选择，不按时间擅选。复制响应原样返回的 `contextRef` 与固定文档路径，不拼造引用或工作区路径。
+
+从本次加载的 Skill 向上两级取得 `<plugin-root>`，使用以下 CLI 绑定原运行时。显式 MCP 试用遇到工具不可用或固定旧实现返回 `MAVT_MCP_LEGACY_INTERFACE` / `MAVT_LEGACY_RUN_REQUIRES_ORIGINAL_RUNTIME` 时也使用此路径；不能用当前新版接管旧 Run。命令中的路径须作为独立参数正确引用。
 
 - **继续、取消或查询已有 Run**：先执行 `node '<plugin-root>/scripts/mavt-entry.js' resume --workspace '<workspace>'`；用户已指定 Run 时增加 `--run '<batchId>'`。有多个候选时让用户选择，不按时间擅选。不要先调用 `workspace` 或加载当前安装的协调文档。
 - **新任务或明确初始化**：执行 `node '<plugin-root>/scripts/mavt-entry.js' workspace --cwd '<workspace>'`；只有此入口允许初始化空工作区。
 - **只读诊断**：执行 `node '<plugin-root>/scripts/mavt-entry.js' doctor --workspace '<workspace>'`，不安装依赖、不修复、不创建 Run。
 
-成功后只使用响应绑定的 `runtimeRoot`、`documentationRoot`、`bundleId`、`hostProfilePath` 和 `coordinatorFacade`。先完整读取 `<documentationRoot>/references/coordinator-principles.md`、`<documentationRoot>/references/coordinator.md` 方法短索引，以及 `hostProfilePath` 指定的固定宿主指引，再进入协调流程；不要改用最新安装中的同名文件。文档命令中的 `<skill-root>` 指本次 `runtimeRoot`，相对文档引用以本次 `documentationRoot` 为根；opaque resource ref 原样交回同一 Facade 的 `read`。
+成功后只使用响应绑定的 `runtimeRoot`、`documentationRoot`、`bundleId`、`hostProfilePath` 和本次传输的 `contextRef` 或 `coordinatorFacade`。先完整读取 `<documentationRoot>/references/coordinator-principles.md`、`<documentationRoot>/references/coordinator.md` 方法短索引，以及 `hostProfilePath` 指定的固定宿主指引，再进入协调流程；不要改用最新安装中的同名文件。文档命令中的 `<skill-root>` 指本次 `runtimeRoot`，相对文档引用以本次 `documentationRoot` 为根；opaque resource ref 原样交回同一固定运行时的 `mavt_run_read` 或 CLI Facade 的 `read`。contextRef 只绑定路由与完整性，不认证调用者身份。
 
 旧 Run 缺失或损坏绑定、固定副本或宿主指引时保留现场并报告启动错误，不回退当前版本，不把错误记为业务 FAIL。旧版未绑定 Run 依赖原实现完成或取消，不改写命令迁移在途任务。
 
 ## 操作流程
 
-原样执行返回的 `coordinatorFacade.command`，通过 stdin JSON 提交 `{operation,input}`。`prepareRun` 返回 Run 命令后，后续原样复用该命令。只按 `runDecision` 和用户选择构造 `confirmRun`；使用 `advanceRun`、`cancelRun`、`read` 处理后续步骤。方法详情只读当前调用页，错误只读定向文档。
+显式 MCP 试用的新任务用工作区 `contextRef` 调用 `mavt_run_prepare({contextRef,input})`；保留成功响应原样返回的 Run `contextRef`，此后使用它调用 `mavt_run_confirm/advance/cancel/read({contextRef,input})`。只按 `runDecision` 和用户选择构造 `confirmRun` 的 `input`。仅查询进度或报告时，直接调用 Run 作用域的 `mavt_run_status({contextRef})` / `mavt_run_report({contextRef})`，无需推进执行；资源 ref 用 `mavt_run_read({contextRef,input:{ref}})`。读取 `structuredContent` 的领域状态，MCP 送达不等于业务成功。
+
+固定 CLI 路径原样执行返回的 `coordinatorFacade.command`，通过 stdin JSON 提交 `{operation,input}`；`prepareRun` 返回 Run 命令后原样复用。只按 `runDecision` 和用户选择构造 `confirmRun`；用 `advanceRun`、`cancelRun`、`read` 处理后续步骤。仅查询进度或报告时，只读已由该固定 Run 响应发布的资源 ref；若尚无可用 ref，说明固定 CLI 未提供足够的只读事实，不为答复查询而调用 `advanceRun`、`confirmRun` 或猜造状态操作。方法详情只读当前调用页，错误只读定向文档。同一 Run 不混用不同固定版本或擅自从 MCP 回退为当前安装的 CLI。
 
 - `NEED_CASE_AGENT`：按已绑定宿主指引，用固定 `delegationPrompt` 和原样 `loaderCommand` 委托，不继承协调上下文，不追加自己的业务解释。
 - `WAITING`：等待真实句柄或持久化条件变化，再推进；同一命令进程仍运行时等待它，不重复启动。已 `CONSUMED` 且不能证明原 Agent 停止时，不自动接管或创建第二写入者。

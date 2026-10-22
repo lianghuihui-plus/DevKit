@@ -220,8 +220,7 @@ function executeRun(execDir, request, options = {}) {
   }
 }
 
-function run(execDir, request, options = {}) {
-  require('../lib/runtime-binding').assertExecutionRuntime(execDir);
+function runBound(execDir, request, options = {}) {
   const runOptions = {
     resourceProvider: require('./agent-resource-store').provideOperationResources,
     ...options,
@@ -244,6 +243,20 @@ function run(execDir, request, options = {}) {
   return response;
 }
 
+function run(execDir, request, options = {}) {
+  require('../lib/runtime-binding').assertExecutionRuntime(execDir);
+  return runBound(execDir, request, options);
+}
+
+function runInVerifiedCaseContext(context, request, options = {}) {
+  if (context.role !== 'case' || context.scope !== 'execution' || !path.isAbsolute(context.execDir)) {
+    throw Object.assign(new Error('Verified Case execution context is required'), { code: 'MAVT_MCP_CONTEXT_INVALID' });
+  }
+  // The MCP worker resolved this context and checked the pinned bundle, Run,
+  // execution identity and active dispatch during this same request.
+  return runBound(context.execDir, request, options);
+}
+
 function main(argv = process.argv.slice(2), options = {}) {
   const startedMs = Date.now();
   const boundExecDir = options.execDir || process.env.MAVT_EXECUTION_DIR;
@@ -253,12 +266,13 @@ function main(argv = process.argv.slice(2), options = {}) {
   let runtimeRejected = false;
   try {
     if (!boundExecDir) throw Object.assign(new Error('execution binding is missing'), { code: 'CASE_RUNTIME_BINDING_MISSING' });
-    require('../lib/runtime-binding').assertExecutionRuntime(boundExecDir);
     const requestArgs = [...argv];
     const dispatchIndex = requestArgs.indexOf('--dispatch-sequence');
     const dispatchSequence = dispatchIndex >= 0 ? Number(requestArgs[dispatchIndex + 1]) : null;
     if (dispatchIndex >= 0) requestArgs.splice(dispatchIndex, 2);
     const execDir = path.resolve(boundExecDir);
+    const stdin = options.stdin !== undefined ? options.stdin : (process.stdin.isTTY ? '' : fs.readFileSync(0, 'utf8'));
+    require('../lib/runtime-binding').assertExecutionRuntime(execDir);
     const runtime = readJson(path.join(execDir, 'runtime.json'), null);
     const execution = readJson(path.join(execDir, 'execution.json'), null);
     const dispatchDirectory = execution?.batchId && runtime?.sessionRef?.statePath
@@ -270,7 +284,6 @@ function main(argv = process.argv.slice(2), options = {}) {
       }
       assertActiveDispatch(dispatchDirectory, execution.executionId, dispatchSequence);
     }
-    const stdin = options.stdin !== undefined ? options.stdin : (process.stdin.isTTY ? '' : fs.readFileSync(0, 'utf8'));
     try {
       request = parseRequest(requestArgs, stdin);
     } catch (error) {
@@ -282,7 +295,7 @@ function main(argv = process.argv.slice(2), options = {}) {
       }]);
     }
     if (!response) {
-      response = run(execDir, request, { ...options, hostTransport: 'stdin' });
+      response = runBound(execDir, request, { ...options, hostTransport: 'stdin' });
       measured = true;
     }
   } catch (error) {
@@ -308,4 +321,4 @@ function main(argv = process.argv.slice(2), options = {}) {
 
 if (require.main === module) main();
 
-module.exports = { invalidResponse, main, parseRequest, run };
+module.exports = { invalidResponse, main, parseRequest, run, runInVerifiedCaseContext };

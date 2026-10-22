@@ -51,7 +51,7 @@ test('async tool rejection retains the original request ID', async () => {
 test('stdio negotiates, handles IDs and notifications, and emits only protocol', t => {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-mcp-protocol-')));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-  const built = buildPlugin({ outputRoot: path.join(temp, 'built') });
+  const built = buildPlugin({ outputRoot: path.join(temp, 'built'), mcpPreview: true });
   const requests = [
     '{broken',
     JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: 'unsupported', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }),

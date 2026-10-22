@@ -8,7 +8,7 @@ const { buildPlugin } = require('../build-plugin');
 function fixture(t) {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-mcp-')));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-  const built = buildPlugin({ outputRoot: path.join(temp, 'build') });
+  const built = buildPlugin({ outputRoot: path.join(temp, 'build'), mcpPreview: true });
   const entry = path.join(built.pluginRoot, 'scripts/mavt-mcp.js');
   assert.ok(fs.existsSync(entry), 'build must expose the management MCP entry');
   const server = require(entry).createServer({ pluginRoot: built.pluginRoot });
@@ -60,7 +60,7 @@ test('knowledge direct prepare/apply rejects changed content and code identity',
   assert.equal(f.call('mavt_knowledge_apply', { ...args, planHash: plan.planHash }).code, 'KNOWLEDGE_PLAN_STALE');
   assert.deepEqual(snapshot(f.workspace), before);
   fs.writeFileSync(draftPath, knowledge);
-  const other = buildPlugin({ outputRoot: path.join(f.temp, 'other') });
+  const other = buildPlugin({ outputRoot: path.join(f.temp, 'other'), mcpPreview: true });
   fs.appendFileSync(path.join(other.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/workspace.js'), '\n// B\n');
   const manifest = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle').createManifest(other.pluginRoot, '0.1.1');
   fs.writeFileSync(path.join(other.pluginRoot, 'bundle.manifest.json'), JSON.stringify(manifest));
@@ -140,7 +140,7 @@ test('knowledge reads do not traverse accumulated evidence in unrelated Runs', t
 test('older managed bundle without MCP keeps its original CLI compatibility path', t => {
   const f = fixture(t), author = init(f, 'author');
   f.call('mavt_cases_import', { contextRef: author, request: draft });
-  const older = buildPlugin({ outputRoot: path.join(f.temp, 'older') });
+  const older = buildPlugin({ outputRoot: path.join(f.temp, 'older'), mcpPreview: true });
   fs.rmSync(path.join(older.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp'), { recursive: true });
   const { createManifest, pinBundle } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');
   fs.writeFileSync(path.join(older.pluginRoot, 'bundle.manifest.json'), JSON.stringify(createManifest(older.pluginRoot, '0.1.0')));
@@ -157,7 +157,7 @@ test('older managed bundle without MCP keeps its original CLI compatibility path
 test('persisted previous-interface MCP contexts hand off to original CLI without modifying pinned A', t => {
   const f = fixture(t), author = init(f, 'author');
   f.call('mavt_cases_import', { contextRef: author, request: draft });
-  const previous = buildPlugin({ outputRoot: path.join(f.temp, 'previous-interface-A') });
+  const previous = buildPlugin({ outputRoot: path.join(f.temp, 'previous-interface-A'), mcpPreview: true });
   // Reproduce the published 5a0b263 capability surface: real management dispatch
   // exists as invokeBound, but the later invokeValidated export does not exist.
   const publishedModule = path.join(previous.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/management-service.js');
@@ -213,7 +213,7 @@ test('installed B schema divergence cannot reject or stall valid pinned A reques
   const coordinator = f.call('mavt_workspace_open', { workspace: f.workspace, role: 'coordinator' }).contextRef;
   const prepared = f.call('mavt_run_prepare', { contextRef: coordinator, input: { caseNos: ['001'] } });
   const knowledgeRef = f.call('mavt_workspace_open', { workspace: f.workspace, role: 'knowledge' }).contextRef;
-  const b = buildPlugin({ outputRoot: path.join(f.temp, 'schema-B') });
+  const b = buildPlugin({ outputRoot: path.join(f.temp, 'schema-B'), mcpPreview: true });
   const contractPath = path.join(b.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/contract.js');
   fs.appendFileSync(contractPath, `\n// B requires an argument that is forbidden by A.\nschemas.mavt_run_advance.properties.input.properties.bOnly = { type: 'boolean' };\nschemas.mavt_run_advance.properties.input.required = ['bOnly'];\nschemas.mavt_knowledge_list.properties.bOnly = { type: 'boolean' };\nschemas.mavt_knowledge_list.required.push('bOnly');\n`);
   const { createManifest } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');

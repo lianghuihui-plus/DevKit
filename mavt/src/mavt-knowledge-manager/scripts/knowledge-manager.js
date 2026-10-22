@@ -4,7 +4,6 @@
 const path = require('path');
 const { managerError } = require('./lib/errors');
 const { inspectKnowledge, listKnowledge, showKnowledge } = require('./lib/knowledge-store');
-const { applyTransaction, prepareTransaction } = require('./lib/knowledge-transaction');
 
 const COMMAND_FLAGS = Object.freeze({
   inspect: ['workspace'],
@@ -55,6 +54,7 @@ function execute(options) {
   if (options.command === 'inspect' || options.command === 'validate') return inspectKnowledge(options.workspace);
   if (options.command === 'list') return listKnowledge(options.workspace);
   if (options.command === 'show') return showKnowledge(options.workspace, options.entryId);
+  const { applyTransaction, prepareTransaction } = require('./lib/knowledge-transaction');
   if (options.command === 'prepare') return prepareTransaction(options.workspace, options.requestPath);
   return applyTransaction(options.workspace, options.requestPath, options.planHash);
 }

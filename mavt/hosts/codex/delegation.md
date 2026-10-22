@@ -2,13 +2,13 @@
 
 本文件只定义宿主协作方式。Coordinator 决定何时委托、绑定哪个 execution；Case Agent 的业务原则来自原样 Loader 返回的固定 Brief。Case Agent 是内部角色，不重新加载 Authoring 或执行协调 Skill；Brief 中出现原 Skill 身份也不改变角色。
 
-MCP 的会话能力核验以同一固定 bundle 的 `hosts/codex/harness-requirements.json` 为准。静态工具通过 Loader 返回的 execution/dispatch scoped `contextRef` 绑定；当前宿主须实际证明独立上下文、子 Agent 可见图片及真实创建/等待/取消句柄，缺项时停止视觉执行。引用仅提供路由与完整性边界，不代表调用者身份认证或操作系统隔离。
+会话能力核验以同一固定 bundle 的 `hosts/codex/harness-requirements.json` 为准，分委托前与子 Agent 执行 Loader 后两阶段。普通委托固定使用 CLI，委托前须实际证明独立上下文、真实创建/等待/取消句柄，以及子 Agent 本地图片查看能力；MCP 工具可见或服务器已连接都不改变传输，也不证明工作进程已热。缺少本地图片查看时停止正常视觉执行。静态 MCP 工具只供另行授权的预览验证，通过 Loader 返回的 execution/dispatch scoped `contextRef` 绑定；该引用不在委托前产生，也不得由 Coordinator 预交付或编造。引用仅提供路由与完整性边界，不代表调用者身份认证或操作系统隔离。
 
 ## 能力与上下文
 
-先检查本会话实际工具清单，确认能运行本地命令、以 stdin JSON 调用并等待同一进程、创建独立上下文 Agent、在子 Agent 中读取本地图片和固定运行时/工作区。使用真实工具名称、参数与返回的句柄，不假设所有 Codex 版本有相同 API，不指定未经支持或用户要求的模型。
+先检查本会话实际工具清单，确认能运行本地命令、以 stdin JSON 调用并等待同一进程、创建独立上下文 Agent、在子 Agent 中读取固定运行时/工作区，并能在子 Agent 中使用本地图片查看工具。使用真实工具名称、参数与返回的句柄，不假设所有 Codex 版本有相同 API，不指定未经支持或用户要求的模型。委托前不要求 execution `contextRef`；它只可能由子 Agent 执行 Loader 后取得。当前固定 Handoff 未携带 Case 传输选择，父 Agent 的 MCP 试用偏好不得变成对 Case 的隐含指令。另行验证 MCP Case 调用时，由验证方核对 Loader 成功响应中的 `role:"case"`、`scope:"execution"`、`contextRef`、`executionId`、`dispatchSequence` 与 `result` 身份字段，再以该原样引用读取本次 Brief；服务端仍须验证固定 bundle、当前 execution 与活跃 dispatch。
 
-例如实际提供 `collaboration.spawn_agent` 且支持 `fork_turns: "none"` 时，用该参数创建全新上下文。没有可验证的独立上下文或子 Agent 图片访问能力时，停止视觉执行并报告具体缺失能力；仍可进行已授权的 Authoring/知识维护。不能降级为协调 Agent 亲自执行 Case。职责隔离不是操作系统安全沙箱。
+例如实际提供 `collaboration.spawn_agent` 且支持 `fork_turns: "none"` 时，用该参数创建全新上下文。没有可验证的独立上下文、真实句柄能力或子 Agent 本地图片访问能力时，停止正常视觉执行并报告具体缺失能力；仍可进行已授权的 Authoring/知识维护。不能降级为协调 Agent 亲自执行 Case。职责隔离不是操作系统安全沙箱。
 
 ## 唯一委托与等待
 

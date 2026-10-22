@@ -40,6 +40,16 @@
 
 需要重新验证时，在项目根目录运行 `npm test`。安装/升级验证脚本 `tests/host-install-check.js` 仅在明确需要时手动运行；本次清理不运行安装或设备测试。
 
+## 0.2.0 MCP 预览开发验证（未安装）
+
+- 普通构建保留固定 CLI 默认，排除 MCP 注册、入口及运行时模块；预览构建通过 `--mcp-preview` 才发布完整闭包。最终本地安装源位于 `dist/mavt-marketplace-0.2.0-final/` 和 `dist/mavt-mcp-preview-0.2.0-final/`，未安装；完整性校验中普通 bundle `93bda7c4200d44cb4b3015870eebc6663d681f1cf543a9cc3bef640bc49d205a` 为 307 个 manifest 文件，预览 bundle `af921e67b1915fb8daa575bcb2b9adcdaf2686aaa03a721849330668ddd5b8db` 为 316 个。
+- 最终 `npm test` 退出码 0：运行时自测 88 组、知识维护自测 6 组、插件测试 76/76、生成文档 51 份。独立 Codex app-server 无模型探针发现 30 个工具、doctor 成功、68 字节 PNG 图片与已发布资源完全一致；该探针没有安装插件，也没有设备/模型执行。
+- 原始比较保留在忽略文件 `verification/mcp-benchmark-default-preview-final-gated.json`；其 30 暖/12 独立冷门槛结果为 `warmPreviewPass=false`、`defaultCliPass=false`、`mcpDefaultSwitchApproved=false`，不得用后续较好的样本覆盖失败记录。
+- 缩小普通包后的完整复测保留在 `verification/mcp-benchmark-task3-packaging-30warm-12cold.json`；五类暖 MCP 调用均通过原 CLI 和普通 CLI 的 p50/p95 门槛，但普通 CLI `knowledgeList` p50 为 27.98 ms，对原 CLI 27.58 ms，导致 `defaultCliPass=false`。12 次独立冷 Loader 加首次 Case 读取 p50/p95：原 CLI 183/211 ms，普通 CLI 160/177 ms，预览 CLI 214/382 ms，预览 MCP 283/291 ms；`mcpDefaultSwitchApproved=false`，默认仍为 CLI。冷预览 CLI 的高 p95 是实测离群值，不隐去。
+- 只读知识 CLI 延迟加载事务模块后，同规格复测保留在 `verification/mcp-benchmark-task3-lazy-knowledge-30warm-12cold.json`；`knowledgeList` 普通 CLI 25.58/27.10 ms 优于原 CLI 26.17/28.17 ms，但普通 CLI doctor 75.46/79.78 ms 对原 CLI 74.40/76.68 ms、Run read p95 128.49 ms 对原 124.62 ms 边缘失守。五类暖 MCP 工作负载通过；独立冷 Case 原 CLI 177/194 ms、普通 CLI 155/163 ms、预览 CLI 203/214 ms、预览 MCP 269/282 ms，故 `defaultCliPass=false`、`mcpDefaultSwitchApproved=false`，基准退出码仍为 1。前三次完整原始测量均保留，不用其中有利样本冒充总门槛通过。
+- 最新预览工具目录响应为 67,758 字节（定义 67,714 字节）；独立空闲 MCP 服务 RSS 53,888 KiB，一个活跃 worker 时服务加 worker 为 239,424 KiB，30 秒回收 worker 后为 87,280 KiB。普通 CLI 仍是每调用一个子进程，暖 MCP 工具调用没有逐操作 CLI 子进程；此数值不代表模型 token 成本。
+- 离线只读 Run 状态/报告与按需图片读取前后工作区字节未变；图片 68 字节源文件的 MCP 响应为 1,155 字节。真实 Provider `ACTION_OUTCOME_UNKNOWN` 通过 MCP、独立子 Agent 图片可见性、桌面会话重载及设备端到端行为仍待用户验收，不得由离线探针推定。
+
 ## 本次清理检查
 
 2026-10-22 删除 31 份项目内历史原始记录和旧目录中 9 份完全一致的副本，共 40 个文件，另保留本汇总。四个必要 JSON 均保留。

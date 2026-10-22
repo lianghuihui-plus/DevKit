@@ -68,7 +68,9 @@ function main(argv = process.argv.slice(2)) {
       dispatchMode: handoff.mode, dispatchSequence: handoff.sequence },
     data: resource.data, resources: resource.resources,
   });
-  const bundle = require('./lib/runtime-bundle').bundleForRuntime(path.resolve(__dirname, '..'));
+  const runtimeRoot = path.resolve(__dirname, '..');
+  const bundle = require('fs').existsSync(path.join(runtimeRoot, 'mcp-preview.json'))
+    ? require('./lib/runtime-bundle').bundleForRuntime(runtimeRoot) : null;
   const service = bundle && require('./mcp/management-service');
   const caseContext = typeof service?.invokeCaseValidated === 'function'
     ? require('./mcp/bindings').createContext({ workspace: options.workspaceRoot, bundleId: bundle.bundleId,

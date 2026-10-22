@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { test } = require('node:test');
 const { buildPlugin } = require('../build-plugin');
 
@@ -12,7 +12,8 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 function fixture(t, options = {}) {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-mcp-case-')));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-  const built = buildPlugin({ outputRoot: path.join(temp, 'build') });
+  const mcpPreview = options.mcpPreview !== false;
+  const built = buildPlugin({ outputRoot: path.join(temp, 'build'), mcpPreview });
   if (options.barrier) {
     const filename = path.join(built.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/case-service.js');
     fs.appendFileSync(filename, `\nconst originalInvoke = module.exports.invoke;\nmodule.exports.invoke = function(context, name, args) {\n  if (name === 'mavt_case_act') {\n    require('node:fs').appendFileSync(${JSON.stringify(path.join(temp, 'entered'))}, context.executionId + '\\n');\n    while (!require('node:fs').existsSync(${JSON.stringify(path.join(temp, 'release'))})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);\n  }\n  return originalInvoke(context, name, args);\n};\n`);
@@ -24,16 +25,30 @@ function fixture(t, options = {}) {
     fs.writeFileSync(path.join(built.pluginRoot, 'bundle.manifest.json'), JSON.stringify(createManifest(built.pluginRoot, '0.1.1')));
   }
   const entry = path.join(built.pluginRoot, 'scripts/mavt-mcp.js');
-  const server = require(entry).createServer({ pluginRoot: built.pluginRoot });
   const workspace = path.join(temp, 'workspace'); fs.mkdirSync(workspace);
-  const call = (name, args) => server.callTool(name, args).structuredContent;
-  const author = call('mavt_workspace_init', { workspace, role: 'author' }).contextRef;
-  assert.ok(author);
-  const imported = call('mavt_cases_import', { contextRef: author,
-    request: { cases: [{ sourceLocator: '/fixture/source', title: 'Case', sourceText: 'Check screen.' }] } });
-  assert.equal(imported.cases.length, 1);
-  const coordinator = call('mavt_workspace_open', { workspace, role: 'coordinator' }).contextRef;
-  const prepared = call('mavt_run_prepare', { contextRef: coordinator, input: { caseNos: ['001'] } });
+  let server, call, coordinator, prepared;
+  if (mcpPreview) {
+    server = require(entry).createServer({ pluginRoot: built.pluginRoot });
+    call = (name, args) => server.callTool(name, args).structuredContent;
+    const author = call('mavt_workspace_init', { workspace, role: 'author' }).contextRef;
+    assert.ok(author);
+    const imported = call('mavt_cases_import', { contextRef: author,
+      request: { cases: [{ sourceLocator: '/fixture/source', title: 'Case', sourceText: 'Check screen.' }] } });
+    assert.equal(imported.cases.length, 1);
+    coordinator = call('mavt_workspace_open', { workspace, role: 'coordinator' }).contextRef;
+    prepared = call('mavt_run_prepare', { contextRef: coordinator, input: { caseNos: ['001'] } });
+  } else {
+    const opened = spawnSync(process.execPath, [path.join(built.pluginRoot, 'scripts/mavt-entry.js'), 'workspace', '--cwd', workspace], { encoding: 'utf8' });
+    assert.equal(opened.status, 0, opened.stderr);
+    const runtimeRoot = JSON.parse(opened.stdout).runtimeRoot;
+    require('../src/mobile-ai-visual-test/scripts/case/import-drafts').importDrafts(workspace,
+      { cases: [{ sourceLocator: '/fixture/source', title: 'Case', sourceText: 'Check screen.' }] });
+    const run = spawnSync(process.execPath, [path.join(runtimeRoot, 'scripts/coordinator-agent.js'), '--workspace', workspace],
+      { encoding: 'utf8', input: JSON.stringify({ operation: 'prepareRun', input: { caseNos: ['001'] } }) });
+    assert.equal(run.status, 0, run.stderr);
+    prepared = { ...JSON.parse(run.stdout), runtimeRoot,
+      batchId: fs.readdirSync(path.join(workspace, 'runs')).find(name => !name.startsWith('.')) };
+  }
   assert.equal(prepared.status, 'SUCCEEDED');
   const runtimeRoot = prepared.runtimeRoot || path.join(workspace, '.mavt/runtime-bundles', prepared.bundleId, 'runtime/mobile-ai-visual-test');
   const agentHandoff = require(path.join(runtimeRoot, 'scripts/batch/agent-handoff'));
@@ -53,11 +68,19 @@ function fixture(t, options = {}) {
     assert.equal(loader.status, 0, loader.stderr);
     const loaded = JSON.parse(loader.stdout);
     assert.equal(loaded.status, 'SUCCEEDED');
-    assert.ok(loaded.contextRef, 'Loader returns a Case context only after claiming the handoff');
+    if (mcpPreview) assert.ok(loaded.contextRef, 'Preview Loader returns a Case context only after claiming the handoff');
     return { execDir, handoff, loaded, contextRef: loaded.contextRef };
   }
   return { ...built, temp, workspace, entry, server, call, prepared, coordinator, runtimeRoot, resources, startCase };
 }
+
+test('ordinary CLI Loader claims the Case without creating an unused MCP context', t => {
+  const f = fixture(t, { mcpPreview: false });
+  const loaded = f.startCase('case-cli-default').loaded;
+  assert.equal(loaded.status, 'SUCCEEDED');
+  assert.equal(Object.hasOwn(loaded, 'contextRef'), false);
+  assert.equal(loaded.result.executionId, 'case-cli-default');
+});
 
 async function awaitFile(filename) {
   const started = Date.now();
@@ -109,6 +132,103 @@ test('Case calls revalidate active dispatch after server startup, including read
   const result = f.call('mavt_case_read', { contextRef: a.contextRef, input: { ref: a.loaded.data.ref } });
   assert.equal(result.code, 'HANDOFF_REPLACED', JSON.stringify(result));
   assert.equal(fs.existsSync(inputState) ? fs.readFileSync(inputState, 'utf8') : null, before);
+});
+
+test('warm worker Case read rejects pinned byte changes on the next call', async t => {
+  const f = fixture(t), a = f.startCase('case-integrity');
+  const server = require(f.entry).createServer({ pluginRoot: f.pluginRoot, workerPool: { idleTimeoutMs: 30000 } });
+  t.after(() => server.close());
+  const args = { contextRef: a.contextRef, input: { ref: a.loaded.data.ref } };
+  assert.equal((await server.callTool('mavt_case_read', args)).structuredContent.status, 'SUCCEEDED');
+  fs.appendFileSync(path.join(f.runtimeRoot, 'scripts/case-runtime/agent-facing-client.js'), '\n// changed after first read\n');
+  const result = (await server.callTool('mavt_case_read', args)).structuredContent;
+  assert.equal(result.status, 'REJECTED');
+  assert.match(result.code, /MAVT_RUNTIME_BUNDLE_INVALID|MAVT_MCP_CONTEXT_INVALID/);
+});
+
+test('CLI Case read still rejects changed pinned bytes after request-local validation', t => {
+  const f = fixture(t), a = f.startCase('case-cli-integrity');
+  const entry = path.join(f.runtimeRoot, 'scripts/case-runtime/agent-facing-client.js');
+  const read = () => {
+    const child = spawnSync(process.execPath, [entry, '--dispatch-sequence', '1'], { encoding: 'utf8',
+      input: JSON.stringify({ operation: 'read', input: { ref: a.loaded.data.ref } }),
+      env: { ...process.env, MAVT_EXECUTION_DIR: a.execDir } });
+    assert.equal(child.status, 0, child.stderr);
+    return JSON.parse(child.stdout);
+  };
+  assert.equal(read().status, 'SUCCEEDED');
+  fs.appendFileSync(entry, '\n// changed after CLI read\n');
+  const result = read();
+  assert.equal(result.status, 'FAILED');
+  assert.equal(result.error.code, 'CASE_RUNTIME_TECHNICAL');
+});
+
+async function delayedCliRequest(t, f, a, beforeInput) {
+  const entry = path.join(f.runtimeRoot, 'scripts/case-runtime/agent-facing-client.js');
+  const hook = path.join(f.temp, 'stdin-barrier.cjs');
+  const release = path.join(f.temp, 'stdin-release');
+  fs.writeFileSync(hook, `const fs = require('node:fs');
+const original = fs.readFileSync;
+fs.readFileSync = function(file, ...args) {
+  if (file === 0) {
+    process.send({ stage: 'BEFORE_STDIN_READ' });
+    while (!fs.existsSync(${JSON.stringify(release)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+  return original.call(this, file, ...args);
+};\n`);
+  const child = spawn(process.execPath, ['--require', hook, entry, '--dispatch-sequence', '1'], {
+    env: { ...process.env, MAVT_EXECUTION_DIR: a.execDir }, stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+  });
+  t.after(() => { if (!child.killed) child.kill('SIGTERM'); });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`CLI did not reach stdin barrier: ${stderr}`)), 10000);
+    child.once('message', message => { clearTimeout(timer); assert.equal(message.stage, 'BEFORE_STDIN_READ'); resolve(); });
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+  });
+  beforeInput(entry);
+  child.stdin.end(JSON.stringify({ operation: 'act', input: {} }));
+  fs.writeFileSync(release, 'go');
+  const exitCode = await new Promise((resolve, reject) => {
+    child.once('exit', resolve);
+    child.once('error', reject);
+  });
+  assert.equal(exitCode, 0, stderr);
+  return JSON.parse(stdout);
+}
+
+test('CLI Case request rejects pinned bytes changed while stdin is withheld', async t => {
+  const f = fixture(t), a = f.startCase('case-delayed-stdin');
+  const result = await delayedCliRequest(t, f, a, entry => fs.appendFileSync(entry, '\n// changed before stdin arrived\n'));
+  assert.equal(result.status, 'FAILED');
+  assert.equal(result.error.code, 'CASE_RUNTIME_TECHNICAL');
+});
+
+test('CLI Case request rejects a dispatch replaced while stdin is withheld', async t => {
+  const f = fixture(t), a = f.startCase('case-delayed-dispatch');
+  const result = await delayedCliRequest(t, f, a, () => {
+    require(path.join(f.runtimeRoot, 'scripts/batch/agent-handoff')).createAgentHandoff({
+      workspaceRoot: f.workspace, batchId: f.prepared.batchId, executionId: 'case-delayed-dispatch',
+      caseProtocolSha: 'case-protocol-fixture', casePrompt: 'Continuation',
+      brief: { case: { source: 'Check screen.' } }, mode: 'CONTINUATION', sequence: 2,
+      continuationReason: 'original Agent stopped',
+    });
+  });
+  assert.equal(result.status, 'REJECTED');
+  assert.equal(result.error.code, 'BINDING_INVALID');
+});
+
+test('a supplied manifest cannot bypass Run binding byte verification', t => {
+  const f = fixture(t), a = f.startCase('case-forged-manifest');
+  const binding = require(path.join(f.runtimeRoot, 'scripts/lib/runtime-binding'));
+  const bundleRoot = path.dirname(path.dirname(f.runtimeRoot));
+  const manifest = JSON.parse(fs.readFileSync(path.join(bundleRoot, 'bundle.manifest.json')));
+  fs.appendFileSync(path.join(f.runtimeRoot, 'scripts/case-runtime/agent-facing-client.js'), '\n// tampered\n');
+  assert.throws(() => binding.readRunBinding(f.workspace, f.prepared.batchId,
+    { verifiedBundle: { bundleRoot, manifest } }), /bundle.*invalid|bytes.*mismatch|MAVT_RUNTIME/i);
+  assert.ok(a.contextRef);
 });
 
 test('Case MCP schema errors retain the pinned runtime repeated-input count', t => {
@@ -329,7 +449,7 @@ test('stdio EOF drains accepted operations and releases worker processes', t => 
 
 test('new installation routes an old Case ref through its sealed A implementation', t => {
   const f = fixture(t), a = f.startCase('case-pinned-a');
-  const newer = buildPlugin({ outputRoot: path.join(f.temp, 'newer-b') });
+  const newer = buildPlugin({ outputRoot: path.join(f.temp, 'newer-b'), mcpPreview: true });
   const modulePath = path.join(newer.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/case-service.js');
   fs.appendFileSync(modulePath, "\nmodule.exports.invoke = () => ({ status: 'FAILED', code: 'B_IMPLEMENTATION_USED' });\n");
   const { createManifest } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');
@@ -343,7 +463,7 @@ test('new installation routes an old Case ref through its sealed A implementatio
 
 test('older fixed Loader without Case MCP capability keeps its original CLI handoff', t => {
   const f = fixture(t);
-  const older = buildPlugin({ outputRoot: path.join(f.temp, 'older-a') });
+  const older = buildPlugin({ outputRoot: path.join(f.temp, 'older-a'), mcpPreview: true });
   const modulePath = path.join(older.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp/management-service.js');
   fs.appendFileSync(modulePath, '\ndelete module.exports.invokeCaseValidated;\n');
   const { createManifest } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');

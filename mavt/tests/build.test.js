@@ -45,10 +45,11 @@ const inputs = {
   'scripts/mavt-mcp.js': '#!/usr/bin/env node\nconsole.log("mcp");\n',
   'hosts/codex/delegation.md': 'Host rules\n',
   'hosts/codex/harness-requirements.json': '{"schemaVersion":1}\n',
+  '.mcp.json': '{"mavt":{"command":"node","args":["./scripts/mavt-mcp.js"],"cwd":"."}}\n',
 };
 // Deliberate fixture release contract: not derived from the builder or source discovery.
 const FIXTURE_RELEASE_FILES = [
-  '.codex-plugin/plugin.json', 'hosts/codex/delegation.md', 'hosts/codex/harness-requirements.json',
+  '.codex-plugin/plugin.json', '.mcp.json', 'hosts/codex/delegation.md', 'hosts/codex/harness-requirements.json',
   'runtime/mavt-knowledge-manager/assets/knowledge-entry-template.md',
   'runtime/mavt-knowledge-manager/references/knowledge-contract.md',
   'runtime/mavt-knowledge-manager/scripts/knowledge-manager.js',
@@ -130,9 +131,11 @@ test('release builds preserve runtime resources and executable bits with repeata
   const second = buildPlugin({ repoRoot: source, outputRoot: path.join(temp, '第二次 build') });
   assert.deepEqual(inventory(first.marketplaceRoot), inventory(second.marketplaceRoot));
   assert.equal(first.manifest.bundleId, second.manifest.bundleId);
-  assert.equal(first.manifest.pluginVersion, '0.1.1');
+  assert.equal(first.manifest.pluginVersion, '0.2.0');
   const files = inventory(first.pluginRoot).map((entry) => entry.path);
-  assert.deepEqual(files, [...FIXTURE_RELEASE_FILES, 'bundle.manifest.json'].sort());
+  assert.deepEqual(files, [...FIXTURE_RELEASE_FILES.filter(relative =>
+    relative !== '.mcp.json' && relative !== 'scripts/mavt-mcp.js' &&
+    !relative.startsWith('runtime/mobile-ai-visual-test/scripts/mcp/')), 'bundle.manifest.json'].sort());
   const apk = path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test', helper, 'ArtemisAccessibilityHelper.apk');
   assert.deepEqual(fs.readFileSync(apk), inputs[mavtRoot + helper + 'ArtemisAccessibilityHelper.apk']);
   const executable = path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/lib/action-common.sh');
@@ -140,6 +143,31 @@ test('release builds preserve runtime resources and executable bits with repeata
   const index = JSON.parse(fs.readFileSync(path.join(output, '.agents/plugins/marketplace.json'), 'utf8'));
   assert.equal(index.name, 'mavt-local');
   assert.equal(path.resolve(output, index.plugins[0].source.path), first.pluginRoot);
+  const plugin = JSON.parse(fs.readFileSync(path.join(first.pluginRoot, '.codex-plugin/plugin.json')));
+  assert.equal(Object.hasOwn(plugin, 'mcpServers'), false, 'ordinary install must not auto-register the MCP catalog');
+  assert.equal(fs.existsSync(path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test/mcp-preview.json')), false);
+  assert.equal(fs.existsSync(path.join(first.pluginRoot, '.mcp.json')), false);
+  assert.equal(fs.existsSync(path.join(first.pluginRoot, 'scripts/mavt-mcp.js')), false);
+  assert.equal(fs.existsSync(path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/mcp')), false);
+});
+
+test('explicit MCP preview registers the relocatable server and pins the preview marker', t => {
+  const { source, temp } = fixture(t);
+  const output = path.join(temp, 'preview-output');
+  const built = buildPlugin({ repoRoot: source, outputRoot: output, mcpPreview: true });
+  const relocated = path.join(temp, 'relocated');
+  fs.renameSync(output, relocated);
+  const pluginRoot = path.join(relocated, 'plugins/mavt');
+  const plugin = JSON.parse(fs.readFileSync(path.join(pluginRoot, '.codex-plugin/plugin.json')));
+  assert.equal(plugin.mcpServers, './.mcp.json');
+  const registration = JSON.parse(fs.readFileSync(path.join(pluginRoot, plugin.mcpServers))).mavt;
+  assert.equal(path.resolve(pluginRoot, registration.cwd, registration.args[0]), path.join(pluginRoot, 'scripts/mavt-mcp.js'));
+  for (const relative of FIXTURE_RELEASE_FILES.filter(name => name.startsWith('runtime/mobile-ai-visual-test/scripts/mcp/'))) {
+    assert.equal(fs.existsSync(path.join(pluginRoot, relative)), true, relative);
+  }
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(pluginRoot, 'runtime/mobile-ai-visual-test/mcp-preview.json'))),
+    { schemaVersion: 1, mcpPreview: true });
+  assert.notEqual(built.manifest.bundleId, buildPlugin({ repoRoot: source, outputRoot: path.join(temp, 'ordinary') }).manifest.bundleId);
 });
 
 test('development builds can retain runnable regression files', (t) => {

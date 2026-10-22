@@ -51,6 +51,11 @@ function createManifest(root, pluginVersion) {
     invalid(error.message);
   }
 }
+const verifiedManifests = new WeakMap();
+function isVerifiedManifest(manifest, root, expectedId) {
+  const verified = manifest && verifiedManifests.get(manifest);
+  return Boolean(verified && verified.root === path.resolve(root) && verified.bundleId === expectedId && manifest.bundleId === expectedId);
+}
 function verifyBundle(root, expectedId = null) {
   if (!fs.existsSync(root)) throw bundleError('MAVT_RUNTIME_BUNDLE_MISSING', root);
   try {
@@ -67,6 +72,10 @@ function verifyBundle(root, expectedId = null) {
     }
     if (identity(manifest.files) !== manifest.bundleId || expectedId && manifest.bundleId !== expectedId) invalid('bundle identity mismatch');
     if (JSON.stringify(recordsFor(root)) !== JSON.stringify(manifest.files)) invalid('bundle files, bytes or executable bits mismatch');
+    for (const record of manifest.files) Object.freeze(record);
+    Object.freeze(manifest.files);
+    Object.freeze(manifest);
+    verifiedManifests.set(manifest, { root: path.resolve(root), bundleId: manifest.bundleId });
     return manifest;
   } catch (error) {
     if (error.code === 'MAVT_RUNTIME_BUNDLE_INVALID') throw error;
@@ -125,4 +134,4 @@ function bundleForRuntime(runtimeRoot) {
   const manifest = verifyBundle(bundleRoot);
   return { bundleRoot, manifest, ...bundleLocations(bundleRoot, manifest) };
 }
-module.exports = { DIGEST, RUNTIME_RELATIVE_ROOT, bundleError, bundleForRuntime, bundleLocations, createManifest, managedDirectories, pinBundle, plainPath, sha256, verifyBundle };
+module.exports = { DIGEST, RUNTIME_RELATIVE_ROOT, bundleError, bundleForRuntime, bundleLocations, createManifest, isVerifiedManifest, managedDirectories, pinBundle, plainPath, sha256, verifyBundle };
