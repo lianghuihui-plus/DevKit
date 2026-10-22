@@ -1,0 +1,143 @@
+{
+  "status": "PASS",
+  "version": "codex-cli 0.163.0-alpha.10.2",
+  "installation": {
+    "pluginId": "mavt@mavt-local",
+    "name": "mavt",
+    "marketplaceName": "mavt-local",
+    "version": "0.1.1",
+    "installedPath": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/codex-home/plugins/cache/mavt-local/mavt/0.1.1",
+    "authPolicy": "ON_INSTALL"
+  },
+  "list": {
+    "installed": [
+      {
+        "pluginId": "mavt@mavt-local",
+        "name": "mavt",
+        "marketplaceName": "mavt-local",
+        "version": "0.1.1",
+        "installed": true,
+        "enabled": true,
+        "source": {
+          "source": "local",
+          "path": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/publisher/plugins/mavt"
+        },
+        "marketplaceSource": {
+          "sourceType": "local",
+          "source": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/publisher"
+        },
+        "installPolicy": "AVAILABLE",
+        "authPolicy": "ON_INSTALL"
+      }
+    ],
+    "available": []
+  },
+  "skills": [
+    {
+      "name": "mavt:author-cases",
+      "path": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/codex-home/plugins/cache/mavt-local/mavt/0.1.1/skills/author-cases/SKILL.md",
+      "enabled": true,
+      "interface": {
+        "displayName": "MAVT 用例编写",
+        "shortDescription": "从测试材料生成、导入和更新 MAVT 标准用例，保留来源追溯",
+        "iconSmall": null,
+        "iconLarge": null,
+        "iconSmallUrl": null,
+        "iconLargeUrl": null,
+        "brandColor": null,
+        "defaultPrompt": null
+      }
+    },
+    {
+      "name": "mavt:manage-knowledge",
+      "path": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/codex-home/plugins/cache/mavt-local/mavt/0.1.1/skills/manage-knowledge/SKILL.md",
+      "enabled": true,
+      "interface": {
+        "displayName": "MAVT 知识管理",
+        "shortDescription": "维护 MAVT 工作区知识，支持条目查看、校验及通过事务增删改",
+        "iconSmall": null,
+        "iconLarge": null,
+        "iconSmallUrl": null,
+        "iconLargeUrl": null,
+        "brandColor": null,
+        "defaultPrompt": null
+      }
+    },
+    {
+      "name": "mavt:run-tests",
+      "path": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/codex-home/plugins/cache/mavt-local/mavt/0.1.1/skills/run-tests/SKILL.md",
+      "enabled": true,
+      "interface": {
+        "displayName": "MAVT 测试执行",
+        "shortDescription": "执行移动端视觉测试，支持环境确认、任务恢复、取消与报告查看",
+        "iconSmall": null,
+        "iconLarge": null,
+        "iconSmallUrl": null,
+        "iconLargeUrl": null,
+        "brandColor": null,
+        "defaultPrompt": null
+      }
+    }
+  ],
+  "upgrade": {
+    "pluginId": "mavt@mavt-local",
+    "name": "mavt",
+    "marketplaceName": "mavt-local",
+    "version": "0.1.2-verification",
+    "installedPath": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/codex-home/plugins/cache/mavt-local/mavt/0.1.2-verification",
+    "authPolicy": "ON_INSTALL"
+  },
+  "upgradedSkills": [
+    {
+      "name": "mavt:author-cases",
+      "path": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/codex-home/plugins/cache/mavt-local/mavt/0.1.2-verification/skills/author-cases/SKILL.md",
+      "enabled": true,
+      "interface": {
+        "displayName": "MAVT 用例编写",
+        "shortDescription": "从测试材料生成、导入和更新 MAVT 标准用例，保留来源追溯",
+        "iconSmall": null,
+        "iconLarge": null,
+        "iconSmallUrl": null,
+        "iconLargeUrl": null,
+        "brandColor": null,
+        "defaultPrompt": null
+      }
+    },
+    {
+      "name": "mavt:manage-knowledge",
+      "path": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/codex-home/plugins/cache/mavt-local/mavt/0.1.2-verification/skills/manage-knowledge/SKILL.md",
+      "enabled": true,
+      "interface": {
+        "displayName": "MAVT 知识管理",
+        "shortDescription": "维护 MAVT 工作区知识，支持条目查看、校验及通过事务增删改",
+        "iconSmall": null,
+        "iconLarge": null,
+        "iconSmallUrl": null,
+        "iconLargeUrl": null,
+        "brandColor": null,
+        "defaultPrompt": null
+      }
+    },
+    {
+      "name": "mavt:run-tests",
+      "path": "/private/var/folders/5k/15r87pq522jfx_x1sybxpgxm0000gn/T/mavt-host-install-dpM62R/codex-home/plugins/cache/mavt-local/mavt/0.1.2-verification/skills/run-tests/SKILL.md",
+      "enabled": true,
+      "interface": {
+        "displayName": "MAVT 测试执行",
+        "shortDescription": "执行移动端视觉测试，支持环境确认、任务恢复、取消与报告查看",
+        "iconSmall": null,
+        "iconLarge": null,
+        "iconSmallUrl": null,
+        "iconLargeUrl": null,
+        "brandColor": null,
+        "defaultPrompt": null
+      }
+    }
+  ],
+  "bundleId": "a61d7b3025054daae3a8bbc834eb685f1a5fe9a8372525ad4684b8f9df92e16e",
+  "upgradedBundleId": "5abae2cb5585970c47881a25e9e26e1e9dcf23621c1f53a11a8d9dd88735e9a5",
+  "resumeAfterOldCacheRemoved": true,
+  "cancelledBeforeDeviceConfirmation": true,
+  "oldCacheRemovedByInstaller": true,
+  "temporaryHomeRemoved": true
+}

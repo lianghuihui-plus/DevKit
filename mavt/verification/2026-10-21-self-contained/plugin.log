@@ -1,0 +1,34 @@
+✔ release builds preserve runtime resources and executable bits with repeatable output (95.606708ms)
+✔ development builds can retain runnable regression files (53.48075ms)
+✔ missing or corrupt Helper APK fails before publishing output (24.610917ms)
+✔ nested and excluded symbolic links cannot smuggle external files into release (16.923625ms)
+✔ missing plugin entry reports actionable source path (13.57875ms)
+✔ missing Android action script fails instead of shipping a partial platform (14.44625ms)
+✔ committed inventory rejects missing runtime documentation and atoms before sealing (13.050625ms)
+✔ new source files require explicit release inventory approval (14.982375ms)
+✔ only explicit file-list generation approves an intended new runtime file (49.879417ms)
+✔ explicit inventory generation rejects a dangling symbolic-link destination (15.958208ms)
+✔ release inventory rejects malformed and duplicate controlled paths (31.68575ms)
+✔ actual checked-in release sources build against their independent committed inventory (200.374917ms)
+✔ build refuses to overwrite user files but accepts an explicitly empty destination (35.649209ms)
+✔ CLI rejects relative output instead of interpreting a caller-dependent path (26.776708ms)
+✔ doctor is read-only and knowledge cannot initialize; workspace initializes before pinning (736.480458ms)
+✔ pinned Run resumes/cancels after A disappears and B installed; commands cannot switch code (2709.397125ms)
+✔ multiple Runs require a choice; abandoned staging is diagnostic only (1065.509209ms)
+✔ parallel snapshot publishers converge on one complete bundle and allow safe lock retries (1600.8965ms)
+✔ MAVT owns complete runtime and knowledge sources within one project (0.689916ms)
+✔ relocating only the project preserves build, knowledge regression and installed entry (3629.800834ms)
+✔ knowledge prepare/apply retains pinned A after installation A disappears and B is active (1533.544041ms)
+✔ A/B report publication serializes on the workspace lock and preserves both sealed executions (2408.360666ms)
+✔ interrupted A initialization resumes its frozen request after B replaces the installation (1993.72325ms)
+✔ A reuses PREPARED dispatch and waits for CONSUMED dispatch after upgrade without taking over (2208.062292ms)
+✔ terminal A Run observes its deferred report recovery through A after B is installed (2030.0855ms)
+✔ Loader, Case client and maintenance reject wrong/missing/malformed Run binding before any write (2603.832375ms)
+ℹ tests 26
+ℹ suites 0
+ℹ pass 26
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 12841.412333

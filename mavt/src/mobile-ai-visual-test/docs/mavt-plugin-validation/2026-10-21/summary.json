@@ -1,0 +1,20 @@
+{
+  "date": "2026-10-21",
+  "cliVersion": "0.163.0-alpha.10.2",
+  "temporaryRoot": "/private/tmp/mavt-validation.KiF1Dj",
+  "runtimeChecks": {
+    "passed": 15,
+    "failed": 0
+  },
+  "relocatedMavtSuites": 18,
+  "relocatedKnowledgeSuites": 5,
+  "pluginSkills": 3,
+  "realCliInstallAndUpgrade": true,
+  "noDeviceOperations": true,
+  "originalConfigByteUnchanged": false,
+  "probeRegisteredInMainConfig": false,
+  "mainConfigObservation": "During verification main config acquired an mcp_servers.module_onboarding section not present in the initial section inventory. No main-config writes were made by this probe, and no rollback was attempted.",
+  "originalAuthUnchanged": true,
+  "temporaryAuthRemoved": true,
+  "scope": "Disposable feasibility prototypes; proposed production startup/binding lifecycle is not implemented or verified."
+}

@@ -1,0 +1,1 @@
+{"status":"PASS","bundleId":"5d0154601ddf7a976ff4be2b10c23631324ce2afcfe2cd0b46605ae135b95542","checks":["workspace","case import","paired Run","resume","cancel before device confirmation","3 platforms x 2 role contracts","knowledge entry","read-only doctor"]}

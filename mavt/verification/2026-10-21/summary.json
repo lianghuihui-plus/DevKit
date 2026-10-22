@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-21",
+  "scope": "formal implementation and no-device validation only",
+  "branch": "codex/mavt-plugin",
+  "pluginVersion": "0.1.0",
+  "bundleId": "5d0154601ddf7a976ff4be2b10c23631324ce2afcfe2cd0b46605ae135b95542",
+  "zipSha256": "dd72403b97fe588c925024bd7969878a42a8115660ceb1856eb1569514d1f1f8",
+  "bundleFiles": 306,
+  "releaseFiles": 311,
+  "mavtSuites": 88,
+  "knowledgeSuites": 6,
+  "pluginTests": 24,
+  "generatedDocs": 51,
+  "skillValidators": 3,
+  "codexCli": "0.163.0-alpha.10.2",
+  "hostInstallUpgrade": "PASS",
+  "sourceReadDeniedSmoke": "PASS",
+  "archiveUnpackIntegrity": "PASS",
+  "deviceTests": "USER_EXECUTES_NOT_RUN",
+  "desktopUiReload": "NOT_RUN"
+}

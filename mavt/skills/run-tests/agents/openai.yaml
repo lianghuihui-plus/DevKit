@@ -1,0 +1,3 @@
+interface:
+  display_name: "MAVT 测试执行"
+  short_description: "执行移动端视觉测试，支持环境确认、任务恢复、取消与报告查看"

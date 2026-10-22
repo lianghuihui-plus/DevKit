@@ -1,0 +1,446 @@
+#!/usr/bin/env node
+'use strict';
+
+const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { implementationGroups, roleEntrypoints, roleResources } = require('../lib/agent-contract-manifest');
+const { AGENT_FACING_INTERFACE_KIND: COORDINATOR_INTERFACE_KIND, COORDINATOR_CAPABILITIES } = require('../coordinator/agent-facing-contract');
+const { AGENT_FACING_CAPABILITIES, AGENT_FACING_INTERFACE_KIND: CASE_INTERFACE_KIND } = require('../case-runtime/agent-facing-contract');
+const { buildContract } = require('../build-agent-contract');
+const { REQUEST_FIELDS, validateDecision, validateRuntimeRequest } = require('../case-runtime/contract');
+const runtimeBroker = require('../case-runtime/runtime-broker');
+const runtimeOperationContract = require('../case-runtime/runtime-operation-contract');
+const { AGENT_OPERATIONS, isSupportedBroker } = runtimeBroker;
+const { OPERATION_CONTRACT } = runtimeOperationContract;
+
+const root = path.resolve(__dirname, '../..');
+const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
+assert.doesNotMatch(
+  read('prompts/case-agent.md'),
+  /启动时完整读取\s*`references\/case-execution-principles\.md`/,
+  'Case Agent startup must not require preloading local reference documents',
+);
+const envelopeSource = read('scripts/lib/agent-facing-envelope.js');
+assert.deepStrictEqual(fs.readdirSync(path.join(root, 'references'), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+  .map((entry) => entry.name).sort(), [
+  'case-authoring.md',
+  'case-execution-principles.md',
+  'case-runtime.md',
+  'commands.md',
+  'coordinator-principles.md',
+  'coordinator.md',
+  'installation.md',
+], 'root reference pages must be formal entrypoints or diagnostics reached by production code');
+// Scope the public syntax scan to formal facades/docs; internal capabilityId remains valid.
+const formalSources = [
+  'scripts/case-runtime/agent-facing-contract.js', 'scripts/case-runtime/agent-facing-client.js',
+  'scripts/case-runtime/agent-facing-translator.js', 'scripts/case-runtime/mcp-server.js',
+  'scripts/coordinator/agent-facing-contract.js', 'scripts/coordinator/agent-facing-service.js',
+  'scripts/coordinator-agent.js', 'scripts/case-agent-bootstrap.js', 'SKILL.md',
+  ...roleResources('case-executor'), ...roleResources('batch-coordinator'),
+];
+for (const relative of new Set(formalSources)) {
+  assert.doesNotMatch(read(relative), /(?:["']?capability["']?\s*:)|\brequestPath\b|\brequiredBeforeNegativeConclusion\b/,
+    `${relative} must use the current formal protocol only`);
+}
+for (const relative of ['scripts/case-runtime/agent-facing-translator.js', 'scripts/coordinator/agent-facing-service.js']) {
+  assert.doesNotMatch(read(relative), /delete\s+(?:response|result|projected|publicResponse)\s*[.[]/,
+    `${relative} must project allowlists rather than spread-copy and delete`);
+}
+assert.strictEqual(Object.hasOwn(require('../case-runtime/agent-facing-contract'), 'projectScene'), false,
+  'the truncated old public Scene projector must be retired');
+assert.doesNotMatch(read('scripts/case-runtime/runtime-core.js'), /requiredBeforeNegativeConclusion/);
+for (const forbiddenDependency of [
+  "require('../case-runtime/", "require('../coordinator/", "require('../report/", "require('../execution/", "require('../batch/",
+]) {
+  assert.strictEqual(envelopeSource.includes(forbiddenDependency), false,
+    `Shared envelope must remain domain-neutral: ${forbiddenDependency}`);
+}
+
+assert.strictEqual(fs.existsSync(path.join(root, 'scripts/lib/readers/current-execution.js')), true);
+
+assert.deepStrictEqual(roleResources('case-executor').sort(), [
+  'prompts/case-agent.md',
+  'references/case-execution-principles.md',
+  'references/case-runtime.md',
+  'references/case-runtime/resources.md',
+  'references/case-runtime/methods/read.md',
+  'references/case-runtime/methods/observe.md',
+  'references/case-runtime/methods/inspect.md',
+  'references/case-runtime/methods/plan.md',
+  'references/case-runtime/methods/query-capabilities.md',
+  'references/case-runtime/methods/use-capability.md',
+  'references/case-runtime/methods/record-result.md',
+  'references/case-runtime/methods/act.md',
+  'references/case-runtime/methods/run-sequence.md',
+  'references/case-runtime/methods/knowledge.md',
+  'references/case-runtime/methods/recover.md',
+  'references/case-runtime/methods/finish.md',
+  'references/case-runtime/action-refs.md',
+  'references/case-runtime/errors.md',
+  'references/case-runtime/errors/capability.md',
+  'references/case-runtime/errors/transport.md',
+  'references/case-runtime/errors/scene-action.md',
+  'references/case-runtime/errors/sequence.md',
+  'references/case-runtime/errors/flow-result.md',
+  'references/case-runtime/errors/knowledge-recovery.md',
+  'references/case-runtime/errors/runtime.md',
+].sort());
+assert.deepStrictEqual(roleEntrypoints('case-executor'), [
+  'scripts/case-runtime/agent-facing-client.js',
+  'scripts/case-runtime/mcp-server.js',
+]);
+assert.deepStrictEqual(roleEntrypoints('batch-coordinator'), ['scripts/coordinator-agent.js']);
+assert.strictEqual(roleResources('batch-coordinator').includes('prompts/case-agent.md'), false);
+assert.strictEqual(roleResources('batch-coordinator')[0], 'references/coordinator-principles.md');
+assert.strictEqual(fs.existsSync(path.join(root, 'prompts/main-agent.md')), false);
+assert.strictEqual(COORDINATOR_INTERFACE_KIND, 'AGENT_FACING');
+assert.strictEqual(CASE_INTERFACE_KIND, 'AGENT_FACING');
+assert.ok(COORDINATOR_CAPABILITIES.includes('read'));
+assert.ok(AGENT_FACING_CAPABILITIES.includes('read'));
+
+const casePrompt = read('prompts/case-agent.md');
+const caseExecutionPrinciples = read('references/case-execution-principles.md');
+assert.ok(roleResources('case-executor').includes('references/case-execution-principles.md'));
+assert.ok(Buffer.byteLength(casePrompt) + Buffer.byteLength(caseExecutionPrinciples) <= 10 * 1024,
+  'Case Agent prompt and execution principles must preserve attention-budget headroom');
+for (const obsolete of ['UNDERSTAND', 'START_READY', 'allowedDecisions', 'checkpointId', 'turnId']) {
+  assert.strictEqual(casePrompt.includes(obsolete), false, `Case Prompt must not expose ${obsolete}`);
+}
+assert.match(casePrompt, /独立负责 Handoff Loader 返回的.*一个 execution/);
+assert.match(casePrompt, /本次用例理解与计划/);
+assert.match(casePrompt, /case\.source/);
+assert.match(casePrompt, /Case Flow/);
+assert.match(casePrompt, /checkNodeRef/);
+assert.match(casePrompt, /view_image/);
+assert.match(casePrompt, /统一 `read`/);
+assert.match(casePrompt, /observe.*inspect.*plan.*recordResult.*act.*runSequence.*knowledge.*recover.*finish/);
+assert.match(casePrompt, /plan.*queryCapabilities.*useCapability.*recordResult/);
+assert.match(casePrompt, /动态值只取自当前 Brief、Scene 或响应/);
+assert.doesNotMatch(casePrompt, /retryWith|nextCall|technicalContext/);
+assert.match(casePrompt, /控件树为空.*不得.*页面空白/);
+assert.match(casePrompt, /权限弹窗/);
+assert.match(casePrompt, /长按过程/);
+assert.match(casePrompt, /inspect\(mode="action"\)/);
+assert.match(casePrompt, /previousAction/);
+assert.match(casePrompt, /首选能力.*不是排他的工具边界/);
+assert.match(casePrompt, /原始用例是本次执行唯一的业务目标/);
+assert.match(casePrompt, /CHECK.*不是独立业务任务/);
+assert.match(casePrompt, /不能仅因当前 CHECK 已 PASS 就提前结束/);
+const actionSelfCheckGuidance = `${casePrompt}\n${caseExecutionPrinciples}`;
+assert.match(actionSelfCheckGuidance, /动作前.*可观察.*预期/);
+assert.match(actionSelfCheckGuidance, /技术.*不.*证明.*目标.*业务/);
+assert.match(actionSelfCheckGuidance, /效果不符.*核对.*动作.*坐标.*落点/);
+for (const [name, guidance] of [
+  ['Case Prompt', casePrompt],
+  ['execution principles', caseExecutionPrinciples],
+]) {
+  assert.match(guidance, /现场事实.*不.*证明.*业务定性/,
+    `${name} must distinguish observable facts from business classification`);
+  assert.match(guidance, /预期不符.*操作无效果.*异常反复/,
+    `${name} must identify the high-information knowledge triggers`);
+  assert.match(guidance, /原因不明.*无法形成可靠判断/,
+    `${name} must query knowledge for unexplained or uncertain outcomes`);
+  assert.match(guidance, /优先.*尽早.*knowledge.*收口/,
+    `${name} must direct knowledge lookup before result finalization`);
+  assert.match(guidance, /现场证据.*明确技术事实.*完整解释.*才不查询/,
+    `${name} must limit skipping knowledge to fully explained issues`);
+  assert.match(guidance, /知识不会影响下一步或结论.*才不查询/,
+    `${name} must only skip knowledge when it cannot affect the next action or verdict`);
+  assert.match(guidance, /无适用候选.*现场证据|无候选.*不适用.*现场证据/,
+    `${name} must preserve scene-based judgment after an unhelpful query`);
+}
+for (const obsoleteKnowledgeRule of [
+  '异常无法由现场解释时才调用 `knowledge`',
+  '现场证据充分时直接形成结论',
+]) {
+  assert.strictEqual(`${casePrompt}\n${caseExecutionPrinciples}`.includes(obsoleteKnowledgeRule), false,
+    `Agent guidance must not retain ambiguous knowledge rule: ${obsoleteKnowledgeRule}`);
+}
+assert.strictEqual(casePrompt.includes('Frozen CaseSpec'), false);
+assert.strictEqual(casePrompt.includes('"operation": "prepare"'), false);
+for (const internalField of ['basedOnSceneId', 'capabilityId', 'inspectVisual', 'inspectScene', 'knowledgeReview', 'contractDefinitions', 'allowedOperations']) {
+  assert.strictEqual(casePrompt.includes(internalField), false, `Case Prompt must not expose internal field ${internalField}`);
+}
+assert.deepStrictEqual(AGENT_OPERATIONS, ['observe', 'act', 'runSequence', 'inspectVisual', 'inspectScene', 'knowledge', 'recover', 'finish', 'status']);
+assert.deepStrictEqual(AGENT_OPERATIONS, Object.entries(OPERATION_CONTRACT)
+  .filter(([, definition]) => definition.agentAccessible).map(([operation]) => operation));
+for (const [operation, definition] of Object.entries(OPERATION_CONTRACT)) {
+  assert.deepStrictEqual([...REQUEST_FIELDS[operation]], definition.requestFields);
+}
+assert.strictEqual(isSupportedBroker({ allowedOperations: AGENT_OPERATIONS }), true);
+assert.strictEqual(isSupportedBroker({ allowedOperations: ['observe', 'act', 'knowledge', 'recover', 'finish', 'status'] }), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeOperationContract, 'BROKER_OPERATION_SETS'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(runtimeBroker, 'LEGACY_AGENT_OPERATIONS'), false);
+assert.strictEqual(read('scripts/case-runtime/runtime-operation-contract.js').includes('BROKER_OPERATION_SETS'), false);
+assert.strictEqual(read('scripts/coordinator/agent-facing-service.js').includes('COORDINATOR_SCHEMA_VERSION'), false);
+assert.match(read('scripts/case-runtime/agent-facing-client.js'), /schemaVersion !== 14/);
+assert.strictEqual(read('scripts/report/execution-trace.js').includes('legacyCoordinateAudit'), false);
+assert.strictEqual(read('scripts/report/execution-trace.js').includes('event.coordinateAudit'), false);
+assert.strictEqual(read('scripts/lib/execution-timing.js').includes('EXECUTION_LEGACY'), false);
+for (const hidden of ['CLEAR_APP_DATA', 'REINSTALL_APP', 'artifactPath', 'appiumSessionId']) {
+  assert.strictEqual(casePrompt.includes(hidden), false, `Case Prompt must not expose ${hidden}`);
+}
+const promptRequests = [...casePrompt.matchAll(/```json\s*([\s\S]*?)```/g)].map((match) => JSON.parse(match[1]));
+assert.strictEqual(promptRequests.length, 0, 'Runtime request schemas belong in runtime.capabilities, not the prompt');
+assert.match(casePrompt, /stdin.*一次提交.*operation,input/);
+for (const request of promptRequests) assert.doesNotThrow(() => validateRuntimeRequest(request));
+for (const request of promptRequests) if (request.decision) assert.doesNotThrow(() => validateDecision(request.decision));
+assert.doesNotThrow(() => validateDecision({ purpose: '检查结果', expectationRefs: ['E1'] }));
+assert.throws(() => validateDecision({ expectationRefs: ['E1'] }),
+  (error) => error?.code === 'CASE_NARRATIVE_INVALID' && error.fieldPath === 'decision.purpose');
+
+const mainPrompt = read('SKILL.md');
+assert.match(mainPrompt, /你是 Authoring Agent/);
+assert.match(mainPrompt, /你是执行协调 Agent/);
+assert.strictEqual(mainPrompt.includes('主 Agent'), false);
+assert.match(mainPrompt, /NEED_CASE_AGENT/);
+assert.match(mainPrompt, /一个用例只保留一个有效写入者/);
+assert.strictEqual(mainPrompt.includes('Case Definition Compiler'), false);
+assert.match(mainPrompt, /执行协调 Agent 不执行 Case Agent Loader/);
+assert.strictEqual(/读取 `prompts\/case-agent\.md`/.test(mainPrompt), false);
+assert.match(mainPrompt, /不读取.*Handoff 正文/);
+assert.match(mainPrompt, /不继承执行协调 Agent.*上下文/);
+assert.match(mainPrompt, /loaderCommand/);
+assert.strictEqual(mainPrompt.includes('根据原文整理并审核'), false);
+assert.strictEqual(mainPrompt.includes('caseNo + definitionRef'), false);
+assert.match(mainPrompt, /prepareRun.*confirmRun.*advanceRun.*cancelRun/);
+assert.match(mainPrompt, /仍在运行的会话句柄.*继续等待.*不得重复执行/);
+assert.strictEqual(mainPrompt.includes('可重试的报告发布'), false, 'report publication must not keep a run WAITING');
+assert.strictEqual(mainPrompt.includes('coordinatorCapabilities'), false);
+assert.strictEqual(mainPrompt.includes('batch bootstrap'), false);
+assert.strictEqual(mainPrompt.includes('batch start'), false);
+assert.match(mainPrompt, /执行协调 Agent.*不执行 Case Agent Loader.*不读取.*Handoff 正文/);
+assert.match(mainPrompt, /documentationRef/);
+assert.doesNotMatch(mainPrompt, /confirmChoices|confirmTemplate|retryWith|technicalContext\.resume/);
+assert.match(mainPrompt, /首选入口.*不是.*排他能力边界/);
+assert.strictEqual(fs.existsSync(path.join(root, 'prompts/case-definition-compiler.md')), false);
+assert.strictEqual(mainPrompt.includes('allowedDecisions'), false);
+
+const currentReportSource = read('scripts/report/current-report.js');
+assert.strictEqual(currentReportSource.includes('report.events'), false, 'Renderer must consume projected ViewModels');
+for (const obsolete of ['execution-story', 'checkpoint-accordion', 'process-workspace', 'case-plan-workspace']) {
+  assert.strictEqual(currentReportSource.includes(obsolete), false, `Renderer must not retain obsolete ${obsolete} UI`);
+}
+for (const artifact of ['binding.snapshot.json', 'case.snapshot.json', 'source.snapshot.md', 'logs/', 'action-spatial-evidence/']) {
+  assert.ok(read('docs/architecture.md').includes(artifact), `architecture must list ${artifact}`);
+}
+
+for (const name of fs.readdirSync(path.join(root, 'scripts/case-runtime')).filter((item) => item.endsWith('.js'))) {
+  assert.strictEqual(read(`scripts/case-runtime/${name}`).includes("require('../batch/"), false, `${name} must not depend on Batch`);
+}
+
+const lifecycle = require('../case-runtime/lifecycle');
+const batchCore = require('../batch/core');
+assert.deepStrictEqual(Object.keys(lifecycle).sort(), ['EXECUTION_SCHEMA_VERSION', 'buildContinuationBrief', 'cancelExecution', 'commitExecution', 'createExecution', 'establishInitialState', 'readCompletion', 'reconcileExecution', 'recordAgentContinuation', 'recordTimingAnchor', 'resumeExecution', 'withCompletionPublication']);
+assert.strictEqual(batchCore.BATCH_SCHEMA_VERSION, 8);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(lifecycle, 'act'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(batchCore, 'recoverApp'), false);
+
+const batchCoreSource = read('scripts/batch/core.js');
+assert.ok(batchCoreSource.split(/\r?\n/).length < 100, 'Batch core must be a small phase facade');
+for (const service of [
+  'initialization-service.js',
+  'dispatch-service.js',
+  'completion-service.js',
+  'finalization-service.js',
+  'reconcile-service.js',
+]) {
+  assert.strictEqual(fs.existsSync(path.join(root, 'scripts/batch', service)), true, `${service} must own its Batch phase`);
+  assert.match(batchCoreSource, new RegExp(service.replace(/\.js$/, '').replace('.', '\\.')));
+}
+for (const obsolete of ["require('../agent/", "require('../execution/core')", 'recoveryDraft', 'RESUME_RECOVERY']) {
+  assert.strictEqual(batchCoreSource.includes(obsolete), false, `Batch must not retain replaced recovery path: ${obsolete}`);
+}
+assert.strictEqual(read('scripts/case-runtime/lifecycle.js').includes("require('./runtime-broker')"), false,
+  'Lifecycle must depend on the pure Runtime operation contract, not Broker');
+for (const relative of fs.readdirSync(path.join(root, 'scripts/batch')).filter((name) => name.endsWith('.js'))) {
+  const source = read(`scripts/batch/${relative}`);
+  assert.strictEqual(/require\(['"]\.\.\/case-runtime\/(?!lifecycle)/.test(source), false, `${relative} must use the Case Runtime lifecycle facade`);
+}
+
+const caseContract = buildContract({ skillRoot: root, role: 'case-executor', platform: 'harmony' });
+assert.strictEqual(Object.prototype.hasOwnProperty.call(caseContract, 'schemaVersion'), false);
+assert.strictEqual(caseContract.implementationFiles.some((file) => file.startsWith('scripts/agent/')), false);
+assert.strictEqual(caseContract.implementationFiles.some((file) => file.startsWith('scripts/batch/')), false);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/case-runtime/lifecycle.js'), false);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/platform/prepare-app.sh'), true);
+const iosContract = buildContract({ skillRoot: root, role: 'case-executor', platform: 'ios' });
+assert.strictEqual(iosContract.implementationFiles.includes('scripts/platform/adapters/ios/lib/input-service.js'), true);
+assert.strictEqual(iosContract.implementationFiles.includes('scripts/platform/adapters/ios/lib/pointer-actions.js'), true);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/lib/app-provisioning.js'), true);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/case-runtime/case-model-service.js'), false);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/execution/contracts/case-spec-contract.js'), false);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/execution/contracts/validation-profile-contract.js'), true);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/case-runtime/runtime-operation-contract.js'), true);
+assert.strictEqual(caseContract.implementationFiles.includes('scripts/lib/dispatch-lease.js'), true);
+
+const coordinatorContract = buildContract({ skillRoot: root, role: 'batch-coordinator', platform: 'harmony' });
+assert.strictEqual(Object.prototype.hasOwnProperty.call(coordinatorContract, 'schemaVersion'), false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(coordinatorContract.coordinatorFacade, 'schemaVersion'), false);
+assert.strictEqual(coordinatorContract.coordinatorFacade.interfaceKind, 'AGENT_FACING');
+assert.strictEqual(coordinatorContract.implementationFiles.includes('prompts/case-definition-compiler.md'), false);
+assert.strictEqual(coordinatorContract.allowedEntrypoints.includes('scripts/app-artifact.js'), false);
+assert.strictEqual(coordinatorContract.implementationFiles.includes('scripts/app-artifact.js'), true);
+assert.strictEqual(coordinatorContract.requiredResources.includes('references/knowledge.md'), false);
+assert.deepStrictEqual([...coordinatorContract.requiredResources].sort(), [
+  'references/coordinator-principles.md',
+  'references/coordinator.md',
+  'references/coordinator/resources.md',
+  'references/coordinator/methods/read.md',
+  'references/coordinator/methods/prepare-run.md',
+  'references/coordinator/methods/confirm-run.md',
+  'references/coordinator/methods/advance-run.md',
+  'references/coordinator/methods/cancel-run.md',
+  'references/coordinator/errors.md',
+  'references/coordinator/errors/input-state.md',
+  'references/coordinator/errors/environment.md',
+  'references/coordinator/errors/batch.md',
+  'references/coordinator/errors/resources.md',
+].sort());
+assert.strictEqual(read('SKILL.md').includes('## Case Runtime'), false);
+for (const retired of ['function caseFlowRanks', 'function renderCaseFlow(', 'function flowViewer(', '.case-flow-', '.flow-viewer']) {
+  assert.strictEqual(read('scripts/report/current-report-html.js').includes(retired), false, `retired flow renderer remains: ${retired}`);
+}
+assert.strictEqual(read('SKILL.md').includes('runtime.requestPath'), false);
+assert.match(read('SKILL.md'), /scripts\/workspace\.js/);
+assert.match(read('SKILL.md'), /通过 stdin 提交请求/);
+assert.match(read('SKILL.md'), /"operation":"prepareRun"/);
+assert.doesNotMatch(read('SKILL.md'), /coordinator-agent\.js prepare|预绑定 `commands`/);
+assert.match(read('SKILL.md'), /Authoring 入口/);
+assert.match(read('SKILL.md'), /references\/case-authoring\.md/);
+assert.match(read('references/case-authoring.md'), /文件(?:名|数量|格式)?.*不是用例边界|文件不是用例边界/);
+assert.match(read('references/case-authoring.md'), /完整读取|阅读完整/);
+assert.match(read('references/case-authoring.md'), /一条或多条/);
+assert.strictEqual(read('SKILL.md').includes('你是本次测试的主 Agent'), false);
+assert.strictEqual(`${read('SKILL.md')}\n${read('docs/architecture.md')}`.includes('Prompt 和派生 Case Brief 一次性交给'), false);
+assert.strictEqual(read('docs/architecture.md').includes('agentRequired=true + derived Case Brief'), false);
+assert.strictEqual(read('docs/architecture.md').includes('主 Agent 使用该 Brief'), false);
+const implementation = implementationGroups(root, 'harmony');
+assert.strictEqual(implementation.coordinator.includes('scripts/knowledge.js'), false);
+assert.strictEqual(implementation.report.includes('scripts/execution/contracts/case-definition-contract.js'), false);
+assert.strictEqual(implementation.report.includes('scripts/execution/contracts/validation-profile-contract.js'), true);
+const platformSpecific = /\b(?:codex|spawn_agent|fork_turns|provider)\b/i;
+for (const relative of new Set([...caseContract.requiredResources, ...coordinatorContract.requiredResources])) {
+  assert.strictEqual(platformSpecific.test(read(relative)), false, `${relative} must remain Agent-host neutral`);
+}
+// The absolute installation location is transport metadata, not a host instruction.
+// Developer directories can legitimately contain a host name (e.g. .codex).
+const withoutLocation = ({ root: installationRoot, ...contract }) => contract;
+assert.strictEqual(platformSpecific.test(JSON.stringify({
+  caseContract: withoutLocation(caseContract), coordinatorContract: withoutLocation(coordinatorContract),
+})), false, 'Agent contracts must remain host neutral');
+
+const digestRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-digest-boundaries-'));
+fs.cpSync(root, digestRoot, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+const harmonyBefore = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
+const androidBefore = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'android' });
+const coordinatorBefore = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
+// Installed runtime omits the source Skill: the neutral resource must suffice.
+fs.unlinkSync(path.join(digestRoot, 'SKILL.md'));
+assert.strictEqual(buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' }).protocolSha,
+  coordinatorBefore.protocolSha);
+fs.appendFileSync(path.join(digestRoot, 'references/coordinator-principles.md'), '\n协调原则摘要验证。\n');
+assert.notStrictEqual(buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' }).protocolSha,
+  coordinatorBefore.protocolSha, 'neutral coordination principles must be frozen by the protocol digest');
+assert.strictEqual(buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' }).protocolSha,
+  harmonyBefore.protocolSha, 'coordinator rules must not change Case protocol identity');
+fs.writeFileSync(path.join(digestRoot, 'references/coordinator-principles.md'), read('references/coordinator-principles.md'));
+
+function assertCoordinatorOnlyDigestChange(relative) {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-coordinator-digest-boundary-'));
+  fs.cpSync(root, fixtureRoot, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  const caseBefore = buildContract({ skillRoot: fixtureRoot, role: 'case-executor', platform: 'harmony' });
+  const coordinatorBeforeFixture = buildContract({ skillRoot: fixtureRoot, role: 'batch-coordinator', platform: 'harmony' });
+  fs.appendFileSync(path.join(fixtureRoot, relative), '\n// coordinator digest boundary fixture\n');
+  const caseAfter = buildContract({ skillRoot: fixtureRoot, role: 'case-executor', platform: 'harmony' });
+  const coordinatorAfter = buildContract({ skillRoot: fixtureRoot, role: 'batch-coordinator', platform: 'harmony' });
+  assert.notStrictEqual(coordinatorAfter.coordinatorSha, coordinatorBeforeFixture.coordinatorSha, `${relative} must affect coordinatorSha`);
+  assert.strictEqual(caseAfter.runtimeSha, caseBefore.runtimeSha, `${relative} must not affect runtimeSha`);
+  assert.strictEqual(caseAfter.adapterSha, caseBefore.adapterSha, `${relative} must not affect adapterSha`);
+  assert.strictEqual(caseAfter.protocolSha, caseBefore.protocolSha, `${relative} must not affect case protocolSha`);
+  assert.strictEqual(coordinatorAfter.protocolSha, coordinatorBeforeFixture.protocolSha, `${relative} must not affect coordinator protocolSha`);
+  fs.rmSync(fixtureRoot, { recursive: true, force: true });
+}
+
+for (const relative of [
+  'scripts/batch/initialization-service.js',
+  'scripts/batch/reconcile-service.js',
+  'scripts/case-runtime/lifecycle.js',
+]) assertCoordinatorOnlyDigestChange(relative);
+
+fs.appendFileSync(path.join(digestRoot, 'docs/architecture.md'), '\nMaintainer-only architecture fixture.\n');
+const coordinatorAfterMaintainerDocs = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
+assert.strictEqual(coordinatorAfterMaintainerDocs.protocolSha, coordinatorBefore.protocolSha);
+assert.strictEqual(buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' }).protocolSha, harmonyBefore.protocolSha);
+fs.appendFileSync(path.join(digestRoot, 'references/case-runtime/methods/act.md'), '\nActionRef recovery fixture.\n');
+const caseAfterDocs = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
+assert.notStrictEqual(caseAfterDocs.protocolSha, harmonyBefore.protocolSha);
+const coordinatorInterfaceFile = path.join(digestRoot, 'scripts/coordinator/agent-facing-contract.js');
+fs.writeFileSync(coordinatorInterfaceFile, fs.readFileSync(coordinatorInterfaceFile, 'utf8')
+  .replace('在绑定工作空间中创建一次 run。', '在当前绑定工作空间中创建一次 run。'));
+const coordinatorAfterInterface = buildContract({ skillRoot: digestRoot, role: 'batch-coordinator', platform: 'harmony' });
+assert.notStrictEqual(coordinatorAfterInterface.protocolSha, coordinatorAfterMaintainerDocs.protocolSha);
+assert.strictEqual(buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' }).protocolSha, caseAfterDocs.protocolSha);
+fs.appendFileSync(path.join(digestRoot, 'scripts/report/current-report.js'), '\n// renderer digest boundary fixture\n');
+const afterReport = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
+assert.strictEqual(afterReport.runtimeSha, harmonyBefore.runtimeSha);
+assert.strictEqual(afterReport.adapterSha, harmonyBefore.adapterSha);
+assert.strictEqual(afterReport.coordinatorSha, coordinatorAfterInterface.coordinatorSha);
+assert.notStrictEqual(afterReport.reportRendererSha, harmonyBefore.reportRendererSha);
+fs.appendFileSync(path.join(digestRoot, 'scripts/lib/technical-facts.js'), '\n// technical fact digest boundary fixture\n');
+const afterTechnicalFacts = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
+assert.notStrictEqual(afterTechnicalFacts.runtimeSha, afterReport.runtimeSha);
+assert.notStrictEqual(afterTechnicalFacts.reportRendererSha, afterReport.reportRendererSha);
+assert.strictEqual(afterTechnicalFacts.adapterSha, afterReport.adapterSha);
+fs.appendFileSync(path.join(digestRoot, 'scripts/platform/adapters/harmony/probe.sh'), '\n# adapter digest boundary fixture\n');
+const harmonyAfterAdapter = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'harmony' });
+const androidAfterAdapter = buildContract({ skillRoot: digestRoot, role: 'case-executor', platform: 'android' });
+assert.notStrictEqual(harmonyAfterAdapter.adapterSha, afterTechnicalFacts.adapterSha);
+assert.strictEqual(harmonyAfterAdapter.runtimeSha, afterTechnicalFacts.runtimeSha);
+assert.strictEqual(harmonyAfterAdapter.coordinatorSha, afterTechnicalFacts.coordinatorSha);
+assert.strictEqual(androidAfterAdapter.adapterSha, androidBefore.adapterSha);
+fs.rmSync(digestRoot, { recursive: true, force: true });
+
+for (const relative of fs.readdirSync(path.join(root, 'scripts/platform/adapters'), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory()).map((entry) => `scripts/platform/adapters/${entry.name}`)) {
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      const child = path.posix.join(dir, entry.name);
+      if (entry.isDirectory()) walk(child);
+      else if (/\.(js|sh)$/.test(entry.name)) files.push(child);
+    }
+  };
+  walk(relative);
+  for (const file of files) {
+    const source = read(file);
+    assert.strictEqual(/require\([^)]*(?:batch|case-runtime|report)/.test(source), false, `${file} must not depend on orchestration`);
+  }
+}
+
+for (const relative of ['references/shared-agent-principles.md', 'references/shared-decision-protocol.md', 'references/agent-execution.md']) {
+  assert.strictEqual(fs.existsSync(path.join(root, relative)), false, `${relative} should be retired`);
+}
+
+for (const relative of [
+  'scripts/agent',
+  'scripts/execution/core.js',
+  'scripts/batch/internal-recovery.js',
+  'scripts/batch/recovery-validation.js',
+  'scripts/lib/agent-attempt-lifecycle.js',
+  'scripts/lib/agent-driven-contract.js',
+  'scripts/lib/agent-entrypoint.js',
+  'scripts/lib/agent-input-contract.js',
+  'scripts/lib/case-agent-guidance.js',
+  'scripts/lib/case-agent-runtime-contract.js',
+  'scripts/lib/execution-time-limit.js',
+  'scripts/lib/knowledge-context.js',
+  'scripts/lib/recovery-contract.js',
+  'scripts/lib/source-reference.js',
+]) assert.strictEqual(fs.existsSync(path.join(root, relative)), false, `${relative} should be retired`);
+
+console.log('architecture boundaries passed');

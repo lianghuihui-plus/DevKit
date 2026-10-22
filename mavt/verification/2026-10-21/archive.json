@@ -1,0 +1,7 @@
+{
+  "status": "PASS",
+  "bundleId": "5d0154601ddf7a976ff4be2b10c23631324ce2afcfe2cd0b46605ae135b95542",
+  "files": 306,
+  "zipSha256": "dd72403b97fe588c925024bd7969878a42a8115660ceb1856eb1569514d1f1f8",
+  "method": "unzip final ZIP to a fresh temporary directory, then verifyBundle against expected bundleId"
+}

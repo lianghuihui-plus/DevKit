@@ -1,0 +1,3 @@
+interface:
+  display_name: "MAVT 用例编写"
+  short_description: "从测试材料生成、导入和更新 MAVT 标准用例，保留来源追溯"

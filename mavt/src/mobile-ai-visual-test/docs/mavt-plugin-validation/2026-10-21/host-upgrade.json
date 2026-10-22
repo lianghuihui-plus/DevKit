@@ -1,0 +1,22 @@
+{
+  "installedA": {
+    "pluginId": "mavt@mavt-probe-local",
+    "name": "mavt",
+    "marketplaceName": "mavt-probe-local",
+    "version": "0.0.0-probe",
+    "installedPath": "/private/tmp/mavt-validation.KiF1Dj/codex-home/plugins/cache/mavt-probe-local/mavt/0.0.0-probe",
+    "authPolicy": "ON_INSTALL"
+  },
+  "installedB": {
+    "pluginId": "mavt@mavt-probe-local",
+    "name": "mavt",
+    "marketplaceName": "mavt-probe-local",
+    "version": "0.0.1-probe",
+    "installedPath": "/private/tmp/mavt-validation.KiF1Dj/codex-home/plugins/cache/mavt-probe-local/mavt/0.0.1-probe",
+    "authPolicy": "ON_INSTALL"
+  },
+  "sourceDirectoryDenied": true,
+  "oldCacheRemoved": true,
+  "retainedRunOutcome": "CANCELLED",
+  "scope": "Real CLI upgrade plus retained terminal Run; not an active-device upgrade test"
+}

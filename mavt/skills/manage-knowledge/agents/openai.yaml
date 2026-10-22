@@ -1,0 +1,3 @@
+interface:
+  display_name: "MAVT 知识管理"
+  short_description: "维护 MAVT 工作区知识，支持条目查看、校验及通过事务增删改"

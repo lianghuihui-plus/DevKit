@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-22",
+  "branch": "main",
+  "pluginVersion": "0.1.1",
+  "bundleId": "a61d7b3025054daae3a8bbc834eb685f1a5fe9a8372525ad4684b8f9df92e16e",
+  "releaseFileCount": 314,
+  "skills": [
+    { "name": "mavt:author-cases", "displayName": "MAVT 用例编写" },
+    { "name": "mavt:run-tests", "displayName": "MAVT 测试执行" },
+    { "name": "mavt:manage-knowledge", "displayName": "MAVT 知识管理" }
+  ],
+  "baseline": {
+    "result": "EXPECTED_FAILURE",
+    "check": "real Codex skills/list against the 0.1.0 build with the target 0.1.1 names",
+    "actualNames": ["mavt:mavt-case-authoring", "mavt:mavt-knowledge-manager", "mavt:mobile-ai-visual-test"]
+  },
+  "verification": {
+    "skillFormat": "3 passed",
+    "npmTest": { "exitCode": 0, "runtimeSuites": 88, "knowledgeSuites": 6, "pluginTests": 26, "generatedDocs": 51 },
+    "isolatedHostInstall": "PASS; names, enabled state, Chinese interface metadata, upgrade and pinned Run resume/cancel before device confirmation",
+    "independentInstructionReview": "PASS; read-only comparison and four scenario walkthroughs, not model-driven runtime or device execution",
+    "localInstallation": "updated mavt@mavt-local to 0.1.1",
+    "localAppServerDiscovery": "PASS; exactly three renamed MAVT skills enabled with matching Chinese display names; no discovery errors"
+  },
+  "limitations": ["No mobile device or simulator tests", "Existing Desktop session UI reload not exercised"],
+  "committed": false
+}

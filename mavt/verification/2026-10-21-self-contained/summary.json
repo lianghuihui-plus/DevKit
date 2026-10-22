@@ -1,0 +1,34 @@
+{
+  "date": "2026-10-21",
+  "scope": "self-contained source project migration and no-device validation",
+  "projectRoot": "mavt/",
+  "branch": "codex/mavt-plugin",
+  "pluginVersion": "0.1.0",
+  "sourceModules": [
+    "src/mobile-ai-visual-test",
+    "src/mavt-knowledge-manager"
+  ],
+  "externalDevkitSourceDependency": false,
+  "bundleId": "5d0154601ddf7a976ff4be2b10c23631324ce2afcfe2cd0b46605ae135b95542",
+  "pluginZipSha256": "6c026bc1395a79f463b73aa9a0ea15942a8767855504209a7e0b508687e91f60",
+  "bundleFiles": 306,
+  "releaseFiles": 311,
+  "mavtSuites": 88,
+  "knowledgeSuites": 6,
+  "pluginTests": 26,
+  "generatedDocs": 51,
+  "skillValidators": 3,
+  "sourceBoundaryTests": "RED observed on old layout, GREEN after full source migration",
+  "sourceReadDeniedBuildAndFullNpmTest": "PASS",
+  "sourceReadDeniedInstalledSmoke": "PASS",
+  "trackedOriginalFilesAccountedFor": {
+    "mobile-ai-visual-test": 386,
+    "mavt-knowledge-manager": 18
+  },
+  "codexCli": "0.163.0-alpha.10.2",
+  "hostInstallUpgrade": "PASS",
+  "pluginArchiveUnpackIntegrity": "PASS",
+  "deviceTests": "USER_EXECUTES_NOT_RUN",
+  "desktopUiReload": "NOT_RUN",
+  "sourceArchiveChecksums": "Generated alongside final archives in dist/SHA256SUMS; not embedded here to avoid a self-referential source archive digest."
+}

@@ -1,0 +1,185 @@
+[
+  {
+    "name": "source access really denied by OS sandbox",
+    "status": "PASS",
+    "detail": "EPERM"
+  },
+  {
+    "name": "two generated distributions have identical bytes and modes",
+    "status": "PASS",
+    "detail": {
+      "files": 401,
+      "bundleA": "22735789b67608f19b36dbc3abdd890edcfc32c962082d1da2c6eb681cb215fd",
+      "bundleB": "cac6b40bbdaacaf3c89bba5da93e74eb81513230b6cd1771bddd8179615020d4"
+    }
+  },
+  {
+    "name": "three-platform two-role contracts work without root SKILL or source tree",
+    "status": "PASS",
+    "detail": {
+      "harmony/case-executor": {
+        "protocolSha": "agent-protocol-802465087df6e83c",
+        "runtimeSha": "case-runtime-2e8fb063173919be"
+      },
+      "harmony/batch-coordinator": {
+        "protocolSha": "agent-protocol-65054fe1fc17a13b",
+        "runtimeSha": "case-runtime-2e8fb063173919be"
+      },
+      "android/case-executor": {
+        "protocolSha": "agent-protocol-63f6b87b8bba06bf",
+        "runtimeSha": "case-runtime-2e8fb063173919be"
+      },
+      "android/batch-coordinator": {
+        "protocolSha": "agent-protocol-7a175ccd7f1bd948",
+        "runtimeSha": "case-runtime-2e8fb063173919be"
+      },
+      "ios/case-executor": {
+        "protocolSha": "agent-protocol-d0ac4f9a13236779",
+        "runtimeSha": "case-runtime-2e8fb063173919be"
+      },
+      "ios/batch-coordinator": {
+        "protocolSha": "agent-protocol-38aedf139e949fe4",
+        "runtimeSha": "case-runtime-2e8fb063173919be"
+      }
+    }
+  },
+  {
+    "name": "READY initialization precedes code snapshot; import is idempotent",
+    "status": "PASS",
+    "detail": {
+      "workspace": "/private/tmp/mavt-validation.KiF1Dj/真实布局 测试工作区",
+      "caseNos": [
+        "001",
+        "002"
+      ],
+      "rootIndex": true
+    }
+  },
+  {
+    "name": "knowledge prepare reads packaged assets and preserves READY contract",
+    "status": "PASS",
+    "detail": {
+      "status": "PREPARED",
+      "planHash": "ebe811b3821ceeefc02423d2658a74a53555fb83f5da8b91685468dcebe45e24"
+    }
+  },
+  {
+    "name": "Run created from pinned A before installation disappears",
+    "status": "PASS",
+    "detail": {
+      "outcome": "NEED_USER_CONFIRMATION",
+      "command": "'/usr/local/bin/node' '/private/tmp/mavt-validation.KiF1Dj/真实布局 测试工作区/.mavt/runtime-bundles/22735789b67608f19b36dbc3abdd890edcfc32c962082d1da2c6eb681cb215fd/runtime/mobile-ai-visual-test/scripts/coordinator-agent.js' --state '/private/tmp/mavt-validation.KiF1Dj/真实布局 测试工作区/runs/batch-20261021073653963-47d3de9d/coordinator-state.json'"
+    }
+  },
+  {
+    "name": "A installation removed; retained Run resource still readable",
+    "status": "PASS",
+    "detail": {
+      "status": "SUCCEEDED",
+      "bundleId": "22735789b67608f19b36dbc3abdd890edcfc32c962082d1da2c6eb681cb215fd"
+    }
+  },
+  {
+    "name": "B new Run uses B; A retains own implementation and command",
+    "status": "PASS",
+    "detail": {
+      "oldBundle": "22735789b67608f19b36dbc3abdd890edcfc32c962082d1da2c6eb681cb215fd",
+      "newBundle": "cac6b40bbdaacaf3c89bba5da93e74eb81513230b6cd1771bddd8179615020d4",
+      "differentRuntimeSha": true
+    }
+  },
+  {
+    "name": "knowledge apply after installation removal uses original pinned entry",
+    "status": "PASS",
+    "detail": {
+      "status": "APPLIED",
+      "backupPath": "/private/tmp/mavt-validation.KiF1Dj/真实布局 测试工作区/.mavt/knowledge-maintenance/backups/20261021T073654195Z-ebe811b3821c"
+    }
+  },
+  {
+    "name": "cancel unconfirmed A Run after installation removal; no device access",
+    "status": "PASS",
+    "detail": {
+      "result": {
+        "outcome": "COMPLETE",
+        "phase": "COMPLETE",
+        "command": "'/usr/local/bin/node' '/private/tmp/mavt-validation.KiF1Dj/真实布局 测试工作区/.mavt/runtime-bundles/22735789b67608f19b36dbc3abdd890edcfc32c962082d1da2c6eb681cb215fd/runtime/mobile-ai-visual-test/scripts/coordinator-agent.js' --state '/private/tmp/mavt-validation.KiF1Dj/真实布局 测试工作区/runs/batch-20261021073840866-845a0803/coordinator-state.json'",
+        "reportStatus": "DEGRADED"
+      },
+      "summary": {
+        "outcome": "COMPLETE",
+        "phase": "COMPLETE",
+        "runOutcome": "CANCELLED",
+        "reportStatus": "DEGRADED",
+        "reportErrorCode": "REPORT_NOT_PUBLISHED",
+        "reportReason": "本次运行未生成可发布报告",
+        "cancelReason": "repeat cancellation probe with correct public contract field"
+      }
+    },
+    "retestReason": "Probe assertion used outcome instead of the documented runOutcome. No MAVT source changed."
+  },
+  {
+    "name": "retained report rendering works with no installation or source directory",
+    "status": "PASS",
+    "detail": {
+      "stdout": "/private/tmp/mavt-validation.KiF1Dj/真实布局 测试工作区/index.html",
+      "bytes": 20963
+    }
+  },
+  {
+    "name": "manifest detects missing Android Helper and changed runtime before use",
+    "status": "PASS",
+    "detail": {
+      "apk": "runtime/mobile-ai-visual-test/scripts/platform/adapters/android/helper/ArtemisAccessibilityHelper.apk",
+      "missingAndTamperedRejected": true,
+      "scope": "prototype verifier, not yet integrated into production entrypoints"
+    }
+  },
+  {
+    "name": "relocated actual runtime regression suites inside OS source denial",
+    "status": "PASS",
+    "detail": {
+      "suites": [
+        "platformRuntime",
+        "workspace",
+        "caseAuthoring",
+        "control",
+        "knowledge",
+        "knowledgeClosure",
+        "caseFlow",
+        "batchCancellation",
+        "batchReconcile",
+        "agentHandoff",
+        "coordinatorAgentFacing",
+        "agentFacingTransportParity",
+        "agentFacingDocs",
+        "report",
+        "publication",
+        "crossPlatformExecution",
+        "finalReviewGate",
+        "executionFlowCombination"
+      ],
+      "count": 18,
+      "tail": "self-test passed: platformRuntime, workspace, caseAuthoring, control, knowledge, knowledgeClosure, caseFlow, batchCancellation, batchReconcile, agentHandoff, coordinatorAgentFacing, agentFacingTransportParity, agentFacingDocs, report, publication, crossPlatformExecution, finalReviewGate, executionFlowCombination"
+    }
+  },
+  {
+    "name": "packaged knowledge transaction and parser regressions inside source denial",
+    "status": "PASS",
+    "detail": {
+      "suites": [
+        "contract",
+        "store",
+        "transaction",
+        "cli",
+        "mavtCompatibility"
+      ],
+      "count": 5
+    }
+  },
+  {
+    "name": "pinned runtime bytes unchanged after commands and regressions",
+    "status": "PASS",
+    "detail": true
+  }
+]

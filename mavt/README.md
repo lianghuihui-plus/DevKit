@@ -1,0 +1,91 @@
+# MAVT
+
+MAVT 是自包含的移动端 AI 黑盒视觉测试项目，首阶段以一个 Codex 插件交付，包含测试执行、用例生成和知识维护三个 Skill。
+
+本目录包含完整源码、知识管理模块、资源、文档、构建与测试；单独复制整个目录即可开发、构建和运行离线验证，不依赖 DevKit 的其他目录。
+
+## 项目结构
+
+```text
+mavt/
+├── src/
+│   ├── mobile-ai-visual-test/      # 完整测试运行时、三端 Adapter、文档与回归
+│   └── mavt-knowledge-manager/     # 完整知识维护实现、契约、模板与回归
+├── skills/                        # 三个 Codex Skill 包装
+├── hosts/codex/                   # Codex Agent 委托适配
+├── scripts/mavt-entry.js           # 安装后启动、固定版本、恢复和诊断入口
+├── .codex-plugin/plugin.json
+├── build-plugin.js
+├── release-files.json
+├── package.json
+├── tests/                         # 构建、安装、升级及项目隔离验证
+├── docs/                          # 项目边界与实施计划
+└── verification/                  # 无设备验证证据
+```
+
+两套源码的唯一维护位置均在本项目 `src/` 内。知识管理从原独立 Skill 完整迁入；插件包装调用项目内的实现。构建仅把这些项目内文件组装为分发包，不能从父目录的 Skill 补齐文件。迁移记录见 [项目边界](docs/project-boundary.md)。
+
+源码放在 `src/`，安装包和工作区固定副本放在 `runtime/`；两者分开，以保留“损坏的已安装 bundle 必须拒绝执行”的校验。
+
+## 构建与离线验证
+
+实测环境为 Node.js `v24.18.0`，不是最低版本承诺。运行时使用 Node 内置模块；构建和回归无需安装 npm 依赖。Shell 相关验证需要 Bash 及 macOS/Unix 常用工具，设备环境另见 [安装教程](src/mobile-ai-visual-test/references/installation.md)。
+
+进入本项目根目录执行：
+
+```sh
+npm test
+npm run build
+```
+
+默认输出 `dist/mavt-marketplace/`，目录必须不存在或为空；不会覆盖非空输出。也可指定任意绝对输出路径：
+
+```sh
+node build-plugin.js --output /absolute/path/mavt-marketplace
+```
+
+`npm test` 依次执行 MAVT 运行时回归、知识管理回归、插件/项目边界回归和生成文档检查，不连接手机或模拟器。分开执行可使用 `npm run test:runtime`、`npm run test:knowledge`、`npm run test:plugin` 和 `npm run check:docs`。
+
+## 发布完整性
+
+构建保留脚本执行位、APK/IME 等资源字节，检查 Android Helper APK 摘要，并生成完整性清单。发布包移除自测代码；开发验证包追加 `--include-tests`。构建拒绝符号链接，不安装依赖。
+
+`release-files.json` 是独立维护的生产文件清单。正常构建只读取它；发现文件缺失或未经登记的新文件即停止。生产文件变动时，先确认变动合理，再显式重新生成清单并审查差异：
+
+```sh
+node build-plugin.js --write-file-list
+git diff -- release-files.json
+node --test tests/build.test.js
+```
+
+重新生成清单不校验删除的业务合理性；意外缺失应恢复源码。构建生成的 `bundle.manifest.json` 不纳入源码清单。
+
+## Codex 安装与使用
+
+注册整个 marketplace 目录，不能直接注册 ZIP 或源码项目目录：
+
+```sh
+codex plugin marketplace add /absolute/path/mavt-marketplace
+codex plugin add mavt@mavt-local
+codex plugin list --marketplace mavt-local --json
+```
+
+首阶段实际验证版本为 Codex CLI `0.163.0-alpha.10.2`。插件 `0.1.1` 的三个入口分别为：
+
+| 入口 | 中文显示名 | 职责 |
+| --- | --- | --- |
+| `mavt:author-cases` | MAVT 用例编写 | 将测试材料生成、导入或更新为工作区标准用例 |
+| `mavt:run-tests` | MAVT 测试执行 | 环境确认、执行、恢复、取消与报告查看；Case Agent 保持内部角色 |
+| `mavt:manage-knowledge` | MAVT 知识管理 | 维护 READY 工作区的 `knowledge/`，沿用 prepare/apply 事务 |
+
+通常先编写用例，再执行测试，按需维护知识；已有用例可直接执行。三个入口的目录名与 frontmatter `name` 一致，中文显示信息放在各自的 `agents/openai.yaml`，自动发现保持默认启用。
+
+从 `0.1.0` 升级时，旧入口 `mavt:mavt-case-authoring`、`mavt:mobile-ai-visual-test`、`mavt:mavt-knowledge-manager` 分别替换为上表三个入口。更新安装源后重新运行 `codex plugin add mavt@mavt-local`，新开或重载会话后选择新入口；不保留重复的旧入口别名。已有 Run 仍通过原固定运行时恢复。
+
+命名、格式和本次无设备验证见 [Skill 入口约定](docs/skill-interface.md)。
+
+迁移时人工停用旧的同用途独立 Skill，并使用原版本完成或取消旧版未绑定的活动 Run。安装器不会删除旧 Skill 或改写个人配置。桌面 App 的会话重载仍需人工验收。
+
+新 Run 固定运行时、文档和宿主指引；恢复旧 Run 使用其原固定版本。绑定或副本损坏时拒绝继续，不自动切换到新版。一次知识维护的 prepare/apply 使用同一固定副本。
+
+完整验证结果及用户执行的设备清单见 [实现与验证报告](src/mobile-ai-visual-test/docs/mavt-codex-plugin-implementation.md)。开发侧只负责代码和无设备验证，所有手机、模拟器和移动设备连接测试由用户执行。

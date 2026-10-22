@@ -1,0 +1,33 @@
+# MAVT 独立项目边界
+
+2026-10-21 用户明确要求：MAVT 是独立完整的项目，知识管理必须完整纳入，构建不能从项目外复制源码。此要求替代早期方案“DevKit 两个 sibling Skill + 插件组装目录”的源码组织方式。
+
+## 归属与目录
+
+项目根目录为 `mavt/`，可整体取出成为独立 checkout，无需保留 DevKit 父目录。
+
+| 项目内位置 | 职责 |
+| --- | --- |
+| `src/mobile-ai-visual-test/` | 原完整测试运行时，含脚本、平台资源、Prompt、文档、开发入口和回归 |
+| `src/mavt-knowledge-manager/` | 原完整知识维护模块，含 CLI、事务、契约、模板、开发入口和六组回归 |
+| `skills/`、`hosts/codex/`、`scripts/` | 三个插件入口、Codex 委托指引、安装后启动适配 |
+| `build-plugin.js`、`release-files.json`、`package.json`、`tests/` | 独立构建、生产文件清单和项目测试 |
+| `docs/`、源模块内 `docs/`、`verification/` | 设计、计划、使用说明与验证证据 |
+
+两套原模块从 DevKit 的 `skills/` 迁入此处，未留下第二套维护实现或指向外部源码的符号链接。后续按用户指令，完整实现已转入主工作区 `/Users/cm/GitProj/DevKit/mavt`，直接在 `main` 分支继续开发；改动尚未提交。旧路径中原有的未跟踪文档和归档予以保留。
+
+源码使用 `src/`，分发物继续使用 `runtime/`，保持现有 bundle 识别、摘要及拒绝损坏分发物的逻辑。若开发源码也采用 `runtime/mobile-ai-visual-test` 路径，原守卫会将它正确识别为应有 manifest 的分发物，导致源码回归失败；本次通过区分目录解决，不放松运行时守卫。
+
+## 构建和运行
+
+构建映射全部相对于本项目根目录；bundle 工具也从项目内加载。外部 DevKit 不再是构建、测试或安装后的运行依赖。源码项目本身不是可安装分发物：应先构建，再注册生成的 marketplace。
+
+安装包省略开发入口、测试与设计文档，仅包含生产运行所需文件。完整源项目另行归档，包含开发和测试所需内容。设备工具链仍属于显式准备的外部环境依赖，不因源码自包含而自动安装。
+
+测试工作区与源码项目独立；知识内容仍保存在用户工作区的 `knowledge/`，不会迁入源码树。Workspace schema、Execution schema、Run 绑定字段、发布路径和执行状态机均沿用上一实现。
+
+## 验证方式
+
+新增项目边界测试已在迁移前观察到 RED：单独取出原插件根目录，构建访问外部 `skills/` 后失败。迁移后，测试只复制 `mavt/` 到中文/空格路径，从项目外的 cwd 调用其构建器、知识回归、文档检查与安装包冒烟。
+
+进一步在临时目录复制源项目，通过 macOS sandbox 禁止读取原始 DevKit 和实现工作树，再运行构建和完整 `npm test`，证明源码边界而非仅证明安装包边界。最终结果见 [实现报告](../src/mobile-ai-visual-test/docs/mavt-codex-plugin-implementation.md)。设备验收由用户执行。

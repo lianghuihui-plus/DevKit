@@ -1,0 +1,11 @@
+[self-test] contract
+knowledge contract passed
+[self-test] store
+knowledge store passed
+[self-test] transaction
+knowledge transaction passed
+[self-test] cli
+knowledge manager CLI passed
+[self-test] mavtCompatibility
+MAVT knowledge compatibility passed
+self-test passed: contract, store, transaction, cli, mavtCompatibility
