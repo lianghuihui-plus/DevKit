@@ -22,8 +22,8 @@ function createIdentity(options = {}) {
     const marker = repository.readMarker(workspace), identity = read(workspace);
     if (!identity) {
       // A marker id can legitimately predate reporting, but any private residue cannot.
-      const traces = ['revisions.json', 'transactions/identity.json'].some(p => repository.readWorkspace(workspace,p))
-        || ['jobs','transactions','intents','destinations'].some(p => repository.listWorkspace(workspace,p).length);
+      const traces = ['revisions.json', 'transactions/identity.json', 'worker-claim.json'].some(p => repository.readWorkspace(workspace,p))
+        || ['jobs','transactions','intents','destinations','packages','sessions','receipts'].some(p => repository.listWorkspace(workspace,p).length);
       if (traces) throw reportingError('REPORTING_IDENTITY_STATE_MISSING');
       return {marker,identity:null};
     }

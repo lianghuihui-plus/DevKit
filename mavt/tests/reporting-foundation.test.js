@@ -238,3 +238,75 @@ test('loading lightweight integration dependencies never loads a report renderer
  const script=`require(process.argv[1]+'/settings');require(process.argv[1]+'/intents');process.stdout.write(JSON.stringify(Object.keys(require.cache).filter(x=>x.includes('/scripts/report/'))));`;
  assert.deepEqual(JSON.parse(execFileSync(process.execPath,['-e',script,root],{encoding:'utf8'})),[]);
 });
+
+test('frozen packages alone prevent a fresh identity or ledger under the old workspace id',t=>{
+ const f=components(t),old=f.identity.ensure(f.workspace);
+ const tx=f.revisions.reserve(f.workspace,{packageId:'retained-package',entries:[entry()]});
+ f.revisions.publish(f.workspace,{transactionId:tx.transactionId,manifest:{value:'already-exported'}});
+ fs.unlinkSync(statePath(f,'identity.json'));fs.unlinkSync(statePath(f,'revisions.json'));
+ fs.rmSync(statePath(f,'transactions'),{recursive:true});
+ assert.throws(()=>f.identity.ensure(f.workspace),{code:'REPORTING_IDENTITY_STATE_MISSING'});
+ assert.equal(fs.existsSync(statePath(f,'identity.json')),false);
+ assert.equal(fs.existsSync(statePath(f,'revisions.json')),false);
+ assert.equal(JSON.parse(fs.readFileSync(path.join(f.workspace,'workspace.json'))).id,old.workspaceId);
+ const reset=f.identity.reset(f.workspace);assert.notEqual(reset.workspaceId,old.workspaceId);
+});
+test('durable receipt and worker-claim residue also require recovery or reset',t=>{
+ for(const relative of ['receipts/receipt-a.json','sessions/session-a.json','worker-claim.json']) {
+  const f=components(t);f.repository.writeWorkspace(f.workspace,relative,{identityEpoch:'previous-epoch',state:'RELEASED'});
+  assert.throws(()=>f.identity.ensure(f.workspace),{code:'REPORTING_IDENTITY_STATE_MISSING'});
+  assert.equal(fs.existsSync(statePath(f,'identity.json')),false);
+ }
+});
+test('native async lock callbacks never execute before rejection or after lock release',async t=>{
+ const f=components(t);
+ for(const lock of [callback=>f.repository.withConfigLock(callback),callback=>f.repository.withWorkspaceLock(f.workspace,callback)]) {
+  let entered=false,continued=false;
+  assert.throws(()=>lock(async()=>{entered=true;await Promise.resolve();continued=true;}),{code:'REPORTING_INPUT_INVALID'});
+  await Promise.resolve();
+  assert.equal(entered,false);assert.equal(continued,false);
+ }
+});
+test('ordinary callbacks returning Promises remain defensively rejected',t=>{
+ const f=components(t);
+ assert.throws(()=>f.repository.withWorkspaceLock(f.workspace,()=>Promise.resolve('later')),{code:'REPORTING_INPUT_INVALID'});
+});
+test('corrupted candidates cannot be activated or returned as an existing candidate',t=>{
+ const mutations=[
+  {serverUrl:'http://external.example/'},{serverUrl:'https://EXAMPLE.com:443/prefix'},
+  {autoUpload:'yes'},{configured:'yes'},{noticeAcknowledged:1},
+  {credentialGeneration:undefined},{credentialGeneration:4},{credentialGeneration:'not-a-generation'},
+  {configured:true,credentialGeneration:null},{requestDigest:undefined},{requestDigest:'bad'},
+  {exportVersion:2},{batchId:'other-batch'},{attemptId:'../escape'},{state:'ACTIVE'}
+ ];
+ for(const mutation of mutations) {
+  const f=components(t),candidate=f.intents.prepareRunSnapshot({workspace:f.workspace,batchId:'batch-a',attemptId:'attempt-a'});
+  f.repository.writeWorkspace(f.workspace,'attempts/attempt-a.json',{...candidate,...mutation});
+  fs.mkdirSync(path.join(f.workspace,'runs','batch-a'),{recursive:true});
+  fs.writeFileSync(path.join(f.workspace,'runs','batch-a','coordinator-state.json'),JSON.stringify({workspace:f.workspace,batchId:'batch-a',environmentConfirmed:true,initialization:{reportingAttemptId:'attempt-a'}}));
+  assert.throws(()=>f.intents.acceptRunSnapshot(f.workspace,'batch-a','attempt-a'),{code:'REPORTING_STATE_CORRUPT'});
+  assert.equal(fs.existsSync(statePath(f,'runs/batch-a.json')),false);
+  assert.throws(()=>f.intents.prepareRunSnapshot({workspace:f.workspace,batchId:'batch-a',attemptId:'attempt-a'}),{code:'REPORTING_STATE_CORRUPT'});
+ }
+});
+test('corrupted ACTIVE snapshots fail readonly validation and cannot be accepted again',t=>{
+ const mutations=[{serverUrl:'http://external.example/'},{autoUpload:'yes'},{credentialGeneration:undefined},{requestDigest:undefined},{state:'CANDIDATE'},{batchId:'other-batch'},{exportVersion:2}];
+ for(const mutation of mutations) {
+  const f=components(t),candidate=f.intents.prepareRunSnapshot({workspace:f.workspace,batchId:'batch-a',attemptId:'attempt-a'});
+  f.repository.writeWorkspace(f.workspace,'runs/batch-a.json',{...candidate,state:'ACTIVE',...mutation});
+  const file=statePath(f,'runs/batch-a.json'),before=fs.readFileSync(file,'utf8'),mtime=fs.statSync(file).mtimeMs;
+  assert.throws(()=>f.intents.readRunSnapshot(f.workspace,'batch-a'),{code:'REPORTING_STATE_CORRUPT'});
+  assert.equal(fs.readFileSync(file,'utf8'),before);assert.equal(fs.statSync(file).mtimeMs,mtime);
+  fs.mkdirSync(path.join(f.workspace,'runs','batch-a'),{recursive:true});
+  fs.writeFileSync(path.join(f.workspace,'runs','batch-a','coordinator-state.json'),JSON.stringify({workspace:f.workspace,batchId:'batch-a',environmentConfirmed:true,initialization:{reportingAttemptId:'attempt-a'}}));
+  assert.throws(()=>f.intents.acceptRunSnapshot(f.workspace,'batch-a','attempt-a'),{code:'REPORTING_STATE_CORRUPT'});
+ }
+});
+test('unsupported revision export versions cannot reserve or publish mismatched package metadata',t=>{
+ const f=components(t);f.identity.ensure(f.workspace);
+ for(const exportVersion of [0,2,-1,'1',null]) assert.throws(()=>f.revisions.reserve(f.workspace,{packageId:'bad-export',entries:[entry()],exportVersion}),{code:'REPORTING_INPUT_INVALID'});
+ assert.deepEqual(f.repository.listWorkspace(f.workspace,'packages'),[]);
+ const tx=f.revisions.reserve(f.workspace,{packageId:'supported-export',entries:[entry()],exportVersion:1});
+ const ready=f.revisions.publish(f.workspace,{transactionId:tx.transactionId,manifest:{value:'supported'}});
+ assert.equal(ready.exportVersion,tx.exportVersion);assert.equal(ready.exportVersion,1);
+});

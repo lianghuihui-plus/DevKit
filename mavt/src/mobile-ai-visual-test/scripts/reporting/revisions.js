@@ -74,6 +74,7 @@ function createRevisions(options = {}) {
   }
   function reserve(workspace, input) {
     safeId(input?.packageId);
+    requireInput(input.exportVersion===undefined || input.exportVersion===1,'Only reporting exportVersion 1 is supported');
     requireInput(Array.isArray(input.entries) && input.entries.length > 0);
     const prepared=input.entries.map(entry=>({entry,fingerprint:fingerprint(entry),indexKey:`${entry.kind}:${entry.key}`}));
     requireInput(new Set(prepared.map(v=>v.indexKey)).size===prepared.length,'Duplicate revision identity');
@@ -99,7 +100,7 @@ function createRevisions(options = {}) {
         }
         return {kind:entry.kind,key:entry.key,indexKey,fingerprint:digest,revision:previous?.fingerprint===digest?previous.revision:(previous?.revision||0)+1,previous,...(binding?{binding}:{})};
       });
-      const tx={type:'revisions',state:'PREPARED',transactionId:crypto.randomUUID(),packageId:input.packageId,identityEpoch:value.identityEpoch,exportVersion:input.exportVersion || 1,allocations};
+      const tx={type:'revisions',state:'PREPARED',transactionId:crypto.randomUUID(),packageId:input.packageId,identityEpoch:value.identityEpoch,exportVersion:1,allocations};
       repository.writeWorkspace(workspace,`transactions/${tx.transactionId}.json`,tx);
       return tx;
     });

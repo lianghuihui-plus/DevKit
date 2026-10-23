@@ -12,7 +12,27 @@ function createIntents(options={}) {
  const repository=options.repository||createRepository(options);
  const settings=options.settings||createSettings({repository});
  const credentials=options.credentials||createCredentials({repository});
- function readRunSnapshot(workspace,batchId) {return repository.readWorkspace(workspace,`runs/${safeId(batchId)}.json`);}
+ function validateSnapshot(value,{batchId,attemptId,state}) {
+  try {
+   requireInput(value && typeof value==='object' && !Array.isArray(value));
+   requireInput(value.schemaVersion===1 && value.exportVersion===1 && value.identityEpoch===null);
+   safeId(value.batchId);safeId(value.attemptId);
+   requireInput(value.batchId===batchId && (attemptId===undefined || value.attemptId===attemptId) && value.state===state);
+   requireInput(typeof value.serverUrl==='string' && normalizeServerUrl(value.serverUrl)===value.serverUrl);
+   requireInput(['autoUpload','configured','noticeAcknowledged'].every(key=>typeof value[key]==='boolean'));
+   const generation=value.credentialGeneration;
+   requireInput(generation===null || (typeof generation==='string' && /^[a-f0-9]{64}$/.test(generation)));
+   requireInput(value.configured===(generation!==null));
+   requireInput(typeof value.requestDigest==='string' && /^[a-f0-9]{64}$/.test(value.requestDigest));
+  } catch {
+   throw reportingError('REPORTING_STATE_CORRUPT','Invalid persisted reporting snapshot');
+  }
+  return value;
+ }
+ function readRunSnapshot(workspace,batchId) {
+  const value=repository.readWorkspace(workspace,`runs/${safeId(batchId)}.json`);
+  return value ? validateSnapshot(value,{batchId,state:'ACTIVE'}) : null;
+ }
  function prepareRunSnapshot(input) {
   requireInput(input && typeof input.workspace==='string');safeId(input.batchId);
   const attemptId=safeId(input.attemptId||crypto.randomUUID()),requestDigest=digest(input.request||{});
@@ -24,6 +44,7 @@ function createIntents(options={}) {
   return repository.withWorkspaceLock(input.workspace,()=>{
    const previous=repository.readWorkspace(input.workspace,`attempts/${attemptId}.json`);
    if(previous) {
+    validateSnapshot(previous,{batchId:input.batchId,attemptId,state:'CANDIDATE'});
     if(previous.batchId!==input.batchId||previous.requestDigest!==requestDigest)throw reportingError('REPORTING_CANDIDATE_CONFLICT');
     return previous;
    }
@@ -36,7 +57,8 @@ function createIntents(options={}) {
    const state=repository.readRunState(workspace,batchId);
    if(state?.environmentConfirmed!==true||state.initialization?.reportingAttemptId!==attemptId)throw reportingError('REPORTING_RUN_NOT_ACCEPTED');
    const candidate=repository.readWorkspace(workspace,`attempts/${attemptId}.json`);
-   if(!candidate||candidate.batchId!==batchId||candidate.attemptId!==attemptId||candidate.state!=='CANDIDATE')throw reportingError('REPORTING_CANDIDATE_MISSING');
+   if(!candidate)throw reportingError('REPORTING_CANDIDATE_MISSING');
+   validateSnapshot(candidate,{batchId,attemptId,state:'CANDIDATE'});
    const previous=readRunSnapshot(workspace,batchId);
    if(previous) {
     if(previous.attemptId!==attemptId)throw reportingError('REPORTING_CANDIDATE_CONFLICT');

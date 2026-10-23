@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const { types } = require('node:util');
 const { reportingError, ReportingError, requireInput } = require('./errors');
 const EXPORT_VERSION = 1;
 
@@ -83,7 +84,11 @@ function createRepository(options = {}) {
     }
   }
   function lock(base, name, callback) {
-    requireInput(typeof callback === 'function', 'A synchronous critical section is required');
+    // Only synchronous callbacks belong here. Reject native async functions before
+    // invocation so they cannot resume after finally releases the metadata lock.
+    // The result check below also rejects ordinary callbacks returning thenables;
+    // callers must not start asynchronous work indirectly inside a critical section.
+    requireInput(typeof callback === 'function' && !types.isAsyncFunction(callback), 'A synchronous critical section is required');
     mkdirPrivate(base);
     const file = target(base, `.${safeId(name)}.lock`);
     const owner = {schemaVersion:1,pid:process.pid,nonce:crypto.randomUUID()};
