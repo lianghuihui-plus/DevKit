@@ -45,16 +45,18 @@ async function inspectSkills(cli, env, cwd) {
     const errors = response.data.flatMap(row => row.errors || []);
     assert.deepEqual(errors, []);
     const skills = response.data.flatMap(row => row.skills).filter(skill => skill.pluginId && /^mavt:/.test(skill.name));
-    assert.deepEqual(skills.map(skill => skill.name).sort(), ['mavt:author-cases', 'mavt:manage-knowledge', 'mavt:run-tests']);
+    assert.deepEqual(skills.map(skill => skill.name).sort(), ['mavt:author-cases', 'mavt:manage-knowledge', 'mavt:reporting', 'mavt:run-tests']);
     assert.equal(skills.every(skill => skill.enabled), true);
     const displayNames = {
       'mavt:author-cases': 'MAVT 用例编写',
       'mavt:run-tests': 'MAVT 测试执行',
       'mavt:manage-knowledge': 'MAVT 知识管理',
+      'mavt:reporting': 'MAVT 数据上报',
     };
     for (const skill of skills) {
       assert.equal(skill.interface?.displayName, displayNames[skill.name]);
-      assert.ok(skill.interface.shortDescription.length >= 25 && skill.interface.shortDescription.length <= 64);
+      if (skill.name === 'mavt:reporting') assert.equal(skill.interface.shortDescription, '配置目标、检查连接并查看或恢复上报任务');
+      else assert.ok(skill.interface.shortDescription.length >= 25 && skill.interface.shortDescription.length <= 64);
     }
     return skills.map(({ name, path: skillPath, enabled, interface: metadata }) => ({ name, path: skillPath, enabled, interface: metadata }));
   } finally {
@@ -67,7 +69,7 @@ async function main() {
   const [cli, marketplaceRoot] = process.argv.slice(2);
   assert.ok(cli && path.isAbsolute(cli) && marketplaceRoot && path.isAbsolute(marketplaceRoot), 'usage: host-install-check.js /absolute/codex /absolute/marketplace');
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-host-install-')));
-  const env = { ...process.env, CODEX_HOME: path.join(temp, 'codex-home') };
+  const env = { PATH: process.env.PATH, HOME: temp, CODEX_HOME: path.join(temp, 'codex-home'), XDG_CONFIG_HOME: path.join(temp, 'config') };
   fs.mkdirSync(env.CODEX_HOME);
   const run = args => {
     const result = cp.spawnSync(cli, args, { cwd: temp, env, encoding: 'utf8', timeout: 30000 });
@@ -86,12 +88,12 @@ async function main() {
     const installedRoot = path.resolve(path.dirname(skills[0].path), '../..');
     const workspace = path.join(temp, '工作 空间');
     fs.mkdirSync(workspace);
-    const opened = cp.spawnSync(process.execPath, [path.join(installedRoot, 'scripts/mavt-entry.js'), 'workspace', '--cwd', workspace], { encoding: 'utf8', cwd: temp });
+    const opened = cp.spawnSync(process.execPath, [path.join(installedRoot, 'scripts/mavt-entry.js'), 'workspace', '--cwd', workspace], { encoding: 'utf8', cwd: temp, env });
     assert.equal(opened.status, 0, opened.stderr || opened.stdout);
     const binding = JSON.parse(opened.stdout);
     assert.equal(binding.marker.initializationState, 'READY');
     const node = (script, args, input) => {
-      const result = cp.spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', cwd: temp, input: input === undefined ? undefined : JSON.stringify(input) });
+      const result = cp.spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', cwd: temp, env, input: input === undefined ? undefined : JSON.stringify(input) });
       assert.equal(result.status, 0, result.stderr || result.stdout);
       return JSON.parse(result.stdout);
     };

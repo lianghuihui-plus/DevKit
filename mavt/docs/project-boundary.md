@@ -10,7 +10,7 @@
 | --- | --- |
 | `src/mobile-ai-visual-test/` | 原完整测试运行时，含脚本、平台资源、Prompt、文档、开发入口和回归 |
 | `src/mavt-knowledge-manager/` | 原完整知识维护模块，含 CLI、事务、契约、模板、开发入口和六组回归 |
-| `skills/`、`hosts/codex/`、`scripts/` | 三个插件入口、Codex 委托指引、安装后启动适配 |
+| `skills/`、`hosts/codex/`、`scripts/` | 四个插件入口（含 reporting）、Codex 委托指引、安装后启动适配 |
 | `build-plugin.js`、`release-files.json`、`package.json`、`tests/` | 独立构建、生产文件清单和项目测试 |
 | `docs/`、源模块内 `docs/`、`verification/summary.md` | 设计、计划、使用说明与验证结论汇总 |
 

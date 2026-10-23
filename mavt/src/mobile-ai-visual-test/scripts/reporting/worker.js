@@ -101,7 +101,9 @@ function createWorker(options = {}) {
     }
     let acknowledgedRawBytes = metrics.acknowledgedRawBytes || 0;
     let acknowledgedWireBytes = metrics.acknowledgedWireBytes || 0;
-    const transport = Object.assign(Object.create(baseTransport), {
+    // Copy methods into own properties: the production transport is frozen, so
+    // an inherited non-writable upload cannot be overridden by assignment.
+    const transport = Object.assign({}, baseTransport, {
       async upload(...args) {
         const result = await baseTransport.upload(...args);
         acknowledgedRawBytes += result.rawBytes || 0;

@@ -1,6 +1,6 @@
 # MAVT
 
-MAVT 是自包含的移动端 AI 黑盒视觉测试项目，首阶段以一个 Codex 插件交付，包含测试执行、用例生成和知识维护三个 Skill。
+MAVT 是自包含的移动端 AI 黑盒视觉测试项目，首阶段以一个 Codex 插件交付，版本 `0.4.0` 包含测试执行、用例生成、知识维护和数据上报四个 Skill。
 
 本目录包含完整源码、知识管理模块、资源、文档、构建与测试；单独复制整个目录即可开发、构建和运行离线验证，不依赖 DevKit 的其他目录。
 
@@ -11,7 +11,7 @@ mavt/
 ├── src/
 │   ├── mobile-ai-visual-test/      # 完整测试运行时、三端 Adapter、文档与回归
 │   └── mavt-knowledge-manager/     # 完整知识维护实现、契约、模板与回归
-├── skills/                        # 三个 Codex Skill 包装
+├── skills/                        # 四个 Codex Skill 包装
 ├── hosts/codex/                   # Codex Agent 委托适配
 ├── scripts/mavt-mcp.js             # 插件唯一正常调用入口
 ├── scripts/mavt-entry.js           # 开发验证和技术维护脚本
@@ -89,15 +89,16 @@ codex plugin add mavt@mavt-local
 codex plugin list --marketplace mavt-local --json
 ```
 
-首阶段实际验证版本为 Codex CLI `0.163.0-alpha.10.2`。插件 `0.3.6` 保留三个入口：
+首阶段实际验证版本为 Codex CLI `0.163.0-alpha.10.2`。插件 `0.4.0` 提供四个入口：
 
 | 入口 | 中文显示名 | 职责 |
 | --- | --- | --- |
 | `mavt:author-cases` | MAVT 用例编写 | 将测试材料生成、导入或更新为工作区标准用例 |
 | `mavt:run-tests` | MAVT 测试执行 | 环境确认、执行、恢复、取消与报告查看；Case Agent 保持内部角色 |
 | `mavt:manage-knowledge` | MAVT 知识管理 | 维护 READY 工作区的 `knowledge/`，沿用 prepare/apply 事务 |
+| `mavt:reporting` | MAVT 数据上报 | 配置目标、检查连接、补报工作区、查看与恢复上报任务 |
 
-通常先编写用例，再执行测试，按需维护知识；已有用例可直接执行。三个入口的目录名与 frontmatter `name` 一致，中文显示信息放在各自的 `agents/openai.yaml`，自动发现保持默认启用。
+通常先编写用例，再执行测试，按需维护知识；已有用例可直接执行。四个入口的目录名与 frontmatter `name` 一致，中文显示信息放在各自的 `agents/openai.yaml`，自动发现保持默认启用。
 
 `0.3.0` 的环境设置统一为：选择平台与设备 → 选择目标 App → 自动解析入口和配置、准备依赖 → 确认执行。三端由同一 Coordinator 状态机编排，差异留在平台适配器；普通流程不要求填写 Activity、Ability、UDID 或签名团队标识。已有配置会先复查设备、应用、入口和签名，再允许复用；确认后整批共用冻结环境，不在各 Case 中重复发现。
 
@@ -113,9 +114,13 @@ codex plugin list --marketplace mavt-local --json
 
 `0.3.6` 修复结果复核闭环：原文明示业务时序、条件、范围由 Agent 建立 CHECK，不能因导航重排而丢失；被拒绝的结果修改必须成功重提后才可收口。最终复核提交最新快照 token、Agent 明确结论及原文覆盖确认，Runtime 仅检查版本和 ledger 聚合一致性，不解析摘要或代做业务判断。MCP Schema 与结果规则统一，提供合法 FAIL 示例。更新插件后新建 Run 验证；已有 Run 保持冻结版本，构建不自动安装。
 
-三个入口及新 Case 执行均使用 MCP。文档使用原始工具名，宿主可能通过命名空间前缀和工具发现入口提供这些工具。Loader 仍须由独立 Case Agent 原样执行一次，返回其 execution/dispatch 专属 `contextRef`；Handoff 冻结 `runtime.transport:"MCP"`。委托前检查独立上下文与 Agent 句柄，子 Agent 启动后发现自己的工具和图片查看能力。截图按需通过 `mavt_case_image` 或子 Agent 已验证可见的本地图片查看器读取，实际看图后登记 inspection。worker 由每个 MCP 服务实例共享，最多 5 个，空闲 5 分钟回收。冷启动、复用和内存的历史测量及边界见[验证汇总](verification/summary.md)；新版本的设备效果与整批耗时由用户验证。
+`0.4.0` 新增独立上报组件：已确认批次的终态可自动入队，手动补报选择工作区当前定义与每用例、每平台最新终态执行；三端标准段、原版模型与引用证据一起冻结，后台进程按 v2 prepare/PUT/commit 协议提交。上报错误不改变本地测试结论，状态读取不启动任务；旧 Run 保留原固定 bundle。默认地址为 `https://mobile-backend.codemao.cn/mavtdashboard/`，自定义 HTTPS 或 loopback HTTP 保留部署路径前缀。
 
-从 `0.1.0` 升级时，旧入口 `mavt:mavt-case-authoring`、`mavt:mobile-ai-visual-test`、`mavt:mavt-knowledge-manager` 分别替换为上表三个入口。更新安装源后重新运行 `codex plugin add mavt@mavt-local`，新开或重载会话后选择新入口；不保留重复的旧入口别名。已有 Run 仍通过原固定运行时恢复。
+通过 `mavt:reporting` 准备私有本地凭据文件并在文件中填写 Token，不把 Token 发到对话或工具参数；缺失凭据时记录跳过，可继续测试。查看任务后按提示显式重试，接受凭据变化或重置工作区身份须明确决策。详情见[上报指引](src/mobile-ai-visual-test/references/reporting.md)。当前发布的离线、宿主与 Dashboard 校验边界见[验证汇总](verification/summary.md)；未据离线结果宣称真实 Dashboard HTTP、数据库或页面联调通过。
+
+四个入口及新 Case 执行均使用 MCP。文档使用原始工具名，宿主可能通过命名空间前缀和工具发现入口提供这些工具。Loader 仍须由独立 Case Agent 原样执行一次，返回其 execution/dispatch 专属 `contextRef`；Handoff 冻结 `runtime.transport:"MCP"`。委托前检查独立上下文与 Agent 句柄，子 Agent 启动后发现自己的工具和图片查看能力。截图按需通过 `mavt_case_image` 或子 Agent 已验证可见的本地图片查看器读取，实际看图后登记 inspection。worker 由每个 MCP 服务实例共享，最多 5 个，空闲 5 分钟回收。冷启动、复用和内存的历史测量及边界见[验证汇总](verification/summary.md)；新版本的设备效果与整批耗时由用户验证。
+
+从 `0.1.0` 升级时，旧入口 `mavt:mavt-case-authoring`、`mavt:mobile-ai-visual-test`、`mavt:mavt-knowledge-manager` 分别替换为上表对应入口。更新安装源后重新运行 `codex plugin add mavt@mavt-local`，新开或重载会话后选择新入口；不保留重复的旧入口别名。已有 Run 仍通过原固定运行时恢复。
 
 命名、格式和本次无设备验证见 [Skill 入口约定](docs/skill-interface.md)。
 

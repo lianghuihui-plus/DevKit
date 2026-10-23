@@ -7,6 +7,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const readline = require('node:readline');
 const { buildPlugin } = require('../build-plugin');
+const { skills: RELEASE_SKILLS, tools: RELEASE_TOOLS, reportingTools } = require('./support/release-contract');
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
@@ -56,10 +57,12 @@ function fixture(root) {
 async function main() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-actual-host-probe-')));
   let child;
+  const previousConfig = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = path.join(root, 'config');
   try {
     const f = fixture(root), codexHome = path.join(root, 'codex-home');
     fs.mkdirSync(codexHome);
-    const env = { PATH: process.env.PATH || '/usr/bin:/bin', HOME: root, CODEX_HOME: codexHome, LANG: process.env.LANG || 'en_US.UTF-8' };
+    const env = { PATH: process.env.PATH || '/usr/bin:/bin', HOME: root, CODEX_HOME: codexHome, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, LANG: process.env.LANG || 'en_US.UTF-8' };
     const command = process.env.MAVT_CODEX_CLI || 'codex';
     child = cp.spawn(command, ['-c', 'mcp_servers.mavt_probe.command=' + JSON.stringify(f.registration.command),
       '-c', 'mcp_servers.mavt_probe.args=' + JSON.stringify(f.registration.args),
@@ -87,13 +90,24 @@ async function main() {
     child.stdin.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
     const plugin = await call('plugin/read', { pluginName: 'mavt', marketplacePath: path.join(f.marketplaceRoot, '.agents/plugins/marketplace.json') });
     assert.ok(plugin.plugin.mcpServers.includes('mavt'));
-    assert.deepEqual(plugin.plugin.skills.map(skill => skill.name).sort(), ['mavt:author-cases', 'mavt:manage-knowledge', 'mavt:run-tests']);
+    assert.deepEqual(plugin.plugin.skills.map(skill => skill.name).sort(), RELEASE_SKILLS.map(name => 'mavt:' + name));
     const started = await call('thread/start', { cwd: root, ephemeral: true, approvalPolicy: 'never', sandbox: 'read-only' });
     const threadId = started.thread.id;
     const discovery = await call('mcpServerStatus/list', { threadId, serverName: 'mavt_probe' });
     const connected = discovery.data?.find(item => item.name === 'mavt_probe');
     assert.equal(connected?.runtimeStatus, 'connected');
     assert.equal(connected?.toolsError, null);
+    assert.deepEqual(Object.keys(connected.tools).sort(), RELEASE_TOOLS);
+    for (const name of reportingTools) assert.ok(connected.tools[name]?.inputSchema);
+    assert.equal(connected.tools.mavt_reporting_status.annotations.readOnlyHint, true);
+    assert.equal(connected.tools.mavt_reporting_submit.annotations.openWorldHint, true);
+    assert.equal(connected.tools.mavt_reporting_identity_reset.annotations.destructiveHint, true);
+    const global = await call('mcpServer/tool/call', { threadId, server: 'mavt_probe', tool: 'mavt_reporting_settings_read', arguments: {} });
+    assert.equal(global.structuredContent.status, 'SUCCEEDED');
+    assert.equal(global.structuredContent.result.configured, false);
+    const opened = await call('mcpServer/tool/call', { threadId, server: 'mavt_probe', tool: 'mavt_workspace_open', arguments: { workspace: f.workspace, role: 'reporting' } });
+    const reporting = await call('mcpServer/tool/call', { threadId, server: 'mavt_probe', tool: 'mavt_reporting_status', arguments: { contextRef: opened.structuredContent.contextRef } });
+    assert.deepEqual(reporting.structuredContent.result, []);
     assert.ok(connected.tools.mavt_case_image?.inputSchema);
     assert.ok(connected.tools.mavt_case_read?.inputSchema);
     const doctor = await call('mcpServer/tool/call', { threadId, server: 'mavt_probe', tool: 'mavt_workspace_doctor', arguments: { workspace: f.workspace } });
@@ -107,11 +121,12 @@ async function main() {
       isolatedHome: codexHome, hostStatus: connected.runtimeStatus, manifestRegistration: true,
       relocatedPluginRead: { mcpServers: plugin.plugin.mcpServers, skills: plugin.plugin.skills.map(skill => skill.name).sort() },
       discoveredToolCount: Object.keys(connected.tools).length, discoveredToolNames: Object.keys(connected.tools).sort(),
-      doctorStatus: doctor.structuredContent.status,
+      doctorStatus: doctor.structuredContent.status, reporting: { globalRead: global.structuredContent.status, configured: false, roleStatus: reporting.structuredContent.status, jobs: reporting.structuredContent.result, tools: reportingTools },
       image: { ref: f.imageRef, exactBytes: true, byteLength: PNG.length, mediaType: imageBlock.mimeType } }, null, 2) + '\n');
   } finally {
     if (child) { child.stdin.end(); child.kill('SIGTERM'); }
     fs.rmSync(root, { recursive: true, force: true });
+    if (previousConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = previousConfig;
   }
 }
 

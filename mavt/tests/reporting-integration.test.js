@@ -157,9 +157,10 @@ test('candidate storage failure leaves original confirmation result intact and u
 test('reporting tool descriptors have explicit effects, safe inputs, and workspace role', () => {
   const { descriptors, invoke } = require('../src/mobile-ai-visual-test/scripts/reporting/tools');
   const { definitions } = require('../src/mobile-ai-visual-test/scripts/mcp/contract');
-  assert.equal(descriptors.length, 8);
+  const { reportingTools } = require('./support/release-contract');
+  assert.deepEqual(descriptors.map(item => item.name).sort(), reportingTools);
   const tools = definitions().filter(tool => tool.name.startsWith('mavt_reporting_'));
-  assert.equal(tools.length, 8);
+  assert.deepEqual(tools.map(item => item.name).sort(), reportingTools);
   for (const descriptor of descriptors) {
     const tool = tools.find(item => item.name === descriptor.name);
     assert.ok(tool);

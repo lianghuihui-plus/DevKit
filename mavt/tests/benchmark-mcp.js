@@ -9,6 +9,7 @@ const readline = require('node:readline');
 const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { buildPlugin } = require('../build-plugin');
+const { tools: RELEASE_TOOLS } = require('./support/release-contract');
 const { DEFAULT_IDLE_TIMEOUT_MS } = require('../src/mobile-ai-visual-test/scripts/mcp/worker-pool');
 
 // Declared before measurements. Every warm path must beat its own CLI p50 and p95.
@@ -178,7 +179,7 @@ async function main(argv) {
     const catalog = await client.request('tools/list', {});
     const coldConnectMs = performance.now() - startup;
     const idleProcesses = processStats(client.child.pid);
-    assert.equal(catalog.value.tools.length, 30);
+    assert.deepEqual(catalog.value.tools.map(tool => tool.name).sort(), RELEASE_TOOLS);
     const call = async (name, args) => {
       const started = performance.now();
       const response = await client.request('tools/call', { name, arguments: args });

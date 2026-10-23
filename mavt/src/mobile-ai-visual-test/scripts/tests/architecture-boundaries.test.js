@@ -33,7 +33,10 @@ assert.deepStrictEqual(fs.readdirSync(path.join(root, 'references'), { withFileT
   'coordinator-principles.md',
   'coordinator.md',
   'installation.md',
-], 'root reference pages must be formal entrypoints or diagnostics reached by production code');
+  'reporting.md',
+], 'root reference pages must be formal Skill entrypoints or diagnostics reached by production code');
+assert.match(fs.readFileSync(path.resolve(root, '../../skills/reporting/SKILL.md'), 'utf8'),
+  /references\/reporting\.md/, 'reporting reference must be reached by its published Skill');
 // Scope the public syntax scan to formal facades/docs; internal capabilityId remains valid.
 const formalSources = [
   'scripts/case-runtime/agent-facing-contract.js', 'scripts/case-runtime/agent-facing-client.js',

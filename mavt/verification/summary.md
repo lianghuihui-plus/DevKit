@@ -2,11 +2,26 @@
 
 整理日期：2026-10-23。保留插件化开发的验证结论和边界；原始 JSON 与日志已精简，不作为插件运行依赖。已提交的原始记录可从 Git 提交 `3621f35` 恢复，清理时的本地副本另移入系统废纸篓。
 
+## 0.4.0 数据上报 v2（2026-10-23，未安装，最终独立分支审查待完成）
+
+- 当前固定构建为 `dist/mavt-marketplace/` 的 `0.4.0`；四个 Skill 为 `author-cases`、`run-tests`、`manage-knowledge`、`reporting`，MCP 共 38 个工具，其中 8 个 reporting 工具；入口与实际工具名均按完整名单验证。
+- 上报组件包含私有分目标配置/凭据、身份与修订、schema14 三端采集、标准段及 native 证据闭包、v2 会话/传输、持久任务与固定独立 worker、异常隔离的 Coordinator 钩子及 reporting 角色；故障不改变测试 verdict，本地状态读取不修复或启动任务。
+- 发布回归发现并修复真实固定 worker 的冻结 transport 组合错误：生产 transport 被 `Object.freeze` 后，通过原型继承再赋值 `upload` 会抛 TypeError；现在复制为自身方法再包装度量；可复现的实际进程回归覆盖该路径。
+- `npm run build` 退出码 0，bundleId 为 `4d4987c884bc141c1f8fa8719a5f4d99414769d700dfab9c2d18a5d8b84d94f4`；独立完整性探针核对 349 个 manifest 文件、360 个发布源文件逐字节一致、362 个总分发文件、全部 23 个 reporting 模块及重定位 stdio 工具发现；日志 `test-results/task-6-build-final.log`、`task-6-bundle-probe-final.log`。
+- 真实 Codex app-server 使用临时 HOME/CODEX_HOME/XDG_CONFIG_HOME，父进程在运行 Coordinator fixture 前先隔离 XDG；重定位后 `plugin/read` 发现四 Skill，连接 stdio MCP 并发现完整 38 工具，reporting 安全全局读取、workspace 角色状态、annotations、doctor 与 68 字节图片检查通过；日志 `test-results/task-6-host-probe-final.log`；无模型回合或插件安装。
+- 真实固定 detached worker 在启动父进程退出、原安装目录删除后完成三端整包 collect→prepare→40 次去重 PUT→commit→持久回执→冻结数据清理，63 个文件描述符、1 个任务/会话、3 个执行、最终缺失文件与字节均为 0；断线版本分别丢失已接收的 prepare/PUT/commit 响应，保留原包与 key，三次预算用尽后经另一个已退出父进程显式 retry 查询原会话，完成清理且不重发已接收 PUT 或 commit。
+- 上述 fixture 的 rawBytes/uniqueRawBytes 为 415000/404990；正常 acknowledged/received wireBytes 均为 404990，断线时为 404745/404990，245 字节已送达但响应丢失的 PUT 不计为本地 acknowledged；专项样本耗时 2024/5060 ms，抽样 worker RSS 最大值 90608/91568 KiB，日志 `test-results/task-6-final-focused.log`；这些数值不是真机整批性能或真实峰值内存承诺。
+- 复用 Task 2 的显式本地 Dashboard 差分探针，实际 `ReportingManifestSchema`、`validateManifestSemantics`、`validateReportGraph` 接受 Android FAIL、Harmony BLOCKED、iOS PASS+WAIVED；每会话 21 文件、2 个图根，覆盖 17 类标准段与 native；日志 `test-results/task-6-dashboard-probe.log`，默认测试和发布代码均不导入 Dashboard 源码。
+- `npm test` 退出码 0：运行时 89 组、知识管理 6 组、插件 386/386（0 fail/skip）与 51 份生成文档检查通过；日志 `test-results/task-6-full-final-pass.log`；专项 build/release 36/36、reporting jobs/release 37/37、worker timeout/crash 2/2 通过；完整运行修正了 reporting 文档入口旧清单与 worker fixture 未保留新 reporting 依赖布局的问题。
+- 中间完整检查在旧 WDA 子进程清理用例再次出现历史 `kill EPERM`，日志 `test-results/task-6-full-verified.log`，该文件独立复跑 9/9 通过；未改 WDA 生产代码，尚未确认偶发根因，不将其记作已修复。
+- 本轮没有显式提供临时隔离的已认证 Dashboard HTTP/DB/Web 服务及测试身份，故真实认证/持久化、数据库重复补报对象数、五页签页面/原图/日志读取与线上 capabilities 未验证；loopback HTTP 与真实校验器差分不替代这些验收；无个人 Token、真机/模拟器、主 checkout 或服务端修改、依赖安装、合并、推送。
+- 以上为实现者证据与自查，整个分支最终独立审查由 controller 随后执行；不将任务专项验证或已有分层审查当作该最终 gate 已完成。
+
 ## 仓库清理（2026-10-23）
 
 - 旧构建归档、0.1.0 安装目录、0.1.0/0.1.1 ZIP 及对应摘要和验证 JSON、7 份重复中间日志与 Finder 缓存已移入系统废纸篓，可从废纸篓恢复；共清理 4,310 个文件、约 31.5 MiB。
-- 保留固定安装源 `dist/mavt-marketplace/`（0.3.6）、最新完整与专项测试日志、历史验证仍引用的日志及未定位偶发失败证据；源码、必要配置、测试资源和设计文档保留。
-- 下文的旧归档路径与旧摘要记录是各轮构建时的历史事实；旧产物已清理，当前安装源以 0.3.6 小节记录的 bundleId 和 `dist/mavt-marketplace/plugins/mavt/bundle.manifest.json` 为准。
+- 该次清理后保留固定安装源 `dist/mavt-marketplace/`（0.3.6）、最新完整与专项测试日志、历史验证仍引用的日志及未定位偶发失败证据；源码、必要配置、测试资源和设计文档保留。
+- 下文的旧归档路径与旧摘要记录是各轮构建时的历史事实；旧产物已清理，该次清理时的安装源以 0.3.6 小节记录的 bundleId 和 `dist/mavt-marketplace/plugins/mavt/bundle.manifest.json` 为准。
 
 ## 0.3.6 业务约束与结果复核修复（2026-10-23，未安装）
 

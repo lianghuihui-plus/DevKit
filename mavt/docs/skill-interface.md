@@ -1,5 +1,11 @@
 # MAVT Skill 入口约定
 
+当前 `0.4.0` 提供四个入口：`mavt:author-cases`（MAVT 用例编写）、`mavt:run-tests`（MAVT 测试执行）、`mavt:manage-knowledge`（MAVT 知识管理）、`mavt:reporting`（MAVT 数据上报）。四个目录均独立维护 `SKILL.md` 和 `agents/openai.yaml`，通过同一份 MCP 分发包调用实际运行时。
+
+`reporting` 使用独立 workspace 角色，负责配置、连接检查、手动补报、状态与重试；不推进 Run 或 Case。四个全局上报工具无需工作区，四个工作区工具要求 reporting context；Token 只存在私有本地文件，不出现在工具输入或安全视图。自动上报由测试终态钩子复用同一组件，故障不能阻塞测试或改变 verdict。当前验证见[验证汇总](../verification/summary.md)。
+
+## 0.1.1 入口迁移与验证历史
+
 插件 `0.1.1` 于 2026-10-22 统一三个用户入口。
 
 | 入口 | 中文显示名 | 原 `0.1.0` 入口 |

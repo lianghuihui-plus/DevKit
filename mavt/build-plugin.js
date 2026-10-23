@@ -36,7 +36,7 @@ const REQUIRED = [
   `${MAVT}/scripts/mcp/contract.js`,
   'hosts/codex/delegation.md',
   'hosts/codex/harness-requirements.json',
-  ...['author-cases', 'run-tests', 'manage-knowledge']
+  ...['author-cases', 'run-tests', 'manage-knowledge', 'reporting']
     .flatMap((name) => [`skills/${name}/SKILL.md`, `skills/${name}/agents/openai.yaml`]),
   `${MAVT}/scripts/coordinator-agent.js`,
   `${MAVT}/scripts/lib/action-common.sh`,

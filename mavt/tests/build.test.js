@@ -82,6 +82,7 @@ const FIXTURE_RELEASE_FILES = [
   'skills/author-cases/SKILL.md', 'skills/author-cases/agents/openai.yaml',
   'skills/manage-knowledge/SKILL.md', 'skills/manage-knowledge/agents/openai.yaml',
   'skills/run-tests/SKILL.md', 'skills/run-tests/agents/openai.yaml',
+  'skills/reporting/SKILL.md', 'skills/reporting/agents/openai.yaml',
 ];
 
 function write(root, relative, value) {
@@ -99,7 +100,7 @@ function fixture(t) {
   write(source, mavtRoot + helper + 'helper_manifest.json', JSON.stringify({
     sha256: crypto.createHash('sha256').update(apk).digest('hex'),
   }));
-  for (const name of ['author-cases', 'run-tests', 'manage-knowledge']) {
+  for (const name of ['author-cases', 'run-tests', 'manage-knowledge', 'reporting']) {
     write(source, `skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: Test entry\n---\n`);
     write(source, `skills/${name}/agents/openai.yaml`, `interface:\n  display_name: "${name}"\n  short_description: "Test entry metadata for ${name}"\n`);
   }
@@ -131,7 +132,7 @@ test('release builds preserve runtime resources and executable bits with repeata
   const second = buildPlugin({ repoRoot: source, outputRoot: path.join(temp, '第二次 build') });
   assert.deepEqual(inventory(first.marketplaceRoot), inventory(second.marketplaceRoot));
   assert.equal(first.manifest.bundleId, second.manifest.bundleId);
-  assert.equal(first.manifest.pluginVersion, '0.3.6');
+  assert.equal(first.manifest.pluginVersion, '0.4.0');
   const files = inventory(first.pluginRoot).map((entry) => entry.path);
   assert.deepEqual(files, [...FIXTURE_RELEASE_FILES, 'runtime/mobile-ai-visual-test/mcp-transport.json', 'bundle.manifest.json'].sort());
   const apk = path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test', helper, 'ArtemisAccessibilityHelper.apk');
@@ -302,7 +303,7 @@ test('the first default publication works without an existing output directory',
   const published = buildDefaultPlugin({ repoRoot: source });
   assert.equal(published.marketplaceRoot, path.join(source, 'dist/mavt-marketplace'));
   assert.equal(published.archivedMarketplaceRoot, null);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(published.pluginRoot, '.codex-plugin/plugin.json'))).version, '0.3.6');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(published.pluginRoot, '.codex-plugin/plugin.json'))).version, '0.4.0');
 });
 
 for (const point of ['before-archive', 'after-archive', 'after-publish']) test(`default publication recovers a killed publisher at ${point}`, t => {
@@ -478,4 +479,18 @@ test('CLI rejects relative output instead of interpreting a caller-dependent pat
   const result = spawnSync(process.execPath, [path.join(repoRoot, 'build-plugin.js'), '--output', 'relative'], { encoding: 'utf8' });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /absolute/i);
+});
+
+for (const relative of ['skills/reporting/SKILL.md', 'skills/reporting/agents/openai.yaml']) {
+  test(`release requires ${relative} even after inventory refresh`, t => {
+    const { source, output } = fixture(t);
+    fs.unlinkSync(path.join(source, relative));
+    writeReleaseFileList({ repoRoot: source });
+    assert.throws(() => buildPlugin({ repoRoot: source, outputRoot: output }), /Required build source is missing.*reporting/);
+    assert.equal(fs.existsSync(output), false);
+  });
+}
+test('release package and plugin metadata agree on 0.4.0', () => {
+  assert.equal(require('../package.json').version, '0.4.0');
+  assert.equal(require('../.codex-plugin/plugin.json').version, '0.4.0');
 });

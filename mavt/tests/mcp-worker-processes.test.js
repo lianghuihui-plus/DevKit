@@ -23,9 +23,15 @@ for (const mode of ['timeout', 'crash']) test(`worker ${mode} reaps operation pr
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-worker-process-test-'));
   const entered = path.join(temp, 'entered.json');
   const descendant = path.join(temp, 'descendant.pid');
-  for (const file of ['worker-pool.js', 'worker-child.js']) fs.copyFileSync(path.join(workerRoot, file), path.join(temp, file));
+  // Preserve the real dependency layout; worker-pool also reads reporting
+  // descriptors before it starts either operation process.
+  const fixtureMcpRoot = path.join(temp, 'mcp');
+  fs.mkdirSync(fixtureMcpRoot);
+  fs.mkdirSync(path.join(temp, 'reporting'));
+  fs.copyFileSync(path.join(workerRoot, '../reporting/tools.js'), path.join(temp, 'reporting/tools.js'));
+  for (const file of ['worker-pool.js', 'worker-child.js']) fs.copyFileSync(path.join(workerRoot, file), path.join(fixtureMcpRoot, file));
   // Substitute only the domain operation. Worker IPC, fork, timeout, lane and close are real.
-  fs.writeFileSync(path.join(temp, 'management-service.js'), `
+  fs.writeFileSync(path.join(fixtureMcpRoot, 'management-service.js'), `
     const fs = require('node:fs'), cp = require('node:child_process');
     exports.toolResult = value => ({ structuredContent: value });
     exports.failureValue = error => ({ status: 'FAILED', message: error.message });
@@ -49,7 +55,7 @@ for (const mode of ['timeout', 'crash']) test(`worker ${mode} reaps operation pr
       }) };
     };
   `);
-  const pool = require(path.join(temp, 'worker-pool')).createPool({ pluginRoot: temp, maxOperationMs: mode === 'timeout' ? 1200 : 5000 });
+  const pool = require(path.join(fixtureMcpRoot, 'worker-pool')).createPool({ pluginRoot: temp, maxOperationMs: mode === 'timeout' ? 1200 : 5000 });
   t.after(async () => {
     await pool.close();
     if (fs.existsSync(entered)) for (const pid of Object.values(JSON.parse(fs.readFileSync(entered)))) {
