@@ -2,7 +2,7 @@
 
 整理日期：2026-10-23。保留插件化开发的验证结论和边界；原始 JSON 与日志已精简，不作为插件运行依赖。已提交的原始记录可从 Git 提交 `3621f35` 恢复，清理时的本地副本另移入系统废纸篓。
 
-## 0.4.0 数据上报 v2（2026-10-23，未安装，最终独立分支审查待完成）
+## 0.4.0 数据上报 v2（2026-10-23，未安装，最终独立分支审查通过）
 
 - 当前固定构建为 `dist/mavt-marketplace/` 的 `0.4.0`；四个 Skill 为 `author-cases`、`run-tests`、`manage-knowledge`、`reporting`，MCP 共 38 个工具，其中 8 个 reporting 工具；入口与实际工具名均按完整名单验证。
 - 上报组件包含私有分目标配置/凭据、身份与修订、schema14 三端采集、标准段及 native 证据闭包、v2 会话/传输、持久任务与固定独立 worker、异常隔离的 Coordinator 钩子及 reporting 角色；故障不改变测试 verdict，本地状态读取不修复或启动任务。
@@ -10,6 +10,8 @@
 - 最终审查修复了两处本地持久化缺口：元数据锁以完整私有 owner 文件原子发布，进程在发布前死亡不会留下空锁，死亡的完整 owner/reaper 可恢复且活 owner、未来版本不按年龄抢占；手动提交或显式 retry 每次最多处理一个包、32 个目录项，持久 COMMITTED 回执后重试清理，七天后将保留的 REJECTED/重试耗尽任务转为 EXPIRED_LOCAL，活动或归属不明 claim、旧 identityEpoch 和未来版本均不清理，状态读取与 Coordinator 自动入队不清理。
 - 后续范围审查修复了 COMMITTED 清理授权绕过：先核对非空且完整的冻结会话集合、持久会话状态与原凭据代际、回执绑定、原始 manifest 摘要和终态结果，才写入持久授权证明并删冻结数据；部分删除后重启可凭相同证明继续，缺失或外来回执保留冻结包。
 - worker 终态清理现先在活跃 claim 下调用同一授权检查并持久化证明，再删除冻结数据；实际 `processJob` 在 session manifest 已删除后注入目录删除失败，fresh queue 显式 retry 可继续清理，非法回执既不生成证明也不删除 blob。
+- controller 的架构裁决将 `createReportingService` 注入限定为轻量 repository/queue/launcher/clock，sourceReader/transport 仅注入 `createWorker`；函数无法跨独立进程传递，原拟依赖重型 facade 注入选项的调用方需适配。
+- controller 将最终修复延长一次定向修复与范围复审，以防清理授权绕过造成冻结数据丢失；代价是额外验证周期，没有扩展产品范围。
 - 本次 worker 修复专项 foundation/jobs/transport/release 129/129 通过；完整 `npm test` 退出码 0：运行时 89 组、知识管理 6 组、插件 403/403（0 fail/skip）与 51 份生成文档检查通过，日志 `test-results/final-worker-focused.log`、`final-worker-full.log`。
 - 本次 `npm run build` 与独立 bundle 探针均退出码 0，当前 bundleId 为 `be354c745ac5145c4a5232a0b7f7af416804adafff6bb2dab0bf5f9ad1af2b61`；349 个 manifest 文件、360 个发布源文件逐字节一致、362 个总分发文件，日志 `test-results/final-worker-build.log`、`final-worker-bundle-probe.log`。
 - 上一授权修复专项 foundation/jobs/transport/release 127/127 通过；完整 `npm test` 退出码 0：运行时 89 组、知识管理 6 组、插件 401/401（0 fail/skip）与 51 份生成文档检查通过，日志 `test-results/final-receipt-focused.log`、`final-receipt-full.log`。
@@ -22,7 +24,7 @@
 - 上一修复波次的 `npm test` 退出码 0：运行时 89 组、知识管理 6 组、插件 393/393（0 fail/skip）与 51 份生成文档检查通过；日志 `test-results/final-fix-full-final.log`；修复专项 foundation/jobs/release 75/75 通过，含固定独立 worker 完整成功与断线重放；原 Task 6 的 build/release 36/36、worker timeout/crash 2/2 仍为修复前专项记录。
 - 中间完整检查在旧 WDA 子进程清理用例再次出现历史 `kill EPERM`，日志 `test-results/task-6-full-verified.log`，该文件独立复跑 9/9 通过；未改 WDA 生产代码，尚未确认偶发根因，不将其记作已修复。
 - 本轮没有显式提供临时隔离的已认证 Dashboard HTTP/DB/Web 服务及测试身份，故真实认证/持久化、数据库重复补报对象数、五页签页面/原图/日志读取与线上 capabilities 未验证；loopback HTTP 与真实校验器差分不替代这些验收；无个人 Token、真机/模拟器、主 checkout 或服务端修改、依赖安装、合并、推送。
-- 以上为实现者证据与自查；两项最终分支审查问题已修复，controller 的最终范围复审仍待完成，不将实现者自查当作该 gate 已完成。
+- controller 已在运行时代码提交 `480deec` 完成整分支审查和后续所有定向范围复审，锁、清理授权及 worker 首次删除前证明的发现均已修复，未留 Critical/Important/Minor 问题；本段为文档收口，不代替上述外部验收，也不声称历史 WDA `kill EPERM` 已修复。
 
 ## 仓库清理（2026-10-23）
 
