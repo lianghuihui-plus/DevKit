@@ -50,12 +50,60 @@ function listMetrics(source) {
     recoveries: m?.executionRecoveryCount,
     verdictBasis: report.display?.verdictBasis
   };
-  if (mapping.sequenceFailures === undefined && m?.sequenceMetrics && Number.isInteger(m.sequenceMetrics.partialCount) && Number.isInteger(m.sequenceMetrics.interruptedCount))
+  // Only the known schema-3 metrics define these disjoint terminal counters.
+  if (mapping.sequenceFailures === undefined && m?.schemaVersion === 3 && m.sequenceMetrics && Number.isInteger(m.sequenceMetrics.partialCount) && Number.isInteger(m.sequenceMetrics.interruptedCount))
     mapping.sequenceFailures = m.sequenceMetrics.partialCount + m.sequenceMetrics.interruptedCount;
   for (const [k, v] of Object.entries(mapping))
     if (v !== undefined && v !== null)
       result[k] = v;
   return result;
+}
+function reportHealthProjection({ source, graph }) {
+  const metadata = {
+    ...source.healthMetadata,
+    execution: graph.get('report-metadata.json')?.data ?? null
+  };
+  const issues = source.report.result ? [] : [{
+    code: 'RESULT_MISSING',
+    closure: source.report.closure ?? null
+  }];
+  let degraded = false, unavailable = false;
+  for (const [scope, value] of Object.entries(metadata)) {
+    if (!value)
+      continue;
+    const health = value.reportHealth;
+    const signals = [typeof health === 'string' ? health : health?.status];
+    const sourceIssues = [...(Array.isArray(health?.issues) ? health.issues : []),
+      ...(Array.isArray(value.reportIssues) ? value.reportIssues : []),
+      ...(Array.isArray(value.reportErrors) ? value.reportErrors : [])];
+    for (const entry of Array.isArray(health?.cases) ? health.cases : []) {
+      signals.push(entry.health);
+      for (const issue of Array.isArray(entry.issues) ? entry.issues : [])
+        sourceIssues.push({ ...issue, caseKey: entry.caseKey });
+    }
+    if (value.reportErrorCode) {
+      sourceIssues.push({ code: value.reportErrorCode });
+      unavailable = true;
+    }
+    for (const signal of signals) {
+      if (signal === 'UNAVAILABLE')
+        unavailable = true;
+      if (typeof signal === 'string' && signal !== 'HEALTHY') {
+        degraded = true;
+        issues.push({ code: 'SOURCE_REPORT_HEALTH', scope, status: signal });
+      }
+    }
+    for (const issue of sourceIssues)
+      issues.push({ ...(issue && typeof issue === 'object' ? issue : { reason: String(issue) }), scope });
+    if (sourceIssues.length)
+      degraded = true;
+  }
+  return {
+    status: !source.report.result ? 'RESULT_MISSING' : unavailable ? 'UNAVAILABLE' : degraded ? 'DEGRADED'
+      : source.report.completion ? 'HEALTHY' : 'READABLE',
+    issues,
+    metadata
+  };
 }
 const PROJECTORS = {
   'case-source': ({ source }) => ({
@@ -111,10 +159,13 @@ const PROJECTORS = {
     screenshot: e.data.screenshot?.ref ? artifactMap[e.data.screenshot.ref] ?? null : null,
     sourceScreenshot: e.data.screenshot
   })),
-  'spatial-evidence': ({ source, graph }) => [...graph.values()].filter(e => e.relative.startsWith('action-spatial-evidence/') && e.data?.operationId).map(e => ({
+  'spatial-evidence': ({ graph, artifactMap }) => [...graph.values()].filter(e => e.relative.startsWith('action-spatial-evidence/') && e.data?.operationId).map(e => ({
     ...e.data,
     operationId: e.data.operationId,
-    kind: String(e.data.kind || 'UNKNOWN')
+    kind: String(e.data.kind || 'UNKNOWN'),
+    screenshot: e.data.screenshot?.ref ? artifactMap[e.data.screenshot.ref] ?? null : null,
+    sourceScreenshot: e.data.screenshot ?? null,
+    annotation: e.data.annotatedScreenshotRef ? artifactMap[e.data.annotatedScreenshotRef] ?? null : null
   })),
   metrics: ({ source }) => source.report.metrics || {},
   records: ({ source }) => source.trace.entries.map((e, i) => ({
@@ -165,14 +216,7 @@ const PROJECTORS = {
     })),
     investigations: source.trace.narrative?.knowledgeInvestigations ?? []
   }),
-  'report-health': ({ source, graph }) => ({
-    status: source.report.completion ? 'HEALTHY' : source.report.result ? 'READABLE' : 'RESULT_MISSING',
-    issues: source.report.result ? [] : [{
-        code: 'RESULT_MISSING',
-        closure: source.report.closure ?? null
-      }],
-    metadata: {...source.healthMetadata,execution:graph.get('report-metadata.json')?.data ?? null}
-  }),
+  'report-health': reportHealthProjection,
   integrity: ({ source }) => ({
     sourceCompletion: source.report.completion,
     sourceClosure: source.report.closure ?? null,

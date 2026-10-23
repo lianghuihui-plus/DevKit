@@ -27,26 +27,46 @@ function mediaType(relative) {
     throw reportingError('REPORTING_ATTACHMENT_UNSUPPORTED', 'Unsupported report evidence type');
   return media;
 }
-function durableWrite(file, content) {
-  fs.mkdirSync(path.dirname(file), {
-    recursive: true,
-    mode: 0o700
-  });
-  const fd = fs.openSync(file, 'wx', 0o600);
+function syncDirectory(directory) {
+  const fd = fs.openSync(directory, 'r');
   try {
-    fs.writeFileSync(fd, content);
     fs.fsyncSync(fd);
   }
   finally {
     fs.closeSync(fd);
   }
-  const dir = fs.openSync(path.dirname(file), 'r');
+}
+function ensureDurableDirectory(directory) {
+  if (fs.existsSync(directory))
+    return;
+  const parent = path.dirname(directory);
+  ensureDurableDirectory(parent);
+  fs.mkdirSync(directory, { mode: 0o700 });
+  syncDirectory(directory);
+  syncDirectory(parent);
+}
+function writeAll(fd, value, length) {
+  const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  const end = length ?? buffer.length;
+  let offset = 0;
+  while (offset < end) {
+    const written = fs.writeSync(fd, buffer, offset, end - offset, null);
+    if (!Number.isSafeInteger(written) || written <= 0 || written > end - offset)
+      throw reportingError('REPORTING_WRITE_NO_PROGRESS', 'Unable to write complete frozen attachment');
+    offset += written;
+  }
+}
+function durableWrite(file, content) {
+  ensureDurableDirectory(path.dirname(file));
+  const fd = fs.openSync(file, 'wx', 0o600);
   try {
-    fs.fsyncSync(dir);
+    writeAll(fd, content);
+    fs.fsyncSync(fd);
   }
   finally {
-    fs.closeSync(dir);
+    fs.closeSync(fd);
   }
+  syncDirectory(path.dirname(file));
 }
 function assertShareable(value) {
   if (value && typeof value === 'object') {
@@ -79,6 +99,8 @@ function discoverEvidence(source) {
     if (graph.has(relative))
       return;
     const file = safePath(root, relative);
+    if (!available.has(relative))
+      throw reportingError('REPORTING_EVIDENCE_NOT_INVENTORIED', 'Referenced evidence is outside the validated inventory');
     const media = mediaType(relative);
     let data = null;
     const refs = new Set();
@@ -110,7 +132,14 @@ function createArtifactStore({ workspace, packageId, repository, redactor, limit
     state: 'COLLECTING',
     packageId
   });
-  const staging = path.join(workspace, '.mavt/reporting/staging', packageId), files = new Map(), adj = new Map();
+  const staging = path.resolve(workspace, '.mavt/reporting/staging', packageId), files = new Map(), adj = new Map();
+  // The repository created the initial staging tree. Persist every ancestor
+  // entry here before any nested artifact can become publication authority.
+  for (let directory = staging; ; directory = path.dirname(directory)) {
+    syncDirectory(directory);
+    if (directory === path.resolve(workspace))
+      break;
+  }
   function record(id, relative, media, purpose) {
     const file = path.join(staging, 'blobs', id), stat = fs.statSync(file), sha256 = 'sha256:' + digest(file);
     if (stat.size > limits.fileBytes || (['application/json', 'application/x-ndjson'].includes(media) && stat.size > limits.documentBytes))
@@ -151,10 +180,7 @@ function createArtifactStore({ workspace, packageId, repository, redactor, limit
         fileId: id
       };
     const file = path.join(staging, 'blobs', id);
-    fs.mkdirSync(path.dirname(file), {
-      recursive: true,
-      mode: 0o700
-    });
+    ensureDurableDirectory(path.dirname(file));
     if (entry.data !== null) {
       const value = redactor.redact(entry.data);
       const raw = entry.mediaType === 'application/x-ndjson' ? value.map(v => canonicalJson(v)).join('\n') + '\n' : canonicalJson(value);
@@ -170,7 +196,7 @@ function createArtifactStore({ workspace, packageId, repository, redactor, limit
           size += n;
           if (size > limits.fileBytes)
             throw reportingError('REPORTING_UNIT_TOO_LARGE');
-          fs.writeSync(output, buffer, 0, n);
+          writeAll(output, buffer, n);
         }
         fs.fsyncSync(output);
       }
@@ -194,7 +220,7 @@ function createArtifactStore({ workspace, packageId, repository, redactor, limit
         size += Buffer.byteLength(raw);
         if (size > limits.fileBytes)
           throw reportingError('REPORTING_UNIT_TOO_LARGE');
-        fs.writeSync(output, raw);
+        writeAll(output, raw);
       }
       try {
         for await (const chunk of input) {
@@ -222,6 +248,7 @@ function createArtifactStore({ workspace, packageId, repository, redactor, limit
       }
       adj.set(id, new Set());
     }
+    syncDirectory(path.dirname(file));
     return record(id, logical, entry.mediaType, 'evidence');
   }
   function closure(roots) {
@@ -247,21 +274,14 @@ function createArtifactStore({ workspace, packageId, repository, redactor, limit
   }
   function finalize() {
     const parent = path.join(workspace, '.mavt/reporting/packages');
-    fs.mkdirSync(parent, {
-      recursive: true,
-      mode: 0o700
-    });
+    ensureDurableDirectory(parent);
     const final = path.join(parent, packageId);
+    syncDirectory(staging);
     fs.renameSync(staging, final);
+    syncDirectory(path.dirname(staging));
+    syncDirectory(parent);
     for (const f of files.values())
       f.path = path.join(final, 'blobs', f.id);
-    const fd = fs.openSync(parent, 'r');
-    try {
-      fs.fsyncSync(fd);
-    }
-    finally {
-      fs.closeSync(fd);
-    }
     return final;
   }
   return {

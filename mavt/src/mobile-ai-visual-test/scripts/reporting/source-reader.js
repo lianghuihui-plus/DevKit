@@ -43,14 +43,17 @@ function text(file) {
     fail();
   }
 }
-function rejectReserved(value, depth = 0) {
+function rejectReserved(value, depth = 0, fieldPath = '') {
   if (depth > 64)
     fail();
   if (value && typeof value === 'object') {
-    if (!Array.isArray(value) && Object.hasOwn(value, 'fileId'))
-      fail('REPORTING_RESERVED_FIELD_COLLISION');
-    for (const child of Object.values(value))
-      rejectReserved(child, depth + 1);
+    if (!Array.isArray(value) && Object.hasOwn(value, 'fileId')) {
+      const error = reportingError('REPORTING_RESERVED_FIELD_COLLISION', 'Source uses a reserved protocol field');
+      error.fieldPath = `${fieldPath}/fileId`;
+      throw error;
+    }
+    for (const [name, child] of Object.entries(value))
+      rejectReserved(child, depth + 1, `${fieldPath}/${name.replace(/~/g, '~0').replace(/\//g, '~1')}`);
   }
 }
 function parse(file) {

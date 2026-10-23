@@ -103,6 +103,9 @@ function selectSources(request, { repository, sourceReader }) {
     });
     signatures.push(...definition.signature);
     for (const platform of PLATFORMS) {
+      const target = targets?.get(caseKey);
+      if (target?.platform && target.platform !== platform)
+        continue;
       const candidates = executionCandidates(workspace, caseDir, platform);
       addDirectorySignature(path.relative(workspace,path.join(caseDir,'platforms',platform,'executions')).split(path.sep).join('/'));
       for (const c of candidates) {
@@ -118,9 +121,6 @@ function selectSources(request, { repository, sourceReader }) {
       }
       let chosen;
       if (targets) {
-        const target = targets.get(caseKey);
-        if (target.platform && target.platform !== platform)
-          continue;
         if (!target.executionId) {
           if (candidates.some(c => c.execution.batchId === request.batchId))
             throw reportingError('REPORTING_RUN_STATE_INVALID');
