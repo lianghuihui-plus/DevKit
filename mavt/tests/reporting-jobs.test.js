@@ -31,6 +31,139 @@ function fixture(t) {
   return { root, workspace, repository };
 }
 
+function retainedJob(repository, workspace, id, state, createdAt, extra = {}) {
+  const identityEpoch = repository.readWorkspace(workspace, 'identity.json').identityEpoch;
+  const packageId = `package-${id}`;
+  repository.writeWorkspace(workspace, `jobs/${id}/state.json`, {
+    jobId: id, packageId, state, identityEpoch, exportVersion: 1, createdAt,
+    updatedAt: createdAt, sessions: [], metrics: {}, ...extra
+  });
+  const blob = path.join(workspace, '.mavt/reporting/packages', packageId, 'blobs', 'file');
+  fs.mkdirSync(path.dirname(blob), { recursive: true });
+  fs.writeFileSync(blob, 'retained');
+  return blob;
+}
+
+test('an explicit submit retries COMMITTED cleanup after a durable receipt, while status is readonly', t => {
+  const { workspace, repository } = fixture(t);
+  const queue = createJobQueue({ repository, launcher: () => {},
+    credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
+  require('../src/mobile-ai-visual-test/scripts/reporting/identity').createIdentity({ repository }).ensure(workspace);
+  const blob = retainedJob(repository, workspace, 'done', 'COMMITTED', new Date().toISOString(), {
+    sessions: [{ id: 'session-0001', state: 'COMMITTED', receiptRelative: 'receipts/package-done/session-0001.json' }],
+    metrics: {}
+  });
+  repository.writeWorkspace(workspace, 'receipts/package-done/session-0001.json', { status: 'COMMITTED' });
+  const before = fs.readFileSync(path.join(workspace, '.mavt/reporting/jobs/done/state.json'));
+  assert.equal(queue.status(workspace, 'done').metrics.localCleanupPending, undefined);
+  assert.deepEqual(fs.readFileSync(path.join(workspace, '.mavt/reporting/jobs/done/state.json')), before);
+  assert.equal(fs.existsSync(blob), true);
+  queue.submit({ workspace, scope: 'batch', trigger: 'automatic', batchId: 'unconfirmed' });
+  assert.equal(fs.existsSync(blob), true);
+  const unlink = fs.unlinkSync;
+  fs.unlinkSync = function(file,...args) {
+    if (file === blob) throw Object.assign(new Error('injected cleanup failure'), { code: 'EACCES' });
+    return unlink.call(this,file,...args);
+  };
+  try { queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) }); }
+  finally { fs.unlinkSync = unlink; }
+  assert.equal(queue.status(workspace, 'done').metrics.localCleanupPending, true);
+  assert.equal(fs.existsSync(blob), true);
+  const owner = repository.readWorkspace(workspace, 'worker-claim.json');
+  repository.writeWorkspace(workspace, 'worker-claim.json', { ...owner, state: 'RELEASED' });
+  assert.equal(queue.retry(workspace, 'done').state, 'COMMITTED');
+  assert.equal(fs.existsSync(blob), false);
+  assert.equal(queue.status(workspace, 'done').metrics.localCleanupPending, false);
+});
+
+test('cleanup is bounded and refuses live, uncertain, or future-version ownership', t => {
+  const { workspace, repository } = fixture(t);
+  const queue = createJobQueue({ repository, launcher: () => {}, processIdentity: () => null, isAlive: () => true,
+    credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
+  require('../src/mobile-ai-visual-test/scripts/reporting/identity').createIdentity({ repository }).ensure(workspace);
+  const blob = retainedJob(repository, workspace, 'done', 'COMMITTED', new Date().toISOString());
+  for (let i = 0; i < 40; i++) fs.writeFileSync(path.join(path.dirname(blob), `extra-${i}`), 'retained');
+  repository.writeWorkspace(workspace, 'worker-claim.json', { state: 'RESERVED', jobId: 'other', nonce: 'incomplete', epoch: 1 });
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.equal(fs.readdirSync(path.dirname(blob)).length, 41);
+  repository.writeWorkspace(workspace, 'worker-claim.json', { state: 'ACTIVE', jobId: 'other', pid: 999999,
+    processStartedAt: 'unknown', nonce: 'live', epoch: 1 });
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.equal(fs.existsSync(blob), true);
+  repository.writeWorkspace(workspace, 'worker-claim.json', { state: 'RELEASED', nonce: 'live', epoch: 1 });
+  repository.writeWorkspace(workspace, 'jobs/done/claim.json', { state: 'RELEASED' });
+  const claimFile = path.join(workspace, '.mavt/reporting/jobs/done/claim.json');
+  fs.writeFileSync(claimFile, JSON.stringify({ schemaVersion: 2, state: 'ACTIVE' }));
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.equal(fs.existsSync(blob), true);
+  fs.writeFileSync(claimFile, JSON.stringify({ schemaVersion: 1, state: 'RELEASED' }));
+  const reserved = repository.readWorkspace(workspace, 'worker-claim.json');
+  repository.writeWorkspace(workspace, 'worker-claim.json', { ...reserved, state: 'RELEASED' });
+  const stateFile = path.join(workspace, '.mavt/reporting/jobs/done/state.json');
+  const currentState = JSON.parse(fs.readFileSync(stateFile));
+  fs.writeFileSync(stateFile, JSON.stringify({ ...currentState, identityEpoch: 'previous-epoch' }));
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.equal(fs.readdirSync(path.dirname(blob)).length, 41);
+  fs.writeFileSync(stateFile, JSON.stringify(currentState));
+  const afterEpoch = repository.readWorkspace(workspace, 'worker-claim.json');
+  repository.writeWorkspace(workspace, 'worker-claim.json', { ...afterEpoch, state: 'RELEASED' });
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.equal(fs.readdirSync(path.dirname(blob)).length >= 9, true);
+  const futureState = { ...JSON.parse(fs.readFileSync(stateFile)), schemaVersion: 2 };
+  fs.writeFileSync(stateFile, JSON.stringify(futureState));
+  const ownerAfter = repository.readWorkspace(workspace, 'worker-claim.json');
+  repository.writeWorkspace(workspace, 'worker-claim.json', { ...ownerAfter, state: 'RELEASED' });
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)), futureState);
+  assert.equal(fs.readdirSync(path.dirname(blob)).length >= 9, true);
+});
+
+test('a missing COMMITTED receipt protects its package without starving older expiry', t => {
+  const { workspace, repository } = fixture(t);
+  const queue = createJobQueue({ repository, launcher: () => {},
+    credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
+  require('../src/mobile-ai-visual-test/scripts/reporting/identity').createIdentity({ repository }).ensure(workspace);
+  const committed = retainedJob(repository, workspace, 'a-committed', 'COMMITTED', new Date().toISOString(), {
+    sessions: [{ id: 'session-0001', state: 'COMMITTED' }]
+  });
+  const rejected = retainedJob(repository, workspace, 'b-rejected', 'REJECTED',
+    new Date(Date.now() - 8 * 86400000).toISOString());
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.equal(fs.existsSync(committed), true);
+  assert.equal(fs.existsSync(rejected), false);
+  const owner = repository.readWorkspace(workspace, 'worker-claim.json');
+  repository.writeWorkspace(workspace, 'worker-claim.json', { ...owner, state: 'RELEASED' });
+  repository.writeWorkspace(workspace, 'receipts/package-a-committed/session-0001.json', { status: 'COMMITTED' });
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.equal(fs.existsSync(committed), false);
+});
+
+test('explicit write expires retained rejected jobs after seven days but keeps younger unfinished packages', t => {
+  const { workspace, repository } = fixture(t);
+  const queue = createJobQueue({ repository, launcher: () => {},
+    credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
+  require('../src/mobile-ai-visual-test/scripts/reporting/identity').createIdentity({ repository }).ensure(workspace);
+  const old = new Date(Date.now() - 8 * 86400000).toISOString();
+  const recent = new Date(Date.now() - 6 * 86400000).toISOString();
+  const rejected = retainedJob(repository, workspace, 'a-rejected', 'REJECTED', old);
+  const exhausted = retainedJob(repository, workspace, 'b-exhausted', 'RETRYABLE_FAILED', old, { attempts: 3 });
+  const unfinished = retainedJob(repository, workspace, 'c-unfinished', 'RETRYABLE_FAILED', recent, { attempts: 3 });
+  queue.status(workspace);
+  assert.equal(fs.existsSync(rejected), true);
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.equal(queue.status(workspace, 'a-rejected').state, 'EXPIRED_LOCAL');
+  assert.equal(fs.existsSync(rejected), false);
+  assert.equal(fs.existsSync(exhausted), true);
+  const owner = repository.readWorkspace(workspace, 'worker-claim.json');
+  repository.writeWorkspace(workspace, 'worker-claim.json', { ...owner, state: 'RELEASED' });
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  assert.equal(queue.status(workspace, 'b-exhausted').state, 'EXPIRED_LOCAL');
+  assert.equal(fs.existsSync(exhausted), false);
+  assert.equal(fs.existsSync(unfinished), true);
+  assert.equal(queue.status(workspace, 'c-unfinished').state, 'RETRYABLE_FAILED');
+  assert.throws(() => queue.retry(workspace, 'a-rejected'), { code: 'REPORTING_RESUBMIT_REQUIRED' });
+});
+
 test('manual submit persists a job and never performs network work', t => {
   const { workspace, repository } = fixture(t);
   const launches = [];

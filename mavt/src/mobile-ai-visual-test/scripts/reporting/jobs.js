@@ -16,6 +16,43 @@ const CLAIM_MS = 15000;
 const RETENTION_MS = 7 * 86400000;
 const RUNNABLE = new Set(['QUEUED', 'RETRYABLE_FAILED', 'PARTIAL', 'ADOPTING_CREDENTIAL', 'COLLECTING', 'PREPARING', 'UPLOADING', 'COMMITTING', 'RUNNING']);
 const TERMINAL = new Set(['COMMITTED', 'REJECTED', 'EXPIRED_LOCAL', 'SKIPPED_NOT_STARTED', 'SKIPPED_UNCONFIGURED', 'SKIPPED_DISABLED']);
+function releaseFrozenData(workspace, packageId, repository, sessions, expired = false, limit = Infinity) {
+  safeId(packageId);
+  if (!expired && !sessions.every(item => repository.readWorkspace(workspace,
+    `receipts/${packageId}/${safeId(item.id)}.json`)?.status === 'COMMITTED'))
+    throw reportingError('REPORTING_RECEIPT_MISSING');
+  const root = path.join(path.resolve(workspace), '.mavt/reporting/packages', packageId);
+  function stat(file) {
+    try { return fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  }
+  function prune(directory, budget) {
+    const directoryStat = stat(directory);
+    if (!directoryStat) return;
+    if (!directoryStat.isDirectory()) throw reportingError('REPORTING_PATH_UNSAFE');
+    const handle = fs.opendirSync(directory);
+    try {
+      let entry;
+      while (budget.remaining > 0 && (entry = handle.readSync())) {
+        budget.remaining--;
+        const child = path.join(directory, entry.name), childStat = stat(child);
+        if (!childStat) continue;
+        if (childStat.isDirectory()) prune(child, budget);
+        else if (childStat.isFile()) fs.unlinkSync(child);
+        else throw reportingError('REPORTING_PATH_UNSAFE');
+      }
+    } finally { handle.closeSync(); }
+    try { fs.rmdirSync(directory); }
+    catch (error) { if (error.code !== 'ENOTEMPTY') throw error; }
+  }
+  const rootStat = stat(root);
+  if (!rootStat) return true;
+  if (!rootStat.isDirectory()) throw reportingError('REPORTING_PATH_UNSAFE');
+  const budget = { remaining: limit };
+  for (const name of ['blobs', 'sessions']) prune(path.join(root, name), budget);
+  const fd = fs.openSync(root, 'r');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  return !['blobs', 'sessions'].some(name => stat(path.join(root, name)));
+}
 function processStart(pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) return null;
   if (process.platform === 'linux') {
@@ -172,10 +209,58 @@ function createJobQueue(options = {}) {
   }
   function ownerBusy(claim) {
     if (!claim || claim.state === 'RELEASED') return false;
-    if (claim.state === 'RESERVED') return Date.parse(claim.leaseUntil) > clock();
+    if (claim.state === 'RESERVED') {
+      const leaseUntil = Date.parse(claim.leaseUntil);
+      return !Number.isFinite(leaseUntil) || leaseUntil > clock();
+    }
     if (claim.state !== 'ACTIVE' || !claim.processStartedAt || !claim.pid) return true;
     const observed = processIdentity(claim.pid);
     return observed === claim.processStartedAt || (observed === null && isAlive(claim.pid));
+  }
+  function cleanupOne(workspace) {
+    return repository.withWorkspaceLock(workspace, () => {
+      const owner = repository.readWorkspace(workspace, 'worker-claim.json');
+      if (ownerBusy(owner)) return false;
+      const epoch = repository.readWorkspace(workspace, 'identity.json')?.identityEpoch;
+      if (!epoch) return false;
+      for (const id of repository.listWorkspace(workspace, 'jobs')) {
+        const job = readCompatible(workspace, jobPath(id));
+        if (!job || job.exportVersion !== EXPORT_VERSION || job.identityEpoch !== epoch || !job.packageId) continue;
+        let claim;
+        try { claim = repository.readWorkspace(workspace, jobClaimPath(id)); }
+        catch (error) {
+          if (['REPORTING_STATE_VERSION_UNSUPPORTED', 'REPORTING_STATE_CORRUPT'].includes(error.code)) continue;
+          throw error;
+        }
+        if (ownerBusy(claim)) continue;
+        const expired = Number.isFinite(Date.parse(job.createdAt)) && clock() - Date.parse(job.createdAt) > RETENTION_MS;
+        if (job.state !== 'COMMITTED' && job.state !== 'EXPIRED_LOCAL' && !expired) continue;
+        if (job.state === 'COMMITTED') {
+          let receiptsReady = false;
+          try { receiptsReady = (job.sessions || []).every(item => repository.readWorkspace(workspace,
+            `receipts/${safeId(job.packageId)}/${safeId(item.id)}.json`)?.status === 'COMMITTED'); }
+          catch (error) {
+            if (!['REPORTING_STATE_VERSION_UNSUPPORTED', 'REPORTING_STATE_CORRUPT'].includes(error.code)) throw error;
+          }
+          if (!receiptsReady) continue;
+        }
+        const patch = expired && job.state !== 'COMMITTED' && job.state !== 'EXPIRED_LOCAL'
+          ? { state: 'EXPIRED_LOCAL', failureCode: 'REPORTING_LOCAL_EXPIRED', nextRetryAt: null } : {};
+        const packageRoot = path.join(path.resolve(workspace), '.mavt/reporting/packages', safeId(job.packageId));
+        if (!Object.keys(patch).length && !job.metrics?.localCleanupPending
+          && !['blobs', 'sessions'].some(name => fs.existsSync(path.join(packageRoot, name)))) continue;
+        if (Object.keys(patch).length) repository.writeWorkspace(workspace, jobPath(id), { ...job, ...patch, updatedAt: now() });
+        let complete = false;
+        try { complete = releaseFrozenData(workspace, job.packageId, repository, job.sessions || [],
+          job.state !== 'COMMITTED', 32); }
+        catch { /* Keep the durable job and retry on a later explicit write. */ }
+        if (job.metrics?.localCleanupPending !== !complete || Object.keys(patch).length)
+          repository.writeWorkspace(workspace, jobPath(id), { ...job, ...patch,
+            metrics: { ...job.metrics, localCleanupPending: !complete }, updatedAt: now() });
+        return true;
+      }
+      return false;
+    });
   }
   function releaseStale(workspace, existing) {
     if (!existing || existing.state === 'RELEASED' || ownerBusy(existing)) return false;
@@ -282,6 +367,7 @@ function createJobQueue(options = {}) {
     requireInput(input && typeof input.workspace === 'string' && ['batch', 'workspace'].includes(input.scope)
       && ['automatic', 'manual'].includes(input.trigger) && (input.scope === 'batch') === (input.trigger === 'automatic'));
     if (input.scope === 'batch') safeId(input.batchId);
+    if (input.trigger === 'manual') cleanupOne(input.workspace);
     const snapshot = input.trigger === 'automatic' ? intents.readRunSnapshot(input.workspace, input.batchId) : null;
     const target = snapshot ? snapshot.serverUrl : input.trigger === 'manual' ? settings.read().serverUrl : null;
     const generation = snapshot ? snapshot.credentialGeneration : target ? credentials.status(target).generation : null;
@@ -342,6 +428,7 @@ function createJobQueue(options = {}) {
     });
   }
   function retry(workspace, jobId, retryOptions = {}) {
+    cleanupOne(workspace);
     const job = readJob(workspace, jobId);
     if (!job) throw reportingError('REPORTING_JOB_NOT_FOUND');
     if (job.exportVersion !== EXPORT_VERSION) throw reportingError('REPORTING_STATE_VERSION_UNSUPPORTED');
@@ -418,4 +505,4 @@ function createJobQueue(options = {}) {
   return { submit, status, retry, reserveWorker, reapDeadClaim, registerWorker, assertOwner, heartbeat, beginJob, updateJob,
     releaseWorker, cancelReservation, launchReserved, finishCredentialChange, readJob, processStart, RETENTION_MS };
 }
-module.exports = { createJobQueue, processStart, CLAIM_MS, RETENTION_MS };
+module.exports = { createJobQueue, releaseFrozenData, processStart, CLAIM_MS, RETENTION_MS };

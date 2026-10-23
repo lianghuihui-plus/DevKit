@@ -1,6 +1,6 @@
 # MAVT 数据上报 v2 技术方案
 
-日期：2026-10-23。实施状态：Tasks 1–5 已实现并完成各自独立审查修复，Task 6 已构建 `0.4.0` 并完成固定 detached worker 成功上传/断线重放、重定位 stdio、实际 Codex 宿主与本地 Dashboard 校验器差分验证；最终 `npm test` 退出码 0，运行时 89 组、知识管理 6 组、插件 386/386（无失败或跳过）与 51 份生成文档检查通过。整个分支的最终独立审查仍由 controller 随后执行，不在本次实现者自查中关闭。
+日期：2026-10-23。实施状态：Tasks 1–5 已实现并完成各自独立审查修复，Task 6 已构建 `0.4.0` 并完成固定 detached worker 成功上传/断线重放、重定位 stdio、实际 Codex 宿主与本地 Dashboard 校验器差分验证。最终分支审查提出的空/部分 owner 锁崩溃窗口及终态冻结包无后续清理路径已修复：私有锁完整 owner 原子发布，显式上报写入按已有所有权执行有界本地清理，COMMITTED 回执先持久化，七天后过期保留的终态/耗尽任务；只读状态及 Coordinator 自动入队不清理。修复后 `npm test` 退出码 0，运行时 89 组、知识管理 6 组、插件 393/393（无失败或跳过）与 51 份生成文档检查通过；bundleId 为 `afbe1bcd35b66a714d55b1a32464a8077b90e575c2168fa190cf4d96e1649ed0`。controller 的最终范围复审仍待完成，不在本次实现者自查中关闭。
 
 当前证据：四 Skill、38 工具（8 reporting）、23 reporting 模块；固定 bundleId `4d4987c884bc141c1f8fa8719a5f4d99414769d700dfab9c2d18a5d8b84d94f4`，349 manifest 文件、360 发布源文件、362 总分发文件；实际固定 worker 在父进程退出后完成三端 63 文件描述符/40 次 PUT 的持久提交与清理，prepare/PUT/commit 已接收但响应丢失时可复用同包/同 key 显式恢复。完整命令、失败记录与验收边界见 [验证汇总](../../../verification/summary.md)。
 

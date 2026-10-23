@@ -1,8 +1,7 @@
 'use strict';
 const path = require('node:path');
-const fs = require('node:fs');
 const { createRepository, safeId } = require('./repository');
-const { createJobQueue, RETENTION_MS } = require('./jobs');
+const { createJobQueue, releaseFrozenData, RETENTION_MS } = require('./jobs');
 const { createCredentials } = require('./credentials');
 const { reportingError } = require('./errors');
 
@@ -10,23 +9,6 @@ const JOB_BUDGET_MS = 30 * 60000;
 const MAX_ATTEMPTS = 3;
 const TRANSIENT = new Set(['REPORTING_RETRY_LATER', 'REPORTING_NETWORK_ERROR', 'REPORTING_TIMEOUT',
   'REPORTING_UPLOAD_ERROR', 'REPORTING_RUN_BUDGET_EXCEEDED']);
-function releaseFrozenData(workspace, packageId, repository, sessions, expired = false) {
-  safeId(packageId);
-  if (!expired && !sessions.every(item => repository.readWorkspace(workspace,
-    `receipts/${packageId}/${item.id}.json`)?.status === 'COMMITTED'))
-    throw reportingError('REPORTING_RECEIPT_MISSING');
-  const root = path.join(path.resolve(workspace), '.mavt/reporting/packages', packageId);
-  if (!fs.existsSync(root)) return;
-  if (!fs.lstatSync(root).isDirectory()) throw reportingError('REPORTING_PATH_UNSAFE');
-  for (const name of ['blobs', 'sessions']) {
-    const target = path.join(root, name);
-    if (!fs.existsSync(target)) continue;
-    if (!fs.lstatSync(target).isDirectory()) throw reportingError('REPORTING_PATH_UNSAFE');
-    fs.rmSync(target, { recursive: true, force: true });
-  }
-  const fd = fs.openSync(root, 'r');
-  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-}
 function createWorker(options = {}) {
   const repository = options.repository || createRepository(options);
   const queue = options.queue || createJobQueue({ ...options, repository });

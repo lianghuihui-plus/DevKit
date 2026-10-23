@@ -33,6 +33,58 @@ function fillToken(f,url,token='fixture-secret') {
 const entry=(text='one')=>({kind:'definition',key:'case-a',descriptor:{title:text,definitionRevision:999,extensions:{revision:3}},dependencies:[]});
 const statePath=(f,p)=>path.join(f.workspace,'.mavt','reporting',p);
 
+test('a process dying before lock publication cannot leave an ownerless blocking lock', t => {
+ const f=fixture(t);
+ for (const [base, run] of [[f.configDir, () => f.repository.withConfigLock(() => 'config')],
+   [statePath(f,''), () => f.repository.withWorkspaceLock(f.workspace, () => 'workspace')]]) {
+  fs.mkdirSync(base,{recursive:true});
+  const lock=path.join(base,base===f.configDir?'.config.lock':'.metadata.lock');
+  const script=`const fs=require('node:fs');const open=fs.openSync;fs.openSync=function(file,...args){const fd=open.call(this,file,...args);if(file===process.argv[2])process.exit(17);return fd;};const repo=require(process.argv[1]).createRepository({configDir:process.argv[3]});${base===f.configDir?'repo.withConfigLock(()=>{});':'repo.withWorkspaceLock(process.argv[4],()=>{});'}`;
+  const child=require('node:child_process').spawnSync(process.execPath,
+   ['-e',script,path.join(root,'repository.js'),lock,f.configDir,f.workspace],{encoding:'utf8'});
+  assert.equal(child.status===0||child.status===17,true,child.stderr);
+  assert.equal(fs.existsSync(lock),false);
+  assert.equal(run(),base===f.configDir?'config':'workspace');
+ }
+});
+
+test('dead complete lock owners recover while live and future-version owners stay protected', t => {
+ const f=fixture(t),base=statePath(f,'');
+ fs.mkdirSync(base,{recursive:true});
+ const lock=path.join(base,'.metadata.lock');
+ const child=require('node:child_process').spawnSync(process.execPath,['-e',
+  'const repo=require(process.argv[1]).createRepository({configDir:process.argv[2]});repo.withWorkspaceLock(process.argv[3],()=>process.exit(17));',
+  path.join(root,'repository.js'),f.configDir,f.workspace],{encoding:'utf8'});
+ assert.equal(child.status,17,child.stderr);
+ assert.equal(JSON.parse(fs.readFileSync(lock)).schemaVersion,1);
+ assert.equal(f.repository.withWorkspaceLock(f.workspace,()=>true),true);
+ assert.equal(fs.existsSync(lock),false);
+ const owner={schemaVersion:1,pid:process.pid,nonce:'still-live'};
+ fs.writeFileSync(lock,JSON.stringify(owner));
+ fs.utimesSync(lock,new Date(0),new Date(0));
+ assert.throws(()=>f.repository.withWorkspaceLock(f.workspace,()=>{}),{code:'REPORTING_LOCKED'});
+ assert.deepEqual(JSON.parse(fs.readFileSync(lock)),owner);
+ const future={schemaVersion:2,pid:999999,nonce:'future'};
+ fs.writeFileSync(lock,JSON.stringify(future));
+ assert.throws(()=>f.repository.withWorkspaceLock(f.workspace,()=>{}),{code:'REPORTING_STATE_VERSION_UNSUPPORTED'});
+ assert.deepEqual(JSON.parse(fs.readFileSync(lock)),future);
+});
+
+test('a dead stale-lock reaper does not permanently block later metadata writes', t => {
+ const f=fixture(t),base=statePath(f,'');
+ fs.mkdirSync(base,{recursive:true});
+ const lock=path.join(base,'.metadata.lock');
+ fs.writeFileSync(lock,JSON.stringify({schemaVersion:1,pid:999999,nonce:'old-owner'}));
+ const script=`const fs=require('node:fs'),unlink=fs.unlinkSync;fs.unlinkSync=function(file,...args){if(file===process.argv[2])process.exit(17);return unlink.call(this,file,...args)};const repo=require(process.argv[1]).createRepository({configDir:process.argv[3]});repo.withWorkspaceLock(process.argv[4],()=>{});`;
+ const child=require('node:child_process').spawnSync(process.execPath,
+  ['-e',script,path.join(root,'repository.js'),lock,f.configDir,f.workspace],{encoding:'utf8'});
+ assert.equal(child.status,17,child.stderr);
+ assert.equal(fs.existsSync(`${lock}.reap`),true);
+ assert.equal(f.repository.withWorkspaceLock(f.workspace,()=>true),true);
+ assert.equal(fs.existsSync(lock),false);
+ assert.equal(fs.existsSync(`${lock}.reap`),false);
+});
+
 test('readonly defaults and missing identity never create config or reporting state',t=>{
  const f=components(t);
  assert.equal(f.settings.read().serverUrl,'https://mobile-backend.codemao.cn/mavtdashboard/');

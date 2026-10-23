@@ -92,33 +92,62 @@ function createRepository(options = {}) {
     mkdirPrivate(base);
     const file = target(base, `.${safeId(name)}.lock`);
     const owner = {schemaVersion:1,pid:process.pid,nonce:crypto.randomUUID()};
-    let fd;
-    try { fd = fs.openSync(file, 'wx', 0o600); }
+    function publish(file, value) {
+      const temp = `${file}.${crypto.randomUUID()}.tmp`;
+      let fd, linked = false;
+      try {
+        fd = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+        fs.writeFileSync(fd, JSON.stringify(value));
+        fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
+        // Hard-link creation is exclusive: the lock path never exposes partial ownership.
+        fs.linkSync(temp, file);
+        linked = true;
+      } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+        try { fs.unlinkSync(temp); }
+        catch (error) {
+          if (error.code !== 'ENOENT') {
+            if (linked) fs.unlinkSync(file);
+            throw error;
+          }
+        }
+      }
+    }
+    function confirmedDead(record) {
+      if (!Number.isInteger(record?.pid) || record.pid < 1) return false;
+      try { process.kill(record.pid, 0); return false; }
+      catch (error) { return error.code === 'ESRCH'; }
+    }
+    try { publish(file, owner); }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
       // Conservative synchronous stale recovery: only reclaim a completely written,
       // dead owner, and serialize reclaimers with a separate exclusive guard.
       const reap = `${file}.reap`;
-      let reapFd;
-      try { reapFd = fs.openSync(reap, 'wx', 0o600); } catch { throw reportingError('REPORTING_LOCKED', 'Reporting metadata is busy'); }
+      try { publish(reap, owner); }
+      catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const staleReaper = parse(reap);
+        if (!confirmedDead(staleReaper)) throw reportingError('REPORTING_LOCKED', 'Reporting metadata is busy');
+        if (parse(reap)?.nonce !== staleReaper.nonce) throw reportingError('REPORTING_LOCKED', 'Reporting metadata is busy');
+        fs.unlinkSync(reap);
+        try { publish(reap, owner); }
+        catch { throw reportingError('REPORTING_LOCKED', 'Reporting metadata is busy'); }
+      }
       try {
         const previous = parse(file);
-        let alive = true;
-        if (Number.isInteger(previous?.pid) && previous.pid > 0) {
-          try { process.kill(previous.pid, 0); } catch (e) { if (e.code === 'ESRCH') alive = false; }
-        }
-        if (alive) throw reportingError('REPORTING_LOCKED', 'Reporting metadata is busy');
+        if (!confirmedDead(previous)) throw reportingError('REPORTING_LOCKED', 'Reporting metadata is busy');
         fs.unlinkSync(file);
-        fd = fs.openSync(file, 'wx', 0o600);
-      } finally { fs.closeSync(reapFd); fs.unlinkSync(reap); }
+        publish(file, owner);
+      } finally {
+        if (parse(reap)?.nonce === owner.nonce) fs.unlinkSync(reap);
+      }
     }
     try {
-      fs.writeFileSync(fd, JSON.stringify(owner)); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
       const result = callback();
       requireInput(!result || typeof result.then !== 'function', 'Metadata locks cannot wrap asynchronous work');
       return result;
     } finally {
-      if (fd !== undefined) fs.closeSync(fd);
       const current = parse(file);
       if (current?.nonce === owner.nonce) fs.unlinkSync(file);
     }
