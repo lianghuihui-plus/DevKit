@@ -12,7 +12,12 @@ const { createJobQueue } = require('../src/mobile-ai-visual-test/scripts/reporti
 const { createWorker } = require('../src/mobile-ai-visual-test/scripts/reporting/worker');
 const { launchWorker } = require('../src/mobile-ai-visual-test/scripts/reporting/launcher');
 const { createReportingService } = require('../src/mobile-ai-visual-test/scripts/reporting/service');
-const { createManifest } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');
+const { createManifest, pinBundle } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-bundle');
+const { publishManagedRun, runCommand } = require('../src/mobile-ai-visual-test/scripts/lib/runtime-binding');
+const { confirmEnvironment, createExecutionRequest } = require('../src/mobile-ai-visual-test/scripts/lib/run-control');
+const { createCaseContract } = require('../src/mobile-ai-visual-test/scripts/execution/contracts/case-contract');
+const { publishSnapshot, bindTerminalResource } = require('../src/mobile-ai-visual-test/scripts/coordinator/agent-resource-store');
+const { recordAgentFacingEvent } = require('../src/mobile-ai-visual-test/scripts/lib/agent-facing-telemetry');
 const { createSettings } = require('../src/mobile-ai-visual-test/scripts/reporting/settings');
 const { capabilities } = require('./support/reporting-http-fixture');
 
@@ -377,25 +382,64 @@ test('automatic publication wait remains durable until a published sidecar is ob
   assert.equal(launches, 1);
 });
 
-test('missing batch state is definition-only only with explicit no-execution history', t => {
+test('pinned zero-execution cancellation queues before and after request creation but refuses lost batch history', t => {
   const { workspace, repository } = fixture(t);
+  const plugin = path.join(path.dirname(workspace), 'plugin');
+  fs.mkdirSync(path.join(plugin, 'runtime/mobile-ai-visual-test/scripts'), { recursive: true });
+  fs.mkdirSync(path.join(plugin, 'hosts/codex'), { recursive: true });
+  fs.writeFileSync(path.join(plugin, 'hosts/codex/delegation.md'), 'profile');
+  fs.writeFileSync(path.join(plugin, 'runtime/mobile-ai-visual-test/scripts/coordinator-agent.js'), 'code');
+  fs.writeFileSync(path.join(plugin, 'bundle.manifest.json'), JSON.stringify(createManifest(plugin, 'fixture')));
+  const pinned = pinBundle(plugin, workspace);
   let launches = 0;
   const queue = createJobQueue({ repository, launcher: () => launches++,
     credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
-  for (const [batchId, initialization, expected] of [
-    ['lost-batch', { executionRequestCreated: { requestId: 'request-1' }, batchInitialized: { batchId: 'lost-batch' } }, 'WAITING_PUBLICATION'],
-    ['unstarted-batch', { executionRequestCreated: null, batchInitialized: null }, 'QUEUED']
+  const observed = [];
+  for (const [batchId, withRequest, lostBatch] of [
+    ['cancel-before-request', false, false],
+    ['cancel-after-request', true, false],
+    ['lost-batch', true, true],
+    ['unexpected-execution', false, false]
   ]) {
     const base = path.join(workspace, 'runs', batchId);
-    fs.mkdirSync(base, { recursive: true });
-    fs.writeFileSync(path.join(base, 'coordinator-state.json'), JSON.stringify({ workspace, batchId,
-      phase: 'COMPLETE', environmentConfirmed: true, initialization, targets: [{ caseKey: 'case-1' }] }));
+    const statePath = path.join(base, 'coordinator-state.json');
+    const state = { type: 'coordinatorRun', workspace, batchId, statePath,
+      command: runCommand(pinned.runtimeRoot, statePath), phase: 'COMPLETE', outcome: 'CANCELLED',
+      environmentConfirmed: true, initialization: { executionRequestCreated: null, batchInitialized: null },
+      targets: [{ caseKey: 'ck-0123456789ab' }] };
+    publishManagedRun(state, pinned.runtimeRoot);
+    if (withRequest) {
+      const caseKey = 'ck-0123456789ab';
+      const caseDir = path.join(workspace, 'cases', `case__${caseKey}`);
+      fs.mkdirSync(caseDir, { recursive: true });
+      fs.writeFileSync(path.join(caseDir, 'source.md'), 'Check cancellation.');
+      fs.writeFileSync(path.join(caseDir, 'case.json'), JSON.stringify(createCaseContract({
+        caseKey, title: 'Cancellation', sourceText: 'Check cancellation.', importPath: '/fixture/case.md'
+      })));
+      const binding = { platform: 'harmony', deviceId: 'offline-device', appId: 'com.example.offline', entry: 'EntryAbility' };
+      const environmentConfirmation = confirmEnvironment({ workspaceRoot: workspace, binding,
+        probe: { schemaVersion: 1, platform: 'harmony', ready: true, devices: [{ id: 'offline-device' }] },
+        userConfirmation: 'Confirm offline fixture' });
+      const request = createExecutionRequest({ workspaceRoot: workspace, batchId, mode: 'SINGLE',
+        targets: [{ caseNo: '001' }], environmentConfirmation, userInstruction: 'Check cancellation.' });
+      state.initialization.executionRequestCreated = { requestId: request.requestId, requestSha: request.requestSha };
+    }
+    if (lostBatch) state.initialization.batchInitialized = { status: 'INITIALIZED', contractSha: 'a'.repeat(64) };
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    bindTerminalResource(state, publishSnapshot(state, 'runSummary', { outcome: 'CANCELLED' }));
+    recordAgentFacingEvent(path.join(base, 'telemetry', 'agent-facing.jsonl'),
+      { operation: 'cancelRun', status: 'SUCCEEDED', result: { outcome: 'CANCELLED' } }, 0);
+    if (batchId === 'unexpected-execution') fs.mkdirSync(path.join(base, 'executions'));
     repository.writeWorkspace(workspace, `runs/${batchId}.json`, { batchId, attemptId: `attempt-${batchId}`,
       state: 'ACTIVE', serverUrl: 'https://mobile-backend.codemao.cn/mavtdashboard/', autoUpload: true,
       configured: true, noticeAcknowledged: true, credentialGeneration: 'a'.repeat(64), requestDigest: 'b'.repeat(64) });
-    assert.equal(queue.submit({ workspace, scope: 'batch', trigger: 'automatic', batchId,
-      bundleId: 'c'.repeat(64) }).state, expected);
+    observed.push([batchId, queue.submit({ workspace, scope: 'batch', trigger: 'automatic', batchId,
+      bundleId: 'c'.repeat(64) }).state]);
   }
+  assert.deepEqual(observed, [
+    ['cancel-before-request', 'QUEUED'], ['cancel-after-request', 'QUEUED'],
+    ['lost-batch', 'WAITING_PUBLICATION'], ['unexpected-execution', 'WAITING_PUBLICATION']
+  ]);
   assert.equal(launches, 1);
 });
 

@@ -9,6 +9,8 @@ const { createCredentials } = require('./credentials');
 const { createIdentity } = require('./identity');
 const { createIntents } = require('./intents');
 const { reportingError, requireInput } = require('./errors');
+const { readRunBinding } = require('../lib/runtime-binding');
+const { terminalResource } = require('../coordinator/agent-resource-store');
 
 const CLAIM_MS = 15000;
 const RETENTION_MS = 7 * 86400000;
@@ -31,19 +33,62 @@ function processAlive(pid) {
   try { process.kill(pid, 0); return true; }
   catch (error) { return error.code !== 'ESRCH'; }
 }
+function onlyEntries(directory, expected) {
+  return fs.lstatSync(directory).isDirectory()
+    && fs.readdirSync(directory).every(name => expected.has(name))
+    && [...expected].every(name => fs.existsSync(path.join(directory, name)));
+}
+function plainFile(file) { return fs.lstatSync(file).isFile(); }
+function optionalRunArtifacts(base, run) {
+  const resources = path.join(base, 'coordinator-resources');
+  if (fs.existsSync(resources)) {
+    if (!onlyEntries(resources, new Set(['catalog', 'snapshots', 'terminal.json']))
+      || !plainFile(path.join(resources, 'terminal.json'))
+      || !terminalResource(run)) return false;
+    for (const [directory, pattern] of [
+      ['catalog', /^[a-f0-9]{64}\.json$/], ['snapshots', /^\d+-[a-f0-9]{64}\.json$/]
+    ]) {
+      const root = path.join(resources, directory);
+      if (!fs.lstatSync(root).isDirectory() || fs.readdirSync(root).some(name =>
+        !pattern.test(name) || !plainFile(path.join(root, name)))) return false;
+    }
+  }
+  const telemetry = path.join(base, 'telemetry');
+  return !fs.existsSync(telemetry) || (onlyEntries(telemetry, new Set(['agent-facing.jsonl']))
+    && plainFile(path.join(telemetry, 'agent-facing.jsonl')));
+}
 function publicationState(workspace, batchId, repository) {
   const run = repository.readRunState(workspace, batchId);
   if (!run || !['COMPLETE', 'BLOCKED'].includes(run.phase)) return { state: 'SKIPPED_NOT_STARTED' };
   const base = path.join(path.resolve(workspace), 'runs', safeId(batchId));
   const batch = path.join(base, 'batch.json');
   if (!fs.existsSync(batch)) {
-    const unstarted = run.environmentConfirmed === true
-      && run.initialization?.executionRequestCreated === null
-      && run.initialization?.batchInitialized === null;
     try {
-      if (unstarted && fs.lstatSync(base).isDirectory()
-        && fs.readdirSync(base).every(name => name === 'coordinator-state.json'))
-        return { state: 'QUEUED' };
+      if (run.phase === 'COMPLETE' && run.outcome === 'CANCELLED' && run.environmentConfirmed === true
+        && run.initialization?.batchInitialized === null && fs.lstatSync(base).isDirectory()) {
+        const { binding } = readRunBinding(workspace, batchId);
+        const requestMarker = run.initialization.executionRequestCreated;
+        const request = requestMarker ? require('../lib/run-control').loadExecutionRequest(workspace, batchId) : null;
+        if (requestMarker && (!request || requestMarker.requestId !== request.requestId
+          || requestMarker.requestSha !== request.requestSha)) throw new Error('request history mismatch');
+        const expected = new Set(['coordinator-state.json']);
+        if (binding) expected.add('runtime-binding.json');
+        if (request) {
+          expected.add('execution-request.json');
+          expected.add('request-targets');
+          const targetsRoot = path.join(base, 'request-targets');
+          const targets = new Set(request.targets.map(target => path.basename(target.snapshotPath)));
+          if (!onlyEntries(targetsRoot, targets) || request.targets.some(target =>
+            !onlyEntries(target.snapshotPath, new Set(['source.snapshot.md', 'case.snapshot.json']))
+            || !['source.snapshot.md', 'case.snapshot.json'].every(name =>
+              plainFile(path.join(target.snapshotPath, name))))) throw new Error('unexpected request snapshot');
+        }
+        for (const name of ['coordinator-resources', 'telemetry']) {
+          if (fs.existsSync(path.join(base, name))) expected.add(name);
+        }
+        if (onlyEntries(base, expected) && optionalRunArtifacts(base, run))
+          return { state: 'QUEUED' };
+      }
     } catch {}
     return { state: 'WAITING_PUBLICATION', failureCode: 'REPORTING_RUN_STATE_INVALID',
       nextAction: 'RESOLVE_PUBLICATION' };
