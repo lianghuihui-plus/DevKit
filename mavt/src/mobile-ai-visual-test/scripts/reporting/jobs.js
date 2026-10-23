@@ -418,6 +418,17 @@ function createJobQueue(options = {}) {
       return repository.writeWorkspace(workspace, jobPath(job.jobId), { ...job, ...patch, updatedAt: now() });
     });
   }
+  function authorizeWorkerCleanup(workspace, claim) {
+    return repository.withWorkspaceLock(workspace, () => {
+      assertOwner(workspace, claim);
+      const job = readJob(workspace, claim.jobId), owned = repository.readWorkspace(workspace, jobClaimPath(claim.jobId));
+      if (!owned || owned.state !== 'ACTIVE' || owned.nonce !== claim.nonce || owned.epoch !== claim.epoch)
+        throw reportingError('REPORTING_WORKER_CLAIM_LOST');
+      if (job?.state !== 'COMMITTED' || job.identityEpoch !== claim.identityEpoch
+        || job.exportVersion !== EXPORT_VERSION) throw reportingError('REPORTING_PACKAGE_CORRUPT');
+      return authorizeCommittedCleanup(workspace, job);
+    });
+  }
   function releaseWorker(workspace, claim) {
     return repository.withWorkspaceLock(workspace, () => {
       assertOwner(workspace, claim);
@@ -568,6 +579,7 @@ function createJobQueue(options = {}) {
     });
   }
   return { submit, status, retry, reserveWorker, reapDeadClaim, registerWorker, assertOwner, heartbeat, beginJob, updateJob,
+    authorizeWorkerCleanup,
     releaseWorker, cancelReservation, launchReserved, finishCredentialChange, readJob, processStart, RETENTION_MS };
 }
 module.exports = { createJobQueue, releaseFrozenData, processStart, CLAIM_MS, RETENTION_MS };

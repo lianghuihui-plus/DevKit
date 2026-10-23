@@ -134,7 +134,10 @@ function createWorker(options = {}) {
     if (attempts >= MAX_ATTEMPTS && retryableOutcome) nextRetryAt = null;
     const updated = queue.updateJob(workspace, claim, { sessions, metrics, state, failureCode, nextRetryAt, attempts });
     if (state === 'COMMITTED') {
-      try { releaseFrozenData(workspace, packageId, repository, sessions); }
+      try {
+        queue.authorizeWorkerCleanup(workspace, claim);
+        releaseFrozenData(workspace, packageId, repository, sessions);
+      }
       catch { queue.updateJob(workspace, claim, { metrics: { ...metrics, localCleanupPending: true } }); }
     }
     return updated;

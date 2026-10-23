@@ -1,8 +1,8 @@
 # MAVT 数据上报 v2 技术方案
 
-日期：2026-10-23。实施状态：Tasks 1–5 已实现并完成各自独立审查修复，Task 6 已构建 `0.4.0` 并完成固定 detached worker 成功上传/断线重放、重定位 stdio、实际 Codex 宿主与本地 Dashboard 校验器差分验证。最终分支审查提出的空/部分 owner 锁崩溃窗口及终态冻结包无后续清理路径已修复：私有锁完整 owner 原子发布，显式上报写入按已有所有权执行有界本地清理，COMMITTED 清理先核对完整冻结会话、持久状态、绑定及终态回执，七天后过期保留的终态/耗尽任务；只读状态及 Coordinator 自动入队不清理。修复后 `npm test` 退出码 0，运行时 89 组、知识管理 6 组、插件 401/401（无失败或跳过）与 51 份生成文档检查通过；bundleId 为 `fb83db95aa6c0277da3549f16d201efc954d07dd3fbe9bb3279f3f10017e04dd`。controller 的最终范围复审仍待完成，不在本次实现者自查中关闭。
+日期：2026-10-23。实施状态：Tasks 1–5 已实现并完成各自独立审查修复，Task 6 已构建 `0.4.0` 并完成固定 detached worker 成功上传/断线重放、重定位 stdio、实际 Codex 宿主与本地 Dashboard 校验器差分验证。最终分支审查提出的空/部分 owner 锁崩溃窗口及终态冻结包无后续清理路径已修复：私有锁完整 owner 原子发布，显式上报写入按已有所有权执行有界本地清理，COMMITTED 清理先核对完整冻结会话、持久状态、绑定及终态回执，worker 首次删除前持久化同一授权证明，七天后过期保留的终态/耗尽任务；只读状态及 Coordinator 自动入队不清理。修复后 `npm test` 退出码 0，运行时 89 组、知识管理 6 组、插件 403/403（无失败或跳过）与 51 份生成文档检查通过；bundleId 为 `be354c745ac5145c4a5232a0b7f7af416804adafff6bb2dab0bf5f9ad1af2b61`。controller 的最终范围复审仍待完成，不在本次实现者自查中关闭。
 
-当前证据：四 Skill、38 工具（8 reporting）、23 reporting 模块；固定 bundleId `fb83db95aa6c0277da3549f16d201efc954d07dd3fbe9bb3279f3f10017e04dd`，349 manifest 文件、360 发布源文件、362 总分发文件；实际固定 worker 在父进程退出后完成三端 63 文件描述符/40 次 PUT 的持久提交与清理，prepare/PUT/commit 已接收但响应丢失时可复用同包/同 key 显式恢复。完整命令、失败记录与验收边界见 [验证汇总](../../../verification/summary.md)。
+当前证据：四 Skill、38 工具（8 reporting）、23 reporting 模块；固定 bundleId `be354c745ac5145c4a5232a0b7f7af416804adafff6bb2dab0bf5f9ad1af2b61`，349 manifest 文件、360 发布源文件、362 总分发文件；实际固定 worker 在父进程退出后完成三端 63 文件描述符/40 次 PUT 的持久提交与清理，prepare/PUT/commit 已接收但响应丢失时可复用同包/同 key 显式恢复。完整命令、失败记录与验收边界见 [验证汇总](../../../verification/summary.md)。
 
 本轮未提供临时隔离的已认证 Dashboard HTTP/DB/Web 服务或测试身份，真实 HTTP 持久化、数据库幂等对象数、五页签/原图/日志浏览器对应以及部署能力仍未验收；实际本地 schema/语义/图校验通过不等于这些边界通过。没有使用个人 Token、真机或生产服务，也没有安装、合并或推送。第 13 节及文中的评审建议保留方案审查阶段的历史结论，本段和验证汇总记录当前实施状态。
 

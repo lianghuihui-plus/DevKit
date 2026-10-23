@@ -190,6 +190,77 @@ test('a restarted queue resumes authorized cleanup after the session manifest is
   assert.equal(fs.existsSync(path.join(f.packageRoot, 'sessions')), false);
 });
 
+function prepareCommittedWorker(f) {
+  const { workspace, repository } = f;
+  const jobRelative = `jobs/${f.submitted.jobId}/state.json`;
+  const job = repository.readWorkspace(workspace, jobRelative);
+  repository.writeWorkspace(workspace, jobRelative, { ...job, state: 'QUEUED' });
+  const reserved = repository.readWorkspace(workspace, 'worker-claim.json');
+  repository.writeWorkspace(workspace, 'worker-claim.json', { ...reserved, state: 'RESERVED' });
+  return reserved;
+}
+function activateCommittedWorker(f) {
+  const { workspace, queue } = f;
+  const reserved = prepareCommittedWorker(f);
+  const claim = queue.registerWorker(workspace, reserved.nonce, 123, 'started');
+  const running = queue.beginJob(workspace, claim);
+  return { claim, running };
+}
+async function runCommittedWorker(f) {
+  const { workspace, repository, queue } = f;
+  const { claim, running } = activateCommittedWorker(f);
+  const worker = createWorker({ repository, queue,
+    credentials: { status: () => ({ configured: true, generation: f.currentGeneration }) },
+    transport: { serverUrl: f.submitted.serverUrl, credentialGeneration: f.currentGeneration },
+    collectExport: () => assert.fail('frozen package must not be recollected'),
+    sessionRunner: { async runSession() { return { state: 'COMMITTED' }; } } });
+  try { await worker.processJob(workspace, claim, running); }
+  finally { queue.releaseWorker(workspace, claim); }
+}
+
+test('worker-origin partial cleanup resumes after the frozen manifest is removed', async t => {
+  const f = await committedPackage(t, { queueOptions: { processIdentity: () => 'started' } });
+  const sessionDir = path.join(f.packageRoot, 'sessions', f.sessions[0].id);
+  const manifestFile = path.join(sessionDir, 'manifest.json');
+  const rmdir = fs.rmdirSync;
+  let injected = false;
+  fs.rmdirSync = function(directory, ...args) {
+    if (!injected && directory === sessionDir) {
+      assert.equal(fs.existsSync(manifestFile), false);
+      injected = true;
+      throw Object.assign(new Error('injected directory cleanup failure'), { code: 'EACCES' });
+    }
+    return rmdir.call(this, directory, ...args);
+  };
+  try { await runCommittedWorker(f); }
+  finally { fs.rmdirSync = rmdir; }
+  assert.equal(injected, true);
+  assert.equal(f.queue.status(f.workspace, f.submitted.jobId).metrics.localCleanupPending, true);
+  assert.equal(fs.existsSync(manifestFile), false);
+  const proofRelative = `jobs/${f.submitted.jobId}/cleanup-authorized.json`;
+  assert.equal(f.repository.readWorkspace(f.workspace, proofRelative)?.state, 'AUTHORIZED');
+
+  const restarted = createJobQueue({ repository: f.repository, launcher: () => {
+    assert.fail('cleanup must not launch network work');
+  }, credentials: { status: () => ({ configured: true, generation: f.currentGeneration }) } });
+  assert.equal(restarted.retry(f.workspace, f.submitted.jobId).state, 'COMMITTED');
+  assert.equal(restarted.status(f.workspace, f.submitted.jobId).metrics.localCleanupPending, false);
+  assert.equal(fs.existsSync(path.join(f.packageRoot, 'sessions')), false);
+});
+
+test('worker refuses cleanup when a persisted terminal receipt is invalid', async t => {
+  const f = await committedPackage(t, { queueOptions: { processIdentity: () => 'started' } });
+  const relative = f.sessions[0].receiptRelative;
+  const receipt = f.repository.readWorkspace(f.workspace, relative);
+  f.repository.writeWorkspace(f.workspace, relative, { ...receipt, results: null });
+  const blob = path.join(f.packageRoot, 'blobs', f.frozen.files[0].id);
+  await runCommittedWorker(f);
+  assert.equal(f.queue.status(f.workspace, f.submitted.jobId).metrics.localCleanupPending, true);
+  assert.equal(f.repository.readWorkspace(f.workspace,
+    `jobs/${f.submitted.jobId}/cleanup-authorized.json`), null);
+  assert.equal(fs.existsSync(blob), true);
+});
+
 test('cleanup is bounded and refuses live, uncertain, or future-version ownership', async t => {
   const f = await committedPackage(t, { queueOptions: { processIdentity: () => null, isAlive: () => true } });
   const { workspace, repository, queue } = f;
@@ -688,7 +759,7 @@ test('pinned zero-execution cancellation queues before and after request creatio
   assert.equal(launches, 1);
 });
 
-test('frozen blobs survive a partial result and are removed only after all receipts commit', async t => {
+test('frozen blobs survive a partial result and status-only terminal receipts', async t => {
   const { workspace, repository } = fixture(t);
   const generation = 'a'.repeat(64);
   const credentials = { status: () => ({ configured: true, generation }) };
@@ -728,7 +799,8 @@ test('frozen blobs survive a partial result and are removed only after all recei
     } } });
   await second.runClaim(workspace, secondClaim.nonce, { pid: 123, processStartedAt: 'started' });
   assert.equal(queue.status(workspace, job.jobId).state, 'COMMITTED');
-  assert.equal(fs.existsSync(blob), false);
+  assert.equal(queue.status(workspace, job.jobId).metrics.localCleanupPending, true);
+  assert.equal(fs.existsSync(blob), true);
 });
 
 for (const [name, mutate, expected, adopted] of [
@@ -739,47 +811,23 @@ for (const [name, mutate, expected, adopted] of [
     workspace: { ...receipt.results.workspace, id: 'foreign-workspace' } } }), 'RETRYABLE_FAILED', false]
 ]) {
   test(`${name} persisted receipt is validated before frozen data cleanup`, async t => {
-    const { workspace, repository } = fixture(t);
-    const generation = 'a'.repeat(64);
-    let currentGeneration = generation;
-    const queue = createJobQueue({ repository, launcher: () => {}, processIdentity: () => 'started',
-      credentials: { status: () => ({ configured: true, generation: currentGeneration }) } });
-    const job = queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
-    if (adopted) currentGeneration = 'b'.repeat(64);
-    const identityEpoch = repository.readWorkspace(workspace, 'identity.json').identityEpoch;
-    const packageId = 'receipt-package', localId = 'session-0001';
-    const manifest = { workspace: { id: 'workspace-1' }, cases: [], executions: [], files: [] };
-    const rawManifest = JSON.stringify(manifest);
-    const manifestSha256 = `sha256:${crypto.createHash('sha256').update(rawManifest).digest('hex')}`;
-    const binding = { packageId, localId, identityEpoch, exportVersion: 1,
-      serverUrl: job.serverUrl, credentialGeneration: generation, manifestSha256 };
-    const blob = path.join(workspace, '.mavt/reporting/packages', packageId, 'blobs/file-1');
-    fs.mkdirSync(path.dirname(blob), { recursive: true });
-    fs.writeFileSync(blob, 'frozen');
-    repository.writeWorkspace(workspace, `sessions/${packageId}/${localId}.json`, { ...binding,
-      state: 'COMMITTED', phase: 'TERMINAL', key: crypto.randomUUID(), remoteSessionId: 'remote-1',
-      manifestRelative: `sessions/${localId}/manifest.json`, sequence: 1 });
-    repository.writeWorkspace(workspace, `receipts/${packageId}/${localId}.json`, mutate({ ...binding,
-      protocolVersion: '2.0', sessionId: 'remote-1', status: 'COMMITTED',
-      results: { workspace: { id: 'workspace-1', decision: 'CREATED', code: null }, cases: [], executions: [] }, errors: [] }));
-    repository.withWorkspaceLock(workspace, () => repository.writeWorkspace(workspace, `jobs/${job.jobId}/state.json`, {
-      ...repository.readWorkspace(workspace, `jobs/${job.jobId}/state.json`), packageId,
-      credentialGeneration: currentGeneration,
-      sessions: [{ id: localId, state: 'QUEUED' }]
-    }));
+    const f = await committedPackage(t, { oldGeneration: adopted,
+      queueOptions: { processIdentity: () => 'started' } });
+    const { workspace, repository, queue } = f;
+    const relative = f.sessions[0].receiptRelative;
+    const receipt = repository.readWorkspace(workspace, relative);
+    repository.writeWorkspace(workspace, relative, mutate(receipt));
+    const blob = path.join(f.packageRoot, 'blobs', f.frozen.files[0].id);
+    const reserved = prepareCommittedWorker(f);
     const worker = createWorker({ repository, queue,
-      credentials: { status: () => ({ configured: true, generation: currentGeneration }) },
-      transport: { serverUrl: job.serverUrl, credentialGeneration: currentGeneration,
+      credentials: { status: () => ({ configured: true, generation: f.currentGeneration }) },
+      transport: { serverUrl: f.submitted.serverUrl, credentialGeneration: f.currentGeneration,
         capabilities: () => assert.fail('receipt recovery must not use network') },
-      readFrozenExport: () => ({ state: 'PACKAGE_READY', packageId, identityEpoch,
-        sessions: [{ id: localId, rawManifest, manifestSha256, manifest }]
-      }) });
-    const claim = repository.readWorkspace(workspace, 'worker-claim.json');
-    await worker.runClaim(workspace, claim.nonce, { pid: 123, processStartedAt: 'started' });
-    assert.equal(queue.status(workspace, job.jobId).state, expected);
+      collectExport: () => assert.fail('receipt recovery must not recollect sources') });
+    await worker.runClaim(workspace, reserved.nonce, { pid: 123, processStartedAt: 'started' });
+    assert.equal(queue.status(workspace, f.submitted.jobId).state, expected);
     assert.equal(fs.existsSync(blob), expected !== 'COMMITTED');
-    if (adopted) assert.equal(repository.readWorkspace(workspace,
-      `receipts/${packageId}/${localId}.json`).credentialGeneration, generation);
+    if (adopted) assert.equal(repository.readWorkspace(workspace, relative).credentialGeneration, f.generation);
   });
 }
 
