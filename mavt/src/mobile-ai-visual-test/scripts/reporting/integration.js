@@ -32,7 +32,8 @@ function reportState(state, options = {}) {
   return preflight(state.workspace, options);
 }
 function terminal(state, response, options = {}) {
-  if (!['COMPLETE', 'BLOCKED'].includes(state.phase) || response && !['COMPLETE', 'BLOCKED'].includes(response.result?.phase)) return null;
+  if (!['COMPLETE', 'BLOCKED'].includes(state.phase) || response?.status !== 'SUCCEEDED'
+    || !['COMPLETE', 'BLOCKED'].includes(response.result?.phase)) return null;
   if (state.environmentConfirmed && !recover(state, options)) return { state: 'REPORTING_UNAVAILABLE', code: 'REPORTING_UNAVAILABLE' };
   return safely(() => {
     // The Run binding is verified after Coordinator locks have been released.

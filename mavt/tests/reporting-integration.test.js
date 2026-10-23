@@ -11,6 +11,8 @@ const { createCaseContract } = require('../src/mobile-ai-visual-test/scripts/exe
 const { createReportingService } = require('../src/mobile-ai-visual-test/scripts/reporting/service');
 const { createRepository } = require('../src/mobile-ai-visual-test/scripts/reporting/repository');
 const { createIntents } = require('../src/mobile-ai-visual-test/scripts/reporting/intents');
+const reportingIntegration = require('../src/mobile-ai-visual-test/scripts/reporting/integration');
+const resourceStore = require('../src/mobile-ai-visual-test/scripts/coordinator/agent-resource-store');
 process.env.MAVT_SELF_TEST = '1';
 
 function fixture(t, service) {
@@ -61,6 +63,60 @@ test('prepare hint survives projection and a reporting failure preserves the com
   assert.equal(submitted.length, 1);
   assert.equal(submitted[0].scope, 'batch');
   assert.equal(submitted[0].trigger, 'automatic');
+});
+
+test('terminal reporting submits only after a successful terminal response', t => {
+  const submissions = [];
+  const service = {
+    preflight: () => ({ configured: true, autoUpload: true }),
+    submit: input => { submissions.push(input); return { state: 'QUEUED' }; },
+  };
+  const { prepared } = fixture(t, service);
+  const completed = coordinator.cancelRun(prepared.statePath, { operation: 'cancelRun', input: { reason: '停止' } },
+    { reportingService: service });
+  const state = coordinator.loadCoordinatorState(prepared.statePath);
+  assert.equal(submissions.length, 1);
+  for (const response of [undefined, { status: 'FAILED', operation: 'advanceRun', result: { phase: 'COMPLETE' } },
+    { status: 'SUCCEEDED', operation: 'advanceRun', result: { phase: 'INITIALIZING' } }]) {
+    reportingIntegration.afterRequest(state, { operation: 'advanceRun' }, response, { reportingService: service });
+    assert.equal(submissions.length, 1);
+  }
+  reportingIntegration.afterRequest(state, { operation: 'advanceRun' }, completed, { reportingService: service });
+  assert.equal(submissions.length, 2);
+});
+
+test('terminal projection failure preserves its error and recovers the saved reporting attempt without submitting', t => {
+  const privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-reporting-projection-'));
+  t.after(() => fs.rmSync(privateRoot, { recursive: true, force: true }));
+  const repository = createRepository({ configDir: path.join(privateRoot, 'mavt') });
+  const service = createReportingService({ repository, launcher: () => {} });
+  service.updateSettings({ serverUrl: 'http://127.0.0.1:18188/' });
+  const { prepared, root } = fixture(t, service);
+  const options = confirmationOptions(service);
+  const { confirm, ref } = readyConfirmation(prepared, options);
+  assert.throws(() => confirm({ decision: 'CONFIRM_ENVIRONMENT', environmentRef: ref, userInstruction: '确认执行' },
+    { interruptAfter: 'environmentFrozen' }), /MAVT_COORDINATOR_INTERRUPTED/);
+  coordinator.advanceRun(prepared.statePath, options);
+
+  const projectionError = new Error('run summary projection failed');
+  const originalPublish = resourceStore.publishSnapshot;
+  t.mock.method(resourceStore, 'publishSnapshot', (...args) => {
+    if (args[1] === 'runSummary') throw projectionError;
+    return originalPublish(...args);
+  });
+  let thrown;
+  try {
+    coordinator.advanceRun(prepared.statePath, { ...options,
+      batchExecute: () => ({ action: 'BATCH_COMPLETE', publicationState: { status: 'PUBLISHED' } }),
+    });
+  } catch (error) { thrown = error; }
+  assert.equal(thrown, projectionError);
+  const state = coordinator.loadCoordinatorState(prepared.statePath);
+  assert.equal(state.phase, 'COMPLETE');
+  assert.ok(state.initialization.reportingAttemptId);
+  const intents = createIntents({ repository });
+  assert.equal(intents.readRunSnapshot(root, state.batchId).attemptId, state.initialization.reportingAttemptId);
+  assert.deepEqual(service.status(root), []);
 });
 
 test('reporting load failure adds an unavailable hint without blocking prepare', t => {
