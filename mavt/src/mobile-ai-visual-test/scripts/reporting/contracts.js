@@ -4,6 +4,11 @@
 const crypto = require('node:crypto');
 const { TextDecoder } = require('node:util');
 const { reportingError } = require('./errors');
+const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+const TERMINAL_DECISIONS = new Set(['CREATED', 'REPLACED', 'ALREADY_CURRENT', 'STALE_IGNORED']);
+const REMOTE_CODES = new Set(['INVALID_MANIFEST', 'INVALID_DOCUMENT', 'CONTENT_MISMATCH', 'REFERENCE_INVALID',
+  'PAYLOAD_TOO_LARGE', 'UNSUPPORTED_VERSION', 'REVISION_CONFLICT', 'EXECUTION_IDENTITY_CONFLICT',
+  'DEFINITION_CONFLICT', 'INTERNAL_ERROR', 'VALIDATION_TIMEOUT']);
 const LIMITS = Object.freeze({
   manifestBytes: 4194304,
   cases: 1000,
@@ -48,6 +53,44 @@ function invalid(message = 'Invalid reporting contract') {
 function check(condition) {
   if (!condition)
     invalid();
+}
+function terminalResult(value, manifest, remoteId) {
+  const protocol = condition => { if (!condition) throw reportingError('REPORTING_PROTOCOL_INVALID'); };
+  const safeCode = code => REMOTE_CODES.has(code) ? code : 'REMOTE_REJECTED';
+  function safeFieldPath(field) {
+    if (field === '/workspace') return field;
+    const match = /^\/(cases|executions|files)\/(\d+)(?:\/(definition|report|revision|definitionRevision|summary|sections|data|dataFiles|fileId))?$/.exec(field || '');
+    return match && Number(match[2]) < manifest[match[1]].length ? field : '/';
+  }
+  protocol(value?.protocolVersion === '2.0' && validId(value.sessionId) && value.sessionId === remoteId);
+  protocol(['COMMITTED', 'REJECTED'].includes(value.status));
+  const result = value.results;
+  protocol(result && result.workspace?.id === manifest.workspace.id && Array.isArray(result.cases) && Array.isArray(result.executions));
+  function decision(row) {
+    protocol(row && typeof row === 'object');
+    protocol(value.status === 'COMMITTED' ? TERMINAL_DECISIONS.has(row.decision) && row.code === null
+      : row.decision === 'REJECTED' && typeof row.code === 'string');
+    return { decision: row.decision, code: row.code === null ? null : safeCode(row.code) };
+  }
+  function members(rows, expected, identity, fields) {
+    protocol(rows.length === expected.length);
+    const identities = new Set(expected.map(identity));
+    return rows.map(row => {
+      protocol(row && typeof row === 'object' && !Array.isArray(row));
+      const key = identity(row);
+      protocol(identities.delete(key));
+      return { ...Object.fromEntries(fields.map(k => [k, row[k]])), ...decision(row) };
+    });
+  }
+  const cases = members(result.cases, manifest.cases, row => row.caseKey, ['caseKey']);
+  const executions = members(result.executions, manifest.executions,
+    row => `${row.caseKey}\0${row.platform}\0${row.executionId}`, ['caseKey', 'platform', 'executionId']);
+  protocol(Array.isArray(value.errors) && value.errors.length <= Math.max(1,
+    manifest.cases.length + manifest.executions.length + manifest.files.length));
+  protocol(value.status !== 'COMMITTED' || value.errors.length === 0);
+  return { protocolVersion: '2.0', sessionId: remoteId, status: value.status,
+    results: { workspace: { id: manifest.workspace.id, ...decision(result.workspace) }, cases, executions },
+    errors: value.errors.map(e => ({ path: safeFieldPath(e?.path), code: safeCode(e?.code) })) };
 }
 function object(v) {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -410,6 +453,8 @@ async function validateGraph(manifest, load, { limits = LIMITS } = {}) {
   return closures;
 }
 module.exports = {
+  validId,
+  terminalResult,
   CONTRACT_SNAPSHOT: 'reporting-v2/2026-10-23',
   CONTRACT_SCHEMA_SHA256: '705495e422a0530fe1feccce5caf6806fe36bc4e83aaa47e83189f1e3d26082d',
   LIMITS,

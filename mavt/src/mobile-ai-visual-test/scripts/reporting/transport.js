@@ -10,10 +10,9 @@ const { TextDecoder } = require('node:util');
 const { normalizeServerUrl } = require('./settings');
 const { createCredentials } = require('./credentials');
 const { reportingError, ReportingError } = require('./errors');
-const { LIMITS, validateCapabilities } = require('./contracts');
+const { LIMITS, validateCapabilities, validId } = require('./contracts');
 const RESPONSE_BYTES = 4 * 1024 * 1024;
 const DEFAULT_TIMEOUTS = Object.freeze({ ordinary: 15000, file: 180000, commit: 360000 });
-const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
 function protocol(condition) {
   if (!condition) throw reportingError('REPORTING_PROTOCOL_INVALID');
 }

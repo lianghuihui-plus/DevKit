@@ -8,6 +8,9 @@ const { createSettings } = require('./settings');
 const { createCredentials } = require('./credentials');
 const { createIdentity } = require('./identity');
 const { createIntents } = require('./intents');
+const { createRevisions, canonicalJson } = require('./revisions');
+const { LIMITS, validateManifest, terminalResult, validId } = require('./contracts');
+const { safePath } = require('./source-reader');
 const { reportingError, requireInput } = require('./errors');
 const { readRunBinding } = require('../lib/runtime-binding');
 const { terminalResource } = require('../coordinator/agent-resource-store');
@@ -217,6 +220,71 @@ function createJobQueue(options = {}) {
     const observed = processIdentity(claim.pid);
     return observed === claim.processStartedAt || (observed === null && isAlive(claim.pid));
   }
+  function authorizeCommittedCleanup(workspace, job) {
+    const packageId = safeId(job.packageId);
+    const ready = createRevisions({ repository }).assertReady(workspace, packageId);
+    const frozen = ready.manifest;
+    if (frozen?.format !== 'mavt-frozen/1' || frozen.packageId !== packageId
+      || frozen.identityEpoch !== job.identityEpoch || !Array.isArray(frozen.sessions)
+      || !frozen.sessions.length || !Array.isArray(job.sessions)
+      || job.sessions.length !== frozen.sessions.length) throw reportingError('REPORTING_PACKAGE_CORRUPT');
+    const jobSessions = new Map();
+    for (const item of job.sessions) {
+      const id = safeId(item?.id);
+      if (jobSessions.has(id) || item.state !== 'COMMITTED'
+        || item.receiptRelative !== `receipts/${packageId}/${id}.json`)
+        throw reportingError('REPORTING_PACKAGE_CORRUPT');
+      jobSessions.set(id, item);
+    }
+    const proofRelative = `jobs/${safeId(job.jobId)}/cleanup-authorized.json`;
+    const authorization = repository.readWorkspace(workspace, proofRelative);
+    const packageRoot = path.join(path.resolve(workspace), '.mavt/reporting/packages', packageId);
+    const seen = new Set(), proofs = [];
+    for (const session of frozen.sessions) {
+      const id = safeId(session?.id);
+      if (seen.has(id) || !jobSessions.has(id)
+        || session.manifestRelative !== `sessions/${id}/manifest.json`
+        || !/^sha256:[a-f0-9]{64}$/.test(session.manifestSha256))
+        throw reportingError('REPORTING_PACKAGE_CORRUPT');
+      seen.add(id);
+      const state = repository.readWorkspace(workspace, `sessions/${packageId}/${id}.json`);
+      const receipt = repository.readWorkspace(workspace, `receipts/${packageId}/${id}.json`);
+      const binding = { packageId, localId: id, identityEpoch: job.identityEpoch,
+        exportVersion: EXPORT_VERSION, serverUrl: job.serverUrl,
+        credentialGeneration: state?.credentialGeneration, manifestSha256: session.manifestSha256 };
+      if (!state || !receipt || state.state !== 'COMMITTED' || state.phase !== 'TERMINAL'
+        || !Number.isSafeInteger(state.sequence) || state.sequence < 1
+        || !/^[a-f0-9]{64}$/.test(state.credentialGeneration)
+        || !validId(state.remoteSessionId) || state.key !== session.key
+        || state.manifestRelative !== session.manifestRelative
+        || state.receiptRelative !== `receipts/${packageId}/${id}.json`
+        || Object.entries(binding).some(([key, value]) => state[key] !== value || receipt[key] !== value))
+        throw reportingError('REPORTING_PACKAGE_CORRUPT');
+      if (!authorization) {
+        const manifestPath = safePath(packageRoot, session.manifestRelative);
+        if (!fs.lstatSync(manifestPath).isFile() || fs.statSync(manifestPath).size > LIMITS.manifestBytes)
+          throw reportingError('REPORTING_PACKAGE_CORRUPT');
+        const raw = fs.readFileSync(manifestPath, 'utf8');
+        if (`sha256:${crypto.createHash('sha256').update(raw).digest('hex')}` !== session.manifestSha256)
+          throw reportingError('REPORTING_PACKAGE_CORRUPT');
+        const manifest = JSON.parse(raw);
+        validateManifest(manifest, { limits: session.limits });
+        if (terminalResult(receipt, manifest, state.remoteSessionId).status !== 'COMMITTED')
+          throw reportingError('REPORTING_PACKAGE_CORRUPT');
+      }
+      proofs.push({ id, stateHash: crypto.createHash('sha256').update(canonicalJson(state)).digest('hex'),
+        receiptHash: crypto.createHash('sha256').update(canonicalJson(receipt)).digest('hex') });
+    }
+    const proofHash = crypto.createHash('sha256').update(canonicalJson({ jobId: job.jobId, packageId,
+      identityEpoch: job.identityEpoch, serverUrl: job.serverUrl,
+      manifestHash: ready.manifestHash, proofs })).digest('hex');
+    if (authorization) {
+      if (authorization.state !== 'AUTHORIZED' || authorization.proofHash !== proofHash)
+        throw reportingError('REPORTING_PACKAGE_CORRUPT');
+    } else repository.writeWorkspace(workspace, proofRelative, { state: 'AUTHORIZED',
+      jobId: job.jobId, packageId, identityEpoch: job.identityEpoch, proofHash, authorizedAt: now() });
+    return true;
+  }
   function cleanupOne(workspace) {
     return repository.withWorkspaceLock(workspace, () => {
       const owner = repository.readWorkspace(workspace, 'worker-claim.json');
@@ -237,11 +305,8 @@ function createJobQueue(options = {}) {
         if (job.state !== 'COMMITTED' && job.state !== 'EXPIRED_LOCAL' && !expired) continue;
         if (job.state === 'COMMITTED') {
           let receiptsReady = false;
-          try { receiptsReady = (job.sessions || []).every(item => repository.readWorkspace(workspace,
-            `receipts/${safeId(job.packageId)}/${safeId(item.id)}.json`)?.status === 'COMMITTED'); }
-          catch (error) {
-            if (!['REPORTING_STATE_VERSION_UNSUPPORTED', 'REPORTING_STATE_CORRUPT'].includes(error.code)) throw error;
-          }
+          try { receiptsReady = authorizeCommittedCleanup(workspace, job); }
+          catch { /* An incomplete or foreign proof never authorizes deletion. */ }
           if (!receiptsReady) continue;
         }
         const patch = expired && job.state !== 'COMMITTED' && job.state !== 'EXPIRED_LOCAL'

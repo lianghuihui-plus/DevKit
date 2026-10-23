@@ -6,13 +6,9 @@ const { createCredentials } = require('./credentials');
 const { normalizeServerUrl } = require('./settings');
 const { readFrozenExport } = require('./collector');
 const { createTransport, validateCapabilityResponse, validId, DEFAULT_TIMEOUTS } = require('./transport');
-const { LIMITS, resolveLimits, validateManifest } = require('./contracts');
+const { LIMITS, resolveLimits, validateManifest, terminalResult } = require('./contracts');
 const { reportingError, ReportingError } = require('./errors');
 const DEFAULT_SESSION_TIMEOUTS = Object.freeze({ total: 1800000, commit: 360000, poll: 2000, retry: 1000 });
-const DECISIONS = new Set(['CREATED', 'REPLACED', 'ALREADY_CURRENT', 'STALE_IGNORED']);
-const REMOTE_CODES = new Set(['INVALID_MANIFEST', 'INVALID_DOCUMENT', 'CONTENT_MISMATCH', 'REFERENCE_INVALID',
-  'PAYLOAD_TOO_LARGE', 'UNSUPPORTED_VERSION', 'REVISION_CONFLICT', 'EXECUTION_IDENTITY_CONFLICT',
-  'DEFINITION_CONFLICT', 'INTERNAL_ERROR', 'VALIDATION_TIMEOUT']);
 const RETRYABLE = new Set(['REPORTING_NETWORK_ERROR', 'REPORTING_TIMEOUT', 'REPORTING_UPLOAD_ERROR']);
 function check(condition) {
   if (!condition) throw reportingError('REPORTING_PROTOCOL_INVALID');
@@ -25,40 +21,6 @@ function constraints(capabilities, session) {
   check(Buffer.byteLength(session.rawManifest) <= limits.manifestBytes);
   check(session.files.every(f => capabilities.encodings.includes(f.encoding)));
   return limits;
-}
-function safeRemoteCode(code) { return REMOTE_CODES.has(code) ? code : 'REMOTE_REJECTED'; }
-function safeFieldPath(value, manifest) {
-  if (value === '/workspace') return value;
-  const match = /^\/(cases|executions|files)\/(\d+)(?:\/(definition|report|revision|definitionRevision|summary|sections|data|dataFiles|fileId))?$/.exec(value || '');
-  return match && Number(match[2]) < manifest[match[1]].length ? value : '/';
-}
-function terminalResult(value, manifest, remoteId) {
-  check(value.protocolVersion === '2.0' && validId(value.sessionId) && value.sessionId === remoteId);
-  check(['COMMITTED', 'REJECTED'].includes(value.status));
-  const result = value.results;
-  check(result && result.workspace?.id === manifest.workspace.id && Array.isArray(result.cases) && Array.isArray(result.executions));
-  function decision(row) {
-    check(row && typeof row === 'object');
-    check(value.status === 'COMMITTED' ? DECISIONS.has(row.decision) && row.code === null : row.decision === 'REJECTED' && typeof row.code === 'string');
-    return { decision: row.decision, code: row.code === null ? null : safeRemoteCode(row.code) };
-  }
-  function members(rows, expected, identity, fields) {
-    check(rows.length === expected.length);
-    const identities = new Set(expected.map(identity));
-    return rows.map(row => {
-      check(row && typeof row === 'object' && !Array.isArray(row));
-      const key = identity(row);
-      check(identities.delete(key));
-      return { ...Object.fromEntries(fields.map(k => [k, row[k]])), ...decision(row) };
-    });
-  }
-  const cases = members(result.cases, manifest.cases, row => row.caseKey, ['caseKey']);
-  const executions = members(result.executions, manifest.executions, row => `${row.caseKey}\0${row.platform}\0${row.executionId}`, ['caseKey', 'platform', 'executionId']);
-  check(Array.isArray(value.errors) && value.errors.length <= Math.max(1, manifest.cases.length + manifest.executions.length + manifest.files.length));
-  check(value.status !== 'COMMITTED' || value.errors.length === 0);
-  return { protocolVersion: '2.0', sessionId: remoteId, status: value.status,
-    results: { workspace: { id: manifest.workspace.id, ...decision(result.workspace) }, cases, executions },
-    errors: value.errors.map(e => ({ path: safeFieldPath(e?.path, manifest), code: safeRemoteCode(e?.code) })) };
 }
 function sessionResponse(value, session, remoteId, limits) {
   check(value?.protocolVersion === '2.0' && validId(value.sessionId) && (!remoteId || value.sessionId === remoteId));
