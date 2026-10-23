@@ -25,6 +25,8 @@ description: 用户需要在 MAVT 工作区执行移动端视觉测试、继续�
 
 新任务用工作区 `contextRef` 调用 `mavt_run_prepare({contextRef,input})`；保留成功响应原样返回的 Run `contextRef`，此后使用它调用 `mavt_run_confirm/advance/cancel/read({contextRef,input})`。只按 `runDecision` 和用户选择构造 `confirmRun` 的 `input`。仅查询进度或报告时，直接调用 Run 作用域的 `mavt_run_status({contextRef})` / `mavt_run_report({contextRef})`，无需推进执行；资源 ref 用 `mavt_run_read({contextRef,input:{ref}})`。读取 `structuredContent` 的领域状态，MCP 送达不等于业务成功。
 
+执行前可在原有环境确认中简短展示 `result.reporting` 的目标、Token 配置及自动上报状态，不新增必须答复的问题。缺少 Token 或上报不可用时照常继续测试并生成本地报告；用户明确要求配置时再使用 `mavt:reporting`。
+
 方法详情只读当前调用页，错误只读定向文档。同一 Run 不混用不同固定版本。
 
 环境确认采用三端相同流程：选择平台与设备 → 选择目标 App → 自动解析环境 → 确认执行。已有目标应用标识或名称时原样传入 `SELECT_PLATFORM` 的 `appId` / `appName`；同名候选由用户选择，不默认选择前台 App。`runDecision.environmentStatus` 的 `NEED_SELECTION` 用于选择应用或命名配置，`NEED_USER_ACTION` 展示 `actions` 中具体操作，完成后用 `RETRY_ENVIRONMENT` 重试；`READY` 使用原样 `environmentRef` 和用户确认原文提交 `CONFIRM_ENVIRONMENT`。只展示用户需要做的选择和操作；入口和签名由适配器解析。应用列表可能受平台能力限制，以 `coverage` 和诊断为准；Android 当前以包名显示候选。历史环境在复用前自动复查，确认后各 Case 共用冻结绑定。
@@ -43,3 +45,4 @@ description: 用户需要在 MAVT 工作区执行移动端视觉测试、继续�
 ## 结果汇报
 
 以持久化 `runSummary` 为准，汇报任务状态、测试结果、报告位置或技术阻塞；取消只有在终态确认后才汇报完成。
+另行报告 `result.reporting` 或 `mavt_run_status/report` 的本地上报状态；`QUEUED`、`UPLOADING`、`PARTIAL` 不能说成已提交，`SKIPPED_UNCONFIGURED` 不改变测试结论。上传状态变化不改写已发布的 `runSummary`。

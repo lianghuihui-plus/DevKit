@@ -5,6 +5,7 @@ const assert = require('assert');
 const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const suites = Object.freeze({
   setupDependencies: 'tests/setup-dependencies.test.js',
@@ -111,14 +112,17 @@ for (const name of requested) {
 }
 
 const selected = requested.length ? requested : Object.keys(suites);
-for (const name of selected) {
-  const file = path.join(__dirname, suites[name]);
-  process.stdout.write(`[self-test] ${name}\n`);
-  childProcess.execFileSync(process.execPath, [file], {
-    cwd: path.resolve(__dirname, '..'),
-    env: process.env,
-    stdio: 'inherit',
-  });
-}
+const reportingConfig = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-runtime-test-config-'));
+try {
+  for (const name of selected) {
+    const file = path.join(__dirname, suites[name]);
+    process.stdout.write(`[self-test] ${name}\n`);
+    childProcess.execFileSync(process.execPath, [file], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, XDG_CONFIG_HOME: reportingConfig },
+      stdio: 'inherit',
+    });
+  }
+} finally { fs.rmSync(reportingConfig, { recursive: true, force: true }); }
 
 console.log(`self-test passed: ${selected.join(', ')}`);

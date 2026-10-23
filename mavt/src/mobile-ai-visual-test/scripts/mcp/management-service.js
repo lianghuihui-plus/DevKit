@@ -6,6 +6,7 @@ const { pinBundle, plainPath, verifyBundle, bundleError } = require('../lib/runt
 const { readRunBinding } = require('../lib/runtime-binding');
 const { createContext, resolveContext, existingPath, safeTree, safeWorkspace, workspacePath } = require('./bindings');
 const { definitions, validate } = require('./contract');
+const { descriptor: reportingDescriptor } = require('../reporting/tools');
 const { successEnvelope } = require('../lib/agent-facing-envelope');
 function load(context, relative) { return require(plainPath(context.runtimeRoot, relative.endsWith('.js') ? relative : relative + '.js', 'file')); }
 function runFailure(context, operation, error) {
@@ -63,6 +64,7 @@ function open(pluginRoot, args, initialize) {
   return { status: 'SUCCEEDED', ...createContext({ workspace: args.workspace, bundleId: pinned.bundleId, role: args.role, scope: args.batchId ? 'run' : 'workspace', ...(args.batchId ? { batchId: args.batchId } : {}) }) };
 }
 function invokeBound(context, name, args) {
+  if (reportingDescriptor(name)) return load(context, 'scripts/reporting/tools').invoke(name, args, context);
   if (name === 'mavt_cases_import') {
     // Import republishes derived case reports, so its relevant authority is the case tree.
     safeTree(context.workspace, 'cases');
@@ -93,12 +95,15 @@ function invokeBound(context, name, args) {
   const action = name.slice(9);
   if (action === 'status' || action === 'report') {
     const state = service.loadCoordinatorState(context.statePath);
+    let reporting;
+    try { reporting = { reporting: load(context, 'scripts/reporting/service').createReportingService().status(context.workspace)
+      .filter(item => item.batchId === context.batchId) }; } catch { reporting = { reporting: { code: 'REPORTING_UNAVAILABLE' } }; }
     if (action === 'status') return { status: 'SUCCEEDED', batchId: context.batchId, phase: state.phase, caseCount: state.targets.length,
       environmentConfirmed: state.environmentConfirmed === true, ...(state.outcome ? { outcome: state.outcome } : {}),
       ...(state.cancelReason ? { cancelReason: state.cancelReason } : {}),
-      ...(state.reportPublication ? { reportStatus: state.reportPublication.status || state.reportPublication.reportStatus } : {}) };
+      ...(state.reportPublication ? { reportStatus: state.reportPublication.status || state.reportPublication.reportStatus } : {}), ...reporting };
     const resource = load(context, 'scripts/coordinator/agent-resource-store').terminalResource(state);
-    return { status: 'SUCCEEDED', workspace: context.workspace, batchId: context.batchId, reportPath: path.join(context.workspace, 'index.html'), summary: resource?.data || null };
+    return { status: 'SUCCEEDED', workspace: context.workspace, batchId: context.batchId, reportPath: path.join(context.workspace, 'index.html'), summary: resource?.data || null, ...reporting };
   }
   if (action === 'read') {
     const state = service.loadCoordinatorState(context.statePath);
@@ -123,8 +128,9 @@ function invokeValidated(context, name, args) {
   let validationError;
   try { validate(name, args); }
   catch (error) { if (error.code !== 'MAVT_MCP_INPUT_INVALID') throw error; validationError = error; }
-  const role = name.startsWith('mavt_knowledge_') ? 'knowledge' : name === 'mavt_cases_import' ? 'author' : 'coordinator';
-  const scope = name.startsWith('mavt_run_') && name !== 'mavt_run_prepare' ? 'run' : 'workspace';
+  const reporting = reportingDescriptor(name);
+  const role = reporting?.role || (name.startsWith('mavt_knowledge_') ? 'knowledge' : name === 'mavt_cases_import' ? 'author' : 'coordinator');
+  const scope = reporting?.scope || (name.startsWith('mavt_run_') && name !== 'mavt_run_prepare' ? 'run' : 'workspace');
   if (context.role !== role || context.scope !== scope) throw bundleError('MAVT_MCP_CONTEXT_INVALID', 'context role/scope mismatch');
   if (validationError) {
     // Only this pinned contract may record invalid-input facts for its valid Run.
@@ -136,12 +142,19 @@ function invokeValidated(context, name, args) {
 }
 function invokeCaseValidated(context, name, args) {
   if (context.role !== 'case' || context.scope !== 'execution') throw bundleError('MAVT_MCP_CONTEXT_INVALID', 'Case execution scope is required');
+  if (reportingDescriptor(name)) throw bundleError('MAVT_MCP_CONTEXT_INVALID', 'Reporting requires reporting workspace scope');
   return load(context, 'scripts/mcp/case-service').invoke(context, name, args);
 }
 function execute(pluginRoot, name, args) {
   if (['mavt_workspace_init', 'mavt_workspace_open', 'mavt_workspace_doctor'].includes(name)) {
     validate(name, args);
     return name === 'mavt_workspace_doctor' ? diagnostic(args.workspace) : open(pluginRoot, args, name.endsWith('_init'));
+  }
+  if (reportingDescriptor(name)?.scope === 'global') {
+    verifyBundle(pluginRoot);
+    const installed = plainPath(pluginRoot, 'runtime/mobile-ai-visual-test/scripts', 'directory');
+    require(plainPath(installed, 'mcp/contract.js', 'file')).validate(name, args);
+    return require(plainPath(installed, 'reporting/tools.js', 'file')).invoke(name, args);
   }
   // This stable envelope locates authority only; installed schemas must not inspect
   // the versioned payload or account failures on behalf of another pinned bundle.

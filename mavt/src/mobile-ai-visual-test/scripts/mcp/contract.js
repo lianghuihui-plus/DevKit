@@ -2,11 +2,12 @@
 const { PUBLIC_CONTRACT } = require('../coordinator/agent-facing-contract');
 const { PUBLIC_CONTRACT: CASE_CONTRACT } = require('../case-runtime/agent-facing-contract');
 const { validateAgentJson } = require('../lib/agent-json-contract');
+const { descriptors, descriptor } = require('../reporting/tools');
 const string = { type: 'string', minLength: 1 };
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const contextRef = { ...string, pattern: '^mavt-context:[A-Za-z0-9_-]+$' };
 const workspace = { ...string, pattern: '^/' };
-const role = { enum: ['author', 'knowledge', 'coordinator'] };
+const role = { enum: ['author', 'knowledge', 'coordinator', 'reporting'] };
 const operation = { oneOf: [object({ type: { const: 'ADD' }, draftPath: workspace }), object({ type: { const: 'UPDATE' }, entryId: string, draftPath: workspace }), object({ type: { const: 'DELETE' }, entryId: string })] };
 const request = object({ schemaVersion: { const: 1 }, reason: string, operations: { type: 'array', minItems: 1, items: operation } });
 const schemas = {
@@ -26,6 +27,7 @@ const schemas = {
   ...Object.fromEntries(Object.values(CASE_CONTRACT.methods).map(method => [`mavt_case_${method.name}`,
     object({ contextRef, input: method.inputSchema })])),
   mavt_case_image: object({ contextRef, ref: string }),
+  ...Object.fromEntries(descriptors.map(item => [item.name, item.inputSchema])),
 };
 const resultProperties = {
   contextRef, planHash: string, code: string, message: string, error: { type: 'object' },
@@ -38,7 +40,7 @@ const OUTPUT_SCHEMA = { type: 'object', description: 'Authoritative domain resul
   { type: 'object', required: ['type', 'cases'], properties: { type: { const: 'caseAuthoringImport' }, cases: { type: 'array', items: { type: 'object' } } }, additionalProperties: true },
 ] };
 function definitions() { return Object.entries(schemas).map(([name, inputSchema]) => ({ name, description: CASE_CONTRACT.methods[name.replace(/^mavt_case_/, '')]?.summary || name.replace(/^mavt_/, '').replace(/_/g, ' '), inputSchema, outputSchema: OUTPUT_SCHEMA,
-  annotations: { readOnlyHint: /doctor|inspect|list|show|validate|status|report|_read$|_image$/.test(name), destructiveHint: /apply|cancel/.test(name), openWorldHint: /confirm|advance/.test(name) } })); }
+  annotations: descriptor(name)?.annotations || { readOnlyHint: /doctor|inspect|list|show|validate|status|report|_read$|_image$/.test(name), destructiveHint: /apply|cancel/.test(name), openWorldHint: /confirm|advance/.test(name) } })); }
 function validate(name, args) {
   if (!Object.hasOwn(schemas, name)) throw Object.assign(new Error(`Unknown MAVT tool: ${name}`), { code: 'MAVT_MCP_TOOL_UNKNOWN' });
   const issues = validateAgentJson(args, schemas[name]);

@@ -1,0 +1,3 @@
+interface:
+  display_name: "MAVT 数据上报"
+  short_description: "配置目标、检查连接并查看或恢复上报任务"

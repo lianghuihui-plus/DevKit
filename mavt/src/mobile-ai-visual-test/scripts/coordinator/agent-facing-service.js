@@ -295,6 +295,7 @@ function startInitialization(state, environment, userInstruction, options = {}) 
     },
     executionRequestCreated: null,
     batchInitialized: null,
+    ...(options.reportingAttemptId ? { reportingAttemptId: options.reportingAttemptId } : {}),
     ...(state.environmentSetup?.prepared ? { environmentPrepared: { ...state.environmentSetup.prepared } } : {}),
     startedAt: options.now || new Date().toISOString(),
   };
@@ -825,10 +826,13 @@ function prepareRunBound(request, options = {}) {
     projectionMs = Math.max(0, Date.now() - projectionStartedMs);
     return value;
   });
-  recordProtocolResponse(state.statePath, projected, Date.now() - startedMs, {
+  let reported = projected;
+  try { reported = require('../reporting/integration').addReporting(projected,
+    require('../reporting/integration').preflight(state.workspace, options)); } catch { /* Reporting is supplemental. */ }
+  recordProtocolResponse(state.statePath, reported, Date.now() - startedMs, {
     ...options, agentFacingMetrics: { projectionMs },
   });
-  return { response: projected, workspace: state.workspace, batchId: state.batchId, statePath: state.statePath };
+  return { response: reported, workspace: state.workspace, batchId: state.batchId, statePath: state.statePath };
 }
 function prepareRun(request, options = {}) { return prepareRunBound(request, options).response; }
 function executeRunRequestCore(statePath, request, options = {}) {
@@ -869,7 +873,22 @@ function recordProtocolResponseForState(state, response, durationMs, options = {
 function executeRunRequest(statePath, request, options = {}) {
   const startedMs = Date.now();
   const runOptions = { ...options, agentFacingMetrics: { projectionMs: 0 } };
-  const response = executeRunRequestCore(statePath, request, runOptions);
+  if (request.operation !== 'read') {
+    try {
+      const state = loadCoordinatorState(statePath);
+      runOptions.reportingAttemptId = require('../reporting/integration').prepareAttempt(state, request, options);
+    } catch { /* Core owns request and state validation. */ }
+  }
+  let response, coreError;
+  try { response = executeRunRequestCore(statePath, request, runOptions); }
+  catch (error) { coreError = error; }
+  if (request.operation !== 'read') {
+    try {
+      const state = loadCoordinatorState(statePath);
+      response = require('../reporting/integration').afterRequest(state, request, response, options);
+    } catch { /* Preserve the original Core response or exception. */ }
+  }
+  if (coreError) throw coreError;
   if (request.operation === 'read' && runOptions.verifiedReadState) {
     recordProtocolResponseForState(runOptions.verifiedReadState, response, Date.now() - startedMs, runOptions);
   } else recordProtocolResponse(statePath, response, Date.now() - startedMs, runOptions);

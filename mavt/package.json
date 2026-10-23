@@ -8,7 +8,7 @@
     "test": "npm run test:runtime && npm run test:knowledge && npm run test:plugin && npm run check:docs",
     "test:runtime": "node src/mobile-ai-visual-test/scripts/self-test.js",
     "test:knowledge": "node src/mavt-knowledge-manager/scripts/self-test.js",
-    "test:plugin": "node --test tests/*.test.js",
+    "test:plugin": "node --require ./tests/support/isolate-reporting-config.js --test tests/*.test.js",
     "check:docs": "node src/mobile-ai-visual-test/scripts/build-agent-facing-docs.js --check"
   }
 }

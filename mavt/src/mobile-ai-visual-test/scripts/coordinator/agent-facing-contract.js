@@ -56,15 +56,15 @@ const PUBLIC_ERRORS = Object.freeze({
 });
 const base = ['outcome', 'phase', 'command'];
 const projection = (resultFields, primaryResourceType, associatedResourceTypes = []) => ({ resultFields, primaryResourceType, associatedResourceTypes });
-const decision = projection(base, 'runDecision', ['coordinatorDiagnostic']);
-const confirmed = projection(base, null);
-const waiting = projection([...base, 'waitFor', 'caseNo'], 'runProgress', ['coordinatorDiagnostic']);
-const terminal = projection([...base, 'reportStatus'], 'runSummary', ['coordinatorDiagnostic']);
+const decision = projection([...base, 'reporting'], 'runDecision', ['coordinatorDiagnostic']);
+const confirmed = projection([...base, 'reporting'], null);
+const waiting = projection([...base, 'waitFor', 'caseNo', 'reporting'], 'runProgress', ['coordinatorDiagnostic']);
+const terminal = projection([...base, 'reportStatus', 'reporting'], 'runSummary', ['coordinatorDiagnostic']);
 const PROJECTIONS = Object.freeze({
   prepareRun: { NEED_USER_CONFIRMATION: decision },
   confirmRun: { NEED_USER_CONFIRMATION: decision, CONFIRMED: confirmed },
   advanceRun: { NEED_USER_CONFIRMATION: decision, CONFIRMED: confirmed,
-    NEED_CASE_AGENT: projection([...base, 'caseNo'], 'caseDispatch'), WAITING: waiting, COMPLETE: terminal, BLOCKED: terminal },
+    NEED_CASE_AGENT: projection([...base, 'caseNo', 'reporting'], 'caseDispatch'), WAITING: waiting, COMPLETE: terminal, BLOCKED: terminal },
   cancelRun: { WAITING: waiting, COMPLETE: terminal, BLOCKED: terminal },
   read: projection(['outcome', 'resourceRef', 'resourceType'], '$resourceType', '$declaredResources'),
 });
@@ -93,7 +93,7 @@ const PUBLIC_METHODS = Object.freeze(Object.fromEntries(COORDINATOR_CAPABILITIES
   conditionalRequirements: name === 'confirmRun' ? ['decision 分支不得混用字段；配置和应用候选只能来自当前 runDecision；外部操作完成后提交 RETRY_ENVIRONMENT。'] : [],
   contextualValidationRules: [], successStatuses: ['SUCCEEDED'], errorCodes: Object.keys(PUBLIC_ERRORS),
   sideEffects: name === 'read' ? [] : ['保存当前 run 的确定性进度'],
-  idempotency: name === 'prepareRun' ? '创建新 run。' : name === 'read' ? '只读，不推进状态。' : 'advanceRun/cancelRun 在终态且报告发布状态不变时复用当前 runSummary；发布状态变化时生成新快照并保留旧引用；confirmRun 终态拒绝。',
+  idempotency: name === 'prepareRun' ? '创建新 run。' : name === 'read' ? '只读，不推进状态。' : '终态及发布状态不变时复用 runSummary；发布状态变化时生成新快照并保留旧引用；confirmRun 终态拒绝。',
   minimalExample: { operation: name, input: examples[name] }, responseProjection: name === 'read' ? PROJECTIONS[name] : { outcomes: PROJECTIONS[name] },
   minimalExamples: [examples[name], ...(name === 'confirmRun' ? [
     { decision: 'USE_CURRENT', userInstruction: '确认使用当前环境' },

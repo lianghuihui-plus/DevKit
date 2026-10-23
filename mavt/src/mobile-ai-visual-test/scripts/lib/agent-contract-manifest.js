@@ -49,6 +49,7 @@ const SHARED_IMPLEMENTATION_FILES = new Set([
   'scripts/lib/startup-display.js',
   'scripts/lib/runtime-bundle.js',
   'scripts/lib/runtime-binding.js',
+  'scripts/reporting/tools.js',
 ]);
 
 const REPORT_ONLY_LIB_FILES = new Set([
@@ -149,6 +150,8 @@ function implementationGroups(skillRoot, platform) {
   for (const relative of walkFiles(skillRoot, 'scripts/lib')) {
     if (!REPORT_ONLY_LIB_FILES.has(relative)) coordinator.add(relative);
   }
+  for (const name of ['integration', 'service', 'jobs', 'launcher', 'repository', 'settings',
+    'credentials', 'identity', 'revisions', 'intents', 'errors']) coordinator.add(`scripts/reporting/${name}.js`);
 
   const report = new Set(walkFiles(skillRoot, 'scripts/report'));
   report.add('scripts/render-context.js');

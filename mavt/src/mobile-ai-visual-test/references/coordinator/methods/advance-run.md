@@ -20,37 +20,37 @@ advanceRun({  })
 
 ### 成功 / outcome=NEED_USER_CONFIRMATION
 
-- 简单结果：`outcome`、`phase`、`command`。
+- 简单结果：`outcome`、`phase`、`command`、`reporting`。
 - 主数据：`runDecision`。
 - 关联资源：`coordinatorDiagnostic`。
 
 ### 成功 / outcome=CONFIRMED
 
-- 简单结果：`outcome`、`phase`、`command`。
+- 简单结果：`outcome`、`phase`、`command`、`reporting`。
 - 主数据：无。
 - 关联资源：无。
 
 ### 成功 / outcome=NEED_CASE_AGENT
 
-- 简单结果：`outcome`、`phase`、`command`、`caseNo`。
+- 简单结果：`outcome`、`phase`、`command`、`caseNo`、`reporting`。
 - 主数据：`caseDispatch`。
 - 关联资源：无。
 
 ### 成功 / outcome=WAITING
 
-- 简单结果：`outcome`、`phase`、`command`、`waitFor`、`caseNo`。
+- 简单结果：`outcome`、`phase`、`command`、`waitFor`、`caseNo`、`reporting`。
 - 主数据：`runProgress`。
 - 关联资源：`coordinatorDiagnostic`。
 
 ### 成功 / outcome=COMPLETE
 
-- 简单结果：`outcome`、`phase`、`command`、`reportStatus`。
+- 简单结果：`outcome`、`phase`、`command`、`reportStatus`、`reporting`。
 - 主数据：`runSummary`。
 - 关联资源：`coordinatorDiagnostic`。
 
 ### 成功 / outcome=BLOCKED
 
-- 简单结果：`outcome`、`phase`、`command`、`reportStatus`。
+- 简单结果：`outcome`、`phase`、`command`、`reportStatus`、`reporting`。
 - 主数据：`runSummary`。
 - 关联资源：`coordinatorDiagnostic`。
 
@@ -60,7 +60,7 @@ advanceRun({  })
 
 ## 幂等性
 
-advanceRun/cancelRun 在终态且报告发布状态不变时复用当前 runSummary；发布状态变化时生成新快照并保留旧引用；confirmRun 终态拒绝。
+终态及发布状态不变时复用 runSummary；发布状态变化时生成新快照并保留旧引用；confirmRun 终态拒绝。
 
 ## 错误
 

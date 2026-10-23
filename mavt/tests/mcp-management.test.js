@@ -31,6 +31,34 @@ test('nonempty init and unready knowledge reject without writes', t => {
   assert.equal(f.call('mavt_workspace_open', { workspace: f.workspace, role: 'knowledge' }).code, 'WORKSPACE_INVALID');
   assert.deepEqual(snapshot(f.workspace), before);
 });
+test('reporting global tools validate without a context and workspace tools enforce reporting role', t => {
+  const f = fixture(t);
+  const global = f.call('mavt_reporting_settings_read', {});
+  assert.equal(global.status, 'SUCCEEDED', JSON.stringify(global));
+  assert.equal(global.result.autoUpload, true);
+  assert.equal(JSON.stringify(global).includes('Token'), false);
+  assert.equal(f.call('mavt_reporting_settings_update', { token: 'forbidden' }).code, 'MAVT_MCP_INPUT_INVALID');
+  const coordinator = init(f, 'coordinator');
+  const reporting = f.call('mavt_workspace_open', { workspace: f.workspace, role: 'reporting' });
+  assert.equal(reporting.status, 'SUCCEEDED', JSON.stringify(reporting));
+  const before = snapshot(f.workspace);
+  assert.deepEqual(f.call('mavt_reporting_status', { contextRef: reporting.contextRef }).result, []);
+  assert.deepEqual(snapshot(f.workspace), before, 'status must not create reporting state');
+  assert.equal(f.call('mavt_reporting_status', { contextRef: coordinator }).code, 'MAVT_MCP_CONTEXT_INVALID');
+  assert.equal(f.call('mavt_run_prepare', { contextRef: reporting.contextRef, input: { caseNos: ['001'] } }).code, 'MAVT_MCP_CONTEXT_INVALID');
+  assert.equal(f.call('mavt_workspace_open', { workspace: f.workspace, role: 'reporting', batchId: 'forbidden' }).code, 'MAVT_MCP_CONTEXT_INVALID');
+  assert.equal(f.call('mavt_reporting_submit', { contextRef: reporting.contextRef, scope: 'batch' }).code, 'MAVT_MCP_INPUT_INVALID');
+  assert.throws(() => require('../src/mobile-ai-visual-test/scripts/mcp/management-service')
+    .invokeCaseValidated({ role: 'case', scope: 'execution' }, 'mavt_reporting_status', { contextRef: reporting.contextRef }),
+  error => error.code === 'MAVT_MCP_CONTEXT_INVALID');
+});
+test('reporting global tools execute from the selected installation root', t => {
+  const f = fixture(t);
+  const installedTools = require(path.join(f.pluginRoot, 'runtime/mobile-ai-visual-test/scripts/reporting/tools.js'));
+  t.mock.method(installedTools, 'invoke', () => ({ status: 'SUCCEEDED', result: { marker: 'selected-installation' } }));
+  const { execute } = require('../src/mobile-ai-visual-test/scripts/mcp/management-service');
+  assert.equal(execute(f.pluginRoot, 'mavt_reporting_settings_read', {}).result.marker, 'selected-installation');
+});
 test('persisted scoped contexts interleave workspaces and import idempotently', t => {
   const f = fixture(t), a = init(f, 'author');
   const second = path.join(f.temp, 'second'); fs.mkdirSync(second);

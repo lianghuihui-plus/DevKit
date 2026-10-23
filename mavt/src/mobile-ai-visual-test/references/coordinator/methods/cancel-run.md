@@ -20,19 +20,19 @@ cancelRun({ reason: string })
 
 ### 成功 / outcome=WAITING
 
-- 简单结果：`outcome`、`phase`、`command`、`waitFor`、`caseNo`。
+- 简单结果：`outcome`、`phase`、`command`、`waitFor`、`caseNo`、`reporting`。
 - 主数据：`runProgress`。
 - 关联资源：`coordinatorDiagnostic`。
 
 ### 成功 / outcome=COMPLETE
 
-- 简单结果：`outcome`、`phase`、`command`、`reportStatus`。
+- 简单结果：`outcome`、`phase`、`command`、`reportStatus`、`reporting`。
 - 主数据：`runSummary`。
 - 关联资源：`coordinatorDiagnostic`。
 
 ### 成功 / outcome=BLOCKED
 
-- 简单结果：`outcome`、`phase`、`command`、`reportStatus`。
+- 简单结果：`outcome`、`phase`、`command`、`reportStatus`、`reporting`。
 - 主数据：`runSummary`。
 - 关联资源：`coordinatorDiagnostic`。
 
@@ -42,7 +42,7 @@ cancelRun({ reason: string })
 
 ## 幂等性
 
-advanceRun/cancelRun 在终态且报告发布状态不变时复用当前 runSummary；发布状态变化时生成新快照并保留旧引用；confirmRun 终态拒绝。
+终态及发布状态不变时复用 runSummary；发布状态变化时生成新快照并保留旧引用；confirmRun 终态拒绝。
 
 ## 错误
 

@@ -372,6 +372,7 @@ test('automatic publication wait remains durable until a published sidecar is ob
     credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
   const submission = queue.submit({ workspace, scope: 'batch', trigger: 'automatic', batchId, bundleId: 'b'.repeat(64) });
   assert.equal(submission.state, 'WAITING_PUBLICATION');
+  assert.equal(queue.status(workspace, submission.jobId).nextAction, 'RENDER_INDEX');
   assert.equal(launches, 0);
   assert.equal(queue.retry(workspace, submission.jobId).state, 'WAITING_PUBLICATION');
   fs.writeFileSync(path.join(batchDir, 'report-publication.json'), JSON.stringify({ status: 'DEGRADED', errorCode: 'REPORT_FINALIZE_FAILED' }));

@@ -2,6 +2,7 @@
 const path = require('node:path');
 const { fork, execFile } = require('node:child_process');
 const { toolResult } = require('./management-service');
+const { descriptor: reportingDescriptor } = require('../reporting/tools');
 
 const READ_ONLY = /^mavt_(?:workspace_doctor|run_(?:status|report|read)|case_(?:read|image)|knowledge_(?:inspect|list|show|validate))$/;
 const CONTROL = /^mavt_run_cancel$/;
@@ -157,7 +158,7 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
   function callTool(name, args = {}) {
     if (!accepting) return Promise.resolve(result('REJECTED', 'MAVT_MCP_CLOSED', 'Server is draining accepted calls'));
     return new Promise(resolve => {
-      const readOnly = READ_ONLY.test(name);
+      const readOnly = reportingDescriptor(name)?.annotations.readOnlyHint ?? READ_ONLY.test(name);
       let key = `${args.contextRef || args.workspace || `unbound:${++sequence}`}:${readOnly ? 'read' : 'write'}`;
       if (name.startsWith('mavt_case_') && name !== 'mavt_case_image') {
         try {

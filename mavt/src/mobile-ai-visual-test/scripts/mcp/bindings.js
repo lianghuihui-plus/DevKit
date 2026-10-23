@@ -38,8 +38,9 @@ function safeWorkspace(workspace, { allowUnready = false } = {}) {
 function createContext(binding) {
   safeWorkspace(binding.workspace);
   const manifest = verifyBundle(path.join(binding.workspace, '.mavt/runtime-bundles', binding.bundleId), binding.bundleId);
-  if (!['author', 'knowledge', 'coordinator', 'case'].includes(binding.role) || !['workspace', 'run', 'execution'].includes(binding.scope) ||
+  if (!['author', 'knowledge', 'coordinator', 'case', 'reporting'].includes(binding.role) || !['workspace', 'run', 'execution'].includes(binding.scope) ||
     binding.scope === 'run' && (binding.role !== 'coordinator' || !binding.batchId) || binding.scope === 'workspace' && binding.batchId) invalid('invalid role/scope');
+  if (binding.role === 'reporting' && binding.scope !== 'workspace') invalid('Reporting requires workspace scope');
   if (binding.scope === 'execution') {
     if (binding.role !== 'case') invalid('execution scope requires Case role');
     resolveCaseBinding(binding, bundleLocations(path.join(binding.workspace, '.mavt/runtime-bundles', binding.bundleId), manifest), manifest);
@@ -83,6 +84,7 @@ function resolveContext(contextRef, expected = {}) {
     const filename = plainPath(token.workspace, `.mavt/mcp-contexts/${token.id}.json`, 'file');
     const record = JSON.parse(fs.readFileSync(filename, 'utf8'));
     if (sha256(JSON.stringify(record)) !== token.digest || record.schemaVersion !== 1 || record.workspace !== token.workspace) invalid('context authority changed');
+    if (record.role === 'reporting' && (record.scope !== 'workspace' || record.batchId || record.executionId)) invalid('Reporting requires workspace scope');
     if (expected.role && record.role !== expected.role || expected.scope && record.scope !== expected.scope) invalid('context role/scope mismatch');
     if (!/^[a-f0-9]{64}$/.test(record.bundleId)) invalid('invalid bundle identity');
     const bundleRoot = plainPath(record.workspace, `.mavt/runtime-bundles/${record.bundleId}`, 'directory');

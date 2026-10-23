@@ -20,7 +20,7 @@ prepareRun({ caseNos: string[] })
 
 ### 成功 / outcome=NEED_USER_CONFIRMATION
 
-- 简单结果：`outcome`、`phase`、`command`。
+- 简单结果：`outcome`、`phase`、`command`、`reporting`。
 - 主数据：`runDecision`。
 - 关联资源：`coordinatorDiagnostic`。
 
