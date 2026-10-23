@@ -194,6 +194,59 @@ assert.strictEqual(run(started.execDir, {
 }, { now: '2026-09-16T01:00:00.300Z' }).result.outcome, 'VISUAL_OBSERVATION_RECORDED');
 assert.strictEqual(run(started.execDir, resultRequest,
   { now: '2026-09-16T01:00:00.400Z' }).result.outcome, 'RESULTS_RECORDED');
+
+// No devices: reproduce a rejected MCP FAIL correction over a valid PASS ledger.
+const correctionDir = path.join(temp, 'rejected-result-correction');
+fs.cpSync(started.execDir, correctionDir, { recursive: true });
+const correctionScene = require('../case-runtime/store').readCurrentScene(correctionDir);
+correctionScene.screenshot.path = path.join(correctionDir, correctionScene.screenshot.ref);
+correctionScene.evidenceChannels.visual.attachment.path = correctionScene.screenshot.path;
+require('../case-runtime/store').writeScene(correctionDir, correctionScene);
+const correctionSceneRef = require('../case-runtime/agent-resource-store').publishScene(correctionDir, correctionScene.sceneId).data.ref;
+const caseService = require('../mcp/case-service');
+const context = { role: 'case', scope: 'execution', execDir: correctionDir };
+const finishCorrection = { operation: 'finish', input: { mode: 'complete', summary: '发现不符合预期' } };
+const initialReview = run(correctionDir, finishCorrection);
+assert.strictEqual(initialReview.error.code, 'CASE_FINAL_REVIEW_REQUIRED');
+assert.match(initialReview.result.finalReviewToken, /^[a-f0-9]{64}$/);
+assert.strictEqual(initialReview.result.ledgerVerdict, 'PASS');
+const confirm = (response, verdict) => ({ token: response.result.finalReviewToken, verdict, sourceCoverageConfirmed: true });
+const invalidCorrection = structuredClone(resultRequest.input);
+invalidCorrection.results[0].evidence.sceneRefs = [correctionSceneRef];
+invalidCorrection.results[0].status = 'FAIL';
+invalidCorrection.results[0].actual = '业务预期不满足';
+invalidCorrection.results[0].reason = 'FAIL 应在 actual 中说明差异';
+invalidCorrection.results[0].evidence.knowledgeRefs = ['mavt:0123456789abcdef01234567:knowledgeReview:event-1'];
+assert.strictEqual(caseService.invoke(context, 'mavt_case_recordResult', {
+  contextRef: 'mavt-context:offline', input: invalidCorrection,
+}).status, 'REJECTED');
+// A read or unrelated successful operation must not dismiss the failed update.
+assert.strictEqual(run(correctionDir, { operation: 'read', input: { ref: correctionSceneRef } }).status, 'SUCCEEDED');
+const blockedCorrection = run(correctionDir, { ...finishCorrection, input: {
+  ...finishCorrection.input, finalReview: confirm(initialReview, 'PASS'),
+} });
+assert.strictEqual(blockedCorrection.error.code, 'RESULT_CORRECTION_REQUIRED');
+assert.deepStrictEqual(blockedCorrection.result.pendingCheckNodeRefs, ['N2']);
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(correctionDir, 'execution.json'))).finalized, false);
+delete invalidCorrection.results[0].reason;
+delete invalidCorrection.results[0].evidence.knowledgeRefs;
+const corrected = caseService.invoke(context, 'mavt_case_recordResult', {
+  contextRef: 'mavt-context:offline', input: invalidCorrection,
+});
+assert.strictEqual(corrected.result.outcome, 'RESULTS_RECORDED', JSON.stringify(corrected));
+const stale = run(correctionDir, { ...finishCorrection, input: {
+  ...finishCorrection.input, finalReview: confirm(initialReview, 'FAIL'),
+} });
+assert.strictEqual(stale.error.code, 'CASE_FINAL_REVIEW_REQUIRED');
+const inconsistent = run(correctionDir, { ...finishCorrection, input: {
+  ...finishCorrection.input, finalReview: confirm(stale, 'PASS'),
+} });
+assert.strictEqual(inconsistent.error.code, 'CASE_FINAL_VERDICT_MISMATCH');
+const correctedFinish = run(correctionDir, { ...finishCorrection, input: {
+  ...finishCorrection.input, finalReview: confirm(inconsistent, 'FAIL'),
+} });
+assert.strictEqual(correctedFinish.result.verdict, 'FAIL', JSON.stringify(correctedFinish));
+
 const interruptedDir = path.join(temp, 'interrupted-finish-publication');
 fs.cpSync(started.execDir, interruptedDir, { recursive: true });
 const interruptedScene = require('../case-runtime/store').readCurrentScene(interruptedDir);
@@ -214,6 +267,10 @@ assert.match(review.result.finalReviewInstruction, /重新阅读/);
 assert.strictEqual(review.result.originalCase, source);
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(started.execDir, 'execution.json'))).finalized, false);
 
+const unreviewed = run(started.execDir, finishInput);
+assert.strictEqual(unreviewed.error.code, 'CASE_FINAL_REVIEW_REQUIRED', 'repeating finish cannot confirm business coverage');
+finishInput.input.finalReview = confirm(unreviewed, 'PASS');
+
 const finished = run(started.execDir, finishInput, {
   now: '2026-09-16T01:00:00.600Z',
   resourceProvider(execDir, response, request) {
@@ -230,7 +287,7 @@ assert.strictEqual(publicationBoundaryReached, true);
 assert.strictEqual(finished.status, 'SUCCEEDED');
 assert.strictEqual(finished.result.outcome, 'COMPLETED');
 const finishMetrics = readAgentFacingEvents(agentFacingFile(started.execDir)).filter((event) => event.operation === 'finish');
-assert.strictEqual(finishMetrics.length, 2, 'the review and final finish each record one telemetry event');
+assert.strictEqual(finishMetrics.length, 3, 'review, missing confirmation and final finish each record one telemetry event');
 assert.strictEqual(finishMetrics.at(-1).responseBytes, Buffer.byteLength(JSON.stringify(finished)),
   'finish telemetry measures the final public response including resource refs');
 assert.doesNotThrow(() => validateResultIntegrity(started.execDir,

@@ -2,13 +2,15 @@
 
 本文件只定义宿主协作方式。Coordinator 决定何时委托、绑定哪个 execution；Case Agent 的业务原则来自原样 Loader 返回的固定 Brief。Case Agent 是内部角色，不重新加载 Authoring 或执行协调 Skill；Brief 中出现原 Skill 身份也不改变角色。
 
-会话能力核验以同一固定 bundle 的 `hosts/codex/harness-requirements.json` 为准，分委托前与子 Agent 执行 Loader 后两阶段。当前构建的新 Handoff 冻结 `brief.runtime.transport:"MCP"`，公开的 `caseDispatch.transport` 提供相同选择；委托前须证明独立上下文、真实创建/等待/取消句柄、子 Agent 所需 `mavt_case_*` 工具可用，以及 MCP 图片或本地图片查看能力。服务器已连接不证明子 Agent 工具可见或 worker 已热。调用绑定使用 Loader 返回的 execution/dispatch scoped `contextRef`；该引用不在委托前产生，也不得由 Coordinator 预交付或编造。引用仅提供路由与完整性边界，不代表调用者身份认证或操作系统隔离。
+会话能力核验以同一固定 bundle 的 `hosts/codex/harness-requirements.json` 为准，分委托前与子 Agent 执行 Loader 后两阶段。当前构建的新 Handoff 冻结 `brief.runtime.transport:"MCP"`，公开的 `caseDispatch.transport` 提供相同选择；委托前核验宿主支持独立上下文及真实创建/等待/取消句柄。子 Agent 启动并执行 Loader 后，在自己的会话中发现 `mavt_case_*` 工具和 MCP 图片或本地图片查看能力。调用绑定使用 Loader 返回的 execution/dispatch scoped `contextRef`；该引用不在委托前产生，也不得由 Coordinator 预交付或编造。引用仅提供路由与完整性边界，不代表调用者身份认证或操作系统隔离。
 
 ## 能力与上下文
 
-先检查本会话实际工具清单，确认能原样执行并等待 Loader、本机读取固定运行时/工作区、创建独立上下文 Agent，且所需 MCP 工具与图片能力在子 Agent 中确实可用。使用真实工具名称、参数与返回的句柄，不假设所有 Codex 版本有相同 API，不指定未经支持或用户要求的模型。委托前不要求 execution `contextRef`；它只可能由子 Agent 执行 Loader 后取得。子 Agent 核对 Loader 成功响应中的 `role:"case"`、`scope:"execution"`、`contextRef`、`executionId`、`dispatchSequence` 与 `result` 身份字段，再以原样引用调用 `mavt_case_<method>({contextRef,input})`；方法名称大小写与 Brief 方法索引一致。服务端仍验证固定 bundle、当前 execution 与活跃 dispatch。
+通过宿主的工具发现入口按 `mavt` 查找工具并使用返回的真实名称。本文使用 MCP 原始工具名；Codex 可能展示为 `mcp__mavt__mavt_case_observe`，或经工具搜索、`functions.exec` 的 `ALL_TOOLS` 目录提供。根据本会话实际提供的入口发现和调用。
 
-例如实际提供 `collaboration.spawn_agent` 且支持 `fork_turns: "none"` 时，用该参数创建全新上下文。缺少独立上下文、真实句柄、子 Agent MCP 工具或可用图片查看能力时，停止正常视觉执行并报告具体缺失能力；仍可进行已授权的 Authoring/知识维护。不能降级为协调 Agent 亲自执行 Case，也不因 MCP 调用失败自动用 CLI 重放。旧 Handoff 未选择 MCP 时报告接口不兼容，由原版本处理，不迁移在途任务。职责隔离不是操作系统安全沙箱。
+协调 Agent 检查创建独立上下文 Agent、等待和中断的实际宿主能力；子 Agent 自行确认 Shell、固定文件读取、MCP 工具与图片查看能力。使用真实工具名称、参数与返回的句柄，不假设所有 Codex 版本有相同 API，不指定未经支持或用户要求的模型。委托前不要求 execution `contextRef`；它只可能由子 Agent 执行 Loader 后取得。子 Agent 核对 Loader 成功响应中的 `role:"case"`、`scope:"execution"`、`contextRef`、`executionId`、`dispatchSequence` 与 `result` 身份字段，再以原样引用调用 `mavt_case_<method>({contextRef,input})`；方法名称大小写与 Brief 方法索引一致。服务端仍验证固定 bundle、当前 execution 与活跃 dispatch。
+
+例如实际提供 `collaboration.spawn_agent` 且支持 `fork_turns: "none"` 时，用该参数创建全新上下文。Case 由独立 Case Agent 执行，协调 Agent 保持协调职责。旧 Handoff 未选择 MCP 时报告接口不兼容，由原版本处理，不迁移在途任务。职责隔离不是操作系统安全沙箱。
 
 ## 唯一委托与等待
 

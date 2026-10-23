@@ -58,7 +58,7 @@ function fixture(t, options = {}) {
     fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 14, runtime: 'case-runtime',
       executionId, batchId: prepared.batchId, caseProtocolSha: 'case-protocol-fixture', platform: 'harmony', finalized: false }));
     fs.writeFileSync(path.join(execDir, 'runtime.json'), JSON.stringify({ schemaVersion: 1, executionId,
-      sessionRef: { statePath: path.join(workspace, 'runs', prepared.batchId, 'coordinator-state.json') } }));
+      sessionRef: { statePath: path.join(workspace, 'runs', prepared.batchId, 'batch.json') } }));
     fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
     const handoff = agentHandoff.createAgentHandoff({ workspaceRoot: workspace, batchId: prepared.batchId,
       executionId, caseProtocolSha: 'case-protocol-fixture', casePrompt: 'Execute the case',
@@ -69,8 +69,84 @@ function fixture(t, options = {}) {
     assert.equal(loaded.status, 'SUCCEEDED');
     return { execDir, handoff, loaded, contextRef: loaded.contextRef };
   }
-  return { ...built, temp, workspace, entry, server, call, prepared, coordinator, runtimeRoot, resources, startCase };
+  function startDispatchedCase(platform) {
+    const service = require(path.join(runtimeRoot, 'scripts/coordinator/agent-facing-service'));
+    const batch = require(path.join(runtimeRoot, 'scripts/batch'));
+    const core = require(path.join(runtimeRoot, 'scripts/batch/core'));
+    const statePath = path.join(workspace, 'runs', prepared.batchId, 'coordinator-state.json');
+    const binding = { platform, deviceId: 'offline-device', appId: 'com.example.offline',
+      ...(platform === 'ios' ? { deviceType: 'realDevice', platformVersion: '15.4.1',
+        xcodeOrgId: 'TESTTEAM01', xcodeSigningId: 'Apple Development', updatedWDABundleId: 'com.example.WDARunner' }
+        : { entry: platform === 'android' ? '.MainActivity' : 'EntryAbility' }) };
+    // Only hardware/environment ports are replaced. The request, batch, execution,
+    // sessionRef, Handoff, Loader and MCP calls all use the built release code.
+    const options = {
+      probeEnvironment: () => ({ schemaVersion: 1, type: 'environmentProbe', platform,
+        ready: true, devices: [{ id: binding.deviceId }], diagnostics: [] }),
+      resolveEnvironment: () => ({ status: 'READY', binding }),
+      prepareEnvironment: () => ({ schemaVersion: 1, type: 'environmentPrepare', platform, ok: true }),
+      batchExecute: input => {
+        assert.equal(input.command, 'init', 'offline initialization must never dispatch device operations');
+        return batch.execute(input);
+      },
+    };
+    const offer = service.confirmRun(statePath, { operation: 'confirmRun', input: {
+      decision: 'SELECT_PLATFORM', platform, appId: binding.appId,
+    } }, options);
+    assert.equal(offer.data.content.environmentStatus, 'READY', JSON.stringify(offer));
+    const confirmed = service.confirmRun(statePath, { operation: 'confirmRun', input: {
+      decision: 'CONFIRM_ENVIRONMENT', environmentRef: offer.data.content.environmentRef,
+      userInstruction: 'Offline MCP integration verification only',
+    } }, options);
+    assert.equal(confirmed.result.outcome, 'CONFIRMED', JSON.stringify(confirmed));
+    core.bootstrapBatch({ workspaceRoot: workspace, batchId: prepared.batchId,
+      adapter: { restartApp: () => ({ ok: true, coldStartVerified: true, startupDisplayVerified: true }) } });
+    const started = core.startCurrentCase({ workspaceRoot: workspace, batchId: prepared.batchId });
+    assert.equal(started.action, 'DELEGATE_CASE_AGENT');
+    const loader = spawnSync('/bin/sh', ['-c', started.handoff.loaderCommand], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(loader.status, 0, loader.stderr || loader.stdout);
+    const loaded = JSON.parse(loader.stdout);
+    assert.equal(loaded.status, 'SUCCEEDED');
+    const state = core.loadBatch(workspace, prepared.batchId).state;
+    const execDir = path.dirname(state.cases[0].runtimePath);
+    return { execDir, loaded, contextRef: loaded.contextRef };
+  }
+  return { ...built, temp, workspace, entry, server, call, prepared, coordinator, runtimeRoot, resources, startCase, startDispatchedCase };
 }
+
+for (const platform of ['ios', 'android', 'harmony']) {
+  test(`real batch dispatch reaches Case MCP on ${platform}`, async t => {
+    const f = fixture(t), a = f.startDispatchedCase(platform);
+    const read = f.call('mavt_case_read', { contextRef: a.contextRef, input: { ref: a.loaded.data.ref } });
+    assert.equal(read.status, 'SUCCEEDED', JSON.stringify(read));
+    assert.equal(read.data.type, 'caseBrief');
+    const server = require(f.entry).createServer({ pluginRoot: f.pluginRoot, workerPool: { idleTimeoutMs: 30000 } });
+    t.after(() => server.close());
+    const workerRead = (await server.callTool('mavt_case_read', {
+      contextRef: a.contextRef, input: { ref: a.loaded.data.ref },
+    })).structuredContent;
+    assert.equal(workerRead.status, 'SUCCEEDED', JSON.stringify(workerRead));
+    assert.equal(workerRead.data.type, 'caseBrief');
+  });
+}
+
+test('Case MCP rejects replaced session state paths after real batch dispatch', t => {
+  const f = fixture(t), a = f.startDispatchedCase('harmony');
+  const filename = path.join(a.execDir, 'runtime.json');
+  const runtime = JSON.parse(fs.readFileSync(filename));
+  for (const statePath of [
+    path.join(f.workspace, 'runs', f.prepared.batchId, 'coordinator-state.json'),
+    path.join(f.workspace, 'runs', 'another-batch', 'batch.json'),
+    path.join(f.temp, 'batch.json'),
+    undefined,
+  ]) {
+    fs.writeFileSync(filename, JSON.stringify({ ...runtime, sessionRef: { ...runtime.sessionRef, statePath } }));
+    const result = f.call('mavt_case_read', { contextRef: a.contextRef, input: { ref: a.loaded.data.ref } });
+    assert.equal(result.code, 'MAVT_MCP_CONTEXT_INVALID', JSON.stringify(result));
+  }
+  fs.writeFileSync(filename, JSON.stringify(runtime));
+  assert.equal(f.call('mavt_case_read', { contextRef: a.contextRef, input: { ref: a.loaded.data.ref } }).status, 'SUCCEEDED');
+});
 
 test('the single MCP build issues a scoped Loader context even when initialized through the compatibility CLI', t => {
   const f = fixture(t, { cliSetup: true });
@@ -243,6 +319,25 @@ test('Case MCP schema errors retain the pinned runtime repeated-input count', t 
   assert.equal(f.call('mavt_case_act', request).error.code, 'AGENT_INPUT_STALLED');
   const state = JSON.parse(fs.readFileSync(path.join(a.execDir, 'agent-facing-state.json'), 'utf8'));
   assert.equal(state.lastInvalid.count, 2);
+});
+
+test('MCP rejects invalid FAIL evidence and preserves its pending correction across reads and restart', t => {
+  const f = fixture(t), a = f.startCase('case-rejected-fail');
+  const request = { contextRef: a.contextRef, input: { results: [{ checkNodeRef: 'N4', status: 'FAIL', actual: '顺序不符', reason: '非法字段',
+    evidence: { knowledgeRefs: ['mavt:0123456789abcdef01234567:knowledgeReview:event-1'] } }] } };
+  const rejected = f.call('mavt_case_recordResult', request);
+  assert.equal(rejected.status, 'REJECTED');
+  assert.equal(rejected.error.code, 'AGENT_INPUT_INVALID');
+  const store = require(path.join(f.runtimeRoot, 'scripts/case-runtime/store'));
+  const review = require(path.join(f.runtimeRoot, 'scripts/case-runtime/final-review'));
+  assert.equal(store.events(a.execDir).filter(event => event.type === 'checkpointResultRejected').length, 1);
+  // No known CHECK exists in this minimal fixture: a successful corrected result
+  // can resolve the recoverable wildcard, rather than trapping an unknown ref.
+  assert.deepEqual(review.pendingCorrections(a.execDir).map(([ref]) => ref), ['*']);
+  const restarted = require(f.entry).createServer({ pluginRoot: f.pluginRoot });
+  assert.equal(restarted.callTool('mavt_case_read', { contextRef: a.contextRef, input: { ref: a.loaded.data.ref } }).structuredContent.status, 'SUCCEEDED');
+  assert.deepEqual(review.pendingCorrections(a.execDir).map(([ref]) => ref), ['*']);
+  assert.equal(store.events(a.execDir).some(event => event.type === 'expectationResultUpdated'), false);
 });
 
 test('on-demand image returns verified published bytes and does not register visual inspection', t => {
@@ -489,7 +584,7 @@ test('older fixed Loader without Case MCP capability keeps its original CLI hand
   fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 14, runtime: 'case-runtime',
     executionId, batchId: prepared.batchId, caseProtocolSha: 'old-protocol', platform: 'harmony' }));
   fs.writeFileSync(path.join(execDir, 'runtime.json'), JSON.stringify({ schemaVersion: 1, executionId,
-    sessionRef: { statePath: path.join(workspace, 'runs', prepared.batchId, 'coordinator-state.json') } }));
+    sessionRef: { statePath: path.join(workspace, 'runs', prepared.batchId, 'batch.json') } }));
   const handoff = require(path.join(runtimeRoot, 'scripts/batch/agent-handoff')).createAgentHandoff({
     workspaceRoot: workspace, batchId: prepared.batchId, executionId, caseProtocolSha: 'old-protocol',
     casePrompt: 'Old fixed instruction', brief: { runtime: { command: 'old fixed CLI command' } } });

@@ -47,6 +47,9 @@ function parseArgs(argv) {
       case '--device-type':
         options.deviceType = requiredValue(argv, ++i, arg);
         break;
+      case '--platform-version':
+        options.platformVersion = requiredValue(argv, ++i, arg);
+        break;
       case '--appium-server':
         options.appiumServer = requiredValue(argv, ++i, arg);
         break;
@@ -149,6 +152,7 @@ function listAvailableRealDevices() {
         udid: item.identifier,
         state: 'Available',
         deviceType: 'realDevice',
+        platformVersion: String(item.operatingSystemVersion || '').match(/^\d+(?:\.\d+){1,2}/)?.[0],
       }));
   } catch {
     return [];
@@ -169,6 +173,7 @@ function buildTarget(options = {}) {
     device,
     appId,
     deviceType: inferDeviceType(options.deviceType || process.env.MAVT_IOS_DEVICE_TYPE, device),
+    platformVersion: options.platformVersion,
     appiumServer: options.appiumServer || process.env.MAVT_IOS_APPIUM_SERVER || 'http://127.0.0.1:4723',
     appiumSessionId: options.appiumSessionId || process.env.MAVT_IOS_APPIUM_SESSION_ID || '',
     wdaLocalPort: options.wdaLocalPort || process.env.MAVT_IOS_WDA_LOCAL_PORT || '8100',

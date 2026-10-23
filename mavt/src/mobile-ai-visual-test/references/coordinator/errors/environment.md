@@ -11,15 +11,6 @@
 
 **处理：** 恢复环境后通过同一固定 Run 绑定提交 advanceRun。
 
-<a id="error-ios-signing-required"></a>
-## IOS_SIGNING_REQUIRED
-
-iOS 真机缺少签名字段。
-
-**可重试：** 是
-
-**处理：** 补齐 requiredBindingFields 后提交 CONFIRM_BINDING。
-
 <a id="error-input-capability-not-ready"></a>
 ## INPUT_CAPABILITY_NOT_READY
 

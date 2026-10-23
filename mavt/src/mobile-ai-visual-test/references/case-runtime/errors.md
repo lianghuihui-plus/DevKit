@@ -46,5 +46,7 @@
 <a id="error-sequence-interrupted"></a>- [`SEQUENCE_INTERRUPTED`](errors/sequence.md#error-sequence-interrupted)
 <a id="error-case-result-incomplete"></a>- [`CASE_RESULT_INCOMPLETE`](errors/flow-result.md#error-case-result-incomplete)
 <a id="error-case-final-review-required"></a>- [`CASE_FINAL_REVIEW_REQUIRED`](errors/flow-result.md#error-case-final-review-required)
+<a id="error-result-correction-required"></a>- [`RESULT_CORRECTION_REQUIRED`](errors/flow-result.md#error-result-correction-required)
+<a id="error-case-final-verdict-mismatch"></a>- [`CASE_FINAL_VERDICT_MISMATCH`](errors/flow-result.md#error-case-final-verdict-mismatch)
 <a id="error-time-limit"></a>- [`TIME_LIMIT`](errors/flow-result.md#error-time-limit)
 <a id="error-case-runtime-technical"></a>- [`CASE_RUNTIME_TECHNICAL`](errors/knowledge-recovery.md#error-case-runtime-technical)

@@ -13,9 +13,9 @@ const {
   validateCoordinatorRequest,
 } = require('../coordinator/agent-facing-contract');
 const {
-  advanceRun,
+  advanceRun: advanceBoundRun,
   cancelRun,
-  confirmRun,
+  confirmRun: confirmBoundRun,
   executeRunRequest,
   loadCoordinatorState,
   prepareRun: prepareBoundRun,
@@ -70,6 +70,21 @@ function createCase(caseNo) {
 }
 
 function prepareRun(request, options = {}) { return prepareBoundRun(request, { workspace, ...options }); }
+// Every device/environment port is explicit. Lifecycle tests must never invoke host tools.
+function fixtureResolve({ binding }) {
+  if (!binding.appId) return { status: 'NEED_SELECTION', selectionKind: 'APP', coverage: 'limited', allowTargetInput: true, candidates: [] };
+  if (binding.deviceType === 'realDevice' && !binding.xcodeOrgId && binding.deviceId === 'ios-real-device') {
+    return { status: 'NEED_USER_ACTION', actions: [{ id: 'CONFIGURE_SIGNING', message: '在 Xcode 完成开发者签名设置后重试。' }] };
+  }
+  return { status: 'READY', binding: { ...binding, ...(binding.platform === 'android' ? { androidUiBackend: binding.androidUiBackend || 'auto' } : {}) } };
+}
+const offlineOptions = {
+  resolveEnvironment: fixtureResolve,
+  probeEnvironment: (platform, deviceId) => ({ schemaVersion: 1, type: 'environmentProbe', platform, ready: true, devices: [{ id: deviceId }] }),
+  prepareEnvironment: ({ binding }) => ({ schemaVersion: 1, type: 'environmentPrepare', platform: binding.platform, ok: true, dependencies: [] }),
+};
+function confirmRun(state, request, options = {}) { return confirmBoundRun(state, request, { ...offlineOptions, ...options }); }
+function advanceRun(state, options = {}) { return advanceBoundRun(state, { ...offlineOptions, ...options }); }
 function statePath(response) { return response.result.command.match(/ --state '([^']+)'$/)[1]; }
 function content(response) { return response.data?.content || {}; }
 function diagnostic(response) { return require('../coordinator/agent-resource-store').readResource(loadCoordinatorState(statePath(response)), response.resources[0].ref).data.content; }
@@ -162,12 +177,12 @@ const needBinding = confirmRun(statePath(prepared), { operation: 'confirmRun', i
   now: '2026-09-11T02:00:03.000Z',
 });
 assert.strictEqual(needBinding.result.outcome, 'NEED_USER_CONFIRMATION');
-assert.strictEqual(content(needBinding).reason, 'CONFIRM_ENVIRONMENT_AND_RUN');
+assert.strictEqual(content(needBinding).reason, 'SELECT_APP');
 assert.deepStrictEqual(content(needBinding).devices, probe.devices);
 assert.deepStrictEqual(content(needBinding).binding, {
-  platform: 'harmony', deviceId: 'device-001', deviceFormFactor: 'phone',
+  platform: 'harmony', deviceId: 'device-001',
 });
-assert.deepStrictEqual(content(needBinding).requiredUserFields, ['binding.appId', 'binding.entry']);
+assert.strictEqual(content(needBinding).requiredUserFields, undefined);
 assert.strictEqual(JSON.stringify(needBinding).includes('probeJson'), false);
 assert.strictEqual(needBinding.result.phase, 'NEED_BINDING_CONFIRMATION');
 assertNoEmbeddedInstructions(needBinding);
@@ -213,7 +228,7 @@ const androidPreparedRun = prepareRun({ operation: 'prepareRun', input: { caseNo
 const androidBindingOffer = confirmRun(statePath(androidPreparedRun), {
   operation: 'confirmRun', input: { decision: 'SELECT_PLATFORM', platform: 'android' },
 }, { probeEnvironment: () => androidProbe });
-assert.strictEqual(content(androidBindingOffer).binding.androidUiBackend, 'auto');
+assert.strictEqual(content(androidBindingOffer).reason, 'SELECT_APP');
 const preparationCalls = [];
 const androidPrepared = confirmRun(statePath(androidPreparedRun), { operation: 'confirmRun', input: { decision: 'CONFIRM_BINDING',
   userInstruction: '确认 Android 输入能力由框架自动准备',
@@ -244,9 +259,7 @@ const androidPreparationFailureRun = prepareRun({ operation: 'prepareRun', input
 });
 confirmRun(statePath(androidPreparationFailureRun), { operation: 'confirmRun', input: { decision: 'SELECT_PLATFORM', platform: 'android',
  } }, { probeEnvironment: () => androidProbe });
-let preparationError;
-try {
-  confirmRun(statePath(androidPreparationFailureRun), { operation: 'confirmRun', input: { decision: 'CONFIRM_BINDING',
+const preparationFailed = confirmRun(statePath(androidPreparationFailureRun), { operation: 'confirmRun', input: { decision: 'CONFIRM_BINDING',
     userInstruction: '确认 Android 输入能力失败时保持可恢复',
     binding: {
       platform: 'android', deviceId: 'android-device', appId: 'com.example.android', entry: '.MainActivity',
@@ -261,27 +274,26 @@ try {
     }),
     batchExecute: () => { throw new Error('batch must not initialize before input capability is ready'); },
   });
-} catch (error) {
-  preparationError = error;
-}
-assert.strictEqual(preparationError?.code, 'INPUT_CAPABILITY_NOT_READY');
-assert.strictEqual(preparationError?.diagnostic?.stage, 'ENVIRONMENT_PREPARE');
-const preparationErrorResponse = coordinatorAgent.errorResponse(preparationError, 'confirm');
-assert.strictEqual(JSON.stringify(preparationErrorResponse).includes('IME'), false);
-assert.strictEqual(preparationErrorResponse.error.retryable, true);
-assert.match(preparationErrorResponse.error.documentationRef, /references\/coordinator\/errors\/environment\.md#error-input-capability-not-ready$/);
-assertNoEmbeddedInstructions(preparationErrorResponse);
+assert.strictEqual(content(preparationFailed).environmentStatus, 'NEED_USER_ACTION');
+assert.ok(content(preparationFailed).actions.length);
+assertNoEmbeddedInstructions(preparationFailed);
 assert.strictEqual(fs.existsSync(path.join(
   workspace, 'runs', 'batch-android-input-prepare-failure', 'execution-request.json',
 )), false);
-assert.strictEqual(loadCoordinatorState(statePath(androidPreparationFailureRun)).phase, 'INITIALIZING_RUN');
-const recoveredAndroidPreparation = advanceRun(statePath(androidPreparationFailureRun), {
+assert.strictEqual(loadCoordinatorState(statePath(androidPreparationFailureRun)).phase, 'NEED_BINDING_CONFIRMATION');
+const recoveredAndroidPreparation = confirmRun(statePath(androidPreparationFailureRun), {
+  operation: 'confirmRun', input: { decision: 'RETRY_ENVIRONMENT' },
+}, {
   prepareEnvironment: () => ({
     schemaVersion: 1, type: 'environmentPrepare', platform: 'android', ok: true, dependencies: [],
   }),
   batchExecute: () => ({ state: { status: 'INITIALIZING' } }),
 });
-assert.strictEqual(recoveredAndroidPreparation.result.outcome, 'CONFIRMED');
+assert.strictEqual(content(recoveredAndroidPreparation).environmentStatus, 'READY');
+const recoveredAndroidConfirmation = confirmRun(statePath(androidPreparationFailureRun), {
+  operation: 'confirmRun', input: { decision: 'CONFIRM_ENVIRONMENT', environmentRef: content(recoveredAndroidPreparation).environmentRef, userInstruction: '确认准备成功后执行' },
+}, { batchExecute: () => ({ state: { status: 'INITIALIZING' } }) });
+assert.strictEqual(recoveredAndroidConfirmation.result.outcome, 'CONFIRMED');
 
 confirmEnvironment({
   workspaceRoot: workspace,
@@ -306,7 +318,7 @@ const selectedIos = confirmRun(statePath(switchable), { operation: 'confirmRun',
   }),
 });
 assert.strictEqual(selectedIos.result.outcome, 'NEED_USER_CONFIRMATION');
-assert.strictEqual(content(selectedIos).reason, 'CONFIRM_ENVIRONMENT_AND_RUN');
+assert.strictEqual(content(selectedIos).reason, 'SELECT_APP');
 assert.strictEqual(content(selectedIos).binding.platform, 'ios');
 assert.strictEqual(content(selectedIos).binding.deviceId, 'ios-device');
 assertNoEmbeddedInstructions(selectedIos);
@@ -352,8 +364,8 @@ const iosSigningPending = confirmRun(statePath(iosDeviceDetectedButSigningPendin
   }),
 });
 assert.strictEqual(iosSigningPending.result.outcome, 'NEED_USER_CONFIRMATION');
-assert.strictEqual(content(iosSigningPending).reason, 'CONFIRM_ENVIRONMENT_AND_RUN');
-assert.strictEqual(content(iosSigningPending).executionReady, false);
+assert.strictEqual(content(iosSigningPending).reason, 'SELECT_APP');
+assert.strictEqual(content(iosSigningPending).environmentStatus, 'NEED_SELECTION');
 assert.deepStrictEqual(content(iosSigningPending).devices[0], {
   id: 'ios-real-device', udid: 'ios-real-device', deviceType: 'realDevice',
 });
@@ -364,8 +376,9 @@ const iosSigningMissing = confirmRun(statePath(iosDeviceDetectedButSigningPendin
   },
  } });
 assert.strictEqual(iosSigningMissing.result.outcome, 'NEED_USER_CONFIRMATION');
-assert.strictEqual(content(iosSigningMissing).reason, 'IOS_SIGNING_REQUIRED');
-assert.deepStrictEqual(content(iosSigningMissing).requiredBindingFields, ['xcodeOrgId', 'xcodeSigningId', 'updatedWDABundleId']);
+assert.strictEqual(content(iosSigningMissing).reason, 'ENVIRONMENT_USER_ACTION');
+assert.strictEqual(content(iosSigningMissing).requiredBindingFields, undefined);
+assert.ok(content(iosSigningMissing).actions[0].message.includes('Xcode'));
 const iosSigningConfirmed = confirmRun(statePath(iosDeviceDetectedButSigningPending), { operation: 'confirmRun', input: { decision: 'CONFIRM_BINDING',
   userInstruction: '补充签名参数后确认执行',
   binding: {

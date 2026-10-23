@@ -102,6 +102,36 @@ test('malformed calls and symlink escape reject before domain effects', t => {
   assert.equal(f.call('mavt_cases_import', { contextRef, request: draft }).status, 'REJECTED');
   assert.deepEqual(snapshot(path.join(f.temp, 'external-cases')), externalBefore);
 });
+
+test('doctor verifies a shared bundle once per request and still detects later corruption', t => {
+  const f = fixture(t), author = init(f, 'author');
+  f.call('mavt_cases_import', { contextRef: author, request: draft });
+  const opened = f.call('mavt_workspace_open', { workspace: f.workspace, role: 'coordinator' });
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(f.call('mavt_run_prepare', { contextRef: opened.contextRef, input: { caseNos: ['001'] } }).status, 'SUCCEEDED');
+  }
+  const bundleRoot = path.join(f.workspace, '.mavt/runtime-bundles', opened.bundleId);
+  const manifestPath = path.join(bundleRoot, 'bundle.manifest.json');
+  const originalRead = fs.readFileSync;
+  let manifests = 0;
+  const spy = t.mock.method(fs, 'readFileSync', function (filename, ...args) {
+    if (filename === manifestPath) manifests += 1;
+    return originalRead.call(this, filename, ...args);
+  });
+  try {
+    const result = f.call('mavt_workspace_doctor', { workspace: f.workspace });
+    assert.equal(result.status, 'SUCCEEDED', JSON.stringify(result));
+    assert.equal(result.runs.length, 5);
+    assert.equal(manifests, 1, 'historical Runs must share this request’s verified bundle');
+    fs.appendFileSync(path.join(bundleRoot, 'runtime/mobile-ai-visual-test/references/coordinator.md'), '\nchanged');
+    manifests = 0;
+    const corrupted = f.call('mavt_workspace_doctor', { workspace: f.workspace });
+    assert.equal(corrupted.status, 'FAILED');
+    assert.equal(corrupted.bundles[0].status, 'INVALID');
+    assert.ok(corrupted.runs.every(run => run.code));
+    assert.equal(manifests, 1, 'corrupt bundles must not be rehashed for each historical Run either');
+  } finally { spy.mock.restore(); }
+});
 test('initialization recovery rejects nested symbolic links before writing artifacts', t => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.workspace, 'workspace.json'), JSON.stringify({ schemaVersion: 1, type: 'mobile-ai-visual-test-workspace', initializationState: 'INITIALIZING' }));

@@ -97,6 +97,8 @@ try {
     userInstruction: '验证初始化中断后由真实 CLI 恢复',
    } }, {
     interruptAfter: 'environmentFrozen',
+    probeEnvironment: () => probe,
+    environmentOptions: { env: { MAVT_IOS_FAKE: '1' } },
     now: '2026-09-14T08:02:00.000Z',
   }), /MAVT_COORDINATOR_INTERRUPTED: environmentFrozen/);
   const recovered = submit(interrupted, { operation: 'advanceRun', input: {} });

@@ -18,7 +18,7 @@
 
 ## 持久化
 
-将 draft 写入一个 JSON request：
+将 draft 组成一个 JSON request：
 
 ```json
 {
@@ -34,8 +34,8 @@
 
 单用例和批量用例使用同一个入口：
 
-```bash
-node <skill-root>/scripts/import-cases.js --workspace <workspace> --request-file <json-file>
+```javascript
+mavt_cases_import({contextRef,request})
 ```
 
-接口只校验 draft 结构、非空内容、来源定位唯一性并完成编号、稳定标识、幂等更新和报告刷新，不判断业务边界。导入后核对返回数量和标题是否与自己的理解一致。
+`contextRef` 使用 Authoring 入口原样返回值，`request` 直接传入上述对象。接口只校验 draft 结构、非空内容、来源定位唯一性并完成编号、稳定标识、幂等更新和报告刷新，不判断业务边界。导入后核对 `structuredContent.cases` 的数量和标题是否与自己的理解一致。

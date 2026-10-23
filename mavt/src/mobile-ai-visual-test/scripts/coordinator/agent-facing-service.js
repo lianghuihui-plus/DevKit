@@ -16,7 +16,8 @@ const {
   validateEnvironmentConfirmation,
 } = require('../lib/run-control');
 const { readJson, withFileLock, writeJsonAtomic } = require('../lib/execution-lifecycle');
-const { environmentPrepareArgs } = require('../lib/execution-environment');
+const environmentSetup = require('../platform/environment/setup');
+const environmentFlow = require('./environment-flow');
 const { readPublicationState, statePath: publicationStatePath } = require('../report/publication-state');
 const {
   AGENT_FACING_PROTOCOL,
@@ -229,7 +230,7 @@ function environmentDecisionResponse(state, options = {}, details = {}) {
     status: 'NEED_USER_CONFIRMATION',
     reason: details.reason || 'CHOOSE_ENVIRONMENT',
     ...(details.code ? { code: details.code } : {}),
-    ...(environment ? { binding: environment.binding } : {}),
+    ...(environment ? { binding: environmentFlow.safeBinding(environment.binding) } : {}),
     ...(details.diagnostics?.length ? { diagnostics: details.diagnostics } : {}),
     ...(!details.diagnostics?.length && environmentError && environmentError.code !== 'ENVIRONMENT_NOT_CONFIRMED'
       ? { diagnostics: [{ code: environmentError.code || 'ENVIRONMENT_CONFIRMATION_INVALID', message: environmentError.message || String(environmentError) }] }
@@ -239,37 +240,15 @@ function environmentDecisionResponse(state, options = {}, details = {}) {
   };
 }
 
-function knownBindingFacts(binding) {
-  return Object.fromEntries(Object.entries(binding || {}).filter(([, value]) => (
-    typeof value !== 'string' || !/^<.*>$/.test(value)
-  )));
-}
-
 function bindingConfirmationResponse(state, options = {}) {
-  if (!state.bindingConfirmationTemplate || !state.selectedProbe) {
-    return environmentDecisionResponse(state, options, {
-      reason: 'CHOOSE_ENVIRONMENT',
-      code: 'PROBE_REQUIRED',
-      diagnostics: [{ code: 'PROBE_REQUIRED', message: '平台探测结果不可用，请重新选择平台' }],
-    });
+  if (state.environmentSetup) {
+    saveCoordinatorState(state, options.now);
+    return { ...environmentFlow.response(state), ...publicBase(state) };
   }
-  saveCoordinatorState(state, options.now);
-  return {
-    status: 'NEED_USER_CONFIRMATION',
-    reason: 'CONFIRM_ENVIRONMENT_AND_RUN',
-    devices: state.selectedProbe.devices,
-    ...(state.selectedProbe.deviceDetected !== undefined ? { deviceDetected: state.selectedProbe.deviceDetected } : {}),
-    ...(state.selectedProbe.executionReady !== undefined ? { executionReady: state.selectedProbe.executionReady } : {}),
-    ...(state.selectedProbe.diagnostics?.length ? { diagnostics: state.selectedProbe.diagnostics } : {}),
-    ...(state.selectedProbe.executionReady === false && state.selectedProbe.platform === 'ios'
-      && state.selectedProbe.diagnostics?.some((item) => item.id === 'iosRealDeviceSigningIncomplete')
-      ? { requiredBindingFields: ['xcodeOrgId', 'xcodeSigningId', 'updatedWDABundleId'] } : {}),
-    requiredUserFields: state.selectedProbe.platform === 'ios'
-      ? ['binding.appId']
-      : ['binding.appId', 'binding.entry'],
-    binding: knownBindingFacts(state.bindingConfirmationTemplate.binding),
-    ...publicBase(state),
-  };
+  return environmentDecisionResponse(state, options, {
+    reason: 'CHOOSE_ENVIRONMENT', code: 'PROBE_REQUIRED',
+    diagnostics: [{ code: 'PROBE_REQUIRED', message: '环境选择记录不可用，请重新选择平台' }],
+  });
 }
 
 function assertCoordinatorPhase(state, expected, decision) {
@@ -299,29 +278,6 @@ function inputCapabilityError() {
   return error;
 }
 
-function defaultPrepareEnvironment(input) {
-  const binding = input.binding;
-  if (binding.platform !== 'android') {
-    return { schemaVersion: 1, type: 'environmentPrepare', platform: binding.platform, ok: true, dependencies: [] };
-  }
-  const args = environmentPrepareArgs(binding);
-  try {
-    const output = childProcess.execFileSync(path.join(SKILL_ROOT, 'scripts/prepare-env.sh'), args, {
-      cwd: SKILL_ROOT,
-      encoding: 'utf8',
-    });
-    return JSON.parse(output);
-  } catch (error) {
-    return {
-      schemaVersion: 1,
-      type: 'environmentPrepare',
-      platform: binding.platform,
-      ok: false,
-      internalError: String(error.stderr || error.stdout || error.message || error).trim().slice(0, 4000),
-    };
-  }
-}
-
 function startInitialization(state, environment, userInstruction, options = {}) {
   const frozen = validateEnvironmentConfirmation(JSON.parse(JSON.stringify(environment)), {
     workspaceRoot: state.workspace,
@@ -339,6 +295,7 @@ function startInitialization(state, environment, userInstruction, options = {}) 
     },
     executionRequestCreated: null,
     batchInitialized: null,
+    ...(state.environmentSetup?.prepared ? { environmentPrepared: { ...state.environmentSetup.prepared } } : {}),
     startedAt: options.now || new Date().toISOString(),
   };
   saveCoordinatorState(state, options.now);
@@ -360,8 +317,8 @@ function resumeInitialization(state, options = {}) {
     throw coordinatorError('冻结环境引用与内容不一致', [], 'COORDINATOR_INITIALIZATION_INVALID');
   }
 
-  if (environment.binding.platform === 'android' && !initialization.environmentPrepared) {
-    const prepareEnvironment = options.prepareEnvironment || defaultPrepareEnvironment;
+  if (!initialization.environmentPrepared) {
+    const prepareEnvironment = options.prepareEnvironment || ((input) => environmentSetup.prepareEnvironment(input, options.environmentOptions || {}));
     let prepared;
     try {
       prepared = prepareEnvironment({ binding: { ...environment.binding } });
@@ -487,10 +444,10 @@ function prepareCore(request, options = {}) {
   return environmentDecisionResponse(state, options);
 }
 
-function defaultProbeEnvironment(platform) {
-  const output = childProcess.execFileSync(path.join(SKILL_ROOT, 'scripts/probe-env.sh'), ['--platform', platform], {
+function defaultProbeEnvironment(platform, selectedDeviceId) {
+  const output = childProcess.execFileSync(path.join(SKILL_ROOT, 'scripts/probe-env.sh'), ['--platform', platform, ...(selectedDeviceId ? ['--device', selectedDeviceId] : [])], {
     cwd: SKILL_ROOT,
-    encoding: 'utf8',
+    encoding: 'utf8', timeout: 60000, maxBuffer: 16 * 1024 * 1024,
   });
   return JSON.parse(output);
 }
@@ -503,9 +460,6 @@ function bindingTemplate(platform, device) {
   return {
     platform,
     deviceId: deviceId(device) || '<device-id>',
-    appId: '<target-app-id>',
-    entry: '<entry-ability>',
-    ...(platform === 'android' ? { androidUiBackend: 'auto' } : {}),
     ...(device?.deviceType ? { deviceType: device.deviceType } : {}),
     ...(device?.deviceFormFactor ? { deviceFormFactor: device.deviceFormFactor } : {}),
   };
@@ -519,9 +473,12 @@ function confirmCore(statePath, request, options = {}) {
     if (['COMPLETE', 'BLOCKED'].includes(state.phase)) throw coordinatorError('Coordinator 已终止', [], 'COORDINATOR_TERMINAL');
     state.lastInvalid = null;
     if (request.decision === 'SELECT_PLATFORM') {
-      assertCoordinatorPhase(state, 'NEED_ENVIRONMENT_DECISION', request.decision);
-      const probe = (options.probeEnvironment || defaultProbeEnvironment)(request.platform);
+      if (!['NEED_ENVIRONMENT_DECISION', 'NEED_BINDING_CONFIRMATION'].includes(state.phase)) {
+        throw coordinatorError('当前阶段不能重新选择环境', [], 'DECISION_NOT_ALLOWED');
+      }
+      let probe = (options.probeEnvironment || defaultProbeEnvironment)(request.platform, request.deviceId);
       state.selectedProbe = probe;
+      state.environmentSetup = null;
       if (!Array.isArray(probe?.devices) || !probe.devices.length) {
         return environmentDecisionResponse(state, options, {
           reason: 'ENVIRONMENT_NOT_READY',
@@ -548,57 +505,66 @@ function confirmCore(statePath, request, options = {}) {
             decision: 'SELECT_PLATFORM',
             platform: request.platform,
             deviceId: deviceId(device),
+            ...(request.appId ? { appId: request.appId } : {}),
+            ...(request.appName ? { appName: request.appName } : {}),
           })),
           diagnostics: probe.diagnostics || [],
           ...publicBase(state),
         };
       }
-      const confirmationReady = probe.ready === true || probe.confirmationReady === true;
-      if (!confirmationReady) {
-        return environmentDecisionResponse(state, options, {
-          reason: 'ENVIRONMENT_NOT_READY',
-          code: 'ENVIRONMENT_NOT_READY',
-          diagnostics: probe?.diagnostics?.length
-            ? probe.diagnostics
-            : [{ code: 'ENVIRONMENT_NOT_READY', message: 'iOS 设备已发现，但执行环境尚未就绪' }],
-        });
-      }
-      const confirmTemplate = {
-        decision: 'CONFIRM_BINDING',
-        userInstruction: `确认在所选设备和 App 上执行用例 ${state.targets.map((item) => item.caseNo).join(', ')}`,
-        binding: bindingTemplate(request.platform, selectedDevice),
-      };
+      const binding = { ...bindingTemplate(request.platform, selectedDevice), ...(request.appId ? { appId: request.appId } : {}) };
       state.phase = 'NEED_BINDING_CONFIRMATION';
-      state.bindingConfirmationTemplate = confirmTemplate;
-      saveCoordinatorState(state, options.now);
+      if (environmentFlow.probeBinding(state, binding, probe)) {
+        environmentFlow.resolve(state, { binding, ...(request.appName ? { appName: request.appName } : {}) }, options);
+      }
+      return bindingConfirmationResponse(state, options);
+    }
+
+    if (['SELECT_APP', 'SELECT_ENVIRONMENT_OPTION', 'RETRY_ENVIRONMENT', 'CONFIRM_ENVIRONMENT'].includes(request.decision)) {
+      assertCoordinatorPhase(state, 'NEED_BINDING_CONFIRMATION', request.decision);
+      const current = state.environmentSetup;
+      if (!current?.input) throw coordinatorError('环境选择不可用，请重新选择平台', [], 'DECISION_NOT_ALLOWED');
+      if (request.decision === 'CONFIRM_ENVIRONMENT') {
+        if (current.status !== 'READY' || request.environmentRef !== current.environmentRef) {
+          throw coordinatorError('环境引用已经失效或不属于当前运行', [], 'ENVIRONMENT_REFERENCE_INVALID');
+        }
+        if (!environmentFlow.refresh(state, options, options.probeEnvironment || defaultProbeEnvironment)) {
+          return bindingConfirmationResponse(state, options);
+        }
+        return confirmResolvedEnvironment(state, request.userInstruction, options);
+      }
+      if (request.decision === 'RETRY_ENVIRONMENT') {
+        // A retry invalidates the old confirmation even when the external facts are unchanged.
+        environmentFlow.refresh(state, options, options.probeEnvironment || defaultProbeEnvironment, true);
+        if (state.environmentSetup.status === 'READY') state.environmentSetup.environmentRef = `environment-${crypto.randomBytes(16).toString('hex')}`;
+      } else if (request.decision === 'SELECT_APP') {
+        if (current.status !== 'NEED_SELECTION' || current.selectionKind !== 'APP'
+          || (!current.allowTargetInput && !current.candidates.some(candidate => candidate.id === request.appId))) {
+          throw coordinatorError('只能选择当前应用候选', [], 'DECISION_NOT_ALLOWED');
+        }
+        environmentFlow.resolve(state, { ...current.input, appName: undefined, binding: { ...current.input.binding, appId: request.appId } }, options);
+      } else {
+        if (current.status !== 'NEED_SELECTION' || current.selectionKind === 'APP'
+          || !current.candidates.some(candidate => candidate.id === request.optionId)) {
+          throw coordinatorError('只能选择当前配置候选', [], 'DECISION_NOT_ALLOWED');
+        }
+        environmentFlow.resolve(state, { ...current.input, optionId: request.optionId }, options);
+      }
       return bindingConfirmationResponse(state, options);
     }
 
     if (request.decision === 'CONFIRM_BINDING') {
       assertCoordinatorPhase(state, 'NEED_BINDING_CONFIRMATION', request.decision);
-      let environment;
-      try {
-        environment = confirmEnvironment({
-          workspaceRoot: state.workspace,
-          binding: request.binding,
-          probe: state.selectedProbe,
-          userConfirmation: request.userInstruction,
-          now: options.now,
-        });
-      } catch (error) {
-        if (error.code !== 'IOS_SIGNING_INCOMPLETE') throw error;
-        return {
-          status: 'NEED_USER_CONFIRMATION',
-          reason: 'IOS_SIGNING_REQUIRED',
-          code: error.code,
-          requiredBindingFields: ['xcodeOrgId', 'xcodeSigningId', 'updatedWDABundleId'],
-          diagnostics: [{ code: error.code, message: error.message }],
-          devices: state.selectedProbe.devices,
-          binding: knownBindingFacts(state.bindingConfirmationTemplate.binding),
-          ...publicBase(state),
-        };
+      const selected = state.environmentSetup?.input?.binding;
+      if (selected && ['platform', 'deviceId'].some(key => selected[key] !== request.binding[key])) {
+        throw coordinatorError('手动配置不能改变已选择的平台或设备', [], 'DECISION_NOT_ALLOWED');
       }
-      return startInitialization(state, environment, request.userInstruction, options);
+      const binding = { ...selected, ...request.binding };
+      const probe = (options.probeEnvironment || defaultProbeEnvironment)(binding.platform, binding.deviceId);
+      if (!environmentFlow.probeBinding(state, binding, probe)) return bindingConfirmationResponse(state, options);
+      environmentFlow.resolve(state, { binding }, options);
+      if (state.environmentSetup.status !== 'READY') return bindingConfirmationResponse(state, options);
+      return confirmResolvedEnvironment(state, request.userInstruction, options);
     }
 
     assertCoordinatorPhase(state, 'NEED_ENVIRONMENT_DECISION', request.decision);
@@ -615,8 +581,29 @@ function confirmCore(statePath, request, options = {}) {
         diagnostics: [{ code: error.code || 'ENVIRONMENT_CONFIRMATION_INVALID', message: error.message || String(error) }],
       });
     }
-    return startInitialization(state, environment, request.userInstruction, options);
+    const previousBinding = environment.binding;
+    state.phase = 'NEED_BINDING_CONFIRMATION';
+    const probe = (options.probeEnvironment || defaultProbeEnvironment)(previousBinding.platform, previousBinding.deviceId);
+    const input = { binding: previousBinding, previousBinding, appProvisioning: environment.appProvisioning };
+    if (!environmentFlow.probeBinding(state, previousBinding, probe, input)) return bindingConfirmationResponse(state, options);
+    environmentFlow.resolve(state, input, options);
+    if (state.environmentSetup.status !== 'READY'
+      || canonicalJson(state.environmentSetup.binding) !== canonicalJson(previousBinding)) {
+      return bindingConfirmationResponse(state, options);
+    }
+    return confirmResolvedEnvironment(state, request.userInstruction, options, environment.appProvisioning);
   }, options);
+}
+
+function confirmResolvedEnvironment(state, userInstruction, options, appProvisioning) {
+  const resolved = state.environmentSetup;
+  const environment = confirmEnvironment({
+    workspaceRoot: state.workspace, binding: resolved.binding,
+    // The platform resolver owns readiness. Retain the original probe diagnostics as evidence.
+    probe: { ...state.selectedProbe, ready: true, confirmationReady: true, executionReady: true },
+    userConfirmation: userInstruction, appProvisioning: appProvisioning || resolved.input.appProvisioning, now: options.now,
+  });
+  return startInitialization(state, environment, userInstruction, options);
 }
 
 function terminalResponse(state, response, options = {}) {
@@ -806,7 +793,7 @@ function projectResponse(state, operation, response) {
     if (projection.primaryResourceType === 'runDecision') {
       resource = resources.publishSnapshot(state, 'runDecision', {
         kind: response.reason === 'SELECT_DEVICE' ? 'DEVICE' : state.phase === 'NEED_BINDING_CONFIRMATION' ? 'BINDING' : 'ENVIRONMENT',
-        ...pick(response, ['reason', 'code', 'choices', 'binding', 'devices', 'deviceDetected', 'executionReady', 'requiredBindingFields', 'requiredUserFields']),
+        ...pick(response, ['reason', 'code', 'choices', 'binding', 'devices', 'deviceName', 'app', 'coverage', 'allowTargetInput', 'actions', 'environmentStatus', 'environmentRef', 'deviceDetected', 'executionReady', 'requiredUserFields']),
         ...(diagnosticRefs.length ? { diagnosticRefs } : {}),
       }, associated);
     } else if (projection.primaryResourceType === 'caseDispatch') {

@@ -166,9 +166,12 @@ function readAccessibilityState(options, androidUserId) {
 }
 
 function writeServices(options, androidUserId, services) {
+  // adb shell joins argv into a remote shell command. Preserve an empty value
+  // and service names containing shell metacharacters as one literal argument.
+  const value = "'" + services.join(':').replace(/'/g, "'\\''") + "'";
   adb(options, [
     'shell', 'settings', '--user', androidUserId, 'put', 'secure',
-    'enabled_accessibility_services', services.join(':'),
+    'enabled_accessibility_services', value,
   ]);
 }
 

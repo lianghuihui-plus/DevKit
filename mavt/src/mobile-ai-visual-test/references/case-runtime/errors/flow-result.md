@@ -86,11 +86,29 @@ Ledger 仍有 unresolved 或 conflicts。
 <a id="error-case-final-review-required"></a>
 ## CASE_FINAL_REVIEW_REQUIRED
 
-最终收口前必须重新核对完整原始用例。
+最终复核未确认或快照已更新。
 
 **可重试：** 是
 
-**处理：** 阅读响应中的 originalCase 和 finalReviewInstruction，确认完整业务目标、条件分支和最终结果后重新提交同一 finish 请求。
+**处理：** 重新阅读 originalCase 和最新 checkpointLedger，补齐遗漏 CHECK 并成功记录结果；确认完整业务约束后，使用最新 finalReviewToken、Agent verdict 和 sourceCoverageConfirmed:true 提交 finish.finalReview。
+
+<a id="error-result-correction-required"></a>
+## RESULT_CORRECTION_REQUIRED
+
+结果修改尚未成功，旧结果不能用于收口。
+
+**可重试：** 是
+
+**处理：** 按 pendingCheckNodeRefs 修正 recordResult 的参数或证据，成功重提交对应 CHECK；* 表示无法识别先前请求的 CHECK，请成功重提交正确结果。不得通过摘要宣称修改已生效。
+
+<a id="error-case-final-verdict-mismatch"></a>
+## CASE_FINAL_VERDICT_MISMATCH
+
+Agent 明确结论与最新 ledger 聚合不一致。
+
+**可重试：** 是
+
+**处理：** 核对最新 CHECK 结果；如遗漏业务约束，先补齐 CHECK 和证据并成功记录；只有确认原文覆盖与聚合一致后再提交 finalReview。
 
 <a id="error-time-limit"></a>
 ## TIME_LIMIT

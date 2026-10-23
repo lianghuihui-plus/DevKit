@@ -145,6 +145,7 @@ function executeResult(verdict, options = {}) {
   };
   const review = run(started.execDir, finishInput, { now: '2026-09-04T02:00:02.000Z' });
   assert.strictEqual(review.error.code, 'CASE_FINAL_REVIEW_REQUIRED');
+  finishInput.input.finalReview = { token: review.result.finalReviewToken, verdict, sourceCoverageConfirmed: true };
   const finished = run(started.execDir, finishInput, { now: '2026-09-04T02:00:03.000Z' });
   assert.strictEqual(finished.result.outcome, 'COMPLETED');
   const report = readExecutionReport(started.execDir);

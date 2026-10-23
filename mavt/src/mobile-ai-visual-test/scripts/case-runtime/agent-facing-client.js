@@ -61,7 +61,11 @@ function clearInvalidState(execDir) {
   writeJsonAtomic(statePath(execDir), { type: 'agentFacingInputState', lastInvalid: null });
 }
 
-function invalidResponse(execDir, request, issues, code = 'AGENT_INPUT_INVALID') {
+function invalidResponse(execDir, request, issues, code = 'AGENT_INPUT_INVALID', options = {}) {
+  if (readJson(path.join(execDir, 'execution.json'), null)?.finalized) {
+    return projectAgentFacingError({ status: 'REJECTED', code: 'CASE_RUNTIME_FINALIZED' }, request);
+  }
+  finalReview.noteRejected(execDir, request, options);
   const current = readJson(statePath(execDir), { type: 'agentFacingInputState', lastInvalid: null });
   const currentFingerprint = fingerprint(request, issues);
   if (current.lastInvalid?.fingerprint === currentFingerprint) {
@@ -136,7 +140,7 @@ function executeRun(execDir, request, options = {}) {
     }, request);
   }
   const structural = validateAgentFacingRequest(request);
-  if (structural.length) return invalidResponse(resolved, request, structural);
+  if (structural.length) return invalidResponse(resolved, request, structural, 'AGENT_INPUT_INVALID', options);
   if ((execution.finalized || execution.lifecycle === 'FINALIZED') && request.operation !== 'read') {
     return projectAgentFacingError({ status: 'REJECTED', code: 'CASE_RUNTIME_FINALIZED' }, request);
   }
@@ -169,8 +173,9 @@ function executeRun(execDir, request, options = {}) {
           'EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID', 'RECORD_RESULT_INVALID',
         ].includes(item.code))?.code
           || 'AGENT_INPUT_INVALID';
-      return invalidResponse(resolved, request, issues, firstCode);
+      return invalidResponse(resolved, request, issues, firstCode, options);
     }
+    finalReview.noteRejected(resolved, request, options);
     return projectAgentFacingError({
       status: 'FAILED',
       code: error.code === 'SEQUENCE_RECORD_INCOMPLETE' ? error.code : 'CASE_RUNTIME_TECHNICAL',
@@ -182,35 +187,36 @@ function executeRun(execDir, request, options = {}) {
   const executeRequest = options.executeRequest || executeFacadeRequest;
   let response;
   try {
-    if (request.operation === 'finish' && finalReview.requestFinalReview(resolved, options)) {
-      response = {
-        status: 'RESULT_INCOMPLETE',
-        code: 'CASE_FINAL_REVIEW_REQUIRED',
-        message: '最终收口前必须重新核对完整原始用例；核对后重新提交 finish',
-      };
-    } else {
+    response = request.operation === 'finish' ? finalReview.gate(resolved, request, options) : null;
+    if (!response) {
       response = executeRequest(resolved, internal, options);
     }
   } catch (error) {
+    finalReview.noteRejected(resolved, request, options);
     return projectAgentFacingError({ status: 'FAILED', code: error.code || 'CASE_RUNTIME_TECHNICAL' }, request);
   }
   if (response?.status === 'REQUEST_INVALID') {
     if (request.operation === 'plan' && CASE_FLOW_INPUT_ERROR_CODES.has(response.code)) {
-      return invalidResponse(resolved, request, caseFlowInputIssues(response));
+      return invalidResponse(resolved, request, caseFlowInputIssues(response), 'AGENT_INPUT_INVALID', options);
     }
     if (PUBLIC_CONTRACT.errors[response.code]) {
       return invalidResponse(resolved, request, response.issues || [{
         field: request.operation === 'plan' ? 'input.caseFlow' : 'request',
         code: response.code,
         message: response.message || response.code,
-      }], response.code);
+      }], response.code, options);
     }
+    finalReview.noteRejected(resolved, request, options);
     return projectAgentFacingError({
       status: 'FAILED',
       code: 'CASE_RUNTIME_TECHNICAL',
       message: `Facade 生成的内部请求未通过 Runtime：${response.message || response.code || 'unknown error'}`,
       retryable: false,
     }, request);
+  }
+  if (request.operation === 'recordResult') {
+    if (response.status === 'RESULTS_RECORDED') finalReview.noteRecorded(resolved, request, options);
+    else finalReview.noteRejected(resolved, request, options);
   }
   try {
     return measureMetric(options, 'projectionMs', () => projectAgentFacingResponse(resolved, response, request, options));
@@ -231,7 +237,7 @@ function runBound(execDir, request, options = {}) {
   // section. lockHeld is an internal option, never taken from the public input.
   let response;
   try {
-    response = request?.operation === 'finish'
+    response = ['finish', 'recordResult'].includes(request?.operation)
       ? require('./store').withRuntimeLock(path.resolve(execDir), () =>
         executeRun(execDir, request, { ...runOptions, lockHeld: true }), runOptions)
       : executeRun(execDir, request, runOptions);

@@ -33,7 +33,7 @@ function errorResponse(error, operation = null, stalled = false, resources = [])
   const publicCode = stalled ? 'AGENT_INPUT_STALLED' : error.code;
   const code = PUBLIC_CONTRACT.errors[publicCode] ? publicCode : 'COORDINATOR_TECHNICAL';
   const rejected = ['COORDINATOR_INPUT_INVALID', 'AGENT_INPUT_STALLED', 'COORDINATOR_TERMINAL', 'DECISION_NOT_ALLOWED',
-    'RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH'].includes(code);
+    'RESOURCE_UNKNOWN', 'RESOURCE_SCOPE_MISMATCH', 'ENVIRONMENT_REFERENCE_INVALID'].includes(code);
   return errorEnvelope({ operation: recognizedOperation, status: rejected ? 'REJECTED' : 'FAILED',
     code, retryable: PUBLIC_CONTRACT.errors[code].retryable,
     resources: resources.filter((resource) => PUBLIC_CONTRACT.errors[code].resourceTypes.includes(resource.type)),

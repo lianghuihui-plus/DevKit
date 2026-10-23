@@ -52,7 +52,7 @@ advanceRun/cancelRun 在终态且报告发布状态不变时复用当前 runSumm
 - [`COORDINATOR_TERMINAL`](../errors/input-state.md#error-coordinator-terminal)
 - [`DECISION_NOT_ALLOWED`](../errors/input-state.md#error-decision-not-allowed)
 - [`ENVIRONMENT_NOT_READY`](../errors/environment.md#error-environment-not-ready)
-- [`IOS_SIGNING_REQUIRED`](../errors/environment.md#error-ios-signing-required)
+- [`ENVIRONMENT_REFERENCE_INVALID`](../errors/input-state.md#error-environment-reference-invalid)
 - [`INPUT_CAPABILITY_NOT_READY`](../errors/environment.md#error-input-capability-not-ready)
 - [`PLATFORM_UNAVAILABLE`](../errors/environment.md#error-platform-unavailable)
 - [`BATCH_BLOCKED`](../errors/batch.md#error-batch-blocked)

@@ -11,11 +11,13 @@ description: 用户明确要求从任意可读取材料编写、生成、导入�
 
 ## 工作区与版本绑定
 
-用户须提供或明确选定目标工作区，不扫描猜测其他目录。默认使用 MCP，无需另行请求试用：已有 READY 工作区调用 `mavt_workspace_open({workspace,role:"author"})`，用户明确选定的空工作区调用 `mavt_workspace_init({workspace,role:"author"})`。只使用成功响应原样返回的 `runtimeRoot`、`documentationRoot`、`bundleId` 和 `contextRef`；不拼造引用或路径。MCP context 只绑定路由与完整性，不认证调用者身份。所需工具未连接时停止并报告插件连接问题，不将本次任务悄悄改成 CLI。
+本文使用 MCP 原始工具名；通过宿主的工具发现入口按 `mavt` 查找并调用，实际名称可能带命名空间前缀，例如 `mcp__mavt__mavt_workspace_open`。
+
+用户须提供或明确选定目标工作区，不扫描猜测其他目录。通过 MCP 启动：已有 READY 工作区调用 `mavt_workspace_open({workspace,role:"author"})`，用户明确选定的空工作区调用 `mavt_workspace_init({workspace,role:"author"})`。只使用成功响应原样返回的 `runtimeRoot`、`documentationRoot`、`bundleId` 和 `contextRef`；不拼造引用或路径。MCP context 只绑定路由与完整性，不认证调用者身份。
 
 固定旧实现返回 `MAVT_MCP_LEGACY_INTERFACE` 时报告接口不兼容，不用当前版本接管旧绑定。MCP 调用返回 UNKNOWN 或结果不明时，按本次固定导入文档只读核对目标工作区落盘的用例、标题与来源定位；无法确认则报告结果不明并停止，不编造查询工具或重放导入。
 
-完整读取 `<documentationRoot>/references/case-authoring.md`，仅按本次导入需要读取 `<documentationRoot>/references/commands/authoring.md`。文档中的 `<skill-root>` 指返回的 `runtimeRoot`。脚本与文档均使用本次固定副本，不从工作区猜 `scripts/`，不回退安装缓存或开发源码。
+完整读取 `<documentationRoot>/references/case-authoring.md`。文档均使用本次固定副本，不从工作区猜 `scripts/`，不回退安装缓存或开发源码。
 
 ## 操作流程
 

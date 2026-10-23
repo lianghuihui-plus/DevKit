@@ -28,7 +28,7 @@ function fixture(root) {
   fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 14, runtime: 'case-runtime',
     executionId, batchId: prepared.batchId, caseProtocolSha: 'case-host-probe-protocol', platform: 'harmony', finalized: false }));
   fs.writeFileSync(path.join(execDir, 'runtime.json'), JSON.stringify({ schemaVersion: 1, executionId,
-    sessionRef: { statePath: path.join(workspace, 'runs', prepared.batchId, 'coordinator-state.json') } }));
+    sessionRef: { statePath: path.join(workspace, 'runs', prepared.batchId, 'batch.json') } }));
   fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
   const handoff = require(path.join(prepared.runtimeRoot, 'scripts/batch/agent-handoff')).createAgentHandoff({
     workspaceRoot: workspace, batchId: prepared.batchId, executionId, caseProtocolSha: 'case-host-probe-protocol',

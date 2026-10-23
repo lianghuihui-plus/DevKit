@@ -37,7 +37,7 @@ const OUTPUT_SCHEMA = { type: 'object', description: 'Authoritative domain resul
   outputBranch(['REJECTED', 'FAILED', 'UNKNOWN', 'REQUEST_INVALID']),
   { type: 'object', required: ['type', 'cases'], properties: { type: { const: 'caseAuthoringImport' }, cases: { type: 'array', items: { type: 'object' } } }, additionalProperties: true },
 ] };
-function definitions() { return Object.entries(schemas).map(([name, inputSchema]) => ({ name, description: name.replace(/^mavt_/, '').replace(/_/g, ' '), inputSchema, outputSchema: OUTPUT_SCHEMA,
+function definitions() { return Object.entries(schemas).map(([name, inputSchema]) => ({ name, description: CASE_CONTRACT.methods[name.replace(/^mavt_case_/, '')]?.summary || name.replace(/^mavt_/, '').replace(/_/g, ' '), inputSchema, outputSchema: OUTPUT_SCHEMA,
   annotations: { readOnlyHint: /doctor|inspect|list|show|validate|status|report|_read$|_image$/.test(name), destructiveHint: /apply|cancel/.test(name), openWorldHint: /confirm|advance/.test(name) } })); }
 function validate(name, args) {
   if (!Object.hasOwn(schemas, name)) throw Object.assign(new Error(`Unknown MAVT tool: ${name}`), { code: 'MAVT_MCP_TOOL_UNKNOWN' });

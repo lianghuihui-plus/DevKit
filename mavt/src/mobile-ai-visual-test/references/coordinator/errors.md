@@ -8,7 +8,7 @@
 <a id="error-coordinator-terminal"></a>- [`COORDINATOR_TERMINAL`](errors/input-state.md#error-coordinator-terminal)
 <a id="error-decision-not-allowed"></a>- [`DECISION_NOT_ALLOWED`](errors/input-state.md#error-decision-not-allowed)
 <a id="error-environment-not-ready"></a>- [`ENVIRONMENT_NOT_READY`](errors/environment.md#error-environment-not-ready)
-<a id="error-ios-signing-required"></a>- [`IOS_SIGNING_REQUIRED`](errors/environment.md#error-ios-signing-required)
+<a id="error-environment-reference-invalid"></a>- [`ENVIRONMENT_REFERENCE_INVALID`](errors/input-state.md#error-environment-reference-invalid)
 <a id="error-input-capability-not-ready"></a>- [`INPUT_CAPABILITY_NOT_READY`](errors/environment.md#error-input-capability-not-ready)
 <a id="error-platform-unavailable"></a>- [`PLATFORM_UNAVAILABLE`](errors/environment.md#error-platform-unavailable)
 <a id="error-batch-blocked"></a>- [`BATCH_BLOCKED`](errors/batch.md#error-batch-blocked)

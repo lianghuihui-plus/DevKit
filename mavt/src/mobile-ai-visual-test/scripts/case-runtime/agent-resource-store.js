@@ -420,11 +420,12 @@ function publishKnowledge(execDir, query, events) {
   return { candidateSet, query: publishedQuery, documents, reviews };
 }
 
-function publishLedger(execDir, events = store.events(execDir)) {
+function publishLedger(execDir, events = store.events(execDir), mode = 'complete') {
   const flow = require('./case-flow-service');
   const results = require('./expectation-result-service');
   const content = { eventHighWaterMark: events.at(-1)?.sequence || 0, caseFlowRevision: flow.current(execDir)?.revision || null,
     registry: flow.checkpointRegistry(execDir), ledger: results.currentLedger(execDir), readiness: results.finishReadiness(execDir) };
+  Object.assign(content, finalReview.snapshot(execDir, mode, content));
   const id = jsonHash(content);
   const dependencies = artifactAssociations(execDir, content, resourceRef(execDir, 'checkpointLedger', id));
   return publishResource(execDir, { type: 'checkpointLedger', id, params: { refMap: dependencies.refMap }, associations: dependencies.associations }, content);
@@ -475,9 +476,9 @@ function provideOperationResources(execDir, response, request) {
     result.invocationRef = value.data.ref;
     result.capabilityName = value.data.content.capabilityName;
   }
-  if (request.operation === 'finish' && response.code === 'CASE_FINAL_REVIEW_REQUIRED') {
+  if (request.operation === 'finish' && ['CASE_FINAL_REVIEW_REQUIRED', 'RESULT_CORRECTION_REQUIRED', 'CASE_FINAL_VERDICT_MISMATCH'].includes(response.code)) {
     result.finalReviewRequired = true;
-    result.finalReviewInstruction = '请重新阅读下面的完整原始用例，确认最终结果覆盖其完整业务目标、条件分支和最终结果；不要只根据 CHECK ledger 是否完整来结束用例。核对后重新提交 finish，无需回复确认。';
+    result.finalReviewInstruction = '请重新阅读完整原始用例及最新 checkpointLedger，确认全部业务约束（含顺序、条件、范围）均有 CHECK 覆盖；遗漏时先 plan 补齐并成功 recordResult。修正被拒绝不代表已生效，须成功重提交 pendingCheckNodeRefs。完成业务复核后提交 finish.finalReview:{token:最新 finalReviewToken,verdict:Agent 明确结论,sourceCoverageConfirmed:true}；结论须与最新 ledger 一致，不能只修改 summary。';
     result.originalCase = finalReview.sourceText(execDir);
   }
   const sceneId = responseSceneId(response, request);
@@ -497,7 +498,10 @@ function provideOperationResources(execDir, response, request) {
     });
   }
   if (['plan', 'recordResult', 'finish'].includes(request.operation)) {
-    if (!finalizedFinish && events.some((event) => event.type === 'caseFlowRevised')) add(publishLedger(execDir, events));
+    if (!finalizedFinish && events.some((event) => event.type === 'caseFlowRevised')) {
+      const ledger = add(publishLedger(execDir, events, request.operation === 'finish' ? request.input.mode : 'complete'));
+      for (const field of ['finalReviewToken', 'ledgerVerdict', 'pendingCheckNodeRefs']) result[field] = ledger.data.content[field];
+    }
     if (request.operation === 'recordResult') {
       const ids = new Set((request.input.results || []).map((item) => item.checkNodeRef));
       const current = new Map(events.filter((event) => event.type === 'expectationResultUpdated' && ids.has(event.expectationRef))

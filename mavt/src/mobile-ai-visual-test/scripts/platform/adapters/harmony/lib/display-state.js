@@ -27,6 +27,13 @@ function selectDeviceProfile(devices, deviceId) {
   return devices.find((item) => item.id === target || item.serial === target || item.name === target) || null;
 }
 
+function connectedDeviceProfiles(targets, profiles = []) {
+  const ids = [...new Set(String(targets || '').split(/\r?\n/).map(id => id.trim())
+    .filter(id => /^[A-Za-z0-9_][A-Za-z0-9_.:@-]*$/.test(id)))];
+  return ids.map(id => profiles.find(profile => profile.id === id || profile.serial === id)
+    || { id, serial: id, name: id });
+}
+
 function lastNumber(text, name) {
   const matches = [...String(text || '').matchAll(new RegExp(`^\\s*${name}:\\s*(\\d+)\\s*$`, 'gmi'))];
   return matches.length ? Number(matches[matches.length - 1][1]) : null;
@@ -55,6 +62,7 @@ function parseDisplayState(text) {
 }
 
 module.exports = {
+  connectedDeviceProfiles,
   parseDeviceList,
   parseDisplayState,
   selectDeviceProfile,

@@ -68,7 +68,7 @@ function resolveCaseBinding(record, locations, manifest) {
   const runtime = JSON.parse(fs.readFileSync(plainPath(execDir, 'runtime.json', 'file'), 'utf8'));
   if (execution.schemaVersion !== 14 || execution.executionId !== executionId || execution.batchId !== batchId ||
     execution.caseProtocolSha !== caseProtocolSha || runtime.executionId !== executionId ||
-    runtime.sessionRef?.statePath !== path.join(workspace, 'runs', batchId, 'coordinator-state.json')) invalid('Case execution identity or protocol changed');
+    runtime.sessionRef?.statePath !== path.join(workspace, 'runs', batchId, 'batch.json')) invalid('Case execution identity or protocol changed');
   const loaded = readRunBinding(workspace, batchId, { verifiedBundle: { bundleRoot: locations.bundleRoot, manifest } });
   if (!loaded.binding || loaded.bundleId !== record.bundleId) invalid('Case Run bundle mismatch');
   assertActiveDispatch(path.join(workspace, 'runs', batchId, 'handoffs', executionId), executionId, dispatchSequence);

@@ -46,3 +46,12 @@ Coordinator 已终止，不能再确认。
 **可重试：** 是
 
 **处理：** 按当前 runDecision 选择确认分支。
+
+<a id="error-environment-reference-invalid"></a>
+## ENVIRONMENT_REFERENCE_INVALID
+
+环境引用已过期或不属于当前 Run。
+
+**可重试：** 是
+
+**处理：** 使用当前 runDecision 的 environmentRef 重新确认。

@@ -8,7 +8,11 @@
 
 ```typescript
 confirmRun({ decision: "USE_CURRENT", userInstruction: string })
-confirmRun({ decision: "SELECT_PLATFORM", platform: "harmony" | "android" | "ios", deviceId?: string })
+confirmRun({ decision: "SELECT_PLATFORM", platform: "harmony" | "android" | "ios", deviceId?: string, appId?: string, appName?: string })
+confirmRun({ decision: "SELECT_APP", appId: string })
+confirmRun({ decision: "SELECT_ENVIRONMENT_OPTION", optionId: string })
+confirmRun({ decision: "RETRY_ENVIRONMENT" })
+confirmRun({ decision: "CONFIRM_ENVIRONMENT", environmentRef: string, userInstruction: string })
 confirmRun({ decision: "CONFIRM_BINDING", userInstruction: string, binding: object })
 ```
 
@@ -16,31 +20,25 @@ confirmRun({ decision: "CONFIRM_BINDING", userInstruction: string, binding: obje
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `decision` | 是 | `"USE_CURRENT" \| "SELECT_PLATFORM" \| "CONFIRM_BINDING"` | 当前 runDecision 允许的确认分支。 |
+| `decision` | 是 | `"USE_CURRENT" \| "SELECT_PLATFORM" \| "SELECT_APP" \| "SELECT_ENVIRONMENT_OPTION" \| "RETRY_ENVIRONMENT" \| "CONFIRM_ENVIRONMENT" \| "CONFIRM_BINDING"` | 当前 runDecision 允许的确认分支。 |
 | `userInstruction` | 否/条件 | `string` | 用户对使用当前环境或目标绑定的明确确认原文。 |
 | `platform` | 否/条件 | `"harmony" \| "android" \| "ios"` | 用户选择的平台。 |
 | `deviceId` | 否/条件 | `string` | 当前探测事实中的设备标识；多设备时必须明确选择。 |
-| `binding` | 否/条件 | `object` | 用户确认的目标设备与应用绑定。 |
-| `binding.platform` | 否/条件 | `"harmony" \| "android" \| "ios"` | 已选择的平台。 |
-| `binding.deviceId` | 否/条件 | `string` | 已确认的设备标识。 |
-| `binding.appId` | 否/条件 | `string` | 已确认的目标应用标识。 |
-| `binding.entry` | 否/条件 | `string` | HarmonyOS 或 Android 应用入口。 |
-| `binding.androidUiBackend` | 否/条件 | `"auto" \| "helper" \| "uiautomator"` | Android UI 后端策略：auto、helper 或 uiautomator。 |
-| `binding.deviceType` | 否/条件 | `"simulator" \| "realDevice"` | iOS 模拟器或真机。 |
-| `binding.deviceFormFactor` | 否/条件 | `string` | 设备形态。 |
-| `binding.xcodeOrgId` | 否/条件 | `string` | 用户确认的 iOS 签名团队。 |
-| `binding.xcodeSigningId` | 否/条件 | `string` | iOS 签名身份。 |
-| `binding.updatedWDABundleId` | 否/条件 | `string` | WDA 签名 Bundle ID。 |
+| `appId` | 否/条件 | `string` | 目标应用标识：优先使用用户已指定的标识，否则原样选择应用候选。 |
+| `appName` | 否/条件 | `string` | 用户提供的应用名称，歧义时仍需选择候选。 |
+| `optionId` | 否/条件 | `string` | 原样复制当前 runDecision 的配置候选 ID。 |
+| `environmentRef` | 否/条件 | `string` | 原样复制当前 Run 返回的就绪环境引用。 |
+| `binding` | 否/条件 | `object` | 兼容明确手动配置的高级输入，结构见下；正常流程使用 CONFIRM_ENVIRONMENT。 |
 
 ## 结构字段
 
 ```typescript
-input.binding: { platform: "harmony" | "android" | "ios"; deviceId: string; appId: string; entry?: string; androidUiBackend?: "auto" | "helper" | "uiautomator"; deviceType?: "simulator" | "realDevice"; deviceFormFactor?: string; xcodeOrgId?: string; xcodeSigningId?: string; updatedWDABundleId?: string }
+input.binding: { platform: "harmony" | "android" | "ios"; deviceId: string; appId: string; entry?: string; androidUiBackend?: "auto" | "helper" | "uiautomator"; deviceType?: "simulator" | "realDevice"; deviceFormFactor?: string; xcodeOrgId?: string; xcodeSigningId?: string; updatedWDABundleId?: string; platformVersion?: string }
 ```
 
 ## 条件要求
 
-- 三个 decision 分支不得混用字段。
+- decision 分支不得混用字段；配置和应用候选只能来自当前 runDecision；外部操作完成后提交 RETRY_ENVIRONMENT。
 
 ## 成功状态
 
@@ -74,7 +72,7 @@ advanceRun/cancelRun 在终态且报告发布状态不变时复用当前 runSumm
 - [`COORDINATOR_TERMINAL`](../errors/input-state.md#error-coordinator-terminal)
 - [`DECISION_NOT_ALLOWED`](../errors/input-state.md#error-decision-not-allowed)
 - [`ENVIRONMENT_NOT_READY`](../errors/environment.md#error-environment-not-ready)
-- [`IOS_SIGNING_REQUIRED`](../errors/environment.md#error-ios-signing-required)
+- [`ENVIRONMENT_REFERENCE_INVALID`](../errors/input-state.md#error-environment-reference-invalid)
 - [`INPUT_CAPABILITY_NOT_READY`](../errors/environment.md#error-input-capability-not-ready)
 - [`PLATFORM_UNAVAILABLE`](../errors/environment.md#error-platform-unavailable)
 - [`BATCH_BLOCKED`](../errors/batch.md#error-batch-blocked)
@@ -91,6 +89,22 @@ advanceRun/cancelRun 在终态且报告发布状态不变时复用当前 runSumm
 
 ```json
 {"operation":"confirmRun","input":{"decision":"USE_CURRENT","userInstruction":"确认使用当前环境"}}
+```
+
+```json
+{"operation":"confirmRun","input":{"decision":"SELECT_APP","appId":"com.example.app"}}
+```
+
+```json
+{"operation":"confirmRun","input":{"decision":"SELECT_ENVIRONMENT_OPTION","optionId":"published-option-id"}}
+```
+
+```json
+{"operation":"confirmRun","input":{"decision":"RETRY_ENVIRONMENT"}}
+```
+
+```json
+{"operation":"confirmRun","input":{"decision":"CONFIRM_ENVIRONMENT","environmentRef":"published-environment-ref","userInstruction":"确认执行"}}
 ```
 
 ```json

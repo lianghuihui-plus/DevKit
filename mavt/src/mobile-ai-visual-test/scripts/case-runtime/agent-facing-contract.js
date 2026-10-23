@@ -15,7 +15,7 @@ const RESOURCE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:[^:]+:.+$' }
 const RESOURCE_REF_ARRAY = { type: 'array', items: RESOURCE_REF };
 const SCENE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:scene:.+$' };
 const SCENE_REF_ARRAY = { type: 'array', items: SCENE_REF };
-const KNOWLEDGE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:knowledgeDocument:.+$' };
+const KNOWLEDGE_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:knowledgeDocument:.+$', description: '已评估为适用的 knowledgeDocument 引用；不接受 knowledgeReview、knowledgeQuery 或 candidateSet。无适用知识时省略。' };
 const KNOWLEDGE_REF_ARRAY = { type: 'array', items: KNOWLEDGE_REF };
 const TECHNICAL_REF = { type: 'string', pattern: '^mavt:[a-f0-9]{24}:technicalFact:.+$' };
 const TECHNICAL_REF_ARRAY = { type: 'array', items: TECHNICAL_REF };
@@ -92,15 +92,21 @@ const RESULT_EVIDENCE = object({
   technicalRefs: TECHNICAL_REF_ARRAY,
   searchAbsence: object({ sceneRef: SCENE_REF, scrollContextRef: STRING }, ['sceneRef', 'scrollContextRef']),
 }, []);
-const RESULT_REQUEST = object({
-  checkNodeRef: STRING,
-  status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE', 'WAIVED'] },
-  actual: STRING,
-  reason: STRING,
-  evidence: RESULT_EVIDENCE,
-}, ['checkNodeRef', 'status', 'actual']);
+const RESULT_REQUEST = { oneOf: [
+  object({ checkNodeRef: CASE_FLOW_NODE_REF,
+    status: { enum: ['PASS', 'FAIL', 'INCONCLUSIVE', 'BLOCKED', 'NOT_APPLICABLE'] },
+    actual: { ...STRING, description: '实际观察及与 CHECK 预期的差异；FAIL 的说明写在这里，不传 reason。' }, evidence: RESULT_EVIDENCE,
+  }, ['checkNodeRef', 'status', 'actual']),
+  object({ checkNodeRef: CASE_FLOW_NODE_REF, status: { const: 'WAIVED' }, actual: STRING, reason: STRING, evidence: RESULT_EVIDENCE },
+    ['checkNodeRef', 'status', 'actual', 'reason']),
+] };
 const NOT_RUN_EVIDENCE = object({ sceneRefs: SCENE_REF_ARRAY, technicalRefs: TECHNICAL_REF_ARRAY }, ['sceneRefs', 'technicalRefs']);
 const FLOW_CONTEXT = object({ nodeRef: STRING, selectedEdgeRef: STRING }, ['nodeRef']);
+const FINAL_REVIEW = object({
+  token: { type: 'string', pattern: '^[a-f0-9]{64}$', description: '最新响应或 checkpointLedger 中的 finalReviewToken，原样复制。' },
+  verdict: { enum: ['PASS', 'FAIL', 'BLOCKED', 'INCONCLUSIVE', 'NOT_RUN'] },
+  sourceCoverageConfirmed: { const: true, description: 'Agent 已重新通读完整原文并确认全部业务约束已覆盖，包括时序、条件及范围；Runtime 不代做此判断。' },
+}, ['token', 'verdict', 'sourceCoverageConfirmed']);
 
 const SCHEMAS = Object.freeze({
   observe: object({
@@ -145,10 +151,10 @@ const SCHEMAS = Object.freeze({
     object({ mode: { const: 'external' }, reason: STRING, externalAction: EXTERNAL_ACTION, flowContext: FLOW_CONTEXT }, ['mode', 'reason', 'externalAction']),
   ] },
   finish: { type: 'object', oneOf: [object({
-    mode: { const: 'complete' }, summary: STRING, uncertainties: STRING_ARRAY, flowContext: FLOW_CONTEXT,
+    mode: { const: 'complete' }, summary: STRING, uncertainties: STRING_ARRAY, flowContext: FLOW_CONTEXT, finalReview: FINAL_REVIEW,
   }, ['mode', 'summary']), object({
     mode: { const: 'notRun' }, reason: STRING,
-    evidence: NOT_RUN_EVIDENCE, summary: STRING, uncertainties: STRING_ARRAY, flowContext: FLOW_CONTEXT,
+    evidence: NOT_RUN_EVIDENCE, summary: STRING, uncertainties: STRING_ARRAY, flowContext: FLOW_CONTEXT, finalReview: FINAL_REVIEW,
   }, ['mode', 'reason', 'evidence', 'summary'])] },
 });
 
@@ -201,7 +207,9 @@ const PUBLIC_ERRORS = Object.freeze({
   SEQUENCE_FINAL_CAPTURE_FAILED: { group: 'sequence', retryable: true, resourceTypes: ['scene', 'sequenceResult', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '最终 Scene 采集失败。', recovery: '读取序列记录与技术事实，再观察当前现场。' },
   SEQUENCE_INTERRUPTED: { group: 'sequence', retryable: false, resourceTypes: ['scene', 'sequenceResult', 'screenshot', 'actionSpatialEvidence', 'technicalFact'], summary: '动作序列被中断。', recovery: '读取恢复后的现场与已完成步骤，不要盲目重放。' },
   CASE_RESULT_INCOMPLETE: { group: 'flow-result', retryable: true, summary: 'Ledger 仍有 unresolved 或 conflicts。', recovery: '逐项处置全部 Baseline CHECK 和最终活跃的补充 CHECK；可用 PASS、FAIL、BLOCKED、INCONCLUSIVE、条件检查的 NOT_APPLICABLE，或提供理由的 WAIVED。' },
-  CASE_FINAL_REVIEW_REQUIRED: { group: 'flow-result', retryable: true, summary: '最终收口前必须重新核对完整原始用例。', recovery: '阅读响应中的 originalCase 和 finalReviewInstruction，确认完整业务目标、条件分支和最终结果后重新提交同一 finish 请求。' },
+  CASE_FINAL_REVIEW_REQUIRED: { group: 'flow-result', retryable: true, summary: '最终复核未确认或快照已更新。', recovery: '重新阅读 originalCase 和最新 checkpointLedger，补齐遗漏 CHECK 并成功记录结果；确认完整业务约束后，使用最新 finalReviewToken、Agent verdict 和 sourceCoverageConfirmed:true 提交 finish.finalReview。' },
+  RESULT_CORRECTION_REQUIRED: { group: 'flow-result', retryable: true, summary: '结果修改尚未成功，旧结果不能用于收口。', recovery: '按 pendingCheckNodeRefs 修正 recordResult 的参数或证据，成功重提交对应 CHECK；* 表示无法识别先前请求的 CHECK，请成功重提交正确结果。不得通过摘要宣称修改已生效。' },
+  CASE_FINAL_VERDICT_MISMATCH: { group: 'flow-result', retryable: true, summary: 'Agent 明确结论与最新 ledger 聚合不一致。', recovery: '核对最新 CHECK 结果；如遗漏业务约束，先补齐 CHECK 和证据并成功记录；只有确认原文覆盖与聚合一致后再提交 finalReview。' },
   TIME_LIMIT: { group: 'flow-result', retryable: false, summary: '已停止新的设备动作。', recovery: '不再执行设备动作；使用已有证据收口可判断项，并披露未完成项和时间限制。' },
   CASE_RUNTIME_TECHNICAL: { group: 'knowledge-recovery', retryable: false, resourceTypes: ['technicalFact'], summary: '未归类的 execution 技术异常。', recovery: '读取 technical.stage、logRefs 和 resourceFacts 排障；恢复后先 observe 核验现场，再回到原业务节点。' },
 });
@@ -246,6 +254,7 @@ function projection(resultFields, primaryResourceType, associatedResourceTypes) 
   return Object.freeze({ resultFields: ['outcome', ...resultFields], primaryResourceType, associatedResourceTypes });
 }
 const SCENE_RESOURCES = ['screenshot', 'layout', 'elementSet', 'actionSpatialEvidence', 'technicalFact'];
+const REVIEW_FIELDS = ['finalReviewToken', 'ledgerVerdict', 'pendingCheckNodeRefs'];
 
 const PUBLIC_METHODS = Object.freeze({
   observe: method('observe', '采集一个新 Scene，不执行业务动作。', SCHEMAS.observe, {
@@ -275,7 +284,7 @@ const PUBLIC_METHODS = Object.freeze({
   plan: method('plan', '创建或修订完整 Case Flow。', SCHEMAS.plan, {
     caseFlow: '完整 Case Flow 快照',
   }, {
-    responseProjection: projection(['caseFlowRef', 'revision', 'idempotent', 'retiredNodeIds', 'retiredEdgeIds', 'invalidatedResultRefs'], null, ['caseFlow', 'checkpointLedger', 'checkpointResult']),
+    responseProjection: projection(['caseFlowRef', 'revision', 'idempotent', 'retiredNodeIds', 'retiredEdgeIds', 'invalidatedResultRefs', ...REVIEW_FIELDS], null, ['caseFlow', 'checkpointLedger', 'checkpointResult']),
     conditionalRequirements: [
       '首次 baseRevision 为 null；修订时等于当前 revision 且 reason 必填。',
       '所有节点 ref、entryNodeRef 以及边的 from/to 统一按流程顺序使用 N1、N2…（^N[1-9]\\d*$）；不要按节点类型使用 A1、C1、E1 等前缀。',
@@ -317,13 +326,14 @@ const PUBLIC_METHODS = Object.freeze({
   recordResult: method('recordResult', '独立记录已完成证据闭环的验证点结果；成功表示整批结果均已闭环，不采集 Scene、不执行动作。', SCHEMAS.recordResult, {
     results: '已形成判断的验证结果和证据引用',
   }, {
-    responseProjection: projection(['recordedResultRefs', 'idempotentCheckNodeIds'], null, ['checkpointResult', 'checkpointLedger']),
+    responseProjection: projection(['recordedResultRefs', 'idempotentCheckNodeIds', ...REVIEW_FIELDS], null, ['checkpointResult', 'checkpointLedger']),
     conditionalRequirements: ['WAIVED 必须提供独立非空 reason；其他状态不得提供 reason。', 'NOT_APPLICABLE 只允许用于 CONDITIONAL 检查点。'],
     contextualValidationRules: ['所有结果先完整校验且证据闭合；任一结果无效或未闭合时整批不写入。', '引用 Scene 的结果必须先对同一 Scene 使用 inspect(mode="visual") 登记视觉事实。', 'Baseline CHECK 始终可处置；补充 CHECK 仅在最终 Working Flow 中活跃时进入结束闭环。', '知识、Scene 和技术事实可支撑豁免，但 Runtime 不要求知识命中，也不判断豁免理由是否充分。'],
     successStatuses: ['RESULTS_RECORDED'],
     errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'EXPECTATION_UNKNOWN', 'EVIDENCE_REFERENCE_INVALID', 'VISUAL_INSPECTION_REQUIRED', 'RECORD_RESULT_INVALID', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['追加 expectation result 事件'], idempotency: '相同结果重复提交不追加重复事件。',
     minimalExample: { operation: 'recordResult', input: { results: [{ checkNodeRef: 'N1', status: 'PASS', actual: '目标结果可见', evidence: { sceneRefs: [EXAMPLE_SCENE_REF] } }] } },
+    additionalExamples: [{ results: [{ checkNodeRef: 'N1', status: 'FAIL', actual: '原文要求先年龄确认后隐私协议；已观察并为 N1 登记的两次 Scene 显示顺序相反', evidence: { sceneRefs: [EXAMPLE_SCENE_REF, 'mavt:0123456789abcdef01234567:scene:scene-2'] } }] }],
   }),
   act: method('act', '执行一个动作并返回完整新 Scene，控制权立即交还 Agent。', SCHEMAS.act, {
     sceneRef: '当前 Scene', action: '发布的 ActionRef 或 Agent 自主视觉坐标动作',
@@ -396,15 +406,17 @@ const PUBLIC_METHODS = Object.freeze({
   }),
   finish: method('finish', '从 CHECK ledger 收口并完成用例。', SCHEMAS.finish, {
     mode: 'complete 或 notRun', summary: '最终摘要', uncertainties: '仍需披露的不确定性',
+    finalReview: '首次复核响应后必填：最新 token、Agent 明确 verdict、确认完整原文覆盖 sourceCoverageConfirmed:true。',
     reason: 'NOT_RUN 的业务原因', evidence: 'NOT_RUN 引用的已登记 Scene 或技术事实', flowContext: '实际到达的 END 节点',
   }, {
-    responseProjection: projection(['executionId', 'verdict', 'caseResultRef', 'idempotent', 'finalReviewRequired', 'finalReviewInstruction', 'originalCase'], null, ['caseResult', 'checkpointLedger', 'technicalFact']),
-    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', '首次满足收口条件的 finish 会先要求一次原始用例复核，复核要求只触发一次；收到复核提示后重新提交 finish。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', '出现预期不符、操作无效果、异常反复、原因不明或无法形成可靠判断时，优先并尽早完成知识调查。只有问题已由现场证据或明确技术事实完整解释，且知识不会影响下一步或结论时才不查询；无适用候选仍按现场证据处置。', 'NOT_RUN 必须提供原因和已登记证据。'],
+    responseProjection: projection(['executionId', 'verdict', 'caseResultRef', 'idempotent', 'finalReviewRequired', 'finalReviewInstruction', 'originalCase', ...REVIEW_FIELDS], null, ['caseResult', 'checkpointLedger', 'technicalFact']),
+    contextualValidationRules: ['正常收口由 Runtime 从 ledger 组装；全部 Baseline CHECK 和最终活跃补充 CHECK 必须已处置。', '首次满足收口条件的 finish 要求原文复核；重复原请求不能代替确认。Agent 复核后提交 finalReview，token 必须绑定最新原文、Flow、结果和待处理修正，verdict 须与 ledger 聚合一致。', 'recordResult 被拒绝时没有写入；必须成功重提交对应 CHECK 后才能 finish。读资源或重排路线不会解除待处理修正。', 'WAIVED 与 NOT_APPLICABLE 不降低聚合后的 PASS；报告会单独披露豁免。', '出现预期不符、操作无效果、异常反复、原因不明或无法形成可靠判断时，优先并尽早完成知识调查。只有问题已由现场证据或明确技术事实完整解释，且知识不会影响下一步或结论时才不查询；无适用候选仍按现场证据处置。', 'NOT_RUN 必须提供原因和已登记证据。'],
     successStatuses: ['COMPLETED', 'RESULT_INCOMPLETE'],
-    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_FINAL_REVIEW_REQUIRED', 'CASE_RUNTIME_TECHNICAL'],
+    errorCodes: ['AGENT_INPUT_INVALID', 'BINDING_INVALID', 'CASE_FLOW_REQUIRED', 'CASE_RESULT_INCOMPLETE', 'CASE_FINAL_REVIEW_REQUIRED', 'RESULT_CORRECTION_REQUIRED', 'CASE_FINAL_VERDICT_MISMATCH', 'CASE_RUNTIME_TECHNICAL'],
     sideEffects: ['就绪后持久化最终结果'], idempotency: '复用现有可恢复 finish 事务。',
     minimalExample: { operation: 'finish', input: { mode: 'complete', summary: '验证完成' } },
-    additionalExamples: [{ mode: 'notRun', reason: '必要执行条件无法在当前 execution 内建立且没有安全继续路径', summary: '未运行', evidence: { sceneRefs: [EXAMPLE_SCENE_REF], technicalRefs: [] } }],
+    additionalExamples: [{ mode: 'notRun', reason: '必要执行条件无法在当前 execution 内建立且没有安全继续路径', summary: '未运行', evidence: { sceneRefs: [EXAMPLE_SCENE_REF], technicalRefs: [] } },
+      { mode: 'complete', summary: '原文时序检查未满足', finalReview: { token: 'a'.repeat(64), verdict: 'FAIL', sourceCoverageConfirmed: true } }],
   }),
 });
 

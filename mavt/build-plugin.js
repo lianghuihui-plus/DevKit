@@ -227,20 +227,196 @@ function buildPlugin({ repoRoot = DEFAULT_REPO, outputRoot, includeTests = false
   }
 }
 
+function clearInterruptedReclaim(dist, lock, stat) {
+  for (const entry of fs.readdirSync(dist).filter(name => /^\.mavt-reclaim-owner-[a-f0-9-]+\.json$/.test(name))) {
+    const witness = path.join(dist, entry);
+    let owner;
+    try { ordinaryStat(witness); owner = JSON.parse(fs.readFileSync(witness, 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (owner.lockDevice !== stat.dev || owner.lockInode !== stat.ino || owner.lockBirthtime !== stat.birthtimeMs) continue;
+    if (owner.hostname !== require('node:os').hostname() || !Number.isInteger(owner.pid) || owner.pid < 1) continue;
+    try { process.kill(owner.pid, 0); continue; } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    try { fs.rmdirSync(lock); }
+    catch (error) { if (error.code === 'ENOTEMPTY') return true; if (error.code !== 'ENOENT') throw error; }
+    try { fs.unlinkSync(witness); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return true;
+  }
+  return false;
+}
+
+function acquirePublicationLock(dist) {
+  const lock = path.join(dist, '.mavt-marketplace.publish-lock');
+  const staging = fs.mkdtempSync(path.join(dist, '.mavt-lock-'));
+  const ownerName = `owner-${crypto.randomUUID()}.json`;
+  const stagingStat = fs.statSync(staging);
+  const owner = { pid: process.pid, hostname: require('node:os').hostname(),
+    lockDevice: stagingStat.dev, lockInode: stagingStat.ino, lockBirthtime: stagingStat.birthtimeMs };
+  fs.writeFileSync(path.join(staging, ownerName), JSON.stringify(owner), { flag: 'wx' });
+  try {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      // Publish a nonempty lock atomically: there is no owner-writing window.
+      if (!fs.existsSync(lock)) {
+        try { fs.renameSync(staging, lock); return { lock, ownerName }; }
+        catch (error) { if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error; }
+      }
+      const lockStat = ordinaryStat(lock);
+      if (!lockStat.isDirectory()) throw new Error('Invalid publication lock');
+      const entries = fs.readdirSync(lock);
+      if (!entries.length && clearInterruptedReclaim(dist, lock, lockStat)) continue;
+      if (entries.length !== 1 || !/^owner-[a-f0-9-]+\.json$/.test(entries[0])) throw new Error('Unknown publication lock; preserved for inspection');
+      const previousFile = path.join(lock, entries[0]);
+      let previous;
+      try { ordinaryStat(previousFile); previous = JSON.parse(fs.readFileSync(previousFile, 'utf8')); }
+      catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      if (!Number.isInteger(previous.pid) || previous.pid < 1 || previous.hostname !== owner.hostname) throw new Error('Invalid or foreign publication lock owner');
+      try { process.kill(previous.pid, 0); throw new Error(`Publication lock is held by process ${previous.pid}`); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+      // Keep the dead owner's identity outside the directory before emptying
+      // it, so a kill between these steps can be recovered without guessing
+      // whether an arbitrary empty lock belongs to this publisher.
+      const witness = path.join(dist, `.mavt-reclaim-${entries[0]}`);
+      try { fs.renameSync(previousFile, witness); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      try { fs.rmdirSync(lock); } catch (error) { if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error; }
+      try { fs.unlinkSync(witness); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    throw new Error('Publication lock changed concurrently; retry the build');
+  } finally { fs.rmSync(staging, { recursive: true, force: true }); }
+}
+
+function verifyMarketplace(outputRoot) {
+  // Archive/recover only a complete, recognized build, never arbitrary files.
+  for (const [relative, expected] of [
+    ['', ['.agents', 'plugins']], ['.agents', ['plugins']],
+    ['.agents/plugins', ['marketplace.json']], ['plugins', ['mavt']],
+  ]) {
+    const directory = path.join(outputRoot, relative);
+    if (!ordinaryStat(directory).isDirectory() || JSON.stringify(fs.readdirSync(directory).sort()) !== JSON.stringify(expected)) {
+      throw new Error(`Unrecognized MAVT build directory; preserved without replacement: ${directory}`);
+    }
+  }
+  const indexPath = path.join(outputRoot, '.agents/plugins/marketplace.json');
+  if (!ordinaryStat(indexPath).isFile()) throw new Error('Marketplace index must be an ordinary file');
+  const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+  if (index.name !== 'mavt-local' || index.plugins?.length !== 1 || index.plugins[0].name !== 'mavt' ||
+    index.plugins[0].source?.source !== 'local' || index.plugins[0].source?.path !== './plugins/mavt') {
+    throw new Error('Unrecognized MAVT marketplace; preserved without replacement');
+  }
+  return require('./src/mobile-ai-visual-test/scripts/lib/runtime-bundle').verifyBundle(path.join(outputRoot, 'plugins/mavt'));
+}
+
+function recoverPublication(dist, outputRoot, journal) {
+  if (!fs.existsSync(journal)) return;
+  if (!ordinaryStat(journal).isFile()) throw new Error('Invalid publication journal');
+  const record = JSON.parse(fs.readFileSync(journal, 'utf8'));
+  const digest = /^[a-f0-9]{64}$/;
+  if (record.schemaVersion !== 1 || !/^\.mavt-publish-[A-Za-z0-9]+$/.test(record.candidate) ||
+    !digest.test(record.bundleId) || (record.archive !== null &&
+      (!/^mavt-marketplace-\d+-[a-f0-9-]+$/.test(record.archive) || !digest.test(record.previousBundleId)))) {
+    throw new Error('Invalid publication journal; preserved for inspection');
+  }
+  const candidate = path.join(dist, record.candidate);
+  if (record.archive === null && fs.existsSync(outputRoot) && ordinaryStat(outputRoot).isDirectory() && fs.readdirSync(outputRoot).length === 0) {
+    if (verifyMarketplace(candidate).bundleId !== record.bundleId) throw new Error('Candidate publication identity mismatch');
+    fs.rmdirSync(outputRoot);
+  }
+  if (!fs.existsSync(outputRoot)) {
+    let restored;
+    if (record.archive) {
+      ordinaryStat(path.join(dist, 'archive'));
+      restored = path.join(dist, 'archive', record.archive);
+      if (verifyMarketplace(restored).bundleId !== record.previousBundleId) throw new Error('Archived publication identity mismatch');
+    } else {
+      restored = candidate;
+      if (verifyMarketplace(restored).bundleId !== record.bundleId) throw new Error('Candidate publication identity mismatch');
+    }
+    fs.renameSync(restored, outputRoot);
+  }
+  const active = verifyMarketplace(outputRoot).bundleId;
+  if (active !== record.bundleId && active !== record.previousBundleId) throw new Error('Active publication changed; journal preserved');
+  let retiredCandidate;
+  if (fs.existsSync(candidate)) {
+    if (verifyMarketplace(candidate).bundleId !== record.bundleId) throw new Error('Candidate publication identity mismatch');
+    retiredCandidate = path.join(dist, `.mavt-retired-candidate-${crypto.randomUUID()}`);
+    fs.renameSync(candidate, retiredCandidate);
+  }
+  fs.unlinkSync(journal);
+  // Recursive cleanup can be interrupted; it must never corrupt a directory
+  // that a live recovery journal still requires to pass integrity validation.
+  if (retiredCandidate) fs.rmSync(retiredCandidate, { recursive: true });
+}
+
+function buildDefaultPlugin({ repoRoot = DEFAULT_REPO, includeTests = false } = {}) {
+  repoRoot = path.resolve(repoRoot);
+  const dist = path.join(repoRoot, 'dist');
+  fs.mkdirSync(dist, { recursive: true });
+  ordinaryStat(dist);
+  const outputRoot = path.join(dist, 'mavt-marketplace');
+  const { lock, ownerName } = acquirePublicationLock(dist);
+  const journal = path.join(dist, '.mavt-marketplace.publish.json');
+  const journalTemp = path.join(dist, `.mavt-journal-${crypto.randomUUID()}.tmp`);
+  let candidate;
+  let archivedMarketplaceRoot = null;
+  try {
+    // Restore visibility before building, even if the current sources are broken.
+    recoverPublication(dist, outputRoot, journal);
+    candidate = fs.mkdtempSync(path.join(dist, '.mavt-publish-'));
+    const built = buildPlugin({ repoRoot, outputRoot: candidate, includeTests });
+    let existing = false;
+    try {
+      const stat = fs.lstatSync(outputRoot);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Default build output must be an ordinary directory');
+      existing = fs.readdirSync(outputRoot).length > 0;
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const previous = existing ? verifyMarketplace(outputRoot) : null;
+    if (existing) {
+      const archiveRoot = path.join(dist, 'archive');
+      fs.mkdirSync(archiveRoot, { recursive: true });
+      ordinaryStat(archiveRoot);
+      archivedMarketplaceRoot = path.join(archiveRoot, `mavt-marketplace-${Date.now()}-${crypto.randomUUID()}`);
+    }
+    // Persist recovery facts before the first destructive rename. A partial
+    // journal is never made visible, and all paths are constrained on recovery.
+    fs.writeFileSync(journalTemp, JSON.stringify({ schemaVersion: 1, candidate: path.basename(candidate),
+      bundleId: built.manifest.bundleId, archive: archivedMarketplaceRoot ? path.basename(archivedMarketplaceRoot) : null,
+      previousBundleId: previous?.bundleId || null }), { flag: 'wx' });
+    fs.renameSync(journalTemp, journal);
+    if (existing) fs.renameSync(outputRoot, archivedMarketplaceRoot);
+    else if (fs.existsSync(outputRoot)) fs.rmdirSync(outputRoot);
+    try { fs.renameSync(candidate, outputRoot); }
+    catch (error) {
+      if (archivedMarketplaceRoot) fs.renameSync(archivedMarketplaceRoot, outputRoot);
+      throw error;
+    }
+    fs.unlinkSync(journal);
+    return { ...built, marketplaceRoot: outputRoot, pluginRoot: path.join(outputRoot, 'plugins/mavt'), archivedMarketplaceRoot };
+  } finally {
+    // A journal owns its candidate until recovery has completed.
+    if (candidate && !fs.existsSync(journal)) fs.rmSync(candidate, { recursive: true, force: true });
+    if (fs.existsSync(journalTemp)) fs.unlinkSync(journalTemp);
+    // Release atomically before cleanup; a kill cannot leave an ownerless lock.
+    ordinaryStat(path.join(lock, ownerName));
+    const retired = path.join(dist, `.mavt-retired-${ownerName.slice(0, -5)}`);
+    fs.renameSync(lock, retired);
+    fs.rmSync(retired, { recursive: true });
+  }
+}
+
 function main(argv) {
   if (argv.length === 1 && argv[0] === '--write-file-list') {
     process.stdout.write(JSON.stringify(writeReleaseFileList()) + '\n');
     return;
   }
   let outputRoot = path.join(DEFAULT_REPO, 'dist/mavt-marketplace');
+  let explicitOutput = false;
   let includeTests = false;
   for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] === '--output' && argv[index + 1]) outputRoot = argv[++index];
+    if (argv[index] === '--output' && argv[index + 1]) { outputRoot = argv[++index]; explicitOutput = true; }
     else if (argv[index] === '--include-tests') includeTests = true;
     else throw new Error(`Unknown or incomplete argument: ${argv[index]}. Usage: node build-plugin.js --output /absolute/path [--include-tests]`);
   }
-  const result = buildPlugin({ outputRoot, includeTests });
-  process.stdout.write(JSON.stringify({ marketplaceRoot: result.marketplaceRoot, pluginRoot: result.pluginRoot, bundleId: result.manifest.bundleId }) + '\n');
+  const result = explicitOutput ? buildPlugin({ outputRoot, includeTests }) : buildDefaultPlugin({ includeTests });
+  process.stdout.write(JSON.stringify({ marketplaceRoot: result.marketplaceRoot, pluginRoot: result.pluginRoot,
+    bundleId: result.manifest.bundleId, ...(result.archivedMarketplaceRoot ? { archivedMarketplaceRoot: result.archivedMarketplaceRoot } : {}) }) + '\n');
 }
 
 if (require.main === module) {
@@ -248,4 +424,4 @@ if (require.main === module) {
   catch (error) { process.stderr.write(`MAVT build failed: ${error.message}\n`); process.exitCode = 1; }
 }
 
-module.exports = { buildPlugin, writeReleaseFileList };
+module.exports = { buildPlugin, buildDefaultPlugin, writeReleaseFileList };

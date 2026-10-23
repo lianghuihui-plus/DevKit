@@ -68,7 +68,7 @@ fi
 
 node -e '
 const { classifyRuntimeDisplay, normalizeDeviceFormFactor } = require(process.argv[9]);
-const { parseDeviceList, parseDisplayState, selectDeviceProfile } = require(process.argv[10]);
+const { connectedDeviceProfiles, parseDeviceList, parseDisplayState, selectDeviceProfile } = require(process.argv[10]);
 const hdc = !!process.argv[3];
 const device = process.argv[1] || null;
 const uitestVersion = process.argv[4] || null;
@@ -82,7 +82,7 @@ if (explicitFormFactorRaw && !explicitFormFactor) {
   console.error(`无效 --device-form-factor: ${explicitFormFactorRaw}`);
   process.exit(2);
 }
-const devices = parseDeviceList(process.argv[12] || "");
+const devices = connectedDeviceProfiles(process.argv[2], parseDeviceList(process.argv[12] || ""));
 let selectedProfile = selectDeviceProfile(devices, device);
 if (explicitFormFactor && selectedProfile) {
   selectedProfile.deviceFormFactor = explicitFormFactor;

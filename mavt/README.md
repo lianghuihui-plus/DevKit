@@ -40,7 +40,9 @@ npm test
 npm run build
 ```
 
-默认输出 `dist/mavt-marketplace/`，目录必须不存在或为空；不会覆盖非空输出。也可指定任意绝对输出路径：
+`npm run build` 固定发布到 `dist/mavt-marketplace/`，Codex 市场始终使用这个路径。先完成新包构建和校验，再将已有的有效 MAVT 构建归档到 `dist/archive/` 并发布新包；普通构建失败时保留原安装源。发布切换被强制中断时，下次运行 `npm run build` 会先根据事务记录恢复安装源、回收已退出发布进程的锁，再构建；活动进程的锁、未知文件或损坏产物会阻止替换。不会自动安装插件或修改 Codex 配置。
+
+也可指定其他绝对输出路径；显式 `--output` 仍要求目标不存在或为空，不自动覆盖：
 
 ```sh
 node build-plugin.js --output /absolute/path/mavt-marketplace
@@ -87,7 +89,7 @@ codex plugin add mavt@mavt-local
 codex plugin list --marketplace mavt-local --json
 ```
 
-首阶段实际验证版本为 Codex CLI `0.163.0-alpha.10.2`。插件 `0.2.1` 保留三个入口：
+首阶段实际验证版本为 Codex CLI `0.163.0-alpha.10.2`。插件 `0.3.6` 保留三个入口：
 
 | 入口 | 中文显示名 | 职责 |
 | --- | --- | --- |
@@ -97,7 +99,21 @@ codex plugin list --marketplace mavt-local --json
 
 通常先编写用例，再执行测试，按需维护知识；已有用例可直接执行。三个入口的目录名与 frontmatter `name` 一致，中文显示信息放在各自的 `agents/openai.yaml`，自动发现保持默认启用。
 
-三个入口及新 Case 执行均使用 MCP。Loader 仍须由独立 Case Agent 原样执行一次，返回其 execution/dispatch 专属 `contextRef`；Handoff 冻结 `runtime.transport:"MCP"`，Brief 不再交付 CLI 命令模板。截图按需通过 `mavt_case_image` 或子 Agent 已验证可见的本地图片查看器读取，实际看图后登记 inspection。worker 由每个 MCP 服务实例共享，最多 5 个，空闲 5 分钟回收。工具缺失或旧固定接口不支持 MCP 时报告阻塞，不在新流程中回退 CLI。冷启动、复用和内存的历史测量及边界见[验证汇总](verification/summary.md)；新版本的设备效果与整批耗时由用户验证。
+`0.3.0` 的环境设置统一为：选择平台与设备 → 选择目标 App → 自动解析入口和配置、准备依赖 → 确认执行。三端由同一 Coordinator 状态机编排，差异留在平台适配器；普通流程不要求填写 Activity、Ability、UDID 或签名团队标识。已有配置会先复查设备、应用、入口和签名，再允许复用；确认后整批共用冻结环境，不在各 Case 中重复发现。
+
+应用发现以实际工具能力为准：Android 枚举用户安装应用，目前以包名显示候选；HarmonyOS 解析 bundle 元数据；iOS 读取模拟器或设备应用列表。明确 App ID 优先，同名候选需要选择，不默认使用前台 App。iOS 可从本机有效开发证书和匹配设备的 provisioning profile 自动解析 WDA 配置；首次配对、信任、Developer Mode、开发者账号或缺失签名材料仍可能需要按提示在设备或 Xcode 完成一次设置。多团队或多启动入口返回命名候选，不默认取第一个。iOS 的 Appium/WDA 启动仍由原有批次运行时统一管理。
+
+`0.3.1` 修复 iOS 旧系统的应用查询：`devicectl` 不可用时自动使用已安装 XCUITest 驱动自带的 Installation Proxy，应用发现、安装状态和版本查询共用兼容通道，无需额外安装查询工具。设备发现仍使用 `xcdevice`，环境准备不再强制要求 `devicectl`；仅缓存成功通道，不缓存安装结果。此修复需更新插件后新建 Run，已有 Run 仍使用其冻结版本。旧系统的实际执行还取决于本机 Xcode、XCUITest/WDA 与目标系统的兼容性，真机验收由用户完成。
+
+`0.3.3` 修复 iOS 自动签名身份类别，真机本地 WDA 先独立构建成功再由 Appium 启动，按工具链、系统和签名隔离增量缓存，并保留 Run 关联的构建与启动诊断。更新插件后新建 Run 验证运行时修复，构建不会自动安装。
+
+`0.3.4` 修复三端共用的 Case MCP 会话路径校验：会话引用绑定当前 Run 的 `batch.json`，协调状态仍使用 `coordinator-state.json`；错 Run、越界或缺失路径继续拒绝。离线回归覆盖真实批次派发、Loader 与 MCP worker 读取链路；更新后新建 Run，旧 Run 固定副本不会改写。
+
+`0.3.5` 修复 Android 多启动入口和 Helper 空配置恢复：系统返回入口选择器时自动枚举目标应用入口，通过统一选项流程选择并重新验证；唯一入口保持单次查询。Helper 恢复空服务列表时正确保留空参数，同时保留其他无障碍服务。离线回归覆盖 shell 参数解析及选择、确认流程；真机效果由用户更新插件后新建 Run 验证。
+
+`0.3.6` 修复结果复核闭环：原文明示业务时序、条件、范围由 Agent 建立 CHECK，不能因导航重排而丢失；被拒绝的结果修改必须成功重提后才可收口。最终复核提交最新快照 token、Agent 明确结论及原文覆盖确认，Runtime 仅检查版本和 ledger 聚合一致性，不解析摘要或代做业务判断。MCP Schema 与结果规则统一，提供合法 FAIL 示例。更新插件后新建 Run 验证；已有 Run 保持冻结版本，构建不自动安装。
+
+三个入口及新 Case 执行均使用 MCP。文档使用原始工具名，宿主可能通过命名空间前缀和工具发现入口提供这些工具。Loader 仍须由独立 Case Agent 原样执行一次，返回其 execution/dispatch 专属 `contextRef`；Handoff 冻结 `runtime.transport:"MCP"`。委托前检查独立上下文与 Agent 句柄，子 Agent 启动后发现自己的工具和图片查看能力。截图按需通过 `mavt_case_image` 或子 Agent 已验证可见的本地图片查看器读取，实际看图后登记 inspection。worker 由每个 MCP 服务实例共享，最多 5 个，空闲 5 分钟回收。冷启动、复用和内存的历史测量及边界见[验证汇总](verification/summary.md)；新版本的设备效果与整批耗时由用户验证。
 
 从 `0.1.0` 升级时，旧入口 `mavt:mavt-case-authoring`、`mavt:mobile-ai-visual-test`、`mavt:mavt-knowledge-manager` 分别替换为上表三个入口。更新安装源后重新运行 `codex plugin add mavt@mavt-local`，新开或重载会话后选择新入口；不保留重复的旧入口别名。已有 Run 仍通过原固定运行时恢复。
 

@@ -38,7 +38,7 @@ input.caseFlow: { baseRevision: number | null; summary: string; entryNodeRef: st
 
 ### 成功
 
-- 简单结果：`outcome`、`caseFlowRef`、`revision`、`idempotent`、`retiredNodeIds`、`retiredEdgeIds`、`invalidatedResultRefs`。
+- 简单结果：`outcome`、`caseFlowRef`、`revision`、`idempotent`、`retiredNodeIds`、`retiredEdgeIds`、`invalidatedResultRefs`、`finalReviewToken`、`ledgerVerdict`、`pendingCheckNodeRefs`。
 - 主数据：无。
 - 关联资源：`caseFlow`、`checkpointLedger`、`checkpointResult`。
 

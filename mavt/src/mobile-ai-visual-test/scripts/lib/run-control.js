@@ -83,13 +83,6 @@ function validateProbeSelection(probe, binding) {
   const selected = devices.some((device) => [device?.id, device?.serial, device?.udid, device?.name]
     .filter(Boolean).some((value) => String(value) === String(binding.deviceId)));
   if (!selected) throw contractError('ENVIRONMENT_CONFIRMATION_INVALID', 'confirmed device is not present in the probe result');
-  if (probe.executionReady === false && binding.platform === 'ios' && binding.deviceType === 'realDevice') {
-    const missing = ['xcodeOrgId', 'xcodeSigningId', 'updatedWDABundleId']
-      .filter((field) => !String(binding[field] || '').trim());
-    if (missing.length) {
-      throw contractError('IOS_SIGNING_INCOMPLETE', `iOS 真机确认缺少签名字段: ${missing.join(', ')}`);
-    }
-  }
   return probe;
 }
 

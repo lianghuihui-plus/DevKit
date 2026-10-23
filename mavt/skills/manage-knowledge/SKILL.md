@@ -11,7 +11,9 @@ description: 用户需要查看、校验、新增、修改或删除 MAVT 工作�
 
 ## 工作区与版本绑定
 
-默认使用 MCP，调用 `mavt_workspace_open({workspace,role:"knowledge"})`，无需另行请求试用。保留响应原样返回的 `knowledgeRoot`、`bundleId` 和 `contextRef`，不要猜路径或拼造引用；contextRef 只绑定路由与完整性，不认证调用者身份。所需工具未连接时停止并报告插件连接问题。
+本文使用 MCP 原始工具名；通过宿主的工具发现入口按 `mavt` 查找并调用，实际名称可能带命名空间前缀，例如 `mcp__mavt__mavt_workspace_open`。
+
+调用 `mavt_workspace_open({workspace,role:"knowledge"})`。保留响应原样返回的 `knowledgeRoot`、`bundleId` 和 `contextRef`，不要猜路径或拼造引用；contextRef 只绑定路由与完整性，不认证调用者身份。
 
 只接受已有 READY 工作区；失败时报告原因，不改用 `mavt_workspace_init` 隐式初始化。固定旧实现返回 `MAVT_MCP_LEGACY_INTERFACE` 时报告接口不兼容，不接管旧绑定。完整读取本次 `<knowledgeRoot>/references/workflow.md`，调用 `mavt_knowledge_inspect({contextRef})`，仅 `status=VALID` 才继续。新增/修改还需读取 `references/knowledge-contract.md`、`references/writing-guide.md` 并使用 `assets/knowledge-entry-template.md`；这些相对路径和文档中的 `<skill-root>` 均以本次 `knowledgeRoot` 为根。其他操作只读相关引用。
 

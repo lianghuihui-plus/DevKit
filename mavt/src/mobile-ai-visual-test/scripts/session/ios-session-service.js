@@ -83,7 +83,8 @@ function refreshThroughAdapter(binding, runtime, options = {}) {
     });
   }
   if (value?.ok !== true || value?.operation !== 'refresh-session' || !value.platformSession?.sessionId) {
-    throw contractError(value?.failureCode || 'IOS_APPIUM_SESSION_REFRESH_FAILED', value?.reason || 'session refresh did not return a replacement session');
+    throw contractError(value?.failureCode || 'IOS_APPIUM_SESSION_REFRESH_FAILED', value?.reason || 'session refresh did not return a replacement session',
+      value?.diagnostic ? { diagnostic: value.diagnostic } : {});
   }
   return value.platformSession;
 }

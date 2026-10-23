@@ -3,6 +3,9 @@
 
 const http = require('http');
 const https = require('https');
+const os = require('os');
+const path = require('path');
+const wdaBuild = require('./wda-build');
 
 function normalizeServer(server) {
   return String(server || process.env.MAVT_IOS_APPIUM_SERVER || 'http://127.0.0.1:4723').replace(/\/+$/, '');
@@ -75,10 +78,12 @@ function sessionCapabilities(target, options = {}) {
   if (target.appId) alwaysMatch['appium:bundleId'] = target.appId;
   if (target.wdaLocalPort) alwaysMatch['appium:wdaLocalPort'] = Number(target.wdaLocalPort);
   if (target.webDriverAgentUrl) alwaysMatch['appium:webDriverAgentUrl'] = target.webDriverAgentUrl;
+  if (!target.webDriverAgentUrl && target.wdaBuildPrepared) alwaysMatch['appium:usePrebuiltWDA'] = true;
+  if (target.platformVersion) alwaysMatch['appium:platformVersion'] = target.platformVersion;
   if (target.xcodeOrgId) alwaysMatch['appium:xcodeOrgId'] = target.xcodeOrgId;
   if (target.xcodeSigningId) alwaysMatch['appium:xcodeSigningId'] = target.xcodeSigningId;
   if (target.updatedWDABundleId) alwaysMatch['appium:updatedWDABundleId'] = target.updatedWDABundleId;
-  if (target.showXcodeLog !== undefined) alwaysMatch['appium:showXcodeLog'] = target.showXcodeLog;
+  alwaysMatch['appium:showXcodeLog'] = target.showXcodeLog ?? true;
   if (target.useNewWDA !== undefined) alwaysMatch['appium:useNewWDA'] = target.useNewWDA;
   if (target.allowProvisioningDeviceRegistration !== undefined) {
     alwaysMatch['appium:allowProvisioningDeviceRegistration'] = target.allowProvisioningDeviceRegistration;
@@ -89,11 +94,22 @@ function sessionCapabilities(target, options = {}) {
 }
 
 async function createSession(target, options = {}) {
-  const alwaysMatch = sessionCapabilities(target, options);
-  const response = await request(target.appiumServer, 'POST', '/session', { capabilities: { alwaysMatch } }, options.timeoutMs || 180000);
-  const sessionId = response.value?.sessionId || response.sessionId;
-  if (!sessionId) throw new Error(`Appium did not return a session id: ${JSON.stringify(response).slice(0, 500)}`);
-  return { sessionId, capabilities: response.value?.capabilities || response.capabilities || {} };
+  const appiumLogPath = options.appiumLogPath || process.env.MAVT_IOS_APPIUM_LOG || path.join(os.tmpdir(), 'mavt-ios-appium.log');
+  const logOffset = wdaBuild.logOffset(appiumLogPath);
+  const deadline = Date.now() + (options.timeoutMs || 180000);
+  try {
+    target = await (options.buildTarget || wdaBuild.prepareBuildTarget)(target, { ...options, deadline });
+    const alwaysMatch = sessionCapabilities(target, options);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw Object.assign(new Error('WDA preparation exceeded the session startup deadline'), { code: 'IOS_WDA_STARTUP_TIMEOUT' });
+    const response = await request(target.appiumServer, 'POST', '/session', { capabilities: { alwaysMatch } }, remainingMs);
+    const sessionId = response.value?.sessionId || response.sessionId;
+    if (!sessionId) throw new Error(`Appium did not return a session id: ${JSON.stringify(response).slice(0, 500)}`);
+    return { sessionId, capabilities: response.value?.capabilities || response.capabilities || {},
+      wdaBuild: { derivedDataPath: target.derivedDataPath, platformVersion: target.platformVersion, buildLogPath: target.buildLogPath } };
+  } catch (error) {
+    throw wdaBuild.recordFailure(error, target, { ...options, appiumLogPath, logOffset });
+  }
 }
 
 async function deleteSession(server, sessionId) {

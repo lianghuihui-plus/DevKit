@@ -2,7 +2,7 @@
 
 协议：`agent-facing`。启动时读取本索引；字段不足时读取对应方法页。
 
-相对文档路径按 Workspace Coordinator 绑定或 Case Brief runtime 绑定的绝对 `documentationRoot` 解析；旧 Run 使用原固定副本的文档。文档路径不传给资源 `read`。
+响应的 `documentationRef`、`operationDocumentationRef` 按本次绑定的绝对 `documentationRoot` 解析；Markdown 相对链接按所在文档目录解析。旧 Run 使用原固定副本的文档。文档路径不传给资源 `read`。
 
 ## 请求与响应
 
@@ -18,7 +18,7 @@
 | 方法 | 用途 | 紧凑签名 |
 |---|---|---|
 | [`prepareRun`](coordinator/methods/prepare-run.md) | 在绑定工作空间中创建一次 run。 | `prepareRun({ caseNos: string[] })` |
-| [`confirmRun`](coordinator/methods/confirm-run.md) | 确认当前环境、选择平台设备或确认绑定。 | `confirmRun({ decision: "USE_CURRENT", userInstruction: string }) / confirmRun({ decision: "SELECT_PLATFORM", platform: "harmony" \| "android" \| "ios", deviceId?: string }) / confirmRun({ decision: "CONFIRM_BINDING", userInstruction: string, binding: object })` |
+| [`confirmRun`](coordinator/methods/confirm-run.md) | 确认当前环境、选择平台设备或确认绑定。 | `confirmRun({ decision: "USE_CURRENT", userInstruction: string }) / confirmRun({ decision: "SELECT_PLATFORM", platform: "harmony" \| "android" \| "ios", deviceId?: string, appId?: string, appName?: string }) / confirmRun({ decision: "SELECT_APP", appId: string }) / confirmRun({ decision: "SELECT_ENVIRONMENT_OPTION", optionId: string }) / confirmRun({ decision: "RETRY_ENVIRONMENT" }) / confirmRun({ decision: "CONFIRM_ENVIRONMENT", environmentRef: string, userInstruction: string }) / confirmRun({ decision: "CONFIRM_BINDING", userInstruction: string, binding: object })` |
 | [`advanceRun`](coordinator/methods/advance-run.md) | 推进当前确定性状态机。 | `advanceRun({  })` |
 | [`cancelRun`](coordinator/methods/cancel-run.md) | 按用户要求取消当前 run。 | `cancelRun({ reason: string })` |
 | [`read`](coordinator/methods/read.md) | 完整读取当前 run 已发布的不可变资源。 | `read({ ref: string })` |

@@ -16,13 +16,13 @@ Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handof
 
 新任务在 READY 工作区调用 `mavt_workspace_open({workspace,role:"coordinator"})`；仅用户明确选择空工作区初始化时调用 `mavt_workspace_init`。使用 workspace 引用调用 `mavt_run_prepare({contextRef,input:{caseNos:[...]}})`；成功后保留返回的 Run 引用，后续调用 `mavt_run_confirm/advance/cancel/read({contextRef,input})`。`confirmRun` 的业务字段取自当前 `data.content.runDecision` 和用户选择。只查询状态或报告时调用 `mavt_run_status/report`，不推进执行。
 
-相对文档路径均按本次绑定的绝对 `documentationRoot` 解析；旧 Run 使用原固定副本的文档。主复杂数据在 `data`，关联数据通过 `resources` 发布并按需 `mavt_run_read`；不拼装 ref，不把文档路径传给资源读取。工具未连接或旧固定接口不支持 MCP 时报告阻塞，不在新插件中切换 CLI。
+响应的 `documentationRef`、`operationDocumentationRef` 按本次绑定的绝对 `documentationRoot` 解析；Markdown 相对链接按所在文档目录解析。旧 Run 使用原固定副本的文档。主复杂数据在 `data`，关联数据通过 `resources` 发布并按需 `mavt_run_read`；不拼装 ref，不把文档路径传给资源读取。
 
 ## 返回状态
 
 顶层 `status` 为 `SUCCEEDED / REJECTED / FAILED / UNKNOWN`。成功后按 `result.outcome` 处理业务阶段：
 
-- `NEED_USER_CONFIRMATION`：将 `runDecision` 中的选择和绑定事实映射到 `confirmRun`，只向用户确认缺失的业务字段。
+- `NEED_USER_CONFIRMATION`：将 `runDecision` 中的设备、App 或命名配置候选映射到 `confirmRun`。三端统一处理 `environmentStatus`：`NEED_SELECTION` 选择候选，`NEED_USER_ACTION` 展示具体 `actions` 并在完成后 `RETRY_ENVIRONMENT`，`FAILED` 说明诊断并修复后重试，`READY` 用原样 `environmentRef` 和用户确认原文提交 `CONFIRM_ENVIRONMENT`。有明确 App ID 或名称时传给 `SELECT_PLATFORM`；不猜前台 App，不将 Activity、Ability 或签名标识作为正常交互要求。列表范围以 `coverage` 为准，Android 当前显示包名候选。历史环境复用前自动复查，确认后的批次环境固定，各 Case 不重复发现。
 - `NEED_CASE_AGENT`：创建不继承执行协调 Agent 上下文的全新 Case Agent，只发送 `caseDispatch` 中固定的 `delegationPrompt` 和原样 `loaderCommand`，随后等待该 Agent；已有活跃 Agent 时不得重复创建。
 - `WAITING`：根据 `result.waitFor` 和 `runProgress` 判断等待对象，条件变化后提交 `advanceRun`。等待持久化结果不证明 Case Agent 仍在运行。
 - `COMPLETE`：读取 `runSummary` 报告结果和报告位置。
@@ -35,7 +35,7 @@ Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handof
 ## 调用纪律
 
 - 固定 contextRef 原样复用；输入错误按 `error.issues` 和定向文档修正一次，同类错误再次出现时停止猜字段。
-- 执行协调 Agent 不调用 Batch、环境探测、ExecutionRequest、报告渲染或 Case Runtime 的内部 CLI 完成正常业务流程。
+- 正常业务流程由 Coordinator Facade 完成 Batch、环境探测、ExecutionRequest、报告发布和 Case 委托。
 - `advanceRun` 会恢复持久化的 `INITIALIZING_RUN`；初始化中断后不得重新确认或重复启动初始化。
 - 宿主命令返回仍在运行的会话句柄时，继续等待同一进程，不得重复执行 `advanceRun`。
 - `NEED_CASE_AGENT` 后以 execution 持久化状态为准；聊天摘要不能替代框架结果。
@@ -46,7 +46,7 @@ Coordinator Facade 负责 Workspace、环境、ExecutionRequest、Batch、Handof
 
 Case Agent 通过 `recover` 的 `input.mode="prepare"` 和 `input.targetState` 表达需要空本地状态或首次安装状态，平台差异由 Runtime 处理。Android、HarmonyOS 清除目标 App 数据；iOS 仅在 Case Agent 确实请求该状态时，从工作区 `app-packages/ios` 自动查找与 Bundle ID 和设备类型匹配的 `.app` 或 `.ipa`，校验并冻结后卸载、重装目标 App。
 
-iOS 真机用 `devicectl`、模拟器用 `simctl` 核验安装事实，不使用 WDA 运行态代替安装态。初始态准备失败时 Case Agent 根据错误原因和 `documentationRef` 处理；连续失败需先完成技术处置并登记，再重试原目标状态。
+三端安装事实以 Runtime 返回的安装查询结果和诊断为准，查询通道由平台 Adapter 选择；不使用自动化会话运行态代替安装态。初始态准备失败时 Case Agent 根据错误原因和 `documentationRef` 处理；连续失败需先完成技术处置并登记，再重试原目标状态。
 
 执行协调 Agent 不读取用例来预判重装，不询问、登记或向 Case Agent 传递安装包。目录中没有唯一可用安装包时，Runtime 向 Case Agent 返回明确技术事实；放入该约定目录表示允许在已确认的目标 App 上按需重装，不表示每条用例都自动重装。
 
@@ -59,7 +59,7 @@ Coordinator 响应只提供错误原因、诊断、当前资源事实和 `docume
 - 只处理当前批次或已确认终态批次拥有的资源，不终止活动批次或归属不明的进程。
 - 技术排障未经用户确认，不执行额外卸载、清数据、改变签名等有业务影响的动作；`recover` 的 `prepare` 模式只使用 execution 已授权的目标 App 状态能力。
 - 不直接修改 Batch、Execution、Result、Scene、事件或报告文件来伪造恢复。
-- 基础设施恢复后，按错误文档选择当前状态允许的方法回到 Facade；可推进状态通过原 command 提交 `advanceRun`，由框架重新探测并落盘。
+- 基础设施恢复后，按错误文档选择当前状态允许的方法回到 Facade；可推进状态通过原 Run 的 `contextRef` 调用 `mavt_run_advance`，由框架重新探测并落盘。
 - 技术排障不代替 Case Agent 的用例理解、设备操作和业务判断。
 
 ## 角色与 Handoff

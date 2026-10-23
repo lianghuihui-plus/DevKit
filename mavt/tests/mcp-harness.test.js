@@ -35,7 +35,7 @@ test('MCP calls can use child local images while still requiring the scoped bind
   assert.equal(result.imageTransport, 'LOCAL_IMAGE');
 });
 
-test('local images cannot silently replace a missing MCP binding with CLI', () => {
+test('local images still require the Loader binding', () => {
   const result = assessHarness({ ...evidence({ localImageVisibleToChild: true }),
     loaderResponse: { status: 'SUCCEEDED', result: { executionId: 'case-a', dispatchSequence: 1 } } },
   { stage: 'POST_LOADER' });
@@ -51,9 +51,24 @@ test('MCP assessment rejects invented or mismatched Loader binding facts', () =>
   assert.equal(assessHarness({ ...evidence(), loaderResponse: mismatch }, { stage: 'POST_LOADER' }).canUseMcpCase, false);
 });
 
-test('MCP delegation requires actual child tools, images, context and agent handles', () => {
-  assert.deepEqual(assessHarness({ ...evidence(), caseTools: {} }).missing, ['case_tool_visibility']);
-  assert.deepEqual(assessHarness({ ...evidence(), caseImageVisibility: {} }).missing, ['case_image_visibility']);
+test('delegation does not require observations from a child that has not been created', () => {
+  const pre = assessHarness({ independentContext: independent, agentHandleWaitCancel: handles });
+  assert.equal(pre.canDelegateVisualCase, true);
+  assert.equal(pre.canExecuteVisualCase, false);
+  assert.deepEqual(pre.missing, []);
+});
+
+test('Case execution requires the child to discover its own tools and image capability', () => {
+  const post = { ...evidence(), loaderResponse: loader() };
+  for (const [field, missing] of [['caseTools', 'case_tool_visibility'], ['caseImageVisibility', 'case_image_visibility']]) {
+    const result = assessHarness({ ...post, [field]: {} }, { stage: 'POST_LOADER' });
+    assert.equal(result.canDelegateVisualCase, true);
+    assert.equal(result.canExecuteVisualCase, false);
+    assert.deepEqual(result.missing, [missing]);
+  }
+});
+
+test('MCP delegation requires independent context and actual agent handles', () => {
   assert.deepEqual(assessHarness({ ...evidence(), independentContext: { fresh: false } }).missing, ['independent_context']);
   assert.deepEqual(assessHarness({ ...evidence(), agentHandleWaitCancel: { realHandle: true, wait: true } }).missing,
     ['agent_handle_wait_cancel']);

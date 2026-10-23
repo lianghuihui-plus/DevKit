@@ -14,7 +14,7 @@ codex plugin list --marketplace mavt-local --json
 
 以上命令已在 Codex CLI `0.163.0-alpha.10.2` 验证，不作为最低版本承诺；桌面会话重载需人工确认。安装后核对 `mavt:author-cases`（MAVT 用例编写）、`mavt:run-tests`（MAVT 测试执行）、`mavt:manage-knowledge`（MAVT 知识管理）三个入口，并人工停用同用途的旧独立 Skill；安装器不删除旧入口或修改设备配置。插件 `0.1.1` 已统一入口名称；更新安装源后重新执行 `plugin add` 并新开或重载会话。
 
-插件 Skill 目录和运行时目录不同。下文人工诊断中的 `scripts/...` 应相对于启动响应的固定 `runtimeRoot` 执行，文档中的 `<skill-root>` 也指该根；正常协调和 Case 执行原样使用 Facade 返回的完整 command。继续或取消旧 Run 时先由插件 `resume` 解析原绑定，不能调用最新版 `workspace` 来替代恢复。插件加载和安装都不会自动操作设备或安装系统依赖。
+插件 Skill 目录和运行时目录不同。下文人工诊断中的 `scripts/...` 应相对于启动响应的固定 `runtimeRoot` 执行，文档中的 `<skill-root>` 也指该根。正常协调通过 `mavt_workspace_open({workspace,role:"coordinator"})` 获取绑定；继续或取消已有 Run 时传入 `batchId`，使用返回的 Run `contextRef` 调用对应 MCP 工具，不重新 prepare。Case Agent 使用 Loader 返回的 execution `contextRef`。`scripts/mavt-entry.js resume` 仅供开发维护诊断，不能代替 MCP 恢复入口；旧接口 Run 需使用其原兼容插件版本。插件加载和安装都不会自动操作设备或安装系统依赖。
 
 ## 通用要求
 
@@ -129,6 +129,10 @@ scripts/probe-env.sh --platform ios
 
 ## iOS 真机
 
+设备发现使用 `xcdevice`；应用查询优先使用 `devicectl`，不可用时自动通过已安装 XCUITest 驱动的 `appium-ios-device` 使用 Installation Proxy，兼容旧系统的应用发现、安装状态和版本读取，不需要另装 tidevice 等工具。查询失败返回未知状态，不能据此认定设备不存在或应用未安装。该通道只读取元数据，不启动 Appium/WDA session。
+
+`devicectl` 要求 iOS/iPadOS 17+，不是 MAVT 的统一最低系统版本；真实执行的系统范围由本机 Xcode、Appium XCUITest Driver 和 WDA 共同决定。Developer Mode 仅适用于 iOS/iPadOS 16 及以上。若兼容通道提示驱动路径或模块缺失，请修复 XCUITest 驱动安装后重试，勿仅因旧系统而升级设备。
+
 需要安装：
 
 - Xcode。
@@ -143,6 +147,12 @@ scripts/probe-env.sh --platform ios
 - Team ID：`--xcode-org-id <teamId>`。
 - Signing ID：通常是 `Apple Development`。
 - WDA bundle id：`--updated-wda-bundle-id <bundleId>`。
+
+正常插件流程会自动核验证书私钥和 provisioning profile，将团队与开发证书类别分别传给 Xcode；完整证书名称或指纹只用于匹配，不直接作为自动签名的 `CODE_SIGN_IDENTITY`。真实设备系统版本随探测结果冻结，不要求用户填写。
+
+本机 Appium 的真机 WDA 先单独执行 `build-for-testing`，成功后才创建 Appium session 并使用 `usePrebuiltWDA` 启动；构建失败不会继续运行旧产物。增量产物位于临时目录 `mavt-ios-wda-builds/<配置哈希>/`，哈希包含 Xcode、驱动/WDA、设备系统和签名信息；指定 `derivedDataPath` 时，在该目录下使用同样的哈希子目录。相同配置复用增量缓存，各 Case 共用批次 session；仅在创建或恢复 session 时验证构建，不按 Case 重复执行。
+
+构建日志保存到 `runs/<batchId>/diagnostics/ios/`，启动失败同时保留本次 Appium 日志片段和结构化错误，Run 诊断提供具体文件路径。外部 WDA 或远程 Appium 仍由其服务端管理构建，不向远端传入本机缓存路径；独立维护命令缺少 Run 上下文时，诊断写入系统临时目录。以上不保证任意 Xcode/WDA 与旧系统组合均兼容，实际兼容性由真机验证。
 
 设备准备：
 

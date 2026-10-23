@@ -40,7 +40,7 @@ const EXECUTION_PRINCIPLES = Object.freeze([
   '原始用例是唯一业务目标；完整阅读并保留若、如果、可选、可能、无需、跳过、直到等限定词，Case Flow 不能替代、缩小或改写原意。',
   '同一事实的不同取值都可进入正常路径时建 DECISION，分支内验证建 CONDITIONAL CHECK；不得把条件检查改成 REQUIRED CHECK。',
   'Baseline 冻结原意；每条正常 END 路径必须能处置 REQUIRED CHECK，未进入分支的 CONDITIONAL CHECK 记 NOT_APPLICABLE，不新增原文未要求的检查点。',
-  'Working Flow 表达实际路径；Scene、动作效果、环境或原文理解变化时可修订路线，但不得改写 Baseline CHECK。',
+  'Working Flow 可按现场修订导航，但不得改写 Baseline CHECK；原文业务时序、条件、范围须有 CHECK/sourceBasis，不能仅靠 ACTION 排列；遗漏则补充 CHECK，内容正确不证明顺序正确。',
   '同一意图可用 act 或 runSequence 时优先 runSequence；瞬态结果在同一 sequence 中按业务时序使用两次 SCREENSHOT_ONLY，最终完整 Scene 不能替代。',
   '动作结果必须用新 Scene、previousAction 或 sequence result 核验；技术成功不证明业务成功，业务结论通过 recordResult 保存。',
   'ACTION_OUTCOME_UNKNOWN 和 CAPABILITY_OUTCOME_UNKNOWN 禁止自动重放，先观察或调查外部状态。',
@@ -48,7 +48,8 @@ const EXECUTION_PRINCIPLES = Object.freeze([
   '只有覆盖目标可能范围并确认边界后才能判断不存在；否则披露搜索范围或使用 INCONCLUSIVE。',
   '出现预期不符、操作无效果、异常反复、原因不明或无法可靠判断时优先尽早 knowledge；无适用候选仍按现场证据判断。',
   'NOT_RUN 仅在必要条件于 execution 权限、事实和能力内无法建立、无安全合理路径、尚未验证相应业务 CHECK、且已有 Scene 或技术事实说明原因时使用。',
-  '正常结束用 finish(mode="complete")；收口前核对条件、分支、范围、CHECK、证据和不确定项。',
+  'recordResult 被拒绝未生效，须成功重提对应 CHECK，不能用旧 PASS 或修改摘要收口；FAIL 差异写 actual，不传 reason；knowledgeRefs 仅用适用 knowledgeDocument，每张 Scene 须为同一 CHECK 登记 visual。',
+  '正常结束用 finish(mode="complete")；首次 finish 后复核完整原文，补齐遗漏并成功记录，再用最新 finalReviewToken、明确 verdict、sourceCoverageConfirmed:true 提交 finalReview；Runtime 仅校验版本、修正与聚合一致性，不判断业务文本。',
 ]);
 
 function createBoundAgentFacingClient(execDir) {

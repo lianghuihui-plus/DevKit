@@ -20,14 +20,22 @@ function runFailure(context, operation, error) {
 function diagnostic(workspace) {
   workspace = canonicalUserWorkspace(workspace);
   safeWorkspace(workspace);
-  const runs = fs.existsSync(path.join(workspace, 'runs')) ? fs.readdirSync(path.join(workspace, 'runs')).filter(name => !name.startsWith('.')).sort().map(batchId => {
-    try { const loaded = readRunBinding(workspace, batchId); return { batchId, phase: loaded.state.phase, legacy: !loaded.binding, ...(loaded.binding ? { bundleId: loaded.bundleId } : {}) }; }
-    catch (error) { return { batchId, code: error.code, message: error.message }; }
-  }) : [];
+  const verifiedBundles = new Map();
   const root = path.join(workspace, '.mavt/runtime-bundles');
   const bundles = fs.existsSync(root) ? fs.readdirSync(root).filter(name => !name.startsWith('.')).sort().map(bundleId => {
-    try { verifyBundle(path.join(root, bundleId), bundleId); return { bundleId, status: 'VALID' }; }
-    catch (error) { return { bundleId, status: 'INVALID', code: error.code, message: error.message }; }
+    const bundleRoot = path.join(root, bundleId);
+    try {
+      verifiedBundles.set(bundleId, { bundleRoot, manifest: verifyBundle(bundleRoot, bundleId) });
+      return { bundleId, status: 'VALID' };
+    }
+    catch (error) {
+      verifiedBundles.set(bundleId, { bundleRoot, error });
+      return { bundleId, status: 'INVALID', code: error.code, message: error.message };
+    }
+  }) : [];
+  const runs = fs.existsSync(path.join(workspace, 'runs')) ? fs.readdirSync(path.join(workspace, 'runs')).filter(name => !name.startsWith('.')).sort().map(batchId => {
+    try { const loaded = readRunBinding(workspace, batchId, { verifiedBundles }); return { batchId, phase: loaded.state.phase, legacy: !loaded.binding, ...(loaded.binding ? { bundleId: loaded.bundleId } : {}) }; }
+    catch (error) { return { batchId, code: error.code, message: error.message }; }
   }) : [];
   const entries = relative => fs.existsSync(path.join(workspace, relative)) ? fs.readdirSync(path.join(workspace, relative)).sort() : [];
   return { status: runs.some(run => run.code) || bundles.some(bundle => bundle.status === 'INVALID') ? 'FAILED' : 'SUCCEEDED', workspace, runs, bundles,

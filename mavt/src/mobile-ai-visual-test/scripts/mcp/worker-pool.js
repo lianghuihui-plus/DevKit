@@ -1,12 +1,33 @@
 'use strict';
 const path = require('node:path');
-const { fork } = require('node:child_process');
+const { fork, execFile } = require('node:child_process');
 const { toolResult } = require('./management-service');
 
 const READ_ONLY = /^mavt_(?:workspace_doctor|run_(?:status|report|read)|case_(?:read|image)|knowledge_(?:inspect|list|show|validate))$/;
 const CONTROL = /^mavt_run_cancel$/;
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 function result(status, code, message, extra = {}) { return toolResult({ status, code, message, ...extra }); }
+
+async function reapOperationGroup(child) {
+  if (!child.pid) return;
+  // Shared services (e.g. Appium) deliberately create their own process group.
+  // Only synchronous/temporary commands inherited from this worker belong here.
+  try { process.kill(-child.pid, 'SIGKILL'); }
+  catch (error) { if (error.code === 'ESRCH') return; throw error; }
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const output = await new Promise((resolve, reject) => execFile('ps', ['-axo', 'pgid=,stat='],
+      { encoding: 'utf8', timeout: 1000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+    // Zombies cannot execute effects; their parent/OS is responsible for reaping.
+    const running = output.split('\n').some(line => {
+      const fields = line.trim().split(/\s+/);
+      return Number(fields[0]) === child.pid && fields[1] && !fields[1].startsWith('Z');
+    });
+    if (!running) return;
+    if (Date.now() >= deadline) throw new Error(`Worker operation group ${child.pid} did not stop`);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
 
 function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, maxOperationMs = 1800000 } = {}) {
   if (!Number.isInteger(maxWorkers) || maxWorkers < 3 || maxWorkers > 16 ||
@@ -15,7 +36,7 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
     !Number.isInteger(maxOperationMs) || maxOperationMs < 1) throw new TypeError('Invalid worker-pool bounds');
   const workers = new Set(), pending = [], activeKeys = new Set();
   const effectLimit = maxWorkers - 2;
-  let effects = 0, nonReads = 0, reads = 0, sequence = 0, started = 0, accepting = true, closing;
+  let effects = 0, nonReads = 0, reads = 0, sequence = 0, started = 0, accepting = true, closing, cleanupError;
 
   function unknown(task, reason) {
     return result('UNKNOWN', 'MAVT_MCP_WORKER_OUTCOME_UNKNOWN', reason,
@@ -36,7 +57,7 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
   }
   function clearIdle(worker) { if (worker.idleTimer) clearTimeout(worker.idleTimer); worker.idleTimer = null; }
   function stopIdle(worker) {
-    if (worker.busy || !workers.has(worker)) return;
+    if (worker.retiring || worker.busy || !workers.has(worker)) return;
     clearIdle(worker);
     if (closing) { if (worker.child.connected) worker.child.disconnect(); }
     else if (idleTimeoutMs) {
@@ -47,23 +68,27 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
   function settleClose() {
     if (!closing || pending.length || [...workers].some(worker => worker.busy)) return;
     for (const worker of workers) stopIdle(worker);
-    if (!workers.size) closing.resolve();
+    if (!workers.size) cleanupError ? closing.reject(cleanupError) : closing.resolve();
+  }
+  function terminate(worker) {
+    worker.stopping = true;
+    worker.child.kill('SIGKILL');
   }
   function spawnWorker() {
-    const child = fork(path.join(__dirname, 'worker-child.js'), [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], execArgv: [] });
+    const child = fork(path.join(__dirname, 'worker-child.js'), [], { detached: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'], execArgv: [] });
     const worker = { child, busy: null, idleTimer: null, diagnostic: '', error: null };
     started += 1; workers.add(worker);
     child.stderr.on('data', chunk => { worker.diagnostic = (worker.diagnostic + chunk.toString()).slice(-2048); });
     child.on('message', message => {
       const task = worker.busy;
-      if (!task || message?.id !== task.id) return;
+      if (worker.stopping || worker.retiring || !task || message?.id !== task.id) return;
       if (message.kind === 'accepted' && task.phase === 'preparing') {
         // The child cannot enter the domain until this separate start message arrives.
         task.phase = 'start-sent';
         try { child.send({ id: task.id, kind: 'start' }, error => {
-          if (error && worker.busy === task) { worker.error = error; child.kill('SIGKILL'); }
+          if (error && worker.busy === task) { worker.error = error; terminate(worker); }
         }); }
-        catch (error) { worker.error = error; child.kill('SIGKILL'); }
+        catch (error) { worker.error = error; terminate(worker); }
         return;
       }
       if (message.kind !== 'result' || task.phase !== 'start-sent') return;
@@ -71,10 +96,18 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
       stopIdle(worker);
       drain();
     });
-    function failed(code, signal) {
-      if (!workers.has(worker)) return;
-      clearIdle(worker); workers.delete(worker);
+    async function failed(code, signal) {
+      if (!workers.has(worker) || worker.retiring) return;
+      worker.retiring = true;
+      clearIdle(worker);
       const task = worker.busy;
+      try { await reapOperationGroup(child); }
+      catch (error) {
+        cleanupError = worker.error = error;
+        accepting = false;
+        for (const queued of pending.splice(0)) queued.resolve(undispatched(queued, 'Worker process cleanup failed; restart the server after inspecting its processes'));
+      }
+      workers.delete(worker);
       if (task) {
         const detail = worker.error?.message || signal || code;
         release(worker, task, task.phase === 'start-sent'
@@ -85,7 +118,7 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
       }
       drain(); settleClose();
     }
-    child.on('error', error => { worker.error = error; if (child.pid) child.kill('SIGKILL'); else failed(null, null); });
+    child.on('error', error => { worker.error = error; if (child.pid) terminate(worker); else failed(null, null); });
     child.on('exit', failed);
     child.on('close', failed);
     return worker;
@@ -104,16 +137,16 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
     activeKeys.add(task.key);
     if (task.readOnly) reads += 1;
     else { nonReads += 1; if (!task.control) effects += 1; }
-    task.timer = setTimeout(() => { task.timeout = true; worker.child.kill('SIGKILL'); }, maxOperationMs);
+    task.timer = setTimeout(() => { task.timeout = true; terminate(worker); }, maxOperationMs);
     task.timer.unref();
     try { worker.child.send({ kind: 'prepare', id: task.id, pluginRoot, name: task.name, args: task.args }, error => {
-      if (error && worker.busy === task) { worker.error = error; worker.child.kill('SIGKILL'); }
+      if (error && worker.busy === task) { worker.error = error; terminate(worker); }
     }); }
-    catch (error) { worker.error = error; worker.child.kill('SIGKILL'); }
+    catch (error) { worker.error = error; terminate(worker); }
   }
   function drain() {
     while (pending.length) {
-      const available = [...workers].find(worker => !worker.busy && worker.child.connected);
+      const available = [...workers].find(worker => !worker.stopping && !worker.retiring && !worker.busy && worker.child.connected);
       if (!available && workers.size >= maxWorkers) break;
       const task = nextTask();
       if (!task) break;
@@ -145,7 +178,7 @@ function createPool({ pluginRoot, maxWorkers = 5, maxPending = 64, idleTimeoutMs
     if (closing) return closing.promise;
     accepting = false;
     closing = {};
-    closing.promise = new Promise(resolve => { closing.resolve = resolve; });
+    closing.promise = new Promise((resolve, reject) => { closing.resolve = resolve; closing.reject = reject; });
     drain();
     return closing.promise;
   }

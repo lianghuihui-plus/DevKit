@@ -93,7 +93,15 @@ function fakeDevice(overrides = {}) {
       return result(0, state.accessibilityEnabled);
     }
     if (args.slice(0, 7).join(' ') === `shell settings --user ${state.user} put secure enabled_accessibility_services`) {
-      state.services = String(args[7] || '').split(':').filter(Boolean);
+      // ADB joins remote arguments before /system/bin/sh parses them. Exercise
+      // that boundary with a real local shell, without invoking adb or settings.
+      const parsed = childProcess.spawnSync('/bin/sh', ['-c',
+        `settings() { printf '%s\\0' "$@"; }; ${args.slice(1).join(' ')}`,
+      ], { encoding: 'utf8' });
+      assert.strictEqual(parsed.status, 0, parsed.stderr);
+      const remoteArgs = parsed.stdout.split('\0').slice(0, -1);
+      if (remoteArgs.length !== 6) return result(1, '', 'Bad arguments');
+      state.services = remoteArgs[5].split(':').filter(Boolean);
       return result();
     }
     if (args.slice(0, 7).join(' ') === `shell settings --user ${state.user} put secure accessibility_enabled`) {
@@ -221,6 +229,35 @@ function options(device, overrides = {}) {
   assert.strictEqual(preparedDevice.state.forwards.size, 0);
   assert.deepStrictEqual(preparedDevice.state.services, ['existing.reader/.Service']);
   assert.strictEqual(preparedDevice.state.accessibilityEnabled, '0');
+
+  for (const user of ['0', '10']) {
+    const emptyDevice = fakeDevice({ user, services: [] });
+    const emptyOptions = options(emptyDevice, { ownerKey: `empty-services-${user}`, stateRoot: path.join(root, `empty-services-${user}`) });
+    const prepared = await verifyAndroidHelperProvisioning(emptyOptions);
+    assert.strictEqual(prepared.ok, true, JSON.stringify(prepared));
+    assert.deepStrictEqual(emptyDevice.state.services, []);
+    assert.strictEqual(emptyDevice.state.accessibilityEnabled, '0');
+    const runtime = await acquireAndroidHelper(emptyOptions);
+    assert.strictEqual(runtime.status, 'ACTIVE');
+    const released = await releaseAndroidHelper({ ...emptyOptions, runtime });
+    assert.strictEqual(released.status, 'RELEASED', JSON.stringify(released));
+    assert.deepStrictEqual(emptyDevice.state.services, []);
+    assert.strictEqual(emptyDevice.state.accessibilityEnabled, '0');
+    assert.strictEqual(emptyDevice.state.forwards.size, 0);
+    assert.strictEqual(fs.existsSync(runtime.resource.androidHelper.sessionStatePath), false);
+    assert.strictEqual(fs.existsSync(claimPath(emptyOptions.deviceId, emptyOptions)), false);
+  }
+
+  const nestedService = 'existing.reader/.Outer$ReaderService';
+  const changedDevice = fakeDevice({ services: [nestedService], accessibilityEnabled: '1' });
+  const changedOptions = options(changedDevice, { ownerKey: 'changed-services', stateRoot: path.join(root, 'changed-services') });
+  const changedRuntime = await acquireAndroidHelper(changedOptions);
+  assert.strictEqual(changedRuntime.status, 'ACTIVE');
+  assert.ok(changedDevice.state.services.includes(nestedService));
+  changedDevice.state.services.push('another.reader/.Service');
+  assert.strictEqual((await releaseAndroidHelper({ ...changedOptions, runtime: changedRuntime })).status, 'RELEASED');
+  assert.deepStrictEqual(changedDevice.state.services, [nestedService, 'another.reader/.Service']);
+  assert.strictEqual(changedDevice.state.accessibilityEnabled, '1');
 
   const optionalFailureDevice = fakeDevice({ installFailure: 'INSTALL_FAILED_UPDATE_INCOMPATIBLE' });
   const optionalFailure = await verifyAndroidHelperProvisioning(options(optionalFailureDevice, {

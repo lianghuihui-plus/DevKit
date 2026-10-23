@@ -6,6 +6,7 @@ const {
 } = require('./service-lifecycle');
 const wdaLifecycle = require('./wda-lifecycle');
 const appiumClient = require('./appium-client');
+const path = require('path');
 
 function overallOwnership(parts) {
   if (parts.some((part) => part?.ownership === 'FRAMEWORK_MANAGED')) return 'FRAMEWORK_MANAGED';
@@ -56,7 +57,7 @@ async function acquireIosRuntime(target, ownerKey, dependencies = {}) {
     const createSession = dependencies.createSession || (process.env.MAVT_IOS_FAKE === '1'
       ? async () => ({ sessionId: `fake-session-${ownerKey}`, capabilities: { platformName: 'iOS' } })
       : appiumClient.createSession);
-    session = await createSession(target, { autoLaunch: false, timeoutMs: 180000 });
+    session = await createSession(target, { autoLaunch: false, timeoutMs: 180000, appiumLogPath: appiumResult.resource?.logPath });
   } catch (error) {
     await (dependencies.releaseWda || wdaLifecycle.releaseWda)(wdaResult.resource, ownerKey, dependencies.wdaDependencies);
     if (appiumResult.ownership === 'FRAMEWORK_MANAGED') {
@@ -66,8 +67,9 @@ async function acquireIosRuntime(target, ownerKey, dependencies = {}) {
       ok: false,
       status: 'ACQUIRE_FAILED',
       ownership: 'NONE',
-      failureCode: 'IOS_APPIUM_SESSION_CREATE_FAILED',
+      failureCode: error.code || 'IOS_APPIUM_SESSION_CREATE_FAILED',
       reason: error.message || String(error),
+      ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}),
     };
   }
   return {
@@ -93,6 +95,7 @@ async function acquireIosRuntime(target, ownerKey, dependencies = {}) {
         ownership: 'FRAMEWORK_MANAGED',
         capabilities: session.capabilities || {},
         generation: 1,
+        ...(session.wdaBuild ? { wdaBuild: session.wdaBuild } : {}),
       },
     },
   };
@@ -109,11 +112,14 @@ async function refreshIosSession(target, runtime, dependencies = {}) {
       reason: 'batch Appium session is unavailable',
     };
   }
+  if (!target.platformVersion && previous.wdaBuild?.platformVersion) target = { ...target, platformVersion: previous.wdaBuild.platformVersion };
   try {
     const createSession = dependencies.createSession || (process.env.MAVT_IOS_FAKE === '1'
       ? async () => ({ sessionId: `fake-session-refreshed-${Date.now()}`, capabilities: { platformName: 'iOS' } })
       : appiumClient.createSession);
-    const replacement = await createSession(target, { autoLaunch: false, timeoutMs: 180000 });
+    const replacement = await createSession(target, { autoLaunch: false, timeoutMs: 180000,
+      appiumLogPath: runtime.resource?.appium?.logPath,
+      ...(previous.wdaBuild?.buildLogPath ? { diagnosticsDirectory: path.dirname(previous.wdaBuild.buildLogPath) } : {}) });
     const deleteSession = dependencies.deleteSession || (process.env.MAVT_IOS_FAKE === '1'
       ? async () => {}
       : appiumClient.deleteSession);
@@ -127,6 +133,7 @@ async function refreshIosSession(target, runtime, dependencies = {}) {
         server: target.appiumServer,
         ownership: 'FRAMEWORK_MANAGED',
         capabilities: replacement.capabilities || {},
+        ...(replacement.wdaBuild ? { wdaBuild: replacement.wdaBuild } : {}),
       },
     };
   } catch (error) {
@@ -134,8 +141,9 @@ async function refreshIosSession(target, runtime, dependencies = {}) {
       ok: false,
       status: 'ACQUIRE_FAILED',
       ownership: runtime?.ownership || previous.ownership || 'FRAMEWORK_MANAGED',
-      failureCode: 'IOS_APPIUM_SESSION_REFRESH_FAILED',
+      failureCode: error.code || 'IOS_APPIUM_SESSION_REFRESH_FAILED',
       reason: error.message || String(error),
+      ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}),
     };
   }
 }

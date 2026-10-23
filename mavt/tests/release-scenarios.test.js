@@ -86,10 +86,17 @@ function syntheticEvidence(workspace, options) {
     else process.env.MAVT_SELF_TEST = previousSelfTest;
   }
 }
+const offlineEnvironmentPorts = {
+  probeEnvironment: (platform, deviceId) => ({ schemaVersion: 1, type: 'environmentProbe', platform, ready: true,
+    devices: [{ id: deviceId || 'offline-fixture-device' }], diagnostics: [] }),
+  resolveEnvironment: ({ binding }) => binding.appId ? { status: 'READY', binding }
+    : { status: 'NEED_SELECTION', selectionKind: 'APP', coverage: 'limited', allowTargetInput: true, candidates: [] },
+  prepareEnvironment: ({ binding }) => ({ schemaVersion: 1, type: 'environmentPrepare', platform: binding.platform, ok: true }),
+};
 function selectFakeEnvironment(service, statePath) {
   const response = service.confirmRun(statePath, {
     operation: 'confirmRun', input: { decision: 'SELECT_PLATFORM', platform: 'harmony' },
-  }, { probeEnvironment: () => ({ schemaVersion: 1, type: 'environmentProbe', platform: 'harmony', ready: true,
+  }, { ...offlineEnvironmentPorts, probeEnvironment: () => ({ schemaVersion: 1, type: 'environmentProbe', platform: 'harmony', ready: true,
     devices: [{ id: 'offline-fixture-device' }], diagnostics: [] }) });
   assert.equal(response.result.phase, 'NEED_BINDING_CONFIRMATION');
 }
@@ -219,6 +226,7 @@ test('interrupted A initialization resumes its frozen request after B replaces t
   const service = require(path.join(f.pinnedA.runtimeRoot, 'scripts/coordinator/agent-facing-service'));
   selectFakeEnvironment(service, statePath);
   assert.throws(() => service.confirmRun(statePath, fakeBindingConfirmation, {
+    ...offlineEnvironmentPorts,
     interruptAfter: 'executionRequestCreated', batchExecute: () => { throw new Error('initialization must stop before Batch'); },
   }), /MAVT_COORDINATOR_INTERRUPTED: executionRequestCreated/);
   const interrupted = service.loadCoordinatorState(statePath);
@@ -247,6 +255,7 @@ test('A reuses PREPARED dispatch and waits for CONSUMED dispatch after upgrade w
   const service = require(path.join(f.pinnedA.runtimeRoot, 'scripts/coordinator/agent-facing-service'));
   selectFakeEnvironment(service, statePath);
   assert.equal(service.confirmRun(statePath, fakeBindingConfirmation, {
+    ...offlineEnvironmentPorts,
     batchExecute: initializationOnly(f.pinnedA.runtimeRoot),
   }).result.outcome, 'CONFIRMED');
   const state = service.loadCoordinatorState(statePath);
@@ -304,6 +313,7 @@ test('terminal A Run observes its deferred report recovery through A after B is 
   const statePath = path.join(f.workspace, 'runs/batch-report-retry-upgrade/coordinator-state.json');
   selectFakeEnvironment(service, statePath);
   assert.equal(service.confirmRun(statePath, fakeBindingConfirmation, {
+    ...offlineEnvironmentPorts,
     batchExecute: initializationOnly(f.pinnedA.runtimeRoot),
   }).result.outcome, 'CONFIRMED');
   const publication = require(path.join(f.pinnedA.runtimeRoot, 'scripts/report/publication-state'));

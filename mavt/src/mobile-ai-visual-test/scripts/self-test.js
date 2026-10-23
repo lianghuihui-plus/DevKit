@@ -89,6 +89,7 @@ const suites = Object.freeze({
   agentFacingPublicationFlow: 'tests/agent-facing-publication-flow.test.js',
   expectationResult: 'tests/expectation-result-service.test.js',
   finalReviewGate: 'tests/final-review-gate.test.js',
+  finalReviewIntegrity: 'tests/final-review-integrity.test.js',
   agentFacingTransportParity: 'tests/agent-facing-transport-parity.test.js',
   visualCoordinateGrid: 'tests/visual-coordinate-grid.test.js',
   agentHandoff: 'tests/agent-handoff.test.js',

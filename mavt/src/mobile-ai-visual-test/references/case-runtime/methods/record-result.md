@@ -5,19 +5,19 @@
 签名参数是规范请求的 `input`；外壳固定为 `{operation,input}`。
 
 ```typescript
-recordResult({ results: object[] })
+recordResult({ results: Array<object | { status: "WAIVED"; ... }> })
 ```
 
 ## 参数
 
 | 参数 | 必填 | 类型 | 含义 |
 |---|---|---|---|
-| `results` | 是 | `object[]` | 已形成判断的验证结果和证据引用 |
+| `results` | 是 | `Array<object \| { status: "WAIVED"; ... }>` | 已形成判断的验证结果和证据引用 |
 
 ## 结构字段
 
 ```typescript
-input.results: Array<{ checkNodeRef: string; status: "PASS" | "FAIL" | "INCONCLUSIVE" | "BLOCKED" | "NOT_APPLICABLE" | "WAIVED"; actual: string; reason?: string; evidence?: { sceneRefs?: Array<string>; knowledgeRefs?: Array<string>; technicalRefs?: Array<string>; searchAbsence?: { sceneRef: string; scrollContextRef: string } } }>
+input.results: Array<{ checkNodeRef: string; status: "PASS" | "FAIL" | "INCONCLUSIVE" | "BLOCKED" | "NOT_APPLICABLE"; actual: string; evidence?: { sceneRefs?: Array<string>; knowledgeRefs?: Array<string>; technicalRefs?: Array<string>; searchAbsence?: { sceneRef: string; scrollContextRef: string } } } | { checkNodeRef: string; status: "WAIVED"; actual: string; reason: string; evidence?: { sceneRefs?: Array<string>; knowledgeRefs?: Array<string>; technicalRefs?: Array<string>; searchAbsence?: { sceneRef: string; scrollContextRef: string } } }>
 ```
 
 ## 条件要求
@@ -38,7 +38,7 @@ input.results: Array<{ checkNodeRef: string; status: "PASS" | "FAIL" | "INCONCLU
 
 ### 成功
 
-- 简单结果：`outcome`、`recordedResultRefs`、`idempotentCheckNodeIds`。
+- 简单结果：`outcome`、`recordedResultRefs`、`idempotentCheckNodeIds`、`finalReviewToken`、`ledgerVerdict`、`pendingCheckNodeRefs`。
 - 主数据：无。
 - 关联资源：`checkpointResult`、`checkpointLedger`。
 
@@ -63,21 +63,9 @@ input.results: Array<{ checkNodeRef: string; status: "PASS" | "FAIL" | "INCONCLU
 ## 最小示例
 
 ```json
-{
-  "operation": "recordResult",
-  "input": {
-    "results": [
-      {
-        "checkNodeRef": "N1",
-        "status": "PASS",
-        "actual": "目标结果可见",
-        "evidence": {
-          "sceneRefs": [
-            "mavt:0123456789abcdef01234567:scene:scene-1"
-          ]
-        }
-      }
-    ]
-  }
-}
+{"operation":"recordResult","input":{"results":[{"checkNodeRef":"N1","status":"PASS","actual":"目标结果可见","evidence":{"sceneRefs":["mavt:0123456789abcdef01234567:scene:scene-1"]}}]}}
+```
+
+```json
+{"operation":"recordResult","input":{"results":[{"checkNodeRef":"N1","status":"FAIL","actual":"原文要求先年龄确认后隐私协议；已观察并为 N1 登记的两次 Scene 显示顺序相反","evidence":{"sceneRefs":["mavt:0123456789abcdef01234567:scene:scene-1","mavt:0123456789abcdef01234567:scene:scene-2"]}}]}}
 ```

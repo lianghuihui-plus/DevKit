@@ -188,6 +188,7 @@ if (process.argv[2] === '--worker') {
     };
     const review = run(fixture.execDir, finishInput, { now: now(500) });
     assert.strictEqual(review.error.code, 'CASE_FINAL_REVIEW_REQUIRED');
+    finishInput.input.finalReview = { token: review.result.finalReviewToken, verdict: 'PASS', sourceCoverageConfirmed: true };
     assert.strictEqual(run(fixture.execDir, finishInput, { now: now(600) }).result.outcome, 'COMPLETED');
   }
 

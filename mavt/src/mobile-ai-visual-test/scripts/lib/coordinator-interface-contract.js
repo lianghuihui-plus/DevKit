@@ -33,6 +33,7 @@ const BINDING_SCHEMA = {
     entry: STRING,
     androidUiBackend: { type: 'string', enum: ['auto', 'helper', 'uiautomator'] },
     deviceType: { type: 'string', enum: ['simulator', 'realDevice'] },
+    platformVersion: STRING,
     deviceFormFactor: { type: 'string', enum: ['phone', 'tablet', 'foldable', 'widefold', 'triplefold', '2in1', '2in1 foldable', 'wearable', 'tv'] },
     startupDisplayPolicy: {
       type: 'object',

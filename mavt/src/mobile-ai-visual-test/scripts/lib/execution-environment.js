@@ -7,6 +7,7 @@ const { normalizeAndroidUiBackend, normalizeDeviceBinding } = require('./target-
 
 const IOS_ONLY_FIELDS = new Set([
   'deviceType',
+  'platformVersion',
   'appiumServer',
   'wdaLocalPort',
   'webDriverAgentUrl',
@@ -136,6 +137,7 @@ function environmentAdapterArgs(binding, purpose = 'observe') {
   }
   if (binding.platform === 'ios') {
     add('--device-type', binding.deviceType);
+    add('--platform-version', binding.platformVersion);
     add('--appium-server', binding.appiumServer);
     add('--appium-session-id', binding.appiumSessionId);
     add('--wda-local-port', binding.wdaLocalPort);

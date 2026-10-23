@@ -88,7 +88,7 @@ function createCaseSample(f, executionId) {
   fs.writeFileSync(path.join(execDir, 'execution.json'), JSON.stringify({ schemaVersion: 14, runtime: 'case-runtime', executionId,
     batchId, caseProtocolSha: 'benchmark-protocol', platform: 'harmony', finalized: false }));
   fs.writeFileSync(path.join(execDir, 'runtime.json'), JSON.stringify({ schemaVersion: 1, executionId,
-    sessionRef: { statePath: path.join(workspace, 'runs', batchId, 'coordinator-state.json') } }));
+    sessionRef: { statePath: path.join(workspace, 'runs', batchId, 'batch.json') } }));
   fs.writeFileSync(path.join(execDir, 'events.jsonl'), '');
   fs.writeFileSync(path.join(execDir, 'screenshots/probe.png'), PNG);
   const resourceStore = require(path.join(opened.runtimeRoot, 'scripts/case-runtime/agent-resource-store'));

@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
-const { buildPlugin, writeReleaseFileList } = require('../build-plugin');
+const { buildPlugin, buildDefaultPlugin, writeReleaseFileList } = require('../build-plugin');
 
 const repoRoot = path.resolve(__dirname, '..');
 const helper = 'scripts/platform/adapters/android/helper/';
@@ -131,7 +131,7 @@ test('release builds preserve runtime resources and executable bits with repeata
   const second = buildPlugin({ repoRoot: source, outputRoot: path.join(temp, '第二次 build') });
   assert.deepEqual(inventory(first.marketplaceRoot), inventory(second.marketplaceRoot));
   assert.equal(first.manifest.bundleId, second.manifest.bundleId);
-  assert.equal(first.manifest.pluginVersion, '0.2.1');
+  assert.equal(first.manifest.pluginVersion, '0.3.6');
   const files = inventory(first.pluginRoot).map((entry) => entry.path);
   assert.deepEqual(files, [...FIXTURE_RELEASE_FILES, 'runtime/mobile-ai-visual-test/mcp-transport.json', 'bundle.manifest.json'].sort());
   const apk = path.join(first.pluginRoot, 'runtime/mobile-ai-visual-test', helper, 'ArtemisAccessibilityHelper.apk');
@@ -280,6 +280,198 @@ test('build refuses to overwrite user files but accepts an explicitly empty dest
   assert.equal(fs.readFileSync(path.join(output, 'keep.txt'), 'utf8'), 'user data');
   fs.unlinkSync(path.join(output, 'keep.txt'));
   assert.ok(buildPlugin({ repoRoot: source, outputRoot: output }).manifest.bundleId);
+});
+
+test('default publication keeps one marketplace path and archives the complete previous build', t => {
+  const { source } = fixture(t);
+  const output = path.join(source, 'dist/mavt-marketplace');
+  buildPlugin({ repoRoot: source, outputRoot: output });
+  const before = inventory(output);
+  const plugin = JSON.parse(fs.readFileSync(path.join(source, '.codex-plugin/plugin.json')));
+  plugin.version = '99.0.0';
+  write(source, '.codex-plugin/plugin.json', JSON.stringify(plugin));
+  const published = buildDefaultPlugin({ repoRoot: source });
+  assert.equal(published.marketplaceRoot, output);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(output, 'plugins/mavt/.codex-plugin/plugin.json'))).version, '99.0.0');
+  assert.deepEqual(inventory(published.archivedMarketplaceRoot), before);
+  assert.equal(path.dirname(published.archivedMarketplaceRoot), path.join(source, 'dist/archive'));
+});
+
+test('the first default publication works without an existing output directory', t => {
+  const { source } = fixture(t);
+  const published = buildDefaultPlugin({ repoRoot: source });
+  assert.equal(published.marketplaceRoot, path.join(source, 'dist/mavt-marketplace'));
+  assert.equal(published.archivedMarketplaceRoot, null);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(published.pluginRoot, '.codex-plugin/plugin.json'))).version, '0.3.6');
+});
+
+for (const point of ['before-archive', 'after-archive', 'after-publish']) test(`default publication recovers a killed publisher at ${point}`, t => {
+  const { source } = fixture(t);
+  const output = path.join(source, 'dist/mavt-marketplace');
+  buildPlugin({ repoRoot: source, outputRoot: output });
+  const before = inventory(output);
+  write(source, mavtRoot + 'references/case-runtime.md', 'Updated runtime documentation\n');
+  const crashed = spawnSync(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    const original = fs.renameSync;
+    fs.renameSync = function(from, to) {
+      const archiving = from === process.argv[2];
+      if (archiving && process.argv[3] === 'before-archive') process.kill(process.pid, 'SIGKILL');
+      const value = original.apply(this, arguments);
+      if (archiving && process.argv[3] === 'after-archive' || to === process.argv[2] && process.argv[3] === 'after-publish') process.kill(process.pid, 'SIGKILL');
+      return value;
+    };
+    require(${JSON.stringify(path.join(repoRoot, 'build-plugin.js'))}).buildDefaultPlugin({repoRoot: process.argv[1]});
+  `, source, output, point], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(crashed.signal, 'SIGKILL', crashed.stderr);
+  const expected = point === 'after-publish' ? inventory(output) : before;
+  // Recovery must happen before building: even broken sources must not leave
+  // the previous installed marketplace inaccessible or leave a stale lock.
+  fs.unlinkSync(path.join(source, mavtRoot + 'references/case-runtime.md'));
+  assert.throws(() => buildDefaultPlugin({ repoRoot: source }), /missing/i);
+  assert.deepEqual(inventory(output), expected);
+  assert.equal(fs.existsSync(path.join(source, 'dist/.mavt-marketplace.publish-lock')), false);
+  assert.equal(fs.existsSync(path.join(source, 'dist/.mavt-marketplace.publish.json')), false);
+  write(source, mavtRoot + 'references/case-runtime.md', inputs[mavtRoot + 'references/case-runtime.md']);
+  assert.ok(buildDefaultPlugin({ repoRoot: source }).manifest.bundleId, 'retry publishes successfully');
+});
+
+test('default publication preserves a corrupt prior build for diagnosis', t => {
+  const { source } = fixture(t);
+  const output = path.join(source, 'dist/mavt-marketplace');
+  buildPlugin({ repoRoot: source, outputRoot: output });
+  write(output, 'plugins/mavt/runtime/mobile-ai-visual-test/references/case-runtime.md', 'changed by another operation');
+  const before = inventory(output);
+  assert.throws(() => buildDefaultPlugin({ repoRoot: source }), /invalid|mismatch/i);
+  assert.deepEqual(inventory(output), before);
+  assert.equal(fs.existsSync(path.join(source, 'dist/archive')), false);
+});
+
+for (const point of ['empty-before-removal', 'empty-after-removal', 'missing-before-publish']) test(`first publication recovers at ${point} before rebuilding broken sources`, t => {
+  const { source, output: reference } = fixture(t);
+  buildPlugin({ repoRoot: source, outputRoot: reference });
+  const expected = inventory(reference);
+  const output = path.join(source, 'dist/mavt-marketplace');
+  if (point.startsWith('empty')) fs.mkdirSync(output, { recursive: true });
+  const crashed = spawnSync(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    const rmdir = fs.rmdirSync, rename = fs.renameSync;
+    fs.rmdirSync = function(filename) {
+      if (filename === process.argv[2] && process.argv[3] === 'empty-before-removal') process.kill(process.pid, 'SIGKILL');
+      const result = rmdir.apply(this, arguments);
+      if (filename === process.argv[2] && process.argv[3] === 'empty-after-removal') process.kill(process.pid, 'SIGKILL');
+      return result;
+    };
+    fs.renameSync = function(from, to) {
+      if (to === process.argv[2] && process.argv[3] === 'missing-before-publish') process.kill(process.pid, 'SIGKILL');
+      return rename.apply(this, arguments);
+    };
+    require(${JSON.stringify(path.join(repoRoot, 'build-plugin.js'))}).buildDefaultPlugin({repoRoot: process.argv[1]});
+  `, source, output, point], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(crashed.signal, 'SIGKILL', crashed.stderr);
+  fs.unlinkSync(path.join(source, mavtRoot + 'references/case-runtime.md'));
+  assert.throws(() => buildDefaultPlugin({ repoRoot: source }), /missing/i);
+  assert.deepEqual(inventory(output), expected);
+  assert.equal(fs.existsSync(path.join(source, 'dist/.mavt-marketplace.publish.json')), false);
+});
+
+test('default publication preserves an identified live publisher lock', t => {
+  const { source } = fixture(t);
+  const lock = path.join(source, 'dist/.mavt-marketplace.publish-lock');
+  fs.mkdirSync(lock, { recursive: true });
+  const owner = `owner-${crypto.randomUUID()}.json`;
+  write(lock, owner, JSON.stringify({ pid: process.pid, hostname: os.hostname() }));
+  const before = inventory(lock);
+  assert.throws(() => buildDefaultPlugin({ repoRoot: source }), /lock.*held/i);
+  assert.deepEqual(inventory(lock), before);
+});
+
+for (const phase of ['release', 'reclaim']) test(`interruption while ${phase === 'release' ? 'releasing' : 'reclaiming'} a lock remains recoverable`, t => {
+  const { source } = fixture(t);
+  const output = path.join(source, 'dist/mavt-marketplace');
+  buildPlugin({ repoRoot: source, outputRoot: output });
+  const before = inventory(output);
+  const lock = path.join(source, 'dist/.mavt-marketplace.publish-lock');
+  const killAt = event => {
+    const result = spawnSync(process.execPath, ['-e', `
+      const fs = require('node:fs'), path = require('node:path');
+      const rename = fs.renameSync, unlink = fs.unlinkSync;
+      const lock = process.argv[2], event = process.argv[3];
+      const ownerFile = file => path.dirname(file) === lock && path.basename(file).startsWith('owner-');
+      fs.renameSync = function(from, to) {
+        const result = rename.apply(this, arguments);
+        if (event === 'journal' && to.endsWith('.publish.json') || event === 'release' && from === lock || event === 'reclaim' && ownerFile(from)) process.kill(process.pid, 'SIGKILL');
+        return result;
+      };
+      fs.unlinkSync = function(file) {
+        const result = unlink.apply(this, arguments);
+        if (event !== 'journal' && ownerFile(file)) process.kill(process.pid, 'SIGKILL');
+        return result;
+      };
+      require(${JSON.stringify(path.join(repoRoot, 'build-plugin.js'))}).buildDefaultPlugin({repoRoot: process.argv[1]});
+    `, source, lock, event], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(result.signal, 'SIGKILL', result.stderr);
+  };
+  if (phase === 'reclaim') killAt('journal');
+  killAt(phase);
+  fs.unlinkSync(path.join(source, mavtRoot + 'references/case-runtime.md'));
+  assert.throws(() => buildDefaultPlugin({ repoRoot: source }), /missing/i);
+  assert.deepEqual(inventory(output), before);
+  assert.equal(fs.existsSync(lock), false);
+});
+
+test('interrupted recursive cleanup cannot leave the recovery journal pointing at a partial candidate', t => {
+  const { source } = fixture(t);
+  const output = path.join(source, 'dist/mavt-marketplace');
+  buildPlugin({ repoRoot: source, outputRoot: output });
+  const expected = inventory(output);
+  for (const point of ['journal', 'cleanup']) {
+    const crashed = spawnSync(process.execPath, ['-e', `
+      const fs = require('node:fs'), path = require('node:path');
+      const rename = fs.renameSync, rm = fs.rmSync;
+      fs.renameSync = function(from, to) {
+        const result = rename.apply(this, arguments);
+        if (process.argv[2] === 'journal' && to.endsWith('.publish.json')) process.kill(process.pid, 'SIGKILL');
+        return result;
+      };
+      fs.rmSync = function(filename) {
+        if (process.argv[2] === 'cleanup' && /^\\.mavt-(?:publish-|retired-candidate-)/.test(path.basename(filename))) {
+          // A recursive removal can be interrupted after any file prefix.
+          fs.unlinkSync(path.join(filename, 'plugins/mavt/runtime/mobile-ai-visual-test/references/case-runtime.md'));
+          process.kill(process.pid, 'SIGKILL');
+        }
+        return rm.apply(this, arguments);
+      };
+      require(${JSON.stringify(path.join(repoRoot, 'build-plugin.js'))}).buildDefaultPlugin({repoRoot: process.argv[1]});
+    `, source, point], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(crashed.signal, 'SIGKILL', crashed.stderr);
+  }
+  fs.unlinkSync(path.join(source, mavtRoot + 'references/case-runtime.md'));
+  assert.throws(() => buildDefaultPlugin({ repoRoot: source }), /missing/i);
+  assert.deepEqual(inventory(output), expected);
+  assert.equal(fs.existsSync(path.join(source, 'dist/.mavt-marketplace.publish.json')), false);
+});
+
+test('a failed default build leaves the active marketplace and its archive untouched', t => {
+  const { source } = fixture(t);
+  const output = path.join(source, 'dist/mavt-marketplace');
+  buildPlugin({ repoRoot: source, outputRoot: output });
+  const before = inventory(output);
+  fs.unlinkSync(path.join(source, mavtRoot + 'references/case-runtime.md'));
+  assert.throws(() => buildDefaultPlugin({ repoRoot: source }), /missing/i);
+  assert.deepEqual(inventory(output), before);
+  assert.equal(fs.existsSync(path.join(source, 'dist/archive')), false);
+});
+
+test('default publication protects unknown user files and refuses a second publisher', t => {
+  const { source } = fixture(t);
+  const output = path.join(source, 'dist/mavt-marketplace');
+  write(output, 'keep.txt', 'user data');
+  assert.throws(() => buildDefaultPlugin({ repoRoot: source }), /unrecognized|ordinary|build/i);
+  assert.equal(fs.readFileSync(path.join(output, 'keep.txt'), 'utf8'), 'user data');
+  fs.mkdirSync(path.join(source, 'dist/.mavt-marketplace.publish-lock'));
+  assert.throws(() => buildDefaultPlugin({ repoRoot: source }), /EEXIST|publish|lock/i);
+  assert.equal(fs.existsSync(path.join(source, 'dist/.mavt-marketplace.publish-lock')), true);
 });
 
 test('CLI rejects relative output instead of interpreting a caller-dependent path', () => {

@@ -11,14 +11,14 @@
     },
     {
       "id": "case_image_visibility",
-      "stage": "PRE_DELEGATION",
+      "stage": "POST_LOADER",
       "status": "SESSION_REQUIRED",
       "anyEvidenceFields": ["caseImageVisibility.mcpImageVisibleToChild", "caseImageVisibility.localImageVisibleToChild"],
       "failurePolicy": "STOP_VISUAL_EXECUTION"
     },
     {
       "id": "case_tool_visibility",
-      "stage": "PRE_DELEGATION",
+      "stage": "POST_LOADER",
       "status": "SESSION_REQUIRED",
       "evidenceFields": ["caseTools.availableToChild"],
       "failurePolicy": "STOP_VISUAL_EXECUTION"

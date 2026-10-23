@@ -16,6 +16,7 @@ function fixture(id, platform = 'harmony') {
   fs.mkdirSync(path.join(dir, 'screenshots'), { recursive: true });
   writeJsonAtomic(path.join(dir, 'execution.json'), { schemaVersion: 14, runtime: 'case-runtime', executionId: id, platform, finalized: false });
   fs.writeFileSync(path.join(dir, 'events.jsonl'), '');
+  fs.writeFileSync(path.join(dir, 'source.snapshot.md'), 'expected visible');
   fs.writeFileSync(path.join(dir, 'screenshots/scene-0001.png'), png);
   const scene = { sceneId: 'scene-0001', capturedAt: '2026-09-22T00:00:00Z', generation: 1,
     screenshot: { ref: 'screenshots/scene-0001.png', width: 100, height: 200 },
