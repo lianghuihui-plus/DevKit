@@ -90,7 +90,7 @@ flowchart LR
 - `integration` 仅依赖 settings 的安全摘要、intents 和进程启动门面；不能 require collector、报告 renderer 或 transport。调用处按需加载并捕获加载异常，缺文件/语法错误也不能使原测试入口加载失败。
 - `service/jobs` 编排用例，`collector` 通过只读 SourceReader 适配器取得来源；`sections/native-model/redaction` 做确定性转换，`artifacts` 冻结文件，`session` 消费冻结包并驱动 transport。transport 不读取测试目录、不分配修订、不判断测试结果。
 - repository 独占配置、身份、修订、任务和回执的持久化规则；业务模块不能各自拼状态文件路径或实现锁恢复。service 不堆积字段映射、HTTP 或文件系统细节。
-- 通过 `createReportingService({repository, sourceReader, transport, launcher, clock})` 注入实现；生产使用默认实现，测试替换边界，不引入容器框架、动态代码插件或可执行远端策略。
+- 轻量同步门面通过 `createReportingService({repository, settings?, credentials?, identity?, intents?, jobs?, launcher?, clock?})` 注入本地状态与启动边界；`sourceReader`、`transport` 等异步重依赖仅在 `createWorker(...)` 的同进程测试边界注入，不能把函数跨 detached 子进程传递。生产门面仍由默认 launcher 启动已验证的固定 bundle，不引入容器框架、动态代码插件或可执行远端策略。
 - 标准分段采用静态注册表 `{kind, schemaVersion, shape, project, validate, collectRefs}`，约束为 17 类的统一注册入口；新增分段只增加注册项及 fixture。协议版本适配、来源格式适配、native renderer 适配分别注册，互不冒充版本。
 - 首版 SourceReader 明确支持当前 `execution.schemaVersion=14`；旧 Run 可由新 reporting bundle 只读导出其兼容终态，不执行旧 Run 的命令。不支持的来源版本返回 `REPORTING_SOURCE_VERSION_UNSUPPORTED`，保留未来增加 reader 的位置，不承诺任意历史格式兼容。
 
@@ -115,7 +115,7 @@ acceptRunSnapshot(workspace: string, batchId: string, attemptId: string): RunRep
 submit(input: SubmitRequest): Submission; // 固化轻量意图并启动/唤醒 worker，不等待上传
 status(workspace: string, jobId?: string): JobView; // 只读，不能借查询启动任务
 retry(workspace: string, jobId: string, options?: {acceptCredentialChange?: true}): Submission;
-resetIdentity(workspace: string): WorkspaceIdentity;
+resetIdentity(workspace: string): WorkspaceIdentityView; // 仅 {workspaceId, identityEpoch}，不返回内部 anonymizationSalt
 ```
 
 `SubmitRequest` 为 `{ workspace, scope: "batch" | "workspace", batchId?, trigger: "automatic" | "manual", runtimeRoot, bundleId }`；批次范围必须有 batchId，来源从可信 Run 读取，客户端不能指定任意 execution 路径。`Submission` 返回 `{ jobId, state, serverUrl, code? }`；不以 HTTP/MCP 送达等同于 COMMITTED。

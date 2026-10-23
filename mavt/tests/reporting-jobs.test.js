@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
@@ -99,7 +100,61 @@ test('identity reset reaps a confirmed dead worker but refuses an uncertain live
   const service = createReportingService({ repository, jobs: queue });
   const reset = service.resetIdentity(workspace);
   assert.notEqual(reset.identityEpoch, original);
+  assert.equal(Object.hasOwn(reset, 'anonymizationSalt'), false);
   assert.equal(repository.readWorkspace(workspace, `jobs/${submitted.jobId}/state.json`).state, 'RETRYABLE_FAILED');
+});
+
+test('identity reset refuses a worker whose process may still be alive', t => {
+  const { workspace, repository } = fixture(t);
+  const queue = createJobQueue({ repository, launcher: () => {}, processIdentity: () => null,
+    isAlive: () => true, credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
+  queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  const original = repository.readWorkspace(workspace, 'identity.json').identityEpoch;
+  const claim = repository.readWorkspace(workspace, 'worker-claim.json');
+  repository.withWorkspaceLock(workspace, () => repository.writeWorkspace(workspace, 'worker-claim.json', {
+    ...claim, state: 'ACTIVE', pid: 4321, processStartedAt: 'unavailable'
+  }));
+  assert.throws(() => createReportingService({ repository, jobs: queue }).resetIdentity(workspace),
+    { code: 'REPORTING_IDENTITY_BUSY' });
+  assert.equal(repository.readWorkspace(workspace, 'identity.json').identityEpoch, original);
+});
+
+test('retry can requeue one job while another worker owns the workspace', t => {
+  const { workspace, repository } = fixture(t);
+  const queue = createJobQueue({ repository, launcher: () => {}, processIdentity: () => 'started',
+    credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
+  const first = queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  const claim = queue.registerWorker(workspace, repository.readWorkspace(workspace, 'worker-claim.json').nonce, 123, 'started');
+  queue.beginJob(workspace, claim);
+  const second = queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  repository.withWorkspaceLock(workspace, () => repository.writeWorkspace(workspace, `jobs/${second.jobId}/state.json`, {
+    ...repository.readWorkspace(workspace, `jobs/${second.jobId}/state.json`), state: 'RETRYABLE_FAILED', nextRetryAt: null
+  }));
+  assert.equal(queue.retry(workspace, second.jobId).state, 'QUEUED');
+  queue.updateJob(workspace, claim, { state: 'COMMITTED' });
+  assert.equal(queue.releaseWorker(workspace, claim).jobId, second.jobId);
+  assert.equal(queue.status(workspace, first.jobId).state, 'COMMITTED');
+});
+
+test('retry rechecks export version under its write lock', t => {
+  const { workspace, repository } = fixture(t);
+  let now = Date.parse('2026-10-23T00:00:00Z');
+  let upgrade = false;
+  const guarded = { ...repository, withWorkspaceLock(root, callback) {
+    if (upgrade) {
+      upgrade = false;
+      const path = `jobs/${submitted.jobId}/state.json`;
+      repository.writeWorkspace(root, path, { ...repository.readWorkspace(root, path), exportVersion: 2 });
+    }
+    return repository.withWorkspaceLock(root, callback);
+  } };
+  const queue = createJobQueue({ repository: guarded, clock: () => now, launcher: () => {},
+    credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
+  const submitted = queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+  now += 16000;
+  upgrade = true;
+  assert.throws(() => queue.retry(workspace, submitted.jobId), { code: 'REPORTING_STATE_VERSION_UNSUPPORTED' });
+  assert.equal(repository.readWorkspace(workspace, `jobs/${submitted.jobId}/state.json`).exportVersion, 2);
 });
 
 test('retry refuses an old identity epoch and unsupported export version without rewriting state', t => {
@@ -282,6 +337,7 @@ test('explicit credential acceptance journals and resumes only an unfinished ses
     },
     async runSession(input) {
       calls.push(`run:${input.sessionId}`);
+      if (input.sessionId === 'session-0001') return { state: 'COMMITTED' };
       repository.writeWorkspace(workspace, `receipts/frozen-1/${input.sessionId}.json`, { status: 'COMMITTED' });
       return { state: 'COMMITTED' };
     }
@@ -290,7 +346,7 @@ test('explicit credential acceptance journals and resumes only an unfinished ses
     transport: { serverUrl: first.serverUrl, credentialGeneration: generation },
     collectExport: () => assert.fail('frozen package must be reused') });
   await worker.runClaim(workspace, claim.nonce, { pid: 123, processStartedAt: 'started' });
-  assert.deepEqual(calls, ['adopt:session-0002', 'run:session-0002']);
+  assert.deepEqual(calls, ['adopt:session-0002', 'run:session-0001', 'run:session-0002']);
   assert.equal(queue.status(workspace, first.jobId).state, 'COMMITTED');
   assert.equal(repository.readWorkspace(workspace, 'sessions/frozen-1/session-0002.json').key, 'fixed-key');
 });
@@ -318,6 +374,28 @@ test('automatic publication wait remains durable until a published sidecar is ob
   assert.equal(queue.status(workspace, submission.jobId).nextAction, 'RESOLVE_PUBLICATION');
   fs.writeFileSync(path.join(batchDir, 'report-publication.json'), JSON.stringify({ status: 'PUBLISHED' }));
   assert.equal(queue.retry(workspace, submission.jobId).state, 'QUEUED');
+  assert.equal(launches, 1);
+});
+
+test('missing batch state is definition-only only with explicit no-execution history', t => {
+  const { workspace, repository } = fixture(t);
+  let launches = 0;
+  const queue = createJobQueue({ repository, launcher: () => launches++,
+    credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
+  for (const [batchId, initialization, expected] of [
+    ['lost-batch', { executionRequestCreated: { requestId: 'request-1' }, batchInitialized: { batchId: 'lost-batch' } }, 'WAITING_PUBLICATION'],
+    ['unstarted-batch', { executionRequestCreated: null, batchInitialized: null }, 'QUEUED']
+  ]) {
+    const base = path.join(workspace, 'runs', batchId);
+    fs.mkdirSync(base, { recursive: true });
+    fs.writeFileSync(path.join(base, 'coordinator-state.json'), JSON.stringify({ workspace, batchId,
+      phase: 'COMPLETE', environmentConfirmed: true, initialization, targets: [{ caseKey: 'case-1' }] }));
+    repository.writeWorkspace(workspace, `runs/${batchId}.json`, { batchId, attemptId: `attempt-${batchId}`,
+      state: 'ACTIVE', serverUrl: 'https://mobile-backend.codemao.cn/mavtdashboard/', autoUpload: true,
+      configured: true, noticeAcknowledged: true, credentialGeneration: 'a'.repeat(64), requestDigest: 'b'.repeat(64) });
+    assert.equal(queue.submit({ workspace, scope: 'batch', trigger: 'automatic', batchId,
+      bundleId: 'c'.repeat(64) }).state, expected);
+  }
   assert.equal(launches, 1);
 });
 
@@ -354,6 +432,7 @@ test('frozen blobs survive a partial result and are removed only after all recei
     transport: { serverUrl: job.serverUrl, credentialGeneration: generation },
     sessionRunner: { async runSession(input) {
       assert.equal(fs.existsSync(blob), true);
+      if (input.sessionId === 'session-0001') return { state: 'COMMITTED' };
       assert.equal(input.sessionId, 'session-0002');
       repository.writeWorkspace(workspace, 'receipts/one-package/session-0002.json', { status: 'COMMITTED' });
       return { state: 'COMMITTED' };
@@ -362,6 +441,58 @@ test('frozen blobs survive a partial result and are removed only after all recei
   assert.equal(queue.status(workspace, job.jobId).state, 'COMMITTED');
   assert.equal(fs.existsSync(blob), false);
 });
+
+for (const [name, mutate, expected, adopted] of [
+  ['valid', receipt => receipt, 'COMMITTED', false],
+  ['valid old-generation', receipt => receipt, 'COMMITTED', true],
+  ['foreign binding', receipt => ({ ...receipt, serverUrl: 'https://foreign.invalid/' }), 'RETRYABLE_FAILED', false],
+  ['invalid terminal result', receipt => ({ ...receipt, results: { ...receipt.results,
+    workspace: { ...receipt.results.workspace, id: 'foreign-workspace' } } }), 'RETRYABLE_FAILED', false]
+]) {
+  test(`${name} persisted receipt is validated before frozen data cleanup`, async t => {
+    const { workspace, repository } = fixture(t);
+    const generation = 'a'.repeat(64);
+    let currentGeneration = generation;
+    const queue = createJobQueue({ repository, launcher: () => {}, processIdentity: () => 'started',
+      credentials: { status: () => ({ configured: true, generation: currentGeneration }) } });
+    const job = queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'b'.repeat(64) });
+    if (adopted) currentGeneration = 'b'.repeat(64);
+    const identityEpoch = repository.readWorkspace(workspace, 'identity.json').identityEpoch;
+    const packageId = 'receipt-package', localId = 'session-0001';
+    const manifest = { workspace: { id: 'workspace-1' }, cases: [], executions: [], files: [] };
+    const rawManifest = JSON.stringify(manifest);
+    const manifestSha256 = `sha256:${crypto.createHash('sha256').update(rawManifest).digest('hex')}`;
+    const binding = { packageId, localId, identityEpoch, exportVersion: 1,
+      serverUrl: job.serverUrl, credentialGeneration: generation, manifestSha256 };
+    const blob = path.join(workspace, '.mavt/reporting/packages', packageId, 'blobs/file-1');
+    fs.mkdirSync(path.dirname(blob), { recursive: true });
+    fs.writeFileSync(blob, 'frozen');
+    repository.writeWorkspace(workspace, `sessions/${packageId}/${localId}.json`, { ...binding,
+      state: 'COMMITTED', phase: 'TERMINAL', key: crypto.randomUUID(), remoteSessionId: 'remote-1',
+      manifestRelative: `sessions/${localId}/manifest.json`, sequence: 1 });
+    repository.writeWorkspace(workspace, `receipts/${packageId}/${localId}.json`, mutate({ ...binding,
+      protocolVersion: '2.0', sessionId: 'remote-1', status: 'COMMITTED',
+      results: { workspace: { id: 'workspace-1', decision: 'CREATED', code: null }, cases: [], executions: [] }, errors: [] }));
+    repository.withWorkspaceLock(workspace, () => repository.writeWorkspace(workspace, `jobs/${job.jobId}/state.json`, {
+      ...repository.readWorkspace(workspace, `jobs/${job.jobId}/state.json`), packageId,
+      credentialGeneration: currentGeneration,
+      sessions: [{ id: localId, state: 'QUEUED' }]
+    }));
+    const worker = createWorker({ repository, queue,
+      credentials: { status: () => ({ configured: true, generation: currentGeneration }) },
+      transport: { serverUrl: job.serverUrl, credentialGeneration: currentGeneration,
+        capabilities: () => assert.fail('receipt recovery must not use network') },
+      readFrozenExport: () => ({ state: 'PACKAGE_READY', packageId, identityEpoch,
+        sessions: [{ id: localId, rawManifest, manifestSha256, manifest }]
+      }) });
+    const claim = repository.readWorkspace(workspace, 'worker-claim.json');
+    await worker.runClaim(workspace, claim.nonce, { pid: 123, processStartedAt: 'started' });
+    assert.equal(queue.status(workspace, job.jobId).state, expected);
+    assert.equal(fs.existsSync(blob), expected !== 'COMMITTED');
+    if (adopted) assert.equal(repository.readWorkspace(workspace,
+      `receipts/${packageId}/${localId}.json`).credentialGeneration, generation);
+  });
+}
 
 test('a committed and rejected pair is partial but cannot replay the rejected key', async t => {
   const { workspace, repository } = fixture(t);
@@ -427,6 +558,57 @@ test('a broken pinned bundle does not starve a different runnable bundle', t => 
   assert.equal(queue.status(workspace, broken.jobId).state, 'COLLECTION_FAILED');
   assert.equal(queue.status(workspace, good.jobId).state, 'QUEUED');
   assert.deepEqual(launches, ['a'.repeat(64), 'b'.repeat(64)]);
+});
+
+test('more than sixteen broken bundles cannot leave a healthy job unlaunched', t => {
+  const { workspace, repository } = fixture(t);
+  const goodBundle = 'f'.repeat(64);
+  let failuresEnabled = false;
+  const launches = [];
+  const queue = createJobQueue({ repository, launcher: claim => {
+    if (!failuresEnabled) return;
+    launches.push(claim.jobId);
+    if (claim.bundleId !== goodBundle) throw Object.assign(new Error('broken bundle'), { code: 'MAVT_RUNTIME_BUNDLE_INVALID' });
+  }, credentials: { status: () => ({ configured: true, generation: 'a'.repeat(64) }) } });
+  const broken = Array.from({ length: 17 }, (_, index) => queue.submit({ workspace, scope: 'workspace',
+    trigger: 'manual', bundleId: String(index).padStart(64, '0') }));
+  const healthy = queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: goodBundle });
+  failuresEnabled = true;
+  queue.launchReserved(workspace, repository.readWorkspace(workspace, 'worker-claim.json'));
+  assert.equal(launches.length, 18);
+  assert.equal(launches.at(-1), healthy.jobId);
+  assert.equal(repository.readWorkspace(workspace, 'worker-claim.json').jobId, healthy.jobId);
+  assert.equal(broken.every(job => queue.status(workspace, job.jobId).state === 'COLLECTION_FAILED'), true);
+});
+
+test('worker handoff reaches a healthy bundle after seventeen failed launches', async t => {
+  const { workspace, repository } = fixture(t);
+  const generation = 'a'.repeat(64);
+  const credentials = { status: () => ({ configured: true, generation }) };
+  const queue = createJobQueue({ repository, launcher: () => {}, processIdentity: () => 'started', credentials });
+  const first = queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'e'.repeat(64) });
+  const firstClaim = repository.readWorkspace(workspace, 'worker-claim.json');
+  const broken = Array.from({ length: 17 }, (_, index) => queue.submit({ workspace, scope: 'workspace',
+    trigger: 'manual', bundleId: String(index).padStart(64, '0') }));
+  const healthy = queue.submit({ workspace, scope: 'workspace', trigger: 'manual', bundleId: 'f'.repeat(64) });
+  const launches = [];
+  const worker = createWorker({ repository, queue, credentials,
+    launcher: claim => {
+      launches.push(claim.jobId);
+      if (claim.jobId !== healthy.jobId) throw Object.assign(new Error('broken bundle'), { code: 'MAVT_RUNTIME_BUNDLE_INVALID' });
+    },
+    transport: { serverUrl: first.serverUrl, credentialGeneration: generation, capabilities: async () => ({}) },
+    collectExport: async () => ({ packageId: 'handoff-package', files: [], sessions: [{ id: 'session-0001' }] }),
+    sessionRunner: { async runSession() {
+      repository.writeWorkspace(workspace, 'receipts/handoff-package/session-0001.json', { status: 'COMMITTED' });
+      return { state: 'COMMITTED' };
+    } }
+  });
+  await worker.runClaim(workspace, firstClaim.nonce, { pid: 123, processStartedAt: 'started' });
+  assert.equal(launches.length, 18);
+  assert.equal(launches.at(-1), healthy.jobId);
+  assert.equal(repository.readWorkspace(workspace, 'worker-claim.json').jobId, healthy.jobId);
+  assert.equal(broken.every(job => queue.status(workspace, job.jobId).state === 'COLLECTION_FAILED'), true);
 });
 
 test('enqueue during a worker completion hands the next bundle a reserved claim', async t => {

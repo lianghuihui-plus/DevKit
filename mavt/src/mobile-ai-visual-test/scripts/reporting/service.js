@@ -29,7 +29,8 @@ function createReportingService(options = {}) {
   }
   function resetIdentity(workspace) {
     jobs.reapDeadClaim(workspace);
-    return identity.reset(workspace);
+    const { workspaceId, identityEpoch } = identity.reset(workspace);
+    return { workspaceId, identityEpoch };
   }
   return {
     readSettings: settings.read,

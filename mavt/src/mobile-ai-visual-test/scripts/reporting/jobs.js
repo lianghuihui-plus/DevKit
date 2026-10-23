@@ -36,7 +36,18 @@ function publicationState(workspace, batchId, repository) {
   if (!run || !['COMPLETE', 'BLOCKED'].includes(run.phase)) return { state: 'SKIPPED_NOT_STARTED' };
   const base = path.join(path.resolve(workspace), 'runs', safeId(batchId));
   const batch = path.join(base, 'batch.json');
-  if (!fs.existsSync(batch)) return { state: 'QUEUED' };
+  if (!fs.existsSync(batch)) {
+    const unstarted = run.environmentConfirmed === true
+      && run.initialization?.executionRequestCreated === null
+      && run.initialization?.batchInitialized === null;
+    try {
+      if (unstarted && fs.lstatSync(base).isDirectory()
+        && fs.readdirSync(base).every(name => name === 'coordinator-state.json'))
+        return { state: 'QUEUED' };
+    } catch {}
+    return { state: 'WAITING_PUBLICATION', failureCode: 'REPORTING_RUN_STATE_INVALID',
+      nextAction: 'RESOLVE_PUBLICATION' };
+  }
   try {
     const stat = fs.lstatSync(batch);
     if (!stat.isFile() || stat.size > 4 * 1024 * 1024) throw new Error('invalid batch');
@@ -155,7 +166,7 @@ function createJobQueue(options = {}) {
   }
   function launchReserved(workspace, first) {
     let claim = first;
-    for (let failures = 0; claim && !claim.code && failures < 16; failures++) {
+    while (claim && !claim.code) {
       try { launcher(claim, workspace); return null; }
       catch (error) {
         const code = error.code?.startsWith('MAVT_RUNTIME_BUNDLE_') ? 'REPORTING_BUNDLE_INVALID'
@@ -315,9 +326,11 @@ function createJobQueue(options = {}) {
       return { jobId, state: 'NEEDS_CREDENTIAL', serverUrl: job.serverUrl, code: 'REPORTING_NEEDS_CREDENTIAL' };
     const updated = repository.withWorkspaceLock(workspace, () => {
       const current = readJob(workspace, jobId);
+      if (current.exportVersion !== EXPORT_VERSION) throw reportingError('REPORTING_STATE_VERSION_UNSUPPORTED');
       if (current.identityEpoch !== repository.readWorkspace(workspace, 'identity.json')?.identityEpoch)
         throw reportingError('REPORTING_IDENTITY_STALE');
-      if (ownerBusy(repository.readWorkspace(workspace, 'worker-claim.json')))
+      const owner = repository.readWorkspace(workspace, 'worker-claim.json');
+      if (ownerBusy(owner) && owner.jobId === jobId)
         throw reportingError('REPORTING_WORKER_BUSY');
       if (currentGeneration !== current.credentialGeneration) {
         const relative = `jobs/${jobId}/credential-change.json`;

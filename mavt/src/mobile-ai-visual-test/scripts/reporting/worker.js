@@ -117,19 +117,13 @@ function createWorker(options = {}) {
       remaining(deadline);
       const receiptRelative = `receipts/${packageId}/${item.id}.json`;
       const receipt = repository.readWorkspace(workspace, receiptRelative);
-      if (receipt?.status === 'COMMITTED') {
-        item.state = 'COMMITTED'; item.receiptRelative = receiptRelative;
-        continue;
-      }
-      if (receipt?.status === 'REJECTED') {
-        item.state = 'REJECTED'; item.receiptRelative = receiptRelative;
-        continue;
-      }
       const runner = options.sessionRunner || makeRunner({ repository, credentials, transport, readFrozenExport: readFrozen,
         clock, timeouts: { total: remaining(deadline) } });
+      const stored = receipt ? repository.readWorkspace(workspace, `sessions/${packageId}/${item.id}.json`) : null;
       const result = await runner.runSession({ workspace, packageId, sessionId: item.id,
-        serverUrl: job.serverUrl, credentialGeneration: job.credentialGeneration });
+        serverUrl: job.serverUrl, credentialGeneration: stored?.credentialGeneration || job.credentialGeneration });
       queue.assertOwner(workspace, claim);
+      if (receipt && !['COMMITTED', 'REJECTED'].includes(result.state)) throw reportingError('REPORTING_STATE_CORRUPT');
       item.state = result.state;
       item.failureCode = result.failureCode || null;
       item.nextRetryAt = result.nextRetryAt || null;
@@ -193,7 +187,7 @@ function createWorker(options = {}) {
       clearInterval(heartbeat);
       next = queue.releaseWorker(workspace, claim);
     }
-    for (let attempts = 0; next && !next.code && attempts < 16; attempts++) {
+    while (next && !next.code) {
       try { launch(next, workspace); break; }
       catch (error) {
         const code = error.code?.startsWith('MAVT_RUNTIME_BUNDLE_') ? 'REPORTING_BUNDLE_INVALID'
