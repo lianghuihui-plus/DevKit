@@ -70,7 +70,7 @@ function createTransport(options = {}) {
     // All relative routes originate here; never follow a remote Location/header.
     protocol(url.origin === base.origin && url.pathname.startsWith(base.pathname));
     return new Promise((resolve, reject) => {
-      let done = false, response, timer;
+      let done = false, response, timer, responseValue, requestFinished = false;
       const finish = (error, value) => {
         if (done) return;
         done = true; clearTimeout(timer);
@@ -104,14 +104,19 @@ function createTransport(options = {}) {
           try {
             const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes)));
             protocol(value && typeof value === 'object' && !Array.isArray(value));
-            finish(null, value);
+            responseValue = value;
+            if (requestFinished) finish(null, value);
           } catch { finish(reportingError('REPORTING_PROTOCOL_INVALID')); }
         });
+      });
+      req.on('finish', () => {
+        requestFinished = true;
+        if (responseValue) finish(null, responseValue);
       });
       req.on('error', () => finish(reportingError('REPORTING_NETWORK_ERROR')));
       timer = setTimeout(() => finish(reportingError('REPORTING_TIMEOUT')), checkedTimeout(timeout));
       if (body && typeof body.pipe === 'function') {
-        body.on('error', () => finish(reportingError('REPORTING_UPLOAD_ERROR')));
+        body.on('error', error => finish(error instanceof ReportingError ? error : reportingError('REPORTING_UPLOAD_ERROR')));
         body.pipe(req);
       } else req.end(body);
     }).catch(error => {
@@ -140,7 +145,7 @@ function createTransport(options = {}) {
     } });
     const counter = new Writable({ write(chunk, encoding, callback) { wireBytes += chunk.length; callback(); } });
     const abort = new AbortController(), timer = setTimeout(() => abort.abort(), timeout);
-    const stream = () => fs.createReadStream(file.path, { flags: fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW });
+    const stream = () => fs.createReadStream(file.path, { flags: fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW, highWaterMark: 64 * 1024 });
     try {
       const stages = [stream(), verify];
       if (file.encoding === 'gzip') stages.push(zlib.createGzip());
@@ -153,17 +158,57 @@ function createTransport(options = {}) {
     } finally { clearTimeout(timer); }
     const remaining = timeout - (clock() - started);
     if (remaining <= 0) throw reportingError('REPORTING_TIMEOUT');
-    const source = stream();
-    let body = source;
-    if (file.encoding === 'gzip') {
-      body = zlib.createGzip(); source.on('error', error => body.destroy(error));
-      body.on('close', () => source.destroy()); source.pipe(body);
-    }
+    // The prepass only measures the wire representation. The filesystem can
+    // change before or during this read, so enforce raw and wire bounds on the
+    // actual transmitting pipeline and withhold its end on any mismatch.
+    const source = stream(), sentHash = crypto.createHash('sha256');
+    let sentRawBytes = 0, sentWireBytes = 0, pending;
+    const verifySending = new Transform({
+      transform(chunk, encoding, callback) {
+        sentRawBytes += chunk.length;
+        if (sentRawBytes > file.bytes) return callback(reportingError('REPORTING_PACKAGE_CORRUPT'));
+        sentHash.update(chunk);
+        if (pending) this.push(pending);
+        pending = chunk;
+        callback();
+      },
+      flush(callback) {
+        const matches = sentRawBytes === file.bytes && `sha256:${sentHash.digest('hex')}` === file.sha256;
+        if (!matches) return callback(reportingError('REPORTING_PACKAGE_CORRUPT'));
+        // Keep the final bounded raw chunk until EOF verification. Otherwise a
+        // grown file's valid-size prefix could finish the remote request first.
+        if (pending) this.push(pending);
+        pending = null;
+        callback();
+      }
+    });
+    const body = new Transform({
+      transform(chunk, encoding, callback) {
+        sentWireBytes += chunk.length;
+        if (sentWireBytes > wireBytes) return callback(reportingError('REPORTING_PACKAGE_CORRUPT'));
+        callback(null, chunk);
+      },
+      flush(callback) {
+        callback(sentWireBytes === wireBytes ? null : reportingError('REPORTING_PACKAGE_CORRUPT'));
+      }
+    });
+    const stages = [source, verifySending];
+    if (file.encoding === 'gzip') stages.push(zlib.createGzip());
+    // Observe rejection immediately: the HTTP request and filesystem pipeline
+    // run together, and either failure must tear down all participating streams.
+    const sending = pipeline(...stages, body).catch(error => error);
     let result;
-    try { result = await request('PUT', `${sessionRoute(id)}/files/${file.id}`, {
-      body, timeout: remaining, headers: { 'content-type': file.mediaType, 'content-length': wireBytes,
-        ...(file.encoding === 'gzip' ? { 'content-encoding': 'gzip' } : {}) }
-    }); } finally { source.destroy(); body.destroy(); }
+    try {
+      result = await request('PUT', `${sessionRoute(id)}/files/${file.id}`, {
+        body, timeout: remaining, headers: { 'content-type': file.mediaType, 'content-length': wireBytes,
+          ...(file.encoding === 'gzip' ? { 'content-encoding': 'gzip' } : {}) }
+      });
+      const error = await sending;
+      if (error) throw error instanceof ReportingError ? error : reportingError('REPORTING_UPLOAD_ERROR');
+    } finally {
+      source.destroy(); body.destroy();
+      await sending;
+    }
     protocol(result.status === 'AVAILABLE');
     return { rawBytes, wireBytes };
   }

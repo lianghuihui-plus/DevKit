@@ -352,3 +352,48 @@ test('explicit credential adoption uses a metadata CAS and retains the known rem
   assert.throws(() => runner.acceptCredentialChange({ ...request, previousGeneration: generation, expectedSequence: completed.sequence }), { code: 'REPORTING_CREDENTIAL_REBIND_REFUSED' });
   assert.deepEqual(f.repository.readWorkspace(f.workspace, completed.receiptRelative), receipt);
 });
+for (const encoding of ['identity', 'gzip']) {
+  for (const mutation of ['same-size', 'growth', 'truncation']) {
+    test(`actual ${encoding} sending stream rejects ${mutation} mutation between passes`, async t => {
+      const f = await setup(t), raw = crypto.randomBytes(192 * 1024);
+      const blob = path.join(f.dir, 'changed-blob');
+      fs.writeFileSync(blob, raw);
+      const descriptor = { id: 'changed-blob', path: blob, bytes: raw.length,
+        sha256: 'sha256:' + crypto.createHash('sha256').update(raw).digest('hex'),
+        mediaType: 'application/octet-stream', encoding };
+      const expectedWireBytes = encoding === 'gzip' ? zlib.gzipSync(raw).length : raw.length;
+      let receivedBytes = 0, completeRequests = 0, requestClosed;
+      f.server.removeAllListeners('request');
+      f.server.on('request', (req, res) => {
+        requestClosed = new Promise(resolve => req.on('close', resolve));
+        req.on('error', () => {});
+        req.on('data', chunk => {
+          receivedBytes += chunk.length;
+          assert.ok(receivedBytes <= expectedWireBytes, 'mutation must never exceed the frozen wire bound');
+        });
+        req.on('end', () => {
+          completeRequests++;
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"status":"AVAILABLE"}');
+        });
+      });
+      const createReadStream = fs.createReadStream;
+      let reads = 0;
+      t.mock.method(fs, 'createReadStream', function(file, ...args) {
+        if (file === blob && ++reads === 2) {
+          const replacement = mutation === 'growth' ? Buffer.concat([raw, raw, raw])
+            : mutation === 'truncation' ? raw.subarray(0, raw.length / 2) : Buffer.from(raw);
+          if (mutation === 'same-size') replacement[0] ^= 255;
+          fs.writeFileSync(blob, replacement);
+        }
+        return createReadStream.call(this, file, ...args);
+      });
+      await assert.rejects(f.transport.upload('mutated-session', descriptor), { code: 'REPORTING_PACKAGE_CORRUPT' });
+      await new Promise(resolve => setImmediate(resolve));
+      if (requestClosed) await requestClosed;
+      assert.equal(reads, 2, 'exercise the actual second filesystem read');
+      assert.ok(receivedBytes <= expectedWireBytes);
+      assert.equal(completeRequests, 0, 'a bounded prefix must not become a complete upload');
+    });
+  }
+}

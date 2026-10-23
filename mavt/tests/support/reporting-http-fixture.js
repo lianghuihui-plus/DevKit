@@ -55,6 +55,6 @@ async function httpFixture(t, hook = () => false) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
-  return { serverUrl: `http://127.0.0.1:${server.address().port}/prefix/`, requests, sessions, keys, json };
+  return { server, serverUrl: `http://127.0.0.1:${server.address().port}/prefix/`, requests, sessions, keys, json };
 }
 module.exports = { httpFixture, capabilities, terminal };
