@@ -22,7 +22,7 @@ const { createSettings } = require('../src/mobile-ai-visual-test/scripts/reporti
 const { capabilities, terminal } = require('./support/reporting-http-fixture');
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-jobs-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mavt-jobs-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const workspace = path.join(root, 'workspace');
   fs.mkdirSync(workspace);
@@ -111,6 +111,10 @@ for (const [name, mutate, authorized] of [
   }, false],
   ['missing persisted session', f => {
     fs.unlinkSync(path.join(f.workspace, '.mavt/reporting/sessions', f.frozen.packageId, `${f.sessions[0].id}.json`));
+  }, false],
+  ['unproven session key change', f => {
+    const relative = `sessions/${f.frozen.packageId}/${f.sessions[0].id}.json`;
+    f.repository.writeWorkspace(f.workspace, relative, { ...f.repository.readWorkspace(f.workspace, relative), key: crypto.randomUUID() });
   }, false]
 ]) {
   test(`${name} authorizes terminal cleanup only with the complete frozen proof`, async t => {
@@ -122,6 +126,185 @@ for (const [name, mutate, authorized] of [
     assert.equal(fs.existsSync(blob), !authorized);
   });
 }
+
+test('410 key rotation preserves frozen bytes and permits COMMITTED worker cleanup', async t => {
+  const f = require('./support/reporting-fixture').fixture(t);
+  const generation = 'a'.repeat(64), credentials = { status: () => ({ configured: true, generation }) };
+  const queue = createJobQueue({ repository: f.repository, credentials, launcher: () => {} });
+  const submitted = queue.submit({ workspace: f.workspace, scope: 'workspace', trigger: 'manual' });
+  const prepared = [], manifests = [];
+  const transport = { serverUrl: submitted.serverUrl, credentialGeneration: generation,
+    capabilities: async () => capabilities(),
+    prepare: async (raw, key) => {
+      prepared.push(key); manifests.push(raw);
+      if (prepared.length === 1) throw Object.assign(new Error('expired'), { code: 'REPORTING_SESSION_EXPIRED' });
+      return { protocolVersion: '2.0', sessionId: 'remote-after-410', status: 'UPLOADING',
+        expiresAt: '2099-01-01T00:00:00.000Z', limits: capabilities().limits, missingFiles: [] };
+    }, commit: async () => terminal(JSON.parse(manifests.at(-1)), 'remote-after-410') };
+  await createWorker({ repository: f.repository, queue, credentials, transport })
+    .runClaim(f.workspace, f.repository.readWorkspace(f.workspace, 'worker-claim.json').nonce);
+  const job = queue.status(f.workspace, submitted.jobId);
+  assert.equal(job.state, 'COMMITTED');
+  assert.equal(prepared.length, 2);
+  assert.notEqual(prepared[0], prepared[1]);
+  assert.equal(manifests[0], manifests[1]);
+  assert.notEqual(job.metrics.localCleanupPending, true);
+  const root = path.join(f.workspace, '.mavt/reporting/packages', job.packageId);
+  assert.equal(fs.existsSync(path.join(root, 'blobs')), false);
+  assert.equal(fs.existsSync(path.join(root, 'sessions')), false);
+});
+
+test('failed collection retains durable job ownership and explicit retry reclaims its abandoned stage', async t => {
+  const f = require('./support/reporting-fixture').fixture(t);
+  let now = Date.now();
+  const generation = 'a'.repeat(64), credentials = { status: () => ({ configured: true, generation }) };
+  const queue = createJobQueue({ repository: f.repository, credentials, launcher: () => {}, clock: () => now });
+  const submitted = queue.submit({ workspace: f.workspace, scope: 'workspace', trigger: 'manual' });
+  const staging = path.join(f.workspace, '.mavt/reporting/staging');
+  const unlink = fs.unlinkSync;
+  const block = t.mock.method(fs, 'unlinkSync', function(file, ...args) {
+    if (String(file).startsWith(staging + path.sep) && String(file).includes('/blobs/'))
+      throw Object.assign(new Error('cleanup temporarily unavailable'), { code: 'EACCES' });
+    return unlink.call(this, file, ...args);
+  });
+  const transport = { serverUrl: submitted.serverUrl, credentialGeneration: generation,
+    capabilities: async () => ({ ...capabilities(), limits: { ...capabilities().limits, documentBytes: 20000 } }) };
+  try {
+    await createWorker({ repository: f.repository, queue, credentials, transport, clock: () => now })
+      .runClaim(f.workspace, f.repository.readWorkspace(f.workspace, 'worker-claim.json').nonce);
+  } finally { block.mock.restore(); }
+  const job = queue.status(f.workspace, submitted.jobId), packageId = fs.readdirSync(staging)[0];
+  const stage = f.repository.readWorkspace(f.workspace, `staging/${packageId}/stage.json`);
+  assert.equal(job.state, 'COLLECTION_FAILED');
+  assert.equal(job.failureCode, 'REPORTING_NATIVE_MODEL_TOO_LARGE');
+  assert.equal(job.packageId, null);
+  assert.equal(stage.jobId, job.jobId);
+  assert.equal(stage.identityEpoch, f.repository.readWorkspace(f.workspace, 'identity.json').identityEpoch);
+  assert.equal(stage.state, 'FAILED');
+  now += 8 * 86400000;
+  queue.status(f.workspace, job.jobId);
+  assert.equal(fs.existsSync(path.join(staging, packageId)), true, 'status must not clean');
+  queue.retry(f.workspace, job.jobId);
+  assert.equal(fs.existsSync(path.join(staging, packageId)), false);
+});
+
+test('explicit writes reclaim expired snapshots left by a collector process crash', t => {
+  const f = require('./support/reporting-fixture').fixture(t);
+  const source = `const [root,workspace,configDir]=process.argv.slice(1);
+    const repository=require(root+'/repository').createRepository({configDir});
+    require(root+'/collector').collectExport({workspace,scope:'workspace'},
+      {repository,validatePackage:()=>process.exit(17)}).catch(()=>process.exit(18));`;
+  const child = spawnSync(process.execPath, ['-e', source,
+    path.dirname(require.resolve('../src/mobile-ai-visual-test/scripts/reporting/collector')),
+    f.workspace, f.repository.configDir], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 17, child.stderr);
+  const staging = path.join(f.workspace, '.mavt/reporting/staging'), packageId = fs.readdirSync(staging)[0];
+  const queue = createJobQueue({ repository: f.repository, clock: () => Date.now() + 8 * 86400000,
+    credentials: { status: () => ({ configured: false, generation: null }) } });
+  queue.status(f.workspace);
+  assert.equal(fs.existsSync(path.join(staging, packageId, 'blobs')), true);
+  queue.submit({ workspace: f.workspace, scope: 'workspace', trigger: 'manual' });
+  assert.equal(fs.existsSync(path.join(staging, packageId)), false);
+});
+
+test('orphan cleanup protects live collectors, future metadata, foreign epochs and package references', t => {
+  const { workspace, repository } = fixture(t);
+  const epoch = require('../src/mobile-ai-visual-test/scripts/reporting/identity').createIdentity({ repository }).ensure(workspace).identityEpoch;
+  const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+  const createdAt = new Date(Date.now() - 8 * 86400000).toISOString();
+  const protectedBlobs = [];
+  for (const [id, area, patch] of [
+    ['live', 'staging', { ownerPid: process.pid }],
+    ['future', 'staging', { schemaVersion: 2 }],
+    ['future-export', 'staging', { exportVersion: 2 }],
+    ['foreign', 'staging', { identityEpoch: 'foreign-epoch' }],
+    ['referenced', 'packages', { state: 'FAILED' }],
+    ['future-claim', 'staging', { state: 'FAILED', jobId: 'future-job' }]
+  ]) {
+    const stage = { schemaVersion:1, exportVersion:1, state:'COLLECTING', packageId:id,
+      identityEpoch:epoch, ownerPid:deadPid, createdAt, jobId:null, ...patch };
+    const root = path.join(workspace, '.mavt/reporting', area, id);
+    fs.mkdirSync(path.join(root, 'blobs'), { recursive:true });
+    fs.writeFileSync(path.join(root, 'stage.json'), JSON.stringify(stage));
+    const blob = path.join(root, 'blobs/file'); fs.writeFileSync(blob, 'protected'); protectedBlobs.push(blob);
+  }
+  repository.writeWorkspace(workspace, 'jobs/referenced-job/state.json', { jobId:'referenced-job', state:'COMMITTED',
+    identityEpoch:epoch, exportVersion:1, packageId:'referenced', createdAt, sessions:[], metrics:{} });
+  repository.writeWorkspace(workspace, 'jobs/future-job/state.json', { jobId:'future-job', state:'COLLECTION_FAILED',
+    identityEpoch:epoch, exportVersion:1, packageId:null, createdAt, sessions:[], metrics:{} });
+  const claim = path.join(workspace, '.mavt/reporting/jobs/future-job/claim.json');
+  fs.writeFileSync(claim, JSON.stringify({ schemaVersion:2, state:'ACTIVE' }));
+  const queue = createJobQueue({ repository, credentials:{status:()=>({configured:false,generation:null})} });
+  queue.submit({ workspace, scope:'workspace', trigger:'manual' });
+  assert.equal(protectedBlobs.every(file => fs.existsSync(file)), true);
+  // A supported dead collector in the same directory is still reclaimed.
+  const root = path.join(workspace, '.mavt/reporting/staging/dead');
+  repository.writeWorkspace(workspace, 'staging/dead/stage.json', { state:'COLLECTING', packageId:'dead',
+    identityEpoch:epoch, ownerPid:deadPid, createdAt, jobId:null });
+  fs.mkdirSync(path.join(root, 'blobs')); fs.writeFileSync(path.join(root, 'blobs/file'), 'expired');
+  queue.submit({ workspace, scope:'workspace', trigger:'manual' });
+  assert.equal(fs.existsSync(root), false);
+  assert.equal(protectedBlobs.every(file => fs.existsSync(file)), true);
+});
+
+test('orphan stage cleanup is bounded and retains authority until the last payload file is gone', t => {
+  const { workspace, repository } = fixture(t);
+  const epoch = require('../src/mobile-ai-visual-test/scripts/reporting/identity').createIdentity({ repository }).ensure(workspace).identityEpoch;
+  const root = path.join(workspace, '.mavt/reporting/staging/abandoned');
+  repository.writeWorkspace(workspace, 'staging/abandoned/stage.json', { state:'FAILED', packageId:'abandoned',
+    identityEpoch:epoch, ownerPid:process.pid, createdAt:new Date(Date.now() - 8 * 86400000).toISOString(), jobId:null });
+  fs.mkdirSync(path.join(root, 'blobs'));
+  for (let i=0; i<50; i++) fs.writeFileSync(path.join(root, 'blobs', `file-${i}`), 'payload');
+  const queue = createJobQueue({ repository, credentials:{status:()=>({configured:false,generation:null})} });
+  queue.submit({ workspace, scope:'workspace', trigger:'manual' });
+  const remaining = fs.readdirSync(path.join(root, 'blobs')).length;
+  assert.ok(remaining > 0 && remaining >= 18 && remaining < 50);
+  assert.equal(repository.readWorkspace(workspace, 'staging/abandoned/stage.json').state, 'FAILED');
+  queue.submit({ workspace, scope:'workspace', trigger:'manual' });
+  assert.equal(fs.existsSync(root), false);
+});
+
+test('a partial orphan cleanup failure cannot consume another package in the same write', t => {
+  const { workspace, repository } = fixture(t);
+  const epoch = require('../src/mobile-ai-visual-test/scripts/reporting/identity').createIdentity({ repository }).ensure(workspace).identityEpoch;
+  const roots = ['a-failing', 'b-next'].map(packageId => {
+    repository.writeWorkspace(workspace, `staging/${packageId}/stage.json`, { state:'FAILED', packageId,
+      identityEpoch:epoch, ownerPid:process.pid, createdAt:new Date(Date.now()-8*86400000).toISOString(), jobId:null });
+    const root = path.join(workspace, '.mavt/reporting/staging', packageId);
+    fs.mkdirSync(path.join(root, 'blobs')); fs.writeFileSync(path.join(root, 'blobs/file'), 'payload');
+    return root;
+  });
+  const unlink = fs.unlinkSync;
+  t.mock.method(fs, 'unlinkSync', function(file, ...args) {
+    if (file === path.join(roots[0], 'stage.json')) throw Object.assign(new Error('permission denied'), {code:'EACCES'});
+    return unlink.call(this, file, ...args);
+  });
+  const queue = createJobQueue({ repository, credentials:{status:()=>({configured:false,generation:null})} });
+  queue.submit({ workspace, scope:'workspace', trigger:'manual' });
+  assert.equal(fs.existsSync(path.join(roots[0], 'blobs/file')), false);
+  assert.equal(fs.existsSync(path.join(roots[0], 'stage.json')), true);
+  assert.equal(fs.existsSync(path.join(roots[1], 'blobs/file')), true);
+});
+
+test('a finalized snapshot not yet attached to its job is retained then reclaimed after expiry', async t => {
+  const f = require('./support/reporting-fixture').fixture(t);
+  const revisions = require('../src/mobile-ai-visual-test/scripts/reporting/revisions').createRevisions(f.dependencies);
+  f.dependencies.revisions = { ...revisions, publish: () => {
+    throw Object.assign(new Error('publication interrupted'), { code:'REPORTING_STORAGE_ERROR' });
+  } };
+  await assert.rejects(require('../src/mobile-ai-visual-test/scripts/reporting/collector').collectExport(f.request, f.dependencies),
+    { code:'REPORTING_STORAGE_ERROR' });
+  const packages = path.join(f.workspace, '.mavt/reporting/packages'), id = fs.readdirSync(packages)[0];
+  const root = path.join(packages, id);
+  assert.equal(fs.existsSync(path.join(root, 'blobs')), true);
+  const queue = createJobQueue({ repository:f.repository, clock:()=>Date.now()+8*86400000,
+    credentials:{status:()=>({configured:false,generation:null})} });
+  for (let i=0; i<10 && fs.existsSync(path.join(root, 'blobs')); i++)
+    queue.submit({ workspace:f.workspace, scope:'workspace', trigger:'manual' });
+  assert.equal(fs.existsSync(path.join(root, 'blobs')), false);
+  assert.equal(fs.existsSync(path.join(root, 'sessions')), false);
+  assert.equal(f.repository.readWorkspace(f.workspace, `packages/${id}/stage.json`).state, 'EXPIRED_LOCAL');
+});
 
 test('valid old-generation receipt authorizes cleanup without adopting current credentials', async t => {
   const f = await committedPackage(t, { oldGeneration: true });
@@ -581,6 +764,40 @@ test('launcher runs only an intact fixed bundle in an independent process group'
   assert.equal(fs.readFileSync(marker, 'utf8'), 'alive');
   fs.appendFileSync(path.join(root, manifest.bundleId, 'hosts/codex/delegation.md'), 'changed');
   assert.throws(() => launchWorker({ bundleId: manifest.bundleId, nonce: 'nonce' }, workspace));
+});
+
+test('real spawn failure is persisted without an unhandled error terminating the reporting caller', t => {
+  const { workspace, repository } = fixture(t);
+  const bundleRoot = path.join(workspace, '.mavt/runtime-bundles');
+  const staging = path.join(bundleRoot, 'fixture');
+  const entry = path.join(staging, 'runtime/mobile-ai-visual-test/scripts/reporting/worker.js');
+  fs.mkdirSync(path.dirname(entry), { recursive: true });
+  fs.mkdirSync(path.join(staging, 'hosts/codex'), { recursive: true });
+  fs.writeFileSync(path.join(staging, 'hosts/codex/delegation.md'), 'fixture');
+  fs.writeFileSync(entry, '');
+  const manifest = createManifest(staging, 'fixture');
+  fs.writeFileSync(path.join(staging, 'bundle.manifest.json'), JSON.stringify(manifest));
+  fs.renameSync(staging, path.join(bundleRoot, manifest.bundleId));
+  const source = `
+    const {spawn}=require('node:child_process');
+    const [root,workspace,configDir,bundleId]=process.argv.slice(1);
+    const repository=require(root+'/repository').createRepository({configDir});
+    const queue=require(root+'/jobs').createJobQueue({repository,
+      credentials:{status:()=>({configured:true,generation:'a'.repeat(64)})},
+      launcher:(claim,workspace)=>require(root+'/launcher').launchWorker(claim,workspace,{
+        spawn:()=>spawn(process.execPath,['-e',''],{cwd:workspace+'/missing-cwd',stdio:'ignore'})
+      })});
+    const submitted=queue.submit({workspace,scope:'workspace',trigger:'manual',bundleId});
+    setImmediate(()=>console.log(JSON.stringify({job:queue.status(workspace,submitted.jobId),
+      claim:repository.readWorkspace(workspace,'worker-claim.json').state})));`;
+  const child = spawnSync(process.execPath, ['-e', source,
+    path.dirname(require.resolve('../src/mobile-ai-visual-test/scripts/reporting/jobs')),
+    workspace, repository.configDir, manifest.bundleId], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(child.status, 0, child.stderr);
+  const result = JSON.parse(child.stdout);
+  assert.equal(result.job.state, 'COLLECTION_FAILED');
+  assert.equal(result.job.failureCode, 'REPORTING_WORKER_LAUNCH_FAILED');
+  assert.equal(result.claim, 'RELEASED');
 });
 
 test('service status and preflight stay local and read only', t => {

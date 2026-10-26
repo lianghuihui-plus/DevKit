@@ -25,6 +25,10 @@ function launchWorker(claim, workspace, options = {}) {
   const child = (options.spawn || spawn)(process.execPath, args, {
     detached: true, stdio: 'ignore', env: childEnvironment(), cwd: path.resolve(workspace)
   });
+  // Failed spawn returns no pid, then emits error on the next tick. The
+  // synchronous failure below releases the reservation; consume its later event
+  // so that an optional upload cannot terminate the Coordinator/tool process.
+  child.once('error', () => {});
   if (!child.pid) throw reportingError('REPORTING_WORKER_LAUNCH_FAILED');
   child.unref();
   return child;

@@ -1,8 +1,14 @@
 # MAVT 数据上报 v2 技术方案
 
+更新：2026-10-26。五项审查问题已修复：死亡 reaper 保守保留并要求离线维护、spawn 异步 error 隔离、410 key 轮换证明与成功清理、失败/崩溃及未绑定快照有界回收、现代 Run 手动补报强制 PUBLISHED。独立复审未确认本次修复范围内的 P1/P2 问题，匿名探针 5/5、孤立回收回归 6/6 通过；最终静态源码的 `npm test` 退出 0，运行时 89 组、知识管理 6 组、插件 414/414 和 51 份生成文档检查通过。首轮既有 CLI dispatch 替换测试失败，定向及最终完整复跑通过，原因未确认，未修改该模块。
+
+当前构建：`0.4.0`，四 Skill、38 工具（8 reporting）、24 reporting 模块；bundleId 为 `c085e1d9b710c39d803e74bfabc0d1b3f530284f96d463dabdeccb38d4a7f485`，350 manifest 文件、361 发布源文件逐字节一致、363 总分发文件，构建及独立重定位 stdio 探针通过。完整证据见 [验证汇总](../../../verification/summary.md) 的 2026-10-26 小节；未安装、合并或推送。
+
+以下两段为 2026-10-23 的历史实施与验证记录，其旧构建和审查结论不代表当前结果；当前规则以本次更新和正文修订为准。
+
 日期：2026-10-23。实施状态：Tasks 1–5 已实现并完成各自独立审查修复，Task 6 已构建 `0.4.0` 并完成固定 detached worker 成功上传/断线重放、重定位 stdio、实际 Codex 宿主与本地 Dashboard 校验器差分验证。最终分支审查提出的空/部分 owner 锁崩溃窗口及终态冻结包无后续清理路径已修复：私有锁完整 owner 原子发布，显式上报写入按已有所有权执行有界本地清理，COMMITTED 清理先核对完整冻结会话、持久状态、绑定及终态回执，worker 首次删除前持久化同一授权证明，七天后过期保留的终态/耗尽任务；只读状态及 Coordinator 自动入队不清理。运行时代码提交 `480deec` 的整分支审查与全部定向范围复审已通过，未留 Critical/Important/Minor 问题。该提交的 `npm test` 退出码 0，运行时 89 组、知识管理 6 组、插件 403/403（无失败或跳过）与 51 份生成文档检查通过；bundleId 为 `be354c745ac5145c4a5232a0b7f7af416804adafff6bb2dab0bf5f9ad1af2b61`。
 
-当前证据：四 Skill、38 工具（8 reporting）、23 reporting 模块；固定 bundleId `be354c745ac5145c4a5232a0b7f7af416804adafff6bb2dab0bf5f9ad1af2b61`，349 manifest 文件、360 发布源文件、362 总分发文件；实际固定 worker 在父进程退出后完成三端 63 文件描述符/40 次 PUT 的持久提交与清理，prepare/PUT/commit 已接收但响应丢失时可复用同包/同 key 显式恢复。完整命令、失败记录与验收边界见 [验证汇总](../../../verification/summary.md)。
+2026-10-23 历史证据：四 Skill、38 工具（8 reporting）、23 reporting 模块；固定 bundleId `be354c745ac5145c4a5232a0b7f7af416804adafff6bb2dab0bf5f9ad1af2b61`，349 manifest 文件、360 发布源文件、362 总分发文件；实际固定 worker 在父进程退出后完成三端 63 文件描述符/40 次 PUT 的持久提交与清理，prepare/PUT/commit 已接收但响应丢失时可复用同包/同 key 显式恢复。完整命令、失败记录与验收边界见 [验证汇总](../../../verification/summary.md)。
 
 controller 的两项实施裁决：`createReportingService` 仅注入轻量 repository/queue/launcher/clock，sourceReader/transport 留在 `createWorker`，原拟依赖重型 facade 注入的调用方需适配；为避免清理授权绕过丢失冻结数据，最终修复增加一次定向修复与范围复审，增加验证周期但不扩大产品范围。
 
@@ -321,7 +327,7 @@ repo 分配步骤为：流式生成 staging 内容及指纹 → 短锁内持久�
 - 单元自身超限返回明确错误，不能丢截图或截断日志后宣称完整。
 - native 模型单 JSON 对象受当前 16 MiB documentBytes 限制；允许依文档将独立大日志放标准日志段落，原版模型仍不可合法缩小则返回 `REPORTING_NATIVE_MODEL_TOO_LARGE`。不宣称首版能无损渲染任意大 native 对象；扩展 renderer 需另行双方设计。
 
-worker 先在 job staging 生成最终脱敏文件与 Manifest，校验后原子发布为不可变待发快照。manifest.json 原始 UTF-8 字节和每会话 UUID key 在任何 prepare 前持久化。重复尝试读取原文件原字节；不能重新序列化替代重放。
+worker 先在 job staging 生成最终脱敏文件与 Manifest，校验后原子发布为不可变待发快照。staging 在首个附件写入前持久化 identityEpoch、创建时间、owner PID 及 job/claim 归属；失败时立即尝试按短锁分批释放，释放失败或崩溃后由显式写操作在七天后回收无活跃 owner、无任务引用的临时快照，包括已移入 packages 但尚未绑定任务的包。归属不明、旧 epoch 和未来版本保留；状态查询与 Coordinator 自动入队不清理。manifest.json 原始 UTF-8 字节和每会话 UUID key 在任何 prepare 前持久化。重复尝试读取原文件原字节；不能重新序列化替代重放。
 
 按单执行顺序采集，附件流式复制/哈希/压缩，限制同时打开文件；解析对象受 documentBytes 与受控记录队列约束，不把整个工作区的图片和日志一次读入内存。磁盘不足、源文件变化等错误只影响上报任务。
 
@@ -383,6 +389,10 @@ RETRYABLE_FAILED 或中途崩溃的任务恢复原包/原会话；COLLECTION_FAI
 自动入队按 `(batchId, destination, producer export version)` 去重，重复终态推进不重复上传。崩溃发生在业务终态保存与上报意图写入之间时，测试终态仍有效；下一次可写推进或显式补报按此键修复缺失意图。首版不承诺用户退出后无需任何触发的永久后台补偿。
 
 每个会话在原子保存 COMMITTED 回执后才可释放其冻结文件；提交成功后本地回执写入失败时保留快照，下次先 GET session 确认，不重新采集。跨会话共用文件按剩余引用保留。未完成任务默认保留 7 天，超期后状态为 EXPIRED_LOCAL。仅由 reporting worker 或用户显式上报写操作回收已无租约、无引用的本地快照，自动入队的 Coordinator 路径和所有查询均不做清理；清理与 worker 共享任务锁。
+
+410 触发的 key 轮换与有序轮换记录在同一 session 状态写入中持久化；清理验证原始 key → 当前 key 的连续关系、原始 manifest 摘要及绑定最终 key 的终态回执，不要求当前 key 等于最初 key。旧的未轮换回执保持兼容，无证明的 key 变更不授予删除权限。
+
+元数据锁可以在独占 recovery guard 下自动回收普通死亡 owner；recovery guard 自身死亡时返回 `REPORTING_LOCK_RECOVERY_REQUIRED` 并保留证据。文件系统的检查后删除不能提供 owner CAS，因此不递归抢占 guard；须停止全部相关写入者并离线维护后重试。worker 启动没有 pid 时同步记录失败，并监听 Node 随后发出的 error 事件，避免未捕获事件退出测试调用进程。
 
 Token 读取、HTTP 错误格式化和进程日志统一脱敏；控制响应采用有界流读取，当前 v2 上限设为 4 MiB，并根据本次冻结 Manifest 的文件/结果计数校验返回集合。不能沿用 1 MiB 上限：独立探针构造了通过全部契约及引用校验的 10000 文件会话，Manifest 为 2980312 字节，实际服务端状态响应为 1309778 字节，会被旧建议误拒。未来能力变化超出客户端预算时在 prepare 前拆会话或明确拒绝，不无限放宽内存上限。拒绝 HTML/非预期 JSON 或不合法 session/file ID。任何远端返回路径只用作受约束的标识，不能变成本地文件路径或未经验证的下一跳 URL。
 

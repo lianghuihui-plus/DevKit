@@ -9,7 +9,7 @@ const { reportingError } = require('./errors');
 const { createSourceReader14, digest, safePath } = require('./source-reader');
 const { selectSources } = require('./selection');
 const { createRedactor } = require('./redaction');
-const { createArtifactStore, discoverEvidence, durableWrite } = require('./artifacts');
+const { createArtifactStore, discoverEvidence, durableWrite, releaseStagedData } = require('./artifacts');
 const { definitionDocument, executionDocument, runtimeProjection, listMetrics } = require('./sections');
 const { LIMITS, resolveLimits, validateCapabilities, validateManifest, validateDocument, validateGraph } = require('./contracts');
 const PRODUCER = Object.freeze({
@@ -122,16 +122,40 @@ function groupsFor(units, workspace, store, limits) {
 * request: {workspace,scope:'workspace'|'batch',batchId?,capabilities?,limits?}.
 */
 async function collectExport(request, dependencies = {}) {
+  const context = {};
   try {
-    return await collect(request, dependencies);
+    return await collect(request, dependencies, context);
   }
   catch (error) {
+    // Stages are not resumable frozen packages. Dispose failed collections while
+    // preserving the original error; if storage is unavailable, durable ownership
+    // lets a later explicit write reclaim the abandoned bytes after retention.
+    if (context.packageId) {
+      try {
+        const { repository, workspace, packageId, identityEpoch } = context;
+        for (const area of ['staging', 'packages']) {
+          let exists = false;
+          repository.withWorkspaceLock(workspace, () => {
+            const relative = `${area}/${packageId}/stage.json`, stage = repository.readWorkspace(workspace, relative);
+            if (stage?.identityEpoch !== identityEpoch || stage.exportVersion !== 1
+              || stage.packageId !== packageId || stage.ownerPid !== process.pid) return;
+            exists = true;
+            repository.writeWorkspace(workspace, relative, { ...stage, state: 'FAILED' });
+          });
+          if (exists && area === 'staging') {
+            let complete = false;
+            while (!complete) complete = repository.withWorkspaceLock(workspace, () =>
+              releaseStagedData(workspace, packageId, repository, identityEpoch));
+          }
+        }
+      } catch { /* Never replace a source/validation failure with a cleanup error. */ }
+    }
     if (error.code?.startsWith('REPORTING_'))
       throw error;
     throw reportingError('REPORTING_SOURCE_INVALID', 'Report collection failed validation or local IO');
   }
 }
-async function collect(request, dependencies = {}) {
+async function collect(request, dependencies = {}, context = {}) {
   const deps = defaults(dependencies), { repository, identity, revisions, sourceReader } = deps;
   const capabilityLimits = request.capabilities ? validateCapabilities(request.capabilities) : LIMITS;
   const clientLimits = resolveLimits(request.limits || {});
@@ -142,12 +166,17 @@ async function collect(request, dependencies = {}) {
     repository,
     sourceReader
   });
-  const redactor = createRedactor(ident.anonymizationSalt), packageId = crypto.randomUUID(), store = createArtifactStore({
+  const redactor = createRedactor(ident.anonymizationSalt), packageId = crypto.randomUUID();
+  Object.assign(context, { workspace, packageId, repository, identityEpoch: ident.identityEpoch });
+  const store = createArtifactStore({
     workspace,
     packageId,
     repository,
     redactor,
-    limits
+    limits,
+    identityEpoch: ident.identityEpoch,
+    owner: deps.collectionOwner,
+    createdAt: deps.clock ? new Date(deps.clock()).toISOString() : repository.now()
   });
   const definitions = new Map(), units = [], entries = [], sourceInventories = [];
   const workspaceDescriptor = redactor.redact({

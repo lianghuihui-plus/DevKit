@@ -1,13 +1,28 @@
 # MAVT 插件化验证汇总
 
-整理日期：2026-10-23。保留插件化开发的验证结论和边界；原始 JSON 与日志已精简，不作为插件运行依赖。已提交的原始记录可从 Git 提交 `3621f35` 恢复，清理时的本地副本另移入系统废纸篓。
+更新日期：2026-10-26。保留插件化开发的验证结论和边界；原始 JSON 与日志不作为插件运行依赖。历史已提交的原始记录可从 Git 提交 `3621f35` 恢复，清理时的本地副本另移入系统废纸篓。
 
-## 0.4.0 数据上报 v2（2026-10-23，未安装，最终独立分支审查通过）
+## 0.4.0 数据上报 v2 五项审查修复（2026-10-26，未安装）
+
+- 修复死亡 reaper 的并发抢占窗口：普通死亡 owner 仍自动恢复，reaper 自身死亡则保留证据并返回 `REPORTING_LOCK_RECOVERY_REQUIRED`；必须停止相关写入进程、备份 owner 记录后离线移除对应 recovery guard，不能按文件年龄抢锁。
+- 修复真实 spawn 无 pid 后异步 error 导致调用进程退出的问题；任务记录独立启动失败并释放 reservation，上报故障不阻塞测试或改写 verdict。
+- 为 410 后的会话 key 增加连续持久轮换证明及最终回执绑定，COMMITTED 包可正常释放；原始 Manifest 字节保持不变，无证明的 key 修改仍不能授权删除。
+- 采集首个 payload 前持久化 stage 身份、时间、进程与 job/claim 归属；失败时立即尝试回收，显式写可在七天后有界回收崩溃或未绑定的孤立快照，每次最多一个包、32 个目录项；部分删除失败不继续处理下一包，活跃/未知 owner、未来版本、旧 epoch 和任务引用均受保护。
+- 手动补报对存在 Run 元数据的执行强制要求 `PUBLISHED`，缺失或 null 发布记录不能绕过；历史独立执行兼容规则不变。
+- 最终静态源码下 `npm test` 退出码 0：运行时 89 组、知识管理 6 组、插件 414/414（0 fail/skip）及 51 份生成文档检查通过，日志 `test-results/reporting-audit-2026-10-26/full-test-final.log`；新增回归均保留修复前失败证据。
+- 首轮完整测试插件 412/413，既有 CLI dispatch 替换测试返回 `FAILED/CASE_RUNTIME_TECHNICAL` 而非 `REJECTED/BINDING_INVALID`，单独复跑和最终完整测试均通过；未修改该模块，原因尚未确认，不记为已修复，证据 `full-test.log`、`mcp-case-focused.log`。
+- 独立复审未确认本次修复范围内的 P1/P2 问题，匿名故障探针 5/5、孤立快照回收回归 6/6 通过；报告 `test-results/reporting-audit-2026-10-26/fix-review-report.zh-CN.md`。
+- `npm run build` 与独立 bundle 探针均退出码 0：24 个 reporting 模块、350 个 manifest 文件、361 个发布源文件逐字节一致、363 个总分发文件，四 Skill、38 工具及重定位 stdio 安全读取通过；bundleId 为 `c085e1d9b710c39d803e74bfabc0d1b3f530284f96d463dabdeccb38d4a7f485`，日志 `build-final.log`、`bundle-probe-final.log`，均位于上述证据目录。
+- 真实已认证 Dashboard HTTP/DB/Web、数据库幂等对象数、页面/原图/日志和部署能力仍未验收；本轮只使用匿名 fixture/loopback，未访问个人 Token、生产、设备或服务端仓库，未安装、合并或推送，主 checkout 保持干净。
+
+## 历史：0.4.0 数据上报 v2（2026-10-23，未安装）
+
+本节为当日证据；当前构建、审查及锁恢复规则以上方 2026-10-26 记录为准，历史“未留问题”不代表后续审查没有新增发现。
 
 - 当前固定构建为 `dist/mavt-marketplace/` 的 `0.4.0`；四个 Skill 为 `author-cases`、`run-tests`、`manage-knowledge`、`reporting`，MCP 共 38 个工具，其中 8 个 reporting 工具；入口与实际工具名均按完整名单验证。
 - 上报组件包含私有分目标配置/凭据、身份与修订、schema14 三端采集、标准段及 native 证据闭包、v2 会话/传输、持久任务与固定独立 worker、异常隔离的 Coordinator 钩子及 reporting 角色；故障不改变测试 verdict，本地状态读取不修复或启动任务。
 - 发布回归发现并修复真实固定 worker 的冻结 transport 组合错误：生产 transport 被 `Object.freeze` 后，通过原型继承再赋值 `upload` 会抛 TypeError；现在复制为自身方法再包装度量；可复现的实际进程回归覆盖该路径。
-- 最终审查修复了两处本地持久化缺口：元数据锁以完整私有 owner 文件原子发布，进程在发布前死亡不会留下空锁，死亡的完整 owner/reaper 可恢复且活 owner、未来版本不按年龄抢占；手动提交或显式 retry 每次最多处理一个包、32 个目录项，持久 COMMITTED 回执后重试清理，七天后将保留的 REJECTED/重试耗尽任务转为 EXPIRED_LOCAL，活动或归属不明 claim、旧 identityEpoch 和未来版本均不清理，状态读取与 Coordinator 自动入队不清理。
+- 当日修复了两处本地持久化缺口：元数据锁以完整私有 owner 文件原子发布，进程在发布前死亡不会留下空锁，活 owner、未来版本不按年龄抢占；当时允许恢复死亡 reaper 的实现已由 2026-10-26 的保守离线维护策略取代；手动提交或显式 retry 每次最多处理一个包、32 个目录项，持久 COMMITTED 回执后重试清理，七天后将保留的 REJECTED/重试耗尽任务转为 EXPIRED_LOCAL，活动或归属不明 claim、旧 identityEpoch 和未来版本均不清理，状态读取与 Coordinator 自动入队不清理。
 - 后续范围审查修复了 COMMITTED 清理授权绕过：先核对非空且完整的冻结会话集合、持久会话状态与原凭据代际、回执绑定、原始 manifest 摘要和终态结果，才写入持久授权证明并删冻结数据；部分删除后重启可凭相同证明继续，缺失或外来回执保留冻结包。
 - worker 终态清理现先在活跃 claim 下调用同一授权检查并持久化证明，再删除冻结数据；实际 `processJob` 在 session manifest 已删除后注入目录删除失败，fresh queue 显式 retry 可继续清理，非法回执既不生成证明也不删除 blob。
 - controller 的架构裁决将 `createReportingService` 注入限定为轻量 repository/queue/launcher/clock，sourceReader/transport 仅注入 `createWorker`；函数无法跨独立进程传递，原拟依赖重型 facade 注入选项的调用方需适配。

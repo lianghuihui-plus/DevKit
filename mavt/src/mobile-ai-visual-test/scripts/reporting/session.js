@@ -8,6 +8,7 @@ const { readFrozenExport } = require('./collector');
 const { createTransport, validateCapabilityResponse, validId, DEFAULT_TIMEOUTS } = require('./transport');
 const { LIMITS, resolveLimits, validateManifest, terminalResult } = require('./contracts');
 const { reportingError, ReportingError } = require('./errors');
+const { assertSessionKey } = require('./session-identity');
 const DEFAULT_SESSION_TIMEOUTS = Object.freeze({ total: 1800000, commit: 360000, poll: 2000, retry: 1000 });
 const RETRYABLE = new Set(['REPORTING_NETWORK_ERROR', 'REPORTING_TIMEOUT', 'REPORTING_UPLOAD_ERROR']);
 function check(condition) {
@@ -81,6 +82,7 @@ function createSessionRunner(options = {}) {
     function assertState(record) {
       assertBinding(record);
       assertStoredSession(record);
+      assertSessionKey(record, session.key);
     }
     function save(patch) {
       return repository.withWorkspaceLock(workspace, () => {
@@ -106,6 +108,7 @@ function createSessionRunner(options = {}) {
     const receipt = repository.readWorkspace(workspace, receiptRelative);
     if (receipt) {
       assertBinding(receipt);
+      assertSessionKey(state, session.key, receipt);
       const terminal = terminalResult(receipt, session.manifest, state.remoteSessionId);
       return save({ state: terminal.status, phase: 'TERMINAL', receiptRelative,
         failureCode: terminal.status === 'REJECTED' ? 'REPORTING_RESUBMIT_REQUIRED' : null });
@@ -131,7 +134,9 @@ function createSessionRunner(options = {}) {
     async function finish(value) {
       const terminal = terminalResult(value, session.manifest, state.remoteSessionId);
       // The immutable receipt is durable before COMMITTED authorizes reference release.
-      repository.withWorkspaceLock(workspace, () => repository.writeWorkspace(workspace, receiptRelative, { ...binding, ...terminal, receivedAt: new Date(clock()).toISOString() }));
+      repository.withWorkspaceLock(workspace, () => repository.writeWorkspace(workspace, receiptRelative, {
+        ...binding, ...terminal, sessionKey: state.key, receivedAt: new Date(clock()).toISOString()
+      }));
       return save({ state: terminal.status, phase: 'TERMINAL', receiptRelative,
         failureCode: terminal.status === 'REJECTED' ? 'REPORTING_RESUBMIT_REQUIRED' : null, nextRetryAt: null });
     }
@@ -177,7 +182,10 @@ function createSessionRunner(options = {}) {
         } catch (error) {
           if (error.code === 'REPORTING_SESSION_EXPIRED') {
             attempts++;
-            save({ state: 'PREPARING', phase: 'PREPARE', remoteSessionId: null, key: crypto.randomUUID(), commitStartedAt: null });
+            const key = crypto.randomUUID();
+            save({ state: 'PREPARING', phase: 'PREPARE', remoteSessionId: null, key, commitStartedAt: null,
+              keyRotations: [...(state.keyRotations || []), { reason: 'SESSION_EXPIRED',
+                previousKey: state.key, key, sequence: state.sequence + 1 }] });
             continue;
           }
           if (!RETRYABLE.has(error.code) || ++attempts >= 3) throw error;

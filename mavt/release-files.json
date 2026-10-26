@@ -340,6 +340,7 @@
     "runtime/mobile-ai-visual-test/scripts/reporting/sections.js",
     "runtime/mobile-ai-visual-test/scripts/reporting/selection.js",
     "runtime/mobile-ai-visual-test/scripts/reporting/service.js",
+    "runtime/mobile-ai-visual-test/scripts/reporting/session-identity.js",
     "runtime/mobile-ai-visual-test/scripts/reporting/session.js",
     "runtime/mobile-ai-visual-test/scripts/reporting/settings.js",
     "runtime/mobile-ai-visual-test/scripts/reporting/source-reader.js",

@@ -12,6 +12,7 @@ const { createRevisions, canonicalJson } = require('./revisions');
 const { LIMITS, validateManifest, terminalResult, validId } = require('./contracts');
 const { safePath } = require('./source-reader');
 const { reportingError, requireInput } = require('./errors');
+const { assertSessionKey } = require('./session-identity');
 const { readRunBinding } = require('../lib/runtime-binding');
 const { terminalResource } = require('../coordinator/agent-resource-store');
 
@@ -255,11 +256,12 @@ function createJobQueue(options = {}) {
       if (!state || !receipt || state.state !== 'COMMITTED' || state.phase !== 'TERMINAL'
         || !Number.isSafeInteger(state.sequence) || state.sequence < 1
         || !/^[a-f0-9]{64}$/.test(state.credentialGeneration)
-        || !validId(state.remoteSessionId) || state.key !== session.key
+        || !validId(state.remoteSessionId)
         || state.manifestRelative !== session.manifestRelative
         || state.receiptRelative !== `receipts/${packageId}/${id}.json`
         || Object.entries(binding).some(([key, value]) => state[key] !== value || receipt[key] !== value))
         throw reportingError('REPORTING_PACKAGE_CORRUPT');
+      assertSessionKey(state, session.key, receipt);
       if (!authorization) {
         const manifestPath = safePath(packageRoot, session.manifestRelative);
         if (!fs.lstatSync(manifestPath).isFile() || fs.statSync(manifestPath).size > LIMITS.manifestBytes)
@@ -291,8 +293,17 @@ function createJobQueue(options = {}) {
       if (ownerBusy(owner)) return false;
       const epoch = repository.readWorkspace(workspace, 'identity.json')?.identityEpoch;
       if (!epoch) return false;
+      const referencedPackages = new Set();
+      let unknownJobs = false;
       for (const id of repository.listWorkspace(workspace, 'jobs')) {
-        const job = readCompatible(workspace, jobPath(id));
+        let job;
+        try { job = readJob(workspace, id); }
+        catch (error) {
+          if (!['REPORTING_STATE_VERSION_UNSUPPORTED', 'REPORTING_STATE_CORRUPT'].includes(error.code)) throw error;
+          unknownJobs = true;
+          continue;
+        }
+        if (job?.packageId) referencedPackages.add(job.packageId);
         if (!job || job.exportVersion !== EXPORT_VERSION || job.identityEpoch !== epoch || !job.packageId) continue;
         let claim;
         try { claim = repository.readWorkspace(workspace, jobClaimPath(id)); }
@@ -324,8 +335,55 @@ function createJobQueue(options = {}) {
             metrics: { ...job.metrics, localCleanupPending: !complete }, updatedAt: now() });
         return true;
       }
-      return false;
+      return cleanupCollection(workspace, epoch, referencedPackages, unknownJobs);
     });
+  }
+  function cleanupCollection(workspace, epoch, referencedPackages, unknownJobs) {
+    for (const area of ['staging', 'packages']) {
+      for (const id of repository.listWorkspace(workspace, area)) {
+        // Frozen packages referenced by any job still require that job's receipt
+        // proof or expiry path. Unknown job versions may hide additional refs.
+        if (referencedPackages.has(id) || (area === 'packages' && unknownJobs)) continue;
+        const relative = `${area}/${safeId(id)}/stage.json`;
+        let stage, cleanupStarted = false;
+        try {
+          stage = repository.readWorkspace(workspace, relative);
+          if (!stage || stage.exportVersion !== EXPORT_VERSION || stage.identityEpoch !== epoch
+            || stage.packageId !== id || !['COLLECTING', 'FAILED'].includes(stage.state)
+            || !Number.isInteger(stage.ownerPid) || stage.ownerPid < 1
+            || !Number.isFinite(Date.parse(stage.createdAt)) || clock() - Date.parse(stage.createdAt) <= RETENTION_MS
+            || (stage.state === 'COLLECTING' && isAlive(stage.ownerPid))) continue;
+          if (stage.jobId) {
+            const job = readJob(workspace, stage.jobId);
+            if (job && (job.identityEpoch !== epoch || job.exportVersion !== EXPORT_VERSION)) continue;
+            const claim = repository.readWorkspace(workspace, jobClaimPath(stage.jobId));
+            if (ownerBusy(claim)) continue;
+          }
+          // Do not prune a newer package format hidden behind an older stage.
+          let incompatible = false;
+          for (const name of ['frozen.json', 'package.json', 'manifest.json']) {
+            const record = repository.readWorkspace(workspace, `${area}/${id}/${name}`);
+            if (record && (record.exportVersion !== EXPORT_VERSION || record.identityEpoch !== epoch
+              || (record.frozen && record.frozen.format !== 'mavt-frozen/1')
+              || (record.manifest && record.manifest.format !== 'mavt-frozen/1'))) incompatible = true;
+          }
+          if (incompatible) continue;
+          cleanupStarted = true;
+          if (area === 'staging') {
+            require('./artifacts').releaseStagedData(workspace, id, repository, epoch);
+          } else if (releaseFrozenData(workspace, id, repository, [], true, 32)) {
+            repository.writeWorkspace(workspace, relative, { ...stage, state: 'EXPIRED_LOCAL' });
+          }
+          return true;
+        } catch (error) {
+          // Unknown or damaged ownership never grants deletion authority. A
+          // transient cleanup failure leaves stage.json for a later write.
+          if (error.code === 'REPORTING_LOCK_RECOVERY_REQUIRED') throw error;
+          if (cleanupStarted) return true;
+        }
+      }
+    }
+    return false;
   }
   function releaseStale(workspace, existing) {
     if (!existing || existing.state === 'RELEASED' || ownerBusy(existing)) return false;

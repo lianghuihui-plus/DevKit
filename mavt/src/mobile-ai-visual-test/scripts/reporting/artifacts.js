@@ -6,6 +6,7 @@ const { TextDecoder } = require('node:util');
 const { canonicalJson } = require('./revisions');
 const { safePath, parse, collectRefs, digest } = require('./source-reader');
 const { reportingError } = require('./errors');
+const { safeId } = require('./repository');
 const { references } = require('./contracts');
 const MEDIA = {
   '.json': 'application/json',
@@ -127,10 +128,62 @@ function discoverEvidence(source) {
     visit(seed);
   return graph;
 }
-function createArtifactStore({ workspace, packageId, repository, redactor, limits }) {
+// Keep stage.json until all payload has gone, so an interrupted bounded cleanup
+// never loses the ownership and retention metadata needed by a later writer.
+function releaseStagedData(workspace, packageId, repository, identityEpoch, limit = 32) {
+  safeId(packageId);
+  const stage = repository.readWorkspace(workspace, `staging/${packageId}/stage.json`);
+  if (!stage) {
+    if (safePath(workspace, `.mavt/reporting/staging/${packageId}`, true))
+      throw reportingError('REPORTING_STATE_CORRUPT');
+    return true;
+  }
+  if (stage.packageId !== packageId || stage.identityEpoch !== identityEpoch || stage.exportVersion !== 1)
+    throw reportingError('REPORTING_IDENTITY_STALE');
+  const root = safePath(workspace, `.mavt/reporting/staging/${packageId}`);
+  let remaining = limit;
+  function prune(directory) {
+    const handle = fs.opendirSync(directory);
+    try {
+      let entry;
+      while (remaining > 0 && (entry = handle.readSync())) {
+        if (directory === root && entry.name === 'stage.json') continue;
+        remaining--;
+        const file = path.join(directory, entry.name), stat = fs.lstatSync(file);
+        if (stat.isDirectory()) prune(file);
+        else if (stat.isFile()) fs.unlinkSync(file);
+        else throw reportingError('REPORTING_PATH_UNSAFE');
+      }
+    } finally { handle.closeSync(); }
+    if (directory !== root) {
+      try { fs.rmdirSync(directory); }
+      catch (error) { if (error.code !== 'ENOTEMPTY') throw error; }
+    }
+  }
+  prune(root);
+  const remainingFiles = fs.opendirSync(root);
+  let complete = true;
+  try {
+    let entry;
+    while ((entry = remainingFiles.readSync())) if (entry.name !== 'stage.json') { complete = false; break; }
+  } finally { remainingFiles.closeSync(); }
+  if (complete) {
+    fs.unlinkSync(path.join(root, 'stage.json'));
+    fs.rmdirSync(root);
+  }
+  syncDirectory(complete ? path.dirname(root) : root);
+  return complete;
+}
+function createArtifactStore({ workspace, packageId, repository, redactor, limits, identityEpoch, owner, createdAt }) {
   repository.writeWorkspace(workspace, `staging/${packageId}/stage.json`, {
     state: 'COLLECTING',
-    packageId
+    packageId,
+    identityEpoch,
+    ownerPid: process.pid,
+    createdAt: createdAt || repository.now(),
+    jobId: owner?.jobId || null,
+    claimNonce: owner?.nonce || null,
+    claimEpoch: owner?.epoch || null
   });
   const staging = path.resolve(workspace, '.mavt/reporting/staging', packageId), files = new Map(), adj = new Map();
   // The repository created the initial staging tree. Persist every ancestor
@@ -300,5 +353,6 @@ module.exports = {
   mediaType,
   durableWrite,
   discoverEvidence,
-  createArtifactStore
+  createArtifactStore,
+  releaseStagedData
 };

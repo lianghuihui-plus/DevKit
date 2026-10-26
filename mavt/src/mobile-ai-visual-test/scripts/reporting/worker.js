@@ -70,7 +70,8 @@ function createWorker(options = {}) {
       queue.assertOwner(workspace, claim);
       remaining(deadline);
       const frozen = await collect({ workspace, scope: job.scope, batchId: job.batchId || undefined,
-        capabilities }, { repository, sourceReader: options.sourceReader });
+        capabilities }, { repository, sourceReader: options.sourceReader, clock,
+        collectionOwner: { jobId: job.jobId, nonce: claim.nonce, epoch: claim.epoch } });
       queue.assertOwner(workspace, claim);
       remaining(deadline);
       packageId = safeId(frozen.packageId);

@@ -70,7 +70,7 @@ test('dead complete lock owners recover while live and future-version owners sta
  assert.deepEqual(JSON.parse(fs.readFileSync(lock)),future);
 });
 
-test('a dead stale-lock reaper does not permanently block later metadata writes', t => {
+test('a crashed stale-lock reaper requires explicit recovery without deleting ownership evidence', t => {
  const f=fixture(t),base=statePath(f,'');
  fs.mkdirSync(base,{recursive:true});
  const lock=path.join(base,'.metadata.lock');
@@ -80,9 +80,25 @@ test('a dead stale-lock reaper does not permanently block later metadata writes'
   ['-e',script,path.join(root,'repository.js'),lock,f.configDir,f.workspace],{encoding:'utf8'});
  assert.equal(child.status,17,child.stderr);
  assert.equal(fs.existsSync(`${lock}.reap`),true);
- assert.equal(f.repository.withWorkspaceLock(f.workspace,()=>true),true);
- assert.equal(fs.existsSync(lock),false);
- assert.equal(fs.existsSync(`${lock}.reap`),false);
+ const before=[fs.readFileSync(lock,'utf8'),fs.readFileSync(`${lock}.reap`,'utf8')];
+ assert.throws(()=>f.repository.withWorkspaceLock(f.workspace,()=>assert.fail('must not enter')),
+  {code:'REPORTING_LOCK_RECOVERY_REQUIRED'});
+ assert.deepEqual([fs.readFileSync(lock,'utf8'),fs.readFileSync(`${lock}.reap`,'utf8')],before);
+});
+
+test('concurrent processes cannot replace a crashed reaper and enter metadata critical sections', async t => {
+ const f=fixture(t),base=statePath(f,'');
+ fs.mkdirSync(base,{recursive:true});
+ const deadProcess=require('node:child_process').spawnSync(process.execPath,['-e',''],{encoding:'utf8'}).pid;
+ const owner={schemaVersion:1,pid:deadProcess,nonce:'dead-owner'};
+ for(const name of ['.metadata.lock','.metadata.lock.reap']) fs.writeFileSync(path.join(base,name),JSON.stringify(owner));
+ const script=`const r=require(process.argv[1]).createRepository({configDir:process.argv[2]});try{r.withWorkspaceLock(process.argv[3],()=>console.log('ENTERED'));}catch(e){console.log(e.code);}`;
+ const {execFile}=require('node:child_process');
+ const run=()=>new Promise((resolve,reject)=>execFile(process.execPath,
+  ['-e',script,path.join(root,'repository.js'),f.configDir,f.workspace],{timeout:5000},
+  (error,stdout,stderr)=>error?reject(new Error(stderr)):resolve(stdout.trim())));
+ assert.deepEqual(await Promise.all([run(),run()]),['REPORTING_LOCK_RECOVERY_REQUIRED','REPORTING_LOCK_RECOVERY_REQUIRED']);
+ for(const name of ['.metadata.lock','.metadata.lock.reap']) assert.deepEqual(JSON.parse(fs.readFileSync(path.join(base,name))),owner);
 });
 
 test('readonly defaults and missing identity never create config or reporting state',t=>{

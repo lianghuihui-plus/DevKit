@@ -129,10 +129,11 @@ function createRepository(options = {}) {
         if (error.code !== 'EEXIST') throw error;
         const staleReaper = parse(reap);
         if (!confirmedDead(staleReaper)) throw reportingError('REPORTING_LOCKED', 'Reporting metadata is busy');
-        if (parse(reap)?.nonce !== staleReaper.nonce) throw reportingError('REPORTING_LOCKED', 'Reporting metadata is busy');
-        fs.unlinkSync(reap);
-        try { publish(reap, owner); }
-        catch { throw reportingError('REPORTING_LOCKED', 'Reporting metadata is busy'); }
+        // Filesystem check + unlink is not compare-and-remove: two reclaimers
+        // could both observe this dead owner and then delete a live replacement.
+        // Never recursively reclaim the recovery guard. Preserve the evidence
+        // and require offline maintenance after all writers have been stopped.
+        throw reportingError('REPORTING_LOCK_RECOVERY_REQUIRED', 'Reporting lock recovery requires offline maintenance');
       }
       try {
         const previous = parse(file);

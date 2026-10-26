@@ -44,6 +44,6 @@ const tools = [
 const reportingModules = [
   'artifacts', 'collector', 'contracts', 'credentials', 'errors', 'identity', 'integration', 'intents', 'jobs',
   'launcher', 'native-model', 'redaction', 'repository', 'revisions', 'sections', 'selection', 'service',
-  'session', 'settings', 'source-reader', 'tools', 'transport', 'worker',
+  'session-identity', 'session', 'settings', 'source-reader', 'tools', 'transport', 'worker',
 ].map(name => name + '.js');
 module.exports = { skills, tools, reportingModules, reportingTools: tools.filter(name => name.startsWith('mavt_reporting_')) };

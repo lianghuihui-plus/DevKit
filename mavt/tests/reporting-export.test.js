@@ -494,10 +494,20 @@ test('new publication sidecar during collection invalidates the source signature
   });
   await assert.rejects(collect(f), error('REPORTING_SOURCE_CHANGED'));
 });
+test('manual reporting requires explicit publication proof for a modern batch', async t => {
+  const f = fixture(t), batchId = require('./support/reporting-fixture').bindBatch(f);
+  const publication = path.join(f.workspace, 'runs', batchId, 'report-publication.json');
+  fs.unlinkSync(publication);
+  await assert.rejects(collect(f), error('REPORTING_WAITING_PUBLICATION'));
+  write(publication, { schemaVersion:1, batchId, status:'PUBLISHED', attempts:[] });
+  assert.equal((await collect(f)).manifests[0].executions.length, 1);
+});
 test('native single-object limit rejects without truncating original renderer model', async t => {
   const f = fixture(t);
   f.request.limits = {documentBytes:20000};
   await assert.rejects(collect(f), error('REPORTING_NATIVE_MODEL_TOO_LARGE'));
+  const staging = path.join(f.workspace, '.mavt/reporting/staging');
+  assert.deepEqual(fs.existsSync(staging) ? fs.readdirSync(staging) : [], []);
 });
 test('large standard arrays move to deterministic complete record fragments', async t => {
   const f = fixture(t), s = f.sources[0];

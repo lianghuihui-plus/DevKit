@@ -151,10 +151,16 @@ function selectSources(request, { repository, sourceReader }) {
       }
       const publicationRelative = `runs/${chosen.execution.batchId}/report-publication.json`, publication = readJson(workspace, publicationRelative, true);
       addOptionalSignature(publicationRelative);
-      if (publication) {
-        if (publication.status !== 'PUBLISHED')
-          throw reportingError('REPORTING_WAITING_PUBLICATION');
+      // Standalone historical executions can lack Run metadata. A managed Run
+      // must prove publication even when its sidecar is missing or damaged.
+      let managedRun = false;
+      for (const name of ['batch.json', 'coordinator-state.json', 'contract.json']) {
+        const relative = `runs/${chosen.execution.batchId}/${name}`;
+        managedRun ||= !!safePath(workspace, relative, true);
+        addOptionalSignature(relative);
       }
+      if ((publication || managedRun) && publication?.status !== 'PUBLISHED')
+        throw reportingError('REPORTING_WAITING_PUBLICATION');
       selected.push({
         ...chosen,
         caseKey,
