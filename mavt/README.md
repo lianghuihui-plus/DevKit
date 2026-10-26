@@ -1,5 +1,7 @@
 # MAVT
 
+> 本目录自 2026-10-26 起保留为迁移前历史副本；后续开发请使用独立仓库 `/Users/cm/GitProj/mobileaivisualtest`（`git@gitlab.codemao.cn:lianghuihui/mobileaivisualtest.git`）。本机 `mavt-local` 市场来源已切换至新仓库的 `dist/mavt-marketplace/`，请勿在此继续维护。
+
 MAVT 是自包含的移动端 AI 黑盒视觉测试项目，首阶段以一个 Codex 插件交付，版本 `0.4.0` 包含测试执行、用例生成、知识维护和数据上报四个 Skill。
 
 本目录包含完整源码、知识管理模块、资源、文档、构建与测试；单独复制整个目录即可开发、构建和运行离线验证，不依赖 DevKit 的其他目录。
