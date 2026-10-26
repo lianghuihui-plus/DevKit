@@ -270,7 +270,12 @@ fs.readFileSync = function(file, ...args) {
     child.once('error', error => { clearTimeout(timer); reject(error); });
   });
   beforeInput(entry);
-  child.stdin.end(JSON.stringify({ operation: 'act', input: {} }));
+  // The child performs a synchronous read. Keep it behind the barrier until
+  // the pipe has finished writing and closed, otherwise it can read EAGAIN.
+  await new Promise((resolve, reject) => {
+    child.stdin.once('error', reject);
+    child.stdin.end(JSON.stringify({ operation: 'act', input: {} }), resolve);
+  });
   fs.writeFileSync(release, 'go');
   const exitCode = await new Promise((resolve, reject) => {
     child.once('exit', resolve);

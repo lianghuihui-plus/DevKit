@@ -4,6 +4,7 @@
 
 ## 0.4.0 数据上报 v2 五项审查修复（2026-10-26，未安装）
 
+- 合并复验进一步定位 CLI stdin 测试竞态：8 个并行匿名诊断中一次捕获 `readFileSync(0)` 的 `EAGAIN`，发生在 dispatch 校验前；测试原先调用 `stdin.end()` 后立即释放 barrier，没有等待异步管道完成写入及关闭，现等待 end 回调再释放，保留全部拒绝断言且不修改运行时代码，八轮并行的两项 stdin 回归 16/16 通过，证据 `test-results/reporting-audit-2026-10-26/stdin-fixed-*.log`，原始失败及诊断保留在主 checkout 的 `test-results/reporting-merge-2026-10-26/`。
 - 修复死亡 reaper 的并发抢占窗口：普通死亡 owner 仍自动恢复，reaper 自身死亡则保留证据并返回 `REPORTING_LOCK_RECOVERY_REQUIRED`；必须停止相关写入进程、备份 owner 记录后离线移除对应 recovery guard，不能按文件年龄抢锁。
 - 修复真实 spawn 无 pid 后异步 error 导致调用进程退出的问题；任务记录独立启动失败并释放 reservation，上报故障不阻塞测试或改写 verdict。
 - 为 410 后的会话 key 增加连续持久轮换证明及最终回执绑定，COMMITTED 包可正常释放；原始 Manifest 字节保持不变，无证明的 key 修改仍不能授权删除。
